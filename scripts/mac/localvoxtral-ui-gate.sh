@@ -206,6 +206,10 @@ LV_UI_TERM_COMMAND_DIRS="${LV_UI_TERM_COMMAND_DIRS:-$HOME/bin}"
 # suite drives the three failure paths below and a 20-second wall-clock wait
 # per case is most of the suite's runtime.
 LV_UI_TERM_OPEN_TIMEOUT_SECONDS="${LV_UI_TERM_OPEN_TIMEOUT_SECONDS:-20}"
+# How many windows a refused `term open` may record as UNCONFIRMED so
+# `term close` can still reach them. Bounded because each record is a window
+# this gate could not prove is its own.
+LV_UI_TERM_MAX_UNCONFIRMED="${LV_UI_TERM_MAX_UNCONFIRMED:-6}"
 
 # Owner rule (2026-07-09): warn audibly and wait before stealing focus, and
 # announce completion. Set to 0 in the conf file only if you are sitting in
@@ -1180,6 +1184,13 @@ case "termnew":
     }
     if candidates.isEmpty { die("no window of pid \(pid) appeared since the snapshot") }
     let ids = candidates.map { String($0.id) }.joined(separator: " ")
+    // The ids go to STDOUT in a parseable line as well as into the sentence on
+    // stderr. Refusing to guess is still the answer, but the caller has to be
+    // able to TAKE BACK what it opened, and it cannot do that with a window it
+    // was never told about (field failure 2026-09-05: two Ghostty windows the
+    // gate could not name were left on the owner's desktop for him to close by
+    // hand).
+    print("ambiguous \(pid) \(ids)")
     FileHandle.standardError.write(Data((
         "helper: \(candidates.count) windows of pid \(pid) appeared since the snapshot "
         + "(ids \(ids)) and none carries the marker — refusing to guess which one this gate opened\n"
@@ -1403,9 +1414,19 @@ resolve_artifact() { # <argument> -> absolute, symlink-free path under a root
   local argument="$1" resolved root
   token_is_safe "$argument" || return 1
   [[ "$argument" != *".."* ]] || return 1
-  resolved="$(cd "$argument" 2>/dev/null && pwd -P)" || return 1
   for root in $LV_UI_ARTIFACT_ROOTS; do
     root="$(cd "$root" 2>/dev/null && pwd -P)" || continue
+    # A BARE NAME is resolved against each root, because that is the only form
+    # `state` ever hands back: `setup.artifacts` lists names, and pasting one
+    # into `launch` used to deny with "not inside an allowlisted root" — a
+    # refusal for the one spelling the gate itself printed. An absolute or
+    # relative path still works and is still bound by the same containment
+    # check below; the name form just saves guessing WHICH root it came from.
+    if [[ "$argument" != /* && "$argument" != */* ]]; then
+      resolved="$(cd "$root/$argument" 2>/dev/null && pwd -P)" || continue
+    else
+      resolved="$(cd "$argument" 2>/dev/null && pwd -P)" || return 1
+    fi
     if [[ "$resolved" == "$root"/* ]]; then
       printf '%s\n' "$resolved"
       return 0
@@ -1634,7 +1655,7 @@ run_state() {
   fi
 
   terminals=""
-  local file id term marker pid window
+  local file id term marker pid window unconfirmed
   for file in "$STATE_DIR"/terms/*.state; do
     [[ -f "$file" ]] || continue
     id="${file##*/}"
@@ -1643,10 +1664,12 @@ run_state() {
     marker="$(sed -n 's/^marker=//p' "$file" | head -n 1)"
     pid="$(sed -n 's/^pid=//p' "$file" | head -n 1)"
     window="$(sed -n 's/^window=//p' "$file" | head -n 1)"
+    unconfirmed=false
+    [[ "$(sed -n 's/^unconfirmed=//p' "$file" | head -n 1)" == "1" ]] && unconfirmed=true
     [[ -n "$terminals" ]] && terminals+=","
     [[ "$pid" =~ ^[1-9][0-9]*$ ]] || pid=0
     [[ "$window" =~ ^[1-9][0-9]*$ ]] || window=0
-    terminals+="{\"id\":$(json_string "$id"),\"terminal\":$(json_string "$term"),\"pid\":$pid,\"window\":$window,\"alive\":$( (( pid > 0 )) && kill -0 "$pid" 2>/dev/null && echo true || echo false),\"marker\":$(json_string "$marker")}"
+    terminals+="{\"id\":$(json_string "$id"),\"terminal\":$(json_string "$term"),\"pid\":$pid,\"window\":$window,\"alive\":$( (( pid > 0 )) && kill -0 "$pid" 2>/dev/null && echo true || echo false),\"marker\":$(json_string "$marker"),\"unconfirmed\":$unconfirmed}"
   done
 
   printf '{"screen_lock":%s,"idle_seconds":%s,"power":%s,"tcc":{"accessibility":%s,"screen_recording":%s},"app":%s,"terminals":[%s],"setup":%s}\n' \
@@ -2292,6 +2315,58 @@ next_term_id() {
 # is deliberately short. The command never reaches a shell as a string: every
 # token has already passed token_is_safe, and the launcher script below is
 # built with %q quoting, so a token is always one argv element.
+# Processes of <procname> that did NOT exist before this gate ran `open -n`.
+#
+# The partition rides kernel pids, which no launcher gets to choose, so it can
+# only ever be conservative: a pid the snapshot already listed is never
+# reclaimed, and a pid that appeared since could only have come from the
+# instance this gate started (the verb refuses to run twice concurrently for
+# the same reason `launch` refuses a second app).
+term_instance_pids() { # <procname> <space-separated before-pids>
+  local procname="$1" before=" ${2} " pid out=""
+  for pid in $(pgrep -x "$procname" 2>/dev/null || true); do
+    [[ "$before" == *" $pid "* ]] && continue
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+    out+="$pid "
+  done
+  printf '%s' "${out% }"
+}
+
+# Windows this gate SAW but could not prove it opened, written as ordinary
+# terminal records carrying `unconfirmed=1`.
+#
+# The alternative is what shipped before: refuse, say "several windows
+# appeared", and leave every one of them unnamed — which on 2026-09-05 meant
+# the owner closed them by hand because no verb could address them. A record
+# makes `term close` reachable without making `term focus` reachable, and the
+# distinction is the point: closing a window the gate may have opened is
+# recoverable, raising one in front of what the owner is doing is a takeover
+# this gate has not earned.
+UNCONFIRMED_TERM_IDS=""
+record_unconfirmed_terms() { # <terminal> <ownerpid> <marker> <command> <ids...>
+  local terminal="$1" ownerpid="$2" marker="$3" command="$4" ids="$5"
+  local winid recorded="" id count=0
+  UNCONFIRMED_TERM_IDS=""
+  [[ "$ownerpid" =~ ^[1-9][0-9]*$ ]] || return 0
+  for winid in $ids; do
+    [[ "$winid" =~ ^[1-9][0-9]*$ ]] || continue
+    (( count += 1 ))
+    (( count <= LV_UI_TERM_MAX_UNCONFIRMED )) || break
+    id="$(next_term_id)"
+    {
+      printf 'terminal=%s\n' "$terminal"
+      printf 'pid=%s\n' "$ownerpid"
+      printf 'window=%s\n' "$winid"
+      printf 'marker=%s\n' "$marker"
+      printf 'command=%s\n' "$command"
+      printf 'unconfirmed=1\n'
+    } >"$STATE_DIR/terms/$id.state"
+    recorded+="$id "
+  done
+  UNCONFIRMED_TERM_IDS="${recorded% }"
+  [[ -n "$UNCONFIRMED_TERM_IDS" ]] || UNCONFIRMED_TERM_IDS="none"
+}
+
 run_term_open() {
   local terminal="$1"
   shift
@@ -2335,7 +2410,7 @@ run_term_open() {
   # Logged IN FULL: this is the one verb that carries a command line.
   log_command ALLOW "terminal=$terminal command=${argv[*]} resolved=$resolved_command"
 
-  local id marker script app procname pidfile
+  local id marker script app procname pidfile ackfile ack_polls
   id="$(next_term_id)"
   marker="lvui-$id-$RANDOM$RANDOM"
   app="$(terminal_app_name "$terminal")"
@@ -2343,6 +2418,11 @@ run_term_open() {
   mkdir -p "$STATE_DIR/terms"
   script="$STATE_DIR/terms/$marker.command"
   pidfile="$STATE_DIR/terms/$marker.pid"
+  ackfile="$STATE_DIR/terms/$marker.ack"
+  rm -f "$ackfile"
+  # Two seconds past the gate's own deadline, in 100 ms steps: the launcher
+  # must outlive the poll that is looking for it, and then stop waiting.
+  ack_polls=$(( (LV_UI_TERM_OPEN_TIMEOUT_SECONDS + 2) * 10 ))
   {
     printf '#!/bin/sh\n'
     # `exec` keeps this pid, so the file names the process that ends up running
@@ -2353,6 +2433,24 @@ run_term_open() {
     printf 'printf %%s "$$" > %q\n' "$pidfile"
     # OSC 0 title. A TIE-BREAKER, not the identity — see the snapshot below.
     printf 'printf %s "%s"\n' "'\\033]0;%s\\007'" "$marker"
+    # HOLD THE TITLE UNTIL THE GATE HAS READ IT.
+    #
+    # This is what makes the tie-breaker deterministic instead of a race. The
+    # command this verb exists to run is a whole-view herdr client, and herdr
+    # owns the terminal title from its first painted frame — so the marker used
+    # to survive only for as long as `open` plus an ssh handshake happened to
+    # take, and any poll that arrived after herdr painted saw an untagged
+    # window. Waiting here costs nothing when the gate is watching (it acks the
+    # moment it resolves a window) and fails OPEN after the bound above, which
+    # is exactly the pre-handshake behaviour.
+    #
+    # The ack path is inside the gate's own 0700 state dir and is only ever
+    # tested for existence, so nothing the launcher reads can carry content.
+    printf 'lvui_i=0\n'
+    printf 'while [ ! -e %q ] && [ "$lvui_i" -lt %s ]; do\n' "$ackfile" "$ack_polls"
+    printf '  sleep 0.1\n'
+    printf '  lvui_i=$((lvui_i + 1))\n'
+    printf 'done\n'
     # The ABSOLUTE path, not the name: PATH is not this launcher's to rely on.
     printf 'exec %q' "$resolved_command"
     if (( ${#argv[@]} > 1 )); then
@@ -2384,13 +2482,46 @@ run_term_open() {
   before_ids="$(helper termsnapshot $before_pids 2>/dev/null || true)"
   [[ -n "$before_ids" ]] || before_ids="-"
 
+  # WHY ONLY GHOSTTY SPAWNS AN INSTANCE, AND WHY THAT MATTERS.
+  #
+  # `--args` are delivered to an application only when `open` LAUNCHES it, so
+  # the one branch that has to pass `-e <script>` also has to pass `-n`, which
+  # forces a brand-new instance. The other terminals take the launcher as a
+  # DOCUMENT and reuse whatever is already running.
+  #
+  # A brand-new instance runs the whole macOS launch path, state restoration
+  # included: Ghostty's `window-save-state` defaults to `default`, documented
+  # as "the default system behavior… only save state if the application is
+  # forcibly terminated or if it is configured systemwide via Settings.app",
+  # and implemented as the `NSQuitAlwaysKeepsWindows` default. With the
+  # systemwide "Close windows when quitting an application" unchecked, the new
+  # instance recreates the app's saved window set ALONGSIDE the `-e` window.
+  # Field failure 2026-09-05: `term open ghostty lv-attach` reported "several
+  # windows appeared at once" twice in a row and left the extra windows on the
+  # owner's desktop, unaddressable, because the gate had recorded no id for
+  # them. `term open terminal lv-attach` — same moment, same machine, no `-n` —
+  # opened exactly one window and bound it.
+  #
+  # This gate deliberately does NOT try to turn restoration off. Both ways of
+  # doing that are worse than the problem: `--window-save-state=never` writes
+  # `NSQuitAlwaysKeepsWindows` into the OWNER's persistent Ghostty defaults and
+  # would silently disable his own window restoration, and an AppKit argument-
+  # domain override (`--args -NSQuitAlwaysKeepsWindows NO`) has to survive
+  # Ghostty's own argument parser, which is not this gate's to assume. Instead:
+  # the marker handshake above makes the right window identifiable however many
+  # appear, and the reclaim below makes every window of an instance THIS GATE
+  # started the gate's to take back.
+  local spawned_instance=0
   announce_takeover "opening a $terminal window"
   case "$terminal" in
-    ghostty) open -n -a "$app" --args -e "$script" || fail "could not open $app" ;;
+    ghostty)
+      spawned_instance=1
+      open -n -a "$app" --args -e "$script" || fail "could not open $app"
+      ;;
     *) open -a "$app" "$script" || fail "could not open $app" ;;
   esac
 
-  local pid deadline resolved status winid owner="" ambiguous=0
+  local pid deadline resolved status winid owner="" ambiguous=0 ambiguous_ids=""
   deadline=$((SECONDS + LV_UI_TERM_OPEN_TIMEOUT_SECONDS))
   while (( SECONDS < deadline )); do
     pid="$(pgrep -n -x "$procname" 2>/dev/null || true)"
@@ -2403,16 +2534,25 @@ run_term_open() {
         owner="${resolved##* }"
         break
       fi
-      # Several windows appeared at once and none carries the marker. Waiting
-      # longer cannot make that less ambiguous, so stop now rather than binding
-      # whatever the owner just opened.
+      # Several windows appeared at once and none carries the marker. The
+      # marker is HELD by the launcher until this gate acks it, so reaching
+      # here means the tag never rendered at all rather than that we polled a
+      # moment too late — waiting longer still cannot make it less ambiguous.
+      # The ids are kept: whatever happens next, the caller must be able to
+      # take back what was opened.
       if (( status == 2 )); then
         ambiguous=1
+        [[ "$resolved" == ambiguous\ * ]] && ambiguous_ids="${resolved#ambiguous }"
         break
       fi
     fi
     sleep 0.5
   done
+
+  # Released here, on EVERY path out of the poll: the launcher must not sit on
+  # its title after this gate has stopped looking, and a failure path is about
+  # to terminate it anyway.
+  : >"$ackfile" 2>/dev/null || true
 
   if [[ -z "$owner" ]]; then
     # THREE different faults live here and they have completely different
@@ -2437,7 +2577,33 @@ run_term_open() {
       kill -TERM "$orphan" 2>/dev/null || true
       reclaimed="terminated the command it started (pid $orphan); in Ghostty the window closes with it, in Terminal/iTerm it stays showing a finished command"
     fi
-    rm -f "$script" "$pidfile"
+
+    # Killing the launcher closes ONE window. When this gate spawned the whole
+    # instance, every window that instance put on screen is the gate's — the
+    # `-e` one and any macOS restored alongside it — and the pid partition
+    # proves it: a process of this name that was not in the pre-open snapshot
+    # cannot be one the owner was already using. So the reclaim is the whole
+    # instance, which is the only thing that makes "nothing was left behind"
+    # true for the branch that duplicates windows.
+    local spawned_pids=""
+    if (( spawned_instance == 1 )); then
+      spawned_pids="$(term_instance_pids "$procname" "$before_pids")"
+      if [[ -n "$spawned_pids" ]]; then
+        local spawned_pid
+        for spawned_pid in $spawned_pids; do
+          kill -TERM "$spawned_pid" 2>/dev/null || true
+        done
+        reclaimed="terminated the $app instance it started (pid $spawned_pids), closing every window that instance opened"
+      fi
+    elif (( ambiguous == 1 )) && [[ -n "$ambiguous_ids" ]]; then
+      # A REUSED instance's extra windows may be the owner's, so they are not
+      # killed — but the ones this gate saw are recorded, unconfirmed, so
+      # `term close` can still reach a window it may have opened. `term focus`
+      # refuses an unconfirmed record: raising a window is a takeover of
+      # whatever the owner is doing, and this gate does not know whose it is.
+      record_unconfirmed_terms "$terminal" "$pid" "$marker" "${argv[*]}" "$ambiguous_ids"
+    fi
+    rm -f "$script" "$pidfile" "$ackfile"
 
     if (( launcher_ran == 0 )); then
       fail "$app opened but never ran the launcher, so ${argv[0]} was never executed — $reclaimed. This is not a window-identification problem: check that $app accepts the launcher ($script was removed; re-run to regenerate it)."
@@ -2446,7 +2612,10 @@ run_term_open() {
       fail "${argv[0]} ran and exited immediately, which is what an empty terminal window means — $reclaimed. This is the COMMAND failing, not the window being unidentifiable: run it by hand as this user ($resolved_command$args_text) and read its error."
     fi
     if (( ambiguous == 1 )); then
-      fail "$app opened, ${argv[0]} is running, but several windows appeared at once so this cannot tell which one it opened — $reclaimed. Re-run without opening a terminal window yourself at the same moment."
+      if (( spawned_instance == 1 )); then
+        fail "$app opened, ${argv[0]} is running, but several windows appeared at once so this cannot tell which one it opened — $reclaimed, so nothing was left on the desktop. Re-run without opening a terminal window yourself at the same moment."
+      fi
+      fail "$app opened, ${argv[0]} is running, but several windows appeared at once so this cannot tell which one it opened — $reclaimed. The windows it saw are recorded UNCONFIRMED as $UNCONFIRMED_TERM_IDS: \`term close <id>\` can reach them, \`term focus\` will not (this gate cannot prove they are its own). Re-run without opening a terminal window yourself at the same moment."
     fi
     fail "$app opened and ${argv[0]} is running, but no new window appeared within $LV_UI_TERM_OPEN_TIMEOUT_SECONDS seconds — $reclaimed"
   fi
@@ -2472,6 +2641,8 @@ load_term_state() { # <id>
   TERM_MARKER="$(sed -n 's/^marker=//p' "$file" | head -n 1)"
   TERM_WINDOW="$(sed -n 's/^window=//p' "$file" | head -n 1)"
   TERM_KIND="$(sed -n 's/^terminal=//p' "$file" | head -n 1)"
+  TERM_UNCONFIRMED=0
+  [[ "$(sed -n 's/^unconfirmed=//p' "$file" | head -n 1)" == "1" ]] && TERM_UNCONFIRMED=1
   # ^[1-9] on purpose: `kill -0 0` signals the whole process group and always
   # succeeds, so pid 0 would read as a live terminal.
   [[ "$TERM_PID" =~ ^[1-9][0-9]*$ && "$TERM_WINDOW" =~ ^[1-9][0-9]*$ ]] \
@@ -2483,6 +2654,12 @@ run_term_focus() {
   local id="$1"
   require_unlocked_screen
   load_term_state "$id"
+  # An unconfirmed record names a window that appeared at the same instant as
+  # the one this gate opened, in an instance it did NOT start. Closing one is
+  # recoverable; raising one in front of the owner is a takeover of a window
+  # that may be his.
+  (( TERM_UNCONFIRMED == 0 )) \
+    || deny "$id is an UNCONFIRMED window — this gate saw it but cannot prove it opened it, so it may be focused but never raised; \`term close $id\` is available"
   log_command ALLOW "id=$id pid=$TERM_PID"
   announce_takeover "focusing $TERM_KIND window $id"
   helper termaction "$TERM_PID" "$TERM_WINDOW" focus || fail "could not focus $id"
@@ -2497,7 +2674,8 @@ run_term_close() {
   log_command ALLOW "id=$id pid=$TERM_PID"
   helper termaction "$TERM_PID" "$TERM_WINDOW" close || fail "could not close $id"
   rm -f "$STATE_DIR/terms/$id.state" \
-    "$STATE_DIR/terms/$TERM_MARKER.command" "$STATE_DIR/terms/$TERM_MARKER.pid"
+    "$STATE_DIR/terms/$TERM_MARKER.command" "$STATE_DIR/terms/$TERM_MARKER.pid" \
+    "$STATE_DIR/terms/$TERM_MARKER.ack"
   ACTION_COMPLETED=1
   printf 'closed %s\n' "$id"
 }
