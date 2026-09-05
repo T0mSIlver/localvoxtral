@@ -100,14 +100,58 @@ final class HerdrIntegrationTests: XCTestCase {
     }
 
     /// Wait until the whole-view surface has painted `token`, reading only
-    /// what herdr wrote after `mark`.
+    /// what herdr wrote after `mark`, and keep the stamp alive the way the
+    /// product does while waiting.
+    ///
+    /// WHY THE REFRESH. `stamp` carries
+    /// `HerdrPanelBindingProbe.tokenTTLMilliseconds` (8 s), so one stamp
+    /// cannot outlive this wait: at 8 s herdr expires the token and stops
+    /// painting it. The old fixture stamped ONCE and then waited `timeout`
+    /// (20 s), which meant the real budget was 8 s while the signature — and
+    /// every failure message — said 20. On a loaded runner the attach-client
+    /// test crossed 8 s often enough to fail 3 of 5 runs (2026-09-05), always
+    /// at its positive control, and always as a clean 6 s pass / 24 s timeout
+    /// split with nothing in between: the signature of a budget that is not
+    /// the one being reported.
+    ///
+    /// The PRODUCT never relies on a single stamp either.
+    /// `HerdrPanelMicIndicator` re-stamps every `refreshInterval` (4 s) for
+    /// exactly this reason, so the token is refreshed at half its TTL and
+    /// never lapses. The fixture now does the same thing on the same cadence,
+    /// which makes `timeout` mean what it says AND makes the fixture model the
+    /// product instead of a third behaviour that exists nowhere.
+    ///
+    /// Wall-clock here is deliberate and matches `HerdrLaneWait.until`, whose
+    /// comment explains it: this lane waits on LIVE external processes (herdr,
+    /// sshd, a pty) and herdr's own TTL is not a clock this test can inject.
+    /// The loop below is `until`'s, plus the refresh — kept here rather than
+    /// pushed into the shared helper because only the panel token needs it.
     private func waitForToken(
         _ token: String,
         on surface: HerdrSurfaceLog,
+        refreshingThrough client: HerdrSocketClient,
+        socketPath: String,
         timeout: TimeInterval = 20
     ) async throws {
-        try await HerdrLaneWait.until("the surface to paint \(token)", timeout: timeout) {
-            surface.textSinceMark()?.contains(token) == true
+        let deadline = Date().addingTimeInterval(timeout)
+        // First refresh one interval in, exactly like the indicator's loop
+        // (`sleepFor(refreshInterval)` and only then `refreshOnce()`).
+        var nextRefresh = Date().addingTimeInterval(HerdrPanelMicIndicator.refreshInterval)
+        while true {
+            if surface.textSinceMark()?.contains(token) == true { return }
+            guard Date() < deadline else {
+                throw HerdrLaneError.timedOut("the surface to paint \(token)")
+            }
+            if Date() >= nextRefresh {
+                let refreshed = await stamp(token, through: client, socketPath: socketPath)
+                XCTAssertTrue(
+                    refreshed,
+                    "re-stamping the panel token was refused; the wait below would "
+                        + "then be measuring an expired token, not a surface that will not paint"
+                )
+                nextRefresh = Date().addingTimeInterval(HerdrPanelMicIndicator.refreshInterval)
+            }
+            try? await Task.sleep(for: .milliseconds(100))
         }
     }
 
@@ -151,7 +195,12 @@ final class HerdrIntegrationTests: XCTestCase {
             stamped,
             "pane.report_metadata was refused through the forwarded socket"
         )
-        try await waitForToken(token, on: fixture.primarySurface)
+        try await waitForToken(
+            token,
+            on: fixture.primarySurface,
+            refreshingThrough: client,
+            socketPath: handle.localSocketPath
+        )
     }
 
     /// THE load-bearing external assumption.
@@ -192,7 +241,12 @@ final class HerdrIntegrationTests: XCTestCase {
         // Positive control first: the whole-view surface DOES render it, so
         // the negative below is about attach mode and not about a fixture
         // that painted nothing at all.
-        try await waitForToken(token, on: fixture.primarySurface)
+        try await waitForToken(
+            token,
+            on: fixture.primarySurface,
+            refreshingThrough: client,
+            socketPath: handle.localSocketPath
+        )
 
         XCTAssertFalse(
             attachSurface.textSinceMark()?.contains(token) == true,
