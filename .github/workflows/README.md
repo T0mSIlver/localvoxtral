@@ -33,6 +33,24 @@ which also arms the runtime capture default. On manual dispatch the
 conditional live-model lanes (polishd/speechd) skip — the dispatched ref's
 own push/PR run already decided them.
 
+Forcing the hosted lane: `workflow_dispatch` with `hosted=true` runs
+`build-test` for a same-repo ref on `macos-latest` instead of the Mac —
+
+```bash
+gh workflow run CI --ref <branch> -f hosted=true
+```
+
+That is the only way to exercise the fork-PR lane without a fork, and it is
+also the switch for moving tier 0 off the personal Mac. Everything keyed on
+`runner.environment == 'self-hosted'` skips exactly as it does for a fork PR:
+the workspace process cleanup, all four lane-decide steps, the live STT /
+polishd / speechd / herdr lanes, both helper unit suites, the dogfood capture
+suite and packaging, the Metal-toolchain probe, and the process leak check.
+What remains is the shell-test step, the installer test, format lint, the unit
+suite, packaging (helpers skipped, ad-hoc signature), the artifacts, and the
+launch smoke. The input can only move a job toward `macos-latest`; no input
+value can pull a fork PR onto the self-hosted runner.
+
 The same `build-test` check takes a docs/scripts-only fast path when every
 changed file passes `scripts/ci/docs-only-filter.sh`; it then skips all Swift,
 helper, packaging, artifact, smoke, warm, and integration steps. The filter

@@ -14,6 +14,10 @@ on:
         description: "Also package the dogfood-instrumented app (artifact: localvoxtral-app-dogfood)"
         type: boolean
         default: false
+      hosted:
+        description: "Run build-test on a GitHub-hosted macOS runner instead of the Mac (the fork-PR lane)"
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -24,7 +28,23 @@ jobs:
     # Same-repo branches run on the self-hosted Mac (persistent workspace, warm
     # incremental builds). Fork PRs run on GitHub-hosted macOS so untrusted code
     # never executes on the build machine.
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "macOS", "ARM64"]') || 'macos-latest' }}
+    #
+    # `workflow_dispatch` with hosted=true sends a SAME-REPO ref onto the hosted
+    # lane instead. Two uses: it is the only way to exercise the fork-PR lane
+    # without a fork (that lane's last real run predates #244's toolchain fix
+    # and nothing has proved it since), and it is the switch a decision to move
+    # tier 0 off the personal Mac would flip. The term only ever moves a job
+    # TOWARD macos-latest — a fork PR can never be pulled onto the self-hosted
+    # runner by an input, whatever it is set to.
+    #
+    # `github.event.inputs.hosted`, not `inputs.hosted`: the input is declared
+    # `type: boolean`, and comparing a boolean to the string 'true' in an
+    # expression coerces both to numbers (1 vs NaN) and is therefore always
+    # false. The event payload's copy is a string, so it compares as written.
+    # (Same trap as the dogfood UI-gate install step below; it cost a silently
+    # dead gate once already.) For push/pull_request the field is absent, which
+    # compares as '' and leaves the original routing untouched.
+    runs-on: ${{ (github.event.inputs.hosted != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted", "macOS", "ARM64"]') || 'macos-latest' }}
     timeout-minutes: 30
     steps:
       - name: Checkout
