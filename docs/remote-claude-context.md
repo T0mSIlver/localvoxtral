@@ -231,8 +231,9 @@ the token out of the host's shell history. It is a habit, not a guarantee.
 
 If you paste the command into a shell that records it anyway — or you are simply
 not sure — **rotate the token**. That is what rotation is for. Running the setup
-from the app instead avoids the question entirely: the token goes through SSH
-stdin, never through a command line.
+from the app instead avoids the history question: the token goes through SSH
+stdin, never in a process argument on this Mac; on the host it is in that one
+`claude plugin install` command's argv while it runs (see above).
 
 ## tmux, screen, and window titles
 
