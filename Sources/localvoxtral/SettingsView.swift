@@ -79,54 +79,61 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        TabView(selection: $navigator.selectedTab) {
-            GeneralSettingsPane(settings: settings, viewModel: viewModel)
-                .tabItem {
-                    Label("General", systemImage: "gearshape")
-                }
-                .tag(SettingsTab.general)
+        HStack(spacing: 0) {
+            SettingsSidebarView(selection: $navigator.selectedTab)
 
-            ConnectionSettingsPane(
-                settings: settings,
-                viewModel: viewModel,
-                backendManager: backendManager,
-                endpointBinding: endpointBinding,
-                modelBinding: modelBinding
-            )
-            .tabItem {
-                Label("Endpoints", systemImage: "network")
-            }
-            .tag(SettingsTab.endpoints)
+            // The sidebar's trailing hairline. One divider, drawn by the layout
+            // rather than by both columns, so it cannot double up.
+            Divider()
 
-            DictationSettingsPane(
-                settings: settings,
-                viewModel: viewModel,
-                dictationShortcutBinding: dictationShortcutBinding,
-                overlayBufferShortcutBinding: overlayBufferShortcutBinding,
-                livePasteShortcutBinding: livePasteShortcutBinding,
-                shortcutValidationError: $shortcutValidationError
-            )
-            .tabItem {
-                Label("Dictation", systemImage: "mic")
-            }
-            .tag(SettingsTab.dictation)
-
-            TextProcessingSettingsPane(
-                settings: settings,
-                viewModel: viewModel
-            )
-            .tabItem {
-                Label("Text Processing", systemImage: "text.badge.checkmark")
-            }
-            .tag(SettingsTab.textProcessing)
-
-            AboutSettingsPane(settings: settings, viewModel: viewModel)
-                .tabItem {
-                    Label("About", systemImage: "info.circle")
-                }
-                .tag(SettingsTab.about)
+            detailColumn
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background {
+            SettingsWindowChrome()
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+        }
+    }
+
+    /// Header + the selected pane. No transition/animation on the swap: pane
+    /// content is dense, and cross-fading it reads as a flicker.
+    private var detailColumn: some View {
+        VStack(spacing: 0) {
+            SettingsPaneHeader(tab: navigator.selectedTab)
+
+            Divider()
+
+            switch navigator.selectedTab {
+            case .general:
+                GeneralSettingsPane(settings: settings, viewModel: viewModel)
+            case .endpoints:
+                ConnectionSettingsPane(
+                    settings: settings,
+                    viewModel: viewModel,
+                    backendManager: backendManager,
+                    endpointBinding: endpointBinding,
+                    modelBinding: modelBinding
+                )
+            case .dictation:
+                DictationSettingsPane(
+                    settings: settings,
+                    viewModel: viewModel,
+                    dictationShortcutBinding: dictationShortcutBinding,
+                    overlayBufferShortcutBinding: overlayBufferShortcutBinding,
+                    livePasteShortcutBinding: livePasteShortcutBinding,
+                    shortcutValidationError: $shortcutValidationError
+                )
+            case .textProcessing:
+                TextProcessingSettingsPane(
+                    settings: settings,
+                    viewModel: viewModel
+                )
+            case .about:
+                AboutSettingsPane(settings: settings, viewModel: viewModel)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
 
@@ -135,7 +142,7 @@ private struct GeneralSettingsPane: View {
     let viewModel: DictationViewModel
 
     var body: some View {
-        SettingsPage {
+        SettingsPage(tab: .general) {
             SettingsGroup(title: "Permissions") {
                 PermissionRowsView(viewModel: viewModel)
             }
@@ -234,7 +241,7 @@ private struct ConnectionSettingsPane: View {
     }
 
     var body: some View {
-        SettingsPage {
+        SettingsPage(tab: .endpoints) {
             SettingsGroup(title: "Dictation") {
                 SettingsFieldRow(title: "Mode") {
                     VStack(alignment: .leading, spacing: 6) {
@@ -502,7 +509,7 @@ private struct DictationSettingsPane: View {
     @State private var livePasteValidationError: String?
 
     var body: some View {
-        SettingsPage {
+        SettingsPage(tab: .dictation) {
             SettingsGroup(title: "Start dictation with") {
                 SettingsFieldRow(title: "Trigger") {
                     Picker("", selection: Binding(
@@ -708,7 +715,7 @@ private struct TextProcessingSettingsPane: View {
     }
 
     var body: some View {
-        SettingsPage {
+        SettingsPage(tab: .textProcessing) {
             SettingsGroup(title: "Replacements") {
                 SettingsFieldRow(title: "Exact match") {
                     Toggle("", isOn: $settings.replacementDictionaryEnabled)
@@ -1530,7 +1537,7 @@ private struct AboutSettingsPane: View {
     }
 
     var body: some View {
-        SettingsPage {
+        SettingsPage(tab: .about) {
             SettingsGroup(title: "Application") {
                 SettingsFieldRow(title: "Name") {
                     Text(appName)
@@ -1590,6 +1597,10 @@ private struct AboutSettingsPane: View {
 }
 
 private struct SettingsPage<Content: View>: View {
+    /// Identifies the pane's content subtree to the AX drills
+    /// (`settings.pane.<rawValue>`), which scope their content assertions to it
+    /// so a sidebar row's label can never satisfy a pane assertion.
+    let tab: SettingsTab
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -1602,6 +1613,8 @@ private struct SettingsPage<Content: View>: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(tab.paneAccessibilityIdentifier)
     }
 }
 
