@@ -117,6 +117,7 @@ enum ClaudeSurfaceProbeCommand {
                     enrolledHosts: enrolled
                 )
             },
+            proxyJumpShape: { await canonicalizer.proxyJumpShape(for: $0) },
             speculativeHosts: { hosts?.hosts() ?? [] }
         )
     }

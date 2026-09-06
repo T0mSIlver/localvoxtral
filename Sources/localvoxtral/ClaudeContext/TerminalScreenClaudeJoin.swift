@@ -198,6 +198,7 @@ struct ClaudeSessionJoinResolver {
     private let sshDestinationProbe: @Sendable (String) -> SSHDestinationTTYProbeResult
     private let enrolledHosts: @MainActor (String) -> [ClaudeRemoteHost]
     private let canonicalizedEnrolledHosts: @MainActor (String) async -> [ClaudeRemoteHost]
+    private let proxyJumpShape: @MainActor (String) async -> SSHProxyJumpShape?
     private let speculativeHosts: @MainActor () -> [ClaudeRemoteHost]
     private let remoteHerdrForwards: (any ClaudeRemoteHerdrForwarding)?
     private let herdrPanelMetadata: (any HerdrPanelMetadataReporting)?
@@ -280,6 +281,7 @@ struct ClaudeSessionJoinResolver {
         canonicalizedEnrolledHosts: @escaping @MainActor (String) async -> [ClaudeRemoteHost] = {
             _ in []
         },
+        proxyJumpShape: @escaping @MainActor (String) async -> SSHProxyJumpShape? = { _ in nil },
         speculativeHosts: @escaping @MainActor () -> [ClaudeRemoteHost] = { [] },
         remoteHerdrForwards: (any ClaudeRemoteHerdrForwarding)? = nil,
         herdrPanelMetadata: (any HerdrPanelMetadataReporting)? = nil,
@@ -309,6 +311,7 @@ struct ClaudeSessionJoinResolver {
         self.sshDestinationProbe = sshDestinationProbe
         self.enrolledHosts = enrolledHosts
         self.canonicalizedEnrolledHosts = canonicalizedEnrolledHosts
+        self.proxyJumpShape = proxyJumpShape
         self.speculativeHosts = speculativeHosts
         self.remoteHerdrForwards = remoteHerdrForwards
         self.herdrPanelMetadata = herdrPanelMetadata
@@ -1300,16 +1303,30 @@ struct ClaudeSessionJoinResolver {
             return nil
         }
         guard !sockets.isEmpty else {
-            // Readable, and holding nothing. Two ordinary causes, and the
-            // wording says so because the field hit this and could not tell
-            // which: a `ProxyCommand` from ssh_config (the client talks over a
-            // pipe to a helper), or an OpenSSH ControlMaster CLIENT, whose
-            // whole session rides another process's connection over an AF_UNIX
-            // control path.
-            Self.abstainedPlainSSHJoin(
-                outcome: "this ssh holds no connection of its own "
-                    + "(a ControlMaster client or a ProxyCommand)"
-            )
+            // Readable, and holding nothing. Three ordinary causes, and until
+            // the field hit one (2026-09-06) they were reported as a guess
+            // between two of them. `ssh -G` can name the commonest exactly,
+            // and is consulted only HERE — on a path that is about to abstain
+            // anyway, so the ordinary join pays nothing for it.
+            switch await proxyJumpShape(connection.destination) {
+            case .singleHop:
+                Self.abstainedPlainSSHJoin(
+                    outcome: "this connection goes through a jump host (ProxyJump)"
+                )
+            case .chain:
+                Self.abstainedPlainSSHJoin(
+                    outcome: "this connection goes through a chain of jump hosts"
+                )
+            case .some(.none), nil:
+                // No ProxyJump in the effective config, or no readable config
+                // at all: a `ProxyCommand`, or an OpenSSH ControlMaster
+                // CLIENT whose whole session rides another process's
+                // connection over an AF_UNIX control path.
+                Self.abstainedPlainSSHJoin(
+                    outcome: "this ssh holds no connection of its own "
+                        + "(a ControlMaster client or a ProxyCommand)"
+                )
+            }
             return nil
         }
 

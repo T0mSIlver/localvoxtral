@@ -672,14 +672,43 @@ there is not.
     block and repo context — exactly what the marker join bought.
 
     RESIDUALS, none of them silent — every one has its own abstention cause:
-    `-J`/`-W` and any `ProxyCommand` from `~/.ssh/config` (the local socket
-    goes to the JUMP host while the destination's sshd sees the jump host's
-    port — `-J` abstains by name, a config-only ProxyCommand abstains because
-    the client then holds no TCP socket of its own); a host whose remote plugin
-    predates 1.6.0 (it publishes no connection at all, and the cause names
-    exactly that); and an unreadable fd table, which is UNREADABLE rather than
-    "no sockets" — `SSHSurfaceConnection.sockets` is optional for that one
-    reason.
+    ProxyJump (see the next paragraph — it has three causes of its own); a host
+    whose remote plugin predates 1.6.0 (it publishes no connection at all, and
+    the cause names exactly that); and an unreadable fd table, which is
+    UNREADABLE rather than "no sockets" —
+    `SSHSurfaceConnection.sockets` is optional for that one reason.
+
+    **ProxyJump cannot be supported by transport matching, and the reason is a
+    property of unprivileged Unix rather than a gap in this code. Do not
+    re-attempt the design below without reading this paragraph.**
+    `ProxyJump` lives in `~/.ssh/config`, is invisible in argv, and OpenSSH
+    carries it with an `ssh -W` CHILD: the surface's own ssh holds NO TCP
+    socket, the child holds `mac:P1 -> J:22`, and the destination's sshd sees
+    `J:P2`. Nothing on the Mac relates P1 to P2 — only the jump host J does,
+    and the linkage lives in which of J's processes owns both sockets.
+    MEASURED on a live Linux host, 2026-09-06: that linkage is unreachable to
+    an unprivileged user. `sshd` drops to the user after auth, which makes the
+    session process NON-DUMPABLE, so `/proc/<pid>/fd` is root-owned even for
+    the user who owns the process (`ls /proc/<sshd-session pid>/fd` →
+    `Permission denied` for 3 of 3 tried, with 6 such processes owned by that
+    very user), and `ss -tnpH state established` therefore attributes ZERO
+    sshd sockets to a pid. The two obvious escapes were measured too and do
+    not work: `ss --cgroup` reports the socket's CREATOR cgroup, so every
+    inbound sshd socket reads `/init.scope` rather than the session scope
+    that would identify it; and `loginctl show-session` exposes `RemoteHost`
+    but no remote PORT, so two windows from one Mac are indistinguishable.
+    Without pid or cgroup linkage the only remaining rule is "J holds exactly
+    one connection to the destination", which abstains for precisely the user
+    who has several terminals open — the case this would exist to serve.
+    So the arm NAMES the shape and declines: `ssh -G` (already cached for the
+    enrolled-host fallback, and consulted ONLY on the branch that is about to
+    abstain, so a joining dictation spawns nothing extra) yields
+    `SSHProxyJumpShape`, and the causes are `this connection goes through a
+    jump host (ProxyJump)` and `this connection goes through a chain of jump
+    hosts`. The shape is a SHAPE and never the jump host's name — it reaches
+    the log. What would change the verdict: root (or a privileged helper) on
+    the jump host, which is a deployment decision and not something this app
+    may assume.
 
     Two more, and both are MIS-joins rather than missed ones, which is why
     each has a positive check rather than a note:
