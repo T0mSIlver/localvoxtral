@@ -118,7 +118,15 @@ public enum ClaudeShellRCSetup {
 
     /// Is our block already in this text?
     public static func containsBlock(_ existing: String) -> Bool {
-        blockRange(in: existing.components(separatedBy: "\n")) != nil
+        if case .present = locateBlock(in: existing.components(separatedBy: "\n")) {
+            return true
+        }
+        return false
+    }
+
+    /// Does this text carry an unpaired begin marker?
+    public static func hasDamagedBlock(_ existing: String) -> Bool {
+        locateBlock(in: existing.components(separatedBy: "\n")) == .damaged
     }
 
     /// Insert or REPLACE the block, leaving everything else byte for byte.
@@ -126,38 +134,75 @@ public enum ClaudeShellRCSetup {
     /// Idempotent by delimiter, like the ssh-config writer and for a sharper
     /// reason: an rc file with two copies of this block is not merely untidy,
     /// it would run `tty` twice per shell start forever.
-    public static func apply(to existing: String, snippet: String) -> String {
+    /// - Returns: nil when the file's markers do not pair — the caller must
+    ///   refuse rather than write.
+    public static func apply(to existing: String, snippet: String) -> String? {
         let lines = existing.components(separatedBy: "\n")
-        guard let range = blockRange(in: lines) else {
+        switch locateBlock(in: lines) {
+        case .damaged:
+            return nil
+        case .absent:
             var prefix = existing
             if !prefix.isEmpty, !prefix.hasSuffix("\n") { prefix += "\n" }
             if !prefix.isEmpty, !prefix.hasSuffix("\n\n") { prefix += "\n" }
             return prefix + snippet + "\n"
+        case .present(let range):
+            var result = Array(lines[..<range.lowerBound])
+            result.append(contentsOf: snippet.components(separatedBy: "\n"))
+            result.append(contentsOf: lines[(range.upperBound + 1)...])
+            return result.joined(separator: "\n")
         }
-        var result = Array(lines[..<range.lowerBound])
-        result.append(contentsOf: snippet.components(separatedBy: "\n"))
-        result.append(contentsOf: lines[(range.upperBound + 1)...])
-        return result.joined(separator: "\n")
     }
 
     /// Remove the block, leaving everything else untouched.
-    public static func remove(from existing: String) -> String {
+    /// - Returns: nil for the same unpaired-marker case as `apply`.
+    public static func remove(from existing: String) -> String? {
         let lines = existing.components(separatedBy: "\n")
-        guard let range = blockRange(in: lines) else { return existing }
-        var result = Array(lines[..<range.lowerBound])
-        result.append(contentsOf: lines[(range.upperBound + 1)...])
-        return result.joined(separator: "\n")
+        switch locateBlock(in: lines) {
+        case .damaged:
+            return nil
+        case .absent:
+            return existing
+        case .present(let range):
+            var result = Array(lines[..<range.lowerBound])
+            result.append(contentsOf: lines[(range.upperBound + 1)...])
+            return result.joined(separator: "\n")
+        }
     }
 
-    /// The half-open line range of the block, end index INCLUSIVE of the end
-    /// marker. Matched on the trimmed line, so an indented copy still counts.
-    private static func blockRange(in lines: [String]) -> ClosedRange<Int>? {
-        guard let begin = lines.firstIndex(where: {
-            $0.trimmingCharacters(in: .whitespaces) == markerBegin
-        }), let end = lines[begin...].firstIndex(where: {
-            $0.trimmingCharacters(in: .whitespaces) == markerEnd
-        }) else { return nil }
-        return begin...end
+    /// The block's line range, end index INCLUSIVE of the end marker; or
+    /// `.damaged` when a begin marker has no end after it.
+    ///
+    /// `.damaged` is not fussiness. Appending past a dangling begin marker
+    /// leaves the file with two begins and one end, and the NEXT apply would
+    /// then replace everything between the first begin and that single end —
+    /// swallowing whatever the user wrote in between. Refusing to touch a file
+    /// whose markers do not pair is the only answer that cannot lose their
+    /// content.
+    static func locateBlock(in lines: [String]) -> BlockLocation {
+        guard let begin = lines.firstIndex(where: { isMarker($0, markerBegin) }) else {
+            return .absent
+        }
+        guard let end = lines[begin...].firstIndex(where: { isMarker($0, markerEnd) }) else {
+            return .damaged
+        }
+        return .present(begin...end)
+    }
+
+    public enum BlockLocation: Equatable {
+        case absent
+        case present(ClosedRange<Int>)
+        /// A begin marker with no end after it — a hand-edit we will not
+        /// write past.
+        case damaged
+    }
+
+    /// Trimmed of whitespace AND newlines, so an indented copy counts and a
+    /// CRLF file's `…(begin)\r` is still our marker. `.whitespaces` alone is
+    /// space and tab only, and a dotfile synced from a Windows-touched repo
+    /// would have looked marker-free — which means appending a duplicate.
+    private static func isMarker(_ line: String, _ marker: String) -> Bool {
+        line.trimmingCharacters(in: .whitespacesAndNewlines) == marker
     }
 }
 
@@ -206,6 +251,9 @@ public enum ClaudeShellRCError: Error, Equatable {
     case isSymlink
     case invalidEncoding
     case notConfigured
+    /// A begin marker with no end. Writing past it would let the NEXT apply
+    /// swallow whatever the user put in between.
+    case markersDoNotPair
 }
 
 /// Applies or removes the block in the user's rc file.
@@ -238,7 +286,7 @@ public struct ClaudeShellRCWriter: Sendable {
         try write(ClaudeShellRCSetup.remove(from:))
     }
 
-    private func write(_ transform: (String) -> String) throws {
+    private func write(_ transform: (String) -> String?) throws {
         Log.claudeContext.info("Claude shell rc edit requested")
         guard let fileSystem else {
             Log.claudeContext.error("Claude shell rc edit failed: editing not configured")
@@ -265,8 +313,11 @@ public struct ClaudeShellRCWriter: Sendable {
             // Never widen: an rc file is executed by the user's shell, so its
             // mode is a security property, and 0600 is the tightest mode that
             // still works.
+            guard let updated = transform(existing) else {
+                throw ClaudeShellRCError.markersDoNotPair
+            }
             try fileSystem.atomicWrite(
-                Data(transform(existing).utf8),
+                Data(updated.utf8),
                 permissions: state.permissions ?? 0o600
             )
             Log.claudeContext.info("Claude shell rc edit completed")

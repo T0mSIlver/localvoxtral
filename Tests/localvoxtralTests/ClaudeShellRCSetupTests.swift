@@ -118,9 +118,9 @@ final class ClaudeShellRCSetupTests: XCTestCase {
         XCTAssertEqual(result, snippet(.zsh) + "\n")
     }
 
-    func testApplyingPreservesEverythingElseAndSeparatesTheBlock() {
+    func testApplyingPreservesEverythingElseAndSeparatesTheBlock() throws {
         let existing = "export EDITOR=vim\nalias ll='ls -la'\n"
-        let result = ClaudeShellRCSetup.apply(to: existing, snippet: snippet(.zsh))
+        let result = try XCTUnwrap(ClaudeShellRCSetup.apply(to: existing, snippet: snippet(.zsh)))
         XCTAssertTrue(result.hasPrefix(existing), "the user's own lines are untouched")
         XCTAssertTrue(result.contains(snippet(.zsh)))
         XCTAssertTrue(
@@ -129,19 +129,21 @@ final class ClaudeShellRCSetupTests: XCTestCase {
         )
     }
 
-    func testApplyingTwiceIsAByteForByteNoOp() {
+    func testApplyingTwiceIsAByteForByteNoOp() throws {
         // Not tidiness: two copies would run `tty` twice on every shell start,
         // forever, and the second block's guard would then see the first's
         // export and skip — silently masking a stale value.
-        let once = ClaudeShellRCSetup.apply(to: "export EDITOR=vim\n", snippet: snippet(.zsh))
-        let twice = ClaudeShellRCSetup.apply(to: once, snippet: snippet(.zsh))
+        let once = try XCTUnwrap(
+            ClaudeShellRCSetup.apply(to: "export EDITOR=vim\n", snippet: snippet(.zsh))
+        )
+        let twice = try XCTUnwrap(ClaudeShellRCSetup.apply(to: once, snippet: snippet(.zsh)))
         XCTAssertEqual(once, twice)
         XCTAssertEqual(
             twice.components(separatedBy: ClaudeShellRCSetup.markerBegin).count - 1, 1
         )
     }
 
-    func testApplyingREPLACESAnOlderBlockRatherThanAppending() {
+    func testApplyingREPLACESAnOlderBlockRatherThanAppending() throws {
         let stale = """
         export EDITOR=vim
         \(ClaudeShellRCSetup.markerBegin)
@@ -149,7 +151,7 @@ final class ClaudeShellRCSetupTests: XCTestCase {
         \(ClaudeShellRCSetup.markerEnd)
         alias ll='ls -la'
         """
-        let result = ClaudeShellRCSetup.apply(to: stale, snippet: snippet(.zsh))
+        let result = try XCTUnwrap(ClaudeShellRCSetup.apply(to: stale, snippet: snippet(.zsh)))
         XCTAssertFalse(
             result.contains("export LC_LVX_TTY=\"$(tty)\"\n\(ClaudeShellRCSetup.markerEnd)"),
             "the old body must be gone, or a shipped fix never reaches the user"
@@ -162,10 +164,10 @@ final class ClaudeShellRCSetupTests: XCTestCase {
         )
     }
 
-    func testRemovingLeavesEverythingElseExactlyAsItWas() {
+    func testRemovingLeavesEverythingElseExactlyAsItWas() throws {
         let existing = "export EDITOR=vim\nalias ll='ls -la'\n"
-        let applied = ClaudeShellRCSetup.apply(to: existing, snippet: snippet(.zsh))
-        let removed = ClaudeShellRCSetup.remove(from: applied)
+        let applied = try XCTUnwrap(ClaudeShellRCSetup.apply(to: existing, snippet: snippet(.zsh)))
+        let removed = try XCTUnwrap(ClaudeShellRCSetup.remove(from: applied))
         XCTAssertFalse(ClaudeShellRCSetup.containsBlock(removed))
         XCTAssertTrue(removed.contains("export EDITOR=vim"))
         XCTAssertTrue(removed.contains("alias ll='ls -la'"))
@@ -176,12 +178,68 @@ final class ClaudeShellRCSetupTests: XCTestCase {
         XCTAssertEqual(ClaudeShellRCSetup.remove(from: existing), existing)
     }
 
-    func testAnIndentedMarkerIsStillOurBlock() {
+    func testAnIndentedMarkerIsStillOurBlock() throws {
         // Someone's formatter, or a copy-paste into an `if` — the block must
         // still be findable, or the next apply duplicates it.
         let indented = "    \(ClaudeShellRCSetup.markerBegin)\n    x=1\n    \(ClaudeShellRCSetup.markerEnd)\n"
         XCTAssertTrue(ClaudeShellRCSetup.containsBlock(indented))
-        XCTAssertFalse(ClaudeShellRCSetup.containsBlock(ClaudeShellRCSetup.remove(from: indented)))
+        let removed = try XCTUnwrap(ClaudeShellRCSetup.remove(from: indented))
+        XCTAssertFalse(ClaudeShellRCSetup.containsBlock(removed))
+    }
+
+    func testACRLFFileSMarkersAreStillFound() throws {
+        // `.whitespaces` is space and tab only, so a `…(begin)\r` line read
+        // with it looks marker-free — and the next apply APPENDS a duplicate.
+        // A dotfile synced from a Windows-touched repo is exactly that file.
+        // Found by self-review, 2026-09-06.
+        let crlf = "export EDITOR=vim\r\n"
+            + ClaudeShellRCSetup.markerBegin + "\r\n"
+            + "old body\r\n"
+            + ClaudeShellRCSetup.markerEnd + "\r\n"
+        XCTAssertTrue(ClaudeShellRCSetup.containsBlock(crlf))
+        let result = try XCTUnwrap(ClaudeShellRCSetup.apply(to: crlf, snippet: snippet(.zsh)))
+        XCTAssertEqual(
+            result.components(separatedBy: ClaudeShellRCSetup.markerBegin).count - 1, 1,
+            "replaced, not duplicated"
+        )
+        XCTAssertFalse(result.contains("old body"))
+    }
+
+    func testAnUNPAIREDBeginMarkerIsRefusedRatherThanWrittenPast() throws {
+        // The content-losing path, and the reason this returns nil rather than
+        // appending: a file with a dangling begin gains a SECOND begin and one
+        // end, and the next apply then replaces everything between the FIRST
+        // begin and that end — swallowing whatever the user wrote in between.
+        // Found by self-review, 2026-09-06.
+        let damaged = """
+        export EDITOR=vim
+        \(ClaudeShellRCSetup.markerBegin)
+        someone deleted the end marker
+        alias ll='ls -la'
+        """
+        XCTAssertTrue(ClaudeShellRCSetup.hasDamagedBlock(damaged))
+        XCTAssertFalse(ClaudeShellRCSetup.containsBlock(damaged))
+        XCTAssertNil(ClaudeShellRCSetup.apply(to: damaged, snippet: snippet(.zsh)))
+        XCTAssertNil(ClaudeShellRCSetup.remove(from: damaged))
+    }
+
+    func testTheWriterRefusesAFileWhoseMarkersDoNotPair() throws {
+        let damaged = ClaudeShellRCSetup.markerBegin + "\nstranded\n"
+        let fileSystem = StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true, data: Data(damaged.utf8), permissions: 0o644
+        ))
+        let writer = ClaudeShellRCWriter(fileSystem: fileSystem)
+        XCTAssertThrowsError(try writer.apply(shell: .zsh)) { error in
+            XCTAssertEqual(error as? ClaudeShellRCError, .markersDoNotPair)
+        }
+        XCTAssertNil(fileSystem.written, "nothing may be written")
+    }
+
+    func testAFileThatIsONLYTheBlockRemovesToNothing() throws {
+        let onlyBlock = try XCTUnwrap(ClaudeShellRCSetup.apply(to: "", snippet: snippet(.zsh)))
+        let removed = try XCTUnwrap(ClaudeShellRCSetup.remove(from: onlyBlock))
+        XCTAssertFalse(ClaudeShellRCSetup.containsBlock(removed))
+        XCTAssertEqual(removed.trimmingCharacters(in: .whitespacesAndNewlines), "")
     }
 
     // MARK: - The writer's refusals
