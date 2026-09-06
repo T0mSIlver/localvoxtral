@@ -1,6 +1,7 @@
 import ClaudeContextWire
 import CoreGraphics
 import Foundation
+import Synchronization
 import XCTest
 @testable import localvoxtral
 
@@ -129,7 +130,8 @@ final class PlainSSHConnectionJoinTests: XCTestCase {
     private func resolver(
         registry: ClaudeSessionRegistry,
         sshResult: SSHDestinationTTYProbeResult,
-        hosts: [ClaudeRemoteHost]? = nil
+        hosts: [ClaudeRemoteHost]? = nil,
+        proxyJump: SSHProxyJumpShape? = nil
     ) -> ClaudeSessionJoinResolver {
         let hostList = hosts ?? [enrolledHost()]
         return ClaudeSessionJoinResolver(
@@ -141,6 +143,10 @@ final class PlainSSHConnectionJoinTests: XCTestCase {
             enrolledHosts: { destination in
                 hostList.filter { $0.sshHostAlias?.lowercased() == destination.lowercased() }
             },
+            // Defaults to nil — "no readable config" — so no test reaches a
+            // real `ssh -G`, and the un-injected resolver behaves as it did
+            // before the shape existed.
+            proxyJumpShape: { _ in proxyJump },
             speculativeHosts: { hostList }
         )
     }
@@ -233,13 +239,15 @@ final class PlainSSHConnectionJoinTests: XCTestCase {
         _ sshResult: SSHDestinationTTYProbeResult,
         registry: ClaudeSessionRegistry,
         hosts: [ClaudeRemoteHost]? = nil,
+        proxyJump: SSHProxyJumpShape? = nil,
         expectedCause: String? = nil,
         file: StaticString = #filePath,
         line: UInt = #line
     ) async {
         let (join, causes) = await ClaudeJoinAbstentionTap.collecting {
-            await self.resolver(registry: registry, sshResult: sshResult, hosts: hosts)
-                .resolve(target: self.ghostty)
+            await self.resolver(
+                registry: registry, sshResult: sshResult, hosts: hosts, proxyJump: proxyJump
+            ).resolve(target: self.ghostty)
         }
         XCTAssertNil(join, file: file, line: line)
         if let expectedCause {
@@ -426,6 +434,82 @@ final class PlainSSHConnectionJoinTests: XCTestCase {
             expectedCause: "this ssh holds no connection of its own "
                 + "(a ControlMaster client or a ProxyCommand)"
         )
+    }
+
+    // MARK: The shape the owner's Mac actually has
+
+    func testAProxyJumpedConnectionSaysSoInsteadOfGuessingAtControlMaster() async {
+        // The field case (2026-09-06). `ProxyJump` lives in `~/.ssh/config`,
+        // is invisible in argv, and is carried by an `ssh -W` CHILD — so the
+        // surface's own ssh holds no TCP socket, exactly like a ControlMaster
+        // client. The old wording blamed ControlMaster; `ssh -G` knows better.
+        let registry = makeRegistry()
+        ingestRemoteSession(into: registry)
+        await assertNoJoin(
+            surfaceConnection(sockets: []), registry: registry, proxyJump: .singleHop,
+            expectedCause: "this connection goes through a jump host (ProxyJump)"
+        )
+    }
+
+    func testAChainOfJumpHostsHasItsOwnCause() async {
+        let registry = makeRegistry()
+        ingestRemoteSession(into: registry)
+        await assertNoJoin(
+            surfaceConnection(sockets: []), registry: registry, proxyJump: .chain,
+            expectedCause: "this connection goes through a chain of jump hosts"
+        )
+    }
+
+    func testAnUnreadableSSHConfigFallsBackToTheOlderWording() async {
+        // Nothing is claimed that was not read: with no `ssh -G` answer the
+        // arm says what it can still see, which is a socketless client.
+        let registry = makeRegistry()
+        ingestRemoteSession(into: registry)
+        await assertNoJoin(
+            surfaceConnection(sockets: []), registry: registry, proxyJump: nil,
+            expectedCause: "this ssh holds no connection of its own "
+                + "(a ControlMaster client or a ProxyCommand)"
+        )
+    }
+
+    func testAConfigWithNoProxyJumpStillBlamesTheSocketlessClient() async {
+        let registry = makeRegistry()
+        ingestRemoteSession(into: registry)
+        await assertNoJoin(
+            surfaceConnection(sockets: []), registry: registry, proxyJump: SSHProxyJumpShape.none,
+            expectedCause: "this ssh holds no connection of its own "
+                + "(a ControlMaster client or a ProxyCommand)"
+        )
+    }
+
+    func testTheDIRECTPathNeverConsultsTheSSHConfigAtAll() async throws {
+        // `ssh -G` is a process spawn. It runs only on the branch that is
+        // already abstaining, so an ordinary join must not pay for it — and
+        // must not be able to be changed by it.
+        let registry = makeRegistry()
+        ingestRemoteSession(into: registry)
+        let consulted = Mutex(0)
+        let sshResult = surfaceConnection()
+        let hostList = [enrolledHost()]
+        let joinResolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            focusedTerminalTTY: { [surfaceTTY] _ in surfaceTTY },
+            focusedWindowID: { _ in 101 },
+            herdrClientProbe: { _ in false },
+            sshDestinationProbe: { _ in sshResult },
+            enrolledHosts: { destination in
+                hostList.filter { $0.sshHostAlias?.lowercased() == destination.lowercased() }
+            },
+            proxyJumpShape: { _ in
+                consulted.withLock { $0 += 1 }
+                return .singleHop
+            },
+            speculativeHosts: { hostList }
+        )
+        let resolved = await joinResolver.resolve(target: ghostty)
+        let join = try XCTUnwrap(resolved)
+        XCTAssertEqual(join.mechanism, .remoteSSHConnection)
+        XCTAssertEqual(consulted.withLock { $0 }, 0, "the direct path must spawn no ssh -G")
     }
 
     func testAnUndeterminableSSHProbeAbstains() async {

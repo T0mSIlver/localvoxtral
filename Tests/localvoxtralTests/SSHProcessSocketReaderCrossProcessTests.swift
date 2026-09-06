@@ -166,7 +166,14 @@ final class SSHProcessSocketReaderCrossProcessTests: XCTestCase {
 
         // `sh` printed the background pid before waiting, and the connection
         // above proves it has started, so this read cannot block.
-        let announced = standardError.fileHandleForReading.availableData
+        //
+        // `POSIXPipeRead`, not `FileHandle.availableData`: the latter is
+        // BANNED repo-wide (AGENTS.md, PR #60) because a descriptor error
+        // raises an uncatchable ObjC exception — here that would abort the
+        // test runner and take the whole suite with it.
+        let announced = POSIXPipeRead.nextChunk(
+            fromDescriptor: standardError.fileHandleForReading.fileDescriptor
+        )
         let text = String(decoding: announced, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let grandchildPID = try XCTUnwrap(Int32(text), "sh did not announce a pid: \(text)")

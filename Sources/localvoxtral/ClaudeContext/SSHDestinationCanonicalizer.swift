@@ -1,6 +1,41 @@
 import Foundation
 import Synchronization
 
+/// Whether a destination's effective ssh config routes it through a jump host,
+/// as a SHAPE — never the host's name, so it is safe in the log and the
+/// dogfood record.
+///
+/// **This is a diagnosis, not a capability.** A ProxyJump'd connection cannot
+/// be joined by the plain-ssh arm, and the reason is a measured property of
+/// unprivileged Unix rather than a gap in this code — see
+/// `docs/agent/invariants.md`. What the shape buys is an abstention that names
+/// the user's own config instead of guessing at a ControlMaster.
+enum SSHProxyJumpShape: String, Sendable, Equatable {
+    /// No `ProxyJump` line, or an explicit `none`.
+    case none
+    /// Exactly one hop.
+    case singleHop
+    /// A comma-separated chain.
+    case chain
+
+    init(configuredValue value: String) {
+        // A leading `none` disables every hop before it, so `none,dell1` is
+        // ONE hop and not a chain. Kept because the two shapes report
+        // different causes and the wrong one sends a reader looking for a
+        // chain that is not there.
+        let hops = value
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .drop { $0.lowercased() == "none" }
+            .filter { !$0.isEmpty }
+        switch hops.count {
+        case 0: self = .none
+        case 1: self = .singleHop
+        default: self = .chain
+        }
+    }
+}
+
 /// Resolves ssh destination operands through the user's effective ssh config.
 ///
 /// This is deliberately a fallback signal: callers first try the enrolled
@@ -20,6 +55,29 @@ final class SSHDestinationCanonicalizer: Sendable {
         /// remote users both match and land in the existing multiple-match
         /// abstention downstream — fail-closed, as before.
         let user: String?
+        /// The effective `ProxyJump`, as a SHAPE and never as a host name.
+        ///
+        /// Never compared either — it exists so an abstention can say WHY. A
+        /// ProxyJump'd connection is carried by an `ssh -W` child, so the
+        /// surface's own ssh holds no TCP socket, and the plain-ssh arm's
+        /// refusal for it used to read "a ControlMaster client or a
+        /// ProxyCommand": true, unactionable, and wrong about the cause. The
+        /// owner's Mac hit exactly that (field report, 2026-09-06).
+        let proxyJump: SSHProxyJumpShape
+
+        /// `proxyJump` defaults, so every existing construction site keeps
+        /// meaning what it meant: a config with no `ProxyJump` line.
+        init(
+            hostname: String,
+            port: UInt16,
+            user: String?,
+            proxyJump: SSHProxyJumpShape = .none
+        ) {
+            self.hostname = hostname
+            self.port = port
+            self.user = user
+            self.proxyJump = proxyJump
+        }
 
         func matches(_ other: Identity) -> Bool {
             hostname == other.hostname && port == other.port
@@ -113,6 +171,20 @@ final class SSHDestinationCanonicalizer: Sendable {
         return matches
     }
 
+    /// The effective `ProxyJump` shape for one operand, through the same
+    /// cached `ssh -G` the identity fallback uses — so an abstention costs no
+    /// extra process spawn, and a config that cannot be read says `nil` rather
+    /// than guessing `none`.
+    ///
+    /// `ssh -G` evaluates the user's `Match exec` blocks, so this can run a
+    /// command the user configured, once per operand per TTL, bounded by the
+    /// same 2 s timeout as the identity lookup. That is the cost of asking ssh
+    /// what ssh would do; the alternative is reimplementing its config
+    /// resolution, which this file exists not to do.
+    func proxyJumpShape(for operand: String) async -> SSHProxyJumpShape? {
+        await identity(for: operand)?.proxyJump
+    }
+
     private func identity(for operand: String) async -> Identity? {
         // Apply the probe's existing operand policy BEFORE any subprocess sees
         // the string. In particular, refused URI/punctuation shapes never
@@ -187,6 +259,7 @@ final class SSHDestinationCanonicalizer: Sendable {
         var hostname: String?
         var port: UInt16?
         var user: String?
+        var proxyJump: SSHProxyJumpShape = .none
 
         for line in output.split(whereSeparator: \.isNewline) {
             let fields = line.split(maxSplits: 1, whereSeparator: \.isWhitespace)
@@ -207,12 +280,22 @@ final class SSHDestinationCanonicalizer: Sendable {
                 guard !value.isEmpty, !value.contains(where: \.isWhitespace) else { return nil }
                 guard user == nil || user == value else { return nil }
                 user = value
+            case "proxyjump":
+                // `ssh -G` omits the line entirely when unset AND when it is
+                // explicitly `none` (measured on OpenSSH 9.x and 10.0p2,
+                // 2026-09-06: both print no `proxyjump` line at all), so the
+                // missing-line default below is what answers for both. A chain
+                // is comma-separated, and a list that merely BEGINS with
+                // `none` is printed raw. The VALUE is deliberately dropped
+                // here — only the shape survives, because this reaches the
+                // log.
+                proxyJump = SSHProxyJumpShape(configuredValue: value)
             default:
                 continue
             }
         }
         guard let hostname, let port else { return nil }
-        return Identity(hostname: hostname, port: port, user: user)
+        return Identity(hostname: hostname, port: port, user: user, proxyJump: proxyJump)
     }
 }
 

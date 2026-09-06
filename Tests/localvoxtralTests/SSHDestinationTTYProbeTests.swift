@@ -1475,11 +1475,15 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         XCTAssertFalse(value.siblings.leavesMultiplexingPossible)
     }
 
-    func testATTYLessSSHIsNotASibling() throws {
-        // Machinery: an `ssh -N` forward, or `ssh host command` in a script.
-        // A ControlMaster client that could mis-join is a session in another
-        // WINDOW, so it has a controlling terminal; a tty-less one is not a
-        // surface anyone runs an agent on.
+    func testATTYLessSSHIsSTILLASibling() throws {
+        // An earlier version of the survey skipped tty-less siblings, on the
+        // claim that "a mux client that could mis-join is a session in another
+        // WINDOW". Review falsified it (2026-09-06): `ssh -tt D claude -p …`
+        // launched by launchd, cron or an orchestrator has no LOCAL tty and a
+        // REMOTE pty, so the session it starts reports `$SSH_TTY`, carries no
+        // multiplexer label, and is a joinable candidate — and under
+        // ControlMaster it is socketless and reports the master's connection.
+        // Skipping it let a dictation into the master's window join it.
         let value = try XCTUnwrap(
             connection(
                 probe(
@@ -1491,8 +1495,12 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
                 )
             )
         )
-        XCTAssertEqual(value.siblings.considered, 0)
-        XCTAssertFalse(value.siblings.leavesMultiplexingPossible)
+        XCTAssertEqual(value.siblings.considered, 1)
+        XCTAssertEqual(value.siblings.socketless, 1)
+        XCTAssertTrue(
+            value.siblings.leavesMultiplexingPossible,
+            "a socketless sibling abstains whether or not it holds a local tty"
+        )
     }
 
     func testASocketlessSiblingToTheSameDestinationIsReported() throws {

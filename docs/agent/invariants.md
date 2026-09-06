@@ -672,14 +672,74 @@ there is not.
     block and repo context — exactly what the marker join bought.
 
     RESIDUALS, none of them silent — every one has its own abstention cause:
-    `-J`/`-W` and any `ProxyCommand` from `~/.ssh/config` (the local socket
-    goes to the JUMP host while the destination's sshd sees the jump host's
-    port — `-J` abstains by name, a config-only ProxyCommand abstains because
-    the client then holds no TCP socket of its own); a host whose remote plugin
-    predates 1.6.0 (it publishes no connection at all, and the cause names
-    exactly that); and an unreadable fd table, which is UNREADABLE rather than
-    "no sockets" — `SSHSurfaceConnection.sockets` is optional for that one
-    reason.
+    ProxyJump (see the next paragraph — it has three causes of its own); a host
+    whose remote plugin predates 1.6.0 (it publishes no connection at all, and
+    the cause names exactly that); and an unreadable fd table, which is
+    UNREADABLE rather than "no sockets" —
+    `SSHSurfaceConnection.sockets` is optional for that one reason.
+
+    **ProxyJump cannot be supported by transport matching, and the reason is a
+    property of unprivileged Unix rather than a gap in this code. Do not
+    re-attempt the design below without reading this paragraph.**
+    `ProxyJump` lives in `~/.ssh/config`, is invisible in argv, and OpenSSH
+    carries it with an `ssh -W` CHILD: the surface's own ssh holds NO TCP
+    socket, the child holds `mac:P1 -> J:22`, and the destination's sshd sees
+    `J:P2`. Nothing on the Mac relates P1 to P2 — only the jump host J does,
+    and the linkage lives in which of J's processes owns both sockets.
+    MEASURED on a live Linux host, 2026-09-06: that linkage is unreachable to
+    an unprivileged user. `sshd` drops to the user after auth, which makes the
+    session process NON-DUMPABLE, so `/proc/<pid>/fd` is root-owned even for
+    the user who owns the process (`ls /proc/<sshd-session pid>/fd` →
+    `Permission denied` for 3 of 3 tried, with 6 such processes owned by that
+    very user; independently replicated at 7 of 7 on OpenSSH 10.0p2 by an
+    adversarial review), and `ss -tnpH state established` therefore attributes
+    ZERO sshd sockets to a pid.
+
+    The cgroup escape fails for a subtler reason than "cgroups do not work",
+    and the distinction matters to anyone re-attempting this: `ss --cgroup`
+    DOES attribute OUTBOUND sockets to a per-session scope
+    (`/user.slice/user-N.slice/session-cNN.scope`), tty-less sshd sessions
+    included. What cannot be tied to a session is the INBOUND half: an
+    accepted socket carries the LISTENER's cgroup (`/init.scope`), and
+    `loginctl show-session` exposes `RemoteHost` but no remote PORT — so
+    `(mac, P1)`, the only handle the Mac has, reaches no session scope, and
+    two windows from one Mac stay indistinguishable.
+
+    One conditional escape exists and is deliberately not built on: on a host
+    whose auth journal is user-readable, sshd logs the peer PORT together with
+    the session pid (`sshd-session[NNN]: Disconnected from user dev
+    192.168.1.101 port 43286`), and an auth-time `Accepted … port P1` line
+    would tie `(mac, P1)` → pid → logind Leader → session scope → the
+    outbound socket's local port. It is not a foundation for a trust
+    boundary: journald readability and retention are per-host accidents, and
+    on the very host where the review confirmed the disconnect-time lines the
+    auth-time lines needed for a LIVE pairing were absent from a 496 MB,
+    7-day journal.
+
+    Without pid or cgroup linkage the only remaining rule is "J holds exactly
+    one connection to the destination", which abstains for precisely the user
+    who has several terminals open — the case this would exist to serve. It
+    would also be sound only under conditions worth writing down before
+    anyone reaches for it: scoped by UID (`/proc/net/tcp`'s uid column —
+    inbound accepted sockets read uid 0, outbound read the session uid) and
+    counted across EVERY address J may resolve the destination to, since a
+    dual-stack or multi-A-record destination with one connection per address
+    leaves each per-address count at one and lets the rule pick another
+    terminal's socket. Single hop only, too: for a chain, the last hop's
+    inventory is behind the same non-dumpable wall.
+    So the arm NAMES the shape and declines: `ssh -G` (already cached for the
+    enrolled-host fallback, and consulted ONLY on the branch that is about to
+    abstain, so a joining dictation spawns nothing extra) yields
+    `SSHProxyJumpShape`, and the causes are `this connection goes through a
+    jump host (ProxyJump)` and `this connection goes through a chain of jump
+    hosts`. The shape is a SHAPE and never the jump host's name — it reaches
+    the log. `ssh -G` evaluates the user's `Match exec` blocks, so this can
+    run a user-configured command, once per operand per TTL and bounded by the
+    same 2 s timeout as the identity lookup — the price of asking ssh what ssh
+    would do instead of reimplementing its config resolution. What would
+    change the verdict: root (or a privileged helper) on the jump host, or a
+    dependable auth journal there — both deployment decisions, and not
+    something this app may assume.
 
     Two more, and both are MIS-joins rather than missed ones, which is why
     each has a positive check rather than a note:
@@ -718,13 +778,21 @@ there is not.
       of this arm (2026-09-06) abstained on it and the abstention could not
       say why: "a real ControlMaster client is open in another window" and
       "some ssh's fd table could not be read" are the same non-join and
-      opposite fixes. They are now separate causes carrying `n of m`. Two
-      processes are excluded from the survey outright, and both exclusions are
-      about not manufacturing that abstention: an ssh whose kernel PARENT is
-      this app (its `RemoteForward` supervisor, its herdr `ssh -L` — ours, and
-      never somebody's terminal), and any ssh with no controlling terminal (a
-      mux client that could mis-join is a session in another WINDOW; a
-      tty-less ssh is machinery).
+      opposite fixes. They are now separate causes carrying `n of m`. ONE
+      process is excluded from the survey and only one, so the abstention
+      cannot be manufactured against the app itself: an ssh whose kernel
+      PARENT is this app (its `RemoteForward` supervisor, its herdr `ssh -L`
+      — ours, and never somebody's terminal).
+
+      A second exclusion, for ssh processes with no controlling terminal, was
+      added and REMOVED by review (2026-09-06) because it reopened the very
+      mis-join the survey exists to block. `ssh -tt D claude -p …` launched by
+      launchd, cron or an orchestrator has no LOCAL tty and a REMOTE pty, so
+      the session it starts reports `$SSH_TTY`, carries no multiplexer label,
+      and is a joinable candidate — under ControlMaster it is socketless and
+      reports the master's `$SSH_CONNECTION`, so skipping it let a dictation
+      into the master's window join it. The parent check already covered
+      everything that exclusion was written for.
 
       The surface's OWN two refusals are named the same way and for the same
       reason: `this ssh holds no connection of its own (a ControlMaster client
