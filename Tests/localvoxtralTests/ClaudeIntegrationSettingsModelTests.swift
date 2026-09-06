@@ -1004,7 +1004,12 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             "the executed update must migrate the port, not just the panel text: \(scripts)"
         )
         XCTAssertTrue(
-            plan.sshConfigSnippet.contains("SendEnv LC_LVX_TTY"),
+            // Fresh enrollment. The UPDATE path for an ALREADY-enrolled host
+            // regenerates this same snippet and inserts it, which is what the
+            // owner's host needed — pinned in
+            // `ClaudeRemoteEnrollmentServiceTests`.
+            plan.sshConfigSnippet.components(separatedBy: "\n")
+                .contains { $0.trimmingCharacters(in: .whitespaces) == "SendEnv LC_LVX_TTY" },
             "the block must carry the terminal's tty into the session, or the "
                 + "plain-ssh join has nothing to compare: "
                 + plan.sshConfigSnippet
@@ -1783,4 +1788,130 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertFalse(model.isRemoteAvailable)
         XCTAssertTrue(model.hosts.isEmpty)
     }
+    // MARK: - Shell setup for the plain-ssh join
+
+    private final class StubRCFileSystem: ClaudeShellRCFileSystem, @unchecked Sendable {
+        var state: ClaudeShellRCState
+        var writes = 0
+        init(state: ClaudeShellRCState) { self.state = state }
+        func readState() throws -> ClaudeShellRCState { state }
+        func createDirectory(permissions: UInt16) throws {}
+        func atomicWrite(_ data: Data, permissions: UInt16) throws {
+            writes += 1
+            state.data = data
+            state.fileExists = true
+        }
+    }
+
+    @MainActor
+    private func shellSetupModel(
+        shell: ClaudeShellKind? = .zsh,
+        fileSystem: StubRCFileSystem? = nil,
+        crossing: ClaudeShellSetupStatus.CrossingState = .noSessions
+    ) -> ClaudeIntegrationSettingsModel {
+        let stub = fileSystem
+        return ClaudeIntegrationSettingsModel(
+            registry: nil,
+            listener: nil,
+            pluginService: { StubPluginService() },
+            performAsync: { body in
+                do {
+                    try body()
+                    return nil
+                } catch {
+                    return ClaudePluginActionFailure(error)
+                }
+            },
+            loginShell: { shell },
+            shellRCWriter: { _ in stub.map { ClaudeShellRCWriter(fileSystem: $0) } },
+            liveLocalTTYReport: { crossing }
+        )
+    }
+
+    @MainActor
+    func testShellSetupReportsBothHalvesSeparately() {
+        // Two facts that fail for different reasons: the block is in the rc
+        // file, and a session has actually arrived carrying the value. A block
+        // written five seconds ago proves nothing until a NEW ssh session
+        // starts, and saying so is the point of the second half.
+        let fileSystem = StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true, data: Data("export EDITOR=vim\n".utf8), permissions: 0o644
+        ))
+        let model = shellSetupModel(fileSystem: fileSystem, crossing: .notSeen)
+        model.refreshShellSetupStatus()
+        XCTAssertEqual(model.shellSetupStatus.rc, .notApplied)
+        XCTAssertEqual(model.shellSetupStatus.crossing, .notSeen)
+        XCTAssertEqual(model.shellSetupStatus.rcSentence, "Not set up.")
+        XCTAssertEqual(
+            model.shellSetupStatus.crossingSentence,
+            "Open a new terminal window for it to take effect."
+        )
+    }
+
+    @MainActor
+    func testApplyingTheShellSetupWritesTheBlockAndTheStatusFollows() async {
+        let fileSystem = StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true, data: Data("export EDITOR=vim\n".utf8), permissions: 0o644
+        ))
+        let model = shellSetupModel(fileSystem: fileSystem, crossing: .seen)
+        model.refreshShellSetupStatus()
+        XCTAssertEqual(model.shellSetupStatus.rc, .notApplied)
+
+        await model.applyShellSetup()
+        XCTAssertEqual(fileSystem.writes, 1)
+        XCTAssertEqual(model.shellSetupStatus.rc, .applied, "the row reflects the write")
+        XCTAssertEqual(model.shellSetupStatus.crossingSentence,
+                       "A remote session is reporting its terminal.")
+        XCTAssertNil(model.alert)
+
+        await model.removeShellSetup()
+        XCTAssertEqual(fileSystem.writes, 2)
+        XCTAssertEqual(model.shellSetupStatus.rc, .notApplied)
+    }
+
+    @MainActor
+    func testTheSheetPreviewIsTheEXACTTextThatWillBeWritten() async {
+        // Preview-then-consent, like the ssh-config insert: what the user
+        // approved and what lands in their file must be one string, or the
+        // preview is decoration.
+        let fileSystem = StubRCFileSystem(state: ClaudeShellRCState())
+        let model = shellSetupModel(fileSystem: fileSystem)
+        let preview = model.shellSetupPreview
+        XCTAssertEqual(preview, ClaudeShellRCSetup.snippet(for: .zsh))
+
+        await model.applyShellSetup()
+        let written = String(decoding: fileSystem.state.data ?? Data(), as: UTF8.self)
+        XCTAssertTrue(written.contains(try XCTUnwrap(preview)))
+    }
+
+    @MainActor
+    func testAnUnsupportedLoginShellOffersNothingRatherThanGuessing() {
+        let model = shellSetupModel(shell: nil, fileSystem: StubRCFileSystem(
+            state: ClaudeShellRCState()
+        ))
+        model.refreshShellSetupStatus()
+        XCTAssertEqual(model.shellSetupStatus.rc, .unsupportedShell)
+        XCTAssertNil(model.shellSetupPreview, "the button must be disabled, not wrong")
+    }
+
+    @MainActor
+    func testAnUnwritableRCFileReportsUnknownRatherThanNotApplied() {
+        // "Not set up" invites a click that cannot work; "could not read"
+        // sends the user to the copy-paste path.
+        let model = shellSetupModel(fileSystem: nil)
+        model.refreshShellSetupStatus()
+        XCTAssertEqual(model.shellSetupStatus.rc, .unknown)
+    }
+
+    @MainActor
+    func testASymlinkedRCFileSurfacesAsAnAlertRatherThanSilence() async {
+        let fileSystem = StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true, fileIsSymlink: true
+        ))
+        let model = shellSetupModel(fileSystem: fileSystem)
+        await model.applyShellSetup()
+        XCTAssertEqual(fileSystem.writes, 0, "a dotfiles symlink is never written through")
+        XCTAssertEqual(model.alert?.title, "Could not update your shell startup file")
+    }
+
 }

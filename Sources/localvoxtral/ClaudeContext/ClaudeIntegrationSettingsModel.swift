@@ -60,6 +60,69 @@ public struct ClaudeEnrollmentActionAttempt: Sendable, Equatable {
     }
 }
 
+/// What the pane can say about the plain-ssh join's one setup step.
+///
+/// Two facts, deliberately separate, because they fail for different reasons
+/// and only the user can fix the first: is the export in the rc file, and has
+/// a session actually arrived carrying it. A block written five seconds ago
+/// proves nothing until a NEW ssh session starts, and saying so is the whole
+/// value of the second half.
+public struct ClaudeShellSetupStatus: Sendable, Equatable {
+    public enum RCState: Sendable, Equatable {
+        /// The login shell is not one this app writes for.
+        case unsupportedShell
+        case notApplied
+        case applied
+        /// The rc file could not be read, or is a symlink we will not write
+        /// through.
+        case unknown
+    }
+
+    public enum CrossingState: Sendable, Equatable {
+        /// No enrolled host has a live session at all — nothing to say yet.
+        case noSessions
+        /// Live sessions, none carrying the value: the usual "you have not
+        /// opened a new window yet".
+        case notSeen
+        case seen
+    }
+
+    public var rc: RCState
+    public var crossing: CrossingState
+    /// The rc file this app would write, relative to `$HOME` — shown so the
+    /// user knows what they are being asked to let us edit.
+    public var relativeRCPath: String?
+
+    public init(
+        rc: RCState = .unknown,
+        crossing: CrossingState = .noSessions,
+        relativeRCPath: String? = nil
+    ) {
+        self.rc = rc
+        self.crossing = crossing
+        self.relativeRCPath = relativeRCPath
+    }
+
+    /// One short sentence, per the pane's copy rule. Never restates the label,
+    /// never a path or a host.
+    public var rcSentence: String {
+        switch rc {
+        case .unsupportedShell: return "Your login shell is not one this can set up."
+        case .notApplied: return "Not set up."
+        case .applied: return "Set up."
+        case .unknown: return "Could not read your shell startup file."
+        }
+    }
+
+    public var crossingSentence: String {
+        switch crossing {
+        case .noSessions: return "No remote session has reported in yet."
+        case .notSeen: return "Open a new terminal window for it to take effect."
+        case .seen: return "A remote session is reporting its terminal."
+        }
+    }
+}
+
 /// Settings-pane state for both Claude Code integrations.
 ///
 /// `@MainActor @Observable`, per repo convention for stateful UI controllers.
@@ -318,6 +381,8 @@ public final class ClaudeIntegrationSettingsModel {
     /// Set by the join probe after a successful stamp whose value never
     /// appeared in the focused grid. This is inferential, not a config read.
     var herdrPanelStatus: HerdrPanelConfigurationStatus = .ok
+    /// The plain-ssh join's setup step, refreshed with the rest of the pane.
+    var shellSetupStatus = ClaudeShellSetupStatus()
 
     /// The password field's live text. Never seeded from the Keychain: the
     /// stored secret is not shown back to anyone, and an empty field on a
@@ -350,6 +415,16 @@ public final class ClaudeIntegrationSettingsModel {
     // MARK: - Dependencies
 
     private let registry: ClaudeRemoteHostRegistry?
+    /// The user's login shell, or nil for one this app will not write for.
+    /// Injected so no test spawns `dscl`.
+    private let loginShell: @Sendable () -> ClaudeShellKind?
+    /// Reads and writes the rc block for a shell. Nil disables the whole
+    /// setup step — which is what a test that forgets to inject must get, so
+    /// nothing can touch a real `~/.zshrc`.
+    private let shellRCWriter: @Sendable (ClaudeShellKind) -> ClaudeShellRCWriter?
+    /// Does any live remote session report a local tty? Nil means "no way to
+    /// ask", which reports as no sessions rather than as a failure.
+    private let liveLocalTTYReport: @Sendable () -> ClaudeShellSetupStatus.CrossingState
     private let listener: (any ClaudeRemoteListenerControlling)?
     private let pluginService: @Sendable () -> any ClaudePluginInstalling
     private let enrollmentService: ClaudeRemoteEnrollmentService
@@ -424,8 +499,16 @@ public final class ClaudeIntegrationSettingsModel {
         // still works. Production passes the allocation.
         remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort,
         cmuxPasswords: (any CmuxPasswordStoring)? = nil,
-        forwards: ClaudeRemoteForwardCoordinator? = nil
+        forwards: ClaudeRemoteForwardCoordinator? = nil,
+        loginShell: @escaping @Sendable () -> ClaudeShellKind? = { nil },
+        shellRCWriter: @escaping @Sendable (ClaudeShellKind) -> ClaudeShellRCWriter? = { _ in nil },
+        liveLocalTTYReport: @escaping @Sendable () -> ClaudeShellSetupStatus.CrossingState = {
+            .noSessions
+        }
     ) {
+        self.loginShell = loginShell
+        self.shellRCWriter = shellRCWriter
+        self.liveLocalTTYReport = liveLocalTTYReport
         self.registry = registry
         self.listener = listener
         self.pluginService = pluginService
@@ -822,6 +905,69 @@ public final class ClaudeIntegrationSettingsModel {
     /// plugin it exits 0 and leaves the old version in place (Claude Code
     /// 2.1.220), so re-running enrollment does nothing and a host stays on a
     /// plugin the app has since fixed — silently, because the hooks fail open.
+    // MARK: - Shell setup for the plain-ssh join
+
+    /// Re-read both halves. Cheap: one `lstat`+read of one rc file, and one
+    /// registry query. Called with the rest of the pane's refresh.
+    public func refreshShellSetupStatus() {
+        guard let shell = loginShell() else {
+            shellSetupStatus = ClaudeShellSetupStatus(
+                rc: .unsupportedShell, crossing: liveLocalTTYReport()
+            )
+            return
+        }
+        let writer = shellRCWriter(shell)
+        let rc: ClaudeShellSetupStatus.RCState
+        switch writer?.isApplied() {
+        case .some(true): rc = .applied
+        case .some(false): rc = .notApplied
+        case .none: rc = .unknown
+        }
+        shellSetupStatus = ClaudeShellSetupStatus(
+            rc: rc,
+            crossing: liveLocalTTYReport(),
+            relativeRCPath: ClaudeShellRCSetup.relativeRCPath(for: shell) { relative in
+                FileManager.default.fileExists(
+                    atPath: FileManager.default.homeDirectoryForCurrentUser
+                        .appendingPathComponent(relative).path
+                )
+            }
+        )
+    }
+
+    /// The exact text the user is being asked to allow, or nil when there is
+    /// no shell to write for. Shown before anything is written — the same
+    /// preview-then-consent shape as the ssh-config block.
+    public var shellSetupPreview: String? {
+        guard let shell = loginShell() else { return nil }
+        return ClaudeShellRCSetup.snippet(for: shell)
+    }
+
+    /// Write the block. Consent is the CALLER's to obtain, immediately before.
+    public func applyShellSetup() async {
+        guard let shell = loginShell(), let writer = shellRCWriter(shell) else { return }
+        await performShellRCEdit { try writer.apply(shell: shell) }
+    }
+
+    public func removeShellSetup() async {
+        guard let shell = loginShell(), let writer = shellRCWriter(shell) else { return }
+        await performShellRCEdit { try writer.remove() }
+    }
+
+    private func performShellRCEdit(_ body: @escaping @Sendable () throws -> Void) async {
+        let failure = await performAsync { try body() }
+        if let failure {
+            // The pane shows one short line; the detail belongs in the alert
+            // (owner rule), and this is the one place the symlink refusal
+            // becomes visible to a dotfiles user.
+            alert = DetailAlert(
+                title: "Could not update your shell startup file",
+                detail: failure.describedError
+            )
+        }
+        refreshShellSetupStatus()
+    }
+
     public func requestPluginUpdate(hostID: String) {
         guard !isPerformingEnrollmentAction,
               let host = hosts.first(where: { $0.id == hostID })

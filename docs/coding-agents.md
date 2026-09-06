@@ -111,9 +111,10 @@ fields and the threat model.
 > context at all, and no join ever reads a window title — the TTY arm needs
 > Ghostty 1.4 or newer (or iTerm2 / Terminal.app), and there is no title
 > fallback under it. A Claude Code session in a plain `ssh host` shell on an
-> enrolled host joins through the **connection** instead: the ssh process on
-> your focused surface and the remote session have to name the same TCP
-> ports. A Claude Code **Remote Control** session — where the agent runs on a machine
+> enrolled host joins on that same tty, which your shell publishes into the
+> session — Settings offers to add the one block that does it, and unlike a
+> network-level match it works through jump hosts and shared connections. A
+> Claude Code **Remote Control** session — where the agent runs on a machine
 > of yours and [claude.ai/code](https://claude.ai/code) in a browser is the
 > UI — joins from the focused browser tab instead: its `session_…` URL is
 > matched exactly against the id the session's own hooks report (Chrome,
