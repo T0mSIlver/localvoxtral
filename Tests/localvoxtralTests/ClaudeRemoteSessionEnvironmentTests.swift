@@ -37,7 +37,7 @@ final class ClaudeRemoteSessionEnvironmentCodecTests: XCTestCase {
         }
         // The allowlist itself: it grows only deliberately, so a silent addition
         // (or removal, which would break a join arm) fails here first.
-        XCTAssertEqual(ClaudeRemoteEnvironmentField.allCases.count, 13)
+        XCTAssertEqual(ClaudeRemoteEnvironmentField.allCases.count, 14)
         // The cap must stay ABOVE the allowlist. At or below it, whatever
         // sorts last in `allCases` is silently dropped on arrival — a join arm
         // that quietly never fires, with nothing anywhere saying why.
@@ -124,6 +124,7 @@ final class ClaudeRemoteSessionEnvironmentCodecTests: XCTestCase {
             "10.0.0.2,51960,10.0.0.9,22",          // $SSH_CONNECTION, re-joined
             "::1,51960,::1,22",                    // and its IPv6 shape
             "3721.pts-0.sandbox",                  // $STY
+            "/dev/ttys004",                        // $LC_LVX_TTY
         ]
         for value in realistic {
             XCTAssertTrue(

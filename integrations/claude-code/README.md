@@ -125,6 +125,48 @@ A Claude Code session running in an ordinary `ssh` shell on an **enrolled**
 host — no herdr, no cmux, no Remote Control — joins on the **TCP connection**
 your terminal is holding.
 
+There are two ways it can identify your window, tried in that order.
+
+### 1. The tty echo (works through jump hosts and `ControlMaster`)
+
+Add one line to your shell's rc file **on your Mac**:
+
+```sh
+[ -z "${LC_LVX_TTY:-}" ] && [ -z "${SSH_TTY:-}" ] && export LC_LVX_TTY="$(tty)"
+```
+
+That publishes the terminal's own device name. `ssh` carries it into the
+session (`SendEnv`; the enrollment block adds the line, and most ssh_configs
+already send `LC_*` anyway), `sshd` accepts it because its stock config is
+`AcceptEnv LANG LC_*`, and localvoxtral joins by comparing it against the tty
+of the window it can see. `LC_` is not a trick played on you: it is the same
+mechanism iTerm2 uses for `LC_TERMINAL`, and locale libraries ignore names
+they do not know.
+
+The two guards in that line matter. `SSH_TTY` unset means "only on this Mac",
+and the `LC_LVX_TTY` check means "do not overwrite what was sent to me" — put
+the same rc file on a remote host without them and the remote shell would
+replace your Mac's tty with its own, and nothing would match.
+
+**Why this one and not the connection below:** ssh carries environment per
+SESSION, not per connection. So it survives `ProxyJump` (where your Mac holds
+no connection to the destination at all) and `ControlMaster` (where several
+windows share one), which are exactly the two setups the connection match
+cannot see through.
+
+If your host's `sshd` refuses `LC_*` — rare, but it happens on hardened
+configs — add this there and reload sshd:
+
+```
+AcceptEnv LC_LVX_TTY
+```
+
+`localvoxtral --probe-surface` says `no live session on this host reports its
+local tty` when the value is not arriving, which is the one thing that can go
+wrong.
+
+### 2. The connection (zero setup, no jump host)
+
 `sshd` puts `$SSH_CONNECTION` into every session it starts: the client address
 and port, then the server address and port. The remote plugin publishes it, and
 on your Mac the app looks at the `ssh` process running in your focused
@@ -134,38 +176,41 @@ address, same server port. The client port is an ephemeral number your Mac's
 kernel picked; the only machine that learns it is the one on the other end of
 that connection.
 
-It attaches the session block and (for a local session) repository context. It
-never attaches your screen: a plain ssh shell's scrollback is your whole remote
-session, not one pane, so no raw capture is authorized for this join.
+Either way it attaches the session block and (for a local session) repository
+context. It never attaches your screen: a plain ssh shell's scrollback is your
+whole remote session, not one pane, so no raw capture is authorized for either
+join.
 
-It deliberately does **not** join in three cases:
+Neither joins in these cases:
 
-* **through a jump host** (`ssh -J`, `ProxyJump`, or a `ProxyCommand` in your
-  `~/.ssh/config`): your Mac's socket goes to the jump host, while the machine
-  you land on sees the jump host's port. They are two different connections,
-  and only the jump host knows which is which — a fact it cannot tell you
-  without root there. The app says so exactly ("this connection goes through a
-  jump host") rather than guessing. If you dictate into such a session,
-  [herdr](https://herdr.dev) is the arm that works: it binds the pane rather
-  than the connection, through the jump host or not;
+* **through a jump host, without the rc line above** (`ssh -J`, `ProxyJump`,
+  or a `ProxyCommand`): your Mac's socket goes to the jump host, while the
+  machine you land on sees the jump host's port. They are two different
+  connections, and only the jump host knows which is which — a fact it cannot
+  tell you without root there. The app says so exactly ("this connection goes
+  through a jump host"). **The tty echo has no such problem**; if you jump,
+  set it up;
 * **inside tmux, screen or zellij**: a multiplexer server keeps the
   `$SSH_CONNECTION` of the connection that STARTED it, so a session in a pane
   can report a connection that belongs to a different window of yours.
   Measured, not assumed. herdr and cmux have their own joins, which bind the
   pane rather than the connection; tmux, screen and zellij have none;
 * **when your `~/.ssh/config` may be sharing one connection**
-  (`ControlMaster`): several terminals then run over one TCP connection and
-  all report the same `$SSH_CONNECTION`, so it no longer identifies a window.
-  Detected two ways, each with its own reason in `--probe-surface`: the window
-  you are dictating into holds no connection of its own (it is a mux client),
-  or another `ssh` session to the same host does. If you use `ControlMaster`
-  and want this join, `ControlMaster no` for that host restores it;
+  (`ControlMaster`), again only without the rc line: several terminals then
+  run over one TCP connection and all report the same `$SSH_CONNECTION`, so it
+  no longer identifies a window. Detected two ways, each with its own reason
+  in `--probe-surface`: the window you are dictating into holds no connection
+  of its own (it is a mux client), or another `ssh` session to the same host
+  does. The tty echo is unaffected — ssh gives each session its own
+  environment even over a shared connection;
 * **when anything is ambiguous**: two sessions reporting the same connection,
   two enrolled hosts matching the destination, an unreadable process table.
 
 If nothing joins and you expect it to, check the remote plugin version: this
-needs **1.6.0 or newer** on the remote host (`claude plugin update
+needs **1.7.0 or newer** on the remote host (`claude plugin update
 localvoxtral-remote`). `localvoxtral --probe-surface` names the exact reason.
+After adding the rc line you must open a NEW ssh session — the environment is
+fixed when the session starts.
 
 ### What was removed (September 2026)
 
@@ -749,7 +794,8 @@ The same allowlist as the local plugin, plus two additions:
   byte-for-byte, because the host is not assumed to have `jq`):
   `HERDR_PANE_ID`, `HERDR_SOCKET_PATH`, `HERDR_SESSION`, `CMUX_SURFACE_ID`,
   `CMUX_SOCKET_PATH`, `CLAUDE_CODE_BRIDGE_SESSION_ID`, `TMUX`, `TMUX_PANE`,
-  `STY`, `ZELLIJ`, `SSH_TTY`, `SSH_CONNECTION`, and the shim's own parent pid. Each is sent only
+  `STY`, `ZELLIJ`, `SSH_TTY`, `SSH_CONNECTION`, `LC_LVX_TTY`, and the shim's own
+  parent pid. Each is sent only
   if it is non-empty, at most 200 characters, and made purely of ASCII
   alphanumerics plus `._:/@+,=%-`; anything else is dropped rather than
   escaped. `SSH_CONNECTION` is the one value the shim reshapes: `sshd` writes

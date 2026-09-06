@@ -286,7 +286,9 @@ final class DogfoodControlServiceTests: XCTestCase {
     func testRegistryListReportsWhetherThePlainSSHJoinsInputsArrived() async {
         var snapshot = Self.remoteSnapshot()
         snapshot.remoteEnvironment = ClaudeRemoteSessionEnvironment(
-            sshTTY: "/dev/pts/4", sshConnection: "10.0.0.2,51960,10.0.0.9,22"
+            sshTTY: "/dev/pts/4",
+            localTTY: "/dev/ttys004",
+            sshConnection: "10.0.0.2,51960,10.0.0.9,22"
         )
         let service = makeService(viewModel: makeViewModel(), sessions: [snapshot])
         let reply = await expectSuccess(service, .registryList)
@@ -294,6 +296,10 @@ final class DogfoodControlServiceTests: XCTestCase {
 
         XCTAssertEqual(row?["remoteSSHConnection"] as? Bool, true)
         XCTAssertEqual(row?["remoteSSHTTY"] as? Bool, true)
+        XCTAssertEqual(
+            row?["remoteLocalTTY"] as? Bool, true,
+            "the local-tty arm's one setup step is otherwise invisible from the app"
+        )
         XCTAssertEqual(
             row?["remoteMultiplexerLabel"] as? Bool, false,
             "a plain ssh shell carries no multiplexer label — that is what makes it joinable"
@@ -321,6 +327,10 @@ final class DogfoodControlServiceTests: XCTestCase {
         )
         let oldRow = ((first["sessions"] as? [[String: Any]]) ?? []).first
         XCTAssertEqual(oldRow?["remoteSSHConnection"] as? Bool, false)
+        XCTAssertEqual(
+            oldRow?["remoteLocalTTY"] as? Bool, false,
+            "no rc line and an old plugin look different from a mismatch, and must"
+        )
         XCTAssertEqual(oldRow?["remoteMultiplexerLabel"] as? Bool, false)
 
         let second = await expectSuccess(

@@ -612,6 +612,63 @@ there is not.
     join in iTerm2/Terminal.app authorizes attaching that focused pane's
     contents; herdr and cmux joins never attach AX surface text on any
     terminal.
+  - **The local-tty echo arm (`.remoteLocalTTY`, 2026-09-06).** The tty arm,
+    with the identifier taking one extra trip — and the arm that actually
+    serves the configs people have. `resolve(tty:)` compares the focused
+    pane's device against a device a LOCAL session's hooks read from `/dev`
+    here; this compares it against a device name that came FROM here, carried
+    into the remote session by ssh itself.
+
+    The carrier is `$LC_LVX_TTY`: the user's own shell exports it, ssh's
+    `SendEnv` sends it, sshd's stock `AcceptEnv LANG LC_*` accepts it, and
+    libc ignores locale names it does not know — the mechanism iTerm2 ships
+    `LC_TERMINAL` on. Tried BEFORE `.remoteSSHConnection`, because it is the
+    one that works through the two things that defeat a TCP-level match, and
+    both were MEASURED on a live OpenSSH pair (2026-09-06): the value arrives
+    unchanged through a `ProxyCommand`/`-W` jump — where the connection
+    binding has no chain it can follow at all, see the ProxyJump paragraph
+    above — and two sessions multiplexed over ONE ControlMaster connection
+    each receive their OWN value, because ssh carries environment per SESSION
+    CHANNEL rather than per connection. The Mac-side setup is one rc line
+    plus a `SendEnv` in the enrollment-written `Host` block (most ssh_configs
+    already send `LC_*`; the line is what makes it true on the rest).
+
+    Requirements: the focused surface's tty, read through the terminal's own
+    scripting interface — never anything the remote host said; exactly one
+    foreground ssh on that surface whose destination resolves to exactly one
+    enrolled host (ProxyJump does not change the destination OPERAND, so a
+    jumped connection resolves like any other); the candidate registered by a
+    hook AUTHENTICATED FROM THAT HOST; the candidate a plain ssh shell
+    (`$SSH_TTY`, and none of `multiplexerLabels` — a multiplexer server keeps
+    the FIRST client's environment, so a pane's `$LC_LVX_TTY` names whichever
+    window started the server, the same inheritance the connection arm
+    refuses); its reported tty well-formed
+    (`ClaudeRemoteLocalTTYPath.isAcceptable` — under `/dev`, no traversal,
+    bounded) and EQUAL to the surface's; and exactly one live session claiming
+    it. The surface ssh's SOCKET is deliberately not consulted — the socket is
+    precisely what ProxyJump and ControlMaster take away.
+
+    **Trust.** The value is chosen by the user's own shell on this Mac and
+    carried by the SSH session itself; the remote host receives it rather than
+    inventing it. A COMPROMISED enrolled host can of course claim any tty name
+    — it can write whatever it likes into that header — but the origin-host
+    check bounds it to windows whose ssh actually goes to IT, so it can only
+    choose among its own windows. That is the same bound the window-title
+    marker had, and the marker additionally depended on a channel Claude Code
+    clobbered 98.7 % of the time; this one does not. What it does NOT prove is
+    which PROGRAM is drawing in that window — same as every other arm — and it
+    authorizes no screen read for that reason
+    (`TerminalScreenClaudeJoinAuthorizer`).
+
+    A stale local export is not a hazard worth guarding: a shell's controlling
+    tty is fixed for its lifetime, so `LC_LVX_TTY` cannot go stale within the
+    shell that set it. The one real footgun is the opposite direction — the
+    same rc line running on the REMOTE host re-exports the REMOTE pts and
+    hides the Mac's value — which is why the documented line only exports when
+    `$SSH_TTY` is unset and the variable is not already set. Getting that
+    wrong costs a non-join with a named cause (`no live session reports this
+    terminal's tty`), never a mis-join.
+
   - **The plain-ssh arm (`.remoteSSHConnection`, 2026-09-05).** A Claude Code
     session in `ssh host` on an ENROLLED host, with no multiplexer and no
     browser, joins on the TCP CONNECTION its surface holds. sshd sets

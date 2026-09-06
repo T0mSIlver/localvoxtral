@@ -30,6 +30,17 @@ public enum ClaudeRemoteEnvironmentField: String, CaseIterable, Sendable {
     /// `$ZELLIJ`, set inside a zellij session. Same architecture, same reason.
     case zellijSession
     case sshTTY
+    /// `$LC_LVX_TTY` — the LOCAL terminal's tty device, exported by the user's
+    /// own shell on their Mac and carried into the session by ssh itself.
+    ///
+    /// The one allowlisted value that describes THIS machine rather than the
+    /// remote one, and the reason it can: ssh's `SendEnv`/`AcceptEnv` carry it
+    /// per SESSION CHANNEL, so it survives ProxyJump and gives two sessions
+    /// over one ControlMaster connection their own value (both measured,
+    /// 2026-09-06). `LC_` because sshd's Debian/Ubuntu/macOS default is
+    /// `AcceptEnv LANG LC_*` and libc ignores locale names it does not know —
+    /// exactly how iTerm2 ships `LC_TERMINAL`.
+    case localTTY
     /// `$SSH_CONNECTION`, re-joined with commas by the shim — see
     /// `ClaudeRemoteSSHConnectionReport`. sshd sets it in every session it
     /// spawns; it is the only value either side of an ssh connection can name
@@ -55,6 +66,7 @@ public enum ClaudeRemoteEnvironmentField: String, CaseIterable, Sendable {
         case .screenSession: return "X-Lvx-Env-Screen-Session"
         case .zellijSession: return "X-Lvx-Env-Zellij-Session"
         case .sshTTY: return "X-Lvx-Env-Ssh-Tty"
+        case .localTTY: return "X-Lvx-Env-Local-Tty"
         case .sshConnection: return "X-Lvx-Env-Ssh-Connection"
         case .hookParentPID: return "X-Lvx-Env-Hook-Parent-Pid"
         }
@@ -79,6 +91,7 @@ public enum ClaudeRemoteEnvironmentField: String, CaseIterable, Sendable {
         case .screenSession: return "$STY"
         case .zellijSession: return "$ZELLIJ"
         case .sshTTY: return "$SSH_TTY"
+        case .localTTY: return "$LC_LVX_TTY"
         case .sshConnection: return "$SSH_CONNECTION"
         case .hookParentPID: return "$PPID"
         }
@@ -155,6 +168,12 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
     /// zellij's `$ZELLIJ`. Same.
     public var zellijSession: String?
     public var sshTTY: String?
+    /// The CLIENT terminal's tty, as the user's own shell exported it. Still
+    /// untrusted — it is a string a remote host wrote — but it is a string the
+    /// remote host received rather than invented, and the arm that reads it
+    /// pins it to the enrolled host the surface's ssh actually goes to.
+    /// Validate with `ClaudeRemoteLocalTTYPath.isAcceptable` before comparing.
+    public var localTTY: String?
     /// `$SSH_CONNECTION` with its four space-separated fields re-joined by
     /// commas (space is deliberately outside the header charset). Parse it with
     /// `ClaudeRemoteSSHConnectionReport.parse` — never split it by hand, and
@@ -176,6 +195,7 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
         screenSession: String? = nil,
         zellijSession: String? = nil,
         sshTTY: String? = nil,
+        localTTY: String? = nil,
         sshConnection: String? = nil,
         hookParentPID: String? = nil
     ) {
@@ -190,6 +210,7 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
         self.screenSession = screenSession
         self.zellijSession = zellijSession
         self.sshTTY = sshTTY
+        self.localTTY = localTTY
         self.sshConnection = sshConnection
         self.hookParentPID = hookParentPID
     }
@@ -214,6 +235,7 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
             case .screenSession: return screenSession
             case .zellijSession: return zellijSession
             case .sshTTY: return sshTTY
+            case .localTTY: return localTTY
             case .sshConnection: return sshConnection
             case .hookParentPID: return hookParentPID
             }
@@ -231,6 +253,7 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
             case .screenSession: screenSession = newValue
             case .zellijSession: zellijSession = newValue
             case .sshTTY: sshTTY = newValue
+            case .localTTY: localTTY = newValue
             case .sshConnection: sshConnection = newValue
             case .hookParentPID: hookParentPID = newValue
             }

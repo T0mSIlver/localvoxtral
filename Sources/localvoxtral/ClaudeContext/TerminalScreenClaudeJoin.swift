@@ -33,6 +33,13 @@ enum ClaudeSessionJoinMechanism: Sendable, Equatable {
     /// itself: the surface's ssh process's established socket and the session's
     /// reported `$SSH_CONNECTION` name the same connection, ports included.
     case remoteSSHConnection
+    /// The same shape, bound by the LOCAL TTY instead: the user's own shell
+    /// exports `$LC_LVX_TTY`, ssh carries it into the session, and it must
+    /// equal the tty the app reads off the focused terminal. Unlike
+    /// `.remoteSSHConnection` this survives ProxyJump and ControlMaster,
+    /// because ssh carries environment per session CHANNEL rather than per
+    /// connection.
+    case remoteLocalTTY
 }
 
 /// The herdr pane a herdr join resolved to. Captured at resolution so the
@@ -133,7 +140,7 @@ struct ClaudeSessionJoin: Sendable, Equatable {
         switch mechanism {
         case .herdrPane, .remoteHerdrPane: return herdrPane?.paneID
         case .cmuxSurface: return cmuxSurface?.surfaceID
-        case .ttyDevice, .browserTab, .remoteSSHConnection: return nil
+        case .ttyDevice, .browserTab, .remoteSSHConnection, .remoteLocalTTY: return nil
         }
     }
 
@@ -418,12 +425,23 @@ struct ClaudeSessionJoinResolver {
                 break
             }
 
-            // Last, because it is the weakest surface claim of the three: the
-            // herdr arms prove what the terminal DISPLAYS (a nonce rendered in
-            // the grid, or an argv naming herdr as the remote command), while
-            // this one proves only which connection the terminal holds. A
-            // herdr-hosted session never gets here anyway — it carries a herdr
-            // label and this arm refuses those outright.
+            // The local-tty echo first of the two plain-ssh arms: it is the
+            // one that works through ProxyJump and ControlMaster, and it costs
+            // nothing when the user has not set it up (no header, no match, a
+            // named abstention).
+            if let join = await resolveViaRemoteLocalTTY(
+                target: target, tty: tty, sshResult: sshResult
+            ) {
+                return join
+            }
+
+            // Then the connection binding, for the zero-setup case. Last,
+            // because it is the weakest surface claim: the herdr arms prove
+            // what the terminal DISPLAYS (a nonce rendered in the grid, or an
+            // argv naming herdr as the remote command), while this one proves
+            // only which connection the terminal holds. A herdr-hosted session
+            // never gets here anyway — it carries a herdr label and both plain
+            // arms refuse those outright.
             if let join = await resolveViaPlainSSHConnection(
                 target: target, sshResult: sshResult
             ) {
@@ -1205,6 +1223,128 @@ struct ClaudeSessionJoinResolver {
         return false
     }
 
+    // MARK: - The local-tty echo arm
+
+    /// A Claude Code session in a plain `ssh host` shell, joined on the LOCAL
+    /// terminal's tty — the value the user's own shell exported and ssh
+    /// carried into the session.
+    ///
+    /// This is the tty arm the local path has always had, with the identifier
+    /// taking one extra trip. `resolve(tty:)` compares the focused pane's
+    /// device against a device the session's hooks read from `/dev` on THIS
+    /// machine; here the session's hooks report a device name that came FROM
+    /// this machine, through ssh's own `SendEnv`/`AcceptEnv`, and the
+    /// comparison is the same equality.
+    ///
+    /// Why it succeeds where `.remoteSSHConnection` cannot: ssh carries
+    /// environment per SESSION CHANNEL, not per connection. MEASURED,
+    /// 2026-09-06: the value arrives unchanged through a `ProxyJump` (where
+    /// the connection binding has no chain to follow at all — see
+    /// `docs/agent/invariants.md`), and two sessions multiplexed over ONE
+    /// ControlMaster connection each receive their OWN value, which is exactly
+    /// the case that makes `$SSH_CONNECTION` ambiguous.
+    ///
+    /// Requirements, all of them:
+    /// 1. the focused surface's tty, read through the terminal's own scripting
+    ///    interface — the same `focusedTerminalTTY` the local arm uses, not
+    ///    anything the remote host said;
+    /// 2. exactly one foreground ssh on that surface, whose destination
+    ///    resolves to exactly one enrolled host. ProxyJump does not change the
+    ///    destination OPERAND, so a jumped connection resolves like any other;
+    /// 3. the candidate was registered by a hook AUTHENTICATED FROM THAT HOST;
+    /// 4. the candidate is a plain ssh shell — `$SSH_TTY` and no multiplexer
+    ///    label. A multiplexer server keeps the FIRST client's environment, so
+    ///    a pane's `$LC_LVX_TTY` names whichever window started the server;
+    ///    the rule and its measurement are the same as the connection arm's;
+    /// 5. its reported local tty is a well-formed device path and EQUALS the
+    ///    surface's;
+    /// 6. exactly one live session claims that tty.
+    ///
+    /// The surface's ssh SOCKET is deliberately not consulted. That is the
+    /// point: the socket is what ProxyJump and ControlMaster take away.
+    private func resolveViaRemoteLocalTTY(
+        target: TerminalScreenTarget,
+        tty: String,
+        sshResult: SSHDestinationTTYProbeResult
+    ) async -> ClaudeSessionJoin? {
+        let connection: SSHSurfaceConnection
+        switch sshResult {
+        case .noSSHClient:
+            // A local shell. Not an abstention — the arm does not apply.
+            return nil
+        case .undeterminable(let cause):
+            Self.abstainedLocalTTYJoin(
+                outcome: "ssh session undeterminable (\(cause.rawValue))"
+            )
+            return nil
+        case .connection(let value):
+            connection = value
+        }
+
+        var hosts = enrolledHosts(connection.destination)
+        if hosts.isEmpty {
+            hosts = await canonicalizedEnrolledHosts(connection.destination)
+        }
+        guard !hosts.isEmpty else { return nil }
+        guard hosts.count == 1, let host = hosts.first else {
+            Self.abstainedLocalTTYJoin(outcome: "ssh destination matches multiple enrolled hosts")
+            return nil
+        }
+
+        let live = registry.liveRemoteSessions(hostID: host.id)
+        guard !live.isEmpty else { return nil }
+        let plain = live.filter(Self.isPlainSSHShellSession)
+        guard !plain.isEmpty else {
+            Self.abstainedLocalTTYJoin(
+                outcome: "no live session on this host is a plain ssh shell"
+            )
+            return nil
+        }
+        let reporting = plain.filter { snapshot in
+            guard let value = snapshot.remoteSessionEnvironment?.localTTY else { return false }
+            return ClaudeRemoteLocalTTYPath.isAcceptable(value)
+        }
+        guard !reporting.isEmpty else {
+            // The actionable one, and the ONLY thing the user has to do for
+            // this arm to work: export `LC_LVX_TTY` from their shell and let
+            // ssh send it. Nothing else on either machine says so.
+            Self.abstainedLocalTTYJoin(
+                outcome: "no live session on this host reports its local tty"
+            )
+            return nil
+        }
+
+        let matches = reporting.filter { $0.remoteSessionEnvironment?.localTTY == tty }
+        guard matches.count == 1, let snapshot = matches.first else {
+            Self.abstainedLocalTTYJoin(
+                outcome: matches.isEmpty
+                    ? "no live session reports this terminal's tty"
+                    : "several live sessions claim this terminal's tty"
+            )
+            return nil
+        }
+
+        Log.claudeContext.info(
+            "Terminal pane joined to a live Claude session via the local tty it echoed back"
+        )
+        return ClaudeSessionJoin(
+            target: target,
+            snapshot: snapshot,
+            windowID: focusedWindowID(target.pid),
+            mechanism: .remoteLocalTTY
+        )
+    }
+
+    /// Outcome only. A tty device path is the join material here, exactly as
+    /// it is for the local arm, and the local arm's abstention has never
+    /// carried one either.
+    private static func abstainedLocalTTYJoin(outcome: String) {
+        Log.claudeContext.info(
+            "Local tty echo matched no session (\(outcome, privacy: .public)); Claude context withheld"
+        )
+        Self.noteAbstention("remote-tty: \(outcome)")
+    }
+
     // MARK: - The plain-ssh arm
 
     /// A Claude Code session in a PLAIN `ssh host` shell on an enrolled remote
@@ -1880,7 +2020,7 @@ struct TerminalScreenClaudeJoinAuthorizer: TerminalScreenRawAttachmentAuthorizin
         switch join.mechanism {
         case .ttyDevice:
             break
-        case .remoteSSHConnection:
+        case .remoteSSHConnection, .remoteLocalTTY:
             // The surface IS this machine's terminal grid, so unlike the
             // multiplexer arms there is readable text here — and it is still
             // refused. The connection binding says which ssh this window

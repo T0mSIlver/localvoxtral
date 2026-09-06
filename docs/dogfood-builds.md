@@ -71,7 +71,7 @@ High level ([`DogfoodCaptureRecord.swift`](../Sources/localvoxtral/Dogfood/Dogfo
 - **Session**: target app kind, output mode, prompt profile, endpoint
   *class* only (`loopback`/`lan`/`remote` — never the URL).
 - **Join**: which arm resolved the Claude Code session (`tty` / `herdrPane` /
-  `remoteHerdrPane` / `remoteSSHConnection` / `cmuxSurface` / `browserTab` / `none`)
+  `remoteHerdrPane` / `remoteSSHConnection` / `remoteLocalTTY` / `cmuxSurface` / `browserTab` / `none`)
   and every abstention reason along the way. Same six fields, from the same
   mapper, that `localvoxtral --probe-surface` prints for the frontmost surface
   — so a probe run and a record can be compared directly
@@ -144,7 +144,7 @@ $ printf 'registry list\n' | nc -U ~/Library/Application\ Support/localvoxtral/d
 | `session stop` | ends it — and while a start is still connecting, cancels that instead of walking away from it |
 | `join report` | the join the LAST dictation resolved, as `ClaudeSessionJoinSummary` |
 | `surface probe` | resolves the focused surface NOW, against the live in-process registry |
-| `registry list` | the live sessions, as shapes — so "nothing registered" is distinguishable from "resolution failed". For a REMOTE session it also reports whether each join arm's own inputs arrived: `remoteHerdrPane`/`remoteHerdrSocket`, `remoteCmuxSurface`, and `remoteSSHConnection`/`remoteSSHTTY`/`remoteMultiplexerLabel` for the plain-ssh arm |
+| `registry list` | the live sessions, as shapes — so "nothing registered" is distinguishable from "resolution failed". For a REMOTE session it also reports whether each join arm's own inputs arrived: `remoteHerdrPane`/`remoteHerdrSocket`, `remoteCmuxSurface`, and `remoteSSHConnection`/`remoteSSHTTY`/`remoteMultiplexerLabel`/`remoteLocalTTY` for the two plain-ssh arms |
 
 Bounds worth knowing before touching it:
 
