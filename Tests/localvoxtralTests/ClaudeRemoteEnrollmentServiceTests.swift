@@ -2260,4 +2260,55 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertTrue(updated.contains("Host other"), "other stanzas untouched")
     }
 
+    /// MAJOR 1 (review round 4). The README's hand-copy ssh-config block must
+    /// carry exactly the directives `sshConfigSnippet` emits, so the two
+    /// cannot drift again: a user hand-writing their config from the README
+    /// without the tty-echo line gets a join that silently never fires, and
+    /// the app's own currency check then flags their hand-built block as
+    /// stale.
+    func testTheREADMEManualSSHBlockMatchesTheShippedSnippet() throws {
+        let readme = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("integrations/claude-code/README.md"),
+            encoding: .utf8
+        )
+        let readmeLines = readme.components(separatedBy: "\n")
+        guard let beginIndex = readmeLines.firstIndex(where: {
+            $0.contains("# BEGIN localvoxtral claude context")
+        }), let endIndex = readmeLines[beginIndex...].firstIndex(where: {
+            $0.contains("# END localvoxtral claude context")
+        }) else {
+            XCTFail("README manual ssh-config block not found")
+            return
+        }
+        func directives(of blockLines: [String]) -> [String] {
+            blockLines.map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty && !$0.hasPrefix("#") && !$0.hasPrefix("Host ") }
+        }
+        let readmeDirectives = directives(of: Array(readmeLines[beginIndex...endIndex]))
+        // The README's example block names these ports; the snippet must be
+        // generated for the same pair, or the comparison proves nothing.
+        let fixtureHost = ClaudeRemoteHost(
+            id: "h1a2b3c4",
+            label: "buildhost",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            lastSeenAt: nil,
+            revokedAt: nil
+        )
+        let snippet = ClaudeRemoteEnrollmentService.sshConfigSnippet(
+            host: fixtureHost,
+            sshHostAlias: "builder",
+            listenerPort: ClaudeRemoteListenerLimits.default.port,
+            remoteForwardPort: 28511
+        )
+        XCTAssertTrue(
+            snippet.contains("RemoteForward 28511 127.0.0.1:\(ClaudeRemoteListenerLimits.default.port)"),
+            "the README example and this fixture assume these ports: \(snippet)"
+        )
+        XCTAssertEqual(
+            readmeDirectives,
+            directives(of: snippet.components(separatedBy: "\n")),
+            "the README manual block drifted from sshConfigSnippet"
+        )
+    }
+
 }

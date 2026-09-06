@@ -561,6 +561,7 @@ rotate — that is what rotation is for. What the three steps amount to:
 Host builder
     RemoteForward 28511 127.0.0.1:8473
     ExitOnForwardFailure no
+    SendEnv LC_LVX_TTY
 # END localvoxtral claude context (h1a2b3c4)
 ```
 
