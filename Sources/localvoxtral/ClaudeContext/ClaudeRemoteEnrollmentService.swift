@@ -51,7 +51,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// `executeVerification`) or written as prose in
     /// `docs/remote-claude-context.md`. The only `#` lines that survive are the
     /// snippet's BEGIN/END delimiters, which are functional: the idempotent
-    /// replace and `sshConfigForwardsPort` both key on them.
+    /// replace and `sshConfigBlockIsCurrent` both key on them.
     ///
     /// `verifyCommands`, `uninstallCommands` and `notes` are gone with them —
     /// the first became an in-app action, the other two are documentation.
@@ -349,7 +349,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// one-time token is long gone.
     ///
     /// Comment-free apart from the two delimiters, which are load-bearing:
-    /// `applySSHConfigSnippet` and `sshConfigForwardsPort` both find the block
+    /// `applySSHConfigSnippet` and `sshConfigBlockIsCurrent` both find the block
     /// by them, which is what makes a second apply a no-op instead of a
     /// duplicate `Host` stanza. Everything the deleted `#` lines said —
     /// that `remoteForwardPort` is THIS Mac's allocation and must equal the
@@ -612,16 +612,12 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         return forwardsPort && sendsLocalTTY
     }
 
+    /// Port-only spelling of `sshConfigBlockIsCurrent`, kept so its
+    /// cannot-tell semantics stay pinned. It delegates rather than checking
+    /// the port alone, so no future caller can gate a rewrite on the port and
+    /// re-ship the silent SendEnv no-op (review finding B1).
     public func sshConfigForwardsPort(_ port: UInt16, hostID: String) -> Bool? {
-        guard let lines = markedBlockLines(hostID: hostID) else {
-            // Two different nils, deliberately: no seam (or unreadable config)
-            // is "cannot tell"; a readable config with no block for this host
-            // is a definite "does not forward it".
-            return sshConfigFileSystem == nil ? nil : configIsReadable() ? false : nil
-        }
-        return lines.contains { line in
-            forwardedPort(inLine: line) == port
-        }
+        sshConfigBlockIsCurrent(port: port, hostID: hostID)
     }
 
     /// What this host's block currently forwards, as three distinguishable
