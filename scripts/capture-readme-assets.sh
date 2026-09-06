@@ -7,6 +7,14 @@ set -euo pipefail
 #   assets/settings-endpoints.png          (Settings > Endpoints)
 #   assets/settings-dictation.png          (Settings > Dictation)
 #   assets/settings-text-processing.png    (Settings > Text Processing)
+#   assets/settings-context.png            (Settings > Context)
+#   assets/settings-enrollment.png         (the remote-SSH enrollment sheet)
+#
+# settings-enrollment.png is deliberately NOT in the README table — it exists
+# for docs and PR bodies. It is captured from a SAMPLE sheet armed by the
+# hidden `debug.enrollment_sheet_preview` default, in which every mutating
+# button is refused by the model, so the capture cannot write ~/.ssh/config,
+# spawn ssh, or enroll a host.
 #
 # Run ON A MAC from the repo root:
 #   ./scripts/capture-readme-assets.sh [path/to/localvoxtral.app]
@@ -34,8 +42,24 @@ BUNDLE_ID="com.localvoxtral.app"
 PERSISTENT_DEFAULTS_BACKUP="${HOME}/.localvoxtral-capture-assets.pre.plist"
 PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN="${PERSISTENT_DEFAULTS_BACKUP}.had-domain"
 ASSETS_DIR="assets"
-TAB_NAMES=("General" "Endpoints" "Dictation" "Text Processing")
-TAB_FILES=("settings-general.png" "settings-endpoints.png" "settings-dictation.png" "settings-text-processing.png")
+TAB_NAMES=("General" "Endpoints" "Dictation" "Text Processing" "Context")
+# SettingsTab raw values — the sidebar rows carry them as AXIdentifiers
+# (settings.tab.<raw>). SettingsTabTests pins both the raw values and the
+# identifier scheme.
+TAB_IDS=("general" "endpoints" "dictation" "textProcessing" "context")
+TAB_FILES=("settings-general.png" "settings-endpoints.png" "settings-dictation.png" "settings-text-processing.png" "settings-context.png")
+# The three arrays are indexed together below; a mismatch would silently capture
+# one tab's window into another tab's file.
+if (( ${#TAB_NAMES[@]} != ${#TAB_IDS[@]} || ${#TAB_NAMES[@]} != ${#TAB_FILES[@]} )); then
+  echo "Tab tables disagree: ${#TAB_NAMES[@]} names, ${#TAB_IDS[@]} ids, ${#TAB_FILES[@]} files. Fix them together." >&2
+  exit 1
+fi
+# Resolved from this script's location, not the cwd.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AX_PROBE="${SCRIPT_DIR}/lib/ax-probe.swift"
+# Pins the probe's shape-matched fallbacks to the Settings window; the app has
+# other windows the wrong AXButton/AXScrollArea could be found in.
+SETTINGS_WINDOW_TITLE="Settings"
 
 [[ -d "$APP_PATH" ]] || { echo "App bundle not found: $APP_PATH (build with ./scripts/package_app.sh)" >&2; exit 1; }
 [[ -d "$ASSETS_DIR" ]] || { echo "Run from the repo root ($ASSETS_DIR/ not found)." >&2; exit 1; }
@@ -160,6 +184,10 @@ guard CommandLine.arguments.count >= 3,
       let minLayer = Int(CommandLine.arguments[2])
 else { exit(2) }
 
+// Optional third argument: a window id to ignore. A sheet is its own CGWindow,
+// so excluding the settings window is how we get the sheet and not its parent.
+let excludedID = CommandLine.arguments.count >= 4 ? Int(CommandLine.arguments[3]) : nil
+
 let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
 var best: (id: Int, area: Double)?
 for window in windows {
@@ -167,6 +195,7 @@ for window in windows {
           let layer = window[kCGWindowLayer as String] as? Int, layer >= minLayer,
           minLayer > 0 || layer == 0,
           let id = window[kCGWindowNumber as String] as? Int,
+          id != excludedID,
           let bounds = window[kCGWindowBounds as String] as? [String: Double],
           let width = bounds["Width"], let height = bounds["Height"]
     else { continue }
@@ -177,14 +206,14 @@ guard let best else { exit(1) }
 print(best.id)
 SWIFT
 
-window_id() { # <pid> <min-layer>
-  swift "$HELPER" "$1" "$2" 2>/dev/null
+window_id() { # <pid> <min-layer> [exclude-window-id]
+  swift "$HELPER" "$1" "$2" "${3:-}" 2>/dev/null
 }
 
-wait_for_window() { # <pid> <min-layer> [timeout-seconds]
+wait_for_window() { # <pid> <min-layer> [timeout-seconds] [exclude-window-id]
   local deadline=$((SECONDS + ${3:-10}))
   while ((SECONDS < deadline)); do
-    if id="$(window_id "$1" "$2")"; then echo "$id"; return 0; fi
+    if id="$(window_id "$1" "$2" "${4:-}")"; then echo "$id"; return 0; fi
     sleep 0.3
   done
   return 1
@@ -271,19 +300,83 @@ OSA
 SETTINGS_ID="$(wait_for_window "$APP_PID" 0 10)" || { echo "Settings window never appeared." >&2; exit 1; }
 sleep 1
 
+# Tab selection presses the sidebar row by AXIdentifier. The old selector
+# (`button "<name>" of toolbar 1 of window 1`) died with the TabView — the
+# hand-rolled sidebar has no toolbar. The display name is passed as an AXTitle
+# fallback, and the probe prints which route it used.
+[[ -f "$AX_PROBE" ]] || { echo "AX probe helper not found: $AX_PROBE" >&2; exit 1; }
+
 for i in "${!TAB_NAMES[@]}"; do
   tab="${TAB_NAMES[$i]}"
+  tab_id="${TAB_IDS[$i]}"
   out="$ASSETS_DIR/${TAB_FILES[$i]}"
   echo "Capturing $out"
-  osascript >/dev/null <<OSA
-tell application "System Events" to tell process "$APP_PROCESS"
-  click button "$tab" of toolbar 1 of window 1
-end tell
-OSA
+  swift "$AX_PROBE" "$APP_PID" \
+    --press "settings.tab.${tab_id}" --title "$tab" \
+    --window "$SETTINGS_WINDOW_TITLE" \
+    --timeout 10 --dump-on-fail \
+    || { echo "Could not select the $tab tab." >&2; exit 1; }
   sleep 1
   SETTINGS_ID="$(window_id "$APP_PID" 0)" || { echo "Lost the settings window." >&2; exit 1; }
   screencapture -o -x -l "$SETTINGS_ID" "$out"
 done
+
+# --- 3. enrollment sheet ------------------------------------------------------
+# A second launch, on purpose: the preview default is read ONCE when the Context
+# pane is constructed, so arming it before the tab loop would have parked the
+# sheet on top of settings-context.png.
+echo "Capturing $ASSETS_DIR/settings-enrollment.png"
+osascript -e "tell application \"$APP_PROCESS\" to quit" >/dev/null 2>&1 || true
+for _ in $(seq 1 10); do pgrep -xq "$APP_PROCESS" || break; sleep 0.5; done
+pkill -x "$APP_PROCESS" >/dev/null 2>&1 || true
+sleep 1
+
+# The sample sheet: a host that is not in the registry, a visibly fake token,
+# and a presentation the model refuses to act on. It cannot write
+# ~/.ssh/config, spawn ssh, or enroll anything. The key lives in the
+# snapshotted domain (restored on exit); deleted here as well so a run that
+# ends between here and cleanup cannot leave it armed.
+defaults write "$BUNDLE_ID" "debug.enrollment_sheet_preview" -bool true
+open "$APP_PATH"
+for _ in $(seq 1 20); do pgrep -xq "$APP_PROCESS" && break; sleep 0.5; done
+APP_PID="$(pgrep -xn "$APP_PROCESS")"
+sleep 2
+
+open_status_menu
+osascript >/dev/null <<OSA
+tell application "System Events" to tell process "$APP_PROCESS"
+  click menu item "Settings…" of menu 1 of menu bar item 1 of menu bar 2
+end tell
+OSA
+ENROLLMENT_SHOT="$ASSETS_DIR/settings-enrollment.png"
+rm -f "$ENROLLMENT_SHOT"
+if SETTINGS_ID="$(wait_for_window "$APP_PID" 0 10)"; then
+  sleep 1
+  if swift "$AX_PROBE" "$APP_PID" --press "settings.tab.context" --title "Context" \
+       --timeout 10 --dump-on-fail; then
+    # The sheet is its own CGWindow and animates in, so wait for a layer-0
+    # window that is NOT the settings window.
+    if SHEET_ID="$(wait_for_window "$APP_PID" 0 10 "$SETTINGS_ID")"; then
+      sleep 0.5
+      screencapture -o -x -l "$SHEET_ID" "$ENROLLMENT_SHOT" || true
+    else
+      echo "ERROR: the enrollment sheet never appeared." >&2
+    fi
+  else
+    echo "ERROR: could not select the Context tab for the enrollment sheet." >&2
+  fi
+else
+  echo "ERROR: Settings never reopened for the enrollment sheet." >&2
+fi
+defaults delete "$BUNDLE_ID" "debug.enrollment_sheet_preview" >/dev/null 2>&1 || true
+
+# Fail LOUDLY rather than leaving a stale (or absent) asset behind. A capture
+# script that warns and exits 0 is how a run "succeeds" with nothing to show
+# for it — the missing shot is only noticed by whoever needed it.
+if [[ ! -s "$ENROLLMENT_SHOT" ]]; then
+  echo "$ENROLLMENT_SHOT was expected but not produced." >&2
+  exit 1
+fi
 
 osascript -e "tell application \"$APP_PROCESS\" to quit" >/dev/null 2>&1 || true
 CAPTURE_COMPLETED=1
