@@ -71,7 +71,9 @@ Key subsystems:
     stays Claude's verbatim JSON (no `jq` to rewrite it with), so the
     allowlisted env enrichment — herdr/cmux/tmux/screen/zellij/bridge handles,
     `SSH_TTY`, `SSH_CONNECTION` (re-joined with commas, since space is outside
-    the charset), the shim's `$PPID` — rides as `X-Lvx-Env-*` HEADERS, written into the same
+    the charset), `LC_LVX_TTY` (the CLIENT's tty, exported by the user's shell
+    and carried by ssh's `SendEnv`/`AcceptEnv LC_*` — the one value here that
+    describes the Mac), the shim's `$PPID` — rides as `X-Lvx-Env-*` HEADERS, written into the same
     0600 header file as the token and charset-whitelisted
     (`[A-Za-z0-9._:/@+,=%-]`, ≤200 bytes) before a byte is written so CR/LF
     injection is impossible by construction; the listener re-validates and
@@ -149,7 +151,10 @@ Key subsystems:
     screen read, and abstains on `-J`, on any multiplexer label (a
     tmux/screen/zellij/herdr server keeps the FIRST connection's
     `$SSH_CONNECTION`), on a ControlMaster-shaped neighbour, and on any
-    ambiguity.
+    ambiguity. `.remoteLocalTTY` is tried BEFORE it and is the arm that serves
+    the configs people have: the surface's tty must equal the `$LC_LVX_TTY`
+    the session reports, which ssh carries per SESSION CHANNEL and therefore
+    through ProxyJump and ControlMaster alike. It needs no socket at all.
     See [agent/invariants.md](agent/invariants.md) for what is deliberately
     not wired up yet.
 - LLM polish: `LLMPolishingService` (chat/completions client) → in managed

@@ -237,6 +237,15 @@ EOF
   lvx_env_header 'X-Lvx-Env-Screen-Session' "${STY:-}"
   lvx_env_header 'X-Lvx-Env-Zellij-Session' "${ZELLIJ:-}"
   lvx_env_header 'X-Lvx-Env-Ssh-Tty' "${SSH_TTY:-}"
+  # The CLIENT terminal's tty, exported by the user's own shell on their Mac
+  # and carried here by ssh's SendEnv/AcceptEnv. `LC_` because sshd's stock
+  # `AcceptEnv LANG LC_*` is what lets it through unmodified on Debian, Ubuntu
+  # and macOS, and libc ignores locale names it does not know — the same trick
+  # iTerm2 uses for LC_TERMINAL. Unlike every other value here it describes the
+  # MAC, which is exactly why the Mac can check it: env travels per session
+  # CHANNEL, so it survives ProxyJump and gives two sessions over one
+  # ControlMaster connection their own value.
+  lvx_env_header 'X-Lvx-Env-Local-Tty' "${LC_LVX_TTY:-}"
   # $SSH_CONNECTION is the one allowlisted value sshd writes with SPACES in it:
   # "<client-ip> <client-port> <server-ip> <server-port>". Space is outside the
   # charset above — deliberately, since that is what makes a value unable to end

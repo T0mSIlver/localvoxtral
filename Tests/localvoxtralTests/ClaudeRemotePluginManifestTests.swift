@@ -1175,6 +1175,66 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         )
     }
 
+    func testShimSendsTheLocalTTYTheUsersShellExported() throws {
+        // The value that makes a plain-ssh join work through ProxyJump and
+        // ControlMaster. Verified end to end on a live OpenSSH pair
+        // (2026-09-06): with `AcceptEnv LANG LC_*` — sshd's Debian/Ubuntu/macOS
+        // default — `LC_LVX_TTY=/dev/ttys004` arrives unchanged through a plain
+        // ssh, through a `ProxyCommand`/`-W` jump, and separately per session
+        // over ONE ControlMaster connection.
+        let captured = try capturedRequestHeaders(environment: [
+            "LC_LVX_TTY": "/dev/ttys004",
+        ])
+        let request = try parseCapturedHeaders(captured)
+        let parsed = try XCTUnwrap(ClaudeRemoteEnvironmentCodec.environment(in: request.headers))
+        XCTAssertEqual(parsed.localTTY, "/dev/ttys004")
+        XCTAssertTrue(
+            ClaudeRemoteLocalTTYPath.isAcceptable(try XCTUnwrap(parsed.localTTY)),
+            "what the shim sends must be what the app is willing to compare"
+        )
+    }
+
+    func testShimSendsNoLocalTTYHeaderWhenTheUserHasNotSetItUp() throws {
+        // The arm has exactly one setup step, and a user who skipped it must
+        // cost nothing: no header, and the connection arm still gets its turn.
+        let captured = try capturedRequestHeaders(environment: [:])
+        XCTAssertFalse(captured.contains("X-Lvx-Env-Local-Tty"))
+    }
+
+    func testAHostileLocalTTYCannotForgeAHeaderLine() throws {
+        // `LC_*` is carried by sshd's stock config, so this value crosses from
+        // whatever the user's shell put in it — the charset check is what makes
+        // that safe, and the app re-checks the SHAPE afterwards.
+        let hostile = [
+            "/dev/ttys004\r\nAuthorization: Bearer stolen",
+            "/dev/ttys004\nX-Evil: 1",
+            "/dev/ttys 004",
+            "/dev/ttys004\u{e9}",
+            String(repeating: "a", count: 201),
+        ]
+        for value in hostile {
+            let captured = try capturedRequestHeaders(environment: ["LC_LVX_TTY": value])
+            XCTAssertFalse(captured.contains("X-Lvx-Env-Local-Tty"), "\(value)")
+            XCTAssertFalse(captured.contains("X-Evil"), "\(value)")
+            XCTAssertFalse(captured.contains("Bearer stolen"), "\(value)")
+            let request = try parseCapturedHeaders(captured)
+            XCTAssertEqual(request.bearerToken, "unit-test-token", "\(value)")
+        }
+    }
+
+    func testACharsetLegalButWRONGSHAPEDLocalTTYReachesTheAppAndIsRefusedThere() throws {
+        // `/etc/passwd` passes the header charset — the shim's job is header
+        // safety, not semantics. The app is where the shape is judged, and this
+        // pins the division of labour rather than assuming it.
+        let captured = try capturedRequestHeaders(environment: ["LC_LVX_TTY": "/etc/passwd"])
+        let request = try parseCapturedHeaders(captured)
+        let parsed = try XCTUnwrap(ClaudeRemoteEnvironmentCodec.environment(in: request.headers))
+        XCTAssertEqual(parsed.localTTY, "/etc/passwd", "the shim forwards it")
+        XCTAssertFalse(
+            ClaudeRemoteLocalTTYPath.isAcceptable("/etc/passwd"), "and the app refuses it"
+        )
+    }
+
     func testShimDropsAnOversizedSSHConnection() throws {
         // Four fields, each fine on its own, whose JOINED value is over the
         // 200-byte cap: the cap must apply to what is written, not to what was
@@ -1711,8 +1771,26 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             "the binding is the connection, and the README has to say what is compared"
         )
         try assertReadmeHasLine(
-            containing: "**through a jump host**",
-            "ProxyJump is a documented non-join, not a bug report waiting to happen"
+            containing: "**through a jump host, without the rc line above**",
+            "ProxyJump is a documented non-join FOR THE CONNECTION ARM only — the "
+                + "README must not read as if a jumped session cannot join at all"
+        )
+        try assertReadmeHasLine(
+            equalTo: "### 1. The tty echo (works through jump hosts and `ControlMaster`)",
+            "the arm that serves the configs people actually have needs a heading"
+        )
+        try assertReadmeHasLine(
+            containing: "LC_LVX_TTY=\"$(tty)\"; export LC_LVX_TTY",
+            "the one setup step must be copy-pasteable from the README"
+        )
+        try assertReadmeHasLine(
+            containing: "case \"$(tty 2>/dev/null)\" in /dev/*",
+            "the documented line must refuse `not a tty`, which a tty-less shell prints "
+                + "and which then poisons the already-set guard for everything downstream"
+        )
+        try assertReadmeHasLine(
+            containing: "AcceptEnv LC_LVX_TTY",
+            "a hardened sshd that refuses LC_* needs the one-liner that fixes it"
         )
         try assertReadmeHasLine(
             containing: "**inside tmux, screen or zellij**",
@@ -1725,8 +1803,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
                 + "otherwise explain"
         )
         try assertReadmeHasLine(
-            containing: "1.6.0 or newer",
-            "a host on an older plugin publishes no connection; say which version fixes it"
+            containing: "1.7.0 or newer",
+            "a host on an older plugin publishes nothing to match on; say which version fixes it"
         )
     }
 

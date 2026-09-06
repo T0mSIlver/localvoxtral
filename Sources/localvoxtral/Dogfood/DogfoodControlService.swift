@@ -427,6 +427,10 @@ final class DogfoodControlService {
                 // it carries is the join material.
                 ("remoteSSHConnection", DogfoodControlJSON.bool(remote?.sshConnection != nil)),
                 ("remoteSSHTTY", DogfoodControlJSON.bool(remote?.sshTTY != nil)),
+                // The local-tty arm's own input. Absent means the user has not
+                // exported `LC_LVX_TTY`, or ssh is not carrying it — the one
+                // setup step that arm has, and otherwise invisible.
+                ("remoteLocalTTY", DogfoodControlJSON.bool(remote?.localTTY != nil)),
                 ("remoteMultiplexerLabel", DogfoodControlJSON.bool(
                     remote.map { environment in
                         ClaudeSessionJoinResolver.multiplexerLabels.contains {

@@ -299,6 +299,16 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             # refused, fail open, and you simply get no context. The verify step
             # below is how you check.
             ExitOnForwardFailure no
+            # Carries THIS terminal's tty into the remote session, so a plain
+            # `ssh` Claude session can be joined to the window you are actually
+            # dictating into. Set `LC_LVX_TTY` from your shell (the README has
+            # the one line); with it unset this sends nothing and costs
+            # nothing. `LC_` is the point: sshd's stock `AcceptEnv LANG LC_*`
+            # already lets it through, and env travels per session channel, so
+            # it survives ProxyJump and ControlMaster where a TCP-level match
+            # cannot. Most ssh_configs already send `LC_*`; this line is what
+            # makes it true on the ones that do not.
+            SendEnv LC_LVX_TTY
         \(blockEnd(hostID: host.id))
         """
     }

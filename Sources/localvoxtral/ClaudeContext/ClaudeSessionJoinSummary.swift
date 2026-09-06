@@ -19,7 +19,7 @@ import Foundation
 /// writes to `Log.claudeContext`, which are audited for exactly this.
 struct ClaudeSessionJoinSummary: Codable, Equatable, Sendable {
     /// `tty`, `herdrPane`, `browserTab`, `cmuxSurface`, `remoteHerdrPane`,
-    /// `remoteSSHConnection`, or `none`. The resolver's mechanism vocabulary,
+    /// `remoteSSHConnection`, `remoteLocalTTY`, or `none`. The resolver's mechanism vocabulary,
     /// not a second naming of it.
     var arm: String
     /// Every arm that declined, oldest first, joined by `; `. Present even when
@@ -90,6 +90,7 @@ struct ClaudeSessionJoinSummary: Codable, Equatable, Sendable {
         case .cmuxSurface: return "cmuxSurface"
         case .remoteHerdrPane: return "remoteHerdrPane"
         case .remoteSSHConnection: return "remoteSSHConnection"
+        case .remoteLocalTTY: return "remoteLocalTTY"
         }
     }
 

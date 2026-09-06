@@ -237,15 +237,15 @@ final class ClaudeSurfaceProbeTests: XCTestCase {
     }
 
     func testAbstentionCausesAreOrderedOldestFirstAcrossArms() async {
-        // One session on another device: the tty arm declines, then the two
-        // remote arms each find nothing they can read. All three, in that
+        // One session on another device: the tty arm declines, then the three
+        // remote arms each find nothing they can read. All four, in that
         // order — the ORDER is what tells a reader how far the resolve got,
         // and a set would not.
         //
-        // The last two causes come from this resolver's un-injected ssh seam,
+        // The last three causes come from this resolver's un-injected ssh seam,
         // which is the same `.undeterminable(.probeUnavailable)` a shipped
         // build reports when it cannot inspect the surface's process table.
-        // Both arms report it because both consult the same probe result.
+        // All of them report it because they consult the same probe result.
         let registry = makeRegistry()
         XCTAssertNotNil(registry.ingest(record(tty: "/dev/ttys009"), origin: local))
         let joinResolver = resolver(registry: registry, focusedTTY: "/dev/ttys003")
@@ -259,6 +259,7 @@ final class ClaudeSurfaceProbeTests: XCTestCase {
             summary.abstentionReason,
             "tty: no live session on this device"
                 + "; remote-herdr: ssh session undeterminable (probe unavailable)"
+                + "; remote-tty: ssh session undeterminable (probe unavailable)"
                 + "; remote-ssh: ssh session undeterminable (probe unavailable)"
         )
     }

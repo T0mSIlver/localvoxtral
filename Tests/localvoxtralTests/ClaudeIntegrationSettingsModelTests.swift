@@ -1003,6 +1003,12 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             scripts.contains { $0.contains("--config 'port=28542'") },
             "the executed update must migrate the port, not just the panel text: \(scripts)"
         )
+        XCTAssertTrue(
+            plan.sshConfigSnippet.contains("SendEnv LC_LVX_TTY"),
+            "the block must carry the terminal's tty into the session, or the "
+                + "plain-ssh join has nothing to compare: "
+                + plan.sshConfigSnippet
+        )
     }
 
     // MARK: Update migrates BOTH halves (review blocker)
