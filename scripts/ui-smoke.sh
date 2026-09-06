@@ -508,6 +508,9 @@ assert_tab "textProcessing" "Text Processing" "Polishing"
 # title, which exists nowhere else.
 assert_tab "context" "Context" "Polish context"
 assert_tab "context" "Context" "Remote Claude Code over SSH"
+# The cmux join toggle binds $settings.cmuxSurfaceJoinEnabled in its new home;
+# without this, the row could be deleted or rebound with every lane green.
+assert_tab "context" "Context" "Join Claude Code sessions in cmux"
 assert_tab "about" "About" "Diagnostics"
 
 # The launch phase forces external URL modes (managed mode now eagerly spawns
