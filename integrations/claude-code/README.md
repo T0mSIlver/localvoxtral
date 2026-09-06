@@ -132,7 +132,9 @@ There are two ways it can identify your window, tried in that order.
 Add one line to your shell's rc file **on your Mac**:
 
 ```sh
-[ -z "${LC_LVX_TTY:-}" ] && [ -z "${SSH_TTY:-}" ] && export LC_LVX_TTY="$(tty)"
+if [ -z "${LC_LVX_TTY:-}" ] && [ -z "${SSH_TTY:-}" ]; then
+  case "$(tty 2>/dev/null)" in /dev/*) LC_LVX_TTY="$(tty)"; export LC_LVX_TTY ;; esac
+fi
 ```
 
 That publishes the terminal's own device name. `ssh` carries it into the
@@ -143,10 +145,24 @@ of the window it can see. `LC_` is not a trick played on you: it is the same
 mechanism iTerm2 uses for `LC_TERMINAL`, and locale libraries ignore names
 they do not know.
 
-The two guards in that line matter. `SSH_TTY` unset means "only on this Mac",
-and the `LC_LVX_TTY` check means "do not overwrite what was sent to me" — put
-the same rc file on a remote host without them and the remote shell would
-replace your Mac's tty with its own, and nothing would match.
+Every part of that block earns its place, and a shorter version was measured
+to be wrong:
+
+* `SSH_TTY` unset means "only on this Mac", and the `LC_LVX_TTY` check means
+  "do not overwrite what was sent to me". Put the same rc file on a remote host
+  without them and the remote shell replaces your Mac's tty with its own —
+  nothing matches, and because the variable is then *set*, no later shell fixes
+  it either.
+* The `case` is not decoration: in a shell with no terminal, `tty` prints
+  `not a tty`, and the first draft of this line exported that string. It is
+  harmless (the shim's charset drops it) but it poisons the "already set"
+  guard for every shell that inherits it.
+* It is an `if` block rather than a one-line `&&` chain because the chain's
+  status becomes the rc file's status. Measured: `bash --norc -c 'set -e;
+  source rc; echo SURVIVED'` printed nothing and exited 1 with the chain, and
+  `SURVIVED` with exit 0 using the block above. `bash` sources `~/.bashrc`
+  non-interactively for shells it believes sshd started, so the chain version
+  could break `ssh host script` for anyone syncing dotfiles.
 
 **Why this one and not the connection below:** ssh carries environment per
 SESSION, not per connection. So it survives `ProxyJump` (where your Mac holds
@@ -161,9 +177,19 @@ configs — add this there and reload sshd:
 AcceptEnv LC_LVX_TTY
 ```
 
-`localvoxtral --probe-surface` says `no live session on this host reports its
-local tty` when the value is not arriving, which is the one thing that can go
-wrong.
+To check that the value is actually arriving — the one thing that can go wrong
+— ask the remote side, not `--probe-surface`. That verb runs as a separate
+one-shot process with its own empty session registry, so it can tell you which
+arm ran and why the SURFACE was or was not identified, but it never has the
+live sessions this check needs:
+
+```sh
+ssh sandbox-vpn 'echo "[$LC_LVX_TTY]"'   # from a window where the rc line ran
+```
+
+An empty answer means the variable is not crossing (rc line, `SendEnv`, or a
+hardened `AcceptEnv`). If you run a dogfood build, `registry list` reports
+`remoteLocalTTY` per session, which is the same fact from the app's side.
 
 ### 2. The connection (zero setup, no jump host)
 

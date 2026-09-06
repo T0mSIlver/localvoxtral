@@ -669,6 +669,39 @@ there is not.
     wrong costs a non-join with a named cause (`no live session reports this
     terminal's tty`), never a mis-join.
 
+    **What IS a hazard, and the reason rules 6 and 7 exist: the tty NAME is
+    recycled and the registry entry is not.** macOS hands out pty minors
+    first-free (XNU `bsd/kern/tty_ptmx.c`: `ptmx_clone` scans for the first
+    free slot, `ptmx_free_ioctl` returns the minor on last close), so closing
+    a window gives its `/dev/ttysNNN` to the next window opened — while a
+    REMOTE session's registry entry survives for the full session TTL with no
+    liveness check available (its pid is another machine's). Without a gate:
+    close a Claude-over-ssh window, open a new one to the same host, dictate,
+    and the dead session's repository and prior prompt attach to it. That is
+    the cardinal failure, and it was found by review (2026-09-06) rather than
+    in the field. The connection arm was immune by accident — a new window's
+    ssh has a new ephemeral port.
+
+    The gate is kernel truth on both sides: an ssh that STARTED after a
+    session was first seen cannot be the ssh that session was created in, so
+    the candidate must satisfy `firstSeen >= surfaceProcessStartTime`
+    (`p_starttime`, from the same `KERN_PROC` scan). An unreadable start time
+    refuses rather than skipping the check. Where the surface's ssh DOES hold
+    sockets — the direct shape, where this arm and the connection arm overlap
+    — the candidate's `$SSH_CONNECTION` must additionally match one of them; a
+    pure negative check that makes this arm strictly stronger than the
+    connection arm wherever both can run, and that has nothing to say in the
+    ProxyJump/ControlMaster shapes this arm exists for. Which is exactly why
+    the start-time gate is not optional.
+
+    Residual, shared with the connection arm and unchanged by this: a session
+    that DIED without a `SessionEnd` in a window whose ssh is still alive is
+    still joinable until its TTL. And a terminal multiplexer that publishes no
+    label the shim carries — `abduco` and `dtach` are the known ones — keeps
+    the first client's environment exactly as tmux does, and neither arm can
+    see it. `multiplexerLabels` covers what is on the wire; adding a
+    multiplexer means adding its label.
+
   - **The plain-ssh arm (`.remoteSSHConnection`, 2026-09-05).** A Claude Code
     session in `ssh host` on an ENROLLED host, with no multiplexer and no
     browser, joins on the TCP CONNECTION its surface holds. sshd sets

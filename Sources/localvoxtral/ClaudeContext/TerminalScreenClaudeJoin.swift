@@ -1258,10 +1258,15 @@ struct ClaudeSessionJoinResolver {
     ///    the rule and its measurement are the same as the connection arm's;
     /// 5. its reported local tty is a well-formed device path and EQUALS the
     ///    surface's;
-    /// 6. exactly one live session claims that tty.
+    /// 6. it was FIRST SEEN at or after the surface's ssh process started —
+    ///    a tty name is recycled by the kernel and a registry entry is not;
+    /// 7. where the surface's ssh does hold sockets, its reported
+    ///    `$SSH_CONNECTION` matches one of them;
+    /// 8. exactly one live session survives all of that.
     ///
-    /// The surface's ssh SOCKET is deliberately not consulted. That is the
-    /// point: the socket is what ProxyJump and ControlMaster take away.
+    /// The surface's ssh socket is not REQUIRED. That is the point: the socket
+    /// is what ProxyJump and ControlMaster take away. Rule 7 uses it when it
+    /// happens to be there, and can only ever refuse.
     private func resolveViaRemoteLocalTTY(
         target: TerminalScreenTarget,
         tty: String,
@@ -1315,12 +1320,67 @@ struct ClaudeSessionJoinResolver {
         }
 
         let matches = reporting.filter { $0.remoteSessionEnvironment?.localTTY == tty }
-        guard matches.count == 1, let snapshot = matches.first else {
+        guard !matches.isEmpty else {
+            Self.abstainedLocalTTYJoin(outcome: "no live session reports this terminal's tty")
+            return nil
+        }
+
+        // THE TTY NAME IS RECYCLED AND THE REGISTRY ENTRY IS NOT. macOS hands
+        // out pty minors first-free (XNU `bsd/kern/tty_ptmx.c`, `ptmx_clone`
+        // scans for the first free slot and `ptmx_free_ioctl` returns the
+        // minor on last close), so closing a window gives its `/dev/ttysNNN`
+        // to the next window opened — while a remote session's entry lives on
+        // for the full session TTL, with no liveness check available for
+        // another machine's pid. Without this gate: close a Claude-over-ssh
+        // window, open a new one to the same host, dictate, and the dead
+        // session's repo and prior prompt attach to it. Found by review
+        // (2026-09-06); the connection arm was immune because a new window's
+        // ssh has a new ephemeral port.
+        //
+        // The gate is kernel truth on both sides: an ssh that STARTED after a
+        // session was first seen cannot be the ssh that session was created
+        // in. `firstSeen` is when this app first saw the session, so it is
+        // always at or after the moment its ssh existed.
+        guard let sshStartedAt = connection.surfaceProcessStartTime else {
             Self.abstainedLocalTTYJoin(
-                outcome: matches.isEmpty
-                    ? "no live session reports this terminal's tty"
-                    : "several live sessions claim this terminal's tty"
+                outcome: "this terminal's ssh has no readable start time"
             )
+            return nil
+        }
+        let contemporary = matches.filter { $0.firstSeen >= sshStartedAt }
+        guard !contemporary.isEmpty else {
+            Self.abstainedLocalTTYJoin(
+                outcome: "the session claiming this tty predates this terminal's ssh"
+            )
+            return nil
+        }
+
+        // And where the kernel CAN still speak about the connection, it must
+        // agree too. This is a pure negative check — it can only refuse — and
+        // it makes the tty arm strictly stronger than the connection arm
+        // wherever both could run. In the shapes this arm exists for
+        // (ProxyJump, ControlMaster) there are no sockets to consult, which is
+        // exactly why the freshness gate above is not optional.
+        let confirmed: [ClaudeSessionSnapshot]
+        if let sockets = connection.sockets, !sockets.isEmpty {
+            confirmed = contemporary.filter { snapshot in
+                guard let value = snapshot.remoteSessionEnvironment?.sshConnection,
+                      let report = ClaudeRemoteSSHConnectionReport.parse(value)
+                else { return false }
+                return sockets.contains { Self.socket($0, matches: report) }
+            }
+            guard !confirmed.isEmpty else {
+                Self.abstainedLocalTTYJoin(
+                    outcome: "the session claiming this tty is not on this terminal's connection"
+                )
+                return nil
+            }
+        } else {
+            confirmed = contemporary
+        }
+
+        guard confirmed.count == 1, let snapshot = confirmed.first else {
+            Self.abstainedLocalTTYJoin(outcome: "several live sessions claim this terminal's tty")
             return nil
         }
 

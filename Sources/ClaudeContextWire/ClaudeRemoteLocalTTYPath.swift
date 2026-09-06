@@ -22,6 +22,13 @@ public enum ClaudeRemoteLocalTTYPath {
 
     /// Accepted: `/dev/ttys003` (macOS), `/dev/pts/19` (Linux), `/dev/ttyp0`.
     ///
+    /// `/dev/tty` is REFUSED although it is a real path: it is the per-process
+    /// controlling-terminal alias, so it names no particular window. It could
+    /// never equal a terminal's own reported device today, but it is the one
+    /// otherwise-plausible value that is ambiguous by construction, and a
+    /// future caller comparing it against a hook-reported device would match
+    /// everything (review, 2026-09-06).
+    ///
     /// Refused: anything not under `/dev/`, an empty device name, a trailing
     /// slash, `.` or `..` anywhere, more than one `/` inside the device name
     /// (so `/dev/a/b/c` is not a tty), and any character outside ASCII
@@ -32,6 +39,7 @@ public enum ClaudeRemoteLocalTTYPath {
         guard value.hasPrefix(prefix), value.utf8.count <= maxLength else { return false }
         let device = value.dropFirst(prefix.count)
         guard !device.isEmpty, !device.hasSuffix("/") else { return false }
+        guard device != "tty" else { return false }
         let segments = device.split(separator: "/", omittingEmptySubsequences: false)
         guard (1...2).contains(segments.count) else { return false }
         return segments.allSatisfy { segment in

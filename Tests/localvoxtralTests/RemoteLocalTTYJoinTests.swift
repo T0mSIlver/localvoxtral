@@ -74,12 +74,19 @@ final class RemoteLocalTTYJoinTests: XCTestCase {
         )
     }
 
+    /// The surface's ssh started a minute before the session was first seen —
+    /// the only ordering a real window can produce, since the session is
+    /// created INSIDE that ssh.
+    private var sshStartedAt: Date { epoch.addingTimeInterval(-60) }
+
     /// The owner's actual shape: a ProxyJump'd connection, so the surface's ssh
     /// holds NO socket. This arm must not care, and the fixture says so by
     /// defaulting to exactly that.
     private func surfaceConnection(
         destination: String = "sandbox",
-        sockets: [SSHClientSocket]? = []
+        sockets: [SSHClientSocket]? = [],
+        startedAt: Date? = nil,
+        noStartTime: Bool = false
     ) -> SSHDestinationTTYProbeResult {
         .connection(
             SSHSurfaceConnection(
@@ -87,7 +94,8 @@ final class RemoteLocalTTYJoinTests: XCTestCase {
                 hasCompetingHerdrClient: false,
                 herdr: .notHerdr,
                 usesProxyJump: true,
-                sockets: sockets
+                sockets: sockets,
+                surfaceProcessStartTime: noStartTime ? nil : (startedAt ?? sshStartedAt)
             )
         )
     }
@@ -323,6 +331,87 @@ final class RemoteLocalTTYJoinTests: XCTestCase {
         XCTAssertFalse(causes.contains { $0.hasPrefix("remote-tty:") }, "\(causes)")
     }
 
+    // MARK: - The recycled tty
+
+    func testASESSIONOLDERTHANTHISWINDOWSSSHDoesNotJoin() async {
+        // THE mis-join this arm would otherwise have. macOS hands out pty
+        // minors first-free, so a closed window's `/dev/ttysNNN` goes to the
+        // next window opened — while the dead session's registry entry lives
+        // on for the session TTL with no liveness check available for another
+        // machine's pid. Fixtured exactly so: the session was first seen
+        // BEFORE this window's ssh existed, so it cannot be the session this
+        // ssh created, and everything else about it matches perfectly.
+        // Found by review, 2026-09-06.
+        let registry = makeRegistry()
+        ingestRemoteSession(into: registry)
+        await assertNoJoin(
+            surfaceConnection(startedAt: epoch.addingTimeInterval(60)),
+            registry: registry,
+            expectedCause: "the session claiming this tty predates this terminal's ssh"
+        )
+    }
+
+    func testASessionFirstSeenEXACTLYWhenTheSSHStartedStillJoins() async throws {
+        // The boundary is inclusive on purpose: a session cannot be seen
+        // before the ssh that created it, so equality is the earliest honest
+        // ordering and must not be refused.
+        let registry = makeRegistry()
+        ingestRemoteSession(into: registry)
+        let resolved = await resolver(
+            registry: registry, sshResult: surfaceConnection(startedAt: epoch)
+        ).resolve(target: ghostty)
+        XCTAssertEqual(try XCTUnwrap(resolved).mechanism, .remoteLocalTTY)
+    }
+
+    func testAnUnreadableSSHStartTimeRefusesRatherThanSkippingTheCheck() async {
+        let registry = makeRegistry()
+        ingestRemoteSession(into: registry)
+        await assertNoJoin(
+            surfaceConnection(noStartTime: true), registry: registry,
+            expectedCause: "this terminal's ssh has no readable start time"
+        )
+    }
+
+    // MARK: - The socket corroboration, where a socket exists
+
+    func testWhereTheSSHDOESHoldASocketTheSessionMustBeOnIt() async {
+        // A pure negative check: in the direct shape the kernel can still
+        // speak, so the tty arm is strictly stronger than the connection arm
+        // rather than a weaker alternative to it. Here the tty matches and the
+        // ports do not.
+        let socket = SSHClientSocket(localPort: 51_960, peerPort: 22, peerAddress: "192.168.1.9")
+        let registry = makeRegistry()
+        ingestRemoteSession(
+            into: registry,
+            environment: ClaudeRemoteSessionEnvironment(
+                sshTTY: "/dev/pts/3",
+                localTTY: surfaceTTY,
+                sshConnection: "10.0.0.2,40001,192.168.1.9,22"
+            )
+        )
+        await assertNoJoin(
+            surfaceConnection(sockets: [socket]), registry: registry,
+            expectedCause: "the session claiming this tty is not on this terminal's connection"
+        )
+    }
+
+    func testWhereTheSSHHoldsASocketAndTheSessionISOnItTheJoinStands() async throws {
+        let socket = SSHClientSocket(localPort: 51_960, peerPort: 22, peerAddress: "192.168.1.9")
+        let registry = makeRegistry()
+        ingestRemoteSession(
+            into: registry,
+            environment: ClaudeRemoteSessionEnvironment(
+                sshTTY: "/dev/pts/3",
+                localTTY: surfaceTTY,
+                sshConnection: "10.0.0.2,51960,192.168.1.9,22"
+            )
+        )
+        let resolved = await resolver(
+            registry: registry, sshResult: surfaceConnection(sockets: [socket])
+        ).resolve(target: ghostty)
+        XCTAssertEqual(try XCTUnwrap(resolved).mechanism, .remoteLocalTTY)
+    }
+
     // MARK: - Falling through to the connection arm
 
     func testASessionWithNoLocalTTYFallsThroughToTheConnectionArm() async throws {
@@ -342,7 +431,8 @@ final class RemoteLocalTTYJoinTests: XCTestCase {
                 destination: "sandbox",
                 hasCompetingHerdrClient: false,
                 herdr: .notHerdr,
-                sockets: [socket]
+                sockets: [socket],
+                surfaceProcessStartTime: sshStartedAt
             )
         )
         let (join, causes) = await ClaudeJoinAbstentionTap.collecting {
@@ -360,7 +450,7 @@ final class RemoteLocalTTYJoinTests: XCTestCase {
 /// The device-path grammar, away from the resolver.
 final class ClaudeRemoteLocalTTYPathTests: XCTestCase {
     func testTheShapesRealTerminalsProduceAreAccepted() {
-        for value in ["/dev/ttys004", "/dev/ttys000", "/dev/pts/19", "/dev/ttyp0", "/dev/tty"] {
+        for value in ["/dev/ttys004", "/dev/ttys000", "/dev/pts/19", "/dev/ttyp0"] {
             XCTAssertTrue(ClaudeRemoteLocalTTYPath.isAcceptable(value), value)
         }
     }
@@ -371,6 +461,8 @@ final class ClaudeRemoteLocalTTYPathTests: XCTestCase {
             "ttys004",                                   // relative
             "dev/ttys004",
             "/dev/",                                     // no device
+            "/dev/tty",                                  // the controlling-terminal ALIAS,
+                                                         // which names no particular window
             "/dev/ttys004/",                             // trailing slash
             "/etc/passwd",
             "/dev/../etc/passwd",                        // traversal

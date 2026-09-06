@@ -71,6 +71,10 @@ struct SSHSurfaceConnection: Sendable, Equatable {
     /// What the OTHER ssh sessions to this destination look like — the
     /// evidence for or against OpenSSH connection multiplexing.
     var siblings: SSHSiblingSurvey
+    /// When the surface's ssh process started, from the kernel. The local-tty
+    /// arm requires the session it joins to have been FIRST SEEN after this,
+    /// because a tty name is recycled and a registry entry is not.
+    var surfaceProcessStartTime: Date?
 
     init(
         destination: String,
@@ -78,7 +82,8 @@ struct SSHSurfaceConnection: Sendable, Equatable {
         herdr: HerdrInvocation,
         usesProxyJump: Bool = false,
         sockets: [SSHClientSocket]? = nil,
-        siblings: SSHSiblingSurvey = SSHSiblingSurvey()
+        siblings: SSHSiblingSurvey = SSHSiblingSurvey(),
+        surfaceProcessStartTime: Date? = nil
     ) {
         self.destination = destination
         self.hasCompetingHerdrClient = hasCompetingHerdrClient
@@ -86,6 +91,7 @@ struct SSHSurfaceConnection: Sendable, Equatable {
         self.usesProxyJump = usesProxyJump
         self.sockets = sockets
         self.siblings = siblings
+        self.surfaceProcessStartTime = surfaceProcessStartTime
     }
 }
 
@@ -191,6 +197,15 @@ struct SSHClientProcess: Sendable, Equatable {
     var processGroupID: Int32
     /// The foreground process group of its controlling terminal.
     var terminalForegroundGroupID: Int32
+    /// When the kernel says this process started (`p_starttime`). Kernel
+    /// truth, and the only fact that can tell a REUSED tty apart from the
+    /// original: macOS hands out pty minors first-free, so a closed window's
+    /// `/dev/ttysNNN` goes to the next window opened, and a registry entry
+    /// naming it outlives the window by up to the session TTL. An ssh that
+    /// started AFTER a session was first seen cannot be the ssh that session
+    /// was created in. Nil when the scan could not read it, which the arm
+    /// treats as a refusal.
+    var startTime: Date?
     /// Kernel credential (`e_ucred.cr_uid`), never self-reported. A process
     /// owned by another user stays visible to the SURFACE question — a
     /// `sudo ssh` in this terminal's foreground must abstain, not vanish —
@@ -210,6 +225,7 @@ struct SSHClientProcess: Sendable, Equatable {
         processGroupID: Int32,
         terminalForegroundGroupID: Int32,
         effectiveUserID: uid_t = 0,
+        startTime: Date? = nil,
         executablePath: String?,
         arguments: [String]?
     ) {
@@ -219,6 +235,7 @@ struct SSHClientProcess: Sendable, Equatable {
         self.processGroupID = processGroupID
         self.terminalForegroundGroupID = terminalForegroundGroupID
         self.effectiveUserID = effectiveUserID
+        self.startTime = startTime
         self.executablePath = executablePath
         self.arguments = arguments
     }
@@ -430,7 +447,8 @@ enum SSHDestinationTTYProbe {
                     connections: connections,
                     readSockets: readSockets,
                     ownProcessID: ownProcessID
-                )
+                ),
+                surfaceProcessStartTime: surfaceProcess.startTime
             )
         )
     }
@@ -892,6 +910,7 @@ enum SSHDestinationTTYProbe {
                     processGroupID: entry.processGroupID,
                     terminalForegroundGroupID: entry.terminalForegroundGroupID,
                     effectiveUserID: entry.effectiveUserID,
+                    startTime: entry.startTime,
                     executablePath: sameUser ? readExecutablePath(entry.pid) : nil,
                     arguments: sameUser ? readArguments(entry.pid) : nil
                 )
@@ -982,6 +1001,8 @@ enum TTYProcessTable {
         var ttyDevice: dev_t?
         var processGroupID: Int32
         var terminalForegroundGroupID: Int32
+        /// `kp_proc.p_starttime`, wall clock, same domain as `Date()`.
+        var startTime: Date?
 
         init(
             pid: Int32,
@@ -990,7 +1011,8 @@ enum TTYProcessTable {
             name: String,
             ttyDevice: dev_t? = nil,
             processGroupID: Int32 = 0,
-            terminalForegroundGroupID: Int32 = 0
+            terminalForegroundGroupID: Int32 = 0,
+            startTime: Date? = nil
         ) {
             self.pid = pid
             self.parentProcessID = parentProcessID
@@ -999,6 +1021,7 @@ enum TTYProcessTable {
             self.ttyDevice = ttyDevice
             self.processGroupID = processGroupID
             self.terminalForegroundGroupID = terminalForegroundGroupID
+            self.startTime = startTime
         }
     }
 
@@ -1020,6 +1043,20 @@ enum TTYProcessTable {
 
     static func allProcesses() -> [Entry]? {
         scan(mib: [Int32(CTL_KERN), Int32(KERN_PROC), Int32(KERN_PROC_ALL), 0])
+    }
+
+    /// `p_starttime` as a `Date`, or nil for a value that cannot be one.
+    ///
+    /// A zero or negative timestamp is refused rather than turned into 1970:
+    /// the one consumer compares it against a session's `firstSeen`, and an
+    /// epoch date would make EVERY session look newer than the process.
+    static func startTime(of process: kinfo_proc) -> Date? {
+        let started = process.kp_proc.p_un.__p_starttime
+        guard started.tv_sec > 0 else { return nil }
+        return Date(
+            timeIntervalSince1970: Double(started.tv_sec)
+                + Double(started.tv_usec) / 1_000_000
+        )
     }
 
     private static func scan(mib: [Int32]) -> [Entry]? {
@@ -1054,7 +1091,8 @@ enum TTYProcessTable {
                 // NODEV means no controlling terminal — not a surface.
                 ttyDevice: device == ~dev_t(0) ? nil : device,
                 processGroupID: process.kp_eproc.e_pgid,
-                terminalForegroundGroupID: process.kp_eproc.e_tpgid
+                terminalForegroundGroupID: process.kp_eproc.e_tpgid,
+                startTime: Self.startTime(of: process)
             )
         }
     }

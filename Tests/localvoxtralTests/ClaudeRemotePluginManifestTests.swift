@@ -1780,8 +1780,13 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             "the arm that serves the configs people actually have needs a heading"
         )
         try assertReadmeHasLine(
-            containing: "export LC_LVX_TTY=",
+            containing: "LC_LVX_TTY=\"$(tty)\"; export LC_LVX_TTY",
             "the one setup step must be copy-pasteable from the README"
+        )
+        try assertReadmeHasLine(
+            containing: "case \"$(tty 2>/dev/null)\" in /dev/*",
+            "the documented line must refuse `not a tty`, which a tty-less shell prints "
+                + "and which then poisons the already-set guard for everything downstream"
         )
         try assertReadmeHasLine(
             containing: "AcceptEnv LC_LVX_TTY",
