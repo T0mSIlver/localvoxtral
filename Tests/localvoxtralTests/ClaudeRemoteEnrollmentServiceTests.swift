@@ -467,7 +467,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         // A host enrolled before #215 has no `port` option at all, so its shim
         // posts to 8473 while this Mac has moved. This line is the only fix
         // that does not re-send a credential.
-        let runnable = try allocatedPlan().updateCommands.filter { !$0.hasPrefix("#") }
+        let runnable = try allocatedPlan().updateCommands
         let migration = try XCTUnwrap(runnable.last)
         XCTAssertTrue(migration.contains("--config '\(ClaudeRemoteEnrollmentService.portConfigKey)=28511'"))
         XCTAssertFalse(migration.contains(token))

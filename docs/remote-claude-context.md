@@ -4,7 +4,7 @@ Dictate into a Claude Code session that is running on another machine, and have
 localvoxtral spell your code, file names, and identifiers correctly anyway.
 
 This page is the long version. The app's enrollment sheet is deliberately short:
-three steps, no comments in anything you copy, and a **Check Setup** button that
+four steps, no comments in anything you copy, and a **Check Setup** button that
 runs the checks and tells you what they mean.
 
 ---

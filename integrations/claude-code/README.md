@@ -525,8 +525,8 @@ exchange (any HTTP status, even a 401) clears the backoff for everything else.
 In **Settings → Context → Remote hosts → "Remote Claude Code over SSH"**,
 type a name and your SSH host alias and press **Enroll…**. The app issues a
 token, binds the listener immediately — there is no relaunch step — and opens a
-sheet with three numbered steps: add the SSH config, install on the host, check
-the setup. The list in that row shows each enrolled host, when it was last seen,
+sheet with four numbered steps: add the SSH config, install on the host, show
+the dictation indicator in herdr, check the setup. The list in that row shows each enrolled host, when it was last seen,
 and gives you **Update Plugin…**, **Rotate Token**, **Revoke** and **Remove**.
 
 Steps 1 and 2 each offer a button that does the work and a Copy button that
@@ -545,14 +545,14 @@ there. That is true whether the app runs the command or you paste it; see
 Nothing runs or is written without that explicit confirmation.
 
 Everything the sheet gives you to copy is exactly what you run: no `#`
-commentary, no output to interpret. Step 3 is why — instead of handing you
+commentary, no output to interpret. Step 4 is why — instead of handing you
 probe commands and explaining their output, the app runs them and reports two
 verdicts (see below). The full reference — what the token authorizes, the
-per-Mac port, tmux titles, uninstalling — is
+per-Mac port, multiplexer limits, uninstalling — is
 [docs/remote-claude-context.md](../../docs/remote-claude-context.md).
 
 The token is shown exactly once, because only its hash is stored. If you lose it,
-rotate — that is what rotation is for. What the three steps amount to:
+rotate — that is what rotation is for. What the four steps amount to:
 
 **1. Add the tunnel to `~/.ssh/config`:**
 
@@ -575,7 +575,7 @@ refuses to open the session at all when that port is already bound on the remote
 — now only by your own second window to the same host. **A dictation nicety must
 never cost you the shell.** The price of `no` is that a failed forward is
 silent: the hooks get connection refused, fail open, and you simply get no
-context. Breaking that silence is exactly what step 3 is for.
+context. Breaking that silence is exactly what step 4 is for.
 
 **2. Install the plugin on the remote host:**
 
@@ -595,7 +595,18 @@ Nothing else is installed. The marketplace add resolves the repository root's
 POSIX-sh scripts — the hook shim, which needs only `sh` and `curl` on the
 host, and the opt-in status-line renderer below, which needs only `sh`.
 
-**3. Check it — press "Check Setup" in the sheet.**
+**3. Show the dictation indicator in herdr (optional):**
+
+After confirmation, the app appends the agents-panel row below to the remote
+host's herdr config — only when it has no agents table and no rows key,
+otherwise it leaves the file unchanged:
+
+```toml
+[ui.sidebar.agents]
+rows = [["state_icon", "workspace", "tab"], ["agent"], [{ token = "$lvmark", dim = true }]]
+```
+
+**4. Check it — press "Check Setup" in the sheet.**
 
 The app runs two read-only checks over SSH and tells you what they mean:
 
