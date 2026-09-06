@@ -557,12 +557,18 @@ enum SSHDestinationTTYProbe {
             // this is belt and braces; it stops a future forward whose argv
             // happens to parse from abstaining every dictation on that host.
             guard process.parentPID != ownProcessID else { continue }
-            // A ControlMaster client that could mis-join is a session in
-            // ANOTHER WINDOW, so it holds a controlling terminal. A tty-less
-            // ssh is machinery (a `-N` forward, an `ssh host command` in a
-            // script): it is not a surface anyone runs an agent on, and
-            // counting it made transient helpers look like mux clients.
-            guard process.ttyDevice != nil else { continue }
+            // NO tty filter, deliberately — one was added here and removed
+            // by review (2026-09-06) because it was wrong and it reopened the
+            // mis-join this survey exists to block. `ssh -tt D claude -p …`
+            // launched by launchd, cron or an orchestrator has no LOCAL
+            // controlling terminal and a REMOTE pty, so the session it starts
+            // reports `$SSH_TTY`, carries no multiplexer label, and is a
+            // perfectly joinable candidate. Under ControlMaster that client is
+            // socketless and reports the master's `$SSH_CONNECTION`, so
+            // skipping it lets a dictation into the master's window join it.
+            // The exclusion's stated motivation — this app's own `-N`
+            // forwards looking like mux clients — is already covered in full
+            // by the parent check above.
             guard let executablePath = process.executablePath,
                   isTrustedSSHExecutable(executablePath),
                   let arguments = process.arguments,

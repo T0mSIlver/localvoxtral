@@ -19,12 +19,20 @@ enum SSHProxyJumpShape: String, Sendable, Equatable {
     case chain
 
     init(configuredValue value: String) {
-        let trimmed = value.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty, trimmed.lowercased() != "none" else {
-            self = .none
-            return
+        // A leading `none` disables every hop before it, so `none,dell1` is
+        // ONE hop and not a chain. Kept because the two shapes report
+        // different causes and the wrong one sends a reader looking for a
+        // chain that is not there.
+        let hops = value
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .drop { $0.lowercased() == "none" }
+            .filter { !$0.isEmpty }
+        switch hops.count {
+        case 0: self = .none
+        case 1: self = .singleHop
+        default: self = .chain
         }
-        self = trimmed.contains(",") ? .chain : .singleHop
     }
 }
 
@@ -167,6 +175,12 @@ final class SSHDestinationCanonicalizer: Sendable {
     /// cached `ssh -G` the identity fallback uses — so an abstention costs no
     /// extra process spawn, and a config that cannot be read says `nil` rather
     /// than guessing `none`.
+    ///
+    /// `ssh -G` evaluates the user's `Match exec` blocks, so this can run a
+    /// command the user configured, once per operand per TTL, bounded by the
+    /// same 2 s timeout as the identity lookup. That is the cost of asking ssh
+    /// what ssh would do; the alternative is reimplementing its config
+    /// resolution, which this file exists not to do.
     func proxyJumpShape(for operand: String) async -> SSHProxyJumpShape? {
         await identity(for: operand)?.proxyJump
     }
@@ -267,10 +281,14 @@ final class SSHDestinationCanonicalizer: Sendable {
                 guard user == nil || user == value else { return nil }
                 user = value
             case "proxyjump":
-                // `ssh -G` omits the line entirely when unset, and prints
-                // `none` when it is explicitly disabled; a chain is
-                // comma-separated. The VALUE is deliberately dropped here —
-                // only the shape survives, because this reaches the log.
+                // `ssh -G` omits the line entirely when unset AND when it is
+                // explicitly `none` (measured on OpenSSH 9.x and 10.0p2,
+                // 2026-09-06: both print no `proxyjump` line at all), so the
+                // missing-line default below is what answers for both. A chain
+                // is comma-separated, and a list that merely BEGINS with
+                // `none` is printed raw. The VALUE is deliberately dropped
+                // here — only the shape survives, because this reaches the
+                // log.
                 proxyJump = SSHProxyJumpShape(configuredValue: value)
             default:
                 continue
