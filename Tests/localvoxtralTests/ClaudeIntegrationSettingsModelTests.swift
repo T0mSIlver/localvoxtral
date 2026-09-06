@@ -956,6 +956,89 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertNil(model.enrollmentConfirmation)
     }
 
+    /// THE migration the release notes promise, through the shipped path.
+    ///
+    /// The owner's host was enrolled before `SendEnv LC_LVX_TTY` existed, so
+    /// its block already forwards the right port. A currency check that asked
+    /// about the PORT ALONE therefore answered "current", `requestPluginUpdate`
+    /// produced no ssh-config snippet, and `Update Plugin…` silently touched
+    /// only the remote plugin — the line the user was told that button adds
+    /// never arrived (review finding B1, 2026-09-06). The earlier test for this
+    /// fed the stale block to the pure splice and passed while the shipped path
+    /// was broken; this one goes through `requestPluginUpdate`.
+    @MainActor
+    func testUpdatePlanRewritesABlockThatHasThePortButNotSendEnv() async throws {
+        let registry = try makeRegistry()
+        let filesystem = RecordingSSHConfigFileSystem()
+        let service = ClaudeRemoteEnrollmentService(
+            runner: { _ in .init(exitCode: 0, message: "ok") },
+            sshConfigFileSystem: filesystem
+        )
+        let model = await enrolledModel(
+            label: "sandbox", alias: "sandbox-vpn", registry: registry, service: service,
+            remoteForwardPort: 28_542
+        )
+        let hostID = try XCTUnwrap(model.hosts.first).id
+
+        // Exactly the pre-#272 block: right port, no SendEnv.
+        filesystem.setConfig([
+            ClaudeRemoteEnrollmentService.blockBegin(hostID: hostID),
+            "Host sandbox-vpn",
+            "    RemoteForward 28542 127.0.0.1:8473",
+            "    ExitOnForwardFailure no",
+            ClaudeRemoteEnrollmentService.blockEnd(hostID: hostID),
+        ].joined(separator: "\n"))
+
+        model.requestPluginUpdate(hostID: hostID)
+        let update = try XCTUnwrap(model.presentedPluginUpdate)
+        let snippet = try XCTUnwrap(
+            update.sshConfigSnippet,
+            "a stale block must produce a rewrite, or Update Plugin… is a no-op on it"
+        )
+        XCTAssertTrue(
+            snippet.components(separatedBy: "\n")
+                .contains { $0.trimmingCharacters(in: .whitespaces) == "SendEnv LC_LVX_TTY" },
+            "and the rewrite must carry the line the release notes promise"
+        )
+    }
+
+    /// The other side: a block this build would write unchanged is left alone,
+    /// so the update stays a plugin action and does not churn the user's file.
+    @MainActor
+    func testUpdatePlanLeavesAnALREADYCurrentBlockAlone() async throws {
+        let registry = try makeRegistry()
+        let filesystem = RecordingSSHConfigFileSystem()
+        let service = ClaudeRemoteEnrollmentService(
+            runner: { _ in .init(exitCode: 0, message: "ok") },
+            sshConfigFileSystem: filesystem
+        )
+        let model = await enrolledModel(
+            label: "sandbox", alias: "sandbox-vpn", registry: registry, service: service,
+            remoteForwardPort: 28_542
+        )
+        let hostID = try XCTUnwrap(model.hosts.first).id
+        let host = try XCTUnwrap(registry.host(id: hostID))
+        filesystem.setConfig(
+            ClaudeRemoteEnrollmentService.applySSHConfigSnippet(
+                to: "",
+                snippet: ClaudeRemoteEnrollmentService.sshConfigSnippet(
+                    host: host,
+                    sshHostAlias: "sandbox-vpn",
+                    listenerPort: ClaudeRemoteListenerLimits.default.port,
+                    remoteForwardPort: 28_542
+                ),
+                hostID: hostID
+            )
+        )
+
+        model.requestPluginUpdate(hostID: hostID)
+        let update = try XCTUnwrap(model.presentedPluginUpdate)
+        XCTAssertNil(
+            update.sshConfigSnippet,
+            "a current block is not rewritten — the update is a plugin action then"
+        )
+    }
+
     /// Every artifact the pane hands the user must name the SAME remote port —
     /// this Mac's allocation (#215). One that names a different port than
     /// another is a tunnel to nothing, and it fails open, i.e. silently.
@@ -1870,18 +1953,27 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     }
 
     @MainActor
-    func testTheSheetPreviewIsTheEXACTTextThatWillBeWritten() async {
+    func testTheSheetPreviewIsTheEXACTTextThatWillBeWritten() async throws {
         // Preview-then-consent, like the ssh-config insert: what the user
         // approved and what lands in their file must be one string, or the
         // preview is decoration.
         let fileSystem = StubRCFileSystem(state: ClaudeShellRCState())
         let model = shellSetupModel(fileSystem: fileSystem)
-        let preview = model.shellSetupPreview
-        XCTAssertEqual(preview, ClaudeShellRCSetup.snippet(for: .zsh))
+        let preview = try XCTUnwrap(model.shellSetupPreview)
 
         await model.applyShellSetup()
         let written = String(decoding: fileSystem.state.data ?? Data(), as: UTF8.self)
-        XCTAssertTrue(written.contains(try XCTUnwrap(preview)))
+        // EQUALITY on the bytes the writer received, against the preview the
+        // user approved — not `contains`, and not a second call to the same
+        // generator. The earlier version compared the preview to
+        // `snippet(for: .zsh)` and then asserted the write merely CONTAINED
+        // it, which is true of any superset and could not fail (review finding
+        // n1).
+        XCTAssertEqual(
+            written,
+            ClaudeShellRCSetup.apply(to: "", snippet: preview),
+            "what lands in the file is what the sheet showed, byte for byte"
+        )
     }
 
     @MainActor

@@ -165,12 +165,24 @@ final class ClaudeShellRCSetupTests: XCTestCase {
     }
 
     func testRemovingLeavesEverythingElseExactlyAsItWas() throws {
+        // EQUALITY, not `contains`. The weaker assertion hid a growing gap:
+        // `apply` inserts a blank separator line and `remove` did not take it
+        // back, so apply→remove left an extra newline every cycle (review
+        // finding m1).
         let existing = "export EDITOR=vim\nalias ll='ls -la'\n"
         let applied = try XCTUnwrap(ClaudeShellRCSetup.apply(to: existing, snippet: snippet(.zsh)))
         let removed = try XCTUnwrap(ClaudeShellRCSetup.remove(from: applied))
-        XCTAssertFalse(ClaudeShellRCSetup.containsBlock(removed))
-        XCTAssertTrue(removed.contains("export EDITOR=vim"))
-        XCTAssertTrue(removed.contains("alias ll='ls -la'"))
+        XCTAssertEqual(removed, existing, "apply then remove is a byte-for-byte round trip")
+    }
+
+    func testApplyRemoveRoundTripsRepeatedlyWithoutGrowingTheFile() throws {
+        var text = "export EDITOR=vim\nalias ll='ls -la'\n"
+        let original = text
+        for _ in 0..<5 {
+            text = try XCTUnwrap(ClaudeShellRCSetup.apply(to: text, snippet: snippet(.zsh)))
+            text = try XCTUnwrap(ClaudeShellRCSetup.remove(from: text))
+        }
+        XCTAssertEqual(text, original)
     }
 
     func testRemovingFromAFileWithNoBlockChangesNothing() {
@@ -221,6 +233,68 @@ final class ClaudeShellRCSetupTests: XCTestCase {
         XCTAssertFalse(ClaudeShellRCSetup.containsBlock(damaged))
         XCTAssertNil(ClaudeShellRCSetup.apply(to: damaged, snippet: snippet(.zsh)))
         XCTAssertNil(ClaudeShellRCSetup.remove(from: damaged))
+    }
+
+    func testADanglingBeginBeforeACompletePairIsDamagedNotSpanned() throws {
+        // The content-losing shape review finding M1 named: taking the FIRST
+        // begin and the first end AFTER it spans the user's own lines and
+        // deletes them. Reachable by hand-edit — delete an end marker, then
+        // re-paste the README block to "fix" it.
+        let damaged = [
+            ClaudeShellRCSetup.markerBegin,
+            "export EDITOR=vim",
+            ClaudeShellRCSetup.markerBegin,
+            "old body",
+            ClaudeShellRCSetup.markerEnd,
+        ].joined(separator: "\n")
+        XCTAssertTrue(ClaudeShellRCSetup.hasDamagedBlock(damaged))
+        XCTAssertNil(
+            ClaudeShellRCSetup.apply(to: damaged, snippet: snippet(.zsh)),
+            "`export EDITOR=vim` sits between the two begins and must not be deleted"
+        )
+        XCTAssertNil(ClaudeShellRCSetup.remove(from: damaged))
+    }
+
+    func testAnEndMarkerWithNoBeginIsAlsoDamaged() throws {
+        let stray = "export EDITOR=vim\n\(ClaudeShellRCSetup.markerEnd)\n"
+        XCTAssertTrue(ClaudeShellRCSetup.hasDamagedBlock(stray))
+        XCTAssertNil(ClaudeShellRCSetup.apply(to: stray, snippet: snippet(.zsh)))
+    }
+
+    func testTWOCompleteBlocksCollapseToOne() throws {
+        // The README block pasted twice by hand. Replacing only the first left
+        // the second forever, which is the duplicate the idempotency claim
+        // exists to prevent (review finding m2).
+        let doubled = snippet(.zsh) + "\nexport EDITOR=vim\n" + snippet(.zsh) + "\n"
+        let result = try XCTUnwrap(ClaudeShellRCSetup.apply(to: doubled, snippet: snippet(.zsh)))
+        XCTAssertEqual(
+            result.components(separatedBy: ClaudeShellRCSetup.markerBegin).count - 1, 1,
+            "one block afterwards, not two"
+        )
+        XCTAssertTrue(result.contains("export EDITOR=vim"), "and the user's line survives")
+    }
+
+    func testTwoCompleteBlocksAreBothRemoved() throws {
+        let doubled = snippet(.zsh) + "\nexport EDITOR=vim\n" + snippet(.zsh) + "\n"
+        let removed = try XCTUnwrap(ClaudeShellRCSetup.remove(from: doubled))
+        XCTAssertFalse(ClaudeShellRCSetup.containsBlock(removed))
+        XCTAssertTrue(removed.contains("export EDITOR=vim"))
+    }
+
+    func testACRLFFileKeepsCRLFThroughTheSplice() throws {
+        // Splicing LF into a CRLF file leaves it mixed, which the user sees in
+        // their editor (review finding m3). Asserted on BYTES.
+        let crlf = "export EDITOR=vim\r\n"
+            + ClaudeShellRCSetup.markerBegin + "\r\n"
+            + "old body\r\n"
+            + ClaudeShellRCSetup.markerEnd + "\r\n"
+        let result = try XCTUnwrap(ClaudeShellRCSetup.apply(to: crlf, snippet: snippet(.zsh)))
+        XCTAssertFalse(
+            result.replacingOccurrences(of: "\r\n", with: "").contains("\n"),
+            "no bare LF may survive in a CRLF file: \(Array(result.utf8.prefix(80)))"
+        )
+        XCTAssertTrue(result.contains("export EDITOR=vim\r\n"))
+        XCTAssertFalse(result.contains("old body"))
     }
 
     func testTheWriterRefusesAFileWhoseMarkersDoNotPair() throws {
@@ -314,6 +388,112 @@ final class ClaudeShellRCSetupTests: XCTestCase {
         try writer.remove()
         fileSystem.state.data = fileSystem.written?.data
         XCTAssertEqual(writer.isApplied(), false)
+    }
+
+    func testAnEXISTINGButUNREADABLEFileIsRefusedRatherThanTreatedAsEmpty() {
+        // `~/.zshrc` mode 000, or root-owned. Mapping that to "" made a
+        // confirmed setup overwrite it with snippet-only bytes — total content
+        // loss, silently, with the row then reporting "Set up" (review finding
+        // M2).
+        let fileSystem = StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true, data: nil, permissions: nil
+        ))
+        let writer = ClaudeShellRCWriter(fileSystem: fileSystem)
+        XCTAssertThrowsError(try writer.apply(shell: .zsh)) { error in
+            XCTAssertEqual(error as? ClaudeShellRCError, .unreadable)
+        }
+        XCTAssertNil(fileSystem.written, "nothing may be written over a file we cannot read")
+        XCTAssertNil(writer.isApplied(), "and the row must say unknown, not `not set up`")
+    }
+
+    func testADamagedFileReportsUnknownRatherThanApplied() {
+        let damaged = ClaudeShellRCSetup.markerBegin + "\nstranded\n"
+        let fileSystem = StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true, data: Data(damaged.utf8), permissions: 0o644
+        ))
+        XCTAssertNil(
+            ClaudeShellRCWriter(fileSystem: fileSystem).isApplied(),
+            "offering Remove for a block the writer will refuse to touch is a dead button"
+        )
+    }
+
+    // MARK: - The LIVE filesystem, against a real tree
+
+    /// Every symlink test above uses a stub state, so the live `readState` —
+    /// the code that decides what those states ARE — had no coverage at all
+    /// (review finding M3). This one builds a real temp tree.
+    func testTheLiveReaderSeesASymlinkedINTERMEDIATEDirectory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lvx-rc-\(UUID().uuidString)")
+        let real = root.appendingPathComponent("dotfiles/config", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: real.appendingPathComponent("fish/conf.d", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // `~/.config` → `~/dotfiles/config`, the standard dotfiles layout.
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: home.appendingPathComponent(".config", isDirectory: true), withDestinationURL: real
+        )
+
+        let relative = ClaudeShellRCSetup.relativeRCPath(for: .fish) { _ in false }
+        XCTAssertTrue(
+            LiveClaudeShellRCFileSystem.anyComponentIsSymlink(
+                under: home, relativePath: relative
+            ),
+            "a symlinked ~/.config is a link on the way to the fish file"
+        )
+
+        let state = try LiveClaudeShellRCFileSystem(
+            relativePath: relative, homeDirectoryURL: home
+        ).readState()
+        XCTAssertTrue(state.directoryIsSymlink)
+        XCTAssertThrowsError(
+            try ClaudeShellRCWriter(
+                fileSystem: LiveClaudeShellRCFileSystem(
+                    relativePath: relative, homeDirectoryURL: home
+                )
+            ).apply(shell: .fish)
+        ) { error in
+            XCTAssertEqual(error as? ClaudeShellRCError, .isSymlink)
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: real.appendingPathComponent("fish/conf.d/localvoxtral.fish").path
+            ),
+            "nothing may be planted inside the dotfiles repo"
+        )
+    }
+
+    func testTheLiveReaderWritesAndReadsBackAThoroughlyORDINARYTree() throws {
+        // The other side: with no symlink anywhere, the real writer works and
+        // round-trips, so the refusal above is about symlinks and not about
+        // the live path being broken.
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lvx-rc-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try Data("export EDITOR=vim\n".utf8)
+            .write(to: home.appendingPathComponent(".zshrc"))
+
+        let writer = ClaudeShellRCWriter(
+            fileSystem: LiveClaudeShellRCFileSystem(relativePath: ".zshrc", homeDirectoryURL: home)
+        )
+        XCTAssertEqual(writer.isApplied(), false)
+        try writer.apply(shell: .zsh)
+        XCTAssertEqual(writer.isApplied(), true)
+        let written = try String(
+            contentsOf: home.appendingPathComponent(".zshrc"), encoding: .utf8
+        )
+        XCTAssertTrue(written.hasPrefix("export EDITOR=vim\n"))
+        try writer.remove()
+        XCTAssertEqual(
+            try String(contentsOf: home.appendingPathComponent(".zshrc"), encoding: .utf8),
+            "export EDITOR=vim\n"
+        )
     }
 
     func testNonUTF8ContentIsRefusedRatherThanOverwritten() {

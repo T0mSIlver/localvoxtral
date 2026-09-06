@@ -118,15 +118,31 @@ public enum ClaudeShellRCSetup {
 
     /// Is our block already in this text?
     public static func containsBlock(_ existing: String) -> Bool {
-        if case .present = locateBlock(in: existing.components(separatedBy: "\n")) {
-            return true
-        }
+        if case .present = locateBlock(in: splitLines(existing)) { return true }
         return false
     }
 
     /// Does this text carry an unpaired begin marker?
     public static func hasDamagedBlock(_ existing: String) -> Bool {
-        locateBlock(in: existing.components(separatedBy: "\n")) == .damaged
+        locateBlock(in: splitLines(existing)) == .damaged
+    }
+
+    /// Lines, plus the terminator the file actually uses.
+    ///
+    /// A CRLF file spliced with LF comes back mixed (review finding m3), and
+    /// "mostly CRLF with one LF region" is a file we damaged in a way the user
+    /// will notice in their editor. The whole file is never normalized either —
+    /// that would be the same crime in the other direction.
+    static func lineTerminator(of text: String) -> String {
+        text.contains("\r\n") ? "\r\n" : "\n"
+    }
+
+    /// Split on LF and strip a trailing CR, so a CRLF file's lines compare and
+    /// rejoin like any other.
+    static func splitLines(_ text: String) -> [String] {
+        text.components(separatedBy: "\n").map { line in
+            line.hasSuffix("\r") ? String(line.dropLast()) : line
+        }
     }
 
     /// Insert or REPLACE the block, leaving everything else byte for byte.
@@ -137,63 +153,108 @@ public enum ClaudeShellRCSetup {
     /// - Returns: nil when the file's markers do not pair — the caller must
     ///   refuse rather than write.
     public static func apply(to existing: String, snippet: String) -> String? {
-        let lines = existing.components(separatedBy: "\n")
+        let terminator = lineTerminator(of: existing)
+        let lines = splitLines(existing)
         switch locateBlock(in: lines) {
         case .damaged:
             return nil
         case .absent:
             var prefix = existing
-            if !prefix.isEmpty, !prefix.hasSuffix("\n") { prefix += "\n" }
-            if !prefix.isEmpty, !prefix.hasSuffix("\n\n") { prefix += "\n" }
-            return prefix + snippet + "\n"
-        case .present(let range):
-            var result = Array(lines[..<range.lowerBound])
-            result.append(contentsOf: snippet.components(separatedBy: "\n"))
-            result.append(contentsOf: lines[(range.upperBound + 1)...])
-            return result.joined(separator: "\n")
+            if !prefix.isEmpty, !prefix.hasSuffix(terminator) { prefix += terminator }
+            if !prefix.isEmpty, !prefix.hasSuffix(terminator + terminator) {
+                prefix += terminator
+            }
+            let body = snippet.components(separatedBy: "\n").joined(separator: terminator)
+            return prefix + body + terminator
+        case .present(let ranges):
+            // Replace the FIRST block in place and drop the rest, so a file
+            // that was hand-duplicated converges to one.
+            var result: [String] = []
+            var cursor = 0
+            for (offset, range) in ranges.enumerated() {
+                result.append(contentsOf: lines[cursor..<range.lowerBound])
+                if offset == 0 {
+                    result.append(contentsOf: snippet.components(separatedBy: "\n"))
+                }
+                cursor = range.upperBound + 1
+            }
+            result.append(contentsOf: lines[cursor...])
+            return result.joined(separator: terminator)
         }
     }
 
     /// Remove the block, leaving everything else untouched.
     /// - Returns: nil for the same unpaired-marker case as `apply`.
     public static func remove(from existing: String) -> String? {
-        let lines = existing.components(separatedBy: "\n")
+        let terminator = lineTerminator(of: existing)
+        let lines = splitLines(existing)
         switch locateBlock(in: lines) {
         case .damaged:
             return nil
         case .absent:
             return existing
-        case .present(let range):
-            var result = Array(lines[..<range.lowerBound])
-            result.append(contentsOf: lines[(range.upperBound + 1)...])
-            return result.joined(separator: "\n")
+        case .present(let ranges):
+            var result: [String] = []
+            var cursor = 0
+            for range in ranges {
+                var start = range.lowerBound
+                // Take back the blank line `apply` inserted as a separator, so
+                // apply-then-remove is byte-identical to the original rather
+                // than leaving a growing gap behind (review finding m1). Only
+                // ONE, and only when it is a blank line we would have added.
+                if start > cursor, lines[start - 1].isEmpty { start -= 1 }
+                result.append(contentsOf: lines[cursor..<start])
+                cursor = range.upperBound + 1
+            }
+            result.append(contentsOf: lines[cursor...])
+            return result.joined(separator: terminator)
         }
     }
 
-    /// The block's line range, end index INCLUSIVE of the end marker; or
-    /// `.damaged` when a begin marker has no end after it.
+    /// Every complete block, in order; or `.damaged` when the markers do not
+    /// nest and pair the way we wrote them.
     ///
-    /// `.damaged` is not fussiness. Appending past a dangling begin marker
-    /// leaves the file with two begins and one end, and the NEXT apply would
-    /// then replace everything between the first begin and that single end —
-    /// swallowing whatever the user wrote in between. Refusing to touch a file
-    /// whose markers do not pair is the only answer that cannot lose their
-    /// content.
+    /// `.damaged` is not fussiness, and it took two review rounds to get its
+    /// definition right. A begin with NO end lets an append leave two begins
+    /// and one end, and the next apply then replaces everything between the
+    /// first begin and that single end. A begin followed by ANOTHER begin
+    /// before any end is the same wound already open: taking the first begin
+    /// and the first end after it spans the user's lines in between and
+    /// deletes them (review finding M1). Both are hand-edit shapes — delete an
+    /// end marker, re-paste the README block to "fix" it — and refusing to
+    /// touch such a file is the only answer that cannot lose content.
+    ///
+    /// SEVERAL complete pairs are not damage but they are not one block
+    /// either: `apply` replaces the first and would leave the rest forever,
+    /// which is the duplicate the idempotency claim exists to prevent. All of
+    /// them are replaced (review finding m2).
     static func locateBlock(in lines: [String]) -> BlockLocation {
-        guard let begin = lines.firstIndex(where: { isMarker($0, markerBegin) }) else {
-            return .absent
+        var ranges: [ClosedRange<Int>] = []
+        var openedAt: Int?
+        for (index, line) in lines.enumerated() {
+            if isMarker(line, markerBegin) {
+                guard openedAt == nil else { return .damaged }
+                openedAt = index
+                continue
+            }
+            if isMarker(line, markerEnd) {
+                guard let begin = openedAt else {
+                    // An end with no begin: also not a shape we wrote.
+                    return .damaged
+                }
+                ranges.append(begin...index)
+                openedAt = nil
+            }
         }
-        guard let end = lines[begin...].firstIndex(where: { isMarker($0, markerEnd) }) else {
-            return .damaged
-        }
-        return .present(begin...end)
+        if openedAt != nil { return .damaged }
+        return ranges.isEmpty ? .absent : .present(ranges)
     }
 
     public enum BlockLocation: Equatable {
         case absent
-        case present(ClosedRange<Int>)
-        /// A begin marker with no end after it — a hand-edit we will not
-        /// write past.
+        /// One or more complete blocks, in file order.
+        case present([ClosedRange<Int>])
+        /// Markers that do not pair — a hand-edit we will not write past.
         case damaged
     }
 
@@ -251,6 +312,10 @@ public enum ClaudeShellRCError: Error, Equatable {
     case isSymlink
     case invalidEncoding
     case notConfigured
+    /// The file EXISTS and could not be read. Never treated as empty: doing so
+    /// made a confirmed setup overwrite an unreadable `~/.zshrc` with
+    /// snippet-only bytes — total content loss, silently (review finding M2).
+    case unreadable
     /// A begin marker with no end. Writing past it would let the NEXT apply
     /// swallow whatever the user put in between.
     case markersDoNotPair
@@ -271,6 +336,9 @@ public struct ClaudeShellRCWriter: Sendable {
         guard let data = state.data, let text = String(data: data, encoding: .utf8) else {
             return state.fileExists ? nil : false
         }
+        // Damaged markers are not "applied": the writer will refuse, and the
+        // row must not offer Remove as though there were a clean block.
+        if ClaudeShellRCSetup.hasDamagedBlock(text) { return nil }
         return ClaudeShellRCSetup.containsBlock(text)
     }
 
@@ -303,6 +371,12 @@ public struct ClaudeShellRCWriter: Sendable {
                     throw ClaudeShellRCError.invalidEncoding
                 }
                 existing = decoded
+            } else if state.fileExists {
+                // A file we can see but not read is NOT an empty file. The ssh
+                // config reader beside this one propagates its read error; this
+                // one used `try?` and mapped mode-000 to "", which turned
+                // "confirm setup" into "delete my ~/.zshrc".
+                throw ClaudeShellRCError.unreadable
             } else {
                 existing = ""
             }

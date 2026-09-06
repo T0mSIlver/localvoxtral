@@ -989,11 +989,11 @@ public final class ClaudeIntegrationSettingsModel {
         // service means "cannot tell", and cannot-tell must regenerate: the
         // cost of a redundant idempotent rewrite is nothing, and the cost of
         // assuming a stale block is current is a silently dead host.
-        let alreadyForwards =
+        let alreadyCurrent =
             registry?.host(id: hostID).flatMap { host in
-                enrollmentService.sshConfigForwardsPort(remoteForwardPort, hostID: host.id)
+                enrollmentService.sshConfigBlockIsCurrent(port: remoteForwardPort, hostID: host.id)
             } ?? false
-        let snippet: String? = alreadyForwards ? nil : registry?.host(id: hostID).map { host in
+        let snippet: String? = alreadyCurrent ? nil : registry?.host(id: hostID).map { host in
             ClaudeRemoteEnrollmentService.sshConfigSnippet(
                 host: host,
                 sshHostAlias: alias ?? Self.unknownAliasPlaceholder,

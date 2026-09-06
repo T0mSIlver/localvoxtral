@@ -127,19 +127,36 @@ struct LiveClaudeShellRCFileSystem: ClaudeShellRCFileSystem {
     /// - Parameter relativePath: from `ClaudeShellRCSetup.relativeRCPath`, so
     ///   the shell rule and the file I/O cannot disagree about which file this
     ///   is.
+    private let homeURL: URL
+    private let relativePath: String
+
     init(
         relativePath: String,
         homeDirectoryURL: URL = FileManager.default.homeDirectoryForCurrentUser
     ) {
+        homeURL = homeDirectoryURL
+        self.relativePath = relativePath
         fileURL = homeDirectoryURL.appendingPathComponent(relativePath, isDirectory: false)
         directoryURL = fileURL.deletingLastPathComponent()
     }
 
     func readState() throws -> ClaudeShellRCState {
-        let directoryMetadata = ClaudeSocketGuard.metadata(ofPath: directoryURL.path)
         let fileMetadata = ClaudeSocketGuard.metadata(ofPath: fileURL.path)
+        // EVERY component from home down, not just the immediate parent. For
+        // fish the file is `~/.config/fish/conf.d/localvoxtral.fish`, and the
+        // standard dotfiles layout symlinks `~/.config` itself — checking only
+        // `conf.d` walked straight through it and planted the file in the
+        // user's repo (review finding M3). For zsh and bash the parent IS home,
+        // which is why that half of the old check was vacuous.
+        let intermediateIsSymlink = Self.anyComponentIsSymlink(
+            under: homeURL, relativePath: relativePath
+        )
         let data: Data?
-        if fileMetadata != nil, fileMetadata?.isSymlink != true {
+        if fileMetadata != nil, fileMetadata?.isSymlink != true, !intermediateIsSymlink {
+            // NOT `try?`: a file that exists and cannot be read must reach the
+            // writer as "unreadable", never as an empty file (review finding
+            // M2). `readState` reports it as existing with no data, and the
+            // writer turns that into a refusal.
             data = try? Data(contentsOf: fileURL)
         } else {
             data = nil
@@ -153,11 +170,33 @@ struct LiveClaudeShellRCFileSystem: ClaudeShellRCFileSystem {
         return ClaudeShellRCState(
             fileExists: fileMetadata != nil,
             fileIsSymlink: fileMetadata?.isSymlink == true,
-            directoryExists: directoryMetadata?.isDirectory == true,
-            directoryIsSymlink: directoryMetadata?.isSymlink == true,
+            directoryExists: ClaudeSocketGuard.metadata(ofPath: directoryURL.path)?
+                .isDirectory == true,
+            directoryIsSymlink: intermediateIsSymlink,
             data: data,
             permissions: permissions
         )
+    }
+
+    /// Is any directory between `home` and the file a symlink?
+    ///
+    /// Pure over the two arguments and `lstat`, so the fish layout is testable
+    /// against a real temp tree.
+    static func anyComponentIsSymlink(under home: URL, relativePath: String) -> Bool {
+        var current = home
+        let components = relativePath.split(separator: "/").map(String.init)
+        // The leaf is the file itself; its own symlink-ness is reported
+        // separately so the writer can name that case.
+        for component in components.dropLast() {
+            current = current.appendingPathComponent(component, isDirectory: true)
+            guard let metadata = ClaudeSocketGuard.metadata(ofPath: current.path) else {
+                // Not created yet — nothing to follow, and `createDirectory`
+                // will make it under a path we just proved link-free.
+                continue
+            }
+            if metadata.isSymlink { return true }
+        }
+        return false
     }
 
     func createDirectory(permissions: UInt16) throws {
