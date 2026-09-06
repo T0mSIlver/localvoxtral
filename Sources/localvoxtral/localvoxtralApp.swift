@@ -464,6 +464,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         enrolledHosts: hosts
                     )
                 },
+                proxyJumpShape: { destination in
+                    await sshDestinationCanonicalizer.proxyJumpShape(for: destination)
+                },
                 speculativeHosts: { [weak self] in
                     self?.claudeRemoteHosts?.hosts() ?? []
                 },

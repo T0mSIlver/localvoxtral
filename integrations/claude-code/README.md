@@ -142,8 +142,12 @@ It deliberately does **not** join in three cases:
 
 * **through a jump host** (`ssh -J`, `ProxyJump`, or a `ProxyCommand` in your
   `~/.ssh/config`): your Mac's socket goes to the jump host, while the machine
-  you land on sees the jump host's port. They are two different connections and
-  the app will not pretend otherwise;
+  you land on sees the jump host's port. They are two different connections,
+  and only the jump host knows which is which — a fact it cannot tell you
+  without root there. The app says so exactly ("this connection goes through a
+  jump host") rather than guessing. If you dictate into such a session,
+  [herdr](https://herdr.dev) is the arm that works: it binds the pane rather
+  than the connection, through the jump host or not;
 * **inside tmux, screen or zellij**: a multiplexer server keeps the
   `$SSH_CONNECTION` of the connection that STARTED it, so a session in a pane
   can report a connection that belongs to a different window of yours.

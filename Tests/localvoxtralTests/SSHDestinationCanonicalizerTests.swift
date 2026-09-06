@@ -185,6 +185,63 @@ final class SSHDestinationCanonicalizerTests: XCTestCase {
         )
         XCTAssertEqual(runner.calls.withLock { $0.count }, 4)
     }
+    // MARK: - ProxyJump, as a shape
+
+    /// `ssh -G` is the only place the app can learn that a destination is
+    /// routed through a jump host: `ProxyJump` lives in `~/.ssh/config` and is
+    /// invisible in the ssh client's argv. Getting this wrong costs an
+    /// abstention that blames the wrong thing — which is what the field saw
+    /// (2026-09-06).
+    func testProxyJumpIsParsedAsAShapeAndNeverAsAHostName() {
+        let cases: [(String, SSHProxyJumpShape)] = [
+            ("", .none),
+            ("none", .none),
+            ("None", .none),
+            ("dell1", .singleHop),
+            ("user@dell1:2222", .singleHop),
+            ("  dell1  ", .singleHop),
+            ("a,b", .chain),
+            ("a,b,c", .chain),
+        ]
+        for (value, expected) in cases {
+            XCTAssertEqual(
+                SSHProxyJumpShape(configuredValue: value), expected, "proxyjump \(value)"
+            )
+        }
+    }
+
+    func testTheParserCarriesTheProxyJumpShapeOffRealSSHGOutput() throws {
+        // Verbatim `ssh -G` lines: the key is lowercase and the value is the
+        // rest of the line, exactly as OpenSSH prints it (measured against
+        // OpenSSH 9.x, 2026-09-06: `ssh -G -o ProxyJump=dell1 host` prints
+        // `proxyjump dell1`; an unset ProxyJump prints NO line at all).
+        let direct = try XCTUnwrap(SSHDestinationCanonicalizer.parse("""
+        hostname 192.168.1.98
+        port 22
+        user dev
+        """))
+        XCTAssertEqual(direct.proxyJump, .none, "no line means no jump host")
+
+        let jumped = try XCTUnwrap(SSHDestinationCanonicalizer.parse("""
+        hostname 192.168.1.98
+        port 22
+        user dev
+        proxyjump dell1
+        """))
+        XCTAssertEqual(jumped.proxyJump, .singleHop)
+
+        let chained = try XCTUnwrap(SSHDestinationCanonicalizer.parse("""
+        hostname 192.168.1.98
+        port 22
+        proxyjump a,b
+        """))
+        XCTAssertEqual(chained.proxyJump, .chain)
+
+        // And it changes NOTHING about identity matching, which is what the
+        // enrolled-host fallback compares.
+        XCTAssertTrue(direct.matches(jumped))
+    }
+
 }
 
 #endif
