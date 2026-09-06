@@ -669,6 +669,27 @@ there is not.
     wrong costs a non-join with a named cause (`no live session reports this
     terminal's tty`), never a mis-join.
 
+    The setup step is IN THE APP, and follows the ssh-config insert's shape
+    exactly: preview the literal text, write only on explicit consent,
+    idempotent by marker (`ClaudeShellRCSetup`), removable, never silent. Three
+    login shells get a block written for them — zsh, bash, fish — chosen by
+    `dscl`'s `UserShell` with `$SHELL` as a FALLBACK only (a GUI launch
+    inherits `$SHELL` from launchd, which is stale after a `chsh`); anything
+    else is told to paste, because guessing at a shell's syntax is how a setup
+    step corrupts a startup file. The writer REFUSES a symlinked rc file — the
+    case a dotfiles user actually hits, since an atomic rename replaces the
+    link with a regular file and silently detaches their repo. It preserves an
+    existing file's mode and creates a new one at 0600. The `SendEnv` half
+    rides the enrollment block, and reaches an ALREADY-enrolled host through
+    the plugin-update path, which regenerates that block.
+
+    The Settings row reports TWO facts because they fail for different reasons
+    and only the user can fix the first: the block is in the rc file (read
+    from disk), and a session has actually arrived carrying the value
+    (`remoteLocalTTY` on a live remote session). A block written five seconds
+    ago proves nothing until a NEW ssh session starts, and the second sentence
+    is what says so.
+
     **What IS a hazard, and the reason rules 6 and 7 exist: the tty NAME is
     recycled and the registry entry is not.** macOS hands out pty minors
     first-free (XNU `bsd/kern/tty_ptmx.c`: `ptmx_clone` scans for the first

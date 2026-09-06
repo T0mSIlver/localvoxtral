@@ -112,6 +112,204 @@ struct LiveClaudeRemoteSSHConfigFileSystem: ClaudeRemoteSSHConfigFileSystem {
     }
 }
 
+/// The user's shell rc file, with the same discipline as the ssh-config
+/// writer: `lstat` so a symlink is seen as one, `O_NOFOLLOW` on the temp file,
+/// and an atomic rename.
+///
+/// Deliberately NOT shared with that writer despite the shape: `~/.ssh` has
+/// trust rules of its own (owner and group-write checks that OpenSSH itself
+/// enforces), and an rc file has none of them. Merging the two would mean one
+/// of the two sets of rules applying where it does not belong.
+struct LiveClaudeShellRCFileSystem: ClaudeShellRCFileSystem {
+    private let fileURL: URL
+    private let directoryURL: URL
+
+    /// - Parameter relativePath: from `ClaudeShellRCSetup.relativeRCPath`, so
+    ///   the shell rule and the file I/O cannot disagree about which file this
+    ///   is.
+    private let homeURL: URL
+    private let relativePath: String
+
+    init(
+        relativePath: String,
+        homeDirectoryURL: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) {
+        homeURL = homeDirectoryURL
+        self.relativePath = relativePath
+        fileURL = homeDirectoryURL.appendingPathComponent(relativePath, isDirectory: false)
+        directoryURL = fileURL.deletingLastPathComponent()
+    }
+
+    func readState() throws -> ClaudeShellRCState {
+        let fileMetadata = ClaudeSocketGuard.metadata(ofPath: fileURL.path)
+        // EVERY component from home down, not just the immediate parent. For
+        // fish the file is `~/.config/fish/conf.d/localvoxtral.fish`, and the
+        // standard dotfiles layout symlinks `~/.config` itself — checking only
+        // `conf.d` walked straight through it and planted the file in the
+        // user's repo (review finding M3). For zsh and bash the parent IS home,
+        // which is why that half of the old check was vacuous.
+        let intermediateIsSymlink = Self.anyComponentIsSymlink(
+            under: homeURL, relativePath: relativePath
+        )
+        let data: Data?
+        if fileMetadata != nil, fileMetadata?.isSymlink != true, !intermediateIsSymlink {
+            // NOT `try?`: a file that exists and cannot be read must reach the
+            // writer as "unreadable", never as an empty file (review finding
+            // M2). `readState` reports it as existing with no data, and the
+            // writer turns that into a refusal.
+            data = try? Data(contentsOf: fileURL)
+        } else {
+            data = nil
+        }
+        var permissions: UInt16?
+        if data != nil,
+           let number = try? FileManager.default
+               .attributesOfItem(atPath: fileURL.path)[.posixPermissions] as? NSNumber {
+            permissions = number.uint16Value
+        }
+        return ClaudeShellRCState(
+            fileExists: fileMetadata != nil,
+            fileIsSymlink: fileMetadata?.isSymlink == true,
+            directoryExists: ClaudeSocketGuard.metadata(ofPath: directoryURL.path)?
+                .isDirectory == true,
+            directoryIsSymlink: intermediateIsSymlink,
+            data: data,
+            permissions: permissions
+        )
+    }
+
+    /// Is any directory between `home` and the file a symlink?
+    ///
+    /// Pure over the two arguments and `lstat`, so the fish layout is testable
+    /// against a real temp tree.
+    static func anyComponentIsSymlink(under home: URL, relativePath: String) -> Bool {
+        var current = home
+        let components = relativePath.split(separator: "/").map(String.init)
+        // The leaf is the file itself; its own symlink-ness is reported
+        // separately so the writer can name that case.
+        for component in components.dropLast() {
+            current = current.appendingPathComponent(component, isDirectory: true)
+            guard let metadata = ClaudeSocketGuard.metadata(ofPath: current.path) else {
+                // Not created yet — nothing to follow, and `createDirectory`
+                // will make it under a path we just proved link-free.
+                continue
+            }
+            if metadata.isSymlink { return true }
+        }
+        return false
+    }
+
+    func createDirectory(permissions: UInt16) throws {
+        try FileManager.default.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: NSNumber(value: permissions)]
+        )
+    }
+
+    func atomicWrite(_ data: Data, permissions: UInt16) throws {
+        let temporaryURL = directoryURL.appendingPathComponent(
+            ".localvoxtral-rc.\(UUID().uuidString)", isDirectory: false
+        )
+        let descriptor = temporaryURL.path.withCString {
+            open($0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        }
+        guard descriptor >= 0 else { throw ShellRCPOSIXFailure(operation: "open", code: errno) }
+        var renamed = false
+        defer {
+            close(descriptor)
+            if !renamed { _ = temporaryURL.path.withCString { unlink($0) } }
+        }
+        guard fchmod(descriptor, mode_t(permissions)) == 0 else {
+            throw ShellRCPOSIXFailure(operation: "fchmod", code: errno)
+        }
+        try data.withUnsafeBytes { raw in
+            guard let baseAddress = raw.baseAddress else { return }
+            var offset = 0
+            while offset < raw.count {
+                let written = Darwin.write(
+                    descriptor, baseAddress.advanced(by: offset), raw.count - offset
+                )
+                if written == -1, errno == EINTR { continue }
+                guard written > 0 else {
+                    throw ShellRCPOSIXFailure(operation: "write", code: errno)
+                }
+                offset += written
+            }
+        }
+        guard fsync(descriptor) == 0 else {
+            throw ShellRCPOSIXFailure(operation: "fsync", code: errno)
+        }
+        let moved = temporaryURL.path.withCString { source in
+            fileURL.path.withCString { destination in rename(source, destination) }
+        }
+        guard moved == 0 else { throw ShellRCPOSIXFailure(operation: "rename", code: errno) }
+        renamed = true
+    }
+
+    private struct ShellRCPOSIXFailure: Error, CustomStringConvertible {
+        var operation: String
+        var code: Int32
+        var description: String { "\(operation) failed with errno \(code)" }
+    }
+}
+
+/// The user's login shell, from Directory Services — the same answer
+/// `chsh -s` writes and `Terminal.app` obeys.
+///
+/// `$SHELL` is the fallback and NOT the primary: this app runs from a GUI
+/// launch, where `$SHELL` is inherited from launchd and can be stale after a
+/// `chsh`. `dscl` is asked first and the environment only backs it up.
+enum ClaudeLoginShellReader {
+    /// - Parameter runDSCL: returns `dscl`'s RAW output, which `parse` reads.
+    ///   Splitting it that way keeps the parser testable without a process and
+    ///   keeps the process out of every test that forgets to inject.
+    static func loginShellPath(
+        runDSCL: () -> String? = liveDSCL,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String? {
+        if let output = runDSCL(), let path = parse(output) {
+            return path
+        }
+        let fallback = environment["SHELL"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return fallback?.hasPrefix("/") == true ? fallback : nil
+    }
+
+    /// `dscl . -read /Users/<me> UserShell` prints `UserShell: /bin/zsh`.
+    /// Returns that line verbatim; `parse` turns it into a path.
+    static func liveDSCL() -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/dscl")
+        process.arguments = [".", "-read", "/Users/\(NSUserName())", "UserShell"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = Pipe()
+        guard (try? process.run()) != nil else { return nil }
+        // `POSIXPipeRead`, never `FileHandle.availableData` (banned repo-wide,
+        // PR #60). `dscl`'s answer is one short line, so one chunk is the whole
+        // of it; a longer answer is not one this parser would accept anyway.
+        let data = POSIXPipeRead.nextChunk(
+            fromDescriptor: output.fileHandleForReading.fileDescriptor
+        )
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// `UserShell: /bin/zsh` → `/bin/zsh`.
+    static func parse(_ output: String) -> String? {
+        for line in output.split(whereSeparator: \.isNewline) {
+            let fields = line.split(separator: ":", maxSplits: 1)
+            guard fields.count == 2,
+                  fields[0].trimmingCharacters(in: .whitespaces) == "UserShell"
+            else { continue }
+            let value = fields[1].trimmingCharacters(in: .whitespaces)
+            return value.hasPrefix("/") ? value : nil
+        }
+        return nil
+    }
+}
+
 extension ClaudeRemoteEnrollmentService {
     static func live() -> ClaudeRemoteEnrollmentService {
         ClaudeRemoteEnrollmentService(

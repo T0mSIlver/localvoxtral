@@ -673,7 +673,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             enrollmentService: ClaudeRemoteEnrollmentService.live(),
             remoteForwardPort: remoteForwardPort,
             cmuxPasswords: CmuxSocketPasswordStore(),
-            forwards: forwards
+            forwards: forwards,
+            // Read once per pane refresh, not cached at launch: a `chsh` while
+            // the app runs would otherwise write the wrong shell's syntax.
+            loginShell: {
+                ClaudeShellKind.detect(
+                    loginShellPath: ClaudeLoginShellReader.loginShellPath()
+                )
+            },
+            shellRCWriter: { shell in
+                ClaudeShellRCWriter(
+                    fileSystem: LiveClaudeShellRCFileSystem(
+                        relativePath: ClaudeShellRCSetup.relativeRCPath(for: shell) { relative in
+                            FileManager.default.fileExists(
+                                atPath: FileManager.default.homeDirectoryForCurrentUser
+                                    .appendingPathComponent(relative).path
+                            )
+                        }
+                    )
+                )
+            },
+            // The app-visible half of the setup step: has a session actually
+            // arrived carrying the value. Reads the registry, never a file.
+            liveLocalTTYReport: { [weak claudeSessionRegistry] in
+                guard let sessions = claudeSessionRegistry?.liveSessions(),
+                      !sessions.isEmpty
+                else { return .noSessions }
+                let remote = sessions.filter { $0.remoteSessionEnvironment != nil }
+                guard !remote.isEmpty else { return .noSessions }
+                return remote.contains { $0.remoteSessionEnvironment?.localTTY != nil }
+                    ? .seen : .notSeen
+            }
         )
 
         // Route launch through the same model that owns the Settings status.

@@ -129,7 +129,18 @@ There are two ways it can identify your window, tried in that order.
 
 ### 1. The tty echo (works through jump hosts and `ControlMaster`)
 
-Add one line to your shell's rc file **on your Mac**:
+**The app can do this for you.** Settings → the Claude Code pane → *Remote
+Claude Code over SSH* → **Set Up…** next to "Terminal setup for plain SSH". It
+shows the exact block first, writes it only after you say yes, is idempotent
+(a second run replaces rather than duplicates), and has a **Remove**. The row
+also reports whether a remote session has actually arrived carrying the value,
+which is the half you cannot see from the file.
+
+It refuses to write through a symlink: if your `~/.zshrc` is a link into a
+dotfiles repo, an atomic write would replace the link and detach your setup, so
+it tells you and you paste the block yourself.
+
+The manual alternative — add this to your shell's rc file **on your Mac**:
 
 ```sh
 if [ -z "${LC_LVX_TTY:-}" ] && [ -z "${SSH_TTY:-}" ]; then
@@ -235,8 +246,9 @@ Neither joins in these cases:
 If nothing joins and you expect it to, check the remote plugin version: this
 needs **1.7.0 or newer** on the remote host (`claude plugin update
 localvoxtral-remote`). `localvoxtral --probe-surface` names the exact reason.
-After adding the rc line you must open a NEW ssh session — the environment is
-fixed when the session starts.
+After adding the rc block — by hand or from Settings — you must open a NEW
+terminal window and a NEW ssh session: the environment is fixed when a session
+starts.
 
 ### What was removed (September 2026)
 

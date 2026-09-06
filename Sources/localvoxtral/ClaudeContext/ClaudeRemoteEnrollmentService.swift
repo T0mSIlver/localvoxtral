@@ -616,13 +616,22 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         }
     }
 
-    /// Does this host's marked block already forward `port`?
+    /// Is this host's marked block CURRENT — everything this build would write
+    /// into it, not merely the port?
     ///
     /// `nil` means "cannot tell" — no filesystem seam, or a config we refuse to
     /// read. Callers must treat nil as "not known to match" and regenerate,
     /// never as "fine": assuming a block is current is exactly how a plugin
     /// gets a port this Mac does not forward.
-    public func sshConfigForwardsPort(_ port: UInt16, hostID: String) -> Bool? {
+    ///
+    /// It checked the `RemoteForward` port ALONE until 2026-09-06, and that was
+    /// a silent no-op on the one migration that mattered: a host enrolled
+    /// before `SendEnv LC_LVX_TTY` existed already forwards the right port, so
+    /// `Update Plugin…` skipped the local rewrite entirely and the plain-ssh
+    /// join never got the line the release notes told the user that button
+    /// would add (review finding B1). Anything the block must contain belongs
+    /// in this list, or shipping it reaches only new enrollments.
+    public func sshConfigBlockIsCurrent(port: UInt16, hostID: String) -> Bool? {
         guard let sshConfigFileSystem else { return nil }
         guard let state = try? sshConfigFileSystem.readState(),
               let data = state.configData,
@@ -636,12 +645,19 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         }), let endIndex = lines[beginIndex...].firstIndex(where: {
             $0.trimmingCharacters(in: .whitespaces) == end
         }) else { return false }
-        return lines[beginIndex...endIndex].contains { line in
+        let block = lines[beginIndex...endIndex]
+        let forwardsPort = block.contains { line in
             let fields = line.trimmingCharacters(in: .whitespaces)
                 .split(separator: " ", omittingEmptySubsequences: true)
             guard fields.count >= 2, fields[0] == "RemoteForward" else { return false }
             return fields[1] == "\(port)"
         }
+        // An exact line: `# SendEnv LC_LVX_TTY` contains the substring too, and
+        // a commented-out directive sends nothing.
+        let sendsLocalTTY = block.contains {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines) == "SendEnv LC_LVX_TTY"
+        }
+        return forwardsPort && sendsLocalTTY
     }
 
     // MARK: - Execution (opt-in only)

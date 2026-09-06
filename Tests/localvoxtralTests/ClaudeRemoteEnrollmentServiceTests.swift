@@ -266,7 +266,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertLessThan(statusIndex, warningIndex)
     }
 
-    // MARK: SSH config forward state (review finding 1)
+    // MARK: SSH config block currency (review finding 1, extended 2026-09-06)
 
     func testForwardStateReportsWhetherThisHostsBlockAlreadyCarriesThePort() throws {
         let legacy = ClaudeRemoteEnrollmentService.applySSHConfigSnippet(
@@ -276,13 +276,13 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             state: ClaudeRemoteRemoteConfigStateFixture.state(configText: legacy)
         )
         let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: filesystem)
-        XCTAssertEqual(service.sshConfigForwardsPort(8473, hostID: host.id), true)
+        XCTAssertEqual(service.sshConfigBlockIsCurrent(port: 8473, hostID: host.id), true)
         XCTAssertEqual(
-            service.sshConfigForwardsPort(28511, hostID: host.id), false,
+            service.sshConfigBlockIsCurrent(port: 28511, hostID: host.id), false,
             "a legacy block does not forward the allocated port, and saying it does is the split brain"
         )
         XCTAssertEqual(
-            service.sshConfigForwardsPort(28511, hostID: "hunknown"), false,
+            service.sshConfigBlockIsCurrent(port: 28511, hostID: "hunknown"), false,
             "no block at all is not a match either"
         )
     }
@@ -290,7 +290,48 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     func testForwardStateIsUnknownWithoutAFilesystemSeamAndNeverGuessesTrue() throws {
         // nil means cannot tell. Callers must regenerate on nil; a `true` here
         // would let the plugin be pointed at a port nothing forwards.
-        XCTAssertNil(ClaudeRemoteEnrollmentService().sshConfigForwardsPort(28511, hostID: host.id))
+        XCTAssertNil(ClaudeRemoteEnrollmentService().sshConfigBlockIsCurrent(port: 28511, hostID: host.id))
+    }
+
+    func testABlockWithTheRIGHTPortButNoSendEnvIsNOTCurrent() throws {
+        // The owner's exact shape, and the one this check exists for now: a
+        // host enrolled before `SendEnv LC_LVX_TTY` existed already forwards
+        // the right port, so a port-only currency check reported "current" and
+        // `Update Plugin…` skipped the local rewrite — the line the release
+        // notes promise that button adds never arrived (review finding B1).
+        let stale = [
+            ClaudeRemoteEnrollmentService.blockBegin(hostID: host.id),
+            "Host sandbox-vpn",
+            "    RemoteForward 28542 127.0.0.1:8473",
+            "    ExitOnForwardFailure no",
+            ClaudeRemoteEnrollmentService.blockEnd(hostID: host.id),
+        ].joined(separator: "\n")
+        let filesystem = MemorySSHConfigFileSystem(
+            state: ClaudeRemoteRemoteConfigStateFixture.state(configText: stale)
+        )
+        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: filesystem)
+        XCTAssertEqual(
+            service.sshConfigBlockIsCurrent(port: 28_542, hostID: host.id), false,
+            "the port matches and the block is still stale"
+        )
+    }
+
+    func testACOMMENTEDSendEnvDoesNotMakeABlockCurrent() throws {
+        // `# SendEnv LC_LVX_TTY` contains the substring and sends nothing.
+        let commented = [
+            ClaudeRemoteEnrollmentService.blockBegin(hostID: host.id),
+            "Host sandbox-vpn",
+            "    RemoteForward 28542 127.0.0.1:8473",
+            "    # SendEnv LC_LVX_TTY",
+            ClaudeRemoteEnrollmentService.blockEnd(hostID: host.id),
+        ].joined(separator: "\n")
+        let filesystem = MemorySSHConfigFileSystem(
+            state: ClaudeRemoteRemoteConfigStateFixture.state(configText: commented)
+        )
+        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: filesystem)
+        XCTAssertEqual(
+            service.sshConfigBlockIsCurrent(port: 28_542, hostID: host.id), false
+        )
     }
 
     func testForwardStateIgnoresARemoteForwardOutsideThisHostsBlock() throws {
@@ -301,7 +342,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             state: ClaudeRemoteRemoteConfigStateFixture.state(configText: foreign)
         )
         let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: filesystem)
-        XCTAssertEqual(service.sshConfigForwardsPort(28511, hostID: host.id), false)
+        XCTAssertEqual(service.sshConfigBlockIsCurrent(port: 28511, hostID: host.id), false)
     }
 
     func testTheUpdatePathMigratesAnAlreadyEnrolledHostToTheAllocatedPort() throws {
@@ -1439,4 +1480,55 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         }
         XCTAssertEqual(calls.withLock { $0 }, 0)
     }
+    // MARK: - SendEnv on an ALREADY-enrolled host
+
+    /// The owner's host was enrolled before `SendEnv LC_LVX_TTY` existed, so
+    /// the line has to reach it through the path that REGENERATES the block —
+    /// the plugin update — and not only through a fresh enrollment.
+    func testRegeneratedSnippetCarriesSendEnvAndReplacesAnOlderBlock() {
+        let host = ClaudeRemoteHost(
+            id: "h1a2b3c4",
+            label: "sandbox",
+            sshHostAlias: "sandbox-vpn",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            lastSeenAt: nil,
+            revokedAt: nil
+        )
+        let snippet = ClaudeRemoteEnrollmentService.sshConfigSnippet(
+            host: host, sshHostAlias: "sandbox-vpn", listenerPort: 8473, remoteForwardPort: 28_542
+        )
+        // An exact LINE, not a substring: `# SendEnv LC_LVX_TTY` contains the
+        // substring too, so a `contains` check passes for a commented-out
+        // directive — caught by this test's own red run, 2026-09-06.
+        XCTAssertTrue(
+            snippet.components(separatedBy: "\n")
+                .contains { $0.trimmingCharacters(in: .whitespaces) == "SendEnv LC_LVX_TTY" },
+            "the block must carry the directive, not a comment about it: \(snippet)"
+        )
+
+        // A block written before the line existed — the owner's shape.
+        let stale = [
+            ClaudeRemoteEnrollmentService.blockBegin(hostID: host.id),
+            "Host sandbox-vpn",
+            "    RemoteForward 28542 127.0.0.1:8473",
+            "    ExitOnForwardFailure no",
+            ClaudeRemoteEnrollmentService.blockEnd(hostID: host.id),
+        ].joined(separator: "\n")
+        let updated = ClaudeRemoteEnrollmentService.applySSHConfigSnippet(
+            to: "Host other\n    User someone\n\n" + stale,
+            snippet: snippet,
+            hostID: host.id
+        )
+        XCTAssertTrue(
+            updated.components(separatedBy: "\n")
+                .contains { $0.trimmingCharacters(in: .whitespaces) == "SendEnv LC_LVX_TTY" },
+            "the update must add the directive"
+        )
+        XCTAssertEqual(
+            updated.components(separatedBy: "Host sandbox-vpn").count - 1, 1,
+            "replaced, never duplicated — OpenSSH is first-match-wins"
+        )
+        XCTAssertTrue(updated.contains("Host other"), "other stanzas untouched")
+    }
+
 }

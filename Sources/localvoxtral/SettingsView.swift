@@ -1015,6 +1015,7 @@ private struct ClaudeCmuxPasswordSettingsRow: View {
 /// Enrolled SSH hosts, and the preview-first setup for each.
 private struct ClaudeRemoteHostsSettingsRow: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
+    @State private var isShowingShellSetup = false
 
     var body: some View {
         SettingsFieldRow(title: "Remote Claude Code over SSH") {
@@ -1034,6 +1035,7 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                     }
                     enrollmentForm
                     listenerStatus
+                    shellSetup
                     herdrPanelSetup
                 }
 
@@ -1064,6 +1066,42 @@ private struct ClaudeRemoteHostsSettingsRow: View {
         .onAppear {
             model.refreshHosts()
             model.refreshListenerStatus()
+            model.refreshShellSetupStatus()
+        }
+        .sheet(isPresented: $isShowingShellSetup) {
+            ClaudeShellSetupSheet(model: model) { isShowingShellSetup = false }
+        }
+    }
+
+    /// The plain-ssh join's one setup step: two short sentences and a button,
+    /// inside the group that already exists. Nothing is written until the sheet
+    /// has shown the exact text and been confirmed.
+    @ViewBuilder
+    private var shellSetup: some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Terminal setup for plain SSH")
+                    .font(.callout)
+                    .accessibilityIdentifier("claude.remote.shellSetup.title")
+                Text(model.shellSetupStatus.rcSentence)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("claude.remote.shellSetup.rcStatus")
+                Text(model.shellSetupStatus.crossingSentence)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("claude.remote.shellSetup.crossingStatus")
+            }
+            Spacer()
+            if model.shellSetupStatus.rc == .applied {
+                Button("Remove") { Task { await model.removeShellSetup() } }
+                    .controlSize(.small)
+                    .accessibilityIdentifier("claude.remote.shellSetup.remove")
+            }
+            Button("Set Up…") { isShowingShellSetup = true }
+                .controlSize(.small)
+                .disabled(model.shellSetupPreview == nil)
+                .accessibilityIdentifier("claude.remote.shellSetup.setUp")
         }
     }
 
@@ -1760,5 +1798,56 @@ private struct SettingsInlineMessage: View {
             .font(.caption)
             .foregroundStyle(color)
             .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// Preview, then consent, then write — the same shape as the enrollment
+/// sheet's ssh-config insert, for the same reason: this edits a file the user
+/// owns and did not ask us to touch.
+private struct ClaudeShellSetupSheet: View {
+    @Bindable var model: ClaudeIntegrationSettingsModel
+    var dismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Terminal setup for plain SSH")
+                .font(.headline)
+                .accessibilityIdentifier("claude.shellSetupSheet.title")
+            Text(
+                "This adds one block to \(model.shellSetupStatus.relativeRCPath ?? "your shell startup file"), so a Claude Code session over plain SSH can be matched to the window you are dictating into. Open a new terminal window afterwards — the value is fixed when a session starts."
+            )
+            .font(.callout)
+            .fixedSize(horizontal: false, vertical: true)
+
+            if let preview = model.shellSetupPreview {
+                ScrollView {
+                    Text(preview)
+                        .font(.system(.caption2, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("claude.shellSetupSheet.preview")
+                }
+                .frame(maxHeight: 180)
+                .padding(6)
+                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .accessibilityIdentifier("claude.shellSetupSheet.cancel")
+                Button("Add to My Shell") {
+                    Task {
+                        await model.applyShellSetup()
+                        dismiss()
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(model.shellSetupPreview == nil)
+                .accessibilityIdentifier("claude.shellSetupSheet.apply")
+            }
+        }
+        .padding(16)
+        .frame(width: 460)
     }
 }
