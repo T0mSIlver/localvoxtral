@@ -199,6 +199,17 @@ public struct ClaudePluginInstallService: Sendable {
         return result
     }
 
+    /// stdout of `claude plugin list` for the Integrations pane's status row.
+    ///
+    /// Never throws for a listing that ran and failed: that is `.unknown`,
+    /// not an action the pane reports. Throws only when the runner itself
+    /// fails (timeout, output cap) — the same failures `perform` surfaces.
+    public func pluginListOutput() throws -> String? {
+        guard claudeExecutableURL != nil else { return nil }
+        let result = try runner(Invocation(arguments: ["plugin", "list"]))
+        return result.succeeded ? result.message : nil
+    }
+
     /// The user-facing install: register the marketplace, then install. Both
     /// steps are required and the first is idempotent in Claude Code.
     public func installPlugin() throws {

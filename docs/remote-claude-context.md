@@ -34,7 +34,7 @@ What it can never do:
 Two different switches, worth keeping apart:
 
 - **The toggle** (**Use Claude Code project files as polish context**, Settings
-  › Context) gates what a dictation ATTACHES. With it off, nothing a host sent
+  › Integrations) gates what a dictation ATTACHES. With it off, nothing a host sent
   reaches the polisher. It does not close the port: while any enrolled host is
   unrevoked, the listener keeps accepting and caching valid hook records.
 - **Revocation** is what stops a host. Its requests are then rejected rather
@@ -71,7 +71,7 @@ the app's own listener — and only the remote end varies.
 
 `SendEnv LC_LVX_TTY` carries this terminal's tty into the remote session, so a
 plain `ssh` Claude Code session can be joined to the window you are actually
-dictating into. Set `LC_LVX_TTY` from your shell first — Settings › Context ›
+dictating into. Set `LC_LVX_TTY` from your shell first — Settings › Integrations ›
 Remote hosts › "Terminal setup for plain SSH" writes the one line for you, or
 see the integration README — and with it unset this sends nothing and costs
 nothing. `LC_` is the point: `sshd`'s stock `AcceptEnv LANG LC_*` already lets
@@ -293,7 +293,7 @@ does not by itself prove that the something was localvoxtral: if our own bind
 failed, whatever holds the listener port (8473) here receives the forwarded
 request instead,
 and its rejection looks identical from the host. Check the listener line in
-Settings › Context › Remote hosts as well — the in-app check does exactly this,
+Settings › Integrations › Remote hosts as well — the in-app check does exactly this,
 which is why it can tell you which of the two you are looking at.
 
 `000` — or a curl connection error — means nothing answered: usually just that
@@ -347,7 +347,7 @@ On this Mac:
 
 1. Remove the `# BEGIN localvoxtral claude context (<host-id>)` … `# END …`
    block from `~/.ssh/config`.
-2. In Settings › Context › Remote hosts, **Revoke** (or **Remove**) the host.
+2. In Settings › Integrations › Remote hosts, **Revoke** (or **Remove**) the host.
 
 Step 2 is the one that matters. Revocation is what actually stops the host: the
 token dies on this Mac, not on the remote. With no active hosts left, the

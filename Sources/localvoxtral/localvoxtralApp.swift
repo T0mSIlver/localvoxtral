@@ -712,6 +712,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard !remote.isEmpty else { return .noSessions }
                 return remote.contains { $0.remoteSessionEnvironment?.localTTY != nil }
                     ? .seen : .notSeen
+            },
+            // Off the main actor: `claude plugin list` shells out.
+            fetchPluginListOutput: {
+                await Task.detached(priority: .userInitiated) {
+                    try? ClaudePluginInstallService.live().pluginListOutput()
+                }.value
+            },
+            bundledPluginVersion: ClaudePluginAssets.marketplaceVersion(),
+            statuslineService: {
+                ClaudeStatuslineInstallService(
+                    fileSystem: LiveClaudeStatuslineFileSystem()
+                )
+            },
+            // The same publisher the plugin shim execs, in `--statusline`
+            // mode. Nil when the binary is not where this build put it — the
+            // row then reports it cannot install rather than writing a path
+            // that prints nothing.
+            statuslineHookCommand: {
+                guard let publisher = ClaudePluginAssets.publisherURL() else { return nil }
+                return "\(publisher.path) --statusline"
+            },
+            opencodeService: {
+                OpencodePluginInstallService(
+                    bundledPluginData: {
+                        guard let url = ClaudePluginAssets.opencodePluginURL() else { return nil }
+                        return try? Data(contentsOf: url)
+                    },
+                    fileSystem: LiveOpencodePluginFileSystem()
+                )
+            },
+            // A binary on this Mac: a synchronous PATH scan, decided at model
+            // construction so the row paints on first paint.
+            herdrBinaryAvailable: {
+                ClaudeHerdrAvailability.isHerdrBinaryAvailable()
+            },
+            // Any live session — local or remote — reporting a herdr pane.
+            // Reads the registry, never the screen. Refreshes with the pane.
+            herdrPresenceReport: { [weak claudeSessionRegistry] in
+                guard let sessions = claudeSessionRegistry?.liveSessions() else { return false }
+                return sessions.contains { snapshot in
+                    snapshot.process?.herdrPaneID != nil
+                        || snapshot.remoteSessionEnvironment?.herdrPaneID != nil
+                }
             }
         )
 

@@ -78,8 +78,8 @@ default:
    and choose a socket password. (The default `cmuxOnly` mode admits only
    processes cmux itself started, which localvoxtral is not. `allowAll` is
    developer-only and is not required.)
-2. In localvoxtral, enable **Settings → Context → Claude Code → "Join
-   Claude Code sessions in cmux"** and enter the same password in **cmux
+ 2. In localvoxtral, enable **Settings → Integrations → Claude Code → "Join
+    Claude Code sessions in cmux"** and enter the same password in **cmux
    socket password**. It is stored in your Keychain and sent only to cmux's
    local socket.
 
@@ -111,7 +111,7 @@ out on the session's next hook.
 Supported browsers are **Google Chrome, Brave, and Safari**, and each one needs
 its OWN Automation grant the first time it is used (System Settings → Privacy &
 Security → Automation → localvoxtral). The grant is requested only while
-**Settings → Context → "Use Claude Code project files as polish context"** is on
+**Settings → Integrations → "Use Claude Code project files as polish context"** is on
 — that is the only feature a browser join can serve. Firefox is not supported:
 it exposes no AppleScript surface for the focused tab's URL. A browser join
 never reads anything on your screen (a web page is not a terminal grid, and
@@ -129,7 +129,7 @@ There are two ways it can identify your window, tried in that order.
 
 ### 1. The tty echo (works through jump hosts and `ControlMaster`)
 
-**The app can do this for you.** Settings → Context → Remote hosts → *Remote
+**The app can do this for you.** Settings → Integrations → Remote hosts → *Remote
 Claude Code over SSH* → **Set Up…** next to "Terminal setup for plain SSH". It
 shows the exact block first, writes it only after you say yes, is idempotent
 (a second run replaces rather than duplicates), and has a **Remove**. The row
@@ -291,7 +291,7 @@ nothing to migrate, and you can drop
 
 ## Install / update / uninstall
 
-The app way: **Settings → Context → Claude Code → "Claude Code plugin
+The app way: **Settings → Integrations → Claude Code → "Claude Code plugin
 (this Mac)" → Install or Update**. That button registers the bundled marketplace
 and installs the plugin, then reports one short line. Nothing is installed until
 you press it — the app never touches your Claude Code setup at launch or on a
@@ -299,10 +299,13 @@ timer.
 
 Everything it does goes through Claude Code's own plugin CLI.
 
-**`~/.claude/settings.json` is never read, written, wrapped, or merged by
-localvoxtral.** That file is yours and Claude Code owns its schema; the CLI is
-the supported interface, and a third-party app editing it is how setups get
-corrupted during an unrelated upgrade.
+**Plugin install and uninstall never touch `~/.claude/settings.json`.**
+That file is yours and Claude Code owns its schema; the CLI is the
+supported interface, and a third-party app editing it is how setups get
+corrupted during an unrelated upgrade. The one exception lives one row down
+in Settings: the opt-in status-line installer writes exactly the
+`statusLine` key — previewed first, only on your press, and never over a
+status line you wrote yourself (see above).
 
 If you prefer to run the commands yourself, these are the same ones the button
 runs. The only difference is `--config publisher_path=…`: the app knows where
@@ -357,9 +360,19 @@ claude plugin list
 One glance at Claude Code's bottom bar answers the question this plugin
 otherwise leaves silent: *is localvoxtral connected to this session?*
 
-Claude Code has no plugin-owned status line, and localvoxtral never writes
-`~/.claude/settings.json` — so this is wired by **you**, once, in your own
-settings. The publisher binary has a `--statusline` mode that reads the
+The app way: **Settings → Integrations → Claude Code → Status line →
+Set Up…**. It shows the exact JSON first and writes it only after you say
+yes — one `statusLine` entry pointing at this app's bundled
+`localvoxtral-claude-hook --statusline`. Everything else in
+`~/.claude/settings.json` round-trips untouched, and **Remove** takes the
+entry back out (deleting the file when nothing else is in it). If you
+already have your own status line, the row says so and offers no Install
+button: the app never overwrites a script you wrote — combine the two with
+the recipe below instead.
+
+If you prefer to wire it by hand, this is the same entry the button writes.
+Claude Code has no plugin-owned status line, so it lives in your own
+settings either way. The publisher binary has a `--statusline` mode that reads the
 status-line payload Claude Code pipes in, asks the app's socket whether THIS
 session (by `session_id`) is live in its registry, and prints exactly one of
 three fixed lines:
@@ -522,7 +535,7 @@ exchange (any HTTP status, even a 401) clears the backoff for everything else.
 
 ## Set it up
 
-In **Settings → Context → Remote hosts → "Remote Claude Code over SSH"**,
+In **Settings → Integrations → Remote hosts → "Remote Claude Code over SSH"**,
 type a name and your SSH host alias and press **Enroll…**. The app issues a
 token, binds the listener immediately — there is no relaunch step — and opens a
 sheet with four numbered steps: add the SSH config, install on the host, show

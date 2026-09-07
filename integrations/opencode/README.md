@@ -10,7 +10,17 @@ Everything is local: the plugin publishes bounded records over localvoxtral's
 private, peer-authenticated UNIX socket on this machine. No network, no
 telemetry, and when the app is not running every write silently does nothing.
 
-## Install (manual, two steps)
+## Install
+
+In localvoxtral: **Settings → Integrations → Other agents → opencode →
+Install**. The app copies its bundled `localvoxtral.js` into opencode's
+global plugin directory and lists it in `~/.config/opencode/tui.json` —
+creating that file when it is absent, preserving everything else in it when
+it is present. **Remove** reverses both. Nothing is written until you press
+the button, and a `tui.json` whose `plugin` entry has an unexpected shape is
+left untouched rather than reshaped.
+
+If you prefer to do it by hand — the same two steps the button performs:
 
 1. Copy `localvoxtral.js` into opencode's global plugin directory:
 

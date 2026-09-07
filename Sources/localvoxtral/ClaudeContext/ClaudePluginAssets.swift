@@ -96,13 +96,36 @@ public enum ClaudePluginAssets {
             .deletingLastPathComponent() // repo root
     }
 
+    /// This app's marketplace version (`metadata.version`), for the
+    /// Integrations pane's "Update available" comparison. Nil when the
+    /// manifest cannot be read — the row then reports installed-or-not
+    /// without a version comparison, never a guessed one.
+    public static func marketplaceVersion(marketplaceURL: URL? = ClaudePluginAssets.marketplaceURL()) -> String? {
+        guard let marketplaceURL else { return nil }
+        let manifest = marketplaceURL
+            .appendingPathComponent(".claude-plugin")
+            .appendingPathComponent("marketplace.json")
+        guard
+            let data = try? Data(contentsOf: manifest),
+            let json = try? JSONSerialization.jsonObject(with: data),
+            let manifestDict = json as? [String: Any],
+            let metadata = manifestDict["metadata"] as? [String: Any],
+            let version = metadata["version"] as? String,
+            !version.isEmpty
+        else { return nil }
+        return version
+    }
+
     // MARK: opencode
 
     /// Repo-relative home of the opencode integration: one dependency-free JS
-    /// file plus its README. Not packaged into the app bundle yet — install
-    /// is manual (copy + a tui.json line) until the Settings row lands.
+    /// file plus its README. The Settings row installs from it.
     public static let opencodeRepositoryRelativePath = "integrations/opencode"
     public static let opencodePluginFileName = "localvoxtral.js"
+    /// File name inside `Contents/Resources`, as copied there by
+    /// `package_app.sh`. A flat file rather than a directory because the
+    /// opencode integration is one JS file, not a marketplace tree.
+    public static let opencodePackagedFileName = "opencode-localvoxtral.js"
 
     /// Repo checkout location of the opencode plugin file, for the contract
     /// tests that pin it to the Swift wire constants.
@@ -112,6 +135,39 @@ public enum ClaudePluginAssets {
         repositoryRootURL(sourceFile: sourceFile)?
             .appendingPathComponent(opencodeRepositoryRelativePath)
             .appendingPathComponent(opencodePluginFileName)
+    }
+
+    /// The bundled opencode plugin file: the app's own resource bundle first
+    /// (`Bundle.localvoxtralResources`, where SwiftPM resources land when
+    /// packaged), the app bundle's `Contents/Resources` second (where
+    /// `package_app.sh` copies it today), the repo checkout last (dev/test).
+    ///
+    /// `resourcesURL`/`bundleResourcesURL` are plain URLs rather than
+    /// `Bundle`s so the packaged arms are testable against fixture
+    /// directories, like the marketplace lookup above. A nil
+    /// `bundleResourcesURL` resolves `Bundle.localvoxtralResources` inside
+    /// the body: that accessor is internal, so it cannot be a default
+    /// argument of a public function.
+    public static func opencodePluginURL(
+        resourcesURL: URL? = Bundle.main.resourceURL,
+        bundleResourcesURL: URL? = nil
+    ) -> URL? {
+        let bundleResourcesURL = bundleResourcesURL ?? Bundle.localvoxtralResources.resourceURL
+        if let bundleResourcesURL {
+            let candidate = bundleResourcesURL.appendingPathComponent(opencodePackagedFileName)
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        }
+        if let resourcesURL {
+            let candidate = resourcesURL.appendingPathComponent(opencodePackagedFileName)
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        }
+        if
+            let development = developmentOpencodePluginURL(),
+            FileManager.default.fileExists(atPath: development.path)
+        {
+            return development
+        }
+        return nil
     }
 
     /// Name of the publisher binary, as packaged and as the shim looks for it.

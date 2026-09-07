@@ -284,6 +284,17 @@ for REMOTE_SHIM in post.sh statusline.sh; do
   fi
 done
 
+# The opencode plugin is one file, copied flat from the repo — same rule as the
+# marketplace above: it is NOT a SwiftPM resource, so there is exactly one
+# source of truth. ClaudePluginAssets.opencodePluginURL resolves this location
+# (then the repo checkout for dev builds) for the Settings installer.
+OPENCODE_PLUGIN_SOURCE="$ROOT_DIR/integrations/opencode/localvoxtral.js"
+if [[ ! -f "$OPENCODE_PLUGIN_SOURCE" ]]; then
+  echo "opencode plugin missing at $OPENCODE_PLUGIN_SOURCE"
+  exit 1
+fi
+cp "$OPENCODE_PLUGIN_SOURCE" "$APP_DIR/Contents/Resources/opencode-localvoxtral.js"
+
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"

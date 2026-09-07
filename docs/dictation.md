@@ -55,9 +55,10 @@ Open **Settings** from the menu bar popover:
   per-mode keyboard shortcuts) and the menu-bar output mode
 - **Text Processing** — exact-match replacements, plus the LLM Polishing
   switch, the agent prompt profile, and spoken clipboard paste
-- **Context** — what the polisher may see (repo vocabulary, terminal screen,
-  Claude Code project files, clipboard), plus the Claude Code plugin and
-  remote SSH hosts
+- **Integrations** — what the polisher may see (repo vocabulary, terminal
+  screen, Claude Code project files, clipboard), one row per harness with
+  in-app setup: the Claude Code plugin and status line, remote SSH hosts, the
+  opencode plugin, and herdr presence
 - **About** — version, link to the repository, and Export Diagnostics
   (writes a redacted local report to the Desktop)
 
@@ -98,11 +99,11 @@ and keeps your versions as `.backup` files alongside.
     <td width="50%"><img src="../assets/settings-text-processing.png" alt="localvoxtral text processing settings" width="100%" /></td>
   </tr>
   <tr>
-    <td width="50%" align="center"><b>Context</b></td>
+    <td width="50%" align="center"><b>Integrations</b></td>
     <td width="50%"></td>
   </tr>
   <tr>
-    <td width="50%"><img src="../assets/settings-context.png" alt="localvoxtral context settings" width="100%" /></td>
+    <td width="50%"><img src="../assets/settings-integrations.png" alt="localvoxtral integrations settings" width="100%" /></td>
     <td width="50%"></td>
   </tr>
 </table>
