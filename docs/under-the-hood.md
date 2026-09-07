@@ -45,7 +45,7 @@ caught before it ships.
 ## Bring your own server
 
 Prefer your own hardware? Switch Dictation or Polishing to **External URL**
-in **Settings → Endpoints**: any OpenAI Realtime-compatible server works for
+in **Settings → Engines**: any OpenAI Realtime-compatible server works for
 dictation, any chat-completions server for polishing.
 
 Example: Voxtral Realtime on vLLM (NVIDIA GPU) —

@@ -607,7 +607,7 @@ pick among matches deliberately.
 Everything else is denied, and **every** invocation — allowed or denied — is
 logged with a timestamp to `~/Library/Logs/localvoxtral-ui-gate.log`. The one
 thing never written there is `ax type`'s text (it is how an API key gets into
-the Endpoints pane); the log keeps the selector and `-- <redacted>`.
+the Engines pane); the log keeps the selector and `-- <redacted>`.
 
 Three refusals are load-bearing and are what the regression suite
 (`scripts/ci/test-ui-gate.sh`, in ci.yml's shell-test step) exists to hold:
