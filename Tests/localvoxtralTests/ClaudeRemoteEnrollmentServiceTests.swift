@@ -2533,20 +2533,50 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     }
 
     func testHerdrSetupReportsAbsentAndRefusesAnExistingAgentsTable() throws {
-        let absent = ClaudeRemoteEnrollmentService(runner: { _ in
-            .init(exitCode: 0, message: "LVX_HERDR_ABSENT")
+        let assertInvocation: @Sendable (ClaudeRemoteEnrollmentService.Invocation) -> Void = {
+            invocation in
+            XCTAssertEqual(
+                invocation.argv,
+                [
+                    "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
+                    "builder", "/bin/sh", "-s",
+                ]
+            )
+            XCTAssertEqual(invocation.timeout, ClaudeRemoteEnrollmentService.defaultRemoteSetupTimeout)
+            XCTAssertTrue(invocation.environment.isEmpty)
+            let script = String(decoding: invocation.standardInput, as: UTF8.self)
+            XCTAssertTrue(script.contains("command -v herdr"))
+            XCTAssertTrue(script.contains(ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet))
+            XCTAssertTrue(script.contains("herdr server reload-config"))
+            XCTAssertTrue(script.contains("LVX_HERDR_CONFIGURED"))
+        }
+        let absent = ClaudeRemoteEnrollmentService(runner: { invocation in
+            assertInvocation(invocation)
+            return .init(exitCode: 0, message: "LVX_HERDR_ABSENT")
         })
         XCTAssertEqual(try absent.setupRemoteHerdr(sshHostAlias: "builder"), .notFound)
 
-        let customized = ClaudeRemoteEnrollmentService(runner: { _ in
-            .init(exitCode: 42, message: "LVX_HERDR_CUSTOMIZED")
+        let customized = ClaudeRemoteEnrollmentService(runner: { invocation in
+            assertInvocation(invocation)
+            return .init(exitCode: 42, message: "LVX_HERDR_CUSTOMIZED")
         })
         XCTAssertEqual(try customized.setupRemoteHerdr(sshHostAlias: "builder"), .customized)
     }
 
     func testHerdrSetupRequiresTheConfiguredOutcomeFrame() throws {
-        let service = ClaudeRemoteEnrollmentService(runner: { _ in
-            .init(exitCode: 0, message: "")
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            XCTAssertEqual(
+                invocation.argv,
+                [
+                    "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
+                    "builder", "/bin/sh", "-s",
+                ]
+            )
+            XCTAssertTrue(
+                String(decoding: invocation.standardInput, as: UTF8.self)
+                    .contains("LVX_HERDR_CONFIGURED")
+            )
+            return .init(exitCode: 0, message: "")
         })
 
         XCTAssertThrowsError(try service.setupRemoteHerdr(sshHostAlias: "builder")) { error in

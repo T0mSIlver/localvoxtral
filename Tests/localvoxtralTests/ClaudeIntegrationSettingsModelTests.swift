@@ -2758,7 +2758,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let rcFS = StubRCFileSystem(state: ClaudeShellRCState(
             fileExists: true, data: Data("export EDITOR=vim\n".utf8), permissions: 0o644
         ))
-        let (model, hostID, sshFS, _) = try await enrollAndRunSetup(rcFileSystem: rcFS)
+        let (model, hostID, sshFS, recorder) = try await enrollAndRunSetup(rcFileSystem: rcFS)
 
         let run = try XCTUnwrap(model.setupRun)
         XCTAssertEqual(run.hostID, hostID)
@@ -2778,6 +2778,20 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertNil(model.alert)
         XCTAssertEqual(rcFS.writes, 1, "the shell block was written, not just reported")
         XCTAssertTrue(sshFS.configText?.contains("SendEnv LC_LVX_TTY") == true)
+        let invocationOrder = recorder.all.map { invocation in
+            let script = String(decoding: invocation.standardInput, as: UTF8.self)
+            if script.contains("LVX_PLUGIN") { return "remote plugin" }
+            if script.contains("LC_LVX_TTY") { return "environment crossing" }
+            if script.contains("LVX_HERDR") { return "remote herdr" }
+            if script.contains("SessionStart") { return "tunnel check" }
+            if script.contains("claude plugin list") { return "plugin check" }
+            return "unexpected"
+        }
+        XCTAssertEqual(
+            invocationOrder,
+            ["remote plugin", "environment crossing", "remote herdr", "tunnel check", "plugin check"],
+            "each step must finish before the next one starts"
+        )
     }
 
     @MainActor
