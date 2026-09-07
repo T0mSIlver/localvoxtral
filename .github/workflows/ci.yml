@@ -974,12 +974,21 @@ jobs:
         # builds it, and it is only ever exercised by hand.
         #
         # Kept on the Mac, matching the helper suites: it is a second full
-        # compile of the app target against a warm .build, which a cold hosted
-        # runner would pay from scratch.
+        # compile of the app target, which a cold hosted runner would pay
+        # from scratch.
+        #
+        # Its OWN scratch path, never the shared .build. The define changes
+        # what the app and test modules contain, and SwiftPM did not recompile
+        # the test objects when the define went away again: with `clean:
+        # false` the next run's first Swift step on this workspace linked the
+        # previous run's dogfood-only `DogfoodControlProtocolTests.swift.o`
+        # against a non-dogfood app module and died with undefined symbols
+        # (runs 34146743103 and 34147271131, 2026-09-07). Two caches cost disk,
+        # not correctness; one cache cost every Mac lane.
         if: steps.ci_scope.outputs.docs_only != 'true'
         env:
           LOCALVOXTRAL_DOGFOOD: "1"
-        run: swift test --filter 'Dogfood'
+        run: swift test --filter 'Dogfood' --scratch-path .build-dogfood
 
       - name: Ensure Metal toolchain
         # Xcode 26 ships the Metal compiler as a separate component, and its
