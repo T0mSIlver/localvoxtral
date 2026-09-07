@@ -84,6 +84,55 @@ public struct ClaudeEnrollmentActionAttempt: Sendable, Equatable {
     }
 }
 
+/// One consented setup attempt for one remote host.
+public struct RemoteHostSetupRun: Sendable, Equatable {
+    public enum Step: Int, CaseIterable, Sendable, Equatable, Identifiable {
+        case sshConfig
+        case shellStartup
+        case remotePlugin
+        case environmentCrossing
+        case remoteHerdr
+        case checkSetup
+
+        public var id: Int { rawValue }
+
+        public var title: String {
+            switch self {
+            case .sshConfig: return "Mac SSH config"
+            case .shellStartup: return "Mac shell startup"
+            case .remotePlugin: return "Remote plugin"
+            case .environmentCrossing: return "Terminal environment"
+            case .remoteHerdr: return "Remote herdr"
+            case .checkSetup: return "Check setup"
+            }
+        }
+    }
+
+    public enum State: Sendable, Equatable {
+        case pending
+        case running
+        case done(String)
+        case skipped(String)
+        case failed(reason: String, remedy: String)
+    }
+
+    public struct Item: Sendable, Equatable, Identifiable {
+        public var step: Step
+        public var state: State
+        public var id: Int { step.rawValue }
+    }
+
+    public var hostID: String
+    public var startedAt: Date
+    public var items: [Item]
+
+    public init(hostID: String, startedAt: Date) {
+        self.hostID = hostID
+        self.startedAt = startedAt
+        items = Step.allCases.map { Item(step: $0, state: .pending) }
+    }
+}
+
 /// What the pane can say about the plain-ssh join's one setup step.
 ///
 /// Two facts, deliberately separate, because they fail for different reasons
@@ -193,6 +242,8 @@ public final class ClaudeIntegrationSettingsModel {
         /// A forward can only be offered where we know where to ssh. The label
         /// is not a substitute for an alias (PR #197).
         public var canHoldForward: Bool = false
+        /// Last setup outcome for this host during the current app session.
+        public var setupStatusText: String?
     }
 
     /// "Last context: 2 min ago", from a clock the caller supplies.
@@ -351,9 +402,11 @@ public final class ClaudeIntegrationSettingsModel {
     public enum EnrollmentAction: Sendable, Equatable {
         case insertSSHConfig
         case runRemoteSetup
+        case setupHost
         /// Per-host, because the pane shows one row per host and the outcome
         /// has to render in the row whose button ran it.
         case updateRemotePlugin(hostID: String)
+        case updateHost(hostID: String)
         case configureHerdrPanel(hostID: String)
     }
 
@@ -406,6 +459,10 @@ public final class ClaudeIntegrationSettingsModel {
     /// nobody asked for would spawn ssh on opening a sheet.
     public private(set) var verificationChecks: [ClaudeRemoteEnrollmentService.VerificationCheck] = []
     public private(set) var isPerformingVerification = false
+    public private(set) var setupRun: RemoteHostSetupRun?
+    public private(set) var setupManualInstructions: String?
+    private var setupCancellationRequested = false
+    private var setupSummaries: [String: String] = [:]
     public var alert: DetailAlert?
 
     /// One busy flag for the sheet, so no two actions can interleave: an
@@ -826,7 +883,8 @@ public final class ClaudeIntegrationSettingsModel {
                 forwardIsFailure: forwardState?.isFailure ?? false,
                 canHoldForward: forwards != nil
                     && !host.isRevoked
-                    && host.sshHostAlias.map(ClaudeRemoteEnrollmentService.isValidHostAlias) == true
+                    && host.sshHostAlias.map(ClaudeRemoteEnrollmentService.isValidHostAlias) == true,
+                setupStatusText: setupSummaries[host.id]
             )
         }
         refreshRejectionHint()
@@ -1017,14 +1075,63 @@ public final class ClaudeIntegrationSettingsModel {
         }
     }
 
+    /// Remove reverses the Mac side of enrollment — this host's ssh-config
+    /// block, and the shell startup block only when no other host remains —
+    /// and then revokes.
+    ///
+    /// Reversal NEVER blocks the revocation: the registry entry is the off
+    /// switch, and a host whose block could not be edited (a symlinked
+    /// `~/.ssh/config`, an unwritable rc) is exactly a host the user must be
+    /// able to turn off. A failed reversal is reported in the alert with the
+    /// manual cleanup instead; the remote uninstall commands ride along, as
+    /// the sheet and docs always offered them.
     public func remove(hostID: String) async {
         guard let registry else { return }
+        let isLastHost = registry.hosts().allSatisfy { $0.id == hostID }
+        var manualNotes: [String] = []
+
+        if enrollmentService.canEditSSHConfig {
+            let service = enrollmentService
+            let attempt = await performEnrollmentAsync {
+                try service.removeSSHConfig(hostID: hostID)
+                return []
+            }
+            if let failure = attempt.failure {
+                Log.claudeContext.error(
+                    "Claude remote host removal could not rewrite ~/.ssh/config: \(failure.describedError, privacy: .public)"
+                )
+                manualNotes.append(
+                    "This host's block is still in ~/.ssh/config.\n\n"
+                        + Self.enrollmentFailureDetail(failure, action: .insertSSHConfig)
+                )
+            }
+        }
+
+        if isLastHost, let shell = loginShell(), let writer = shellRCWriter(shell) {
+            if let failure = await performAsync({ try writer.remove() }) {
+                Log.claudeContext.error(
+                    "Claude remote host removal could not rewrite the shell startup file: \(failure.describedError, privacy: .public)"
+                )
+                manualNotes.append(
+                    "The LC_LVX_TTY block is still in your shell startup file.\n\n"
+                        + failure.describedError
+                )
+            }
+        }
+
         do {
             try registry.remove(hostID: hostID)
             // The row is going away; its open update panel must not outlive it.
             if presentedPluginUpdate?.hostID == hostID { dismissPluginUpdate() }
             refreshHosts()
             reconcileListener()
+            if !manualNotes.isEmpty {
+                alert = DetailAlert(
+                    title: "Remote host removed",
+                    detail: (manualNotes + ["Remove those blocks by hand to finish the cleanup."])
+                        .joined(separator: "\n\n")
+                )
+            }
         } catch {
             presentRegistryFailure(error, verb: "remove")
         }
@@ -1050,6 +1157,8 @@ public final class ClaudeIntegrationSettingsModel {
         enrollmentStepStatuses = []
         enrollmentResultsAction = nil
         verificationChecks = []
+        setupRun = nil
+        setupManualInstructions = nil
     }
 
     /// Show one host's plugin-update commands in its row.
@@ -1341,13 +1450,29 @@ public final class ClaudeIntegrationSettingsModel {
             title: presentation.sshConfigSnippet == nil
                 ? "Update the plugin on this SSH host?"
                 : "Update ~/.ssh/config on this Mac and the plugin on this SSH host?",
-            // Both halves, verbatim, in the order they will run. The rule that
-            // one-click actions repeat their exact text does not get weaker
-            // because an action now has two parts — it gets more important.
             preview: Self.updatePreview(for: presentation),
             confirmButtonTitle: "Confirm Update"
         )
         Log.claudeContext.info("Claude remote plugin update confirmation requested")
+    }
+
+    public func requestHostUpdateRun() {
+        guard let presentation = presentedPluginUpdate,
+              presentation.canRun,
+              !isEnrollmentBusy
+        else { return }
+        setupRun = nil
+        setupManualInstructions = nil
+        enrollmentConfirmation = EnrollmentConfirmation(
+            action: .updateHost(hostID: presentation.hostID),
+            title: "Update this remote host?",
+            preview: setupPreview(
+                sshConfigSnippet: presentation.sshConfigSnippet,
+                remoteCommands: presentation.commands
+            ),
+            confirmButtonTitle: "Update Host"
+        )
+        Log.claudeContext.info("Claude remote host update confirmation requested")
     }
 
     public func requestSSHConfigInsertion() {
@@ -1387,6 +1512,29 @@ public final class ClaudeIntegrationSettingsModel {
         Log.claudeContext.info("Claude remote setup confirmation requested")
     }
 
+    public func requestHostSetup() {
+        guard let presentation = presentedPlan,
+              presentation.canRunRemoteSetup,
+              !isEnrollmentBusy,
+              !presentation.isPreview
+        else { return }
+        enrollmentStepStatuses = []
+        enrollmentResultsAction = nil
+        verificationChecks = []
+        setupRun = nil
+        setupManualInstructions = nil
+        enrollmentConfirmation = EnrollmentConfirmation(
+            action: .setupHost,
+            title: "Set up this remote host?",
+            preview: setupPreview(
+                sshConfigSnippet: presentation.plan.sshConfigSnippet,
+                remoteCommands: presentation.plan.remoteCommands
+            ),
+            confirmButtonTitle: "Run Setup"
+        )
+        Log.claudeContext.info("Claude remote host setup confirmation requested")
+    }
+
     public func requestHerdrPanelConfiguration(hostID: String) {
         guard !isPerformingEnrollmentAction,
               let host = hosts.first(where: { $0.id == hostID }),
@@ -1414,9 +1562,36 @@ public final class ClaudeIntegrationSettingsModel {
             await performPlanAction(confirmation)
         case .updateRemotePlugin:
             await performPluginUpdate(confirmation)
+        case .setupHost, .updateHost:
+            await performSetupRun(confirmation)
         case .configureHerdrPanel:
             await performHerdrPanelConfiguration(confirmation)
         }
+    }
+
+    public func cancelSetupRun() {
+        guard setupRun != nil, isPerformingEnrollmentAction else { return }
+        setupCancellationRequested = true
+    }
+
+    private func setupPreview(
+        sshConfigSnippet: String?,
+        remoteCommands: [String]
+    ) -> String {
+        var sections: [String] = []
+        if let sshConfigSnippet {
+            sections.append("Mac ~/.ssh/config:\n\(sshConfigSnippet)")
+        }
+        if let shellSetupPreview {
+            sections.append("Mac shell startup file:\n\(shellSetupPreview)")
+        }
+        sections.append("Remote host:\n" + remoteCommands.joined(separator: "\n"))
+        sections.append(
+            "Remote herdr, when installed:\n"
+                + ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet
+                + "\nherdr server reload-config"
+        )
+        return sections.joined(separator: "\n\n")
     }
 
     private func performPlanAction(_ confirmation: EnrollmentConfirmation) async {
@@ -1440,7 +1615,7 @@ public final class ClaudeIntegrationSettingsModel {
                     token: presentation.token
                 )
             }
-        case .updateRemotePlugin:
+        case .updateRemotePlugin, .setupHost, .updateHost:
             // Routed to performPluginUpdate: that action belongs to a host row,
             // has no plan and no token, and must not run against one.
             return
@@ -1484,6 +1659,251 @@ public final class ClaudeIntegrationSettingsModel {
         guard hosts.contains(where: { $0.id == hostID }) else { return }
         publish(attempt, action: confirmation.action)
         if attempt.failure == nil { herdrPanelStatus = .ok }
+    }
+
+    private func performSetupRun(_ confirmation: EnrollmentConfirmation) async {
+        let hostID: String
+        let alias: String
+        let snippet: String?
+        let token: String?
+        switch confirmation.action {
+        case .setupHost:
+            guard let presentation = presentedPlan, !presentation.isPreview else { return }
+            hostID = presentation.host.id
+            alias = presentation.sshHostAlias
+            snippet = presentation.plan.sshConfigSnippet
+            token = presentation.token
+        case .updateHost(let requestedHostID):
+            guard let presentation = presentedPluginUpdate,
+                  presentation.hostID == requestedHostID,
+                  let presentationAlias = presentation.sshHostAlias
+            else { return }
+            hostID = requestedHostID
+            alias = presentationAlias
+            snippet = presentation.sshConfigSnippet
+            token = nil
+        default:
+            return
+        }
+
+        enrollmentConfirmation = nil
+        isPerformingEnrollmentAction = true
+        setupCancellationRequested = false
+        setupManualInstructions = nil
+        setupRun = RemoteHostSetupRun(hostID: hostID, startedAt: now())
+        setupSummaries[hostID] = "Setup is running."
+        refreshHosts()
+        defer { isPerformingEnrollmentAction = false }
+
+        let service = enrollmentService
+        let port = remoteForwardPort
+
+        markSetup(.sshConfig, .running)
+        let sshAttempt = await performEnrollmentAsync {
+            if let snippet {
+                try service.insertSSHConfig(snippet: snippet, hostID: hostID)
+            }
+            return []
+        }
+        if let failure = sshAttempt.failure {
+            failSetup(
+                .sshConfig,
+                reason: "Could not update this Mac's SSH config.",
+                remedy: Self.enrollmentFailureDetail(failure, action: confirmation.action)
+            )
+            return
+        }
+        markSetup(
+            .sshConfig,
+            .done(snippet == nil ? "The SSH config block is already current." : "The SSH config block is current.")
+        )
+        guard continueSetup(hostID: hostID) else { return }
+
+        markSetup(.shellStartup, .running)
+        if let shell = loginShell(), let writer = shellRCWriter(shell) {
+            if writer.isApplied() == true {
+                markSetup(.shellStartup, .done("The shell startup block is already applied."))
+            } else {
+                let shellFailure = await performAsync { try writer.apply(shell: shell) }
+                if let shellFailure {
+                    setupManualInstructions = "Add this block to your shell startup file:\n\n"
+                        + ClaudeShellRCSetup.snippet(for: shell)
+                    markSetup(
+                        .shellStartup,
+                        .skipped("The shell startup file was left unchanged; add the shown block manually.")
+                    )
+                    Log.claudeContext.error(
+                        "Claude remote setup skipped shell startup edit: \(shellFailure.describedError, privacy: .public)"
+                    )
+                } else {
+                    markSetup(.shellStartup, .done("The shell startup block is applied."))
+                }
+            }
+        } else {
+            setupManualInstructions = loginShell().map {
+                "Add this block to your shell startup file:\n\n" + ClaudeShellRCSetup.snippet(for: $0)
+            } ?? "Export LC_LVX_TTY from your Mac terminal's shell startup file."
+            markSetup(
+                .shellStartup,
+                .skipped("This login shell is not supported for automatic setup; configure it manually.")
+            )
+        }
+        refreshShellSetupStatus()
+        guard continueSetup(hostID: hostID) else { return }
+
+        markSetup(.remotePlugin, .running)
+        let pluginAttempt = await performEnrollmentAsync {
+            let outcome = try service.setupRemotePlugin(
+                sshHostAlias: alias, token: token, remoteForwardPort: port
+            )
+            return [.init(index: 0, command: "remote plugin", message: String(describing: outcome))]
+        }
+        if let failure = pluginAttempt.failure {
+            failSetup(
+                .remotePlugin,
+                reason: "The remote plugin could not be installed or updated.",
+                remedy: Self.enrollmentFailureDetail(failure, action: confirmation.action)
+            )
+            return
+        }
+        switch pluginAttempt.steps.first?.message {
+        case "installed": markSetup(.remotePlugin, .done("The remote plugin was installed and verified."))
+        case "updated": markSetup(.remotePlugin, .done("The remote plugin was updated and verified."))
+        default: markSetup(.remotePlugin, .done("The remote plugin is already current and verified."))
+        }
+        guard continueSetup(hostID: hostID) else { return }
+
+        markSetup(.environmentCrossing, .running)
+        let environmentAttempt = await performEnrollmentAsync {
+            let outcome = try service.probeRemoteEnvironment(sshHostAlias: alias)
+            return [.init(index: 0, command: "environment probe", message: String(describing: outcome))]
+        }
+        if let failure = environmentAttempt.failure {
+            failSetup(
+                .environmentCrossing,
+                reason: "The terminal environment check could not run.",
+                remedy: Self.enrollmentFailureDetail(failure, action: confirmation.action)
+            )
+            return
+        }
+        switch environmentAttempt.steps.first?.message {
+        case "crossed":
+            markSetup(.environmentCrossing, .done("LC_LVX_TTY crossed the SSH connection."))
+        case "localSendEnvMissing":
+            failSetup(
+                .environmentCrossing,
+                reason: "This Mac is not sending LC_LVX_TTY for this SSH host.",
+                remedy: "Keep `SendEnv LC_LVX_TTY` in this host's ~/.ssh/config block."
+            )
+            return
+        default:
+            failSetup(
+                .environmentCrossing,
+                reason: "The remote SSH server did not accept LC_LVX_TTY.",
+                remedy: "Add `AcceptEnv LANG LC_*` to sshd_config on the host, then reload sshd."
+            )
+            return
+        }
+        guard continueSetup(hostID: hostID) else { return }
+
+        markSetup(.remoteHerdr, .running)
+        let herdrAttempt = await performEnrollmentAsync {
+            let outcome = try service.setupRemoteHerdr(sshHostAlias: alias)
+            return [.init(index: 0, command: "remote herdr", message: String(describing: outcome))]
+        }
+        if let failure = herdrAttempt.failure {
+            failSetup(
+                .remoteHerdr,
+                reason: "Remote herdr setup failed.",
+                remedy: Self.enrollmentFailureDetail(failure, action: .configureHerdrPanel(hostID: hostID))
+            )
+            return
+        }
+        switch herdrAttempt.steps.first?.message {
+        case "notFound":
+            markSetup(.remoteHerdr, .skipped("herdr is not installed on the remote host."))
+        case "customized":
+            setupManualInstructions = [
+                setupManualInstructions,
+                "The remote herdr agents table is customized. Add this row manually:\n\n"
+                    + ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet,
+            ].compactMap { $0 }.joined(separator: "\n\n")
+            markSetup(.remoteHerdr, .skipped("The existing herdr agents table was left unchanged."))
+        default:
+            markSetup(.remoteHerdr, .done("The remote herdr agents panel is configured."))
+            herdrPanelStatus = .ok
+        }
+        guard continueSetup(hostID: hostID) else { return }
+
+        markSetup(.checkSetup, .running)
+        let listenerWasBound = listenerIsBound
+        let checkAttempt = await performVerificationAsync {
+            try service.executeVerification(
+                sshHostAlias: alias,
+                remoteForwardPort: port,
+                listenerIsBound: listenerWasBound
+            )
+        }
+        if let failure = checkAttempt.failure {
+            failSetup(
+                .checkSetup,
+                reason: "The final setup check could not run.",
+                remedy: Self.verificationFailureDetail(failure)
+            )
+            return
+        }
+        verificationChecks = ClaudeRemoteEnrollmentService.reconciled(
+            checkAttempt.checks,
+            remoteForwardPort: port,
+            listenerIsBound: listenerIsBound
+        )
+        if let failed = verificationChecks.first(where: { !$0.passed }) {
+            failSetup(
+                .checkSetup,
+                reason: failed.summary,
+                remedy: failed.hint ?? failed.detail
+            )
+            return
+        }
+        markSetup(.checkSetup, .done("The tunnel and remote plugin checks passed."))
+        setupSummaries[hostID] = "Setup complete."
+        refreshHosts()
+        Log.claudeContext.info("Claude remote host setup completed")
+    }
+
+    private func markSetup(_ step: RemoteHostSetupRun.Step, _ state: RemoteHostSetupRun.State) {
+        guard let index = setupRun?.items.firstIndex(where: { $0.step == step }) else { return }
+        setupRun?.items[index].state = state
+    }
+
+    private func failSetup(
+        _ step: RemoteHostSetupRun.Step,
+        reason: String,
+        remedy: String
+    ) {
+        markSetup(step, .failed(reason: reason, remedy: remedy))
+        if let hostID = setupRun?.hostID {
+            setupSummaries[hostID] = "Setup stopped at \(step.title)."
+        }
+        refreshHosts()
+        alert = DetailAlert(title: step.title, detail: "\(reason)\n\n\(remedy)")
+        Log.claudeContext.error(
+            "Claude remote host setup stopped at \(step.title, privacy: .public): \(reason, privacy: .public)"
+        )
+    }
+
+    private func continueSetup(hostID: String) -> Bool {
+        guard setupCancellationRequested else { return true }
+        if var run = setupRun {
+            for index in run.items.indices where run.items[index].state == .pending {
+                run.items[index].state = .skipped("Setup was cancelled.")
+            }
+            setupRun = run
+        }
+        setupSummaries[hostID] = "Setup cancelled."
+        refreshHosts()
+        Log.claudeContext.info("Claude remote host setup cancelled")
+        return false
     }
 
     private func performPluginUpdate(_ confirmation: EnrollmentConfirmation) async {
@@ -1565,14 +1985,17 @@ public final class ClaudeIntegrationSettingsModel {
                     detail: attempt.steps.first?.message ?? ""
                 )
             ]
+        case .setupHost, .updateHost:
+            break
         }
         enrollmentResultsAction = action
     }
 
     static func failureAlertTitle(for action: EnrollmentAction) -> String {
         switch action {
-        case .insertSSHConfig, .runRemoteSetup: return "Remote Claude Code setup"
+        case .insertSSHConfig, .runRemoteSetup, .setupHost: return "Remote Claude Code setup"
         case .updateRemotePlugin: return "Remote Claude Code plugin"
+        case .updateHost: return "Remote host update"
         case .configureHerdrPanel: return "Remote herdr panel"
         }
     }

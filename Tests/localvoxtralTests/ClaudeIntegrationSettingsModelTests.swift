@@ -175,6 +175,38 @@ private final class StubForwarding: ClaudeRemoteForwarding {
     }
 }
 
+/// One scripted answer per ssh shape the six-step run can make. Dispatch is
+/// by shape — `ssh -G`, the env probe's stdin, the plugin/herdr sentinels,
+/// the two verification probes — so a step that never ran is visible as an
+/// invocation that never arrived. The env echo arrives framed with banner
+/// noise on both sides, as a real login shell's merged stdout/stderr would
+/// deliver it.
+private struct SetupFlowScript: Sendable {
+    var plugin = ClaudeRemoteEnrollmentService.RunResult(
+        exitCode: 0, message: "LVX_PLUGIN_INSTALLED"
+    )
+    var envEchoesBack = true
+    var sendEnvOutput = "hostname builder\nsendenv LANG LC_*\n"
+    var herdr = ClaudeRemoteEnrollmentService.RunResult(
+        exitCode: 0, message: "LVX_HERDR_ABSENT"
+    )
+    var tunnelMessage = "LVX_HTTP:401"
+    var pluginListMessage = "localvoxtral-remote 1.7.0\n"
+}
+
+/// Records every ssh invocation the run makes, from the nonisolated runner
+/// closure. File scope, not nested in the @MainActor test class: nested types
+/// inherit the enclosing actor's isolation, and `Synchronization.Mutex` is
+/// noncopyable and cannot be moved across it — the same reason every other
+/// Sendable stub in this file lives out here.
+private final class SetupFlowRecorder: @unchecked Sendable {
+    private let invocations = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+    func record(_ invocation: ClaudeRemoteEnrollmentService.Invocation) {
+        invocations.withLock { $0.append(invocation) }
+    }
+    var all: [ClaudeRemoteEnrollmentService.Invocation] { invocations.withLock { $0 } }
+}
+
 @MainActor
 final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     private func makeRegistry() throws -> ClaudeRemoteHostRegistry {
@@ -198,7 +230,12 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         // a test that computed the allocation would only prove the derivation
         // twice.
         remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort,
-        forwards: ClaudeRemoteForwardCoordinator? = nil
+        forwards: ClaudeRemoteForwardCoordinator? = nil,
+        loginShell: @escaping @Sendable () -> ClaudeShellKind? = { nil },
+        shellRCWriter: @escaping @Sendable (ClaudeShellKind) -> ClaudeShellRCWriter? = { _ in nil },
+        liveLocalTTYReport: @escaping @Sendable () -> ClaudeShellSetupStatus.CrossingState = {
+            .noSessions
+        }
     ) -> ClaudeIntegrationSettingsModel {
         ClaudeIntegrationSettingsModel(
             registry: registry,
@@ -238,7 +275,10 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             },
             now: now,
             remoteForwardPort: remoteForwardPort,
-            forwards: forwards
+            forwards: forwards,
+            loginShell: loginShell,
+            shellRCWriter: shellRCWriter,
+            liveLocalTTYReport: liveLocalTTYReport
         )
     }
 
@@ -2608,6 +2648,358 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         await model.applyShellSetup()
         XCTAssertEqual(fileSystem.writes, 0, "a dotfiles symlink is never written through")
         XCTAssertEqual(model.alert?.title, "Could not update your shell startup file")
+    }
+
+    // MARK: - One-flow setup run
+
+    private func failedReason(_ state: RemoteHostSetupRun.State) -> String? {
+        if case .failed(let reason, _) = state { return reason }
+        return nil
+    }
+
+    private func setupFlowRunner(
+        script: SetupFlowScript,
+        recorder: SetupFlowRecorder
+    ) -> ClaudeRemoteEnrollmentService.Runner {
+        { invocation in
+            recorder.record(invocation)
+            let stdin = String(decoding: invocation.standardInput, as: UTF8.self)
+            if invocation.argv.contains("-G") {
+                return .init(exitCode: 0, message: script.sendEnvOutput)
+            }
+            if stdin.contains("LC_LVX_TTY") {
+                return script.envEchoesBack
+                    ? .init(
+                        exitCode: 0,
+                        message: "Welcome to builder\n"
+                            + ClaudeRemoteEnrollmentService.envProbeFramePrefix
+                            + (invocation.environment["LC_LVX_TTY"] ?? "")
+                            + "\nLast login: today\n"
+                    )
+                    : .init(exitCode: 0, message: "")
+            }
+            // Before "claude plugin list": the setup script contains both.
+            if stdin.contains("LVX_PLUGIN") { return script.plugin }
+            if stdin.contains("LVX_HERDR") { return script.herdr }
+            if stdin.contains("SessionStart") {
+                return .init(exitCode: 0, message: script.tunnelMessage)
+            }
+            if stdin.contains("claude plugin list") {
+                return .init(exitCode: 0, message: script.pluginListMessage)
+            }
+            return .init(exitCode: 1, message: "unexpected invocation")
+        }
+    }
+
+    @MainActor
+    private func setupFlowModel(
+        registry: ClaudeRemoteHostRegistry,
+        listener: StubListener,
+        service: ClaudeRemoteEnrollmentService,
+        shell: ClaudeShellKind? = .zsh,
+        rcFileSystem: StubRCFileSystem? = nil
+    ) -> ClaudeIntegrationSettingsModel {
+        let rc = rcFileSystem
+        return makeModel(
+            registry: registry,
+            listener: listener,
+            enrollmentService: service,
+            loginShell: { shell },
+            shellRCWriter: { _ in rc.map { ClaudeShellRCWriter(fileSystem: $0) } }
+        )
+    }
+
+    /// Enroll one host and confirm the one-flow setup, returning the model and
+    /// host id for assertions on the finished run.
+    @MainActor
+    private func enrollAndRunSetup(
+        script: SetupFlowScript = SetupFlowScript(),
+        shell: ClaudeShellKind? = .zsh,
+        rcFileSystem: StubRCFileSystem? = StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true, data: Data("export EDITOR=vim\n".utf8), permissions: 0o644
+        ))
+    ) async throws -> (
+        model: ClaudeIntegrationSettingsModel,
+        hostID: String,
+        sshFS: StubSSHConfigFileSystem,
+        recorder: SetupFlowRecorder
+    ) {
+        let registry = try makeRegistry()
+        let sshFS = StubSSHConfigFileSystem()
+        let recorder = SetupFlowRecorder()
+        let service = ClaudeRemoteEnrollmentService(
+            runner: setupFlowRunner(script: script, recorder: recorder),
+            sshConfigFileSystem: sshFS
+        )
+        let listener = StubListener(hosts: registry)
+        // Bound, or the final 401 reads as a squatter and the run cannot pass.
+        listener.isListening = true
+        let model = setupFlowModel(
+            registry: registry,
+            listener: listener,
+            service: service,
+            shell: shell,
+            rcFileSystem: rcFileSystem
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let hostID = try XCTUnwrap(model.hosts.first?.id)
+        model.requestHostSetup()
+        let confirmation = try XCTUnwrap(model.enrollmentConfirmation)
+        XCTAssertTrue(confirmation.preview.contains("Mac ~/.ssh/config"))
+        XCTAssertTrue(confirmation.preview.contains("Remote host:"))
+        await model.confirmEnrollmentAction()
+        return (model, hostID, sshFS, recorder)
+    }
+
+    @MainActor
+    func testSetupRunCompletesAllSixStepsInOrder() async throws {
+        let rcFS = StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true, data: Data("export EDITOR=vim\n".utf8), permissions: 0o644
+        ))
+        let (model, hostID, sshFS, _) = try await enrollAndRunSetup(rcFileSystem: rcFS)
+
+        let run = try XCTUnwrap(model.setupRun)
+        XCTAssertEqual(run.hostID, hostID)
+        XCTAssertEqual(run.items.map(\.step), RemoteHostSetupRun.Step.allCases)
+        XCTAssertEqual(run.items[0].state, .done("The SSH config block is current."))
+        XCTAssertEqual(run.items[1].state, .done("The shell startup block is applied."))
+        XCTAssertEqual(run.items[2].state, .done("The remote plugin was installed and verified."))
+        XCTAssertEqual(run.items[3].state, .done("LC_LVX_TTY crossed the SSH connection."))
+        XCTAssertEqual(run.items[4].state, .skipped("herdr is not installed on the remote host."))
+        XCTAssertEqual(run.items[5].state, .done("The tunnel and remote plugin checks passed."))
+        XCTAssertEqual(
+            model.hosts.first?.setupStatusText,
+            "Setup complete.",
+            "the row's sentence is the run's last word"
+        )
+        XCTAssertTrue(model.verificationChecks.allSatisfy(\.passed))
+        XCTAssertNil(model.alert)
+        XCTAssertEqual(rcFS.writes, 1, "the shell block was written, not just reported")
+        XCTAssertTrue(sshFS.configText?.contains("SendEnv LC_LVX_TTY") == true)
+    }
+
+    @MainActor
+    func testSetupRunStopsAtTheFirstFailure() async throws {
+        var script = SetupFlowScript()
+        script.plugin = .init(exitCode: 1, message: "boom")
+        let (model, _, _, recorder) = try await enrollAndRunSetup(script: script)
+
+        let run = try XCTUnwrap(model.setupRun)
+        XCTAssertEqual(failedReason(run.items[2].state), "The remote plugin could not be installed or updated.")
+        XCTAssertEqual(run.items[3].state, .pending)
+        XCTAssertEqual(run.items[4].state, .pending)
+        XCTAssertEqual(run.items[5].state, .pending)
+        XCTAssertEqual(
+            model.hosts.first?.setupStatusText,
+            "Setup stopped at Remote plugin."
+        )
+        XCTAssertEqual(model.alert?.title, "Remote plugin")
+        XCTAssertTrue(
+            recorder.all.allSatisfy { $0.environment.isEmpty },
+            "the env probe never ran after the plugin step failed"
+        )
+    }
+
+    @MainActor
+    func testSetupRunWithoutSendEnvBlamesThisMacsSSHBlock() async throws {
+        var script = SetupFlowScript()
+        script.envEchoesBack = false
+        script.sendEnvOutput = "hostname builder\nsendenv LANG\n"
+        let (model, _, _, _) = try await enrollAndRunSetup(script: script)
+
+        let run = try XCTUnwrap(model.setupRun)
+        XCTAssertEqual(
+            failedReason(run.items[3].state),
+            "This Mac is not sending LC_LVX_TTY for this SSH host."
+        )
+        XCTAssertTrue(model.alert?.detail.contains("SendEnv LC_LVX_TTY") == true)
+        XCTAssertEqual(run.items[4].state, .pending, "herdr never ran after the env failure")
+    }
+
+    @MainActor
+    func testSetupRunWithSendEnvButNoCrossingBlamesTheRemoteSshd() async throws {
+        var script = SetupFlowScript()
+        script.envEchoesBack = false
+        let (model, _, _, recorder) = try await enrollAndRunSetup(script: script)
+
+        let run = try XCTUnwrap(model.setupRun)
+        XCTAssertEqual(
+            failedReason(run.items[3].state),
+            "The remote SSH server did not accept LC_LVX_TTY."
+        )
+        XCTAssertTrue(model.alert?.detail.contains("AcceptEnv LANG LC_*") == true)
+        XCTAssertTrue(recorder.all.contains { $0.argv.contains("-G") })
+    }
+
+    @MainActor
+    func testSetupRunLeavesACustomizedHerdrTableAloneAndStillCompletes() async throws {
+        var script = SetupFlowScript()
+        script.herdr = .init(exitCode: 42, message: "LVX_HERDR_CUSTOMIZED")
+        let (model, _, _, _) = try await enrollAndRunSetup(script: script)
+
+        let run = try XCTUnwrap(model.setupRun)
+        XCTAssertEqual(
+            run.items[4].state,
+            .skipped("The existing herdr agents table was left unchanged.")
+        )
+        XCTAssertTrue(
+            model.setupManualInstructions?.contains(
+                ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet
+            ) == true
+        )
+        XCTAssertEqual(run.items[5].state, .done("The tunnel and remote plugin checks passed."))
+        XCTAssertEqual(model.hosts.first?.setupStatusText, "Setup complete.")
+    }
+
+    @MainActor
+    func testSetupRunWithAnUnsupportedShellSkipsWithTheManualBlock() async throws {
+        let (model, _, _, _) = try await enrollAndRunSetup(shell: nil, rcFileSystem: nil)
+
+        let run = try XCTUnwrap(model.setupRun)
+        XCTAssertEqual(
+            run.items[1].state,
+            .skipped("This login shell is not supported for automatic setup; configure it manually.")
+        )
+        XCTAssertTrue(model.setupManualInstructions?.contains("LC_LVX_TTY") == true)
+        XCTAssertEqual(run.items[5].state, .done("The tunnel and remote plugin checks passed."))
+    }
+
+    @MainActor
+    func testUpdateHostRunsTheSameFlowWithoutAnSSHRewrite() async throws {
+        let registry = try makeRegistry()
+        let sshFS = StubSSHConfigFileSystem()
+        let recorder = SetupFlowRecorder()
+        var script = SetupFlowScript()
+        script.plugin = .init(exitCode: 0, message: "LVX_PLUGIN_UPDATED")
+        let service = ClaudeRemoteEnrollmentService(
+            runner: setupFlowRunner(script: script, recorder: recorder),
+            sshConfigFileSystem: sshFS
+        )
+        let listener = StubListener(hosts: registry)
+        listener.isListening = true
+        let model = setupFlowModel(registry: registry, listener: listener, service: service)
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let presentation = try XCTUnwrap(model.presentedPlan)
+        // The block on disk is already what this build would write.
+        sshFS.configText = ClaudeRemoteEnrollmentService.applySSHConfigSnippet(
+            to: "", snippet: presentation.plan.sshConfigSnippet, hostID: presentation.host.id
+        )
+        model.dismissPlan()
+
+        model.requestPluginUpdate(hostID: presentation.host.id)
+        let update = try XCTUnwrap(model.presentedPluginUpdate)
+        XCTAssertNil(update.sshConfigSnippet, "a current block is the update path, not a rewrite")
+        model.requestHostUpdateRun()
+        await model.confirmEnrollmentAction()
+
+        let run = try XCTUnwrap(model.setupRun)
+        XCTAssertEqual(
+            run.items[0].state,
+            .done("The SSH config block is already current.")
+        )
+        XCTAssertEqual(run.items[2].state, .done("The remote plugin was updated and verified."))
+        XCTAssertEqual(model.hosts.first?.setupStatusText, "Setup complete.")
+    }
+
+    @MainActor
+    func testRemoveReversesTheMacSideQuietlyOnSuccess() async throws {
+        let registry = try makeRegistry()
+        let sshFS = StubSSHConfigFileSystem()
+        // The rc carries our block, so reversal has something to take out.
+        let rcFS = StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true,
+            data: ClaudeShellRCSetup.apply(
+                to: "export EDITOR=vim\n",
+                snippet: ClaudeShellRCSetup.snippet(for: .zsh)
+            ).map { Data($0.utf8) },
+            permissions: 0o644
+        ))
+        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: sshFS)
+        let listener = StubListener(hosts: registry)
+        let model = setupFlowModel(
+            registry: registry, listener: listener, service: service, rcFileSystem: rcFS
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let hostID = try XCTUnwrap(model.hosts.first?.id)
+        let presentation = try XCTUnwrap(model.presentedPlan)
+        sshFS.configText = ClaudeRemoteEnrollmentService.applySSHConfigSnippet(
+            to: "", snippet: presentation.plan.sshConfigSnippet, hostID: hostID
+        )
+        model.dismissPlan()
+
+        await model.remove(hostID: hostID)
+
+        XCTAssertTrue(model.hosts.isEmpty)
+        XCTAssertFalse(sshFS.configText?.contains("BEGIN localvoxtral") == true)
+        XCTAssertFalse(
+            String(decoding: rcFS.state.data ?? Data(), as: UTF8.self)
+                .contains("LC_LVX_TTY"),
+            "the last host takes the shell block with it"
+        )
+        XCTAssertEqual(rcFS.writes, 1, "the reversal is a write, not a no-op claim")
+        XCTAssertNil(model.alert, "a clean reversal has nothing to say")
+    }
+
+    @MainActor
+    func testRemoveStillRevokesWhenTheSSHBlockCannotBeRewritten() async throws {
+        let registry = try makeRegistry()
+        let sshFS = RecordingSSHConfigFileSystem()
+        // The one state the writer refuses: a symlinked config, where the
+        // atomic rename would replace the user's link. Revocation must not be
+        // held hostage by it — the registry entry is the off switch.
+        sshFS.setSymlinked(true)
+        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: sshFS)
+        let listener = StubListener(hosts: registry)
+        let model = setupFlowModel(
+            registry: registry, listener: listener, service: service, rcFileSystem: nil
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let hostID = try XCTUnwrap(model.hosts.first?.id)
+        model.dismissPlan()
+
+        await model.remove(hostID: hostID)
+
+        XCTAssertTrue(model.hosts.isEmpty, "revocation is never blocked by the reversal")
+        XCTAssertEqual(sshFS.writeCount, 0)
+        XCTAssertEqual(model.alert?.title, "Remote host removed")
+        XCTAssertTrue(
+            model.alert?.detail.contains("is a symlink") == true,
+            "the leftover block is named with its manual remedy"
+        )
+    }
+
+    @MainActor
+    func testRemoveKeepsTheShellBlockWhileAnotherHostRemains() async throws {
+        let registry = try makeRegistry()
+        let sshFS = StubSSHConfigFileSystem()
+        let rcFS = StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true, data: Data("export EDITOR=vim\n".utf8), permissions: 0o644
+        ))
+        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: sshFS)
+        let listener = StubListener(hosts: registry)
+        let model = setupFlowModel(
+            registry: registry, listener: listener, service: service, rcFileSystem: rcFS
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let firstID = try XCTUnwrap(model.hosts.first?.id)
+        model.enrollLabel = "devbox"
+        model.enrollSSHAlias = "devbox"
+        await model.enroll()
+
+        await model.remove(hostID: firstID)
+
+        XCTAssertEqual(model.hosts.count, 1)
+        XCTAssertEqual(rcFS.writes, 0, "a remaining host still needs the shell block")
     }
 
 }
