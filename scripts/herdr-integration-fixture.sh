@@ -453,6 +453,33 @@ start_surface() {
   log "surface '$name' ($mode) started -> $dir/surface-$name.log"
 }
 
+# Print the focused pane id once it is stable: UNCHANGED across two reads a
+# second apart AND still resolving via `pane get`. Dies loudly past the
+# readiness timeout. Callers that act on the id (report-agent) must still
+# handle it dying afterwards — settle narrows the race, it does not close it.
+settle_focused_pane() {
+  local dir="$1" pane_id="" previous="" waited=0
+  while true; do
+    # `|| true`: before a pane exists, `pane current` answers with a
+    # pane_not_found ERROR and a non-zero status, which `pipefail` would
+    # otherwise turn into an abort on the very first poll.
+    pane_id="$({ herdr_cli pane current 2>/dev/null || true; } \
+      | sed -n 's/.*"pane_id":"\([^"]*\)".*/\1/p' | head -1)"
+    if [[ -n "$pane_id" && "$pane_id" == "$previous" ]] \
+      && herdr_cli pane get "$pane_id" >/dev/null 2>&1; then
+      log "focused pane: $pane_id"
+      printf '%s\n' "$pane_id"
+      return 0
+    fi
+    if (( waited >= READY_TIMEOUT_SECONDS )); then
+      die "herdr never settled on a focused pane; see $dir/surface-primary.log and $dir/server.log"
+    fi
+    previous="$pane_id"
+    sleep 1
+    waited=$((waited + 1))
+  done
+}
+
 command_up() {
   local dir="$1" destination="${2:-}"
   validate_workdir "$dir"
@@ -547,34 +574,33 @@ EOF
   # pane, and every later request answers `pane_not_found` for it (seen on the
   # CI runner, where the timing differed from the dev box). So: require the id
   # to be UNCHANGED across two reads a second apart AND to still resolve.
-  local pane_id="" previous=""
-  waited=0
+  #
+  # Even that is not airtight: the settled pane can still die between the
+  # settle and the `report-agent` below (seen on the CI runner 2026-09-07 as
+  # `pane_not_found` for the just-settled `w1:p1`, failing the whole lane at
+  # bring-up). So the settle+report pair retries, bounded, on exactly that
+  # payload — any other failure still dies loudly.
+  #
+  # The report matters: the agents panel renders rows PER AGENT-BEARING PANE,
+  # so a plain shell pane renders no row and no stamped token could appear.
+  local agent_session_id="lvx-fixture-session-0001"
+  local pane_id="" attempt=0
   while true; do
-    # `|| true`: before a pane exists, `pane current` answers with a
-    # pane_not_found ERROR and a non-zero status, which `pipefail` would
-    # otherwise turn into an abort on the very first poll.
-    pane_id="$({ herdr_cli pane current 2>/dev/null || true; } \
-      | sed -n 's/.*"pane_id":"\([^"]*\)".*/\1/p' | head -1)"
-    if [[ -n "$pane_id" && "$pane_id" == "$previous" ]] \
-      && herdr_cli pane get "$pane_id" >/dev/null 2>&1; then
+    pane_id="$(settle_focused_pane "$dir")"
+    if herdr_cli pane report-agent "$pane_id" \
+      --source "$FIXTURE_AGENT_SOURCE" --agent claude --state working \
+      --agent-session-id "$agent_session_id" \
+      >"$dir/report-agent.out" 2>"$dir/report-agent.err"; then
       break
     fi
-    if (( waited >= READY_TIMEOUT_SECONDS )); then
-      die "herdr never settled on a focused pane; see $dir/surface-primary.log and $dir/server.log"
+    attempt=$((attempt + 1))
+    if (( attempt >= 3 )) || ! grep -q 'pane_not_found' "$dir/report-agent.err" "$dir/report-agent.out" 2>/dev/null; then
+      cat "$dir/report-agent.out" "$dir/report-agent.err" 2>/dev/null >&2 || true
+      die "pane report-agent failed for $pane_id (attempt $attempt); see $dir/surface-primary.log and $dir/server.log"
     fi
-    previous="$pane_id"
+    log "pane $pane_id died between settle and report-agent (attempt $attempt/3) — re-settling"
     sleep 1
-    waited=$((waited + 1))
   done
-  log "focused pane: $pane_id"
-
-  # The agents panel renders rows PER AGENT-BEARING PANE, so a plain shell
-  # pane renders no row at all and no custom token could ever appear. This is
-  # the shape a real join targets: a pane whose agent an integration reported.
-  local agent_session_id="lvx-fixture-session-0001"
-  herdr_cli pane report-agent "$pane_id" \
-    --source "$FIXTURE_AGENT_SOURCE" --agent claude --state working \
-    --agent-session-id "$agent_session_id" >/dev/null
   log "pane $pane_id marked agent-bearing (session $agent_session_id)"
 
   printf '{"agentSessionID":"%s","alias":"%s","altUserAlias":"%s-altuser","otherPortAlias":"%s-otherport","herdrBinary":"%s","socketPath":"%s","paneID":"%s","primarySurfaceLog":"%s","provisionedSSH":%s,"workdir":"%s"}\n' \
