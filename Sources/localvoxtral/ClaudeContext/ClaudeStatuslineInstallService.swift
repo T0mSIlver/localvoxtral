@@ -57,6 +57,9 @@ public struct ClaudeStatuslineInstallService: Sendable {
         /// Our command, but its path no longer resolves to an executable
         /// (the app moved). Offers Update, which rewrites the path.
         case stalePath
+        /// Ours, edited by the user (extra flags, a pipe). Destructive ops
+        /// refuse: deletion cannot be undone from our side.
+        case edited
         /// A `statusLine` that is not ours. No Install button, ever — only a
         /// docs link. Never overwritten.
         case foreign
@@ -72,6 +75,7 @@ public struct ClaudeStatuslineInstallService: Sendable {
         case .notConfigured: return "Not installed."
         case .installed: return "Installed."
         case .stalePath: return "Installed, path no longer exists — Update."
+        case .edited: return "Edited by you; remove it in settings.json."
         case .foreign: return "Your own status line is configured."
         case .unknown: return "Could not read your Claude settings."
         }
@@ -122,6 +126,9 @@ public struct ClaudeStatuslineInstallService: Sendable {
             let command = statuslineCommand(from: entry),
             isOurs(command: command)
         else { return .foreign }
+        // Ours but user-edited (a pipe, extra flags): not canonical, so not
+        // writable — reported distinctly, never deleted.
+        guard isCanonical(command: command) else { return .edited }
         return .installed
     }
 
@@ -249,8 +256,10 @@ public struct ClaudeStatuslineInstallService: Sendable {
                 let parsed = json as? [String: Any]
             else { return nil }
             settings = parsed
+            // Canonical only: a user-edited formerly-ours command is no
+            // longer ours to overwrite.
             if let entry = settings[settingsKey],
-               !(statuslineCommand(from: entry).map { isOurs(command: $0) } ?? false) {
+               !(statuslineCommand(from: entry).map { isCanonical(command: $0) } ?? false) {
                 return nil
             }
         }
@@ -282,7 +291,7 @@ public struct ClaudeStatuslineInstallService: Sendable {
         guard let entry = settings[settingsKey] else { return .rewrite(existing) }
         guard
             let command = statuslineCommand(from: entry),
-            isOurs(command: command)
+            isCanonical(command: command)
         else { return nil }
         var remaining = settings
         remaining.removeValue(forKey: settingsKey)

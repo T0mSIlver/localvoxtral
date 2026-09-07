@@ -1171,6 +1171,11 @@ public final class ClaudeIntegrationSettingsModel {
             statuslineResult = "Installed."
         }
         refreshStatuslineStatus()
+        // M3: an edited formerly-ours entry refuses with its own sentence —
+        // the generic failure line would hide what to do next.
+        if failure != nil, statuslineStatus == .edited {
+            statuslineResult = ClaudeStatuslineInstallService.sentence(for: .edited)
+        }
     }
 
     public func removeStatusline() async {
@@ -1189,6 +1194,9 @@ public final class ClaudeIntegrationSettingsModel {
             statuslineResult = "Removed."
         }
         refreshStatuslineStatus()
+        if failure != nil, statuslineStatus == .edited {
+            statuslineResult = ClaudeStatuslineInstallService.sentence(for: .edited)
+        }
     }
 
     // MARK: opencode plugin

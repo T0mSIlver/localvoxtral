@@ -158,6 +158,48 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
         }
     }
 
+    func testEditedOursRefusesInsteadOfDeleting() throws {
+        // M3: the user customized our entry (a pipe, an extra flag) — the
+        // entry stopped being purely ours, and Remove must refuse rather
+        // than delete the customization.
+        for command in [
+            "\(Self.hookCommand) | jq -r .text",
+            "\(Self.hookCommand) --extra",
+        ] {
+            let existing = try settingsJSON([
+                "statusLine": ["type": "command", "command": command],
+            ])
+            XCTAssertEqual(
+                ClaudeStatuslineInstallService.deriveStatus(settingsData: existing), .edited,
+                "edited entry reads as edited: \(command)"
+            )
+            XCTAssertEqual(
+                ClaudeStatuslineInstallService.sentence(for: .edited),
+                "Edited by you; remove it in settings.json."
+            )
+            let applyFS = StubStatuslineFS(state: ClaudeStatuslineState(
+                fileExists: true, data: existing, permissions: 0o644
+            ))
+            XCTAssertThrowsError(
+                try ClaudeStatuslineInstallService(fileSystem: applyFS)
+                    .apply(hookCommand: Self.hookCommand)
+            ) { error in
+                XCTAssertEqual(error as? ClaudeStatuslineError, .refused, "\(command)")
+            }
+            XCTAssertNil(applyFS.written, "an edited entry is never overwritten: \(command)")
+            let removeFS = StubStatuslineFS(state: ClaudeStatuslineState(
+                fileExists: true, data: existing, permissions: 0o644
+            ))
+            XCTAssertThrowsError(
+                try ClaudeStatuslineInstallService(fileSystem: removeFS).remove()
+            ) { error in
+                XCTAssertEqual(error as? ClaudeStatuslineError, .refused, "\(command)")
+            }
+            XCTAssertNil(removeFS.written, "an edited entry is never rewritten: \(command)")
+            XCTAssertFalse(removeFS.deleted, "an edited entry is never deleted: \(command)")
+        }
+    }
+
     func testNonCommandShapeIsForeign() throws {
         let existing = try settingsJSON(["statusLine": ["type": "unsupported"]])
         XCTAssertEqual(

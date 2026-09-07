@@ -169,6 +169,32 @@ final class IntegrationsSettingsModelTests: XCTestCase {
         XCTAssertTrue(fs.deleted)
     }
 
+    @MainActor
+    func testStatuslineRemoveOnEditedEntryReportsEditedSentence() async {
+        // M3: removing a user-edited formerly-ours entry refuses with the
+        // one-sentence status instead of deleting.
+        let hook = "/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook --statusline"
+        let existing = try? JSONSerialization.data(withJSONObject: [
+            "statusLine": ["type": "command", "command": "\(hook) --extra"],
+        ])
+        let fs = StubModelStatuslineFS(state: ClaudeStatuslineState(
+            fileExists: true, data: existing
+        ))
+        let model = makeModel(
+            statusline: ClaudeStatuslineInstallService(
+                fileSystem: fs, isExecutableFile: { _ in true }
+            ),
+            statuslineHookCommand: { hook }
+        )
+        model.refreshStatuslineStatus()
+        XCTAssertEqual(model.statuslineStatus, .edited)
+        await model.removeStatusline()
+        XCTAssertEqual(
+            model.statuslineResult, "Edited by you; remove it in settings.json."
+        )
+        XCTAssertFalse(fs.deleted, "an edited entry is never deleted")
+    }
+
     // MARK: - opencode row
 
     @MainActor

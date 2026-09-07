@@ -1115,7 +1115,7 @@ private struct ClaudeStatuslineRow: View {
                     Button("Remove") { Task { await model.removeStatusline() } }
                         .disabled(model.isPerformingStatuslineAction)
                         .accessibilityIdentifier("integrations.claude.statusline.remove")
-                case .foreign:
+                case .foreign, .edited:
                     Link("How to combine status lines", destination: Self.docsURL)
                 case .unknown:
                     EmptyView()
