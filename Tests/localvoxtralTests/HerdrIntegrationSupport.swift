@@ -154,10 +154,21 @@ final class HerdrSurfaceLog: @unchecked Sendable {
 
     /// Rendered text painted since the mark, with escape sequences removed.
     func textSinceMark() -> String? {
+        text(fromOffset: mark.withLock { $0 })
+    }
+
+    /// The complete visible paint stream. Diagnostics use this only after
+    /// copying the raw typescript, so an ANSI parser can reconstruct the last
+    /// frame without losing evidence.
+    func fullVisibleText() -> String? {
+        text(fromOffset: 0)
+    }
+
+    private func text(fromOffset offset: UInt64) -> String? {
         guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
         defer { try? handle.close() }
         do {
-            try handle.seek(toOffset: mark.withLock { $0 })
+            try handle.seek(toOffset: offset)
         } catch {
             return nil
         }
@@ -244,13 +255,18 @@ final class HerdrLiveFixture {
     let primarySurface: HerdrSurfaceLog
     private let scriptURL: URL
     private let repoRoot: URL
+    private let diagnosticsRoot: URL
+    private var surfaces: [String: HerdrSurfaceLog]
     private var isTornDown = false
 
-    private init(info: Info, scriptURL: URL, repoRoot: URL) {
+    private init(info: Info, scriptURL: URL, repoRoot: URL, diagnosticsRoot: URL) {
         self.info = info
         self.scriptURL = scriptURL
         self.repoRoot = repoRoot
-        self.primarySurface = HerdrSurfaceLog(path: info.primarySurfaceLog)
+        self.diagnosticsRoot = diagnosticsRoot
+        let primarySurface = HerdrSurfaceLog(path: info.primarySurfaceLog)
+        self.primarySurface = primarySurface
+        self.surfaces = ["primary": primarySurface]
     }
 
     static func bringUp(
@@ -260,6 +276,11 @@ final class HerdrLiveFixture {
     ) throws -> HerdrLiveFixture {
         let scriptURL = repoRoot.appendingPathComponent("scripts/herdr-integration-fixture.sh")
         let workdir = "/tmp/lvx-herdr-fixture-\(label)-\(ProcessInfo.processInfo.processIdentifier)"
+        let configuredDiagnostics = ProcessInfo.processInfo.environment[
+            "HERDR_INTEGRATION_DIAGNOSTICS_DIR"
+        ]
+        let diagnosticsRoot = configuredDiagnostics.map(URL.init(fileURLWithPath:))
+            ?? repoRoot.appendingPathComponent(".build/herdr-lane-diagnostics")
 
         // A previous run that died before its teardown would otherwise make
         // every later run fail on "workdir already exists".
@@ -281,6 +302,9 @@ final class HerdrLiveFixture {
                 "`up` exited \(result.status)\n\(result.standardError)\(result.standardOutput)"
             )
         }
+        if !result.standardError.isEmpty {
+            print(result.standardError, terminator: result.standardError.hasSuffix("\n") ? "" : "\n")
+        }
         guard let line = result.standardOutput
             .split(separator: "\n")
             .last(where: { $0.hasPrefix("{") }),
@@ -290,12 +314,18 @@ final class HerdrLiveFixture {
                 "`up` printed no fixture description\n\(result.standardOutput)\(result.standardError)"
             )
         }
-        return HerdrLiveFixture(info: info, scriptURL: scriptURL, repoRoot: repoRoot)
+        return HerdrLiveFixture(
+            info: info,
+            scriptURL: scriptURL,
+            repoRoot: repoRoot,
+            diagnosticsRoot: diagnosticsRoot
+        )
     }
 
     func tearDown() {
         guard !isTornDown else { return }
         isTornDown = true
+        captureDiagnostics()
         _ = try? HerdrLaneProcess.run(
             executable: URL(fileURLWithPath: "/bin/bash"),
             arguments: [scriptURL.path, "down", info.workdir],
@@ -322,7 +352,54 @@ final class HerdrLiveFixture {
                 "`surface \(name)` exited \(result.status)\n\(result.standardError)"
             )
         }
-        return HerdrSurfaceLog(path: "\(info.workdir)/surface-\(name).log")
+        if !result.standardError.isEmpty {
+            print(result.standardError, terminator: result.standardError.hasSuffix("\n") ? "" : "\n")
+        }
+        let surface = HerdrSurfaceLog(path: "\(info.workdir)/surface-\(name).log")
+        surfaces[name] = surface
+        return surface
+    }
+
+    /// Preserve the evidence before the fixture removes its temporary tree.
+    /// This runs for green tests too, which makes runner and SSH-account runs
+    /// directly comparable instead of leaving diagnostics only for failures.
+    private func captureDiagnostics() {
+        let fileManager = FileManager.default
+        let runName = URL(fileURLWithPath: info.workdir).lastPathComponent
+        let destination = diagnosticsRoot.appendingPathComponent(runName, isDirectory: true)
+        do {
+            try fileManager.createDirectory(
+                at: diagnosticsRoot, withIntermediateDirectories: true
+            )
+            if fileManager.fileExists(atPath: destination.path) {
+                try fileManager.removeItem(at: destination)
+            }
+            try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+            let source = URL(fileURLWithPath: info.workdir, isDirectory: true)
+            for item in try fileManager.contentsOfDirectory(
+                at: source,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ) {
+                guard try item.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true
+                else { continue }
+                try fileManager.copyItem(
+                    at: item,
+                    to: destination.appendingPathComponent(item.lastPathComponent)
+                )
+            }
+            for (name, surface) in surfaces {
+                let visible = surface.fullVisibleText() ?? "<surface log unavailable>"
+                try visible.write(
+                    to: destination.appendingPathComponent("surface-\(name).visible.txt"),
+                    atomically: true,
+                    encoding: .utf8
+                )
+            }
+            print("[herdr-fixture] diagnostics: \(destination.path)")
+        } catch {
+            print("[herdr-fixture] WARNING: could not preserve diagnostics: \(error)")
+        }
     }
 
     /// herdr's own CLI against the fixture's socket. Used only to READ herdr's

@@ -218,7 +218,9 @@ Fixture and host requirements (`scripts/herdr-integration-fixture.sh`):
 
 When must it run? For `scripts/ci/herdr-lane-filter.sh` path matches or the
 literal `[run-herdr-integration]` marker, on the same event-payload terms as
-the LLM lanes. The rule behind the list: anything that changes what the app
+the LLM lanes. A manual `ci.yml` dispatch also runs it, which is the supported
+way to repeat this live external contract without manufacturing commits. The
+rule behind the list: anything that changes what the app
 SAYS to herdr, what it BELIEVES herdr answered, how the forward reaching
 herdr is opened or leased, which host that forward reaches, or the recorded
 assumptions themselves. Editing

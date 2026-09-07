@@ -56,6 +56,11 @@ final class HerdrIntegrationTests: XCTestCase {
             destination: enablement.destination,
             label: label
         )
+        print(
+            "[herdr-fixture] token.ttl_ms=\(HerdrPanelBindingProbe.tokenTTLMilliseconds) "
+                + "refresh_seconds=\(HerdrPanelMicIndicator.refreshInterval) "
+                + "surface_wait_seconds=20"
+        )
     }
 
     override func tearDown() async throws {
