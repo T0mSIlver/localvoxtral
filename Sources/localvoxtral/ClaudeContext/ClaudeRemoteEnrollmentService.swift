@@ -892,17 +892,29 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                 )
             )
         }
-        guard result.succeeded else {
+        if result.exitCode == 43 {
             throw ServiceError.commandFailed(
                 step: 0,
                 command: "install and verify remote plugin",
-                exitCode: result.exitCode,
+                exitCode: 43,
                 message: ClaudeRemoteTokenRedaction.redact(
                     "The plugin is installed but did not report version "
                         + Self.remotePluginVersion
                         + " when read back in the same session.",
                     token: token ?? ""
                 )
+            )
+        }
+        guard result.succeeded else {
+            let message = result.exitCode == 127
+                ? "Claude CLI was not found on the remote host. "
+                    + "Install Claude Code there, or put it on the non-interactive SSH PATH."
+                : "The remote plugin setup command failed."
+            throw ServiceError.commandFailed(
+                step: 0,
+                command: "install and verify remote plugin",
+                exitCode: result.exitCode,
+                message: ClaudeRemoteTokenRedaction.redact(message, token: token ?? "")
             )
         }
         if result.message.contains("LVX_PLUGIN_INSTALLED") { return .installed }

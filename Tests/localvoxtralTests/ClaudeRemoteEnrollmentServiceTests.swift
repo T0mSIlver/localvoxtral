@@ -2477,6 +2477,49 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         }
     }
 
+    func testPluginSetupDistinguishesMissingCLICommandFailureAndVersionMismatch() throws {
+        func failure(exitCode: Int32) throws -> ClaudeRemoteEnrollmentService.ServiceError {
+            let service = ClaudeRemoteEnrollmentService(runner: { _ in
+                .init(exitCode: exitCode, message: "untrusted host output")
+            })
+            do {
+                _ = try service.setupRemotePlugin(
+                    sshHostAlias: "builder",
+                    token: "test-token",
+                    remoteForwardPort: 28_511
+                )
+                XCTFail("exit \(exitCode) must fail")
+                return .executionNotConfigured
+            } catch let error as ClaudeRemoteEnrollmentService.ServiceError {
+                return error
+            }
+        }
+
+        guard case .commandFailed(_, _, 127, let missingCLI) = try failure(exitCode: 127) else {
+            return XCTFail("expected the missing CLI diagnosis")
+        }
+        XCTAssertEqual(
+            missingCLI,
+            "Claude CLI was not found on the remote host. "
+                + "Install Claude Code there, or put it on the non-interactive SSH PATH."
+        )
+
+        guard case .commandFailed(_, _, 1, let commandFailure) = try failure(exitCode: 1) else {
+            return XCTFail("expected the generic command failure diagnosis")
+        }
+        XCTAssertEqual(commandFailure, "The remote plugin setup command failed.")
+
+        guard case .commandFailed(_, _, 43, let versionMismatch) = try failure(exitCode: 43) else {
+            return XCTFail("expected the version read-back diagnosis")
+        }
+        XCTAssertEqual(
+            versionMismatch,
+            "The plugin is installed but did not report version "
+                + ClaudeRemoteEnrollmentService.remotePluginVersion
+                + " when read back in the same session."
+        )
+    }
+
     func testVerifiedPluginVersionMatchesTheRemotePluginManifest() throws {
         let manifestURL = repositoryRoot
             .appendingPathComponent("integrations/claude-code/plugins/localvoxtral-remote")
