@@ -452,6 +452,26 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
     }
 
+    func testSSHConfigCurrencyAcceptsTabsAndRepeatedSpacesBetweenDirectiveFields() throws {
+        let current = [
+            ClaudeRemoteEnrollmentService.blockBegin(hostID: host.id),
+            "Host sandbox-vpn",
+            "\tRemoteForward\t28542\t127.0.0.1:8473",
+            "    SendEnv   LC_LVX_TTY",
+            ClaudeRemoteEnrollmentService.blockEnd(hostID: host.id),
+        ].joined(separator: "\n")
+        let filesystem = MemorySSHConfigFileSystem(
+            state: ClaudeRemoteRemoteConfigStateFixture.state(configText: current)
+        )
+        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: filesystem)
+
+        XCTAssertEqual(
+            service.sshConfigBlockIsCurrent(port: 28_542, hostID: host.id),
+            true,
+            "OpenSSH accepts any horizontal whitespace between directive fields"
+        )
+    }
+
     func testForwardStateIgnoresARemoteForwardOutsideThisHostsBlock() throws {
         // Someone else's `RemoteForward 28511` elsewhere in the config is not
         // this host's block being current.

@@ -660,15 +660,13 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         }) else { return false }
         let block = lines[beginIndex...endIndex]
         let forwardsPort = block.contains { line in
-            let fields = line.trimmingCharacters(in: .whitespaces)
-                .split(separator: " ", omittingEmptySubsequences: true)
+            let fields = line.split(whereSeparator: \.isWhitespace)
             guard fields.count >= 2, fields[0] == "RemoteForward" else { return false }
             return fields[1] == "\(port)"
         }
-        // An exact line: `# SendEnv LC_LVX_TTY` contains the substring too, and
-        // a commented-out directive sends nothing.
-        let sendsLocalTTY = block.contains {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines) == "SendEnv LC_LVX_TTY"
+        let sendsLocalTTY = block.contains { line in
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            return fields.count >= 2 && fields[0] == "SendEnv" && fields[1] == "LC_LVX_TTY"
         }
         return forwardsPort && sendsLocalTTY
     }
