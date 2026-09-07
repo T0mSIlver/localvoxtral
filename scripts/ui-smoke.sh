@@ -499,7 +499,9 @@ assert_pane_scope_is_reachable
 
 assert_tab "general" "General" "Permissions"
 assert_tab "endpoints" "Engines" "Dictation"
-assert_tab "dictation" "Dictation" "Start dictation with"
+# "Trigger" is the Dictation pane's first group title; the pre-#278 needle
+# ("Start dictation with") named copy that no longer exists.
+assert_tab "dictation" "Dictation" "Trigger"
 assert_tab "textProcessing" "Text Processing" "Replacements"
 # The polish feature toggles live on Text Processing (moved from Engines).
 assert_tab "textProcessing" "Text Processing" "Polishing"
@@ -507,7 +509,9 @@ assert_tab "textProcessing" "Text Processing" "Polishing"
 # own pane (moved off Text Processing). Asserted on the group titles, which
 # exist nowhere else.
 assert_tab "integrations" "Integrations" "Polish context"
-assert_tab "integrations" "Integrations" "Remote Claude Code over SSH"
+# Renamed to "Claude Code over SSH" in the #278 copy pass; the old needle
+# ("Remote Claude Code over SSH") no longer exists in the pane.
+assert_tab "integrations" "Integrations" "Claude Code over SSH"
 # The cmux join toggle binds $settings.cmuxSurfaceJoinEnabled in its new home;
 # without this, the row could be deleted or rebound with every lane green.
 assert_tab "integrations" "Integrations" "Join Claude Code sessions in cmux"
