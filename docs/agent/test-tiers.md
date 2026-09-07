@@ -228,6 +228,20 @@ prevent. Not required for UI, insertion, audio, or model work. Either way the
 PR's Proof section carries the scoreboard or a one-line justification for
 skipping.
 
+Worker builds on the Mac must not overlap the lane. Measured 2026-09-07 on
+the build host (per-request latency tap in `HerdrSocketClient`, 10 lane runs
+idle + 10 with one concurrent `swift build`): idle 10/10 green with
+p50/p99/max 110/121/126 ms; loaded 9/10 with p50/p99/max 108/123/137 ms and
+zero unexpected refusals or timeouts across 379 successful requests — but one
+loaded run failed `testMicIndicatorRefreshesTheTokenAndClearsItOnStop`
+because a `pane get` read immediately after the stop still showed the token
+while every socket request in that run had succeeded in ~100 ms. The socket
+path is NOT slow under load (36× inside the 5 s timeout); the read lags the
+server's ack under CPU contention. The lane therefore polls for the clear
+(bounded below the 8 s token TTL, so a truly lost clear still fails) — and a
+red lane with worker builds running beside it means re-run the lane alone
+before debugging the diff.
+
 The speechd live-model lane follows the same owner constraint: it runs only for
 `scripts/ci/speechd-lane-filter.sh` matches or `[run-speechd-integration]`.
 SpeechHelper engine/pin, packaging, or integration-contract changes must run it;

@@ -925,7 +925,16 @@ jobs:
           HERDR_INTEGRATION_TEST_ENABLE: "1"
         # --enable-code-coverage matches the unit step's build flags (same
         # rationale as the STT integration step above).
-        run: swift test --filter HerdrIntegrationTests --enable-code-coverage
+        # Load flake hint (measured 2026-09-07: one concurrent swift build
+        # fails ~1 run in 10 on a clear-visibility race, with socket p99
+        # unchanged): if this step is red, suspect overlapping worker builds
+        # on the Mac first and re-run the lane alone before debugging.
+        run: >-
+          swift test --filter HerdrIntegrationTests --enable-code-coverage || {
+          echo 'HERDR-LANE-HINT: red lane? check for overlapping worker builds
+          (remote-build.sh) on the Mac and re-run this lane alone first —
+          see docs/agent/test-tiers.md "Worker builds on the Mac must not
+          overlap the lane".'; exit 1; }
 
       - name: Polishing helper unit tests (PolishHelper package)
         # Metal-free (HTTP layer, router, cache locator, watchdog); the Metal
