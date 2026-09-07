@@ -24,6 +24,10 @@ import Foundation
 /// JSON choice, stated once (same as the statusline service): edits
 /// round-trip through `JSONSerialization`, written pretty-printed with sorted
 /// keys. Formatting normalizes; content outside our entry is preserved.
+///
+/// Known limitation, shared with the reference writers: edits are
+/// read-modify-write with no interlock, so a hand-edit landing between our
+/// read and our rename loses to our stale snapshot (last-writer-wins).
 public struct OpencodePluginInstallService: Sendable {
     /// The entry this service owns inside `tui.json`'s `plugin` list, exactly
     /// as the plugin README documents it.

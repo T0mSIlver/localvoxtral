@@ -20,6 +20,10 @@ import Foundation
 /// formatting (whitespace, key order) while preserving every key and value
 /// the user had. A text-level splice would preserve bytes but could not
 /// survive the shapes a hand-edited settings file actually takes.
+///
+/// Known limitation, shared with the reference writers: edits are
+/// read-modify-write with no interlock, so a hand-edit landing between our
+/// read and our rename loses to our stale snapshot (last-writer-wins).
 public struct ClaudeStatuslineInstallService: Sendable {
     /// The one key this service owns inside `~/.claude/settings.json`.
     public static let settingsKey = "statusLine"
