@@ -414,6 +414,36 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertNil(modelPreparer.prepareCalls.last?.revision)
     }
 
+    func testFakePreparerCancelledBeforeSuspendingThrowsInsteadOfParking() async {
+        // Hosted unit-suite hang (run 34163270101, 2026-09-07): the test above
+        // cancels the ensure the instant it sees the prepare start, and on a
+        // loaded 3-core VM that cancellation reached the fake BEFORE it parked
+        // its resume continuation. The cancellation handler then found nothing,
+        // the continuation parked afterwards was never resumed, and the async
+        // test wrapper waited forever. A task that is already cancelled when
+        // prepare suspends must observe the termination and throw, never park.
+        let preparer = FakeModelPreparer(suspendBackendIDs: [BackendCatalog.polishd.id])
+        let request = ModelPreparationRequest(
+            backendID: BackendCatalog.polishd.id,
+            displayName: "Polish engine",
+            repoID: "org/model",
+            revision: "0000000000000000000000000000000000000000",
+            includePatterns: ["config.json"]
+        )
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await preparer.prepare(request) { _ in }
+        }
+        // Red before the fix: this await never returns (the suite is killed at
+        // the supervisor's 900 s bound with the runner parked in XCTWaiter).
+        let result = await task.result
+        guard case let .failure(error) = result else {
+            return XCTFail("prepare returned normally in a cancelled task")
+        }
+        XCTAssertTrue(error is CancellationError, "expected CancellationError, got \(error)")
+        XCTAssertEqual(preparer.terminatedBackendIDs, [BackendCatalog.polishd.id])
+    }
+
     func testStopPolishingAwaitsCancelledEnsureSoASubsequentEnsureStartsFresh() async throws {
         // Field regression (PR #99): stop cancelled the in-flight ensure but
         // returned without awaiting it, so a model switch mid-download started
@@ -879,7 +909,21 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
         if shouldSuspend {
             try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { continuation in
-                    state.withLock { $0.prepareResumeContinuation = continuation }
+                    // Cancellation can land BEFORE this continuation exists:
+                    // `stop` cancels the ensure the moment the test sees the
+                    // prepare start, and on a loaded host the handler above
+                    // then runs first, finds nothing to resume, and the
+                    // continuation parked here would never be resumed (the
+                    // hosted unit-suite hang, run 34163270101). Park it only
+                    // when the task is still live; the check and the store
+                    // share the lock with the handler, so no interleaving
+                    // resumes twice or not at all.
+                    let orphaned: CheckedContinuation<Void, Error>? = state.withLock {
+                        if Task.isCancelled { return continuation }
+                        $0.prepareResumeContinuation = continuation
+                        return nil
+                    }
+                    orphaned?.resume(throwing: CancellationError())
                 }
             } onCancel: {
                 let continuation: CheckedContinuation<Void, Error>? = self.state.withLock {

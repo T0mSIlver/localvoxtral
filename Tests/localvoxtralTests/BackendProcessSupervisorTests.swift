@@ -523,17 +523,24 @@ private final class StateWatcher: @unchecked Sendable {
         let id = UUID()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                let state: BackendProcessSupervisor.State? = storage.withLock { storage in
+                // Registered under the same lock the cancel handler takes, and
+                // only while the task is live: a task cancelled before this
+                // point has had its handler run against an empty waiter list,
+                // so a waiter appended now would never be resumed.
+                let outcome: Result<BackendProcessSupervisor.State, Error>? = storage.withLock { storage in
                     if let state = storage.states.first(where: predicate) {
-                        return state
+                        return .success(state)
+                    }
+                    if Task.isCancelled {
+                        return .failure(CancellationError())
                     }
                     storage.waiters.append(
                         Waiter(id: id, predicate: predicate, continuation: continuation)
                     )
                     return nil
                 }
-                if let state {
-                    continuation.resume(returning: state)
+                if let outcome {
+                    continuation.resume(with: outcome)
                 }
             }
         } onCancel: {
