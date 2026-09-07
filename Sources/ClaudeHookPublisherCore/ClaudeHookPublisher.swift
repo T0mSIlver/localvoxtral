@@ -188,20 +188,34 @@ public struct ClaudeHookPublisher: Sendable {
     }
 
     /// The one line to print, or nil for nothing. FIXED strings only, chosen
-    /// by outcome — no wire byte, path, or id is ever interpolated,
-    /// so nothing that crossed a socket can put a byte on the terminal.
-    /// ANSI SGR is deliberate: Claude Code renders it in the status line.
-    public static func statusLineText(for outcome: StatusOutcome) -> String? {
+    /// by outcome. No wire byte, path, or id is ever interpolated, so nothing
+    /// that crossed a socket can put a byte on the terminal.
+    public static func statusLineText(
+        for outcome: StatusOutcome,
+        useColor: Bool = true
+    ) -> String? {
+        if !useColor {
+            switch outcome {
+            case .connected: return "lvx ok"
+            case .sessionUnknown: return "lvx err"
+            case .appUnreachable: return "lvx off"
+            case .unparseablePayload: return nil
+            }
+        }
         switch outcome {
         case .connected:
-            return "\u{1B}[32m\u{25CF}\u{1B}[0m localvoxtral connected"
+            return "lvx \u{1B}[32m\u{25CF}\u{1B}[0m"
         case .sessionUnknown:
-            return "\u{1B}[33m\u{25CB}\u{1B}[0m localvoxtral not connected"
+            return "lvx \u{1B}[31m\u{25CF}\u{1B}[0m"
         case .appUnreachable:
-            return "\u{1B}[2m\u{25CB} localvoxtral not running\u{1B}[0m"
+            return "lvx \u{1B}[90m\u{25CF}\u{1B}[0m"
         case .unparseablePayload:
             return nil
         }
+    }
+
+    public static func statusLineUsesColor(environment: [String: String]) -> Bool {
+        environment["NO_COLOR"] == nil && environment["TERM"]?.lowercased() != "dumb"
     }
 
     /// Safe metadata only: identity and location of the terminal, never its

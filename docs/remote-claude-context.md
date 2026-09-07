@@ -3,12 +3,10 @@
 Dictate into a Claude Code session that is running on another machine, and have
 localvoxtral spell your code, file names, and identifiers correctly anyway.
 
-This page is the long version. The app's enrollment sheet runs the whole
-setup as one self-verifying flow — press **Run Setup**, confirm once, and it
-stops at the first step that fails with the exact remedy — while every block
-it would write stays on the sheet, copyable, with no comments in it, for doing
-any step by hand. A **Check Setup** button runs the checks and tells you what
-they mean.
+The app's enrollment sheet runs the whole setup as one self-verifying flow.
+It shows one consent sentence, a **Details** link to this command reference,
+and one status line for each step. No token, command, or file contents appear
+in Settings.
 
 ---
 
@@ -55,20 +53,18 @@ configured.
 ## How enrollment works
 
 Enrolling a host is one flow that does everything, each step self-verifying.
-Press **Run Setup** in the enrollment sheet — or **Update Host** in an
+Press **Set Up** in the enrollment sheet, or **Update host…** and **Set Up** in an
 enrolled host's row — and it runs, in order, showing one short sentence of
 status per step and stopping at the first failure with the exact remedy:
 
 1. **Mac SSH config** — the marked `Host` block with `RemoteForward` and
-   `SendEnv LC_LVX_TTY`. Manual equivalent: copy the block from step 1 of the
-   sheet.
+   `SendEnv LC_LVX_TTY`. The exact block is below.
 2. **Mac shell startup** — the `LC_LVX_TTY` export block in your login shell's
-   rc. Manual equivalent: the block under "Terminal setup for plain SSH" in
-   Settings, or the integration README. Already applied, unsupported, or
+   rc. The exact blocks are below. Already applied, unsupported, or
    symlinked is reported, not failed.
 3. **Remote plugin** — install, or update when already present, verified by
    reading the installed version back in the same SSH session. Manual
-   equivalent: the two commands in step 2 of the sheet.
+   equivalent: the commands below.
 4. **Remote environment** — proves `LC_LVX_TTY` actually crosses by sending a
    fresh random value for that one call and comparing the echo exactly. The
    value is never logged. A mismatch names the side: no `sendenv` covering the
@@ -81,16 +77,136 @@ status per step and stopping at the first failure with the exact remedy:
 5. **Remote herdr** — when `herdr` resolves on the host, appends the
    agents-panel row (only when no agents table or rows key exists) and runs
    `herdr server reload-config`. "Not installed" and an already-customized
-   table are reported, not failed. Manual equivalent: append the TOML block
-   from the sheet, then `herdr server reload-config` on the host.
+   table are reported, not failed. The exact TOML and reload command are below.
 6. **Check Setup** — the two read-only verdicts, last, as the final status
    line.
+
+### Commands run by Set Up
+
+The app writes the two Mac files directly. For every remote script except the
+tunnel check, it starts this exact process and sends the script through stdin:
+
+```sh
+ssh -o BatchMode=yes -o ClearAllForwardings=yes -- <alias> /bin/sh -s
+```
+
+The token is only in that stdin script on this Mac. The remote plugin step runs
+`claude plugin list --json` before and after the mutation. Between those reads,
+it runs the applicable commands:
+
+```sh
+claude plugin marketplace add T0mSIlver/localvoxtral
+claude plugin marketplace update localvoxtral
+claude plugin update localvoxtral-remote@localvoxtral
+claude plugin install localvoxtral-remote@localvoxtral --config 'token=<token>' --config 'port=<this-Mac's-port>'
+```
+
+An update with no new token uses this last line instead:
+
+```sh
+claude plugin install localvoxtral-remote@localvoxtral --config 'port=<this-Mac's-port>'
+```
+
+The environment-crossing step sends this script with a fresh `LC_LVX_TTY`
+value in the SSH child's environment:
+
+```sh
+printf 'LVX_TTY:%s\n' "${LC_LVX_TTY-}"
+```
+
+If the value does not cross, the app inspects the effective local config with:
+
+```sh
+ssh -G -- <alias>
+```
+
+The herdr step uses the following commands:
+
+```sh
+set -eu
+if ! command -v herdr >/dev/null 2>&1; then
+  for lv_dir in "$HOME/.claude/local" "$HOME/.local/bin" "$HOME/bin" /opt/homebrew/bin /usr/local/bin "$HOME"/.nvm/versions/node/*/bin; do
+    if [ -x "$lv_dir/herdr" ]; then PATH="$lv_dir:$PATH"; break; fi
+  done
+fi
+if ! command -v herdr >/dev/null 2>&1; then
+  printf '%s\n' LVX_HERDR_ABSENT
+  exit 0
+fi
+lv_config=${HERDR_CONFIG_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml}
+if [ -f "$lv_config" ] && grep -Eq '^[[:space:]]*\[ui\.sidebar\.agents\][[:space:]]*(#.*)?$|^[[:space:]]*rows[[:space:]]*=' "$lv_config"; then
+  printf '%s\n' LVX_HERDR_CUSTOMIZED
+  exit 42
+fi
+mkdir -p "$(dirname "$lv_config")"
+touch "$lv_config"
+cat >> "$lv_config" <<'LOCALVOXTRAL_HERDR_PANEL'
+[ui.sidebar.agents]
+rows = [["state_icon", "workspace", "tab"], ["agent"], [{ token = "$lvmark", dim = true }]]
+LOCALVOXTRAL_HERDR_PANEL
+herdr server reload-config
+printf '%s\n' LVX_HERDR_CONFIGURED
+```
+
+The `grep` match stops the step without changing the file. The final tunnel
+check omits `ClearAllForwardings` so it can test the configured forward:
+
+```sh
+ssh -o BatchMode=yes -- <alias> /bin/sh -s
+```
+
+Its exact stdin script checks for `curl` and posts an unauthenticated `{}` body:
+
+```sh
+set -u
+command -v curl >/dev/null 2>&1 || { printf '%s\n' 'LVX_NO_CURL'; exit 0; }
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:<this-Mac's-port>/v1/hook/SessionStart 2>/dev/null) || code=000
+[ -n "$code" ] || code=000
+printf 'LVX_HTTP:%s\n' "$code"
+```
+
+The plugin check uses the first SSH argv above and runs `claude plugin list`
+after resolving `claude` from `PATH`, `~/.claude/local`, `~/.local/bin`,
+`~/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, or
+`~/.nvm/versions/node/*/bin`. Plugin installation uses that same resolver.
 
 Removing the host reverses the Mac side — the ssh block, and the shell block
 only when no other host remains — and never lets a reversal problem block the
 removal itself: the registry entry is the off switch, and anything that could
 not be rewritten is named in an alert with its manual fix. The remote half of
 uninstalling stays manual by design ("Uninstalling" below).
+
+### Shell startup blocks
+
+For zsh and bash, the app adds this marked block to `~/.zshrc`,
+`~/.bash_profile`, or an existing `~/.bashrc`:
+
+```sh
+# localvoxtral plain-ssh join (begin)
+# Publishes this terminal's tty so localvoxtral can tell which window a
+# Claude Code session over ssh belongs to. Remove this block in
+# Settings, or by hand.
+if [ -z "${LC_LVX_TTY:-}" ] && [ -z "${SSH_TTY:-}" ]; then
+  case "$(tty 2>/dev/null)" in /dev/*) LC_LVX_TTY="$(tty)"; export LC_LVX_TTY ;; esac
+fi
+# localvoxtral plain-ssh join (end)
+```
+
+For fish, it writes `~/.config/fish/conf.d/localvoxtral.fish`:
+
+```fish
+# localvoxtral plain-ssh join (begin)
+# Publishes this terminal's tty so localvoxtral can tell which window a
+# Claude Code session over ssh belongs to. Remove this block in
+# Settings, or by hand.
+if not set -q LC_LVX_TTY; and not set -q SSH_TTY
+    set -l __lvx_tty (tty 2>/dev/null)
+    if string match -q -- '/dev/*' "$__lvx_tty"
+        set -gx LC_LVX_TTY "$__lvx_tty"
+    end
+end
+# localvoxtral plain-ssh join (end)
+```
 
 ### 1. An `~/.ssh/config` block
 
@@ -125,11 +241,10 @@ no-op instead of a duplicate `Host` stanza (OpenSSH is first-match-wins, and a
 stale duplicate above a fresh one would silently win). Everything else in your
 config is preserved byte for byte.
 
-The app will insert the block for you after a confirmation that repeats the
-exact text, or you can copy it and paste it yourself. It refuses to write when
+The app inserts the block after the one-sentence consent. It refuses to write when
 `~/.ssh/config` or `~/.ssh` is a symlink (a dotfiles setup — an atomic rename
 would replace your link) or when `~/.ssh` is not exclusively yours to write. In
-those cases, copy and paste.
+those cases, use this reference to edit the real file yourself.
 
 ### 2. The plugin on the host
 
@@ -169,14 +284,15 @@ host's processes and files can read. Practical consequences:
   where you choose, rather than letting setup run it — the exposure window is
   brief either way, but it is yours to time.
 - If you think the token was seen, **rotate it**. Rotation takes effect
-  immediately, with no grace period, and re-running step 2 with the new token is
-  the whole recovery.
+  immediately, with no grace period, and running **Set Up** with the new token
+  is the whole recovery.
 
 ### 3. A token
 
-The token is generated on enrollment and shown **once**. localvoxtral stores
-only a hash of it, so it genuinely cannot be shown again — rotation is the
-recovery path, and it takes effect immediately with no grace period.
+The token is generated on enrollment and passed straight into the consented
+setup run. It is never shown in Settings. localvoxtral stores only a hash, so
+rotation is the recovery path after an interrupted or dismissed setup. Rotation
+takes effect immediately with no grace period.
 
 What the token authorizes is narrow: a host that presents it may *contribute
 remote context*. The listener tags every session it accepts as remote no matter
@@ -204,7 +320,7 @@ unavailable. A convenience feature must never cost you your login.
 
 The price of `no` is that a failed forward is *silent*. The hooks get connection
 refused, fail open, and you simply get no context. That silence is exactly what
-step 3's **Check Setup** exists to break.
+step 6's **Check Setup** exists to break.
 
 ## The forward port is per-Mac
 
@@ -258,9 +374,9 @@ ssh-config block in the same action so the two halves can never disagree. Your
 token is preserved — `claude plugin update` keeps the stored config, and
 `--config` merges per key.
 
-Re-running step 2 is *not* an update: on Claude Code 2.1.220 `plugin install`
-exits 0 with "already installed" and `marketplace add` does not refresh a clone
-it already has.
+The update path refreshes the marketplace and calls `plugin update`; a bare
+`plugin install` is not an update. On Claude Code 2.1.220 it exits 0 with
+"already installed", and `marketplace add` does not refresh an existing clone.
 
 ## Shell history and rotation
 

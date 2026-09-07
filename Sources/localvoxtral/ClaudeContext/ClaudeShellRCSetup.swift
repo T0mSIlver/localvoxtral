@@ -29,8 +29,8 @@ public enum ClaudeShellKind: String, Sendable, CaseIterable {
 /// The whole file is PURE: it turns a shell and some existing text into new
 /// text. Deciding to write anything is the caller's, exactly as it is for
 /// `ClaudeRemoteEnrollmentService.applySSHConfigSnippet` — this app never edits
-/// a user's startup file without showing the exact text first and being told
-/// yes.
+/// a user's startup file without naming the file and obtaining consent first.
+/// The exact text belongs in the linked documentation, not Settings.
 public enum ClaudeShellRCSetup {
     /// The delimiters. Idempotency and removal both ride on them, so they are
     /// content-free and must never carry a host, a path or a version: a marker

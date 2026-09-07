@@ -325,20 +325,35 @@ final class ClaudeHookPublisherTests: XCTestCase {
         // strings and one silence. Nothing here interpolates anything.
         XCTAssertEqual(
             ClaudeHookPublisher.statusLineText(for: .connected),
-            "\u{1B}[32m\u{25CF}\u{1B}[0m localvoxtral connected"
+            "lvx \u{1B}[32m\u{25CF}\u{1B}[0m"
         )
         XCTAssertEqual(
             ClaudeHookPublisher.statusLineText(for: .sessionUnknown),
-            "\u{1B}[33m\u{25CB}\u{1B}[0m localvoxtral not connected"
+            "lvx \u{1B}[31m\u{25CF}\u{1B}[0m"
         )
         XCTAssertEqual(
             ClaudeHookPublisher.statusLineText(for: .appUnreachable),
-            "\u{1B}[2m\u{25CB} localvoxtral not running\u{1B}[0m"
+            "lvx \u{1B}[90m\u{25CF}\u{1B}[0m"
         )
         XCTAssertNil(
             ClaudeHookPublisher.statusLineText(for: .unparseablePayload),
             "a payload we cannot attribute must render as nothing, not a guess"
         )
+    }
+
+    func testStatusLinePlainTextFallbackUsesThreeFixedStates() {
+        XCTAssertEqual(
+            ClaudeHookPublisher.statusLineText(for: .connected, useColor: false), "lvx ok"
+        )
+        XCTAssertEqual(
+            ClaudeHookPublisher.statusLineText(for: .sessionUnknown, useColor: false), "lvx err"
+        )
+        XCTAssertEqual(
+            ClaudeHookPublisher.statusLineText(for: .appUnreachable, useColor: false), "lvx off"
+        )
+        XCTAssertFalse(ClaudeHookPublisher.statusLineUsesColor(environment: ["NO_COLOR": ""]))
+        XCTAssertFalse(ClaudeHookPublisher.statusLineUsesColor(environment: ["TERM": "dumb"]))
+        XCTAssertTrue(ClaudeHookPublisher.statusLineUsesColor(environment: ["TERM": "xterm-256color"]))
     }
 }
 

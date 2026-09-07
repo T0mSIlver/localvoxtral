@@ -28,8 +28,8 @@ func parsedEvent(from arguments: [String]) -> String? {
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 
-// Status-line mode: `localvoxtral-claude-hook --statusline`, wired by the USER
-// into Claude Code's `statusLine` setting (the app never writes that file).
+// Status-line mode: `localvoxtral-claude-hook --statusline`, wired into Claude
+// Code's `statusLine` setting after the user confirms the Settings action.
 // Reads the status-line payload, asks the broker whether this session is live,
 // and prints ONE fixed indicator line. The strings are compile-time constants
 // chosen by outcome — nothing read off the socket is ever echoed — and a
@@ -37,7 +37,10 @@ let arguments = Array(CommandLine.arguments.dropFirst())
 if arguments.contains("--statusline") {
     let payload = ClaudeHookPublisher.readBoundedStdin()
     let outcome = ClaudeHookPublisher().runStatusQuery(stdin: payload)
-    if let text = ClaudeHookPublisher.statusLineText(for: outcome) {
+    let useColor = ClaudeHookPublisher.statusLineUsesColor(
+        environment: ProcessInfo.processInfo.environment
+    )
+    if let text = ClaudeHookPublisher.statusLineText(for: outcome, useColor: useColor) {
         ClaudeHookPublisher.writeStdout(Data((text + "\n").utf8))
     }
     exit(0)

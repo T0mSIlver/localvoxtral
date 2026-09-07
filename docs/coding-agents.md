@@ -85,7 +85,7 @@ Install is one click: **Settings → Integrations → Claude Code → "Plugin on
 this Mac" → Install or update**. The app registers its bundled plugin
 marketplace through Claude Code's own CLI. The same pane offers the opt-in
 status-line indicator (it writes exactly the `statusLine` key in
-`~/.claude/settings.json`, previewed first, never over your own script).
+`~/.claude/settings.json` after a one-sentence consent, never over your own script).
 
 **Working over SSH?** A second plugin, `localvoxtral-remote`, covers Claude
 Code sessions on other machines: its hooks POST through an SSH

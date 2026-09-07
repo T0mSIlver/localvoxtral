@@ -248,19 +248,16 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
         XCTAssertEqual(parsed["command"], Self.hookCommand)
     }
 
-    func testSheetCopyStatesPreservationWithNormalization() {
-        // m4: the preview shows the entry, but Apply rewrites the whole file
-        // with normalized formatting — the sheet must promise preservation,
-        // never byte-stability.
-        XCTAssertTrue(
-            ClaudeStatuslineInstallService.sheetExplanation.contains("formatting is normalized"),
-            "the sheet names the normalization"
+    func testConsentAndApplyStatePreservationWithNormalization() {
+        XCTAssertEqual(
+            ClaudeStatuslineInstallService.consentSentence,
+            "localvoxtral will edit ~/.claude/settings.json on this Mac."
         )
         XCTAssertFalse(
-            ClaudeStatuslineInstallService.sheetExplanation.contains("left alone"),
-            "no byte-stability promise"
+            ClaudeStatuslineInstallService.consentSentence.contains(Self.hookCommand),
+            "the sheet must not render generated JSON or commands"
         )
-        // And the behaviour it describes: content preserved, bytes normalized.
+        // Apply still preserves content while normalizing bytes.
         let existing = Data("{\"z\":1,\"a\":2}".utf8)
         let updated = try? XCTUnwrap(ClaudeStatuslineInstallService.updatedSettingsData(
             existing: existing, hookCommand: Self.hookCommand

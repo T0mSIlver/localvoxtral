@@ -48,7 +48,7 @@ fi
 # A green light must expire. `ok` is a claim about the LAST dial, and the one
 # lie this script could otherwise tell is a green dot hours after the Mac
 # went to sleep — precisely the condition the indicator exists to surface. So
-# an `ok` older than 15 minutes demotes to a dim "no recent hooks"; the next
+# an `ok` older than 15 minutes demotes to the grey offline state; the next
 # submitted prompt dials (UserPromptSubmit is backoff-exempt) and restores
 # the truth either way. Only `ok` is demoted: a stale failure state is still
 # the last known truth, and staying conservative can't mislead. Both numbers
@@ -70,20 +70,36 @@ fi
 # guarantees for %b), and the dots are literal UTF-8. printf here is safe in
 # a way it is not in post.sh: there is no secret anywhere in this process,
 # so an external printf putting its argument into an argv leaks nothing.
-# Green dot: the Mac answered 200 to this host's last hook. Everything else
-# names the failure the last dial actually saw.
+# Green means the Mac accepted this host's last hook, grey means no current
+# connection, and red means the app rejected the plugin. NO_COLOR and dumb
+# terminals get the same states as plain text.
+USE_COLOR=1
+if [ "${NO_COLOR+x}" = x ] || [ "${TERM:-}" = dumb ]; then
+  USE_COLOR=""
+fi
+
+render() {
+  STATE_NAME="$1"
+  if [ -z "$USE_COLOR" ]; then
+    printf '%s\n' "lvx $STATE_NAME"
+    return
+  fi
+  case "$STATE_NAME" in
+  ok) printf '%b\n' 'lvx \0033[32m●\0033[0m' ;;
+  off) printf '%b\n' 'lvx \0033[90m●\0033[0m' ;;
+  err) printf '%b\n' 'lvx \0033[31m●\0033[0m' ;;
+  esac
+}
+
 case "$STATE" in
 ok)
   if [ -n "$STALE" ]; then
-    printf '%b\n' '\0033[2m○ localvoxtral no recent hooks\0033[0m'
+    render off
   else
-    printf '%b\n' '\0033[32m●\0033[0m localvoxtral connected'
+    render ok
   fi
   ;;
-http-401) printf '%b\n' '\0033[33m○\0033[0m localvoxtral token rejected' ;;
-http-*) printf '%b\n' '\0033[33m○\0033[0m localvoxtral not connected' ;;
-down) printf '%b\n' '\0033[2m○ localvoxtral unreachable\0033[0m' ;;
-unconfigured) printf '%b\n' '\0033[33m○\0033[0m localvoxtral token not configured' ;;
-*) printf '%b\n' '\0033[2m○ localvoxtral no hooks yet\0033[0m' ;;
+http-401 | http-* | unconfigured) render err ;;
+*) render off ;;
 esac
 exit 0

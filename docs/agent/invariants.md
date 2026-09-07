@@ -669,14 +669,15 @@ there is not.
     wrong costs a non-join with a named cause (`no live session reports this
     terminal's tty`), never a mis-join.
 
-    The setup step is IN THE APP, and follows the ssh-config insert's shape
-    exactly: preview the literal text, write only on explicit consent,
-    idempotent by marker (`ClaudeShellRCSetup`), removable, never silent. Three
+    The setup step is IN THE APP. Its sheet names the rc file in one consent
+    sentence and links to the exact text in the docs; no command or file
+    contents render in Settings. It writes only on explicit consent, is
+    idempotent by marker (`ClaudeShellRCSetup`), removable, and never silent. Three
     login shells get a block written for them — zsh, bash, fish — chosen by
     `dscl`'s `UserShell` with `$SHELL` as a FALLBACK only (a GUI launch
     inherits `$SHELL` from launchd, which is stale after a `chsh`); anything
-    else is told to paste, because guessing at a shell's syntax is how a setup
-    step corrupts a startup file. The writer REFUSES a symlinked rc file — the
+    else is directed to the docs, because guessing at a shell's syntax is how a
+    setup step corrupts a startup file. The writer REFUSES a symlinked rc file — the
     case a dotfiles user actually hits, since an atomic rename replaces the
     link with a regular file and silently detaches their repo. It preserves an
     existing file's mode and creates a new one at 0600. The `SendEnv` half
@@ -1092,16 +1093,17 @@ there is not.
     terminal" and it is bounded by that interval; a state that claims a channel
     must be able to stop claiming it.
 
-- **Remote enrollment execution is opt-in, preview-first, and keeps the token
-  out of process arguments.** `ClaudeRemoteEnrollmentService` generates a
-  copyable plan (idempotent ssh config block, `claude plugin` commands,
-  verify/uninstall steps, caveats), and the Copy buttons remain available.
-  One-click actions require a separate confirmation that repeats the exact
-  ssh-config block or redacted command list. Local insertion replaces only the
+- **Remote enrollment execution is opt-in, consent-first, and keeps the token
+  out of process arguments.** `ClaudeRemoteEnrollmentService` generates the
+  idempotent ssh config block and remote scripts, but Settings never renders or
+  copies their text. Enrollment and host update expose only the six-step
+  `RemoteHostSetupRun`, one consent sentence naming the local files and SSH
+  alias, and a Details link to `docs/remote-claude-context.md`, where every
+  command is listed. Local insertion replaces only the
   matching host's marked block, preserves an existing config's permissions, and
   atomically renames a same-directory temporary file; a missing `~/.ssh` and
-  config are created as 0700/0600. It refuses (with the copy path as the
-  documented out) when `~/.ssh/config` or `~/.ssh` is a symlink — a rename
+  config are created as 0700/0600. It refuses and directs the user to the docs
+  when `~/.ssh/config` or `~/.ssh` is a symlink — a rename
   would replace the link and desync a dotfiles setup — or when `~/.ssh` is not
   owned by the user or is group/world-writable. Remote execution spawns only `ssh -o
   BatchMode=yes <alias> /bin/sh -s` and sends the generated token-bearing script

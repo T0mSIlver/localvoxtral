@@ -1055,11 +1055,6 @@ private struct ClaudePluginInstallRow: View {
 }
 
 /// The opt-in connection indicator in Claude Code's bottom bar.
-///
-/// Install previews the exact JSON first and writes only on consent — the
-/// same shape as the shell setup, for the same reason: this edits a file the
-/// user owns. A foreign status line is never overwritten: no Install button,
-/// only a link to the recipe that runs both.
 private struct ClaudeStatuslineRow: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
     @State private var isShowingSetup = false
@@ -1075,12 +1070,12 @@ private struct ClaudeStatuslineRow: View {
                 switch model.statuslineStatus {
                 case .notConfigured:
                     Button("Set up…") { isShowingSetup = true }
-                        .disabled(model.statuslinePreview == nil)
+                        .disabled(!model.canApplyStatuslineSetup)
                         .accessibilityIdentifier("integrations.claude.statusline.install")
                 case .installed, .stalePath:
                     Button("Update…") { isShowingSetup = true }
                         .disabled(
-                            model.isPerformingStatuslineAction || model.statuslinePreview == nil
+                            model.isPerformingStatuslineAction || !model.canApplyStatuslineSetup
                         )
                         .accessibilityIdentifier("integrations.claude.statusline.install")
                     Button("Remove") { Task { await model.removeStatusline() } }
@@ -1111,19 +1106,19 @@ private struct ClaudeStatuslineRow: View {
 
 /// Install/remove the opencode plugin.
 ///
-/// Acts on press: the copy target is a file this app owns, and the `tui.json`
-/// edit touches only this plugin's own list entry — everything else
-/// round-trips. Failures report one short line here and the detail in an
-/// alert (owner rule).
+/// Installation is confirmed in a consent sheet because it writes both the
+/// plugin and the user's `tui.json`. Failures report one short line here and
+/// the detail in an alert (owner rule).
 private struct OpencodePluginRow: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
+    @State private var isShowingSetup = false
 
     var body: some View {
         // Stacked like the Claude Code rows: button bar plus status line.
         SettingsFieldRow(title: "opencode", layout: .stacked) {
             HStack(spacing: 8) {
-                Button("Install") {
-                    Task { await model.installOpencodePlugin() }
+                Button(model.opencodeStatus == .notInstalled ? "Set up…" : "Update…") {
+                    isShowingSetup = true
                 }
                 .disabled(model.isPerformingOpencodeAction)
                 .accessibilityIdentifier("integrations.opencode.install")
@@ -1144,6 +1139,9 @@ private struct OpencodePluginRow: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .accessibilityIdentifier("integrations.opencode.status")
+        }
+        .sheet(isPresented: $isShowingSetup) {
+            OpencodePluginSetupSheet(model: model) { isShowingSetup = false }
         }
     }
 }
@@ -1200,7 +1198,7 @@ private struct ClaudeCmuxPasswordSettingsRow: View {
     }
 }
 
-/// Enrolled SSH hosts, and the preview-first setup for each.
+/// Enrolled SSH hosts and their automated setup flow.
 private struct ClaudeRemoteHostsSettingsRow: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
     @State private var isShowingShellSetup = false
@@ -1228,7 +1226,6 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                     enrollmentForm
                     listenerStatus
                     shellSetup
-                    herdrPanelSetup
                 }
             }
         }
@@ -1261,9 +1258,7 @@ private struct ClaudeRemoteHostsSettingsRow: View {
         }
     }
 
-    /// The plain-ssh join's one setup step: two short sentences and a button,
-    /// inside the group that already exists. Nothing is written until the sheet
-    /// has shown the exact text and been confirmed.
+    /// The plain-ssh join's local shell setup.
     @ViewBuilder
     private var shellSetup: some View {
         HStack(spacing: 8) {
@@ -1288,7 +1283,7 @@ private struct ClaudeRemoteHostsSettingsRow: View {
             }
             Button("Set up…") { isShowingShellSetup = true }
                 .controlSize(.small)
-                .disabled(model.shellSetupPreview == nil)
+                .disabled(!model.canApplyShellSetup)
                 .accessibilityIdentifier("claude.remote.shellSetup.setUp")
         }
     }
@@ -1384,118 +1379,54 @@ private struct ClaudeRemoteHostsSettingsRow: View {
         }
     }
 
-    /// One host's plugin-update commands, disclosed in that host's row.
-    ///
-    /// In the row rather than a new group, and confirmed and reported where the
-    /// button is (PR #194): a result the user has to go looking for is a result
-    /// they conclude never happened.
+    /// One host's automated update, kept inside that host's row.
     @ViewBuilder
     private func pluginUpdatePanel(for host: ClaudeIntegrationSettingsModel.HostRow) -> some View {
         if let update = model.presentedPluginUpdate, update.hostID == host.id {
-            // BOTH mutations, in order — not just the remote commands. The
-            // copy-only paths (no recorded alias; the symlink refusal that
-            // sends the user here) are exactly where showing only the commands
-            // recreated the split brain this feature exists to remove.
-            let commands = update.applicationText
-            let action = ClaudeIntegrationSettingsModel.EnrollmentAction.updateRemotePlugin(hostID: host.id)
-            let pendingConfirmation = model.enrollmentConfirmation.flatMap {
-                $0.action == action ? $0 : nil
-            }
             VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("Update the plugin on \(host.label)").font(.caption).bold()
-                    Spacer()
-                    Button("Copy") {
-                        // No token here — the update keeps the stored one — but
-                        // concealed anyway, so a Settings copy cannot ride into
-                        // the next polish prompt's clipboard context.
-                        ConcealedPasteboardWriter.write(commands)
-                    }
-                    .controlSize(.small)
-                    Button("Close") { model.dismissPluginUpdate() }
-                        .controlSize(.small)
-                        .disabled(model.isEnrollmentBusy)
-                }
-                // The displayed block IS the confirmation preview, highlighted
-                // while the question is pending, so confirming still repeats the
-                // exact commands it authorizes.
-                Text(commands)
-                    .font(.system(size: 12, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-                    .background(
-                        pendingConfirmation != nil
-                            ? Color.orange.opacity(0.10) : Color.secondary.opacity(0.08),
-                        in: RoundedRectangle(cornerRadius: 4)
-                    )
-                if let confirmation = pendingConfirmation {
-                    Text(confirmation.title).font(.body).bold()
-                    HStack {
-                        Button("Cancel") { model.cancelEnrollmentActionConfirmation() }
-                        Button(confirmation.confirmButtonTitle) {
-                            Task { await model.confirmEnrollmentAction() }
+                Text("Update \(host.label)").font(.caption).bold()
+                if let alias = update.sshHostAlias {
+                    Text(model.hostSetupConsentSentence(sshHostAlias: alias))
+                        .font(.caption)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Link("Details", destination: Self.remoteSetupDocumentationURL)
+                        .font(.caption)
+                    if !model.isEnrollmentBusy {
+                        HStack(spacing: 8) {
+                            Button("Cancel") { model.dismissPluginUpdate() }
+                                .controlSize(.small)
+                            Button("Set Up") {
+                                Task {
+                                    model.requestHostUpdateRun()
+                                    await model.confirmEnrollmentAction()
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .accessibilityIdentifier("integrations.remote.setup.run")
                         }
-                        .buttonStyle(.borderedProminent)
                     }
-                    .controlSize(.small)
-                } else if update.canRun {
-                    HStack(spacing: 8) {
-                        Button("Run on SSH host") { model.requestPluginUpdateRun() }
-                            .controlSize(.small)
-                            .disabled(model.isEnrollmentBusy)
-                        Button("Update Host") { model.requestHostUpdateRun() }
-                            .controlSize(.small)
-                            .disabled(model.isEnrollmentBusy)
-                    }
-                    updateHostConfirmation(for: host)
                 } else {
-                    Text("Replace your-ssh-host with the alias from your ~/.ssh/config, then apply both steps above yourself. Do the ssh-config block first.")
+                    Text("Re-enroll this host before updating it because its SSH alias was not recorded.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Button("Cancel") { model.dismissPluginUpdate() }
+                            .controlSize(.small)
+                        Link("Details", destination: Self.remoteSetupDocumentationURL)
+                            .font(.caption)
+                    }
                 }
-                if model.setupRun?.hostID == host.id {
-                    ClaudeSetupRunSteps(model: model, hostID: host.id)
-                }
-                if model.enrollmentResultsAction == action {
-                    ClaudeEnrollmentStepResults(statuses: model.enrollmentStepStatuses)
-                }
+                ClaudeSetupRunSteps(model: model, hostID: host.id)
             }
             .padding(.leading, 8)
             .padding(.bottom, 4)
         }
     }
 
-    /// The one-flow update's consent, inside the row whose button asked for it.
-    ///
-    /// Same shape as the plugin-update confirmation above it: the exact preview
-    /// the run will apply, then one confirming button. The run's own step list
-    /// renders below, shared with the enrollment sheet.
-    @ViewBuilder
-    private func updateHostConfirmation(
-        for host: ClaudeIntegrationSettingsModel.HostRow
-    ) -> some View {
-        let action = ClaudeIntegrationSettingsModel.EnrollmentAction.updateHost(hostID: host.id)
-        if let confirmation = model.enrollmentConfirmation,
-           confirmation.action == action {
-            Text(confirmation.title).font(.body).bold()
-            Text(confirmation.preview)
-                .font(.system(size: 12, design: .monospaced))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
-                .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 4))
-            HStack {
-                Button("Cancel") { model.cancelEnrollmentActionConfirmation() }
-                Button(confirmation.confirmButtonTitle) {
-                    Task { await model.confirmEnrollmentAction() }
-                }
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("integrations.remote.setup.run")
-            }
-            .controlSize(.small)
-        }
-    }
+    private static let remoteSetupDocumentationURL = URL(
+        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/remote-claude-context.md"
+    )!
 
     private var enrollmentForm: some View {
         HStack(spacing: 8) {
@@ -1530,67 +1461,6 @@ private struct ClaudeRemoteHostsSettingsRow: View {
         }
     }
 
-    @ViewBuilder
-    private var herdrPanelSetup: some View {
-        if let message = model.herdrPanelStatus.message {
-            SettingsInlineMessage(message, color: .orange)
-            Text(ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet)
-                .font(.system(.caption2, design: .monospaced))
-                .textSelection(.enabled)
-                .padding(6)
-                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
-            ForEach(model.hosts.filter { !$0.isRevoked && $0.sshHostAlias != nil }) { host in
-                let action = ClaudeIntegrationSettingsModel.EnrollmentAction.configureHerdrPanel(
-                    hostID: host.id
-                )
-                if let confirmation = model.enrollmentConfirmation,
-                   confirmation.action == action {
-                    Text(confirmation.title).font(.caption).bold()
-                    HStack {
-                        Button("Cancel") { model.cancelEnrollmentActionConfirmation() }
-                        Button(confirmation.confirmButtonTitle) {
-                            Task { await model.confirmEnrollmentAction() }
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                    .controlSize(.small)
-                } else {
-                    Button("Configure on \(host.label)…") {
-                        model.requestHerdrPanelConfiguration(hostID: host.id)
-                    }
-                    .controlSize(.small)
-                }
-                if model.enrollmentResultsAction == action {
-                    ClaudeEnrollmentStepResults(statuses: model.enrollmentStepStatuses)
-                }
-            }
-        }
-    }
-}
-
-/// One action's outcome, rendered inside the section whose button ran it.
-///
-/// A pooled results area below step 2 is how a step-1 success went unseen in the
-/// field and got re-confirmed — so the caller places this, and the model's
-/// `enrollmentResultsAction` decides which caller gets to.
-private struct ClaudeEnrollmentStepResults: View {
-    let statuses: [ClaudeIntegrationSettingsModel.EnrollmentStepStatus]
-
-    var body: some View {
-        if !statuses.isEmpty {
-            // One line per step, and no command output: raw remote text is the
-            // alert's and the log's job (owner rule), and at .caption2 in a
-            // 90pt scroller nobody read it anyway.
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(statuses) { step in
-                    Text("\(step.succeeded ? "✓" : "✗") \(step.text)")
-                        .font(.body)
-                        .foregroundStyle(step.succeeded ? AnyShapeStyle(.primary) : AnyShapeStyle(.orange))
-                        .lineLimit(1)
-                }
-            }
-        }
-    }
 }
 
 /// One consented setup run, one line per step.
@@ -1603,38 +1473,39 @@ private struct ClaudeSetupRunSteps: View {
     var hostID: String
 
     var body: some View {
-        if let run = model.setupRun, run.hostID == hostID {
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(run.items) { item in
-                    HStack(spacing: 6) {
-                        Text(Self.glyph(for: item.state))
+        let activeRun = model.setupRun.flatMap { $0.hostID == hostID ? $0 : nil }
+        let items = activeRun?.items ?? RemoteHostSetupRun.Step.allCases.map {
+            RemoteHostSetupRun.Item(step: $0, state: .pending)
+        }
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(items) { item in
+                HStack(spacing: 6) {
+                    Text(Self.glyph(for: item.state))
+                        .font(.body)
+                        .foregroundStyle(
+                            Self.isFailure(item.state)
+                                ? AnyShapeStyle(.orange) : AnyShapeStyle(.primary))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(item.step.title)
                             .font(.body)
-                            .foregroundStyle(
-                                Self.isFailure(item.state)
-                                    ? AnyShapeStyle(.orange) : AnyShapeStyle(.primary))
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(item.step.title)
-                                .font(.body)
-                            Text(Self.statusLine(for: item.state))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+                        Text(Self.statusLine(for: item.state))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    .lineLimit(1)
-                    .accessibilityIdentifier("integrations.remote.setup.step.\(item.step.rawValue)")
                 }
+                .lineLimit(1)
+                .accessibilityIdentifier("integrations.remote.setup.step.\(item.step.rawValue)")
             }
-            if model.isEnrollmentBusy {
-                Button("Cancel") { model.cancelSetupRun() }
-                    .controlSize(.small)
-                    .accessibilityIdentifier("integrations.remote.setup.cancel")
-            }
-            if let manual = model.setupManualInstructions {
-                Text(manual)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
+        }
+        if activeRun != nil, model.isEnrollmentBusy {
+            Button("Cancel") { model.cancelSetupRun() }
+                .controlSize(.small)
+                .accessibilityIdentifier("integrations.remote.setup.cancel")
+        }
+        if activeRun != nil, let manual = model.setupManualInstructions {
+            Text(manual)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -1664,12 +1535,7 @@ private struct ClaudeSetupRunSteps: View {
     }
 }
 
-/// The token, shown exactly once.
-///
-/// The registry stores only hashes, so this sheet is genuinely the user's one
-/// chance to copy the credential — there is no "show it again". The copy says so
-/// plainly, and the recovery path (rotate) is one button away in the pane behind
-/// it.
+/// One consent sentence and the six-step automated setup run.
 private struct ClaudeRemoteEnrollmentSheet: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
     let presentation: ClaudeIntegrationSettingsModel.EnrollmentPresentation
@@ -1679,17 +1545,10 @@ private struct ClaudeRemoteEnrollmentSheet: View {
         string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/remote-claude-context.md"
     )!
 
-    private var plan: ClaudeRemoteEnrollmentService.SetupPlan { presentation.plan }
-
-    /// The preview sheet exists to be photographed, so nothing in it may act.
-    /// The model refuses a preview presentation on every entry point; this only
-    /// stops the buttons looking live.
-    private var actionsDisabled: Bool { model.isEnrollmentBusy || presentation.isPreview }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
-                Text(presentation.isRotation ? "New token for \(presentation.host.label)" : "Enroll \(presentation.host.label)")
+                Text(presentation.isRotation ? "Set up \(presentation.host.label) again" : "Set up \(presentation.host.label)")
                     .font(.headline)
                 if presentation.isPreview {
                     Text("Preview")
@@ -1701,60 +1560,20 @@ private struct ClaudeRemoteEnrollmentSheet: View {
             }
 
             if presentation.isRotation {
-                Text("The previous token stopped working immediately. This host has no access until you run step 2 again with the new token.")
+                Text("The previous token stopped working immediately. Set up this host to restore access.")
                     .font(.body)
                     .foregroundStyle(.secondary)
             }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    section(
-                        "Copy the token now",
-                        body: presentation.token,
-                        note: "It cannot be shown again. If you lose it, rotate."
-                    )
-                    setupRunSection
-                    section(
-                        "1. Add the SSH config",
-                        body: plan.sshConfigSnippet,
-                        primaryActionTitle: "Insert into ~/.ssh/config",
-                        enrollmentAction: .insertSSHConfig,
-                        action: { model.requestSSHConfigInsertion() }
-                    )
-                    // No Run button when the alias is the placeholder: this host
-                    // was enrolled before the alias was persisted, so we do not
-                    // know where to send a token. Copy still works.
-                    section(
-                        "2. Install on the host",
-                        body: plan.remoteCommands.joined(separator: "\n"),
-                        displayedBody: ClaudeIntegrationSettingsModel.redactedRemoteCommands(for: presentation),
-                        note: presentation.canRunRemoteSetup
-                            ? "The token never enters a process argument on this Mac. On the host it is in the install command arguments while it runs, and stored under ~/.claude after. Rotate if that host is shared."
-                            : "Replace \(ClaudeIntegrationSettingsModel.unknownAliasPlaceholder) with the alias from your ~/.ssh/config and run these yourself. This host was enrolled before localvoxtral recorded its alias.",
-                        primaryActionTitle: presentation.canRunRemoteSetup ? "Run on SSH host" : nil,
-                        enrollmentAction: .runRemoteSetup,
-                        action: presentation.canRunRemoteSetup ? { model.requestRemoteSetup() } : nil
-                    )
-                    section(
-                        "3. Show the dictation indicator in herdr",
-                        body: ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet,
-                        note: "After confirmation, localvoxtral appends this only when no agents table or rows key exists. Otherwise it leaves the file unchanged.",
-                        primaryActionTitle: presentation.canRunRemoteSetup ? "Configure on SSH host" : nil,
-                        enrollmentAction: .configureHerdrPanel(hostID: presentation.host.id),
-                        action: presentation.canRunRemoteSetup
-                            ? { model.requestHerdrPanelConfiguration(hostID: presentation.host.id) }
-                            : nil
-                    )
-                    verificationSection
-                    section(
-                        "Update later",
-                        body: plan.updateCommands.joined(separator: "\n"),
-                        note: "Re-running step 2 does not update the plugin."
-                    )
+            Text(model.hostSetupConsentSentence(sshHostAlias: presentation.sshHostAlias))
+                .font(.body)
+                .fixedSize(horizontal: false, vertical: true)
+            Link("Details", destination: Self.documentationURL)
+                .font(.body)
 
-                    Link("Uninstall or check manually", destination: Self.documentationURL)
-                        .font(.body)
-                }
+            ScrollView {
+                ClaudeSetupRunSteps(model: model, hostID: presentation.host.id)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(minHeight: 280)
 
@@ -1763,167 +1582,26 @@ private struct ClaudeRemoteEnrollmentSheet: View {
                     ProgressView().controlSize(.small)
                 }
                 Spacer()
-                Button("Done", action: onDismiss).keyboardShortcut(.defaultAction)
-                    .disabled(model.isEnrollmentBusy)
+                if !model.isEnrollmentBusy {
+                    Button("Cancel", action: onDismiss)
+                        .accessibilityIdentifier("integrations.remote.setup.cancel")
+                    if presentation.canRunRemoteSetup {
+                        Button("Set Up") {
+                            Task {
+                                model.requestHostSetup()
+                                await model.confirmEnrollmentAction()
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(presentation.isPreview)
+                        .accessibilityIdentifier("integrations.remote.setup.run")
+                    }
+                }
             }
         }
         .padding(18)
-        .frame(width: 580, height: 580)
-    }
-
-    /// The one flow: every numbered step below, in order, each self-verifying.
-    ///
-    /// Consent covers the whole run at once — the preview names what lands on
-    /// this Mac (the ssh block, the shell block) and what runs on the host —
-    /// and the run stops at the first failure with its remedy. The numbered
-    /// sections stay for copying each step by hand.
-    private var setupRunSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Set up this host").font(.headline)
-            Text("Runs all six steps in order, stopping at the first failure with its remedy.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            let action = ClaudeIntegrationSettingsModel.EnrollmentAction.setupHost
-            if let confirmation = model.enrollmentConfirmation,
-               confirmation.action == action {
-                Text(confirmation.preview)
-                    .font(.system(size: 12, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-                    .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 4))
-                Text(confirmation.title).font(.body).bold()
-                HStack {
-                    Button("Cancel") { model.cancelEnrollmentActionConfirmation() }
-                    Button(confirmation.confirmButtonTitle) {
-                        Task { await model.confirmEnrollmentAction() }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier("integrations.remote.setup.run")
-                }
-                .controlSize(.small)
-            } else if !model.isEnrollmentBusy {
-                // Re-runnable on purpose: a failed run's remedy is usually
-                // "fix that, then run it again", and the reset (`setupRun`
-                // is cleared by `requestHostSetup`) makes the new run's list
-                // replace the old one rather than append to it.
-                Button("Run Setup", action: { model.requestHostSetup() })
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(actionsDisabled || !presentation.canRunRemoteSetup)
-            }
-            ClaudeSetupRunSteps(model: model, hostID: presentation.host.id)
-        }
-    }
-
-    /// Step 3: the app runs the checks and states the verdict.
-    ///
-    /// There is nothing to copy here on purpose. The commands this replaced
-    /// needed a dozen `#` lines to explain their own output — that a forward
-    /// failure can be healthy, that HTTP 401 is the success signal — and a
-    /// person still read healthy output as broken (field report 2026-07-26).
-    /// Interpretation belongs in code.
-    private var verificationSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("4. Check the setup").font(.headline)
-            Text(
-                presentation.canRunRemoteSetup
-                    ? "Runs two read-only checks over SSH. Changes nothing."
-                    // Same reason step 2 withholds its button: with no alias on
-                    // file, checking the placeholder would report on whatever
-                    // machine answers to that name.
-                    : "Unavailable until this host's SSH alias is known. localvoxtral did not record one when it was enrolled. Re-enrol it, or run the checks from the linked page yourself."
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            Button("Check setup") { Task { await model.runVerification() } }
-                .controlSize(.small)
-                .disabled(actionsDisabled || !presentation.canRunRemoteSetup)
-            ForEach(model.verificationChecks) { check in
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("\(check.passed ? "✓" : "✗") \(check.title): \(check.summary)")
-                        .font(.body)
-                        .foregroundStyle(check.passed ? AnyShapeStyle(.primary) : AnyShapeStyle(.orange))
-                    if let hint = check.hint {
-                        Text(hint).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func sectionResults(for enrollmentAction: ClaudeIntegrationSettingsModel.EnrollmentAction) -> some View {
-        if model.enrollmentResultsAction == enrollmentAction {
-            ClaudeEnrollmentStepResults(statuses: model.enrollmentStepStatuses)
-        }
-    }
-
-    private func section(
-        _ title: String,
-        body: String,
-        displayedBody: String? = nil,
-        note: String? = nil,
-        primaryActionTitle: String? = nil,
-        enrollmentAction: ClaudeIntegrationSettingsModel.EnrollmentAction? = nil,
-        action: (() -> Void)? = nil
-    ) -> some View {
-        // The confirmation lives in the section whose button requested it, so
-        // "Confirm" is always next to the thing it confirms. The displayed body
-        // above the buttons IS the confirmation preview (the plan's exact
-        // snippet for step 1, the redacted commands for step 2) — highlighted
-        // while the question is pending, so the second explicit confirmation
-        // still repeats the exact text it authorizes.
-        let pendingConfirmation = model.enrollmentConfirmation.flatMap { confirmation in
-            confirmation.action == enrollmentAction ? confirmation : nil
-        }
-        return VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.headline)
-            Text(displayedBody ?? body)
-                .font(.system(size: 12, design: .monospaced))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
-                .background(
-                    pendingConfirmation != nil
-                        ? Color.orange.opacity(0.10) : Color.secondary.opacity(0.08),
-                    in: RoundedRectangle(cornerRadius: 4)
-                )
-            if let note {
-                Text(note).font(.caption).foregroundStyle(.secondary)
-            }
-            if let confirmation = pendingConfirmation {
-                Text(confirmation.title).font(.body).bold()
-                HStack {
-                    Button("Cancel") { model.cancelEnrollmentActionConfirmation() }
-                    Button(confirmation.confirmButtonTitle) {
-                        Task { await model.confirmEnrollmentAction() }
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                .controlSize(.small)
-            } else {
-                HStack(spacing: 8) {
-                    if let primaryActionTitle, let action {
-                        Button(primaryActionTitle, action: action)
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                            .disabled(actionsDisabled)
-                    }
-                    Button("Copy") {
-                        // Everything in this sheet embeds or accompanies the
-                        // enrollment token — concealed, so clipboard managers
-                        // and our own clipboard-context harvester skip it (F4).
-                        // Copy stays live in a preview: it mutates nothing.
-                        ConcealedPasteboardWriter.write(body)
-                    }
-                    .controlSize(.small)
-                }
-            }
-            if let enrollmentAction {
-                sectionResults(for: enrollmentAction)
-            }
-        }
+        .frame(width: 520, height: 500)
     }
 }
 
@@ -2354,49 +2032,37 @@ private struct SettingsInlineMessage: View {
     }
 }
 
-/// Preview, then consent, then write — the same shape as the enrollment
-/// sheet's ssh-config insert, for the same reason: this edits a file the user
-/// owns and did not ask us to touch.
+/// Consent for the shell startup edit.
 private struct ClaudeShellSetupSheet: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
     var dismiss: () -> Void
+
+    private static let documentationURL = URL(
+        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/remote-claude-context.md"
+    )!
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Terminal setup for plain SSH")
                 .font(.headline)
                 .accessibilityIdentifier("claude.shellSetupSheet.title")
-            Text(
-                "This adds one block to \(model.shellSetupStatus.relativeRCPath ?? "your shell startup file"), so a Claude Code session over plain SSH can be matched to the window you are dictating into. Open a new terminal window afterwards. The value is fixed when a session starts."
-            )
-            .font(.callout)
-            .fixedSize(horizontal: false, vertical: true)
-
-            if let preview = model.shellSetupPreview {
-                ScrollView {
-                    Text(preview)
-                        .font(.system(.caption2, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityIdentifier("claude.shellSetupSheet.preview")
-                }
-                .frame(maxHeight: 180)
-                .padding(6)
-                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
-            }
+            Text(model.shellSetupConsentSentence)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            Link("Details", destination: Self.documentationURL)
 
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .accessibilityIdentifier("claude.shellSetupSheet.cancel")
-                Button("Add to my shell") {
+                Button("Set Up") {
                     Task {
                         await model.applyShellSetup()
                         dismiss()
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(model.shellSetupPreview == nil)
+                .disabled(!model.canApplyShellSetup)
                 .accessibilityIdentifier("claude.shellSetupSheet.apply")
             }
         }
@@ -2405,48 +2071,74 @@ private struct ClaudeShellSetupSheet: View {
     }
 }
 
-/// Preview, then consent, then write — the same shape as the shell setup
-/// sheet, for the same reason: this edits a file the user owns and did not
-/// ask us to touch. Only ever writes the `statusLine` key; a foreign entry
-/// never reaches this sheet (the row offers no button for it).
+/// Consent for the Claude Code status-line edit.
 private struct ClaudeStatuslineSetupSheet: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
     var dismiss: () -> Void
+
+    private static let documentationURL = URL(
+        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/claude-code/README.md#connection-indicator-opt-in-status-line"
+    )!
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Claude Code status line")
                 .font(.headline)
-            Text(ClaudeStatuslineInstallService.sheetExplanation)
-            .font(.callout)
-            .fixedSize(horizontal: false, vertical: true)
-
-            if let preview = model.statuslinePreview {
-                ScrollView {
-                    Text(preview)
-                        .font(.system(.caption2, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityIdentifier("integrations.statuslineSheet.preview")
-                }
-                .frame(maxHeight: 120)
-                .padding(6)
-                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
-            }
+            Text(ClaudeStatuslineInstallService.consentSentence)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            Link("Details", destination: Self.documentationURL)
 
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .accessibilityIdentifier("integrations.statuslineSheet.cancel")
-                Button("Add status line") {
+                Button("Set Up") {
                     Task {
                         await model.applyStatuslineSetup()
                         dismiss()
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(model.statuslinePreview == nil)
+                .disabled(!model.canApplyStatuslineSetup)
                 .accessibilityIdentifier("integrations.statuslineSheet.apply")
+            }
+        }
+        .padding(16)
+        .frame(width: 460)
+    }
+}
+
+/// Consent for the opencode plugin files.
+private struct OpencodePluginSetupSheet: View {
+    @Bindable var model: ClaudeIntegrationSettingsModel
+    var dismiss: () -> Void
+
+    private static let documentationURL = URL(
+        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/opencode/README.md#install"
+    )!
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("opencode plugin")
+                .font(.headline)
+            Text(OpencodePluginInstallService.consentSentence)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            Link("Details", destination: Self.documentationURL)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .accessibilityIdentifier("integrations.opencodeSheet.cancel")
+                Button("Set Up") {
+                    Task {
+                        await model.installOpencodePlugin()
+                        dismiss()
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .accessibilityIdentifier("integrations.opencodeSheet.apply")
             }
         }
         .padding(16)

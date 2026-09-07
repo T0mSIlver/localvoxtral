@@ -13,14 +13,15 @@ telemetry, and when the app is not running every write silently does nothing.
 ## Install
 
 In localvoxtral: **Settings → Integrations → Other agents → opencode →
-Install**. The app copies its bundled `localvoxtral.js` into opencode's
+Set Up…**. A one-sentence consent names both files, and **Details** opens this
+command reference. The app copies its bundled `localvoxtral.js` into opencode's
 global plugin directory and lists it in `~/.config/opencode/tui.json` —
 creating that file when it is absent, preserving everything else in it when
 it is present. **Remove** reverses both. Nothing is written until you press
 the button, and a `tui.json` whose `plugin` entry has an unexpected shape is
 left untouched rather than reshaped.
 
-If you prefer to do it by hand — the same two steps the button performs:
+The exact shell-command equivalent is:
 
 1. Copy `localvoxtral.js` into opencode's global plugin directory:
 
