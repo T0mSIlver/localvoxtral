@@ -29,11 +29,58 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
         let existing = try XCTUnwrap(ClaudeStatuslineInstallService.updatedSettingsData(
             existing: nil, hookCommand: Self.hookCommand
         ))
-        let service = ClaudeStatuslineInstallService(fileSystem: StubStatuslineFS(
-            state: ClaudeStatuslineState(fileExists: true, data: existing)
-        ))
+        let service = ClaudeStatuslineInstallService(
+            fileSystem: StubStatuslineFS(
+                state: ClaudeStatuslineState(fileExists: true, data: existing)
+            ),
+            isExecutableFile: { _ in true }
+        )
         XCTAssertEqual(service.status(), .installed)
         XCTAssertEqual(ClaudeStatuslineInstallService.sentence(for: .installed), "Installed.")
+    }
+
+    func testStalePathReportsUpdateInsteadOfInstalled() throws {
+        // M2: the entry points at an app that moved — the path no longer
+        // resolves, so the row must surface it instead of claiming health.
+        let stale = "/Volumes/Old/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook --statusline"
+        let existing = try settingsJSON([
+            "statusLine": ["type": "command", "command": stale],
+        ])
+        let staleService = ClaudeStatuslineInstallService(
+            fileSystem: StubStatuslineFS(
+                state: ClaudeStatuslineState(fileExists: true, data: existing)
+            ),
+            isExecutableFile: { _ in false }
+        )
+        XCTAssertEqual(staleService.status(), .stalePath)
+        XCTAssertEqual(
+            ClaudeStatuslineInstallService.sentence(for: .stalePath),
+            "Installed, path no longer exists — Update."
+        )
+        let healthyService = ClaudeStatuslineInstallService(
+            fileSystem: StubStatuslineFS(
+                state: ClaudeStatuslineState(fileExists: true, data: existing)
+            ),
+            isExecutableFile: { _ in true }
+        )
+        XCTAssertEqual(healthyService.status(), .installed)
+    }
+
+    func testUpdateRewritesAStalePath() throws {
+        // M2: Update on a stale entry rewrites the path (and keeps padding).
+        let stale = "/Volumes/Old/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook --statusline"
+        let existing = try settingsJSON([
+            "statusLine": ["type": "command", "command": stale, "padding": 2],
+        ])
+        let updated = try XCTUnwrap(ClaudeStatuslineInstallService.updatedSettingsData(
+            existing: existing, hookCommand: Self.hookCommand
+        ))
+        let parsed = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: updated) as? [String: Any]
+        )
+        let entry = try XCTUnwrap(parsed["statusLine"] as? [String: Any])
+        XCTAssertEqual(entry["command"] as? String, Self.hookCommand, "Update rewrites the path")
+        XCTAssertEqual(entry["padding"] as? Int, 2, "padding survives the rewrite")
     }
 
     func testForeignCommandIsForeign() throws {
@@ -348,13 +395,22 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
 
+        // M2: status is `.installed` only when the configured path resolves,
+        // so the live round-trip uses a real executable temp file as the hook.
+        let hook = home.appendingPathComponent("localvoxtral-claude-hook", isDirectory: false)
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: hook.path, contents: Data(),
+            attributes: [.posixPermissions: NSNumber(value: Int16(0o755))]
+        ))
+        let hookCommand = "\(hook.path) --statusline"
+
         let service = ClaudeStatuslineInstallService(
             fileSystem: LiveClaudeStatuslineFileSystem(homeDirectoryURL: home)
         )
         XCTAssertEqual(service.status(), .notConfigured)
-        try service.apply(hookCommand: Self.hookCommand)
+        try service.apply(hookCommand: hookCommand)
         XCTAssertEqual(service.status(), .installed)
-        try service.apply(hookCommand: Self.hookCommand)
+        try service.apply(hookCommand: hookCommand)
         XCTAssertEqual(service.status(), .installed)
         try service.remove()
         XCTAssertEqual(service.status(), .notConfigured)

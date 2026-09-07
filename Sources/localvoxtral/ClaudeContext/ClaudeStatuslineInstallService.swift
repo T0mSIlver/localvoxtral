@@ -32,9 +32,18 @@ public struct ClaudeStatuslineInstallService: Sendable {
     public static let statuslineFlag = "--statusline"
 
     private let fileSystem: (any ClaudeStatuslineFileSystem)?
+    /// Whether an invoked path resolves to an existing executable. Injected
+    /// so tests pin stale-path behaviour without touching the filesystem.
+    private let isExecutableFile: @Sendable (String) -> Bool
 
-    public init(fileSystem: (any ClaudeStatuslineFileSystem)? = nil) {
+    public init(
+        fileSystem: (any ClaudeStatuslineFileSystem)? = nil,
+        isExecutableFile: @escaping @Sendable (String) -> Bool = {
+            FileManager.default.isExecutableFile(atPath: $0)
+        }
+    ) {
         self.fileSystem = fileSystem
+        self.isExecutableFile = isExecutableFile
     }
 
     // MARK: - Read-only status
@@ -42,8 +51,12 @@ public struct ClaudeStatuslineInstallService: Sendable {
     public enum Status: Sendable, Equatable {
         /// No `statusLine` key at all. The only state that offers Install.
         case notConfigured
-        /// Our command is the `statusLine`. Offers Update/Remove.
+        /// Our command is the `statusLine` and its path resolves. Offers
+        /// Update/Remove.
         case installed
+        /// Our command, but its path no longer resolves to an executable
+        /// (the app moved). Offers Update, which rewrites the path.
+        case stalePath
         /// A `statusLine` that is not ours. No Install button, ever — only a
         /// docs link. Never overwritten.
         case foreign
@@ -58,6 +71,7 @@ public struct ClaudeStatuslineInstallService: Sendable {
         switch status {
         case .notConfigured: return "Not installed."
         case .installed: return "Installed."
+        case .stalePath: return "Installed, path no longer exists — Update."
         case .foreign: return "Your own status line is configured."
         case .unknown: return "Could not read your Claude settings."
         }
@@ -70,7 +84,31 @@ public struct ClaudeStatuslineInstallService: Sendable {
             // file is unknown — see the rc writer's M2.
             return state.fileExists ? .unknown : .notConfigured
         }
-        return Self.deriveStatus(settingsData: data)
+        let derived = Self.deriveStatus(settingsData: data)
+        guard derived == .installed else { return derived }
+        // "Installed." only when the configured path resolves: an entry
+        // pointing at a moved/deleted app must surface, not claim health.
+        // Bare names (no "/") cannot be checked against the filesystem here;
+        // they report installed and resolve via PATH at runtime.
+        guard
+            let command = Self.deriveCommand(settingsData: data),
+            Self.isCanonical(command: command)
+        else { return derived }
+        let argv = Self.shellWords(command)
+        guard let invoked = argv.first, invoked.contains("/") else { return .installed }
+        return isExecutableFile(invoked) ? .installed : .stalePath
+    }
+
+    /// The configured command string when the file holds a command-shaped
+    /// `statusLine`, nil otherwise. Lets `status()` refine `.installed`
+    /// without re-parsing at the call site.
+    static func deriveCommand(settingsData: Data) -> String? {
+        guard
+            let json = try? JSONSerialization.jsonObject(with: settingsData),
+            let settings = json as? [String: Any],
+            let entry = settings[settingsKey]
+        else { return nil }
+        return statuslineCommand(from: entry)
     }
 
     /// Pure derivation over file bytes, so fixtures pin every shape.
@@ -114,6 +152,22 @@ public struct ClaudeStatuslineInstallService: Sendable {
             return false
         }
         return argv.contains(statuslineFlag)
+    }
+
+    /// Structurally ours with no extras: exactly `[hook, --statusline]`.
+    /// A user-edited formerly-ours command (extra flags, a pipe) still
+    /// matches `isOurs` but is NOT canonical: destructive ops require the
+    /// canonical shape, and stale-path detection only applies to it.
+    public static func isCanonical(
+        command: String,
+        executableName: String = ClaudePluginAssets.publisherExecutableName
+    ) -> Bool {
+        let argv = shellWords(command)
+        guard argv.count == 2 else { return false }
+        guard URL(fileURLWithPath: argv[0]).lastPathComponent == executableName else {
+            return false
+        }
+        return argv[1] == statuslineFlag
     }
 
     /// Split a shell command into words, respecting single/double quotes and

@@ -1106,7 +1106,7 @@ private struct ClaudeStatuslineRow: View {
                     Button("Set Up…") { isShowingSetup = true }
                         .disabled(model.statuslinePreview == nil)
                         .accessibilityIdentifier("integrations.claude.statusline.install")
-                case .installed:
+                case .installed, .stalePath:
                     Button("Update…") { isShowingSetup = true }
                         .disabled(
                             model.isPerformingStatuslineAction || model.statuslinePreview == nil

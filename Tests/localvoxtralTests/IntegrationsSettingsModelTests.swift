@@ -134,7 +134,8 @@ final class IntegrationsSettingsModelTests: XCTestCase {
         ] {
             let model = makeModel(
                 statusline: ClaudeStatuslineInstallService(
-                    fileSystem: StubModelStatuslineFS(state: state)
+                    fileSystem: StubModelStatuslineFS(state: state),
+                    isExecutableFile: { _ in true }
                 ),
                 statuslineHookCommand: { hook }
             )
@@ -150,7 +151,9 @@ final class IntegrationsSettingsModelTests: XCTestCase {
     func testStatuslineApplyAndRemoveRefreshTheRow() async {
         let fs = StubModelStatuslineFS(state: ClaudeStatuslineState(fileExists: false))
         let model = makeModel(
-            statusline: ClaudeStatuslineInstallService(fileSystem: fs),
+            statusline: ClaudeStatuslineInstallService(
+                fileSystem: fs, isExecutableFile: { _ in true }
+            ),
             statuslineHookCommand: {
                 "/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook --statusline"
             }
