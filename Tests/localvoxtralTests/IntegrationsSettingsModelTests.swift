@@ -254,9 +254,17 @@ final class IntegrationsSettingsModelTests: XCTestCase {
             pluginFileExists: true, pluginData: Data("js".utf8),
             tuiFileExists: true, tuiData: fs.writtenTUI?.data
         )
+        // Clear the install phase's writes: what follows pins the remove.
+        fs.writtenPlugin = nil
+        fs.writtenTUI = nil
         await model.removeOpencodePlugin()
         XCTAssertEqual(model.opencodeResult, "Removed.")
         XCTAssertTrue(fs.deletedPlugin)
+        XCTAssertTrue(
+            fs.deletedTUI,
+            "a tui.json holding only our entry is deleted, not emptied"
+        )
+        XCTAssertNil(fs.writtenTUI)
     }
 
     // MARK: - herdr row
@@ -405,6 +413,9 @@ private final class StubModelOpencodeFS: OpencodePluginFileSystem, @unchecked Se
     var writtenPlugin: (data: Data, permissions: UInt16)?
     var writtenTUI: (data: Data, permissions: UInt16)?
     var deletedPlugin = false
+    /// m9: the double used to swallow TUI deletion, so the model test could
+    /// not pin that Remove drops the tui.json-only file.
+    var deletedTUI = false
 
     init(state: OpencodePluginState) { self.state = state }
 
@@ -418,5 +429,5 @@ private final class StubModelOpencodeFS: OpencodePluginFileSystem, @unchecked Se
         writtenTUI = (data, permissions)
     }
     func deletePlugin() throws { deletedPlugin = true }
-    func deleteTUI() throws {}
+    func deleteTUI() throws { deletedTUI = true }
 }
