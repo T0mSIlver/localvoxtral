@@ -2440,38 +2440,162 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
     }
 
-    func testPluginSetupUpdatesAnInstalledPluginAndVerifiesItsVersionInOneSSHSession() throws {
-        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
-        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
-            calls.withLock { $0.append(invocation) }
-            return .init(exitCode: 0, message: "LVX_PLUGIN_ALREADY_CURRENT")
-        })
+    /// The listing a real `claude plugin list --json` prints (Claude Code
+    /// 2.1.x), framed by the listing script, with a banner on each side as a
+    /// login shell's merged pipe delivers it.
+    private static func framedListing(_ version: String?, _ scope: String) -> String {
+        let ours = version.map {
+            """
+            ,{"id":"\(ClaudeRemoteEnrollmentService.remotePluginReference)","version":"\($0)","scope":"\(scope)","enabled":true,"installPath":"/home/dev/.claude/plugins/cache/localvoxtral/localvoxtral-remote/\($0)","installedAt":"2026-07-27T20:59:23.439Z","lastUpdated":"2026-09-07T13:27:31.000Z"}
+            """
+        } ?? ""
+        return "Welcome to builder\n"
+            + ClaudeRemoteEnrollmentService.pluginListFrameBegin + "\n"
+            + "[{\"id\":\"frontend-design@claude-plugins-official\",\"version\":\"unknown\",\"scope\":\"project\",\"enabled\":false,\"installPath\":\"/x\",\"installedAt\":\"2026-07-01T15:07:39.195Z\",\"lastUpdated\":\"2026-07-01T15:07:39.195Z\",\"projectPath\":\"/home/dev/work/other\"}"
+            + ours + "]\n"
+            + ClaudeRemoteEnrollmentService.pluginListFrameEnd + "\nLast login: today\n"
+    }
+
+    /// Records the ssh invocations a plugin setup makes, from the
+    /// nonisolated runner closure.
+    private final class PluginSetupCalls: Sendable {
+        private let storage = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        private let listings = Mutex(0)
+        func record(_ invocation: ClaudeRemoteEnrollmentService.Invocation) {
+            storage.withLock { $0.append(invocation) }
+        }
+        /// 1 for the first listing, 2 for the read-back.
+        func nextListing() -> Int { listings.withLock { $0 += 1; return $0 } }
+        var all: [ClaudeRemoteEnrollmentService.Invocation] { storage.withLock { $0 } }
+        var scripts: [String] { all.map { String(decoding: $0.standardInput, as: UTF8.self) } }
+    }
+
+    /// Answers the three-call plugin setup: listing, install call, listing.
+    private func pluginSetupRunner(
+        before: String?,
+        after: String?,
+        install: ClaudeRemoteEnrollmentService.RunResult = .init(exitCode: 0, message: ""),
+        calls: PluginSetupCalls
+    ) -> ClaudeRemoteEnrollmentService.Runner {
+        let listing = Self.framedListing
+        return { invocation in
+            calls.record(invocation)
+            let stdin = String(decoding: invocation.standardInput, as: UTF8.self)
+            if stdin.contains(ClaudeRemoteEnrollmentService.pluginListFrameBegin) {
+                let n = calls.nextListing()
+                return .init(exitCode: 0, message: listing(n == 1 ? before : after, "user"))
+            }
+            return install
+        }
+    }
+
+    func testPluginSetupDecodesTheListingAndReportsAnAlreadyCurrentPlugin() throws {
+        let calls = PluginSetupCalls()
+        let service = ClaudeRemoteEnrollmentService(
+            runner: pluginSetupRunner(before: "1.7.0", after: "1.7.0", calls: calls)
+        )
 
         XCTAssertEqual(
-            try service.setupRemotePlugin(
-                sshHostAlias: "builder", token: nil, remoteForwardPort: 28_511
-            ),
-            .alreadyCurrent
+            try service.setupRemotePlugin(sshHostAlias: "builder", token: nil, remoteForwardPort: 28_511),
+            ClaudeRemoteEnrollmentService.PluginSetupOutcome.alreadyCurrent
         )
-        let recorded = calls.withLock { $0 }
-        XCTAssertEqual(recorded.count, 1, "detect, update, and version verification share one ssh session")
-        let script = String(decoding: recorded[0].standardInput, as: UTF8.self)
-        XCTAssertTrue(script.contains("claude plugin marketplace update"))
-        // The version check reads the listing line `claude plugin list` prints
-        // for our reference and matches the version as a space-delimited word
-        // (so 11.7.0 can never satisfy 1.7.0) — both before deciding AND after
-        // the install, in the same session.
-        XCTAssertTrue(
-            script.contains("grep -F '\(ClaudeRemoteEnrollmentService.remotePluginReference)' | head -n 1")
-        )
-        XCTAssertTrue(
-            script.contains("*\" \(ClaudeRemoteEnrollmentService.remotePluginVersion) \"*"),
-            "the version is matched as a word"
+        XCTAssertEqual(calls.all.count, 3, "listing, install call, listing")
+        let scripts = calls.scripts
+        XCTAssertTrue(scripts[0].contains("claude plugin list --json"))
+        XCTAssertTrue(scripts[1].contains("claude plugin install"))
+        XCTAssertFalse(scripts[1].contains("claude plugin update"), "a current plugin is not updated")
+        XCTAssertTrue(scripts[2].contains("claude plugin list --json"))
+        // Nothing on the host matches text: the decision and the read-back
+        // are decoded here from the JSON the CLI prints.
+        for script in scripts {
+            XCTAssertFalse(script.contains("grep"), "no text matching on the host")
+            XCTAssertFalse(script.contains("case \""), "no text matching on the host")
+        }
+    }
+
+    func testPluginSetupUpdatesAStalePluginAndReadsTheNewVersionBack() throws {
+        let calls = PluginSetupCalls()
+        let service = ClaudeRemoteEnrollmentService(
+            runner: pluginSetupRunner(before: "1.4.0", after: "1.7.0", calls: calls)
         )
         XCTAssertEqual(
-            script.components(separatedBy: "claude plugin list").count - 1,
-            2,
-            "the version is read before the decision and again after the install"
+            try service.setupRemotePlugin(sshHostAlias: "builder", token: nil, remoteForwardPort: 28_511),
+            ClaudeRemoteEnrollmentService.PluginSetupOutcome.updated
+        )
+        let script = calls.scripts[1]
+        XCTAssertTrue(script.contains("claude plugin marketplace update"))
+        XCTAssertTrue(script.contains("claude plugin update"))
+    }
+
+    func testPluginSetupInstallsAnAbsentPluginWhenItHasAToken() throws {
+        let calls = PluginSetupCalls()
+        let service = ClaudeRemoteEnrollmentService(
+            runner: pluginSetupRunner(before: nil, after: "1.7.0", calls: calls)
+        )
+        XCTAssertEqual(
+            try service.setupRemotePlugin(sshHostAlias: "builder", token: "t0k", remoteForwardPort: 28_511),
+            ClaudeRemoteEnrollmentService.PluginSetupOutcome.installed
+        )
+        let script = calls.scripts[1]
+        XCTAssertTrue(script.contains("claude plugin marketplace add"))
+        XCTAssertTrue(script.contains("--config 'token=t0k'"))
+    }
+
+    func testPluginSetupReadBackNamesTheVersionItFound() throws {
+        // The field failure of 2026-09-07: the plugin was current, but the
+        // check read the human listing's reference line, which no longer
+        // carries the version, and reported a mismatch on every host.
+        let calls = PluginSetupCalls()
+        let service = ClaudeRemoteEnrollmentService(
+            runner: pluginSetupRunner(before: "1.6.0", after: "1.6.0", calls: calls)
+        )
+        XCTAssertThrowsError(
+            try service.setupRemotePlugin(sshHostAlias: "builder", token: nil, remoteForwardPort: 28_511)
+        ) { error in
+            guard case ClaudeRemoteEnrollmentService.ServiceError.commandFailed(_, _, 43, let message) = error
+            else { return XCTFail("expected the read-back diagnosis, got \(error)") }
+            XCTAssertEqual(message, "The plugin reports version 1.6.0 after setup, not 1.7.0.")
+        }
+    }
+
+    func testPluginListingDecoderPrefersTheUserScopeEntryAndRefusesUnreadableCaptures() throws {
+        let reference = ClaudeRemoteEnrollmentService.remotePluginReference
+        let twoScopes = ClaudeRemoteEnrollmentService.pluginListFrameBegin + "\n"
+            + "[{\"id\":\"\(reference)\",\"version\":\"1.2.0\",\"scope\":\"project\"},"
+            + "{\"id\":\"\(reference)\",\"version\":\"1.7.0\",\"scope\":\"user\"}]\n"
+            + ClaudeRemoteEnrollmentService.pluginListFrameEnd
+        XCTAssertEqual(
+            try ClaudeRemoteEnrollmentService.installedRemotePluginVersion(
+                inFramedOutput: twoScopes, reference: reference
+            ),
+            "1.7.0"
+        )
+        XCTAssertNil(
+            try ClaudeRemoteEnrollmentService.installedRemotePluginVersion(
+                inFramedOutput: Self.framedListing(nil, "user"), reference: reference
+            ),
+            "an unrelated plugin is not ours"
+        )
+        // A version that merely contains ours is not ours.
+        XCTAssertEqual(
+            try ClaudeRemoteEnrollmentService.installedRemotePluginVersion(
+                inFramedOutput: Self.framedListing("11.7.0", "user"), reference: reference
+            ),
+            "11.7.0"
+        )
+        XCTAssertThrowsError(
+            try ClaudeRemoteEnrollmentService.installedRemotePluginVersion(
+                inFramedOutput: "Welcome\n[]\n", reference: reference
+            ),
+            "no frame is an unreadable host, not an absent plugin"
+        )
+        XCTAssertThrowsError(
+            try ClaudeRemoteEnrollmentService.installedRemotePluginVersion(
+                inFramedOutput: ClaudeRemoteEnrollmentService.pluginListFrameBegin + "\nnot json\n"
+                    + ClaudeRemoteEnrollmentService.pluginListFrameEnd,
+                reference: reference
+            ),
+            "an undecodable frame is an unreadable host"
         )
     }
 
@@ -2480,42 +2604,44 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         // tokenless would look exactly like a healthy enrollment failing open,
         // so an absent plugin is reported for the remedy (rotate), not
         // silently installed broken.
-        let service = ClaudeRemoteEnrollmentService(runner: { _ in
-            .init(exitCode: 44, message: "LVX_PLUGIN_ABSENT")
-        })
-
+        let calls = PluginSetupCalls()
+        let service = ClaudeRemoteEnrollmentService(
+            runner: pluginSetupRunner(before: nil, after: nil, calls: calls)
+        )
         XCTAssertThrowsError(
-            try service.setupRemotePlugin(
-                sshHostAlias: "builder", token: nil, remoteForwardPort: 28_511
-            )
+            try service.setupRemotePlugin(sshHostAlias: "builder", token: nil, remoteForwardPort: 28_511)
         ) { error in
-            guard case ClaudeRemoteEnrollmentService.ServiceError
-                .commandFailed(_, _, 44, let message) = error else {
-                return XCTFail("expected exit 44 with the rotation remedy, got \(error)")
-            }
+            guard case ClaudeRemoteEnrollmentService.ServiceError.commandFailed(_, _, 44, let message) = error
+            else { return XCTFail("expected exit 44 with the rotation remedy, got \(error)") }
             XCTAssertTrue(message.contains("Rotate this host's token"))
         }
+        XCTAssertEqual(calls.all.count, 1, "nothing is installed without a token")
     }
 
-    func testPluginSetupDistinguishesMissingCLICommandFailureAndVersionMismatch() throws {
-        func failure(exitCode: Int32) throws -> ClaudeRemoteEnrollmentService.ServiceError {
-            let service = ClaudeRemoteEnrollmentService(runner: { _ in
-                .init(exitCode: exitCode, message: "untrusted host output")
+    func testPluginSetupDistinguishesMissingCLIFromAFailedInstall() throws {
+        func failure(listingExit: Int32, installExit: Int32) throws -> ClaudeRemoteEnrollmentService.ServiceError {
+            let calls = PluginSetupCalls()
+            let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+                calls.record(invocation)
+                let stdin = String(decoding: invocation.standardInput, as: UTF8.self)
+                if stdin.contains(ClaudeRemoteEnrollmentService.pluginListFrameBegin) {
+                    _ = calls.nextListing()
+                    return listingExit == 0
+                        ? .init(exitCode: 0, message: Self.framedListing("1.6.0", "user"))
+                        : .init(exitCode: listingExit, message: "untrusted host output")
+                }
+                return .init(exitCode: installExit, message: "untrusted host output")
             })
             do {
-                _ = try service.setupRemotePlugin(
-                    sshHostAlias: "builder",
-                    token: "test-token",
-                    remoteForwardPort: 28_511
-                )
-                XCTFail("exit \(exitCode) must fail")
+                _ = try service.setupRemotePlugin(sshHostAlias: "builder", token: "test-token", remoteForwardPort: 28_511)
+                XCTFail("must fail")
                 return .executionNotConfigured
             } catch let error as ClaudeRemoteEnrollmentService.ServiceError {
                 return error
             }
         }
 
-        guard case .commandFailed(_, _, 127, let missingCLI) = try failure(exitCode: 127) else {
+        guard case .commandFailed(_, _, 127, let missingCLI) = try failure(listingExit: 127, installExit: 0) else {
             return XCTFail("expected the missing CLI diagnosis")
         }
         XCTAssertEqual(
@@ -2523,21 +2649,10 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             "Claude CLI was not found on the remote host. "
                 + "Install Claude Code there, or put it on the non-interactive SSH PATH."
         )
-
-        guard case .commandFailed(_, _, 1, let commandFailure) = try failure(exitCode: 1) else {
-            return XCTFail("expected the generic command failure diagnosis")
+        guard case .commandFailed(_, _, 1, let installFailure) = try failure(listingExit: 0, installExit: 1) else {
+            return XCTFail("expected the install failure diagnosis")
         }
-        XCTAssertEqual(commandFailure, "The remote plugin setup command failed.")
-
-        guard case .commandFailed(_, _, 43, let versionMismatch) = try failure(exitCode: 43) else {
-            return XCTFail("expected the version read-back diagnosis")
-        }
-        XCTAssertEqual(
-            versionMismatch,
-            "The plugin is installed but did not report version "
-                + ClaudeRemoteEnrollmentService.remotePluginVersion
-                + " when read back in the same session."
-        )
+        XCTAssertEqual(installFailure, "The remote plugin setup command failed.")
     }
 
     func testVerifiedPluginVersionMatchesTheRemotePluginManifest() throws {
