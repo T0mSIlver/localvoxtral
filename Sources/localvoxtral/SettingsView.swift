@@ -973,6 +973,11 @@ private struct IntegrationsSettingsPane: View {
             // plugin/session setup is independent of the current hotkey
             // configuration.
             SettingsGroup(title: "Claude Code") {
+                if let claude = viewModel.claudeIntegrationSettings {
+                    ClaudePluginInstallRow(model: claude)
+                    ClaudeStatuslineRow(model: claude)
+                }
+
                 // Not in Polish context above: this is a JOIN arm — it decides which session you are dictating
                 // into — and it works with no Overlay Buffer shortcut recorded.
                 //
@@ -995,7 +1000,6 @@ private struct IntegrationsSettingsPane: View {
                     // Directly under the toggle whose prerequisite it is: the
                     // help text above tells the user to enter it "below".
                     ClaudeCmuxPasswordSettingsRow(model: claude)
-                    ClaudePluginSettingsRow(model: claude)
                 }
             }
 
@@ -1007,12 +1011,29 @@ private struct IntegrationsSettingsPane: View {
                     ClaudeRemoteHostsSettingsRow(model: claude)
                 }
             }
+
+            SettingsGroup(title: "Other agents") {
+                if let claude = viewModel.claudeIntegrationSettings {
+                    OpencodePluginRow(model: claude)
+                    // Status-only, and absent until something reports herdr:
+                    // a row that can only ever say "not found" is noise, not
+                    // information.
+                    if claude.isHerdrDetected {
+                        HerdrPresenceRow()
+                    }
+                }
+            }
         }
         .onAppear {
-            guard isEnrollmentSheetPreviewArmed,
-                  let claude = viewModel.claudeIntegrationSettings
-            else { return }
-            claude.presentPreviewPlan()
+            if isEnrollmentSheetPreviewArmed,
+               let claude = viewModel.claudeIntegrationSettings {
+                claude.presentPreviewPlan()
+            }
+        }
+        .task {
+            if let claude = viewModel.claudeIntegrationSettings {
+                await claude.refreshIntegrationsStatuses()
+            }
         }
     }
 }
@@ -1023,11 +1044,11 @@ private struct IntegrationsSettingsPane: View {
 /// else's Claude Code is their decision. The result is one short line here; the
 /// CLI's actual output goes to an alert and the log (owner rule: no long text in
 /// the pane).
-private struct ClaudePluginSettingsRow: View {
+private struct ClaudePluginInstallRow: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
 
     var body: some View {
-        // Stacked: the row's controls are a full button bar plus a result line,
+        // Stacked: the row's controls are a full button bar plus a status line,
         // which would squeeze the label to a three-line stub beside them.
         SettingsFieldRow(
             title: "Claude Code plugin (this Mac)",
@@ -1040,23 +1061,132 @@ private struct ClaudePluginSettingsRow: View {
                     Task { await model.updatePlugin() }
                 }
                 .disabled(model.isPerformingPluginAction)
+                .accessibilityIdentifier("integrations.claude.plugin.install")
 
                 Button("Remove") {
                     Task { await model.uninstallPlugin() }
                 }
                 .disabled(model.isPerformingPluginAction)
+                .accessibilityIdentifier("integrations.claude.plugin.remove")
 
                 if model.isPerformingPluginAction {
                     ProgressView().controlSize(.small)
                 }
+            }
 
-                if let result = model.pluginResult {
-                    Text(result)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+            Text(model.pluginResult ?? model.localPluginSentence)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .accessibilityIdentifier("integrations.claude.plugin.status")
+        }
+    }
+}
+
+/// The opt-in connection indicator in Claude Code's bottom bar.
+///
+/// Install previews the exact JSON first and writes only on consent — the
+/// same shape as the shell setup, for the same reason: this edits a file the
+/// user owns. A foreign status line is never overwritten: no Install button,
+/// only a link to the recipe that runs both.
+private struct ClaudeStatuslineRow: View {
+    @Bindable var model: ClaudeIntegrationSettingsModel
+    @State private var isShowingSetup = false
+
+    private static let docsURL = URL(
+        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/claude-code/README.md#connection-indicator-opt-in-status-line"
+    )!
+
+    var body: some View {
+        // Stacked like the plugin row above: button bar plus status line.
+        SettingsFieldRow(title: "Status line", layout: .stacked) {
+            HStack(spacing: 8) {
+                switch model.statuslineStatus {
+                case .notConfigured:
+                    Button("Set Up…") { isShowingSetup = true }
+                        .disabled(model.statuslinePreview == nil)
+                        .accessibilityIdentifier("integrations.claude.statusline.install")
+                case .installed:
+                    Button("Update…") { isShowingSetup = true }
+                        .disabled(
+                            model.isPerformingStatuslineAction || model.statuslinePreview == nil
+                        )
+                        .accessibilityIdentifier("integrations.claude.statusline.install")
+                    Button("Remove") { Task { await model.removeStatusline() } }
+                        .disabled(model.isPerformingStatuslineAction)
+                        .accessibilityIdentifier("integrations.claude.statusline.remove")
+                case .foreign:
+                    Link("How to combine status lines", destination: Self.docsURL)
+                case .unknown:
+                    EmptyView()
+                }
+
+                if model.isPerformingStatuslineAction {
+                    ProgressView().controlSize(.small)
                 }
             }
+
+            Text(model.statuslineResult ?? model.statuslineSentence)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .accessibilityIdentifier("integrations.claude.statusline.status")
+        }
+        .sheet(isPresented: $isShowingSetup) {
+            ClaudeStatuslineSetupSheet(model: model) { isShowingSetup = false }
+        }
+    }
+}
+
+/// Install/remove the opencode plugin.
+///
+/// Acts on press: the copy target is a file this app owns, and the `tui.json`
+/// edit touches only this plugin's own list entry — everything else
+/// round-trips. Failures report one short line here and the detail in an
+/// alert (owner rule).
+private struct OpencodePluginRow: View {
+    @Bindable var model: ClaudeIntegrationSettingsModel
+
+    var body: some View {
+        // Stacked like the Claude Code rows: button bar plus status line.
+        SettingsFieldRow(title: "opencode", layout: .stacked) {
+            HStack(spacing: 8) {
+                Button("Install") {
+                    Task { await model.installOpencodePlugin() }
+                }
+                .disabled(model.isPerformingOpencodeAction)
+                .accessibilityIdentifier("integrations.opencode.install")
+
+                Button("Remove") {
+                    Task { await model.removeOpencodePlugin() }
+                }
+                .disabled(model.isPerformingOpencodeAction)
+                .accessibilityIdentifier("integrations.opencode.remove")
+
+                if model.isPerformingOpencodeAction {
+                    ProgressView().controlSize(.small)
+                }
+            }
+
+            Text(model.opencodeResult ?? model.opencodeSentence)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .accessibilityIdentifier("integrations.opencode.status")
+        }
+    }
+}
+
+/// herdr needs no setup: when it is present, panes join automatically. The
+/// row is status-only, and hidden entirely until something reports herdr.
+private struct HerdrPresenceRow: View {
+    var body: some View {
+        SettingsFieldRow(title: "herdr") {
+            Text(ClaudeIntegrationSettingsModel.herdrDetectedSentence)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .accessibilityIdentifier("integrations.herdr.status")
         }
     }
 }
@@ -2147,6 +2277,57 @@ private struct ClaudeShellSetupSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(model.shellSetupPreview == nil)
                 .accessibilityIdentifier("claude.shellSetupSheet.apply")
+            }
+        }
+        .padding(16)
+        .frame(width: 460)
+    }
+}
+
+/// Preview, then consent, then write — the same shape as the shell setup
+/// sheet, for the same reason: this edits a file the user owns and did not
+/// ask us to touch. Only ever writes the `statusLine` key; a foreign entry
+/// never reaches this sheet (the row offers no button for it).
+private struct ClaudeStatuslineSetupSheet: View {
+    @Bindable var model: ClaudeIntegrationSettingsModel
+    var dismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Claude Code status line")
+                .font(.headline)
+            Text(
+                "This adds one entry to ~/.claude/settings.json pointing at this app's publisher, so Claude Code's bottom bar shows whether localvoxtral is connected to the session. Anything else in that file is left alone."
+            )
+            .font(.callout)
+            .fixedSize(horizontal: false, vertical: true)
+
+            if let preview = model.statuslinePreview {
+                ScrollView {
+                    Text(preview)
+                        .font(.system(.caption2, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("integrations.statuslineSheet.preview")
+                }
+                .frame(maxHeight: 120)
+                .padding(6)
+                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .accessibilityIdentifier("integrations.statuslineSheet.cancel")
+                Button("Add Status Line") {
+                    Task {
+                        await model.applyStatuslineSetup()
+                        dismiss()
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(model.statuslinePreview == nil)
+                .accessibilityIdentifier("integrations.statuslineSheet.apply")
             }
         }
         .padding(16)

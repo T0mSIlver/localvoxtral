@@ -17,6 +17,14 @@ public protocol ClaudePluginInstalling: Sendable {
     func installPlugin() throws
     func updatePlugin() throws
     func uninstallPlugin() throws
+    /// stdout of `claude plugin list`, or nil when the listing is unavailable.
+    /// Default nil so test doubles that only exercise install paths keep
+    /// working; the pane then reports `.unknown` rather than guessing.
+    func pluginListOutput() throws -> String?
+}
+
+extension ClaudePluginInstalling {
+    public func pluginListOutput() throws -> String? { nil }
 }
 
 extension ClaudePluginInstallService: ClaudePluginInstalling {}
@@ -428,6 +436,29 @@ public final class ClaudeIntegrationSettingsModel {
     /// The plain-ssh join's setup step, refreshed with the rest of the pane.
     var shellSetupStatus = ClaudeShellSetupStatus()
 
+    // MARK: - Integrations rows (Settings → Integrations)
+
+    /// The local plugin's install state, refreshed with the rest of the pane
+    /// and after every plugin action. Starts unknown: nothing has probed yet.
+    public private(set) var localPluginStatus: ClaudePluginStatus = .unknown
+    /// The status line's state, refreshed with the rest of the pane.
+    public private(set) var statuslineStatus: ClaudeStatuslineInstallService.Status = .unknown
+    /// Short outcome of the last statusline action, e.g. "Installed.".
+    public private(set) var statuslineResult: String?
+    public private(set) var isPerformingStatuslineAction = false
+    /// The opencode plugin's state, refreshed with the rest of the pane.
+    public private(set) var opencodeStatus: OpencodePluginInstallService.Status = .unknown
+    /// Short outcome of the last opencode action, e.g. "Installed.".
+    public private(set) var opencodeResult: String?
+    public private(set) var isPerformingOpencodeAction = false
+    /// Whether the herdr row is shown at all. Refreshed with the rest of the
+    /// pane; hidden until something reports herdr.
+    public private(set) var isHerdrDetected = false
+
+    /// The herdr row's one status sentence. A constant: the row is
+    /// status-only, and presence is the whole fact.
+    public static let herdrDetectedSentence = "Found — panes join automatically."
+
     /// The password field's live text. Never seeded from the Keychain: the
     /// stored secret is not shown back to anyone, and an empty field on a
     /// machine that HAS a password must not read as "no password set" — which
@@ -469,6 +500,27 @@ public final class ClaudeIntegrationSettingsModel {
     /// Does any live remote session report a local tty? Nil means "no way to
     /// ask", which reports as no sessions rather than as a failure.
     private let liveLocalTTYReport: @Sendable () -> ClaudeShellSetupStatus.CrossingState
+    /// stdout of `claude plugin list`, or nil when the listing is
+    /// unavailable. Async because the listing shells out; injected so tests
+    /// drive the status derivation from fixtures.
+    private let fetchPluginListOutput: @Sendable () async -> String?
+    /// This app's marketplace version, for the update comparison. Nil when
+    /// the bundled manifest could not be read.
+    private let bundledPluginVersion: String?
+    /// Reads and writes the `statusLine` key. Nil disables the row's actions.
+    private let statuslineService: @Sendable () -> ClaudeStatuslineInstallService?
+    /// The hook command the statusline entry points at, e.g.
+    /// `/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook
+    /// --statusline`. Nil when the publisher binary cannot be located — the
+    /// row then cannot offer Install.
+    private let statuslineHookCommand: @Sendable () -> String?
+    /// Copies the bundled opencode plugin and edits `tui.json`. Nil disables
+    /// the row's actions.
+    private let opencodeService: @Sendable () -> OpencodePluginInstallService?
+    /// Whether herdr is present: a binary on this Mac, or any live session
+    /// reporting a herdr pane. Injected so tests pin row visibility without
+    /// a herdr install.
+    private let herdrPresenceReport: @Sendable () -> Bool
     private let listener: (any ClaudeRemoteListenerControlling)?
     private let pluginService: @Sendable () -> any ClaudePluginInstalling
     private let enrollmentService: ClaudeRemoteEnrollmentService
@@ -565,11 +617,23 @@ public final class ClaudeIntegrationSettingsModel {
         shellRCWriter: @escaping @Sendable (ClaudeShellKind) -> ClaudeShellRCWriter? = { _ in nil },
         liveLocalTTYReport: @escaping @Sendable () -> ClaudeShellSetupStatus.CrossingState = {
             .noSessions
-        }
+        },
+        fetchPluginListOutput: @escaping @Sendable () async -> String? = { nil },
+        bundledPluginVersion: String? = nil,
+        statuslineService: @escaping @Sendable () -> ClaudeStatuslineInstallService? = { nil },
+        statuslineHookCommand: @escaping @Sendable () -> String? = { nil },
+        opencodeService: @escaping @Sendable () -> OpencodePluginInstallService? = { nil },
+        herdrPresenceReport: @escaping @Sendable () -> Bool = { false }
     ) {
         self.loginShell = loginShell
         self.shellRCWriter = shellRCWriter
         self.liveLocalTTYReport = liveLocalTTYReport
+        self.fetchPluginListOutput = fetchPluginListOutput
+        self.bundledPluginVersion = bundledPluginVersion
+        self.statuslineService = statuslineService
+        self.statuslineHookCommand = statuslineHookCommand
+        self.opencodeService = opencodeService
+        self.herdrPresenceReport = herdrPresenceReport
         self.registry = registry
         self.listener = listener
         self.pluginService = pluginService
@@ -671,6 +735,7 @@ public final class ClaudeIntegrationSettingsModel {
         let service = pluginService()
         guard let failure = await performAsync({ try body(service) }) else {
             pluginResult = successCopy
+            await refreshLocalPluginStatus()
             return
         }
         // Short line in the pane; the CLI's actual output — which can be pages of
@@ -682,6 +747,16 @@ public final class ClaudeIntegrationSettingsModel {
         )
         Log.claudeContext.error(
             "Claude plugin action failed: \(failure.describedError, privacy: .public)"
+        )
+        await refreshLocalPluginStatus()
+    }
+
+    /// Re-probe `claude plugin list` after an action (or with the pane's
+    /// refresh) so the row's sentence describes the new state.
+    public func refreshLocalPluginStatus() async {
+        let output = await fetchPluginListOutput()
+        localPluginStatus = ClaudePluginStatus.derive(
+            listOutput: output, bundledVersion: bundledPluginVersion
         )
     }
 
@@ -1033,6 +1108,138 @@ public final class ClaudeIntegrationSettingsModel {
             )
         }
         refreshShellSetupStatus()
+    }
+
+    // MARK: - Integrations rows
+
+    /// Re-read every Integrations row that comes from disk or a probe. Called
+    /// with the rest of the pane's refresh and after every row action.
+    public func refreshIntegrationsStatuses() async {
+        let output = await fetchPluginListOutput()
+        localPluginStatus = ClaudePluginStatus.derive(
+            listOutput: output, bundledVersion: bundledPluginVersion
+        )
+        refreshStatuslineStatus()
+        refreshOpencodeStatus()
+        isHerdrDetected = herdrPresenceReport()
+    }
+
+    // MARK: Local plugin status
+
+    /// The plugin row's one status sentence.
+    public var localPluginSentence: String { localPluginStatus.sentence }
+
+    // MARK: Status line
+
+    /// The row's one status sentence.
+    public var statuslineSentence: String {
+        ClaudeStatuslineInstallService.sentence(for: statuslineStatus)
+    }
+
+    public func refreshStatuslineStatus() {
+        guard let service = statuslineService() else {
+            statuslineStatus = .unknown
+            return
+        }
+        statuslineStatus = service.status()
+    }
+
+    /// The exact JSON the apply would write, for the preview sheet. Nil when
+    /// the hook binary cannot be located — the row then cannot offer Install.
+    public var statuslinePreview: String? {
+        guard let hookCommand = statuslineHookCommand() else { return nil }
+        return ClaudeStatuslineInstallService.preview(hookCommand: hookCommand)
+    }
+
+    public func applyStatuslineSetup() async {
+        guard
+            let service = statuslineService(),
+            let hookCommand = statuslineHookCommand(),
+            !isPerformingStatuslineAction
+        else { return }
+        isPerformingStatuslineAction = true
+        statuslineResult = nil
+        defer { isPerformingStatuslineAction = false }
+        let failure = await performAsync { try service.apply(hookCommand: hookCommand) }
+        if let failure {
+            alert = DetailAlert(
+                title: "Could not install the status line",
+                detail: failure.describedError
+            )
+            statuslineResult = "Could not install."
+        } else {
+            statuslineResult = "Installed."
+        }
+        refreshStatuslineStatus()
+    }
+
+    public func removeStatusline() async {
+        guard let service = statuslineService(), !isPerformingStatuslineAction else { return }
+        isPerformingStatuslineAction = true
+        statuslineResult = nil
+        defer { isPerformingStatuslineAction = false }
+        let failure = await performAsync { try service.remove() }
+        if let failure {
+            alert = DetailAlert(
+                title: "Could not remove the status line",
+                detail: failure.describedError
+            )
+            statuslineResult = "Could not remove."
+        } else {
+            statuslineResult = "Removed."
+        }
+        refreshStatuslineStatus()
+    }
+
+    // MARK: opencode plugin
+
+    /// The row's one status sentence.
+    public var opencodeSentence: String {
+        OpencodePluginInstallService.sentence(for: opencodeStatus)
+    }
+
+    public func refreshOpencodeStatus() {
+        guard let service = opencodeService() else {
+            opencodeStatus = .unknown
+            return
+        }
+        opencodeStatus = service.status()
+    }
+
+    public func installOpencodePlugin() async {
+        guard let service = opencodeService(), !isPerformingOpencodeAction else { return }
+        isPerformingOpencodeAction = true
+        opencodeResult = nil
+        defer { isPerformingOpencodeAction = false }
+        let failure = await performAsync { try service.install() }
+        if let failure {
+            alert = DetailAlert(
+                title: "Could not install the opencode plugin",
+                detail: failure.describedError
+            )
+            opencodeResult = "Could not install."
+        } else {
+            opencodeResult = "Installed."
+        }
+        refreshOpencodeStatus()
+    }
+
+    public func removeOpencodePlugin() async {
+        guard let service = opencodeService(), !isPerformingOpencodeAction else { return }
+        isPerformingOpencodeAction = true
+        opencodeResult = nil
+        defer { isPerformingOpencodeAction = false }
+        let failure = await performAsync { try service.remove() }
+        if let failure {
+            alert = DetailAlert(
+                title: "Could not remove the opencode plugin",
+                detail: failure.describedError
+            )
+            opencodeResult = "Could not remove."
+        } else {
+            opencodeResult = "Removed."
+        }
+        refreshOpencodeStatus()
     }
 
     public func requestPluginUpdate(hostID: String) {
