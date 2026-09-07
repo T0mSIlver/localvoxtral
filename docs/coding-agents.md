@@ -76,9 +76,11 @@ while the neighboring pane stays out of the prompt:
 
 https://github.com/user-attachments/assets/15e71c26-3d8b-490f-90d0-f5c507daf5eb
 
-Install is one click: **Settings → Context → Claude Code plugin →
-Install**. The app registers its bundled plugin marketplace through Claude
-Code's own CLI and never edits `~/.claude/settings.json` behind your back.
+Install is one click: **Settings → Integrations → Claude Code → "Claude Code
+plugin (this Mac)" → Install**. The app registers its bundled plugin
+marketplace through Claude Code's own CLI. The same pane offers the opt-in
+status-line indicator (it writes exactly the `statusLine` key in
+`~/.claude/settings.json`, previewed first, never over your own script).
 
 **Working over SSH?** A second plugin, `localvoxtral-remote`, covers Claude
 Code sessions on other machines: its hooks POST through an SSH
@@ -121,5 +123,6 @@ fields and the threat model.
 > Brave, and Safari; a browser join never reads anything on screen). First
 > use asks for one Automation permission per terminal or browser.
 
-An [opencode plugin](../integrations/opencode/README.md) exists too, with a
-manual two-step install.
+An [opencode plugin](../integrations/opencode/README.md) exists too, installed
+from **Settings → Integrations → Other agents** (copy plus the `tui.json`
+entry, both reversible from the same row).
