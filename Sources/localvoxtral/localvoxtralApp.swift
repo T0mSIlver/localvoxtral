@@ -203,6 +203,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     override init() {
         let settings = SettingsStore()
+        // The one-time-per-launch terminal_apps.toml import (owner decision,
+        // 2026-09-07): the file is read HERE and never written — Settings →
+        // Terminals owns the list from then on. Runs before anything that
+        // consults the user-added list (the session verdict, the agent polish
+        // profile), so those read settings only.
+        let migratedUserTerminalApps = UserTerminalAppsMigrator.migrate(
+            tomlBundleIDs: appConfigStore.loadTerminalAppBundleIDs(),
+            storedApps: settings.userTerminalApps,
+            defaults: .standard
+        )
+        if migratedUserTerminalApps != settings.userTerminalApps {
+            settings.userTerminalApps = migratedUserTerminalApps
+        }
         let manager = BackendManager(
             polishingModelProvider: { settings.resolvedManagedLLMPolishingModel },
             speechdCacheLimitProvider: { settings.speechdCacheLimit.megabytes },
@@ -754,6 +767,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return sessions.contains { snapshot in
                     snapshot.process?.herdrPaneID != nil
                         || snapshot.remoteSessionEnvironment?.herdrPaneID != nil
+                }
+            },
+            // The enrolled hosts whose live REMOTE sessions report a herdr
+            // pane, for the herdr pane's host list. A local herdr pane
+            // belongs to no enrolled host and is never listed.
+            herdrPaneReportingHostIDs: { [weak claudeSessionRegistry] in
+                guard let sessions = claudeSessionRegistry?.liveSessions() else { return [] }
+                return sessions.compactMap { snapshot in
+                    guard snapshot.remoteSessionEnvironment?.herdrPaneID != nil else {
+                        return nil
+                    }
+                    return ClaudeRemoteSessionScope.hostID(
+                        fromScopedSessionID: snapshot.sessionID
+                    )
                 }
             }
         )

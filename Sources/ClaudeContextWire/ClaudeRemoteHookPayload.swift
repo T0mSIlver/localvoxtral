@@ -229,4 +229,19 @@ public enum ClaudeRemoteSessionScope {
     public static func channel(hostID: String) -> String {
         "ssh:\(hostID)"
     }
+
+    /// The host a scoped session id belongs to (`remote:<hostID>:<sessionID>`
+    /// → `<hostID>`), or nil for anything else. The inverse of
+    /// `scopedSessionID(hostID:sessionID:)`, for read-side surfaces that
+    /// report per host (the Settings herdr row). Host ids are minted by
+    /// `ClaudeRemoteHostRegistry.makeHostID` (`h` + 8 hex, no separators), so
+    /// splitting at the first separator cannot cut one short.
+    public static func hostID(fromScopedSessionID sessionID: String) -> String? {
+        guard sessionID.hasPrefix(prefix) else { return nil }
+        let remainder = sessionID.dropFirst(prefix.count)
+        guard let separator = remainder.firstIndex(of: ":") else { return nil }
+        let hostID = remainder[..<separator]
+        guard !hostID.isEmpty else { return nil }
+        return String(hostID)
+    }
 }

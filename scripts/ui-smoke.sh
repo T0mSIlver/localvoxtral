@@ -505,20 +505,38 @@ assert_tab "dictation" "Dictation" "Trigger"
 assert_tab "textProcessing" "Text Processing" "Replacements"
 # The polish feature toggles live on Text Processing (moved from Engines).
 assert_tab "textProcessing" "Text Processing" "Polishing"
-# The consent-grade context sources and the harness integrations live on their
-# own pane (moved off Text Processing). Asserted on the group titles, which
-# exist nowhere else.
-assert_tab "integrations" "Integrations" "Polish context"
-# Renamed to "Claude Code over SSH" in the #278 copy pass; the old needle
-# ("Remote Claude Code over SSH") no longer exists in the pane.
-assert_tab "integrations" "Integrations" "Claude Code over SSH"
-# The cmux join toggle binds $settings.cmuxSurfaceJoinEnabled in its new home;
-# without this, the row could be deleted or rebound with every lane green.
-assert_tab "integrations" "Integrations" "Join Claude Code sessions in cmux"
-# One row per harness: each row's status sentence is asserted by its AX
-# identifier, so a missing row fails here rather than in a screenshot diff.
-assert_tab "integrations" "Integrations" "Status line"
-assert_tab "integrations" "Integrations" "opencode"
+# --- Integrations section: one pane per harness (2026-09-07 owner decision) ---
+# The consent-grade context sources live on their own pane (moved off Text
+# Processing). Asserted on the group title, which exists nowhere else.
+assert_tab "integrations.context" "Context" "Polish context"
+# Everything Claude-Code-related in one pane: plugin row, status line, the
+# cmux join toggle (binds $settings.cmuxSurfaceJoinEnabled — without this,
+# the row could be deleted or rebound with every lane green), remote hosts.
+assert_tab "integrations.claude" "Claude Code" "Plugin on this Mac"
+assert_tab "integrations.claude" "Claude Code" "Status line"
+assert_tab "integrations.claude" "Claude Code" "Join Claude Code sessions in cmux"
+assert_tab "integrations.claude" "Claude Code" "Claude Code over SSH"
+assert_tab "integrations.opencode" "opencode" "What it gets"
+assert_tab "integrations.herdr" "herdr" "Status"
+# --- Terminals section: one pane per terminal ---
+# The capability rows are machine-independent ("Dictation", "Session join",
+# "Screen context" render on every terminal pane whatever the dot says), so
+# every pane is drilled on them. The STATUS SENTENCE varies with what is
+# installed on the machine, so it is asserted only where it is deterministic:
+# Terminal.app ships with macOS, is always found by LaunchServices, and always
+# gets the full green sentence.
+assert_tab "terminals.ghostty" "Ghostty" "Session join"
+assert_tab "terminals.iterm2" "iTerm2" "Session join"
+assert_tab "terminals.apple-terminal" "Terminal.app" "Session join"
+assert_tab "terminals.apple-terminal" "Terminal.app" "Installed. Dictation, session join and screen context."
+assert_tab "terminals.cmux" "cmux" "Socket mode"
+assert_tab "terminals.warp" "Warp" "Session join"
+assert_tab "terminals.wezterm" "WezTerm" "Session join"
+assert_tab "terminals.kitty" "kitty" "Session join"
+assert_tab "terminals.alacritty" "Alacritty" "Session join"
+assert_tab "terminals.hyper" "Hyper" "Session join"
+assert_tab "terminals.tabby" "Tabby" "Session join"
+assert_tab "terminals.rio" "Rio" "Session join"
 assert_tab "about" "About" "Diagnostics"
 
 # The launch phase forces external URL modes (managed mode now eagerly spawns

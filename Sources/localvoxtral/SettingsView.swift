@@ -1,17 +1,6 @@
 import AppKit
 import SwiftUI
 
-/// Identifies each Settings tab so navigation can be driven programmatically
-/// (e.g. the onboarding "I run my own server" link jumps to Engines).
-enum SettingsTab: String, Hashable, CaseIterable, Sendable {
-    case general
-    case endpoints
-    case dictation
-    case textProcessing
-    case integrations
-    case about
-}
-
 /// Shared, observable selection for the Settings `TabView`. Owned by the app
 /// delegate so a programmatic tab change survives the Settings window's
 /// open/close lifecycle.
@@ -27,6 +16,37 @@ struct SettingsView: View {
     var backendManager: BackendManager
     @Bindable var navigator: SettingsNavigator
     @State private var shortcutValidationError: String?
+
+    /// Terminal rows, installed-state cache, and the user-added list. Cached
+    /// per Settings open (owner decision): the LaunchServices lookups re-run
+    /// in `onAppear`, and nothing else consults the system mid-session —
+    /// never a running-process check.
+    @State private var terminalAppsModel: TerminalAppsSettingsModel
+
+    /// The sidebar's one-line Add app… refusal message. Reset on every open
+    /// of the picker.
+    @State private var addAppMessage: String?
+
+    init(
+        settings: SettingsStore,
+        viewModel: DictationViewModel,
+        backendManager: BackendManager,
+        navigator: SettingsNavigator
+    ) {
+        self.settings = settings
+        self.viewModel = viewModel
+        self.backendManager = backendManager
+        self.navigator = navigator
+        _terminalAppsModel = State(
+            initialValue: TerminalAppsSettingsModel(
+                settings: settings,
+                isCmuxSocketSetUp: { [weak viewModel] in
+                    guard let claude = viewModel?.claudeIntegrationSettings else { return false }
+                    return settings.cmuxSurfaceJoinEnabled && claude.hasCmuxPassword
+                }
+            )
+        )
+    }
 
     private var endpointBinding: Binding<String> {
         Binding(
@@ -81,7 +101,13 @@ struct SettingsView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            SettingsSidebarView(selection: $navigator.selectedTab)
+            SettingsSidebarView(
+                selection: $navigator.selectedTab,
+                terminalApps: terminalAppsModel.terminalApps,
+                statusDot: sidebarDot,
+                addTerminalApp: chooseAndAddTerminalApp,
+                addAppMessage: $addAppMessage
+            )
 
             // The sidebar's trailing hairline. One divider, drawn by the layout
             // rather than by both columns, so it cannot double up.
@@ -95,6 +121,86 @@ struct SettingsView: View {
                 .frame(width: 0, height: 0)
                 .accessibilityHidden(true)
         }
+        // Per Settings open (owner decision): the terminal rows' installed
+        // cache and the Integrations dots' statuses refresh with the window,
+        // not per pane — a dot is on the sidebar, which is visible on every
+        // pane.
+        .onAppear {
+            terminalAppsModel.refreshInstalledState()
+            if let claude = viewModel.claudeIntegrationSettings {
+                Task { await claude.refreshIntegrationsStatuses() }
+            }
+        }
+    }
+
+    /// The dot each sidebar row trails (owner decision, 2026-09-07). Nil for
+    /// the main panes and About — they have no install state to report.
+    private func sidebarDot(for tab: SettingsTab) -> SettingsStatusDot? {
+        switch tab.kind {
+        case .integrationsContext:
+            let anyConsent = settings.repoVocabularyEnabled
+                || settings.terminalScreenContextEnabled
+                || settings.claudeRepoContextEnabled
+                || settings.polishClipboardContextEnabled
+                || settings.polishContextTrustedEndpointEnabled
+            return IntegrationsSidebarStatus.contextDot(anyConsentEnabled: anyConsent)
+        case .integrationsClaude:
+            return IntegrationsSidebarStatus.claudeDot(
+                pluginStatus: viewModel.claudeIntegrationSettings?.localPluginStatus ?? .unknown
+            )
+        case .integrationsOpencode:
+            return IntegrationsSidebarStatus.opencodeDot(
+                status: viewModel.claudeIntegrationSettings?.opencodeStatus ?? .unknown
+            )
+        case .integrationsHerdr:
+            return IntegrationsSidebarStatus.herdrDot(
+                isDetected: viewModel.claudeIntegrationSettings?.isHerdrDetected ?? false
+            )
+        case .terminal:
+            guard let app = tab.terminalApp else { return nil }
+            return terminalAppsModel.dot(for: app)
+        case .general, .dictation, .endpoints, .textProcessing, .about:
+            return nil
+        }
+    }
+
+    /// The Terminals section's Add app… action: an `NSOpenPanel` filtered to
+    /// applications (owner decision). The chosen app's bundle id and display
+    /// name go into settings; a refusal leaves one short line under the
+    /// section (owner rule: never more than a sentence in chrome).
+    private func chooseAndAddTerminalApp() {
+        addAppMessage = nil
+        let panel = NSOpenPanel()
+        panel.title = "Add a terminal app"
+        panel.message = "Choose an application localvoxtral should treat as a terminal."
+        panel.allowedContentTypes = [.application]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        guard
+            let bundle = Bundle(url: url),
+            let bundleID = bundle.bundleIdentifier,
+            !bundleID.trimmed.isEmpty
+        else {
+            Log.config.error(
+                "Add app: no readable bundle id in \(url.lastPathComponent, privacy: .public)"
+            )
+            addAppMessage = "That app has no readable bundle id."
+            return
+        }
+        let displayName =
+            (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String)?.trimmed
+            ?? url.deletingPathExtension().lastPathComponent
+        if terminalAppsModel.addUserApp(bundleID: bundleID, displayName: displayName) {
+            navigator.selectedTab = SettingsTab.terminal(
+                TerminalAppsSettingsModel.descriptor(
+                    for: UserTerminalApp(bundleID: bundleID, displayName: displayName)
+                ))
+        } else {
+            addAppMessage = "That app is already listed."
+        }
     }
 
     /// Header + the selected pane. No transition/animation on the swap: pane
@@ -105,7 +211,7 @@ struct SettingsView: View {
 
             Divider()
 
-            switch navigator.selectedTab {
+            switch navigator.selectedTab.kind {
             case .general:
                 GeneralSettingsPane(settings: settings, viewModel: viewModel)
             case .endpoints:
@@ -130,11 +236,22 @@ struct SettingsView: View {
                     settings: settings,
                     viewModel: viewModel
                 )
-            case .integrations:
-                IntegrationsSettingsPane(
-                    settings: settings,
-                    viewModel: viewModel
-                )
+            case .integrationsContext:
+                IntegrationsContextSettingsPane(settings: settings, viewModel: viewModel)
+            case .integrationsClaude:
+                ClaudeCodeSettingsPane(settings: settings, viewModel: viewModel)
+            case .integrationsOpencode:
+                OpencodeSettingsPane(viewModel: viewModel)
+            case .integrationsHerdr:
+                HerdrSettingsPane(viewModel: viewModel)
+            case .terminal:
+                if let app = navigator.selectedTab.terminalApp {
+                    TerminalSettingsPane(
+                        app: app,
+                        model: terminalAppsModel,
+                        onRemove: removeUserTerminalApp
+                    )
+                }
             case .about:
                 AboutSettingsPane(settings: settings, viewModel: viewModel)
             }
@@ -827,44 +944,31 @@ private struct TextProcessingSettingsPane: View {
     }
 }
 
-/// Everything that lets something OTHER than your spoken words reach the
-/// polisher, plus one row per harness that feeds it.
+/// The consent toggles — everything that lets something OTHER than your
+/// spoken words reach the polisher (owner decision, 2026-09-07: its own pane
+/// under the Integrations section).
 ///
 /// Split out of Text Processing (2026-08-04): these are consent-grade toggles
 /// whose help text is the consent, and they were being read past as formatting
-/// options next to "Exact match". The four groups here are STATIC — a toggle
+/// options next to "Exact match". The group here is STATIC — a toggle
 /// switches a group's content, never the number or identity of the groups
 /// (owner rule, 2026-07-04).
 ///
 /// Copy rule (owner review, 2026-09-07): each toggle's help is ONE line
 /// stating what leaves the machine — the consequence, nothing else. The full
-/// terms live in `docs/coding-agents.md` behind each group's Learn more link.
-private struct IntegrationsSettingsPane: View {
+/// terms live in `docs/coding-agents.md` behind the group's Learn more link.
+private struct IntegrationsContextSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
 
-    /// Where each group's Learn more link lands. Repo pages, not relative
+    /// Where the group's Learn more link lands. Repo pages, not relative
     /// links: Settings is a shipped app, not a doc site.
     private enum LearnMore {
         static let polishContext = URL(
             string:
                 "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/coding-agents.md#polish-context-what-each-toggle-sends"
         )!
-        static let claudeCode = URL(
-            string:
-                "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/claude-code/README.md#which-terminal-am-i-dictating-into"
-        )!
-        static let remoteHosts = URL(
-            string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/remote-claude-context.md"
-        )!
     }
-
-    /// Read ONCE, when the pane is constructed — like every other `debug.`
-    /// default, this is a screenshot affordance, not a preference that may
-    /// change under a running window. Armed, it auto-presents a SAMPLE
-    /// enrollment sheet whose every mutating action the model refuses.
-    @State private var isEnrollmentSheetPreviewArmed =
-        ClaudeIntegrationSettingsModel.isEnrollmentSheetPreviewArmed()
 
     /// Same gate as the Text Processing polishing rows: context is only ever
     /// harvested for an Overlay Buffer dictation, so with no shortcut recorded
@@ -874,7 +978,7 @@ private struct IntegrationsSettingsPane: View {
     }
 
     var body: some View {
-        SettingsPage(tab: .integrations) {
+        SettingsPage(tab: .integrationsContext) {
             SettingsGroup(title: "Polish context", learnMoreURL: LearnMore.polishContext) {
                 if !isLLMPolishingReachable {
                     SettingsAvailabilityCard(
@@ -935,18 +1039,45 @@ private struct IntegrationsSettingsPane: View {
                 .disabled(!isLLMPolishingReachable)
                 .opacity(isLLMPolishingReachable ? 1.0 : 0.5)
             }
+        }
+    }
+}
 
-            // Deliberately NOT under the availability gate above: revocation is
-            // the security off switch for an already-bound listener, and
-            // plugin/session setup is independent of the current hotkey
-            // configuration.
+/// Everything Claude-Code-related in one place (owner decision, 2026-09-07):
+/// the plugin row, the status-line row, the cmux join toggle + password, and
+/// the Remote hosts group (enrolled hosts, Add host, shell setup).
+private struct ClaudeCodeSettingsPane: View {
+    @Bindable var settings: SettingsStore
+    let viewModel: DictationViewModel
+
+    /// Where each group's Learn more link lands. Repo pages, not relative
+    /// links: Settings is a shipped app, not a doc site.
+    private enum LearnMore {
+        static let claudeCode = URL(
+            string:
+                "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/claude-code/README.md#which-terminal-am-i-dictating-into"
+        )!
+        static let remoteHosts = URL(
+            string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/remote-claude-context.md"
+        )!
+    }
+
+    /// Read ONCE, when the pane is constructed — like every other `debug.`
+    /// default, this is a screenshot affordance, not a preference that may
+    /// change under a running window. Armed, it auto-presents a SAMPLE
+    /// enrollment sheet whose every mutating action the model refuses.
+    @State private var isEnrollmentSheetPreviewArmed =
+        ClaudeIntegrationSettingsModel.isEnrollmentSheetPreviewArmed()
+
+    var body: some View {
+        SettingsPage(tab: .integrationsClaude) {
             SettingsGroup(title: "Claude Code", learnMoreURL: LearnMore.claudeCode) {
                 if let claude = viewModel.claudeIntegrationSettings {
                     ClaudePluginInstallRow(model: claude)
                     ClaudeStatuslineRow(model: claude)
                 }
 
-                // Not in Polish context above: this is a JOIN arm — it decides
+                // Not on the Context pane: this is a JOIN arm — it decides
                 // which session you are dictating into — and it works with no
                 // Overlay Buffer shortcut recorded. The two-step cmux setup
                 // (socket password mode, then this password) is in the group's
@@ -969,22 +1100,10 @@ private struct IntegrationsSettingsPane: View {
 
             // The integration model is built once at launch and cleared only on
             // terminate, so the `if let` is not a mode: in a running app both
-            // groups above and this one always have their rows.
+            // groups always have their rows.
             SettingsGroup(title: "Remote hosts", learnMoreURL: LearnMore.remoteHosts) {
                 if let claude = viewModel.claudeIntegrationSettings {
                     ClaudeRemoteHostsSettingsRow(model: claude)
-                }
-            }
-
-            SettingsGroup(title: "Other agents") {
-                if let claude = viewModel.claudeIntegrationSettings {
-                    OpencodePluginRow(model: claude)
-                    // Status-only, and absent until something reports herdr:
-                    // a row that can only ever say "not found" is noise, not
-                    // information.
-                    if claude.isHerdrDetected {
-                        HerdrPresenceRow()
-                    }
                 }
             }
         }
@@ -994,11 +1113,168 @@ private struct IntegrationsSettingsPane: View {
                 claude.presentPreviewPlan()
             }
         }
-        .task {
-            if let claude = viewModel.claudeIntegrationSettings {
-                await claude.refreshIntegrationsStatuses()
+    }
+}
+
+/// The opencode pane (owner decision, 2026-09-07): the install row plus one
+/// sentence on what an installed plugin gets.
+private struct OpencodeSettingsPane: View {
+    let viewModel: DictationViewModel
+
+    var body: some View {
+        SettingsPage(tab: .integrationsOpencode) {
+            SettingsGroup(title: "opencode") {
+                if let claude = viewModel.claudeIntegrationSettings {
+                    OpencodePluginRow(model: claude)
+                }
+
+                SettingsFieldRow(
+                    title: "What it gets",
+                    help: "Dictation joins the focused opencode session and polishes with its prompt and touched files."
+                ) {
+                    EmptyView()
+                }
             }
         }
+    }
+}
+
+/// The herdr pane (owner decision, 2026-09-07): status sentence, and the
+/// enrolled-host names when any enrolled host reports a herdr pane. herdr
+/// needs no setup — the row is status-only, and the dot is green whenever
+/// herdr is found.
+private struct HerdrSettingsPane: View {
+    let viewModel: DictationViewModel
+
+    var body: some View {
+        SettingsPage(tab: .integrationsHerdr) {
+            SettingsGroup(title: "herdr") {
+                SettingsFieldRow(
+                    title: "Status",
+                    status: herdrSentence,
+                    statusAccessibilityIdentifier: "integrations.herdr.status"
+                ) {
+                    EmptyView()
+                }
+
+                if !herdrPaneHostLabels.isEmpty {
+                    SettingsFieldRow(
+                        title: "Hosts reporting a herdr pane",
+                        help: herdrPaneHostLabels.joined(separator: ", ")
+                    ) {
+                        EmptyView()
+                    }
+                }
+            }
+        }
+    }
+
+    private var claude: ClaudeIntegrationSettingsModel? {
+        viewModel.claudeIntegrationSettings
+    }
+
+    private var herdrSentence: String {
+        guard let claude else { return "Not found." }
+        return claude.isHerdrDetected
+            ? ClaudeIntegrationSettingsModel.herdrDetectedSentence
+            : "Not found."
+    }
+
+    private var herdrPaneHostLabels: [String] {
+        claude?.herdrPaneHostLabels ?? []
+    }
+}
+
+/// One terminal's pane (owner decision, 2026-09-07): the status sentence that
+/// explains the row's dot, the capabilities as three short rows, the cmux
+/// socket-mode instruction, and — for a user-added app — removal.
+///
+/// Group structure is constant per pane (owner rule, 2026-07-04): Status,
+/// then Capabilities. cmux's socket row is present whenever its pane is; a
+/// user app's Remove row likewise.
+private struct TerminalSettingsPane: View {
+    let app: TerminalAppDescriptor
+    @Bindable var model: TerminalAppsSettingsModel
+    /// Removal is owned by the pane's caller: it also has to move the
+    /// selection off the pane that is about to disappear.
+    let onRemove: (String) -> Void
+
+    var body: some View {
+        SettingsPage(tab: .terminal(app)) {
+            SettingsGroup(title: "Status") {
+                SettingsFieldRow(
+                    title: app.displayName,
+                    status: model.dot(for: app).terminalSentence,
+                    statusAccessibilityIdentifier: "terminals.\(app.slug).status"
+                ) {
+                    EmptyView()
+                }
+
+                if app.isUserAdded {
+                    SettingsFieldRow(
+                        title: "Added app",
+                        help: "Treated as a terminal for dictation and the agent prompt profile."
+                    ) {
+                        Button("Remove") {
+                            onRemove(app.detectionBundleIDs.first ?? "")
+                        }
+                        .accessibilityIdentifier("terminals.\(app.slug).remove")
+                    }
+                }
+            }
+
+            SettingsGroup(title: "Capabilities") {
+                capabilityRow(title: "Dictation", supported: true, reason: nil)
+
+                let verdicts = model.capabilityVerdicts(for: app)
+                capabilityRow(
+                    title: "Session join",
+                    supported: verdicts.join,
+                    reason: verdicts.joinReason
+                )
+                capabilityRow(
+                    title: "Screen context",
+                    supported: verdicts.screen,
+                    reason: verdicts.screenReason
+                )
+
+                // cmux's socket-mode instruction, one line with a docs link
+                // (owner decision): the two-step setup lives in the plugin
+                // README, not in the pane.
+                if app.slug == "cmux" {
+                    SettingsFieldRow(
+                        title: "Socket mode",
+                        help: TerminalAppCatalog.cmuxSocketReason
+                    ) {
+                        Link("How to set up", destination: TerminalAppCatalog.cmuxDocsURL)
+                    }
+                }
+            }
+        }
+    }
+
+    /// One capability row: "Yes", or "No" plus the one-line reason (e.g.
+    /// "Ghostty 1.4 or newer needed.").
+    private func capabilityRow(
+        title: String,
+        supported: Bool,
+        reason: String?
+    ) -> some View {
+        SettingsFieldRow(
+            title: title,
+            help: supported ? nil : reason
+        ) {
+            Text(supported ? "Yes" : "No")
+        }
+    }
+}
+
+/// Removing the user-added app whose pane is open: the settings write is the
+/// model's; the selection has to leave with the pane.
+private extension SettingsView {
+    func removeUserTerminalApp(bundleID: String) {
+        terminalAppsModel.removeUserApp(bundleID: bundleID)
+        navigator.selectedTab = .general
     }
 }
 
@@ -1127,20 +1403,6 @@ private struct OpencodePluginRow: View {
         }
         .sheet(isPresented: $isShowingSetup) {
             OpencodePluginSetupSheet(model: model) { isShowingSetup = false }
-        }
-    }
-}
-
-/// herdr needs no setup: when it is present, panes join automatically. The
-/// row is status-only, and hidden entirely until something reports herdr.
-private struct HerdrPresenceRow: View {
-    var body: some View {
-        SettingsFieldRow(
-            title: "herdr",
-            status: ClaudeIntegrationSettingsModel.herdrDetectedSentence,
-            statusAccessibilityIdentifier: "integrations.herdr.status"
-        ) {
-            EmptyView()
         }
     }
 }

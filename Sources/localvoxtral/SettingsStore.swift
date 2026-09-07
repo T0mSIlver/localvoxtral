@@ -230,6 +230,10 @@ final class SettingsStore {
         static let cmuxSurfaceJoinEnabled = "settings.cmux_surface_join_enabled"
         static let polishContextTrustedEndpointEnabled =
             "settings.polish_context_trusted_endpoint_enabled"
+        /// User-added terminal apps (Settings → Terminals → Add app…), stored
+        /// as a JSON array of `UserTerminalApp`. Seeded from the legacy
+        /// `terminal_apps.toml` once at startup (`UserTerminalAppsMigrator`).
+        static let userTerminalApps = "settings.user_terminal_apps"
         /// Hidden debug toggle (no UI). When true, every received realtime
         /// event's raw payload is logged to the `Deltas` category before any
         /// merge/preprocess/insertion processing — instrumentation for
@@ -516,6 +520,35 @@ final class SettingsStore {
         didSet {
             defaults.set(cmuxSurfaceJoinEnabled, forKey: Keys.cmuxSurfaceJoinEnabled)
         }
+    }
+
+    /// Terminal apps the user added in Settings → Terminals (plus the
+    /// one-time import from the legacy `terminal_apps.toml`). Insertion
+    /// treats these bundle ids exactly as the TOML entries were treated:
+    /// terminal-like for live dictation and the agent polish profile —
+    /// nothing more (`TerminalScreenAllowlist` still excludes them from
+    /// screen reads, which a user list was never able to grant).
+    var userTerminalApps: [UserTerminalApp] {
+        didSet { persistUserTerminalApps() }
+    }
+
+    /// The user-added apps' bundle ids — the runtime half of the old
+    /// `terminal_apps.toml` list. Seeded once at launch by
+    /// `UserTerminalAppsMigrator`, then owned by Settings → Terminals.
+    var userTerminalAppBundleIDs: Set<String> {
+        Set(userTerminalApps.map(\.bundleID))
+    }
+
+    private func persistUserTerminalApps() {
+        guard let data = try? JSONEncoder().encode(userTerminalApps) else { return }
+        defaults.set(data, forKey: Keys.userTerminalApps)
+    }
+
+    private static func loadUserTerminalApps(from defaults: UserDefaults) -> [UserTerminalApp] {
+        guard let data = defaults.data(forKey: Keys.userTerminalApps),
+              let apps = try? JSONDecoder().decode([UserTerminalApp].self, from: data)
+        else { return [] }
+        return apps
     }
 
     /// The remote listen port this Mac's SSH `RemoteForward` binds on an
@@ -831,6 +864,7 @@ final class SettingsStore {
             defaults: defaults, key: Keys.claudeRepoContextEnabled, fallback: false)
         cmuxSurfaceJoinEnabled = Self.loadBool(
             defaults: defaults, key: Keys.cmuxSurfaceJoinEnabled, fallback: false)
+        userTerminalApps = Self.loadUserTerminalApps(from: defaults)
         polishContextTrustedEndpointEnabled = Self.loadBool(
             defaults: defaults, key: Keys.polishContextTrustedEndpointEnabled, fallback: false)
         debugLogRealtimeDeltas = Self.loadBool(

@@ -682,14 +682,16 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         XCTAssertEqual(savedRecord?.polishProfile, "agent")
     }
 
-    /// A user-listed terminal bundle (via terminal_apps.toml) also selects the
-    /// agent profile even though it is not on the built-in allowlist.
+    /// A user-added terminal app (Settings → Terminals, the successor of
+    /// `terminal_apps.toml`) also selects the agent profile even though it is
+    /// not on the built-in allowlist.
     func testAgentProfileSelectedForUserListedTerminalBundle() async {
-        let mockConfig = MockAppConfigStore(terminalAppBundleIDs: ["com.acme.ide"])
+        let mockConfig = MockAppConfigStore()
         let savedRecord = await runProfileSelectionSession(
             appConfigStore: mockConfig,
             agentProfileEnabled: true,
-            capturedBundleID: "com.acme.ide"
+            capturedBundleID: "com.acme.ide",
+            userTerminalAppBundleIDs: ["com.acme.ide"]
         )
 
         XCTAssertEqual(mockConfig.requestedProfiles, [.agent])
@@ -730,12 +732,19 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
     private func runProfileSelectionSession(
         appConfigStore: MockAppConfigStore,
         agentProfileEnabled: Bool,
-        capturedBundleID: String?
+        capturedBundleID: String?,
+        userTerminalAppBundleIDs: [String] = []
     ) async -> DictationSessionRecord? {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = true
         settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
         settings.agentPolishProfileEnabled = agentProfileEnabled
+        // The user-added apps list is settings-backed now (the TOML is a
+        // one-shot migration source at launch); stage it the way the app
+        // would have it after that import.
+        settings.userTerminalApps = userTerminalAppBundleIDs.map {
+            UserTerminalApp(bundleID: $0, displayName: $0)
+        }
 
         let viewModel = DictationViewModel(
             settings: settings,

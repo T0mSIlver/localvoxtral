@@ -176,7 +176,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         XCTAssertFalse(TerminalTargetDetector.detectCurrentTarget().isTerminalLike)
     }
 
-    // MARK: - User allowlist (terminal_apps.toml)
+    // MARK: - User allowlist (Settings → Terminals, formerly terminal_apps.toml)
 
     func testUserBundleIDIsTerminalLikeWithoutProbing() {
         // A bundle NOT in the built-in list: cmux graduated to built-in, so it
@@ -203,9 +203,9 @@ final class TerminalTargetDetectorTests: XCTestCase {
         XCTAssertEqual(decision.reason, .bundleMatch)
     }
 
-    func testCaptureUsesUserTerminalAppsFromConfigStore() {
+    func testCaptureUsesUserTerminalAppsFromSettings() {
         // The original cmux field case (2026-07-07): a terminal host with a
-        // writable AX value that only the user's terminal_apps.toml entry can
+        // writable AX value that only the user's added-apps entry can
         // classify. cmux itself is built-in now, so an unknown stand-in keeps
         // this capture path exercised.
         TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.example.myterminal" }
@@ -220,7 +220,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         viewModel.applyPreCapturedSessionTargetVerdict()
         XCTAssertTrue(viewModel.sessionTargetIsTerminalLike)
 
-        // Without the config entry the same app stays non-terminal.
+        // Without the added app the same target stays non-terminal.
         let unconfigured = makeViewModel(outputMode: .liveAutoPaste)
         unconfigured.captureSessionTargetVerdict()
         unconfigured.applyPreCapturedSessionTargetVerdict()
@@ -785,6 +785,12 @@ final class TerminalTargetDetectorTests: XCTestCase {
         }
         let settings = SettingsStore(defaults: defaults, environment: [:])
         settings.dictationOutputMode = outputMode
+        // The user-added apps list is settings-backed now (the TOML is a
+        // one-shot migration source at launch), so the fixture stages it the
+        // way the app would have it after that import.
+        settings.userTerminalApps = terminalAppBundleIDs.map {
+            UserTerminalApp(bundleID: $0, displayName: $0)
+        }
         // Never let a process-global launchd service decide these tests. The
         // managed default resolves to port 8000 and can be live on the persistent
         // runner after an integration job, turning a session-start test into a

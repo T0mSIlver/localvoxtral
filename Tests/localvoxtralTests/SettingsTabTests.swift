@@ -2,45 +2,56 @@ import XCTest
 
 @testable import localvoxtral
 
-/// The sidebar is data-driven: a tab that is in `allCases` but in neither
-/// sidebar array is unreachable in the UI, and a tab in both would render twice.
-/// The AX identifiers are a contract with `scripts/ui-smoke.sh` and
+/// The sidebar is data-driven: a pane that is in no sidebar array is
+/// unreachable in the UI, and one in two would render twice. The AX
+/// identifiers are a contract with `scripts/ui-smoke.sh` and
 /// `scripts/capture-readme-assets.sh`, which press and scope by literal string.
+///
+/// `SettingsTab` is a struct, not an enum (owner decision, 2026-09-07): every
+/// TERMINAL gets its own pane and user-added terminals are runtime data. The
+/// fixed pane set the drills can name is `allKnownPanes` — the built-in
+/// terminal panes plus the static sections; user-added terminal panes have no
+/// script-drilled contract.
 final class SettingsTabTests: XCTestCase {
     private var sidebarItems: [SettingsTab] {
-        SettingsTab.primarySidebarItems + SettingsTab.metaSidebarItems
+        SettingsTab.primarySidebarItems
+            + SettingsTab.integrationsSidebarItems
+            + TerminalAppCatalog.builtIn.map(SettingsTab.terminal)
+            + SettingsTab.metaSidebarItems
     }
 
-    func testSidebarArraysCoverEveryTabExactlyOnce() {
+    func testSidebarArraysCoverEveryKnownPaneExactlyOnce() {
         XCTAssertEqual(
-            Set(sidebarItems), Set(SettingsTab.allCases),
-            "every SettingsTab must appear in the sidebar"
+            Set(sidebarItems), Set(SettingsTab.allKnownPanes),
+            "every known SettingsTab pane must appear in the sidebar"
         )
         XCTAssertEqual(
-            sidebarItems.count, SettingsTab.allCases.count,
-            "sidebar arrays must not list a tab twice"
+            sidebarItems.count, SettingsTab.allKnownPanes.count,
+            "sidebar arrays must not list a pane twice"
         )
     }
 
     func testSidebarArraysDoNotOverlap() {
-        let primary = Set(SettingsTab.primarySidebarItems)
-        let meta = Set(SettingsTab.metaSidebarItems)
-        XCTAssertTrue(
-            primary.isDisjoint(with: meta),
-            "a tab pinned to the bottom must not also be in the primary group"
-        )
-        XCTAssertEqual(
-            SettingsTab.primarySidebarItems.count, primary.count,
-            "primary sidebar items must be unique"
-        )
-        XCTAssertEqual(
-            SettingsTab.metaSidebarItems.count, meta.count,
-            "meta sidebar items must be unique"
-        )
+        let sections: [[SettingsTab]] = [
+            SettingsTab.primarySidebarItems,
+            SettingsTab.integrationsSidebarItems,
+            TerminalAppCatalog.builtIn.map(SettingsTab.terminal),
+            SettingsTab.metaSidebarItems,
+        ]
+        let seen = NSMutableSet()
+        for section in sections {
+            for tab in section {
+                XCTAssertFalse(
+                    seen.contains(tab),
+                    "\(tab.rawValue) appears in more than one sidebar section"
+                )
+                seen.add(tab)
+            }
+        }
     }
 
-    func testEveryTabHasCompleteChrome() {
-        for tab in SettingsTab.allCases {
+    func testEveryPaneHasCompleteChrome() {
+        for tab in SettingsTab.allKnownPanes {
             XCTAssertFalse(tab.title.isEmpty, "\(tab.rawValue) has no title")
             XCTAssertFalse(tab.systemImage.isEmpty, "\(tab.rawValue) has no SF Symbol")
             XCTAssertFalse(
@@ -83,7 +94,7 @@ final class SettingsTabTests: XCTestCase {
     }
 
     func testAccessibilityIdentifiersUseTheDrillScheme() {
-        for tab in SettingsTab.allCases {
+        for tab in SettingsTab.allKnownPanes {
             XCTAssertEqual(tab.accessibilityIdentifier, "settings.tab.\(tab.rawValue)")
             XCTAssertEqual(tab.paneAccessibilityIdentifier, "settings.pane.\(tab.rawValue)")
         }
@@ -93,7 +104,7 @@ final class SettingsTabTests: XCTestCase {
     /// strings. Reading the scripts here turns a divergence into a unit-test
     /// failure on every push, instead of an AX drill failure that only surfaces
     /// in the evening ui-smoke slot on the Mac.
-    func testAutomationScriptsDrillExactlyTheTabsTheEnumDefines() throws {
+    func testAutomationScriptsDrillExactlyThePanesTheTabDefines() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()  // SettingsTabTests.swift
             .deletingLastPathComponent()  // localvoxtralTests
@@ -106,16 +117,16 @@ final class SettingsTabTests: XCTestCase {
             contentsOf: repoRoot.appendingPathComponent("scripts/capture-readme-assets.sh"),
             encoding: .utf8
         )
-        let rawValues = Set(SettingsTab.allCases.map(\.rawValue))
+        let rawValues = Set(SettingsTab.allKnownPanes.map(\.rawValue))
 
         XCTAssertEqual(
             Self.firstQuotedArguments(ofCalls: "assert_tab ", in: uiSmoke),
             rawValues,
-            "ui-smoke.sh must drill exactly the tabs the enum defines"
+            "ui-smoke.sh must drill exactly the panes the tab set defines"
         )
 
         // About is deliberately not captured for the README; every other pane
-        // must be, and nothing the enum does not define may appear.
+        // must be, and nothing the tab set does not define may appear.
         let captureIDs = try Self.shellArrayEntries(named: "TAB_IDS", in: capture)
         XCTAssertEqual(
             Set(captureIDs),
@@ -136,6 +147,18 @@ final class SettingsTabTests: XCTestCase {
             captureFiles.count, captureIDs.count,
             "TAB_FILES and TAB_IDS must stay index-aligned"
         )
+        // The press falls back to the row's AXTitle if SwiftUI ever stops
+        // surfacing identifiers; TAB_NAMES carries that title, so it must
+        // match the pane's real title, not just any string.
+        let idToTitle = Dictionary(
+            uniqueKeysWithValues: SettingsTab.allKnownPanes.map { ($0.rawValue, $0.title) }
+        )
+        for (index, id) in captureIDs.enumerated() {
+            XCTAssertEqual(
+                captureNames[index], idToTitle[id],
+                "TAB_NAMES[\(index)] must be the AXTitle of \(id)"
+            )
+        }
     }
 
     /// `SettingsView.swift` source, for the copy/layout pins above. Read from
@@ -187,8 +210,8 @@ final class SettingsTabTests: XCTestCase {
     /// The clipboard toggle's help must name the real payload: a capped,
     /// sanitized EXCERPT of the clipboard attached to the polish prompt
     /// (`PolishContextClipboardReader`). "Technical terms" understated what
-    /// leaves the machine (an independent review of PR #282 caught it), so
-    /// the line is pinned here the same way the header source is pinned
+    /// leaves the machine (an independent review of PR #282 caught it), so the
+    /// line is pinned here the same way the header source is pinned
     /// above — against the understatement returning.
     func testClipboardHelpNamesTheExcerptNotTechnicalTerms() throws {
         let source = try Self.settingsViewSource()
@@ -280,11 +303,19 @@ final class SettingsTabTests: XCTestCase {
         )
     }
 
-    /// The Context → Integrations rename (this tab never shipped, so the raw
-    /// value moved with it). Pins the owner decision: one row per harness.
-    func testIntegrationsTabChrome() {
-        XCTAssertEqual(SettingsTab.integrations.title, "Integrations")
-        XCTAssertEqual(SettingsTab.integrations.rawValue, "integrations")
+    /// The Integrations section (owner decision, 2026-09-07): one row per
+    /// harness, each with its own raw value. The old single `integrations`
+    /// pane never shipped this structure, so the raw value is RETIRED, not
+    /// moved — nothing may reuse it.
+    func testIntegrationsSectionChrome() {
+        XCTAssertEqual(SettingsTab.integrationsContext.title, "Context")
+        XCTAssertEqual(SettingsTab.integrationsContext.rawValue, "integrations.context")
+        XCTAssertEqual(SettingsTab.integrationsClaude.title, "Claude Code")
+        XCTAssertEqual(SettingsTab.integrationsClaude.rawValue, "integrations.claude")
+        XCTAssertEqual(SettingsTab.integrationsOpencode.title, "opencode")
+        XCTAssertEqual(SettingsTab.integrationsOpencode.rawValue, "integrations.opencode")
+        XCTAssertEqual(SettingsTab.integrationsHerdr.title, "herdr")
+        XCTAssertEqual(SettingsTab.integrationsHerdr.rawValue, "integrations.herdr")
     }
 
     func testEndpointsTabKeepsRawValueWhileDisplayingEngines() {
@@ -299,17 +330,64 @@ final class SettingsTabTests: XCTestCase {
     func testSidebarOrderIsThePresentationContract() {
         XCTAssertEqual(
             SettingsTab.primarySidebarItems,
-            [.general, .dictation, .endpoints, .textProcessing, .integrations]
+            [.general, .dictation, .endpoints, .textProcessing]
+        )
+        XCTAssertEqual(
+            SettingsTab.integrationsSidebarItems,
+            [
+                .integrationsContext, .integrationsClaude, .integrationsOpencode,
+                .integrationsHerdr,
+            ]
         )
         XCTAssertEqual(SettingsTab.metaSidebarItems, [.about])
+        // Join-capable terminals first, then the dictation-only list — the
+        // owner-decided order, pinned as slugs so a catalog edit that reorders
+        // rows is a deliberate act.
+        XCTAssertEqual(
+            TerminalAppCatalog.builtIn.map(\.slug),
+            [
+                "ghostty", "iterm2", "apple-terminal", "cmux",
+                "warp", "wezterm", "kitty", "alacritty", "hyper", "tabby", "rio",
+            ]
+        )
     }
 
-    /// The scripts hardcode these strings; renaming a case silently breaks the
+    /// The scripts hardcode these strings; renaming a pane silently breaks the
     /// AX drills, which is exactly the failure this pins.
     func testRawValuesAreStable() {
         XCTAssertEqual(
-            Set(SettingsTab.allCases.map(\.rawValue)),
-            ["general", "endpoints", "dictation", "textProcessing", "integrations", "about"]
+            Set(SettingsTab.allKnownPanes.map(\.rawValue)),
+            [
+                "general", "endpoints", "dictation", "textProcessing", "about",
+                "integrations.context", "integrations.claude", "integrations.opencode",
+                "integrations.herdr",
+                "terminals.ghostty", "terminals.iterm2", "terminals.apple-terminal",
+                "terminals.cmux", "terminals.warp", "terminals.wezterm", "terminals.kitty",
+                "terminals.alacritty", "terminals.hyper", "terminals.tabby", "terminals.rio",
+            ]
         )
+    }
+
+    /// The retired single-Integrations-pane raw value must never come back:
+    /// neither as a kind nor as a terminal pane's slug.
+    func testRetiredIntegrationsRawValueStaysRetired() {
+        XCTAssertNil(SettingsTab.Kind(rawValue: "integrations"))
+        for pane in SettingsTab.allKnownPanes {
+            XCTAssertNotEqual(pane.rawValue, "integrations")
+        }
+    }
+
+    /// A terminal pane's raw value is `terminals.<slug>`, and two descriptors
+    /// with the same slug are the same pane (sidebar selection and `ForEach`
+    /// identity both rely on it).
+    func testTerminalPaneRawValueIsTerminalsSlug() {
+        let app = TerminalAppDescriptor(
+            slug: "dev-some-app", displayName: "Some App",
+            detectionBundleIDs: ["dev.some.app"], capabilities: .supportsEverything(),
+            isUserAdded: true
+        )
+        XCTAssertEqual(SettingsTab.terminal(app).rawValue, "terminals.dev-some-app")
+        XCTAssertEqual(SettingsTab.terminal(app).title, "Some App")
+        XCTAssertEqual(SettingsTab.terminal(app), SettingsTab.terminal(app))
     }
 }

@@ -279,7 +279,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         shellRCWriter: @escaping @Sendable (ClaudeShellKind) -> ClaudeShellRCWriter? = { _ in nil },
         liveLocalTTYReport: @escaping @Sendable () -> ClaudeShellSetupStatus.CrossingState = {
             .noSessions
-        }
+        },
+        herdrPaneReportingHostIDs: @escaping @Sendable () -> [String] = { [] }
     ) -> ClaudeIntegrationSettingsModel {
         ClaudeIntegrationSettingsModel(
             registry: registry,
@@ -322,8 +323,46 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             forwards: forwards,
             loginShell: loginShell,
             shellRCWriter: shellRCWriter,
-            liveLocalTTYReport: liveLocalTTYReport
+            liveLocalTTYReport: liveLocalTTYReport,
+            herdrPaneReportingHostIDs: herdrPaneReportingHostIDs
         )
+    }
+
+    // MARK: - herdr pane host labels
+
+    /// The herdr pane lists the enrolled hosts whose live remote sessions
+    /// report a herdr pane, by LABEL; an id with no enrolled row is dropped,
+    /// never guessed from the id.
+    func testHerdrPaneListsReportingEnrolledHostsOnly() async throws {
+        let registry = try makeRegistry()
+        let builder = try registry.enroll(label: "builder").host
+        let linter = try registry.enroll(label: "linter").host
+
+        let oneHost = makeModel(
+            registry: registry,
+            listener: nil,
+            herdrPaneReportingHostIDs: { [builder.id] }
+        )
+        await oneHost.refreshIntegrationsStatuses()
+        XCTAssertEqual(oneHost.herdrPaneHostLabels, ["builder"])
+
+        // A host removed while its sessions were still live reports an id the
+        // enrolled list no longer knows: dropped, not rendered from the id.
+        let staleID = makeModel(
+            registry: registry,
+            listener: nil,
+            herdrPaneReportingHostIDs: { [linter.id, "hdeadbeef"] }
+        )
+        await staleID.refreshIntegrationsStatuses()
+        XCTAssertEqual(staleID.herdrPaneHostLabels, ["linter"])
+
+        let none = makeModel(
+            registry: registry,
+            listener: nil,
+            herdrPaneReportingHostIDs: { [] }
+        )
+        await none.refreshIntegrationsStatuses()
+        XCTAssertTrue(none.herdrPaneHostLabels.isEmpty)
     }
 
     // MARK: Persistent forward toggle
@@ -333,7 +372,6 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         var byHost: [String: StubForwarding] = [:]
         var journal: ShutdownJournal?
     }
-
     private func makeForwardCoordinator(
         registry: ClaudeRemoteHostRegistry,
         stubs: ForwardStubs,

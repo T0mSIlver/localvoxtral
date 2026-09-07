@@ -1935,7 +1935,7 @@ final class DictationViewModel {
     }
 
     func captureSessionTargetVerdict() {
-        let userBundleIDs = Set(appConfigStore.loadTerminalAppBundleIDs())
+        let userBundleIDs = settings.userTerminalAppBundleIDs
         preCapturedSessionTargetVerdict = SessionTargetVerdict(
             decision: TerminalTargetDetector.detectCurrentTarget(userBundleIDs: userBundleIDs),
             secureKeyboardEntryEnabled: TerminalTargetDetector.isSecureKeyboardEntryEnabled()

@@ -40,6 +40,35 @@ final class SettingsStoreTests: XCTestCase {
         )
     }
 
+    // MARK: - User-added terminal apps
+
+    /// The Settings → Terminals list persists as JSON in defaults and comes
+    /// back on the next store; a corrupt payload falls back to empty (the
+    /// built-in rows and the TOML migration still apply).
+    func testUserTerminalApps_persistAcrossStores() {
+        let store = makeStore()
+        store.userTerminalApps = [
+            UserTerminalApp(bundleID: "dev.some.Editor", displayName: "Editor"),
+        ]
+        XCTAssertEqual(
+            makeStore().userTerminalApps,
+            [UserTerminalApp(bundleID: "dev.some.Editor", displayName: "Editor")]
+        )
+        XCTAssertEqual(
+            makeStore().userTerminalAppBundleIDs, ["dev.some.Editor"]
+        )
+    }
+
+    func testUserTerminalApps_corruptStoredValueFallsBackToEmpty() {
+        defaults.set(Data("not json".utf8), forKey: "settings.user_terminal_apps")
+        XCTAssertEqual(makeStore().userTerminalApps, [])
+    }
+
+    func testUserTerminalApps_defaultIsEmpty() {
+        XCTAssertEqual(makeStore().userTerminalApps, [])
+        XCTAssertTrue(makeStore().userTerminalAppBundleIDs.isEmpty)
+    }
+
     // MARK: - Overlay Buffer session reachability
 
     func testOverlayBufferReachability_truthTable() {
