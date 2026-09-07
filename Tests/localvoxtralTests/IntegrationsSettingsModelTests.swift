@@ -295,33 +295,58 @@ final class IntegrationsSettingsModelTests: XCTestCase {
 
 /// The `claude plugin list` probe on the real service: a failed listing is
 /// nil (unknown), never a throw — only the runner's own failures throw.
+///
+/// M4: every test captures the invocation the seam received and pins it to
+/// `["plugin", "list"]` — the pane's entire plugin status rests on that argv,
+/// and a stub discarding its input would let a wrong subcommand pass.
 final class ClaudePluginListProbeTests: XCTestCase {
     func testSuccessfulListingReturnsStdout() throws {
+        let catcher = ProbeInvocationCatcher()
         let service = ClaudePluginInstallService(
             claudeExecutableURL: URL(fileURLWithPath: "/usr/bin/claude"),
             marketplaceURL: URL(fileURLWithPath: "/marketplace"),
-            runner: { _ in ClaudePluginInstallService.RunResult(exitCode: 0, message: "out") }
+            runner: {
+                catcher.invocations.append($0)
+                return ClaudePluginInstallService.RunResult(exitCode: 0, message: "out")
+            }
         )
         XCTAssertEqual(try service.pluginListOutput(), "out")
+        XCTAssertEqual(catcher.invocations.map(\.arguments), [["plugin", "list"]])
     }
 
     func testFailedListingIsNil() throws {
+        let catcher = ProbeInvocationCatcher()
         let service = ClaudePluginInstallService(
             claudeExecutableURL: URL(fileURLWithPath: "/usr/bin/claude"),
             marketplaceURL: URL(fileURLWithPath: "/marketplace"),
-            runner: { _ in ClaudePluginInstallService.RunResult(exitCode: 1, message: "nope") }
+            runner: {
+                catcher.invocations.append($0)
+                return ClaudePluginInstallService.RunResult(exitCode: 1, message: "nope")
+            }
         )
         XCTAssertNil(try service.pluginListOutput())
+        XCTAssertEqual(catcher.invocations.map(\.arguments), [["plugin", "list"]])
     }
 
     func testMissingCLIIsNil() throws {
+        let catcher = ProbeInvocationCatcher()
         let service = ClaudePluginInstallService(
             claudeExecutableURL: nil,
             marketplaceURL: URL(fileURLWithPath: "/marketplace"),
-            runner: { _ in ClaudePluginInstallService.RunResult(exitCode: 0, message: "out") }
+            runner: {
+                catcher.invocations.append($0)
+                return ClaudePluginInstallService.RunResult(exitCode: 0, message: "out")
+            }
         )
         XCTAssertNil(try service.pluginListOutput())
+        XCTAssertTrue(catcher.invocations.isEmpty, "no CLI means no invocation")
     }
+}
+
+/// Sendable box so the probe tests can record the invocation a `@Sendable`
+/// runner received without tripping Swift 6 capture rules.
+private final class ProbeInvocationCatcher: @unchecked Sendable {
+    var invocations: [ClaudePluginInstallService.Invocation] = []
 }
 
 // MARK: - Doubles
