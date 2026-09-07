@@ -4,10 +4,12 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd -P)"
 SUPERVISOR="$ROOT_DIR/scripts/ci/run-supervised-command.sh"
 FIXTURE="$ROOT_DIR/scripts/ci/fixtures/build-gate-stubborn-tree.sh"
+ESCAPED_FIXTURE="$ROOT_DIR/scripts/ci/fixtures/build-gate-escaped-tree.sh"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lv-supervisor-test.XXXXXX")"
 supervisor_pid=""
 fixture_pid=""
 stubborn_pid=""
+escaped_pid=""
 sibling_pid=""
 
 cleanup() {
@@ -15,6 +17,7 @@ cleanup() {
   [[ -z "$supervisor_pid" ]] || wait "$supervisor_pid" 2>/dev/null || true
   [[ -z "$fixture_pid" ]] || kill -KILL "$fixture_pid" 2>/dev/null || true
   [[ -z "$stubborn_pid" ]] || kill -KILL "$stubborn_pid" 2>/dev/null || true
+  [[ -z "$escaped_pid" ]] || kill -KILL "$escaped_pid" 2>/dev/null || true
   [[ -z "$sibling_pid" ]] || kill -KILL "$sibling_pid" 2>/dev/null || true
   rm -rf "$TMP_DIR"
 }
@@ -220,6 +223,94 @@ grep -q '0x1122334455' "$TMP_DIR/tree.log" \
   && fail "pipe scan reported a pipe the supervised tree does not hold"
 is_live_non_zombie "$fixture_pid" && fail "tree-forensics run: leader survived"
 is_live_non_zombie "$stubborn_pid" && fail "tree-forensics run: descendant survived"
+fixture_pid=""
+stubborn_pid=""
+
+# A wedged `lsof` must be killed at its own cap and never postpone the group
+# kill — and the kill message must name the forensic, not crash on an
+# unset variable (an unbound variable under `set -u` would abort the
+# watchdog before the kill, turning the timeout into a permanent hang).
+pid_fifo="$TMP_DIR/hung-lsof-pids"
+timeout_fifo="$TMP_DIR/hung-lsof-trigger"
+mkfifo "$pid_fifo" "$timeout_fifo"
+cat >"$TMP_DIR/bin/sample" <<'STUB'
+#!/usr/bin/env bash
+echo "stub-sample-of-pid-$1"
+STUB
+cat >"$TMP_DIR/bin/lsof" <<'STUB'
+#!/usr/bin/env bash
+exec sleep 300
+STUB
+chmod +x "$TMP_DIR/bin/sample" "$TMP_DIR/bin/lsof"
+PATH="$TMP_DIR/bin:$PATH" \
+LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO="$timeout_fifo" \
+LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
+LOCALVOXTRAL_SUPERVISOR_LSOF_POLLS=3 \
+  "$SUPERVISOR" 999 "$TMP_DIR/hung-lsof.log" -- "$FIXTURE" "$pid_fifo" &
+supervisor_pid=$!
+read -r fixture_pid stubborn_pid <"$pid_fifo"
+printf 'fire\n' >"$timeout_fifo"
+if wait "$supervisor_pid"; then
+  fail "hung-lsof run unexpectedly succeeded"
+else
+  status=$?
+fi
+supervisor_pid=""
+[[ "$status" == "124" ]] || fail "hung-lsof run: timeout status changed from 124 to $status"
+grep -q -- '--- lsof killed at the 300 ms cap ---' "$TMP_DIR/hung-lsof.log" \
+  || fail "wedged lsof fd-table dump was not killed at the cap"
+grep -q -- '--- lsof-pipe-scan killed at the 300 ms cap ---' "$TMP_DIR/hung-lsof.log" \
+  || fail "wedged lsof pipe scan was not killed at the cap"
+is_live_non_zombie "$fixture_pid" && fail "hung-lsof run: leader survived"
+is_live_non_zombie "$stubborn_pid" && fail "hung-lsof run: descendant survived"
+fixture_pid=""
+stubborn_pid=""
+
+# A descendant that LEFT the process group (the shape `xctest` takes under
+# `swift test`: own group, ppid-linked) must still appear in the tree dump
+# AND be sampled: group-scoped forensics can never see it, and the 2026-09-07
+# hosted hangs proved the interesting process is exactly that one. The sampler
+# takes the tree's pid list, not just pgrep, so the escapee's stacks land in
+# the log. Its survival past the group kill is the supervisor's known
+# tree-kill gap (a stuck xctest outlives the timeout, reparents to launchd,
+# and lingers — observed live as pid 20105 in the probe); this assertion pins
+# the current behavior so closing the gap updates the test on purpose.
+pid_fifo="$TMP_DIR/escaped-pids"
+timeout_fifo="$TMP_DIR/escaped-trigger"
+mkfifo "$pid_fifo" "$timeout_fifo"
+command -v perl >/dev/null 2>&1 || fail "self-test requires perl for the escaped-tree fixture"
+cat >"$TMP_DIR/bin/sample" <<'STUB'
+#!/usr/bin/env bash
+echo "stub-sample-of-pid-$1"
+STUB
+cat >"$TMP_DIR/bin/lsof" <<'STUB'
+#!/usr/bin/env bash
+echo "stub-lsof-readable-table-for $*"
+STUB
+chmod +x "$TMP_DIR/bin/sample" "$TMP_DIR/bin/lsof"
+PATH="$TMP_DIR/bin:$PATH" \
+LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO="$timeout_fifo" \
+LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
+  "$SUPERVISOR" 999 "$TMP_DIR/escaped.log" -- "$ESCAPED_FIXTURE" "$pid_fifo" &
+supervisor_pid=$!
+read -r fixture_pid stubborn_pid escaped_pid <"$pid_fifo"
+printf 'fire\n' >"$timeout_fifo"
+if wait "$supervisor_pid"; then
+  fail "escaped-tree run unexpectedly succeeded"
+else
+  status=$?
+fi
+supervisor_pid=""
+[[ "$status" == "124" ]] || fail "escaped-tree run: timeout status changed from 124 to $status"
+grep -q "DESCENDANT $escaped_pid .* \[left pgroup\]" "$TMP_DIR/escaped.log" \
+  || fail "tree dump does not list the group-escaped grandchild as having left the pgroup"
+grep -qE "stub-sample-of-pid-$escaped_pid" "$TMP_DIR/escaped.log" \
+  || fail "sampler did not cover the group-escaped grandchild"
+is_live_non_zombie "$fixture_pid" && fail "escaped-tree run: leader survived"
+is_live_non_zombie "$stubborn_pid" && fail "escaped-tree run: descendant survived"
+is_live_non_zombie "$escaped_pid" || fail "escaped-tree run: group-escaped grandchild died with the group (tree-kill gap closed? update this test)"
+kill -KILL "$escaped_pid" 2>/dev/null || true
+escaped_pid=""
 fixture_pid=""
 stubborn_pid=""
 

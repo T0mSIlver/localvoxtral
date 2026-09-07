@@ -39,6 +39,11 @@ command_pgid=""
 watchdog_pid=""
 watchdog_pgid=""
 monitor_was_enabled=0
+# Pids of the supervised tree, as recorded by the last
+# dump_tree_and_pipes_for_forensics call: the sampler covers the tree (not
+# just the process group) so a descendant that left the group is still
+# sampled.
+forensic_candidates_csv=""
 
 group_is_alive() {
   local pgid="$1"
@@ -77,17 +82,17 @@ sample_one_bounded() {
 # whole process set is normally 1-3 s, but a wedged box must never turn the
 # diagnostic into a second hang.
 run_forensic_bounded() {
-  local label="$1" forensic_pid waited=0
+  local label="$1"
   shift
   ( "$@" ) >>"$log_file" 2>&1 &
-  local forensic_pid=$!
+  local forensic_pid=$! waited=0
   while kill -0 "$forensic_pid" 2>/dev/null && (( waited < lsof_polls )); do
     sleep 0.1
     waited=$((waited + 1))
   done
   if kill -0 "$forensic_pid" 2>/dev/null; then
     kill -KILL -- "-$forensic_pid" 2>/dev/null || kill -KILL "$forensic_pid" 2>/dev/null || true
-    echo "--- $runner killed at the ${lsof_polls}00 ms cap ---" >>"$log_file"
+    echo "--- $label killed at the ${lsof_polls}00 ms cap ---" >>"$log_file"
   fi
   wait "$forensic_pid" 2>/dev/null || true
 }
@@ -119,7 +124,7 @@ print_shared_pipe_holders() {
     /^t[0-9A-Za-z]+$/ { type = substr($0, 2); next }
     /^n/ {
       name = substr($0, 2)
-      if ((type == "PIPE" || type == "pipe") && fd != "" && current != "") {
+      if ((type == "PIPE" || type == "pipe") && name != "" && fd != "" && current != "") {
         holders[name] = holders[name] "," current ":" fd
       }
       fd = ""; type = ""; name = ""
@@ -242,6 +247,7 @@ dump_tree_and_pipes_for_forensics() {
     }
   ' "$ps_file")"
   candidates_csv="$(printf '%s\n' "$tree_out" | grep '^[0-9]' | tail -n 1 || true)"
+  forensic_candidates_csv="$candidates_csv"
   {
     echo "--- supervised tree (ps pid ppid pgid stat etime command) ---"
     printf '%s\n' "$tree_out" | grep -v '^[0-9]' || true
@@ -272,19 +278,40 @@ dump_tree_and_pipes_for_forensics() {
   return 0
 }
 
-sample_group_for_forensics() {
-  local pgid="$1" sampled=0 pid seen_pids=""
-  [[ -n "$pgid" ]] || return 0
+sample_tree_for_forensics() {
+  local pgid="$1" candidates_csv="$2" sampled=0 pid seen_pids="" ordered=""
+  [[ -n "$pgid" || -n "$candidates_csv" ]] || return 0
   command -v sample >/dev/null 2>&1 || return 0
-  if ! command -v pgrep >/dev/null 2>&1; then
-    echo "=== supervisor timeout forensics skipped: pgrep unavailable ===" >>"$log_file"
-    return 0
-  fi
   {
     echo ""
-    echo "=== supervisor timeout forensics: sampling process group $pgid ==="
+    echo "=== supervisor timeout forensics: sampling supervised tree (group $pgid) ==="
   } >>"$log_file"
-  for pid in $(pgrep -g "$pgid" -x xctest 2>/dev/null; pgrep -g "$pgid" 2>/dev/null); do
+  # The supervised tree first, xctest first within it: on macOS SwiftPM runs
+  # the test runner in its OWN process group (2026-09-07 hosted hangs: the
+  # group held only swift-test while xctest sat beside it, silent), so a
+  # group-scoped pgrep can never see the process actually executing tests.
+  # Group members outside the tree fill any remaining slots, up to 3 total.
+  if [[ -n "$candidates_csv" ]]; then
+    local IFS=,
+    for pid in $candidates_csv; do
+      [[ "$pid" =~ ^[0-9]+$ ]] || continue
+      kill -0 "$pid" 2>/dev/null || continue
+      if [[ "$(ps -o ucomm= -p "$pid" 2>/dev/null | tr -d '[:space:]')" == "xctest" ]]; then
+        ordered="$pid $ordered"
+      else
+        ordered="$ordered $pid"
+      fi
+    done
+    unset IFS
+  fi
+  if command -v pgrep >/dev/null 2>&1 && [[ -n "$pgid" ]]; then
+    for pid in $(pgrep -g "$pgid" 2>/dev/null); do
+      [[ "$pid" =~ ^[0-9]+$ ]] || continue
+      case " $ordered " in *" $pid "*) continue ;; esac
+      ordered="$ordered $pid"
+    done
+  fi
+  for pid in $ordered; do
     (( sampled >= 3 )) && break
     kill -0 "$pid" 2>/dev/null || continue
     case " $seen_pids " in *" $pid "*) continue ;; esac
@@ -355,7 +382,7 @@ command_pgid=$command_pid
   # that can NAME a holder which has already escaped the process group.
   dump_tree_and_pipes_for_forensics "$command_pid" "$command_pgid"
   group_is_alive "$command_pgid" || exit 0
-  sample_group_for_forensics "$command_pgid"
+  sample_tree_for_forensics "$command_pgid" "$forensic_candidates_csv"
   group_is_alive "$command_pgid" || exit 0
   : >"$timeout_marker"
   terminate_group "$command_pgid"
