@@ -138,6 +138,20 @@ final class SettingsTabTests: XCTestCase {
         )
     }
 
+    /// `SettingsView.swift` source, for the copy/layout pins above. Read from
+    /// the repo rather than inlined constants so the assertion runs against
+    /// what actually ships.
+    private static func settingsViewSource() throws -> String {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // SettingsTabTests.swift
+            .deletingLastPathComponent()  // localvoxtralTests
+            .deletingLastPathComponent()  // Tests
+        return try String(
+            contentsOf: repoRoot.appendingPathComponent("Sources/localvoxtral/SettingsView.swift"),
+            encoding: .utf8
+        )
+    }
+
     /// First double-quoted argument of every top-level `<call> "<arg>" ...`
     /// line. Skips the function's own definition line (`<call>() {`).
     private static func firstQuotedArguments(ofCalls call: String, in script: String) -> Set<String> {
@@ -168,6 +182,102 @@ final class SettingsTabTests: XCTestCase {
                 + "if the script was reformatted, teach the parser the new shape"
         )
         return entries
+    }
+
+    /// The clipboard toggle's help must name the real payload: a capped,
+    /// sanitized EXCERPT of the clipboard attached to the polish prompt
+    /// (`PolishContextClipboardReader`). "Technical terms" understated what
+    /// leaves the machine (an independent review of PR #282 caught it), so
+    /// the line is pinned here the same way the header source is pinned
+    /// above — against the understatement returning.
+    func testClipboardHelpNamesTheExcerptNotTechnicalTerms() throws {
+        let source = try Self.settingsViewSource()
+
+        let title = try XCTUnwrap(
+            source.range(of: "title: \"Clipboard\""),
+            "the Clipboard toggle row is gone from SettingsView.swift"
+        )
+        // The row's `help:` argument is the next one after its title.
+        let afterTitle = source[title.upperBound...]
+        let helpOpening = try XCTUnwrap(
+            afterTitle.range(of: "help: \""),
+            "the Clipboard toggle has no help line"
+        )
+        let helpLine = afterTitle[helpOpening.upperBound...].prefix(while: { $0 != "\n" })
+
+        XCTAssertTrue(
+            helpLine.contains("excerpt"),
+            "clipboard help must say an excerpt of the clipboard is sent, was: \(helpLine)"
+        )
+        XCTAssertFalse(
+            helpLine.contains("technical terms"),
+            "\"technical terms\" understates the payload — a capped excerpt of the whole "
+                + "clipboard goes to the polisher, not just terms; was: \(helpLine)"
+        )
+    }
+
+    /// Layout rules for the Integrations remote rows (PR #282 review), pinned
+    /// at the source because no render seam exists for them (no `#Preview`,
+    /// no view-inspector dependency):
+    ///
+    /// - the plain-SSH setup status is an INSTRUCTION ("Open a new terminal
+    ///   window for it to take effect.") and must wrap to a second line
+    ///   (`lineLimit(2)` + `fixedSize(horizontal: false, vertical: true)`),
+    ///   never truncate;
+    /// - a host label (up to the registry's 64-character cap) must not squeeze
+    ///   "Last context: …" off its line: the label truncates from the middle
+    ///   at a layout priority below the status's.
+    func testRemoteRowsWrapInstructionsAndCapHostLabels() throws {
+        let source = try Self.settingsViewSource()
+
+        let shellSetup = try XCTUnwrap(
+            source.range(of: "private var shellSetup: some View {"),
+            "the plain-SSH setup row (shellSetup) moved — update this test's anchor"
+        )
+        // Up to the next member (hostList) = the shellSetup body.
+        let nextMember = try XCTUnwrap(
+            source.range(
+                of: "private var hostList",
+                range: shellSetup.upperBound..<source.endIndex
+            ),
+            "hostList no longer follows shellSetup — update this test's anchor"
+        )
+        let row = source[shellSetup.lowerBound..<nextMember.lowerBound]
+        XCTAssertTrue(
+            row.contains(".lineLimit(2)"),
+            "the shell-setup status may wrap to a second line instead of truncating"
+        )
+        XCTAssertTrue(
+            row.contains(".fixedSize(horizontal: false, vertical: true)"),
+            "the shell-setup status needs fixedSize to actually take its second line"
+        )
+
+        let label = try XCTUnwrap(
+            source.range(of: "Text(host.label)"),
+            "the host-row label (Text(host.label)) moved — update this test's anchor"
+        )
+        let labelModifiers = source[label.upperBound...].prefix(300)
+        XCTAssertTrue(
+            labelModifiers.contains(".lineLimit(1)"),
+            "a 64-char host label must be one line, not an unbounded wrap"
+        )
+        XCTAssertTrue(
+            labelModifiers.contains(".truncationMode(.middle)"),
+            "a long host label should truncate from the middle (head and tail stay readable)"
+        )
+        let status = try XCTUnwrap(
+            source.range(of: "Text(host.statusText)"),
+            "the host-row status (Text(host.statusText)) moved — update this test's anchor"
+        )
+        let statusModifiers = source[status.upperBound...].prefix(300)
+        XCTAssertTrue(
+            statusModifiers.contains(".lineLimit(1)"),
+            "the \"Last context\" status keeps one full line"
+        )
+        XCTAssertTrue(
+            statusModifiers.contains(".layoutPriority(1)"),
+            "the status outranks the label when width runs out"
+        )
     }
 
     /// The Context → Integrations rename (this tab never shipped, so the raw

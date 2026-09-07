@@ -73,8 +73,8 @@ toggle that relaxes that.
   its hooks report go; no files are read from that host. Needs a Claude Code
   session in a supported terminal, or a Remote Control session in the focused
   browser tab.
-- **Clipboard** — checks technical terms against your clipboard to ground
-  spellings.
+- **Clipboard** — sends an excerpt of your clipboard text to the polisher,
+  sanitized and length-capped, used only as a spelling reference.
 - **Non-local endpoints** — when on, the context enabled above also goes to
   the polishing endpoint you configured. Enable it only for an endpoint you
   trust, such as a server on your own network.

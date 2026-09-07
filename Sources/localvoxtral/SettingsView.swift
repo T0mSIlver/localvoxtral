@@ -918,7 +918,7 @@ private struct IntegrationsSettingsPane: View {
 
                     SettingsFieldRow(
                         title: "Clipboard",
-                        help: "Sends technical terms from your clipboard to the polisher."
+                        help: "Sends a capped excerpt of your clipboard to the polisher."
                     ) {
                         Toggle("", isOn: $settings.polishClipboardContextEnabled)
                             .labelsHidden()
@@ -1245,15 +1245,20 @@ private struct ClaudeRemoteHostsSettingsRow: View {
         }
     }
 
-    /// The plain-ssh join's one setup step, on one line: title + status
-    /// leading, the small buttons trailing. The two facts the status carries
-    /// (is the export in the rc file; has a new session arrived carrying it)
-    /// stay separate texts for the drills, separated by a middle dot.
-    /// Nothing is written until the sheet has shown the exact text and been
-    /// confirmed.
+    /// The plain-ssh join's one setup step: title + status leading, the small
+    /// buttons trailing on the TITLE'S line (the outer stack is
+    /// baseline-aligned, so a wrapped status never drags the buttons down).
+    /// The status may wrap to a SECOND line rather than truncate — the
+    /// crossing sentence ("Open a new terminal window for it to take
+    /// effect.") is an instruction, and an instruction must never be
+    /// ellipsized (owner rule, PR #282 review). The two facts the status
+    /// carries (is the export in the rc file; has a new session arrived
+    /// carrying it) stay separate texts for the drills, separated by a
+    /// middle dot. Nothing is written until the sheet has shown the exact
+    /// text and been confirmed.
     @ViewBuilder
     private var shellSetup: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("Terminal setup for plain SSH")
                     .font(.callout)
@@ -1270,7 +1275,11 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                // Two lines, not an ellipsis: lineLimit(2) lets the status
+                // wrap, fixedSize(horizontal: false, vertical: true) lets the
+                // row actually grow to the wrapped height inside the stack.
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer(minLength: 8)
@@ -1302,7 +1311,16 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                         // The transient post-run status is the only thing that
                         // ever adds a second line.
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text(host.label).font(.callout)
+                            // Labels run to the registry's 64-character cap:
+                            // one line, truncating from the middle so head and
+                            // tail stay readable, at a priority BELOW the
+                            // status — a long name must never squeeze
+                            // "Last context: …" off its full line.
+                            Text(host.label)
+                                .font(.callout)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .layoutPriority(0)
 
                             // Rendered by the model against its injected clock —
                             // "Last context: 2 min ago" — and refreshed with the
@@ -1312,6 +1330,7 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
+                                .layoutPriority(1)
                         }
 
                         Spacer(minLength: 8)
@@ -1535,10 +1554,14 @@ private struct ClaudeRemoteHostsSettingsRow: View {
             }
         }
         if let remedy = model.listenerStatus.remedy {
+            // Wrap, never truncate — the remedy is an instruction ("Quit it
+            // and press Retry."), same rule as the shell-setup crossing
+            // sentence (PR #282 review).
             Text(remedy)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
