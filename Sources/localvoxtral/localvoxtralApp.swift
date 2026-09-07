@@ -208,13 +208,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Terminals owns the list from then on. Runs before anything that
         // consults the user-added list (the session verdict, the agent polish
         // profile), so those read settings only.
-        let migratedUserTerminalApps = UserTerminalAppsMigrator.migrate(
+        //
+        // Transactional by design: the stored list is persisted FIRST and the
+        // imported-ids ledger SECOND, so a crash between the two writes
+        // re-imports on the next launch instead of silently dropping apps
+        // the ledger already claims.
+        let terminalAppsImport = UserTerminalAppsMigrator.planImport(
             tomlBundleIDs: appConfigStore.loadTerminalAppBundleIDs(),
             storedApps: settings.userTerminalApps,
             defaults: .standard
         )
-        if migratedUserTerminalApps != settings.userTerminalApps {
-            settings.userTerminalApps = migratedUserTerminalApps
+        if !terminalAppsImport.isEmpty {
+            settings.userTerminalApps += terminalAppsImport.additions
+            UserTerminalAppsMigrator.record(terminalAppsImport, defaults: .standard)
         }
         let manager = BackendManager(
             polishingModelProvider: { settings.resolvedManagedLLMPolishingModel },

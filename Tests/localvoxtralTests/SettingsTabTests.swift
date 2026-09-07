@@ -239,6 +239,39 @@ final class SettingsTabTests: XCTestCase {
         )
     }
 
+    /// The Text Processing → Configuration → Files list names LIVE config
+    /// files only. `terminal_apps.toml` is a launch-time import source, not a
+    /// live config file (PR #284 review finding): listing it there told users
+    /// to edit a file the app no longer reads after the first launch. The
+    /// Terminals section is the UI for that list.
+    func testFilesListNamesLiveConfigFilesOnly() throws {
+        let source = try Self.settingsViewSource()
+
+        let filesRow = try XCTUnwrap(
+            source.range(of: "SettingsFieldRow(title: \"Files\", layout: .stacked)"),
+            "the Files list row is gone from SettingsView.swift — update this pin"
+        )
+        let nextGroup = try XCTUnwrap(
+            source.range(of: "SettingsGroup(", range: filesRow.upperBound..<source.endIndex),
+            "the Files row is not followed by a group — update this pin"
+        )
+        let filesList = source[filesRow.lowerBound..<nextGroup.lowerBound]
+
+        XCTAssertFalse(
+            filesList.contains("terminal_apps.toml"),
+            "terminal_apps.toml is a launch-time import source, not a live config file; the Terminals section is the UI"
+        )
+        for liveFile in [
+            "replacement_dictionary.toml", "llm_system_prompt.toml", "llm_user_prompt.toml",
+            "llm_system_prompt_agent.toml", "llm_user_prompt_agent.toml",
+        ] {
+            XCTAssertTrue(
+                filesList.contains("SettingsFileNote(name: \"\(liveFile)\")"),
+                "\(liveFile) is a live config file and must stay listed"
+            )
+        }
+    }
+
     /// Layout rules for the Integrations remote rows (PR #282 review), pinned
     /// at the source because no render seam exists for them (no `#Preview`,
     /// no view-inspector dependency):

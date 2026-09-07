@@ -17,10 +17,11 @@ struct SettingsView: View {
     @Bindable var navigator: SettingsNavigator
     @State private var shortcutValidationError: String?
 
-    /// Terminal rows, installed-state cache, and the user-added list. Cached
-    /// per Settings open (owner decision): the LaunchServices lookups re-run
-    /// in `onAppear`, and nothing else consults the system mid-session —
-    /// never a running-process check.
+    /// Terminal rows, installed-state cache, and the user-added list. The
+    /// LaunchServices sweep runs in `onAppear` — ONCE per Settings open (owner
+    /// decision) — and the cache then lives for the window's lifetime;
+    /// nothing else consults the system mid-session, never a
+    /// running-process check.
     @State private var terminalAppsModel: TerminalAppsSettingsModel
 
     /// The sidebar's one-line Add app… refusal message. Reset on every open
@@ -122,9 +123,12 @@ struct SettingsView: View {
                 .accessibilityHidden(true)
         }
         // Per Settings open (owner decision): the terminal rows' installed
-        // cache and the Integrations dots' statuses refresh with the window,
-        // not per pane — a dot is on the sidebar, which is visible on every
-        // pane.
+        // cache refreshes with the window, not per pane — a dot is on the
+        // sidebar, which is visible on every pane. This onAppear is the
+        // sweep's single home (the model's construction deliberately runs no
+        // LaunchServices lookups — see `refreshInstalledState`); the
+        // Integrations statuses are async work, which is why they refresh
+        // here rather than at construction.
         .onAppear {
             terminalAppsModel.refreshInstalledState()
             if let claude = viewModel.claudeIntegrationSettings {
@@ -193,13 +197,16 @@ struct SettingsView: View {
         let displayName =
             (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String)?.trimmed
             ?? url.deletingPathExtension().lastPathComponent
-        if terminalAppsModel.addUserApp(bundleID: bundleID, displayName: displayName) {
+        let outcome = terminalAppsModel.addUserApp(bundleID: bundleID, displayName: displayName)
+        if outcome.added {
             navigator.selectedTab = SettingsTab.terminal(
                 TerminalAppsSettingsModel.descriptor(
                     for: UserTerminalApp(bundleID: bundleID, displayName: displayName)
                 ))
-        } else {
-            addAppMessage = "That app is already listed."
+        } else if let refusalSentence = outcome.refusalSentence {
+            // One short sentence under the section (owner rule); the log
+            // carries the detail.
+            addAppMessage = refusalSentence
         }
     }
 
@@ -928,7 +935,9 @@ private struct TextProcessingSettingsPane: View {
                 }
 
                 // Stacked: a list of file names with descriptions is a
-                // full-width block, not a control.
+                // full-width block, not a control. `terminal_apps.toml` is
+                // deliberately absent: it is a launch-time import source,
+                // not a live config file — the Terminals section is the UI.
                 SettingsFieldRow(title: "Files", layout: .stacked) {
                     SettingsFileNotes(notes: [
                         SettingsFileNote(name: "replacement_dictionary.toml"),
@@ -936,7 +945,6 @@ private struct TextProcessingSettingsPane: View {
                         SettingsFileNote(name: "llm_user_prompt.toml"),
                         SettingsFileNote(name: "llm_system_prompt_agent.toml"),
                         SettingsFileNote(name: "llm_user_prompt_agent.toml"),
-                        SettingsFileNote(name: "terminal_apps.toml"),
                     ])
                 }
             }
@@ -1229,6 +1237,7 @@ private struct TerminalSettingsPane: View {
                 let verdicts = model.capabilityVerdicts(for: app)
                 capabilityRow(
                     title: "Session join",
+                    valueText: verdicts.joinValueText,
                     supported: verdicts.join,
                     reason: verdicts.joinReason
                 )
@@ -1254,9 +1263,13 @@ private struct TerminalSettingsPane: View {
     }
 
     /// One capability row: "Yes", or "No" plus the one-line reason (e.g.
-    /// "Ghostty 1.4 or newer needed.").
+    /// "Ghostty 1.4 or newer needed."). The Session join row may carry its
+    /// own value text when the join route asks for a permission on first
+    /// use (iTerm2 / Terminal.app: "Yes, asks for Automation permission on
+    /// first use").
     private func capabilityRow(
         title: String,
+        valueText: String = "Yes",
         supported: Bool,
         reason: String?
     ) -> some View {
@@ -1264,7 +1277,7 @@ private struct TerminalSettingsPane: View {
             title: title,
             help: supported ? nil : reason
         ) {
-            Text(supported ? "Yes" : "No")
+            Text(supported ? valueText : "No")
         }
     }
 }

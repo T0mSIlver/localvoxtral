@@ -100,6 +100,19 @@ enum TerminalAppCatalog {
             "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/claude-code/README.md#which-terminal-am-i-dictating-into"
     )!
 
+    /// The terminals whose session join (and TTY read) goes through
+    /// AppleScript, so the FIRST join prompts for the Automation
+    /// (AppleScript) permission. Their pane's Session join row carries
+    /// `appleScriptAutomationJoinText` instead of a bare "Yes" — the dot
+    /// stays green (installed + supported), and the app must never probe TCC
+    /// to find out, because probing itself prompts (docs/agent/invariants.md).
+    static let appleScriptJoinSlugs: Set<String> = ["iterm2", "apple-terminal"]
+
+    /// The Session join row's value text for the AppleScript joiners above.
+    /// Fixed by owner decision: state the prompt, keep the yes.
+    static let appleScriptAutomationJoinText =
+        "Yes, asks for Automation permission on first use"
+
     /// Owner-decided order (2026-09-07): join-capable terminals first, then
     /// the dictation-only list in the order `terminal_apps.toml` documented.
     static let builtIn: [TerminalAppDescriptor] = [
@@ -276,12 +289,16 @@ final class TerminalAppsSettingsModel {
         self.applicationURLForBundleID = applicationURLForBundleID
         self.bundleShortVersion = bundleShortVersion
         self.isCmuxSocketSetUp = isCmuxSocketSetUp
-        refreshInstalledState()
     }
 
-    /// (Re-)runs the LaunchServices lookups. Called once at construction and
-    /// on every Settings window open — the cache is per Settings open, so an
-    /// app installed while the window was closed is seen on the next open.
+    /// (Re-)runs the LaunchServices lookups. The Settings window's `onAppear`
+    /// calls it ONCE per open — the sweep must have exactly one home, because
+    /// a `TerminalAppsSettingsModel` is also constructed for every discarded
+    /// `SettingsView` value SwiftUI builds while re-evaluating the scene, and
+    /// a constructor sweep would fire on each of those. Adding/removing a user
+    /// app re-runs it so the new bundle id gets its (single) lookup. The
+    /// cache lives for the window's lifetime: an app installed while the
+    /// window was closed is seen on the next open.
     func refreshInstalledState() {
         var newInstalled: [String: Bool] = [:]
         var newVersions: [String: String?] = [:]
@@ -349,6 +366,11 @@ final class TerminalAppsSettingsModel {
     struct CapabilityVerdicts: Equatable, Sendable {
         let join: Bool
         let joinReason: String?
+        /// The trailing text of the Session join row: "Yes", unless the join
+        /// route needs a permission the user grants on first use (iTerm2 and
+        /// Terminal.app join through AppleScript —
+        /// `TerminalAppCatalog.appleScriptAutomationJoinText`).
+        let joinValueText: String
         let screen: Bool
         let screenReason: String?
     }
@@ -367,12 +389,14 @@ final class TerminalAppsSettingsModel {
         case "ghostty":
             if TerminalAppCatalog.meetsGhosttyFloor(row.version) {
                 return CapabilityVerdicts(
-                    join: true, joinReason: nil, screen: true, screenReason: nil
+                    join: true, joinReason: nil, joinValueText: "Yes",
+                    screen: true, screenReason: nil
                 )
             }
             return CapabilityVerdicts(
                 join: false,
                 joinReason: TerminalAppCatalog.ghosttyVersionReason,
+                joinValueText: "No",
                 screen: false,
                 screenReason: TerminalAppCatalog.ghosttyVersionReason
             )
@@ -380,53 +404,107 @@ final class TerminalAppsSettingsModel {
             let reason: String? = isCmuxSocketSetUp ? nil : TerminalAppCatalog.cmuxSocketReason
             return CapabilityVerdicts(
                 join: reason == nil, joinReason: reason,
+                joinValueText: reason == nil ? "Yes" : "No",
                 screen: reason == nil, screenReason: reason
             )
         default:
+            let joinSupported = app.capabilities.joinRequirement == nil
             return CapabilityVerdicts(
-                join: app.capabilities.joinRequirement == nil,
+                join: joinSupported,
                 joinReason: app.capabilities.joinRequirement,
+                joinValueText: joinValueText(supported: joinSupported, slug: app.slug),
                 screen: app.capabilities.screenRequirement == nil,
                 screenReason: app.capabilities.screenRequirement
             )
         }
     }
 
+    /// "Yes"/"No", except the AppleScript joiners state the Automation
+    /// prompt in the value itself: the row still reads as a yes, the dot
+    /// stays green, and no TCC probe ever runs to find out more.
+    nonisolated private static func joinValueText(supported: Bool, slug: String) -> String {
+        guard supported else { return "No" }
+        return TerminalAppCatalog.appleScriptJoinSlugs.contains(slug)
+            ? TerminalAppCatalog.appleScriptAutomationJoinText
+            : "Yes"
+    }
+
     // MARK: - User-added apps
 
-    /// Adds a chosen app. Returns false when the bundle id is empty, already
-    /// added, or already covered by a built-in row — the caller reports one
-    /// short line; the details are in the log.
+    /// The outcome of an Add app… attempt: added, or refused with the ONE
+    /// sentence the sidebar shows. The log carries the detail — never more
+    /// than a sentence in chrome (owner rule).
+    struct AddUserAppOutcome: Equatable, Sendable {
+        let added: Bool
+        let refusalSentence: String?
+
+        static let added = AddUserAppOutcome(added: true, refusalSentence: nil)
+
+        static func refused(_ sentence: String) -> AddUserAppOutcome {
+            AddUserAppOutcome(added: false, refusalSentence: sentence)
+        }
+    }
+
+    /// The refusal sentences, as constants so tests pin the exact copy.
+    enum AddUserAppRefusal {
+        static let blankBundleID = "That app has no readable bundle id."
+        static let coveredByBuiltInRow = "A built-in terminal row already lists that app."
+        static let alreadyAdded = "That app is already listed."
+        static let paneNameTaken = "Another terminal already uses that pane name."
+    }
+
+    /// Adds a chosen app. Refuses a blank bundle id, an id a built-in row
+    /// already covers, an already-added id, and — because a pane's identity
+    /// is its slug (`SettingsTab.terminal`) — a slug that collides with a
+    /// built-in's or another user app's: a colliding pane would shadow the
+    /// row it shares an id with.
     @discardableResult
-    func addUserApp(bundleID: String, displayName: String) -> Bool {
+    func addUserApp(bundleID: String, displayName: String) -> AddUserAppOutcome {
         let id = bundleID.trimmed
         guard !id.isEmpty else {
             Log.config.notice("Refused to add a terminal app with no bundle id")
-            return false
+            return .refused(AddUserAppRefusal.blankBundleID)
         }
         guard !TerminalAppCatalog.isBuiltInDetectionBundleID(id) else {
             Log.config.notice(
                 "Refused to add \(id, privacy: .public): a built-in terminal row already covers it"
             )
-            return false
+            return .refused(AddUserAppRefusal.coveredByBuiltInRow)
         }
         guard !settings.userTerminalApps.contains(where: { $0.bundleID == id }) else {
             Log.config.notice(
                 "Refused to add \(id, privacy: .public): already in the added-apps list"
             )
-            return false
+            return .refused(AddUserAppRefusal.alreadyAdded)
+        }
+        let slug = Self.slug(forBundleID: id)
+        guard !TerminalAppCatalog.builtIn.contains(where: { $0.slug == slug }) else {
+            Log.config.notice(
+                "Refused to add \(id, privacy: .public): its slug \(slug, privacy: .public) collides with a built-in terminal's pane"
+            )
+            return .refused(AddUserAppRefusal.paneNameTaken)
+        }
+        guard !settings.userTerminalApps.contains(where: {
+            Self.slug(forBundleID: $0.bundleID) == slug
+        }) else {
+            Log.config.notice(
+                "Refused to add \(id, privacy: .public): its slug \(slug, privacy: .public) collides with another added app's pane"
+            )
+            return .refused(AddUserAppRefusal.paneNameTaken)
         }
         let name = displayName.trimmed.isEmpty ? Self.fallbackDisplayName(forBundleID: id) : displayName.trimmed
-        settings.userTerminalApps.append(UserTerminalApp(bundleID: id, displayName: name))
+        settings.addUserTerminalApp(UserTerminalApp(bundleID: id, displayName: name))
         Log.config.notice(
             "Added terminal app \(name, privacy: .public) (\(id, privacy: .public))"
         )
         refreshInstalledState()
-        return true
+        return .added
     }
 
     func removeUserApp(bundleID: String) {
-        settings.userTerminalApps.removeAll { $0.bundleID == bundleID }
+        // The store records the removal in the migration ledger so the
+        // launch-time terminal_apps.toml import cannot resurrect the id.
+        settings.removeUserTerminalApp(bundleID: bundleID)
         Log.config.notice("Removed terminal app \(bundleID, privacy: .public)")
         refreshInstalledState()
     }
@@ -486,44 +564,89 @@ final class TerminalAppsSettingsModel {
 /// UNTOUCHED — settings is authoritative from then on.
 ///
 /// Removal must stick: an id the user removed from Settings must not
-/// resurrect on the next launch just because the TOML still lists it, so the
-/// ids that have EVER been imported are recorded in defaults and never
-/// re-imported. A NEW id appended to the TOML is still picked up on the next
-/// launch — the file remains a working add-path, only removal moves to the UI.
+/// resurrect on the next launch just because the TOML still lists it. Two
+/// ledgers hold that line — the ids that have EVER been imported
+/// (`importedBundleIDsKey`) and the ids the user removed
+/// (`removedBundleIDsKey`, written at removal time by `SettingsStore`). An
+/// id in EITHER ledger is never re-imported, so a removed app stays gone
+/// even if the imported-ids ledger is lost or unreadable. A NEW id appended
+/// to the TOML is still picked up on the next launch — the file remains a
+/// working add-path, only removal moves to the UI.
 enum UserTerminalAppsMigrator {
     static let importedBundleIDsKey = "settings.user_terminal_apps_imported_bundle_ids"
+    static let removedBundleIDsKey = "settings.user_terminal_apps_removed_bundle_ids"
 
-    /// Imports new TOML entries into settings. Pure over its inputs: the
-    /// config loader and the defaults store are injected, so the migration's
-    /// idempotence and no-resurrection rules are unit-testable.
-    @discardableResult
-    static func migrate(
+    /// A computed import, applied by the CALLER in a fixed order: the stored
+    /// list first, the imported-ids ledger second. A crash between the two
+    /// writes leaves the ledger BEHIND the list, so the next launch sees the
+    /// ids in the stored list and imports nothing; the reverse order would
+    /// let the ledger alone make a lost list look already-imported, silently
+    /// dropping the apps.
+    struct Plan: Equatable {
+        /// Entries to append to the stored list.
+        let additions: [UserTerminalApp]
+        /// The full replacement value for the imported-ids ledger, to be
+        /// written only after the list was persisted.
+        let importedBundleIDs: [String]
+
+        var isEmpty: Bool { additions.isEmpty }
+    }
+
+    /// Reads both ledgers (a lost or non-array key reads as empty) and plans
+    /// the import. Writes nothing — applying the plan is the caller's half
+    /// of the transaction.
+    static func planImport(
         tomlBundleIDs: [String],
         storedApps: [UserTerminalApp],
         defaults: UserDefaults
-    ) -> [UserTerminalApp] {
-        var imported = defaults.stringArray(forKey: importedBundleIDsKey) ?? []
+    ) -> Plan {
+        planImport(
+            tomlBundleIDs: tomlBundleIDs,
+            storedApps: storedApps,
+            importedBundleIDs: defaults.stringArray(forKey: importedBundleIDsKey) ?? [],
+            removedBundleIDs: defaults.stringArray(forKey: removedBundleIDsKey) ?? []
+        )
+    }
+
+    /// Pure over its inputs, so the migration's idempotence, dedup, and
+    /// no-resurrection rules are unit-testable without a defaults store.
+    static func planImport(
+        tomlBundleIDs: [String],
+        storedApps: [UserTerminalApp],
+        importedBundleIDs: [String],
+        removedBundleIDs: [String]
+    ) -> Plan {
         let known = Set(storedApps.map(\.bundleID))
-            .union(imported)
+            .union(importedBundleIDs)
+            .union(removedBundleIDs)
             .union(TerminalAppCatalog.builtIn.flatMap(\.detectionBundleIDs))
 
+        // Deduped against `known` AND against itself, preserving order: a
+        // bundle id listed twice in the TOML imports once.
+        var seen = Set<String>()
         let newIDs = tomlBundleIDs
             .map { $0.trimmed }
             .filter { !$0.isEmpty }
             .filter { !known.contains($0) }
+            .filter { seen.insert($0).inserted }
 
-        guard !newIDs.isEmpty else { return storedApps }
-        imported.append(contentsOf: newIDs)
-        defaults.set(imported, forKey: importedBundleIDsKey)
-        let additions = newIDs.map { bundleID in
-            UserTerminalApp(
-                bundleID: bundleID,
-                displayName: TerminalAppsSettingsModel.fallbackDisplayName(forBundleID: bundleID)
-            )
-        }
-        Log.config.notice(
-            "Imported \(additions.count, privacy: .public) terminal app(s) from terminal_apps.toml"
+        return Plan(
+            additions: newIDs.map { bundleID in
+                UserTerminalApp(
+                    bundleID: bundleID,
+                    displayName: TerminalAppsSettingsModel.fallbackDisplayName(forBundleID: bundleID)
+                )
+            },
+            importedBundleIDs: importedBundleIDs + newIDs
         )
-        return storedApps + additions
+    }
+
+    /// Records the ledger — call only AFTER the stored list was persisted.
+    static func record(_ plan: Plan, defaults: UserDefaults) {
+        guard !plan.isEmpty else { return }
+        defaults.set(plan.importedBundleIDs, forKey: importedBundleIDsKey)
+        Log.config.notice(
+            "Imported \(plan.additions.count, privacy: .public) terminal app(s) from terminal_apps.toml"
+        )
     }
 }
