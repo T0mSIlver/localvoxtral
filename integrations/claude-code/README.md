@@ -81,7 +81,7 @@ default:
  2. In localvoxtral, enable **Settings → Integrations → Claude Code → "Join
     Claude Code sessions in cmux"** and enter the same password in **cmux
    socket password**. It is stored in your Keychain and sent only to cmux's
-   local socket.
+   local socket; saving an empty field removes the stored password.
 
 If the socket refuses the app, the settings row says
 `cmux socket requires password mode.` and the dictation joins nothing —
