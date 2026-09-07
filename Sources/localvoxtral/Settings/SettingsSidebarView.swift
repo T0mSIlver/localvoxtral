@@ -28,17 +28,6 @@ extension SettingsTab {
         }
     }
 
-    var subtitle: String {
-        switch self {
-        case .general: return "Permissions and app-level behavior."
-        case .dictation: return "How you start, stop, and see dictation."
-        case .endpoints: return "Where dictation and polishing run."
-        case .textProcessing: return "Replacements and LLM polishing of your transcript."
-        case .integrations: return "What the polisher and your coding agents may see."
-        case .about: return "Version, project, and diagnostics."
-        }
-    }
-
     var systemImage: String {
         switch self {
         case .general: return "gearshape.fill"

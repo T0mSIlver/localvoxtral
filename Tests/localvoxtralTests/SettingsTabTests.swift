@@ -42,7 +42,6 @@ final class SettingsTabTests: XCTestCase {
     func testEveryTabHasCompleteChrome() {
         for tab in SettingsTab.allCases {
             XCTAssertFalse(tab.title.isEmpty, "\(tab.rawValue) has no title")
-            XCTAssertFalse(tab.subtitle.isEmpty, "\(tab.rawValue) has no subtitle")
             XCTAssertFalse(tab.systemImage.isEmpty, "\(tab.rawValue) has no SF Symbol")
             XCTAssertFalse(
                 tab.accessibilityIdentifier.isEmpty,
@@ -55,17 +54,32 @@ final class SettingsTabTests: XCTestCase {
         }
     }
 
-    func testSubtitlesAreOneLineSentences() {
-        for tab in SettingsTab.allCases {
-            XCTAssertFalse(
-                tab.subtitle.contains("\n"),
-                "\(tab.rawValue) subtitle must be a single line"
-            )
-            XCTAssertTrue(
-                tab.subtitle.hasSuffix("."),
-                "\(tab.rawValue) subtitle must read as a sentence"
-            )
-        }
+    /// The pane header is the title only (owner review, 2026-09-07): every
+    /// pane subtitle ("What the polisher and your coding agents may see." and
+    /// siblings) was narration and was deleted so the first group starts
+    /// higher. Pins the deletion at the source, the same way the script-pinning
+    /// tests below hold the AX drills, so a future "helpful" subtitle cannot
+    /// silently return.
+    func testPaneHeaderIsTitleOnly() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // SettingsTabTests.swift
+            .deletingLastPathComponent()  // localvoxtralTests
+            .deletingLastPathComponent()  // Tests
+        let headerSource = try String(
+            contentsOf: repoRoot.appendingPathComponent(
+                "Sources/localvoxtral/Settings/SettingsPaneHeader.swift"
+            ),
+            encoding: .utf8
+        )
+
+        XCTAssertFalse(
+            headerSource.contains("tab.subtitle"),
+            "pane subtitles were deleted by owner review; put new explanations in the docs, not the header"
+        )
+        XCTAssertFalse(
+            headerSource.contains(".subheadline"),
+            "the header renders exactly one line: the tab title"
+        )
     }
 
     func testAccessibilityIdentifiersUseTheDrillScheme() {
