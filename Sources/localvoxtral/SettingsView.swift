@@ -2296,9 +2296,7 @@ private struct ClaudeStatuslineSetupSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Claude Code status line")
                 .font(.headline)
-            Text(
-                "This adds one entry to ~/.claude/settings.json pointing at this app's publisher, so Claude Code's bottom bar shows whether localvoxtral is connected to the session. Anything else in that file is left alone."
-            )
+            Text(ClaudeStatuslineInstallService.sheetExplanation)
             .font(.callout)
             .fixedSize(horizontal: false, vertical: true)
 

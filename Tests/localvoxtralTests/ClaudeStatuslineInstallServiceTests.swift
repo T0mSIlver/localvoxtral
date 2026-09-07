@@ -242,6 +242,31 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
         XCTAssertEqual(parsed["command"], Self.hookCommand)
     }
 
+    func testSheetCopyStatesPreservationWithNormalization() {
+        // m4: the preview shows the entry, but Apply rewrites the whole file
+        // with normalized formatting — the sheet must promise preservation,
+        // never byte-stability.
+        XCTAssertTrue(
+            ClaudeStatuslineInstallService.sheetExplanation.contains("formatting is normalized"),
+            "the sheet names the normalization"
+        )
+        XCTAssertFalse(
+            ClaudeStatuslineInstallService.sheetExplanation.contains("left alone"),
+            "no byte-stability promise"
+        )
+        // And the behaviour it describes: content preserved, bytes normalized.
+        let existing = Data("{\"z\":1,\"a\":2}".utf8)
+        let updated = try? XCTUnwrap(ClaudeStatuslineInstallService.updatedSettingsData(
+            existing: existing, hookCommand: Self.hookCommand
+        ))
+        let reparsed = try? XCTUnwrap(
+            try JSONSerialization.jsonObject(with: updated!) as? [String: Any]
+        )
+        XCTAssertEqual(reparsed?["z"] as? Int, 1, "other entries are kept")
+        XCTAssertEqual(reparsed?["a"] as? Int, 2, "other entries are kept")
+        XCTAssertNotEqual(updated, existing, "formatting normalizes: bytes change")
+    }
+
     func testPreviewIsNilWithoutAHookCommand() {
         XCTAssertNil(ClaudeStatuslineInstallService.preview(hookCommand: nil))
     }

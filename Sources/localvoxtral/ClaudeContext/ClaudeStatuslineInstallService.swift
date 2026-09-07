@@ -31,6 +31,15 @@ public struct ClaudeStatuslineInstallService: Sendable {
     /// ours.
     public static let statuslineFlag = "--statusline"
 
+    /// The setup sheet's explanation. A constant so tests pin the promise:
+    /// every other entry is kept, but formatting normalizes through the
+    /// JSON round-trip (pretty-printed, sorted keys) — the sheet must never
+    /// claim the file is otherwise byte-untouched.
+    public static let sheetExplanation =
+        "This adds one entry to ~/.claude/settings.json pointing at this app's publisher, "
+        + "so Claude Code's bottom bar shows whether localvoxtral is connected to the session. "
+        + "Every other entry is kept (formatting is normalized)."
+
     private let fileSystem: (any ClaudeStatuslineFileSystem)?
     /// Whether an invoked path resolves to an existing executable. Injected
     /// so tests pin stale-path behaviour without touching the filesystem.
