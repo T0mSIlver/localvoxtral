@@ -61,6 +61,56 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
         )
     }
 
+    func testSubstringMatchesAreForeign() throws {
+        // B1: a longer flag, a wrapper name containing ours, and a command
+        // that merely mentions both strings must never classify as ours.
+        for command in [
+            "/usr/local/bin/localvoxtral-claude-hook --statusline-compat",
+            "localvoxtral-claude-hook-statusline --statusline",
+            "echo localvoxtral-claude-hook --statusline",
+        ] {
+            let existing = try settingsJSON([
+                "statusLine": ["type": "command", "command": command],
+            ])
+            XCTAssertEqual(
+                ClaudeStatuslineInstallService.deriveStatus(settingsData: existing), .foreign,
+                "must stay foreign: \(command)"
+            )
+        }
+    }
+
+    func testSubstringMatchesRefuseApplyAndRemove() throws {
+        for command in [
+            "/usr/local/bin/localvoxtral-claude-hook --statusline-compat",
+            "localvoxtral-claude-hook-statusline --statusline",
+            "echo localvoxtral-claude-hook --statusline",
+        ] {
+            let existing = try settingsJSON([
+                "statusLine": ["type": "command", "command": command],
+            ])
+            let applyFS = StubStatuslineFS(state: ClaudeStatuslineState(
+                fileExists: true, data: existing, permissions: 0o644
+            ))
+            XCTAssertThrowsError(
+                try ClaudeStatuslineInstallService(fileSystem: applyFS)
+                    .apply(hookCommand: Self.hookCommand)
+            ) { error in
+                XCTAssertEqual(error as? ClaudeStatuslineError, .refused, "\(command)")
+            }
+            XCTAssertNil(applyFS.written, "never overwritten: \(command)")
+            let removeFS = StubStatuslineFS(state: ClaudeStatuslineState(
+                fileExists: true, data: existing, permissions: 0o644
+            ))
+            XCTAssertThrowsError(
+                try ClaudeStatuslineInstallService(fileSystem: removeFS).remove()
+            ) { error in
+                XCTAssertEqual(error as? ClaudeStatuslineError, .refused, "\(command)")
+            }
+            XCTAssertNil(removeFS.written, "never rewritten: \(command)")
+            XCTAssertFalse(removeFS.deleted, "never deleted: \(command)")
+        }
+    }
+
     func testNonCommandShapeIsForeign() throws {
         let existing = try settingsJSON(["statusLine": ["type": "unsupported"]])
         XCTAssertEqual(

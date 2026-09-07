@@ -25,9 +25,10 @@ public struct ClaudeStatuslineInstallService: Sendable {
     public static let settingsKey = "statusLine"
     /// `statusLine.type` for a hook command.
     static let commandType = "command"
-    /// The hook flag that identifies OUR status line command. Matched as a
-    /// substring alongside the publisher binary name, so a wrapper script
-    /// that merely mentions the binary is never mistaken for ours.
+    /// The hook flag that identifies OUR status line command. Matched as an
+    /// exact shell word alongside the publisher binary's basename, so a
+    /// wrapper script that merely mentions the binary is never mistaken for
+    /// ours.
     public static let statuslineFlag = "--statusline"
 
     private let fileSystem: (any ClaudeStatuslineFileSystem)?
@@ -97,14 +98,73 @@ public struct ClaudeStatuslineInstallService: Sendable {
     }
 
     /// Ours when the command invokes THIS app's publisher in statusline mode.
-    /// The binary name alone is not enough: the README's composition recipe
-    /// wraps the binary inside the user's own script, and that script is
-    /// theirs, not ours.
+    /// Tokenized, never substring: the README's composition recipe wraps the
+    /// binary inside the user's own script, and that script is theirs, not
+    /// ours. `argv[0]`'s basename must equal our executable name AND one argv
+    /// token must equal `--statusline` exactly, so `--statusline-compat`, a
+    /// wrapper binary containing our name, or a command merely mentioning
+    /// both strings stays foreign.
     public static func isOurs(
         command: String,
         executableName: String = ClaudePluginAssets.publisherExecutableName
     ) -> Bool {
-        command.contains(executableName) && command.contains(statuslineFlag)
+        let argv = shellWords(command)
+        guard let invoked = argv.first else { return false }
+        guard URL(fileURLWithPath: invoked).lastPathComponent == executableName else {
+            return false
+        }
+        return argv.contains(statuslineFlag)
+    }
+
+    /// Split a shell command into words, respecting single/double quotes and
+    /// backslash escapes. Minimal on purpose: enough to find `argv[0]` and
+    /// exact flag tokens without substring false positives.
+    static func shellWords(_ command: String) -> [String] {
+        var words: [String] = []
+        var current = ""
+        var inWord = false
+        var quote: Character?
+        var escaped = false
+        for ch in command {
+            if escaped {
+                current.append(ch)
+                escaped = false
+                inWord = true
+                continue
+            }
+            if ch == "\\", quote != "'" {
+                escaped = true
+                inWord = true
+                continue
+            }
+            if let q = quote {
+                if ch == q {
+                    quote = nil
+                } else {
+                    current.append(ch)
+                }
+                inWord = true
+                continue
+            }
+            if ch == "'" || ch == "\"" {
+                quote = ch
+                inWord = true
+                continue
+            }
+            if ch.isWhitespace {
+                if inWord {
+                    words.append(current)
+                    current = ""
+                    inWord = false
+                }
+                continue
+            }
+            current.append(ch)
+            inWord = true
+        }
+        if escaped { current.append("\\") }
+        if inWord { words.append(current) }
+        return words
     }
 
     // MARK: - Preview
