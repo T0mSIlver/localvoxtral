@@ -338,6 +338,12 @@ extension ClaudeRemoteEnrollmentService {
             let process = Process()
             process.executableURL = sshExecutableURL
             process.arguments = Array(invocation.argv.dropFirst())
+            if !invocation.environment.isEmpty {
+                process.environment = ProcessInfo.processInfo.environment.merging(
+                    invocation.environment,
+                    uniquingKeysWith: { _, requested in requested }
+                )
+            }
 
             let input = Pipe()
             process.standardInput = input
