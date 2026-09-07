@@ -1697,11 +1697,14 @@ public final class ClaudeIntegrationSettingsModel {
 
         let service = enrollmentService
         let port = remoteForwardPort
+        let snippetToApply = service.sshConfigBlockIsCurrent(port: port, hostID: hostID) == true
+            ? nil
+            : snippet
 
         markSetup(.sshConfig, .running)
         let sshAttempt = await performEnrollmentAsync {
-            if let snippet {
-                try service.insertSSHConfig(snippet: snippet, hostID: hostID)
+            if let snippetToApply {
+                try service.insertSSHConfig(snippet: snippetToApply, hostID: hostID)
             }
             return []
         }
@@ -1715,7 +1718,11 @@ public final class ClaudeIntegrationSettingsModel {
         }
         markSetup(
             .sshConfig,
-            .done(snippet == nil ? "The SSH config block is already current." : "The SSH config block is current.")
+            .done(
+                snippetToApply == nil
+                    ? "The SSH config block is already current."
+                    : "The SSH config block is current."
+            )
         )
         guard continueSetup(hostID: hostID) else { return }
 

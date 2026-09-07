@@ -2781,6 +2781,51 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     }
 
     @MainActor
+    func testInitialSetupSkipsACurrentBlockInASymlinkedSSHConfig() async throws {
+        let registry = try makeRegistry()
+        let sshFS = RecordingSSHConfigFileSystem()
+        let recorder = SetupFlowRecorder()
+        let service = ClaudeRemoteEnrollmentService(
+            runner: setupFlowRunner(script: SetupFlowScript(), recorder: recorder),
+            sshConfigFileSystem: sshFS
+        )
+        let listener = StubListener(hosts: registry)
+        listener.isListening = true
+        let model = setupFlowModel(
+            registry: registry,
+            listener: listener,
+            service: service,
+            rcFileSystem: StubRCFileSystem(state: ClaudeShellRCState(
+                fileExists: true,
+                data: Data("export EDITOR=vim\n".utf8),
+                permissions: 0o644
+            ))
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let presentation = try XCTUnwrap(model.presentedPlan)
+        sshFS.setConfig(ClaudeRemoteEnrollmentService.applySSHConfigSnippet(
+            to: "",
+            snippet: presentation.plan.sshConfigSnippet,
+            hostID: presentation.host.id
+        ))
+        sshFS.setSymlinked(true)
+
+        model.requestHostSetup()
+        await model.confirmEnrollmentAction()
+
+        let run = try XCTUnwrap(model.setupRun)
+        XCTAssertEqual(
+            run.items[0].state,
+            .done("The SSH config block is already current.")
+        )
+        XCTAssertEqual(sshFS.writeCount, 0, "a current symlink target must not be replaced")
+        XCTAssertEqual(model.hosts.first?.setupStatusText, "Setup complete.")
+        XCTAssertFalse(recorder.all.isEmpty, "setup must continue after the current block")
+    }
+
+    @MainActor
     func testSetupRunStopsAtTheFirstFailure() async throws {
         var script = SetupFlowScript()
         script.plugin = .init(exitCode: 1, message: "boom")
