@@ -9,8 +9,8 @@ import Foundation
 /// line it did not write. A foreign `statusLine` is reported, not replaced;
 /// the README shows how to call our hook from the user's own script instead.
 ///
-/// File discipline mirrors `ClaudeShellRCWriter`: preview the exact text,
-/// write only on explicit consent, refuse symlinks at every path component,
+/// File discipline mirrors `ClaudeShellRCWriter`: write only on explicit
+/// consent, refuse symlinks at every path component,
 /// refuse an unreadable file (never treat it as empty), keep an existing
 /// file's mode (0600 for a new one), write atomically, and stay idempotent
 /// (re-applying writes byte-identical bytes).
@@ -35,14 +35,8 @@ public struct ClaudeStatuslineInstallService: Sendable {
     /// ours.
     public static let statuslineFlag = "--statusline"
 
-    /// The setup sheet's explanation. A constant so tests pin the promise:
-    /// every other entry is kept, but formatting normalizes through the
-    /// JSON round-trip (pretty-printed, sorted keys) — the sheet must never
-    /// claim the file is otherwise byte-untouched.
-    public static let sheetExplanation =
-        "This adds one entry to ~/.claude/settings.json pointing at localvoxtral's publisher, "
-        + "so the Claude Code bottom bar shows whether localvoxtral is connected. "
-        + "Every other entry is kept, and formatting is normalized."
+    public static let consentSentence =
+        "localvoxtral will edit ~/.claude/settings.json on this Mac."
 
     private let fileSystem: (any ClaudeStatuslineFileSystem)?
     /// Whether an invoked path resolves to an existing executable. Injected

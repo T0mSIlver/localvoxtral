@@ -196,7 +196,7 @@ private struct SetupFlowScript: Sendable {
         exitCode: 0, message: "LVX_HERDR_ABSENT"
     )
     var tunnelMessage = "LVX_HTTP:401"
-    var pluginListMessage = "localvoxtral-remote 1.7.0\n"
+    var pluginListMessage = "localvoxtral-remote 1.8.0\n"
 }
 
 /// A `claude plugin list --json` capture as a login shell delivers it: a
@@ -786,7 +786,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         )
     }
 
-    func testCustomizedHerdrPanelIsLeftUntouchedAndSurfacesTheManualSnippet() async throws {
+    func testCustomizedHerdrPanelIsLeftUntouchedAndPointsToDetailsWithoutCode() async throws {
         let registry = try makeRegistry()
         let service = ClaudeRemoteEnrollmentService(runner: { _ in
             .init(
@@ -810,15 +810,15 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
         XCTAssertEqual(model.herdrPanelStatus, .likelyNotConfigured)
         XCTAssertEqual(model.enrollmentStepStatuses.first?.text, "Herdr panel setup failed.")
-        XCTAssertTrue(
-            model.enrollmentStepStatuses.first?.detail.contains(
-                ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet
-            ) == true
+        XCTAssertEqual(
+            model.enrollmentStepStatuses.first?.detail,
+            "Open Details for the manual herdr configuration."
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             model.alert?.detail.contains(ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet)
                 == true
         )
+        XCTAssertTrue(model.alert?.detail.contains("Open Details") == true)
     }
 
     func testANewEnrollmentSheetDoesNotInheritThePreviousHostsStepResults() async throws {
@@ -1303,22 +1303,17 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertTrue(model.enrollmentStepStatuses.allSatisfy(\.succeeded))
     }
 
-    /// The half of the blocker that the first fix missed: the executable path
-    /// wrote the ssh block, but the PANEL displayed and copied only the remote
-    /// commands. Both copy-only routes lead straight back to the split brain —
-    /// a host with no recorded alias can ONLY be updated by hand, and the
-    /// symlink refusal deliberately sends the user to that same Copy button.
-    /// So the copy payload has to carry both mutations, in order.
-    func testTheCopyPayloadForAnAliaslessHostCarriesTheSSHBlockToo() async throws {
+    /// The generated documentation seam keeps both halves together even when a
+    /// legacy host cannot be addressed automatically.
+    func testTheGeneratedPlanForAnAliaslessHostCarriesBothPortMutations() async throws {
         let registry = try makeRegistry()
         let filesystem = RecordingSSHConfigFileSystem()
         let service = ClaudeRemoteEnrollmentService(
             runner: { _ in .init(exitCode: 0, message: "ok") },
             sshConfigFileSystem: filesystem
         )
-        // Enrolled before aliases were recorded: copy-only, forever, until the
-        // user re-enrolls. This is the population most likely to still be on a
-        // legacy 8473 block.
+        // Enrolled before aliases were recorded. This population is the most
+        // likely to still have a legacy 8473 block.
         let enrollment = try registry.enroll(label: "buildhost")
         let model = makeModel(
             registry: registry,
@@ -1334,7 +1329,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let payload = update.applicationText
         XCTAssertTrue(
             payload.contains("RemoteForward 28542 127.0.0.1:8473"),
-            "a copy that omits the ssh block updates the remote and strands this Mac: \(payload)"
+            "a plan that omits the ssh block can strand this Mac: \(payload)"
         )
         XCTAssertTrue(payload.contains("--config 'port=28542'"), payload)
         // Order matters as much as presence: the block first, the remote second.
@@ -1344,9 +1339,9 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertTrue(payload.contains("~/.ssh/config"), "and it must say where the block goes")
     }
 
-    /// The recovery path after the app refuses to write a symlinked config: the
-    /// user is told to copy, so what they copy must be enough to finish the job.
-    func testTheCopyPayloadAfterASymlinkRefusalStillCarriesTheSSHBlock() async throws {
+    /// A refusal cannot mutate either side, while the generated test seam still
+    /// describes the complete intended migration.
+    func testTheGeneratedPlanSurvivesASymlinkRefusalWithoutRunningRemoteWork() async throws {
         let registry = try makeRegistry()
         let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
         let filesystem = RecordingSSHConfigFileSystem()
@@ -1375,18 +1370,15 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         await model.confirmEnrollmentAction()
 
         XCTAssertTrue(calls.withLock { $0 }.isEmpty, "the remote must stay untouched")
-        // The panel is still open, and what it offers to copy is the whole job.
         let payload = try XCTUnwrap(model.presentedPluginUpdate).applicationText
         XCTAssertTrue(
             payload.contains("RemoteForward 28542 127.0.0.1:8473"),
-            "the refusal tells the user to copy; copying must hand them both halves: \(payload)"
+            "the retained plan must still describe both halves: \(payload)"
         )
         XCTAssertTrue(payload.contains("--config 'port=28542'"))
     }
 
-    func testThePanelTheConfirmationAndTheCopyAllShowTheSameText() async throws {
-        // Three surfaces rendered the same thing by hand once, and diverged —
-        // that divergence WAS the blocker. One source now.
+    func testThePluginUpdatePlanAndConfirmationTestSeamsUseOneSource() async throws {
         let registry = try makeRegistry()
         let service = ClaudeRemoteEnrollmentService(
             runner: { _ in .init(exitCode: 0, message: "ok") },
@@ -1411,7 +1403,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertEqual(
             try XCTUnwrap(model.enrollmentConfirmation).preview,
             update.applicationText,
-            "the confirmation must be the same text the panel shows and copies"
+            "the retained confirmation seam must use the generated plan"
         )
         XCTAssertEqual(
             ClaudeIntegrationSettingsModel.updatePreview(for: update),
@@ -1517,9 +1509,9 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertFalse(presentation.plan.updateCommands.joined().contains("ssh prod"))
     }
 
-    func testRotatingAHostEnrolledBeforeAliasesWereRecordedIsCopyOnly() async throws {
+    func testRotatingAHostEnrolledBeforeAliasesWereRecordedRequiresReenrollment() async throws {
         // No alias on file means we do not know where to send the new token,
-        // and a guess is exactly what this PR removed. Copy still works.
+        // and a guess is exactly what this path forbids.
         let registry = try makeRegistry()
         let calls = Mutex(0)
         let service = ClaudeRemoteEnrollmentService(runner: { _ in
@@ -1643,7 +1635,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertNil(model.enrollmentConfirmation)
     }
 
-    func testPluginUpdateIsCopyOnlyForAHostWithNoRecordedAlias() async throws {
+    func testPluginUpdateCannotRunForAHostWithNoRecordedAlias() async throws {
         // Hosts enrolled before the alias was persisted. The row says what it
         // does not know instead of ssh-ing at a name it made up.
         let registry = try makeRegistry()
@@ -2627,6 +2619,16 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let model = shellSetupModel(fileSystem: fileSystem, crossing: .seen)
         model.refreshShellSetupStatus()
         XCTAssertEqual(model.shellSetupStatus.rc, .notApplied)
+        XCTAssertEqual(
+            model.shellSetupConsentSentence,
+            "localvoxtral will edit ~/.zshrc on this Mac."
+        )
+        XCTAssertEqual(
+            model.hostSetupConsentSentence(sshHostAlias: "builder"),
+            "localvoxtral will edit ~/.ssh/config and ~/.zshrc on this Mac and install "
+                + "its plugin on builder."
+        )
+        XCTAssertFalse(model.hostSetupConsentSentence(sshHostAlias: "builder").contains("export"))
 
         await model.applyShellSetup()
         XCTAssertEqual(fileSystem.writes, 1)
@@ -2641,26 +2643,17 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     }
 
     @MainActor
-    func testTheSheetPreviewIsTheEXACTTextThatWillBeWritten() async throws {
-        // Preview-then-consent, like the ssh-config insert: what the user
-        // approved and what lands in their file must be one string, or the
-        // preview is decoration.
+    func testTheGeneratedShellBlockStillMatchesTheWriterExactly() async throws {
         let fileSystem = StubRCFileSystem(state: ClaudeShellRCState())
         let model = shellSetupModel(fileSystem: fileSystem)
         let preview = try XCTUnwrap(model.shellSetupPreview)
 
         await model.applyShellSetup()
         let written = String(decoding: fileSystem.state.data ?? Data(), as: UTF8.self)
-        // EQUALITY on the bytes the writer received, against the preview the
-        // user approved — not `contains`, and not a second call to the same
-        // generator. The earlier version compared the preview to
-        // `snippet(for: .zsh)` and then asserted the write merely CONTAINED
-        // it, which is true of any superset and could not fail (review finding
-        // n1).
         XCTAssertEqual(
             written,
             ClaudeShellRCSetup.apply(to: "", snippet: preview),
-            "what lands in the file is what the sheet showed, byte for byte"
+            "the documentation/test seam must remain byte-identical to the writer"
         )
     }
 
@@ -2671,7 +2664,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         ))
         model.refreshShellSetupStatus()
         XCTAssertEqual(model.shellSetupStatus.rc, .unsupportedShell)
-        XCTAssertNil(model.shellSetupPreview, "the button must be disabled, not wrong")
+        XCTAssertNil(model.shellSetupPreview, "an unsupported shell must not generate a block")
+        XCTAssertFalse(model.canApplyShellSetup)
     }
 
     @MainActor
@@ -2931,7 +2925,12 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             failedReason(run.items[3].state),
             "This Mac is not sending LC_LVX_TTY for this SSH host."
         )
-        XCTAssertTrue(model.alert?.detail.contains("SendEnv LC_LVX_TTY") == true)
+        XCTAssertEqual(
+            model.alert?.detail,
+            "This Mac is not sending LC_LVX_TTY for this SSH host.\n\n"
+                + "Open Details and follow the SSH environment setup."
+        )
+        XCTAssertFalse(model.alert?.detail.contains("SendEnv") == true)
         XCTAssertEqual(run.items[4].state, .pending, "herdr never ran after the env failure")
     }
 
@@ -2946,7 +2945,12 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             failedReason(run.items[3].state),
             "The remote SSH server did not accept LC_LVX_TTY."
         )
-        XCTAssertTrue(model.alert?.detail.contains("AcceptEnv LANG LC_*") == true)
+        XCTAssertEqual(
+            model.alert?.detail,
+            "The remote SSH server did not accept LC_LVX_TTY.\n\n"
+                + "Open Details and follow the remote SSH server setup."
+        )
+        XCTAssertFalse(model.alert?.detail.contains("AcceptEnv") == true)
         XCTAssertTrue(recorder.all.contains { $0.argv.contains("-G") })
     }
 
@@ -2961,11 +2965,11 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             run.items[4].state,
             .skipped("The existing herdr agents table was left unchanged.")
         )
-        XCTAssertTrue(
-            model.setupManualInstructions?.contains(
-                ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet
-            ) == true
+        XCTAssertEqual(
+            model.setupManualInstructions,
+            "The remote herdr table is customized; open Details to update it manually."
         )
+        XCTAssertFalse(model.setupManualInstructions?.contains("[[rows]]") == true)
         XCTAssertEqual(run.items[5].state, .done("The tunnel and remote plugin checks passed."))
         XCTAssertEqual(model.hosts.first?.setupStatusText, "Setup complete.")
     }
@@ -2979,7 +2983,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             run.items[1].state,
             .skipped("This login shell is not supported for automatic setup; configure it manually.")
         )
-        XCTAssertTrue(model.setupManualInstructions?.contains("LC_LVX_TTY") == true)
+        XCTAssertEqual(model.setupManualInstructions, "Open Details for manual shell setup.")
+        XCTAssertFalse(model.setupManualInstructions?.contains("export") == true)
         XCTAssertEqual(run.items[5].state, .done("The tunnel and remote plugin checks passed."))
     }
 

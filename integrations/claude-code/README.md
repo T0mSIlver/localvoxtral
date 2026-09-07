@@ -131,8 +131,8 @@ There are two ways it can identify your window, tried in that order.
 
 **The app can do this for you.** Settings → Integrations → Remote hosts → *Remote
 Claude Code over SSH* → **Set Up…** next to "Terminal setup for plain SSH". It
-shows the exact block first, writes it only after you say yes, is idempotent
-(a second run replaces rather than duplicates), and has a **Remove**. The row
+shows one consent sentence naming the shell file, links here for details, is
+idempotent (a second run replaces rather than duplicates), and has a **Remove**. The row
 also reports whether a remote session has actually arrived carrying the value,
 which is the half you cannot see from the file.
 
@@ -304,7 +304,7 @@ That file is yours and Claude Code owns its schema; the CLI is the
 supported interface, and a third-party app editing it is how setups get
 corrupted during an unrelated upgrade. The one exception lives one row down
 in Settings: the opt-in status-line installer writes exactly the
-`statusLine` key — previewed first, only on your press, and never over a
+`statusLine` key after a one-sentence consent, and never over a
 status line you wrote yourself (see above).
 
 If you prefer to run the commands yourself, these are the same ones the button
@@ -361,11 +361,12 @@ One glance at Claude Code's bottom bar answers the question this plugin
 otherwise leaves silent: *is localvoxtral connected to this session?*
 
 The app way: **Settings → Integrations → Claude Code → Status line →
-Set Up…**. It shows the exact JSON first and writes it only after you say
-yes — one `statusLine` entry pointing at this app's bundled
+Set Up…**. A one-sentence consent names `~/.claude/settings.json`; **Details**
+opens this section. The app writes one `statusLine` entry pointing at its bundled
 `localvoxtral-claude-hook --statusline`. Everything else in
-`~/.claude/settings.json` round-trips untouched, and **Remove** takes the
-entry back out (deleting the file when nothing else is in it). If you
+`~/.claude/settings.json` is preserved, although the JSON is rewritten with
+sorted keys and normalized formatting. **Remove** takes the entry back out
+(deleting the file when nothing else is in it). If you
 already have your own status line, the row says so and offers no Install
 button: the app never overwrites a script you wrote — combine the two with
 the recipe below instead.
@@ -379,9 +380,12 @@ three fixed lines:
 
 | Line | Meaning |
 |---|---|
-| `● localvoxtral connected` (green) | the app is running and this session's hooks are reaching it |
-| `○ localvoxtral not connected` (yellow) | the app is running but has no live record of this session — plugin not installed, or the app started after this session's last hook (it catches up on your next prompt) |
-| `○ localvoxtral not running` (dim) | nothing is listening on the socket |
+| `lvx ●` (green) | the app received this session's hooks |
+| `lvx ●` (red) | the app is listening but rejected or does not recognize this plugin session |
+| `lvx ●` (grey) | nothing is listening on the local socket |
+
+With `NO_COLOR` set or `TERM=dumb`, these render as `lvx ok`, `lvx err`, and
+`lvx off`.
 
 In `~/.claude/settings.json`:
 
@@ -538,41 +542,34 @@ exchange (any HTTP status, even a 401) clears the backoff for everything else.
 In **Settings → Integrations → Remote hosts → "Remote Claude Code over SSH"**,
 type a name and your SSH host alias and press **Enroll…**. The app issues a
 token, binds the listener immediately — there is no relaunch step — and opens a
-sheet whose **Run Setup** does all of it in one consented flow, in order, each
-step self-verifying: the SSH config block on this Mac, the shell export block,
+sheet whose **Set Up** does all of it in one consented flow, in order, each step
+self-verifying: the SSH config block on this Mac, the shell export block,
 the plugin install-or-update on the host, the `LC_LVX_TTY` crossing check, the
 herdr agents-panel row when herdr is installed, and the final Check Setup. It
-stops at the first failure with the exact remedy. **Update Host** in an
-enrolled host's row runs the same flow. The numbered sections below stay for
-copying each step by hand — the manual equivalent of every one is
+stops at the first failure with the exact remedy. **Update host…** in an
+enrolled host's row runs the same flow. The sheet shows no token, command, or
+file contents. Its **Details** link opens the complete command reference in
 [docs/remote-claude-context.md](../../docs/remote-claude-context.md#how-enrollment-works).
 The list in that row shows each enrolled host, when it was last seen,
 and gives you **Update host…**, **Rotate Token**, **Revoke** and **Remove**.
 
-Steps 1 and 2 each offer a button that does the work and a Copy button that
-does not. The button paths act **only after showing you exactly what will happen
-and asking you to confirm**: *Insert into ~/.ssh/config* previews the exact
-block (an idempotent, marker-delimited splice; the rest of the file is never
-touched) before atomically writing it, and *Run on SSH host* previews the
-commands (token redacted) before running them through `ssh -o BatchMode=yes`
-with the token fed over the remote shell's stdin — so it never appears in any
-process's argument list **on your Mac**. On the host it does, briefly:
+The consent sentence names every local file and the SSH alias the flow may
+touch. Nothing runs or is written before **Set Up**. The app runs remote work
+through `ssh -o BatchMode=yes` with the token fed over the remote shell's stdin,
+so it never appears in any process's argument list **on your Mac**. On the host
+it does, briefly:
 `claude plugin install` takes its config as a flag and has no stdin path, so
 the token is in that one command's argv while it runs and in the plugin's
 userConfig under `~/.claude` afterwards, readable by anything running as you
 there. That is true whether the app runs the command or you paste it; see
 [docs/remote-claude-context.md](../../docs/remote-claude-context.md#3-a-token).
-Nothing runs or is written without that explicit confirmation.
-
-Everything the sheet gives you to copy is exactly what you run: no `#`
-commentary, no output to interpret. Step 4 is why — instead of handing you
-probe commands and explaining their output, the app runs them and reports two
-verdicts (see below). The full reference — what the token authorizes, the
+The sheet reports one line per step instead of showing output to interpret.
+The full reference — what the token authorizes, the
 per-Mac port, multiplexer limits, uninstalling — is
 [docs/remote-claude-context.md](../../docs/remote-claude-context.md).
 
-The token is shown exactly once, because only its hash is stored. If you lose it,
-rotate — that is what rotation is for. What the four steps amount to:
+The token is never shown in Settings. Only its hash is stored on this Mac. If
+setup is interrupted, rotate the token and run **Set Up** again. The steps are:
 
 **1. Add the tunnel to `~/.ssh/config`:**
 
@@ -665,13 +662,12 @@ traffic, which is also what re-runs the status line:
 
 | Line | The last hook dial saw |
 |---|---|
-| `● localvoxtral connected` (green) | a 200 from the app, through the tunnel, within the last 15 minutes |
-| `○ localvoxtral no recent hooks` (dim) | a 200 too — but a while ago. The green light expires rather than vouch for an app that may have gone away since; your next prompt dials and restores the truth either way |
-| `○ localvoxtral unreachable` (dim) | no listener — tunnel down, Mac asleep, or the app not running |
-| `○ localvoxtral token rejected` (yellow) | a 401 — rotate the token, or finish an interrupted rotation |
-| `○ localvoxtral token not configured` (yellow) | the plugin has no `token` in its config at all |
-| `○ localvoxtral not connected` (yellow) | some other completed HTTP error |
-| `○ localvoxtral no hooks yet` (dim) | nothing — no hook has fired since this host last booted (the stamp lives in the runtime dir) |
+| `lvx ●` (green) | a 200 from the app, through the tunnel, within the last 15 minutes |
+| `lvx ●` (grey) | no recent hooks, no listener, a down tunnel, or no hook since boot |
+| `lvx ●` (red) | the token is missing or rejected, or another HTTP error indicates an outdated plugin |
+
+With `NO_COLOR` set or `TERM=dumb`, these render as `lvx ok`, `lvx off`, and
+`lvx err`.
 
 Set it up on the **remote host** (the plugin ships the renderer; Claude Code's
 versioned plugin cache is no place for a settings path, so copy it somewhere
@@ -781,12 +777,10 @@ ssh builder "claude plugin install localvoxtral-remote@localvoxtral --config 'po
 Order matters: `plugin update` installs whatever the local marketplace clone
 currently offers, so refreshing the clone first is what makes it an update at
 all. In the app, each row in **Remote Claude Code over SSH** has an **Update
-Plugin…** button that shows these two commands with a Copy button, and can run
-them over SSH after you confirm. One-click runs against the **SSH alias you
-enrolled with**, which is recorded with the host — the display name is never
-used as a substitute, since the two are separate fields and can name different
-machines. A host enrolled before localvoxtral recorded aliases has none on file:
-its commands are copy-only (and so is its rotation sheet) until you re-enroll it.
+host…** button. Its consent sentence names the local files and enrolled SSH
+alias, and **Set Up** runs the same six-step flow as enrollment. The display name
+is never used as a substitute for the alias. A host enrolled before aliases
+were recorded must be re-enrolled before the app can update it.
 Non-interactive SSH skips your login shell's
 rc, so the app's version of these commands sets `PATH` to the usual `claude`
 install locations first; add that yourself if `claude` is off the PATH a plain

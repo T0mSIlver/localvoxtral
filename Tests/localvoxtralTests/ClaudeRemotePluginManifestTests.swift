@@ -447,7 +447,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     /// (nil = no stamp at all), a status-line payload on stdin, and captures
     /// everything.
     private func runStatusLineRenderer(
-        stamp: String?
+        stamp: String?,
+        environment overrides: [String: String] = [:]
     ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
         let state = FileManager.default.temporaryDirectory
             .appendingPathComponent("statusline-state-\(UUID().uuidString)")
@@ -465,6 +466,9 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         process.arguments = [statusLineRendererURL.path]
         var environment = ProcessInfo.processInfo.environment
         environment["XDG_RUNTIME_DIR"] = state.path
+        environment.removeValue(forKey: "NO_COLOR")
+        environment["TERM"] = "xterm-256color"
+        for (key, value) in overrides { environment[key] = value }
         process.environment = environment
         return try Self.runToCompletion(process, stdin: Data(#"{"session_id":"s1"}"#.utf8))
     }
@@ -574,21 +578,21 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         let fresh = String(Int(Date().timeIntervalSince1970))
         let stale = String(Int(Date().timeIntervalSince1970) - 3600)
         let cases: [(stamp: String?, expected: String)] = [
-            ("ok \(fresh)", "\(esc)[32m\u{25CF}\(esc)[0m localvoxtral connected\n"),
+            ("ok \(fresh)", "lvx \(esc)[32m\u{25CF}\(esc)[0m\n"),
             // A green light must expire: ok past the staleness gate demotes to
             // the dim no-recent-hooks line rather than claiming a live app.
-            ("ok \(stale)", "\(esc)[2m\u{25CB} localvoxtral no recent hooks\(esc)[0m\n"),
+            ("ok \(stale)", "lvx \(esc)[90m\u{25CF}\(esc)[0m\n"),
             // Freshness is a refinement, never a new failure mode: an epoch we
             // cannot read renders exactly as pre-gate ok did.
-            ("ok not-an-epoch", "\(esc)[32m\u{25CF}\(esc)[0m localvoxtral connected\n"),
-            ("ok", "\(esc)[32m\u{25CF}\(esc)[0m localvoxtral connected\n"),
+            ("ok not-an-epoch", "lvx \(esc)[32m\u{25CF}\(esc)[0m\n"),
+            ("ok", "lvx \(esc)[32m\u{25CF}\(esc)[0m\n"),
             // Failure states are never demoted — stale bad news is still the
             // last known truth, and staying conservative cannot mislead.
-            ("http-401 \(stale)", "\(esc)[33m\u{25CB}\(esc)[0m localvoxtral token rejected\n"),
-            ("http-503 \(fresh)", "\(esc)[33m\u{25CB}\(esc)[0m localvoxtral not connected\n"),
-            ("down \(stale)", "\(esc)[2m\u{25CB} localvoxtral unreachable\(esc)[0m\n"),
-            ("unconfigured \(fresh)", "\(esc)[33m\u{25CB}\(esc)[0m localvoxtral token not configured\n"),
-            (nil, "\(esc)[2m\u{25CB} localvoxtral no hooks yet\(esc)[0m\n"),
+            ("http-401 \(stale)", "lvx \(esc)[31m\u{25CF}\(esc)[0m\n"),
+            ("http-503 \(fresh)", "lvx \(esc)[31m\u{25CF}\(esc)[0m\n"),
+            ("down \(stale)", "lvx \(esc)[90m\u{25CF}\(esc)[0m\n"),
+            ("unconfigured \(fresh)", "lvx \(esc)[31m\u{25CF}\(esc)[0m\n"),
+            (nil, "lvx \(esc)[90m\u{25CF}\(esc)[0m\n"),
         ]
         for (stamp, expected) in cases {
             let result = try runStatusLineRenderer(stamp: stamp)
@@ -604,7 +608,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         // status line. So the stamp's first token only ever SELECTS a fixed
         // string; unrecognized states render the never-heard-anything default
         // and not one byte of the file.
-        let defaultLine = "\u{1B}[2m\u{25CB} localvoxtral no hooks yet\u{1B}[0m\n"
+        let defaultLine = "lvx \u{1B}[90m\u{25CF}\u{1B}[0m\n"
         for hostile in [
             "$(uname) 1786204746",
             "ok`uname` 1786204746",
@@ -618,6 +622,20 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
                 result.stdout, defaultLine,
                 "an unrecognized stamp must render the default, never its own bytes"
             )
+            XCTAssertEqual(result.stderr, "")
+        }
+    }
+
+    func testStatusLineRendererUsesPlainTextWhenColorIsDisabled() throws {
+        let fresh = String(Int(Date().timeIntervalSince1970))
+        for (stamp, environment, expected) in [
+            ("ok \(fresh)", ["NO_COLOR": ""], "lvx ok\n"),
+            ("down \(fresh)", ["TERM": "dumb"], "lvx off\n"),
+            ("http-401 \(fresh)", ["NO_COLOR": "1"], "lvx err\n"),
+        ] {
+            let result = try runStatusLineRenderer(stamp: stamp, environment: environment)
+            XCTAssertEqual(result.exitCode, 0)
+            XCTAssertEqual(result.stdout, expected)
             XCTAssertEqual(result.stderr, "")
         }
     }

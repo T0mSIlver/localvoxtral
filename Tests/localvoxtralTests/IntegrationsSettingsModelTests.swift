@@ -9,6 +9,41 @@ import XCTest
 final class IntegrationsSettingsModelTests: XCTestCase {
     // MARK: - Harness
 
+    func testSetupSheetsRenderConsentButNoGeneratedCode() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repoRoot.appendingPathComponent("Sources/localvoxtral/SettingsView.swift"),
+            encoding: .utf8
+        )
+        for forbidden in [
+            "confirmation.preview",
+            "plan.remoteCommands",
+            "plan.updateCommands",
+            "plan.sshConfigSnippet",
+            "herdrPanelConfigSnippet",
+            "claude.shellSetupSheet.preview",
+            "integrations.statuslineSheet.preview",
+            "Run on SSH host",
+        ] {
+            XCTAssertFalse(source.contains(forbidden), "Settings must not render \(forbidden)")
+        }
+        XCTAssertTrue(source.contains("Link(\"Details\""))
+        XCTAssertTrue(source.contains("integrations.remote.setup.step."))
+        XCTAssertTrue(source.contains("integrations.remote.setup.run"))
+        XCTAssertTrue(source.contains("claude.remote.shellSetup.setUp"))
+        XCTAssertTrue(source.contains("claude.shellSetupSheet.apply"))
+        XCTAssertTrue(source.contains("integrations.statuslineSheet.apply"))
+        XCTAssertEqual(
+            OpencodePluginInstallService.consentSentence,
+            "localvoxtral will edit ~/.config/opencode/plugins/localvoxtral.js and "
+                + "~/.config/opencode/tui.json on this Mac."
+        )
+        XCTAssertFalse(OpencodePluginInstallService.consentSentence.contains("mkdir"))
+    }
+
     @MainActor
     private func makeModel(
         fetchPluginListOutput: @escaping @Sendable () async -> String? = { nil },

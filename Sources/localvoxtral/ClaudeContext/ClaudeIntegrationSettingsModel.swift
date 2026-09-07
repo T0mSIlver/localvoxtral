@@ -202,10 +202,9 @@ public struct ClaudeShellSetupStatus: Sendable, Equatable {
 /// Every dependency is injected: no singleton reaches through this type to a
 /// real process, a real port, or a real host.
 ///
-/// The division of labour with the view is deliberate. Everything that could be
-/// wrong — a failed install, a port conflict, a token that must be shown exactly
-/// once — is decided and shaped here, where it has a test. The view renders
-/// strings.
+/// The division of labour with the view is deliberate. Failures, port
+/// conflicts, and short consent text are decided here, where they have tests.
+/// The view renders those strings without exposing generated configuration.
 @MainActor
 @Observable
 public final class ClaudeIntegrationSettingsModel {
@@ -320,23 +319,22 @@ public final class ClaudeIntegrationSettingsModel {
     /// This is the only place in the app where a plaintext token lives past the
     /// call that made it. It is `private(set)`, it is cleared by `dismissPlan`,
     /// and nothing writes it anywhere. The registry cannot reissue it — that is
-    /// the whole point of storing only hashes — so the user gets one chance to
-    /// copy it. It is not persisted locally; one-click setup only carries it in
-    /// the confirmed SSH process's stdin. Rotation is the recovery path.
+    /// the whole point of storing only hashes. It is not persisted locally;
+    /// automated setup carries it only in the confirmed SSH process's stdin.
+    /// Rotation is the recovery path.
     public struct EnrollmentPresentation: Identifiable, Equatable, Sendable {
         public var id: String { host.id }
         public var host: ClaudeRemoteHost
         public var token: String
         public var sshHostAlias: String
         public var plan: ClaudeRemoteEnrollmentService.SetupPlan
-        /// Rotation reuses this sheet; the copy differs because the user's
-        /// situation does (their remote is currently broken, on purpose).
+        /// Rotation reuses this sheet because the user's remote is currently
+        /// broken on purpose and needs the same complete setup run.
         public var isRotation: Bool
         /// False when `sshHostAlias` is the sheet's placeholder rather than an
         /// alias the user gave us — a legacy host rotated before the alias was
-        /// persisted. The commands are still copyable; what is withheld is
-        /// one-click execution, which would otherwise hand a fresh token to
-        /// whichever machine happened to answer to a guessed name.
+        /// persisted. Automated execution is withheld because it would hand a
+        /// fresh token to whichever machine answered to a guessed name.
         public var canRunRemoteSetup: Bool = true
         /// The port the snippet forwards ON THE HOST — this Mac's allocation.
         /// Carried here rather than re-read at check time so verification can
@@ -348,21 +346,12 @@ public final class ClaudeIntegrationSettingsModel {
         public var isPreview: Bool = false
     }
 
-    /// The two commands that bring one enrolled host to the plugin version this
-    /// app ships, plus the host they belong to.
-    ///
-    /// Carries no token — `claude plugin update` keeps the config the install
-    /// stored — so unlike `EnrollmentPresentation` this can be shown at any
-    /// time, which is the point: the user needs it long after the one-time
-    /// token is gone.
+    /// The generated update plan for one enrolled host.
     public struct PluginUpdatePresentation: Identifiable, Equatable, Sendable {
         public var id: String { hostID }
         public var hostID: String
-        /// The alias one-click execution would use, or nil when the host's
-        /// label is not a usable one. The alias belongs to the user's ssh
-        /// config and is never persisted, so the label is the only guess
-        /// available; when it does not qualify the commands are copy-only and
-        /// name a placeholder instead of pretending.
+        /// The alias automated execution uses, or nil for a legacy host that
+        /// must be re-enrolled before the app can safely address it.
         public var sshHostAlias: String?
         public var commands: [String]
         /// This host's regenerated ssh-config block, when the local one does
@@ -379,17 +368,8 @@ public final class ClaudeIntegrationSettingsModel {
         public var sshConfigSnippet: String?
         public var canRun: Bool { sshHostAlias != nil }
 
-        /// Everything this update consists of, in the order it must be applied.
-        ///
-        /// ONE rendering, used by all three surfaces — the panel's text, its
-        /// Copy button, and the confirmation preview. They diverged once
-        /// already: the executable path wrote the ssh block while the panel
-        /// showed and copied only the commands, so the copy-only paths (a host
-        /// with no recorded alias, and the symlink refusal that explicitly
-        /// tells the user to copy) updated the remote port and left this Mac on
-        /// 8473 — the original split brain, reachable by exactly the users most
-        /// likely to hit it. A single source is the fix; three call sites that
-        /// "should stay in sync" is what produced the bug.
+        /// Exact generated text retained as a test seam. Settings never renders
+        /// or copies it; the user-facing command reference lives in the docs.
         public var applicationText: String {
             guard let sshConfigSnippet else { return commands.joined(separator: "\n") }
             return "# 1. Replace this host's block in ~/.ssh/config on this Mac:\n"
@@ -445,7 +425,7 @@ public final class ClaudeIntegrationSettingsModel {
     public private(set) var pluginResult: String?
     public private(set) var isPerformingPluginAction = false
     public private(set) var presentedPlan: EnrollmentPresentation?
-    /// The update commands the user asked to see, for one host at a time.
+    /// The update plan for the host whose automated setup panel is open.
     public private(set) var presentedPluginUpdate: PluginUpdatePresentation?
     public private(set) var enrollmentConfirmation: EnrollmentConfirmation?
     public private(set) var enrollmentStepStatuses: [EnrollmentStepStatus] = []
@@ -1009,8 +989,8 @@ public final class ClaudeIntegrationSettingsModel {
             // fallback: name and alias are separate fields, so `prod` named
             // over alias `builder` would have sent the new token to whatever
             // answers to `prod` (review finding, PR #197). A host enrolled
-            // before the alias was persisted gets the placeholder and copy-only
-            // commands, which is honest about what we know.
+            // before the alias was persisted gets the placeholder and cannot
+            // run setup until it is re-enrolled with an explicit alias.
             let alias = enrollment.host.sshHostAlias
             let plan = try ClaudeRemoteEnrollmentService.plan(
                 host: enrollment.host,
@@ -1161,12 +1141,6 @@ public final class ClaudeIntegrationSettingsModel {
         setupManualInstructions = nil
     }
 
-    /// Show one host's plugin-update commands in its row.
-    ///
-    /// Needed because `claude plugin install` is not an update: on an installed
-    /// plugin it exits 0 and leaves the old version in place (Claude Code
-    /// 2.1.220), so re-running enrollment does nothing and a host stays on a
-    /// plugin the app has since fixed — silently, because the hooks fail open.
     // MARK: - Shell setup for the plain-ssh join
 
     /// Re-read both halves. Cheap: one `lstat`+read of one rc file, and one
@@ -1197,12 +1171,21 @@ public final class ClaudeIntegrationSettingsModel {
         )
     }
 
-    /// The exact text the user is being asked to allow, or nil when there is
-    /// no shell to write for. Shown before anything is written — the same
-    /// preview-then-consent shape as the ssh-config block.
+    /// Generated shell text retained for the writer and its test seam.
     public var shellSetupPreview: String? {
         guard let shell = loginShell() else { return nil }
         return ClaudeShellRCSetup.snippet(for: shell)
+    }
+
+    public var canApplyShellSetup: Bool { loginShell() != nil }
+
+    public var shellSetupConsentSentence: String {
+        "localvoxtral will edit \(shellRCPathForConsent()) on this Mac."
+    }
+
+    public func hostSetupConsentSentence(sshHostAlias: String) -> String {
+        "localvoxtral will edit ~/.ssh/config and \(shellRCPathForConsent()) on this Mac "
+            + "and install its plugin on \(sshHostAlias)."
     }
 
     /// Write the block. Consent is the CALLER's to obtain, immediately before.
@@ -1264,12 +1247,14 @@ public final class ClaudeIntegrationSettingsModel {
         statuslineStatus = service.status()
     }
 
-    /// The exact JSON the apply would write, for the preview sheet. Nil when
-    /// the hook binary cannot be located — the row then cannot offer Install.
+    /// Exact generated JSON retained for service tests. Settings never renders
+    /// it.
     public var statuslinePreview: String? {
         guard let hookCommand = statuslineHookCommand() else { return nil }
         return ClaudeStatuslineInstallService.preview(hookCommand: hookCommand)
     }
+
+    public var canApplyStatuslineSetup: Bool { statuslineHookCommand() != nil }
 
     public func applyStatuslineSetup() async {
         guard
@@ -1377,8 +1362,8 @@ public final class ClaudeIntegrationSettingsModel {
         // The ENROLLED alias, never the label: a host named `prod` may be
         // reached over alias `builder`, and `ssh prod …` would then update
         // whatever machine answers to that name (review finding, PR #197).
-        // Hosts enrolled before the alias was persisted have none, and get
-        // copy-only commands rather than a guess.
+        // Hosts enrolled before the alias was persisted have none and must be
+        // re-enrolled rather than targeting a guessed host.
         let alias = host.sshHostAlias.flatMap {
             ClaudeRemoteEnrollmentService.isValidHostAlias($0) ? $0 : nil
         }
@@ -1414,15 +1399,13 @@ public final class ClaudeIntegrationSettingsModel {
         )
     }
 
-    /// Exactly what `performPluginUpdate` will do, in order — and exactly what
-    /// the panel shows and copies. Same text, one source.
+    /// Exactly what `performPluginUpdate` will do, retained as a test seam.
     static func updatePreview(for presentation: PluginUpdatePresentation) -> String {
         presentation.applicationText
     }
 
-    /// Stands in for an alias we were never told. Not a valid target and not
-    /// meant to be one — it is there so the copyable commands read correctly
-    /// with an obvious blank to fill in.
+    /// Stands in for an alias we were never told. It is not a valid target and
+    /// exists only for deterministic plans used by documentation and tests.
     static let unknownAliasPlaceholder = "your-ssh-host"
 
     public func dismissPluginUpdate() {
@@ -1444,7 +1427,7 @@ public final class ClaudeIntegrationSettingsModel {
         presentedPluginUpdate = nil
     }
 
-    /// Ask before running the update commands, repeating the exact pair.
+    /// Ask before running the legacy plugin-only update path.
     public func requestPluginUpdateRun() {
         guard let presentation = presentedPluginUpdate,
               presentation.canRun,
@@ -1473,7 +1456,9 @@ public final class ClaudeIntegrationSettingsModel {
         setupManualInstructions = nil
         enrollmentConfirmation = EnrollmentConfirmation(
             action: .updateHost(hostID: presentation.hostID),
-            title: "Update this remote host?",
+            title: hostSetupConsentSentence(
+                sshHostAlias: presentation.sshHostAlias ?? Self.unknownAliasPlaceholder
+            ),
             preview: setupPreview(
                 sshConfigSnippet: presentation.sshConfigSnippet,
                 remoteCommands: presentation.commands
@@ -1502,7 +1487,7 @@ public final class ClaudeIntegrationSettingsModel {
 
     public func requestRemoteSetup() {
         guard let presentation = presentedPlan,
-              // A placeholder alias must not reach ssh: one-click would hand
+              // A placeholder alias must not reach ssh: automation would hand
               // the new token to whatever answers to a name we invented.
               presentation.canRunRemoteSetup,
               !isEnrollmentBusy,
@@ -1533,7 +1518,7 @@ public final class ClaudeIntegrationSettingsModel {
         setupManualInstructions = nil
         enrollmentConfirmation = EnrollmentConfirmation(
             action: .setupHost,
-            title: "Set up this remote host?",
+            title: hostSetupConsentSentence(sshHostAlias: presentation.sshHostAlias),
             preview: setupPreview(
                 sshConfigSnippet: presentation.plan.sshConfigSnippet,
                 remoteCommands: presentation.plan.remoteCommands
@@ -1600,6 +1585,17 @@ public final class ClaudeIntegrationSettingsModel {
                 + "\nherdr server reload-config"
         )
         return sections.joined(separator: "\n\n")
+    }
+
+    private func shellRCPathForConsent() -> String {
+        guard let shell = loginShell() else { return "your shell startup file" }
+        let relative = ClaudeShellRCSetup.relativeRCPath(for: shell) { relative in
+            FileManager.default.fileExists(
+                atPath: FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent(relative).path
+            )
+        }
+        return "~/\(relative)"
     }
 
     private func performPlanAction(_ confirmation: EnrollmentConfirmation) async {
@@ -1741,11 +1737,10 @@ public final class ClaudeIntegrationSettingsModel {
             } else {
                 let shellFailure = await performAsync { try writer.apply(shell: shell) }
                 if let shellFailure {
-                    setupManualInstructions = "Add this block to your shell startup file:\n\n"
-                        + ClaudeShellRCSetup.snippet(for: shell)
+                    setupManualInstructions = "Open Details for manual shell setup."
                     markSetup(
                         .shellStartup,
-                        .skipped("The shell startup file was left unchanged; add the shown block manually.")
+                        .skipped("The shell startup file was left unchanged; see Details.")
                     )
                     Log.claudeContext.error(
                         "Claude remote setup skipped shell startup edit: \(shellFailure.describedError, privacy: .public)"
@@ -1755,9 +1750,7 @@ public final class ClaudeIntegrationSettingsModel {
                 }
             }
         } else {
-            setupManualInstructions = loginShell().map {
-                "Add this block to your shell startup file:\n\n" + ClaudeShellRCSetup.snippet(for: $0)
-            } ?? "Export LC_LVX_TTY from your Mac terminal's shell startup file."
+            setupManualInstructions = "Open Details for manual shell setup."
             markSetup(
                 .shellStartup,
                 .skipped("This login shell is not supported for automatic setup; configure it manually.")
@@ -1808,14 +1801,14 @@ public final class ClaudeIntegrationSettingsModel {
             failSetup(
                 .environmentCrossing,
                 reason: "This Mac is not sending LC_LVX_TTY for this SSH host.",
-                remedy: "Keep `SendEnv LC_LVX_TTY` in this host's ~/.ssh/config block."
+                remedy: "Open Details and follow the SSH environment setup."
             )
             return
         default:
             failSetup(
                 .environmentCrossing,
                 reason: "The remote SSH server did not accept LC_LVX_TTY.",
-                remedy: "Add `AcceptEnv LANG LC_*` to sshd_config on the host, then reload sshd."
+                remedy: "Open Details and follow the remote SSH server setup."
             )
             return
         }
@@ -1838,11 +1831,7 @@ public final class ClaudeIntegrationSettingsModel {
         case "notFound":
             markSetup(.remoteHerdr, .skipped("herdr is not installed on the remote host."))
         case "customized":
-            setupManualInstructions = [
-                setupManualInstructions,
-                "The remote herdr agents table is customized. Add this row manually:\n\n"
-                    + ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet,
-            ].compactMap { $0 }.joined(separator: "\n\n")
+            setupManualInstructions = "The remote herdr table is customized; open Details to update it manually."
             markSetup(.remoteHerdr, .skipped("The existing herdr agents table was left unchanged."))
         default:
             markSetup(.remoteHerdr, .done("The remote herdr agents panel is configured."))
@@ -2241,8 +2230,7 @@ public final class ClaudeIntegrationSettingsModel {
             if case .configureHerdrPanel = action { text = "Herdr panel setup failed." }
             let detail: String
             if failure.serviceError == .herdrPanelConfigAlreadyCustomized {
-                detail = "Add this row manually:\n\n"
-                    + ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet
+                detail = "Open Details for the manual herdr configuration."
             } else {
                 detail = failure.describedError
             }
@@ -2283,12 +2271,12 @@ public final class ClaudeIntegrationSettingsModel {
             return "~/.ssh/config is not valid UTF-8, so localvoxtral left it unchanged."
         case .sshConfigIsSymlink:
             return "~/.ssh/config or ~/.ssh is a symlink, likely from a dotfiles setup. "
-                + "localvoxtral won't replace the link. Use Copy and add the block "
+                + "localvoxtral won't replace the link. Open Details and add the block "
                 + "to the real file yourself."
         case .sshDirectoryNotTrusted:
             return "~/.ssh is not exclusively writable by you (wrong owner or group/world-"
-                + "writable), so localvoxtral left it unchanged. Fix its permissions "
-                + "(chmod 700 ~/.ssh) or use the Copy button."
+                + "writable), so localvoxtral left it unchanged. Open Details for the "
+                + "manual remedy."
         case .sshConfigEditingNotConfigured:
             return "Editing ~/.ssh/config is not available in this build."
         case .executionNotConfigured:
@@ -2296,8 +2284,8 @@ public final class ClaudeIntegrationSettingsModel {
         case .invalidHostAlias:
             return "The SSH host alias is invalid."
         case .herdrPanelConfigAlreadyCustomized:
-            return "The remote herdr config already has an agents table or rows key, so localvoxtral left it unchanged. Add this row manually:\n\n"
-                + ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet
+            return "The remote herdr config already has an agents table or rows key, so "
+                + "localvoxtral left it unchanged. Open Details for the manual remedy."
         case .none:
             return failure.describedError
         }

@@ -984,6 +984,31 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
     }
 
+    func testTheDocsPageListsEveryAutomatedSetupCommandOutsideSettings() throws {
+        let documentation = try documentation()
+        for command in [
+            "ssh -o BatchMode=yes -o ClearAllForwardings=yes -- <alias> /bin/sh -s",
+            "ssh -o BatchMode=yes -- <alias> /bin/sh -s",
+            "ssh -G -- <alias>",
+            "claude plugin list --json",
+            "claude plugin marketplace add T0mSIlver/localvoxtral",
+            "claude plugin marketplace update localvoxtral",
+            "claude plugin update localvoxtral-remote@localvoxtral",
+            "claude plugin install localvoxtral-remote@localvoxtral",
+            "printf 'LVX_TTY:%s\\n' \"${LC_LVX_TTY-}\"",
+            "command -v herdr",
+            "herdr server reload-config",
+            "command -v curl",
+            "/v1/hook/SessionStart",
+            "claude plugin list`",
+        ] {
+            XCTAssertTrue(documentation.contains(command), "missing command documentation: \(command)")
+        }
+        XCTAssertTrue(documentation.contains(ClaudeShellRCSetup.snippet(for: .zsh)))
+        XCTAssertTrue(documentation.contains(ClaudeShellRCSetup.snippet(for: .fish)))
+        XCTAssertTrue(documentation.contains(ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet))
+    }
+
     // MARK: SSH config writing
 
     func testSSHConfigInsertionCreatesFreshDirectoryAndFileWithPrivatePermissions() throws {
@@ -2492,7 +2517,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     func testPluginSetupDecodesTheListingAndReportsAnAlreadyCurrentPlugin() throws {
         let calls = PluginSetupCalls()
         let service = ClaudeRemoteEnrollmentService(
-            runner: pluginSetupRunner(before: "1.7.0", after: "1.7.0", calls: calls)
+            runner: pluginSetupRunner(before: "1.8.0", after: "1.8.0", calls: calls)
         )
 
         XCTAssertEqual(
@@ -2516,7 +2541,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     func testPluginSetupUpdatesAStalePluginAndReadsTheNewVersionBack() throws {
         let calls = PluginSetupCalls()
         let service = ClaudeRemoteEnrollmentService(
-            runner: pluginSetupRunner(before: "1.4.0", after: "1.7.0", calls: calls)
+            runner: pluginSetupRunner(before: "1.4.0", after: "1.8.0", calls: calls)
         )
         XCTAssertEqual(
             try service.setupRemotePlugin(sshHostAlias: "builder", token: nil, remoteForwardPort: 28_511),
@@ -2530,7 +2555,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     func testPluginSetupInstallsAnAbsentPluginWhenItHasAToken() throws {
         let calls = PluginSetupCalls()
         let service = ClaudeRemoteEnrollmentService(
-            runner: pluginSetupRunner(before: nil, after: "1.7.0", calls: calls)
+            runner: pluginSetupRunner(before: nil, after: "1.8.0", calls: calls)
         )
         XCTAssertEqual(
             try service.setupRemotePlugin(sshHostAlias: "builder", token: "t0k", remoteForwardPort: 28_511),
@@ -2554,7 +2579,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         ) { error in
             guard case ClaudeRemoteEnrollmentService.ServiceError.commandFailed(_, _, 43, let message) = error
             else { return XCTFail("expected the read-back diagnosis, got \(error)") }
-            XCTAssertEqual(message, "The plugin reports version 1.6.0 after setup, not 1.7.0.")
+            XCTAssertEqual(message, "The plugin reports version 1.6.0 after setup, not 1.8.0.")
         }
     }
 
@@ -2562,13 +2587,13 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         let reference = ClaudeRemoteEnrollmentService.remotePluginReference
         let twoScopes = ClaudeRemoteEnrollmentService.pluginListFrameBegin + "\n"
             + "[{\"id\":\"\(reference)\",\"version\":\"1.2.0\",\"scope\":\"project\"},"
-            + "{\"id\":\"\(reference)\",\"version\":\"1.7.0\",\"scope\":\"user\"}]\n"
+            + "{\"id\":\"\(reference)\",\"version\":\"1.8.0\",\"scope\":\"user\"}]\n"
             + ClaudeRemoteEnrollmentService.pluginListFrameEnd
         XCTAssertEqual(
             try ClaudeRemoteEnrollmentService.installedRemotePluginVersion(
                 inFramedOutput: twoScopes, reference: reference
             ),
-            "1.7.0"
+            "1.8.0"
         )
         XCTAssertNil(
             try ClaudeRemoteEnrollmentService.installedRemotePluginVersion(
@@ -2579,9 +2604,9 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         // A version that merely contains ours is not ours.
         XCTAssertEqual(
             try ClaudeRemoteEnrollmentService.installedRemotePluginVersion(
-                inFramedOutput: Self.framedListing("11.7.0", "user"), reference: reference
+                inFramedOutput: Self.framedListing("11.8.0", "user"), reference: reference
             ),
-            "11.7.0"
+            "11.8.0"
         )
         XCTAssertThrowsError(
             try ClaudeRemoteEnrollmentService.installedRemotePluginVersion(

@@ -238,8 +238,8 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         case runnerFailed(step: Int, command: String, message: String)
         case invalidHostAlias
         /// The remote config already contains an agents table or a rows key.
-        /// Automatic merging would overwrite user intent, so Settings must show
-        /// the snippet for manual placement instead.
+        /// Automatic merging would overwrite user intent, so Settings points
+        /// to the documented manual placement instead.
         case herdrPanelConfigAlreadyCustomized
     }
 
@@ -258,7 +258,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
 
     /// Kept next to the installer that verifies it. A manifest contract test
     /// pins this value to the remote plugin's plugin.json.
-    public static let remotePluginVersion = "1.7.0"
+    public static let remotePluginVersion = "1.8.0"
 
     /// The plugin's sensitive userConfig key. Claude Code exposes it to the
     /// plugin's COMMAND-hook shim as `CLAUDE_PLUGIN_OPTION_TOKEN`; the shim
@@ -315,8 +315,8 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     ///   - sshHostAlias: the `Host` stanza name in `~/.ssh/config`. Validated,
     ///     not escaped — an alias is a bare token and anything else is a mistake
     ///     we should surface rather than quietly rewrite.
-    ///   - token: the plaintext used to generate the copyable command and, after
-    ///     confirmation, its SSH stdin script. Not stored or logged.
+    ///   - token: the plaintext embedded in the generated documentation/test
+    ///     plan and, after consent, its SSH stdin script. Not stored or logged.
     ///   - listenerPort: the port the app listens on, HERE, on this Mac. The
     ///     forward's target.
     ///   - remoteForwardPort: the port the forward binds THERE, on the remote
@@ -466,12 +466,10 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         ]
     }
 
-    /// Bring an enrolled host to the plugin version this app ships, as a
-    /// copyable set.
+    /// Bring an enrolled host to the plugin version this app ships.
     ///
-    /// Comment-free like everything else the user pastes. What the seven `#`
-    /// lines used to say is on the docs page and in one short line beside the
-    /// panel: re-running setup is NOT an update (on Claude Code 2.1.220
+    /// The generated commands remain a documentation and test seam. The docs
+    /// explain that re-running setup is NOT an update (on Claude Code 2.1.220
     /// `plugin install` exits 0 with "already installed" and `marketplace add`
     /// does not refresh a clone it has), the stored token is preserved, and the
     /// third command only points this host at THIS Mac's allocated port —
@@ -1834,9 +1832,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// installer does (`ClaudePluginInstallService.claudeCLICandidates`), plus
     /// nvm-style node bins, and fail with an actionable message instead of
     /// dash's. POSIX sh only — the remote /bin/sh is dash on Debian-family
-    /// hosts. Token-free by construction, like the `set -eu` line: the
-    /// confirmation shows the commands the user authorizes; this is part of
-    /// how they run.
+    /// hosts. Token-free by construction, like the `set -eu` line.
     static let claudePathResolverPreamble = """
         if ! command -v claude >/dev/null 2>&1; then
           for lv_dir in "$HOME/.claude/local" "$HOME/.local/bin" "$HOME/bin" /opt/homebrew/bin /usr/local/bin "$HOME"/.nvm/versions/node/*/bin; do

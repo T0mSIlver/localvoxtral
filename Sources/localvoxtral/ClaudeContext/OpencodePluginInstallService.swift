@@ -29,6 +29,9 @@ import Foundation
 /// read-modify-write with no interlock, so a hand-edit landing between our
 /// read and our rename loses to our stale snapshot (last-writer-wins).
 public struct OpencodePluginInstallService: Sendable {
+    public static let consentSentence =
+        "localvoxtral will edit ~/.config/opencode/plugins/localvoxtral.js and "
+        + "~/.config/opencode/tui.json on this Mac."
     /// The entry this service owns inside `tui.json`'s `plugin` list, exactly
     /// as the plugin README documents it.
     public static let tuiPluginEntry = "./plugins/localvoxtral.js"
