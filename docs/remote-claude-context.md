@@ -3,9 +3,12 @@
 Dictate into a Claude Code session that is running on another machine, and have
 localvoxtral spell your code, file names, and identifiers correctly anyway.
 
-This page is the long version. The app's enrollment sheet is deliberately short:
-four steps, no comments in anything you copy, and a **Check Setup** button that
-runs the checks and tells you what they mean.
+This page is the long version. The app's enrollment sheet runs the whole
+setup as one self-verifying flow — press **Run Setup**, confirm once, and it
+stops at the first step that fails with the exact remedy — while every block
+it would write stays on the sheet, copyable, with no comments in it, for doing
+any step by hand. A **Check Setup** button runs the checks and tells you what
+they mean.
 
 ---
 
@@ -51,7 +54,43 @@ configured.
 
 ## How enrollment works
 
-Enrolling a host does three things.
+Enrolling a host is one flow that does everything, each step self-verifying.
+Press **Run Setup** in the enrollment sheet — or **Update Host** in an
+enrolled host's row — and it runs, in order, showing one short sentence of
+status per step and stopping at the first failure with the exact remedy:
+
+1. **Mac SSH config** — the marked `Host` block with `RemoteForward` and
+   `SendEnv LC_LVX_TTY`. Manual equivalent: copy the block from step 1 of the
+   sheet.
+2. **Mac shell startup** — the `LC_LVX_TTY` export block in your login shell's
+   rc. Manual equivalent: the block under "Terminal setup for plain SSH" in
+   Settings, or the integration README. Already applied, unsupported, or
+   symlinked is reported, not failed.
+3. **Remote plugin** — install, or update when already present, verified by
+   reading the installed version back in the same SSH session. Manual
+   equivalent: the two commands in step 2 of the sheet.
+4. **Remote environment** — proves `LC_LVX_TTY` actually crosses by sending a
+   fresh random value for that one call and comparing the echo exactly. The
+   value is never logged. A mismatch names the side: no `sendenv` covering the
+   host in this Mac's `ssh -G` means step 1's block is missing; otherwise the
+   remote sshd refused it — add `AcceptEnv LANG LC_*` to `sshd_config` on that
+   host and reload sshd there, which needs root on that host and is never
+   attempted for you. Manual equivalent: from a window where the rc line ran,
+   `ssh <alias> 'echo "[$LC_LVX_TTY]"'` — empty means the value is not
+   crossing.
+5. **Remote herdr** — when `herdr` resolves on the host, appends the
+   agents-panel row (only when no agents table or rows key exists) and runs
+   `herdr server reload-config`. "Not installed" and an already-customized
+   table are reported, not failed. Manual equivalent: append the TOML block
+   from the sheet, then `herdr server reload-config` on the host.
+6. **Check Setup** — the two read-only verdicts, last, as the final status
+   line.
+
+Removing the host reverses the Mac side — the ssh block, and the shell block
+only when no other host remains — and never lets a reversal problem block the
+removal itself: the registry entry is the off switch, and anything that could
+not be rewritten is named in an alert with its manual fix. The remote half of
+uninstalling stays manual by design ("Uninstalling" below).
 
 ### 1. An `~/.ssh/config` block
 
@@ -212,7 +251,7 @@ and the app holds the forward itself, reconnecting as needed.
 ## Hosts enrolled before per-Mac ports
 
 An enrollment made before this existed uses the legacy shared 8473 on both
-ends, and keeps working — migration is never forced. Use **Update Plugin…** in
+ends, and keeps working — migration is never forced. Use **Update host…** in
 the host's row when you want it: it updates the marketplace clone and the
 plugin, then stores this Mac's allocated port, and it rewrites this host's
 ssh-config block in the same action so the two halves can never disagree. Your

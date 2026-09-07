@@ -79,6 +79,44 @@ HOLD_MANIFEST="$HOLD_DIR/manifest"
 
 log() { printf '[herdr-fixture] %s\n' "$*" >&2; }
 
+environment_value() {
+  local name="$1" value
+  value="$(printenv "$name" 2>/dev/null || true)"
+  [[ -n "$value" ]] && printf '%s' "$value" || printf '<unset>'
+}
+
+tty_state() {
+  local descriptor="$1"
+  [[ -t "$descriptor" ]] && printf 'tty' || printf 'not-a-tty'
+}
+
+record_start_diagnostics() {
+  local dir="$1" inherited_socket="$2" account_status="$3" version config_state session_state
+  version="$("$HERDR_BINARY" --version 2>&1 | head -1)"
+  [[ -e "$HERDR_CONFIG_FILE" ]] && config_state=present || config_state=absent
+  [[ -e "$HERDR_SESSION_FILE" ]] && session_state=present || session_state=absent
+  {
+    printf 'account=%s uid=%s home=%s\n' "$(id -un)" "$(id -u)" "$HOME"
+    printf 'herdr.binary=%s\n' "$HERDR_BINARY"
+    printf 'herdr.version=%s\n' "$version"
+    printf 'herdr.status.before=%s\n' "${account_status:-<empty>}"
+    printf 'herdr.socket.inherited=%s\n' "${inherited_socket:-<unset>}"
+    printf 'herdr.socket.fixture=%s\n' "$HERDR_SOCKET_PATH"
+    printf 'herdr.config=%s state=%s\n' "$HERDR_CONFIG_FILE" "$config_state"
+    printf 'herdr.session=%s state=%s\n' "$HERDR_SESSION_FILE" "$session_state"
+    printf 'env.PATH=%s\n' "$PATH"
+    printf 'env.XDG_CONFIG_HOME=%s\n' "$(environment_value XDG_CONFIG_HOME)"
+    printf 'env.XDG_RUNTIME_DIR=%s\n' "$(environment_value XDG_RUNTIME_DIR)"
+    printf 'env.TERM=%s env.COLUMNS=%s env.LINES=%s\n' \
+      "$(environment_value TERM)" "$(environment_value COLUMNS)" "$(environment_value LINES)"
+    printf 'stdio.stdin=%s stdout=%s stderr=%s\n' \
+      "$(tty_state 0)" "$(tty_state 1)" "$(tty_state 2)"
+    printf 'script.binary=%s\n' "$(command -v script 2>/dev/null || printf '<missing>')"
+    printf 'pty.requested=%sx%s\n' "$SURFACE_ROWS" "$SURFACE_COLUMNS"
+    printf 'sidebar.configured_width=26 mobile_width_threshold=64\n'
+  } | tee "$dir/environment.txt" >&2
+}
+
 # Set while `up` is between "started modifying things" and "fully succeeded".
 # A failure in that window restores through the EXIT trap; a KILL in it (or at
 # any point afterwards) is what the hold directory exists for.
@@ -306,6 +344,18 @@ herdr_cli() {
   HERDR_SOCKET_PATH="$HERDR_SOCKET_PATH" "$HERDR_BINARY" "$@"
 }
 
+record_pane_snapshot() {
+  local dir="$1" event="$2" pane="${3:-}"
+  [[ -S "$HERDR_SOCKET_PATH" ]] || return 0
+  {
+    printf '\n[%s] event=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" "$event"
+    printf 'current='; herdr_cli pane current 2>&1 || true
+    if [[ -n "$pane" ]]; then
+      printf 'selected='; herdr_cli pane get "$pane" 2>&1 || true
+    fi
+  } >> "$dir/pane-lifecycle.log"
+}
+
 # Kill whatever a run left behind in its own workdir. Touches no account files.
 stop_workdir_processes() {
   local dir="$1" pid binary
@@ -430,12 +480,14 @@ write_canonicalization_aliases() {
 }
 
 start_surface() {
-  local dir="$1" name="$2" mode="$3" pane="${4:-}" inner
+  local dir="$1" name="$2" mode="$3" pane="${4:-}" geometry
+  geometry="$dir/surface-$name.geometry"
+  local -a inner
   case "$mode" in
-    app) inner="$HERDR_BINARY" ;;
+    app) inner=("$HERDR_BINARY") ;;
     attach)
       [[ -n "$pane" ]] || die "surface mode 'attach' needs a pane id"
-      inner="$HERDR_BINARY terminal attach $pane"
+      inner=("$HERDR_BINARY" terminal attach "$pane")
       ;;
     *) die "unknown surface mode: $mode" ;;
   esac
@@ -447,34 +499,66 @@ start_surface() {
   # the surface read would answer about the past.
   TERM=xterm-256color HERDR_SOCKET_PATH="$HERDR_SOCKET_PATH" \
     script -q -t 0 "$dir/surface-$name.log" \
-    /bin/sh -c "stty rows $SURFACE_ROWS cols $SURFACE_COLUMNS; exec $inner" \
+    /bin/sh -c '
+      rows="$1"; columns="$2"; geometry="$3"; shift 3
+      stty rows "$rows" cols "$columns"
+      {
+        printf "pty.rows_cols="; stty size
+        printf "pty.stdin=%s stdout=%s stderr=%s controlling_tty=%s\n" \
+          "$([[ -t 0 ]] && echo tty || echo not-a-tty)" \
+          "$([[ -t 1 ]] && echo tty || echo not-a-tty)" \
+          "$([[ -t 2 ]] && echo tty || echo not-a-tty)" \
+          "$(tty 2>/dev/null || echo none)"
+        printf "env.TERM=%s env.COLUMNS=%s env.LINES=%s\n" \
+          "${TERM:-<unset>}" "${COLUMNS:-<unset>}" "${LINES:-<unset>}"
+      } > "$geometry"
+      exec "$@"
+    ' fixture-surface "$SURFACE_ROWS" "$SURFACE_COLUMNS" "$geometry" "${inner[@]}" \
     </dev/null >/dev/null 2>&1 &
   echo $! >> "$dir/surface.pids"
+  local waited=0
+  until [[ -s "$geometry" ]]; do
+    (( waited < READY_TIMEOUT_SECONDS * 10 )) \
+      || die "surface '$name' never recorded its pty geometry"
+    sleep 0.1
+    waited=$((waited + 1))
+  done
   log "surface '$name' ($mode) started -> $dir/surface-$name.log"
+  sed "s/^/[herdr-fixture] surface.$name./" "$geometry" >&2
+  record_pane_snapshot "$dir" "surface-$name-started" "$pane"
 }
 
-# Print the focused pane id once it is stable: UNCHANGED across two reads a
+# Print the focused pane id once it is stable: UNCHANGED across three reads a
 # second apart AND still resolving via `pane get`. Dies loudly past the
 # readiness timeout. Callers that act on the id (report-agent) must still
 # handle it dying afterwards — settle narrows the race, it does not close it.
 settle_focused_pane() {
-  local dir="$1" pane_id="" previous="" waited=0
+  local dir="$1" pane_id="" candidate="" stable_reads=0 waited=0
   while true; do
     # `|| true`: before a pane exists, `pane current` answers with a
     # pane_not_found ERROR and a non-zero status, which `pipefail` would
     # otherwise turn into an abort on the very first poll.
     pane_id="$({ herdr_cli pane current 2>/dev/null || true; } \
       | sed -n 's/.*"pane_id":"\([^"]*\)".*/\1/p' | head -1)"
-    if [[ -n "$pane_id" && "$pane_id" == "$previous" ]] \
-      && herdr_cli pane get "$pane_id" >/dev/null 2>&1; then
-      log "focused pane: $pane_id"
-      printf '%s\n' "$pane_id"
-      return 0
+    if [[ -n "$pane_id" ]] && herdr_cli pane get "$pane_id" >/dev/null 2>&1; then
+      if [[ "$pane_id" == "$candidate" ]]; then
+        stable_reads=$((stable_reads + 1))
+      else
+        candidate="$pane_id"
+        stable_reads=1
+      fi
+      if (( stable_reads >= 3 )); then
+        log "focused pane: $pane_id (stable across $stable_reads reads)"
+        printf '%s\n' "$pane_id"
+        return 0
+      fi
+    else
+      candidate=""
+      stable_reads=0
     fi
     if (( waited >= READY_TIMEOUT_SECONDS )); then
       die "herdr never settled on a focused pane; see $dir/surface-primary.log and $dir/server.log"
     fi
-    previous="$pane_id"
     sleep 1
     waited=$((waited + 1))
   done
@@ -485,14 +569,16 @@ command_up() {
   validate_workdir "$dir"
   [[ ! -e "$dir" ]] || die "workdir already exists: $dir (run 'down' first)"
 
+  local inherited_socket="${HERDR_SOCKET_PATH:-}" account_status
   HERDR_BINARY="$(resolve_herdr)"
   log "herdr binary: $HERDR_BINARY ($("$HERDR_BINARY" --version 2>&1 | head -1))"
+  account_status="$("$HERDR_BINARY" status server 2>&1 | tr '\n' ' ' || true)"
 
   # The fixture owns this account's herdr config, its session state and a
   # block in its ssh config for the duration of the lane. If the account
   # already has a herdr running, those files belong to a human right now —
   # refuse rather than trample them.
-  if "$HERDR_BINARY" status server 2>/dev/null | grep -q '^status: running'; then
+  if grep -q '^status: running' <<<"$account_status"; then
     die "a herdr server is already running for $(id -un).
   This lane takes over the account's herdr config and session state for the
   duration of the run, so it refuses to start beside a live one. Quit herdr
@@ -510,6 +596,8 @@ command_up() {
   export HERDR_SOCKET_PATH
   # Recorded first, so teardown can still reach the binary if `up` dies partway.
   printf '%s\n' "$HERDR_BINARY" > "$dir/herdr.bin"
+
+  record_start_diagnostics "$dir" "$inherited_socket" "$account_status"
 
   hold_account_files "$dir"
 
@@ -554,6 +642,7 @@ EOF
 
   herdr_cli server </dev/null >"$dir/server.log" 2>&1 &
   echo $! > "$dir/server.child.pid"
+
   local waited=0
   until [[ -S "$HERDR_SOCKET_PATH" ]]; do
     (( waited < READY_TIMEOUT_SECONDS )) || die "herdr server never created $HERDR_SOCKET_PATH; see $dir/server.log"
@@ -562,18 +651,15 @@ EOF
   done
   log "herdr server listening on $HERDR_SOCKET_PATH"
 
-  # The whole-view client is what CREATES the first pane, so the pane the
-  # lane binds to and the surface that renders it are the same real client.
+  # The whole-view client creates the pane whose rendered output the lane
+  # reads. Require its id to be unchanged across three reads and to resolve.
   : > "$dir/surface.pids"
   start_surface "$dir" "primary" "app"
 
-  # The pane the lane binds to must be the one the CLIENT owns, not herdr's
-  # transient startup pane. A headless server spawns a pane of its own before
-  # any client connects; the whole-view client then retires it and creates its
-  # own in a new workspace. Reading `pane current` once can latch that dying
-  # pane, and every later request answers `pane_not_found` for it (seen on the
-  # CI runner, where the timing differed from the dev box). So: require the id
-  # to be UNCHANGED across two reads a second apart AND to still resolve.
+  # The failed runner artifact measured the provisional w1:p1 surviving the old
+  # two-read check, then disappearing 50–200 ms later as w2:p1 arrived. The
+  # third one-second sample rejects that measured transient without changing
+  # any token TTL or failure timeout.
   #
   # Even that is not airtight: the settled pane can still die between the
   # settle and the `report-agent` below (seen on the CI runner 2026-09-07 as
@@ -602,6 +688,7 @@ EOF
     sleep 1
   done
   log "pane $pane_id marked agent-bearing (session $agent_session_id)"
+  record_pane_snapshot "$dir" "primary-ready" "$pane_id"
 
   printf '{"agentSessionID":"%s","alias":"%s","altUserAlias":"%s-altuser","otherPortAlias":"%s-otherport","herdrBinary":"%s","socketPath":"%s","paneID":"%s","primarySurfaceLog":"%s","provisionedSSH":%s,"workdir":"%s"}\n' \
     "$agent_session_id" "$alias_used" "$alias_used" "$alias_used" \
@@ -628,7 +715,9 @@ load_context() {
 command_surface() {
   local dir="$1" name="$2" mode="$3" pane="${4:-}"
   load_context "$dir"
+  record_pane_snapshot "$dir" "before-surface-$name" "$pane"
   start_surface "$dir" "$name" "$mode" "$pane"
+  record_pane_snapshot "$dir" "after-surface-$name" "$pane"
 }
 
 command_reload() {

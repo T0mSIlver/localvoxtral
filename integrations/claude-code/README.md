@@ -538,9 +538,16 @@ exchange (any HTTP status, even a 401) clears the backoff for everything else.
 In **Settings → Integrations → Remote hosts → "Remote Claude Code over SSH"**,
 type a name and your SSH host alias and press **Enroll…**. The app issues a
 token, binds the listener immediately — there is no relaunch step — and opens a
-sheet with four numbered steps: add the SSH config, install on the host, show
-the dictation indicator in herdr, check the setup. The list in that row shows each enrolled host, when it was last seen,
-and gives you **Update Plugin…**, **Rotate Token**, **Revoke** and **Remove**.
+sheet whose **Run Setup** does all of it in one consented flow, in order, each
+step self-verifying: the SSH config block on this Mac, the shell export block,
+the plugin install-or-update on the host, the `LC_LVX_TTY` crossing check, the
+herdr agents-panel row when herdr is installed, and the final Check Setup. It
+stops at the first failure with the exact remedy. **Update Host** in an
+enrolled host's row runs the same flow. The numbered sections below stay for
+copying each step by hand — the manual equivalent of every one is
+[docs/remote-claude-context.md](../../docs/remote-claude-context.md#how-enrollment-works).
+The list in that row shows each enrolled host, when it was last seen,
+and gives you **Update host…**, **Rotate Token**, **Revoke** and **Remove**.
 
 Steps 1 and 2 each offer a button that does the work and a Copy button that
 does not. The button paths act **only after showing you exactly what will happen

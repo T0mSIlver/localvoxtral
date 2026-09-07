@@ -26,6 +26,18 @@ fi
 
 rm -rf dist logs format-lint.txt default.profraw
 
+# One-time migration for the shared .build: until 2026-09-07 the dogfood
+# capture suite compiled the test module with LOCALVOXTRAL_DOGFOOD into this
+# same cache, and SwiftPM kept those dogfood-only test objects when the define
+# went away, so the next run linked them against a non-dogfood app module and
+# failed with undefined symbols. The suite now builds in .build-dogfood; the
+# stale test objects in .build are dropped exactly once, on the first run
+# that has not yet created the new cache. Only the test module is dropped —
+# the app module and dependency checkouts stay warm.
+if [[ -d .build && ! -d .build-dogfood ]]; then
+  rm -rf .build/debug/localvoxtralTests.build .build/debug/localvoxtralPackageTests.xctest
+fi
+
 # Transient eval enable markers (gitignored, marker-through-the-tree
 # pattern): clean: false preserves them across runs, and a stray one would
 # flip a marker-gated live suite ON in a plain unit step.

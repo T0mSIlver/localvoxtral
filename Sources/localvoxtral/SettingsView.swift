@@ -1312,9 +1312,16 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                             Text(host.statusText)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            // The one-flow setup's last word for this host,
+                            // written by the run, not computed here.
+                            if let setupStatus = host.setupStatusText {
+                                Text(setupStatus)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         Spacer()
-                        Button("Update plugin…") { model.requestPluginUpdate(hostID: host.id) }
+                        Button("Update host…") { model.requestPluginUpdate(hostID: host.id) }
                             .controlSize(.small)
                             .disabled(model.isEnrollmentBusy)
                         Button("Rotate token") { Task { await model.rotate(hostID: host.id) } }
@@ -1433,13 +1440,22 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                     }
                     .controlSize(.small)
                 } else if update.canRun {
-                    Button("Run on SSH host") { model.requestPluginUpdateRun() }
-                        .controlSize(.small)
-                        .disabled(model.isEnrollmentBusy)
+                    HStack(spacing: 8) {
+                        Button("Run on SSH host") { model.requestPluginUpdateRun() }
+                            .controlSize(.small)
+                            .disabled(model.isEnrollmentBusy)
+                        Button("Update Host") { model.requestHostUpdateRun() }
+                            .controlSize(.small)
+                            .disabled(model.isEnrollmentBusy)
+                    }
+                    updateHostConfirmation(for: host)
                 } else {
                     Text("Replace your-ssh-host with the alias from your ~/.ssh/config, then apply both steps above yourself. Do the ssh-config block first.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+                if model.setupRun?.hostID == host.id {
+                    ClaudeSetupRunSteps(model: model, hostID: host.id)
                 }
                 if model.enrollmentResultsAction == action {
                     ClaudeEnrollmentStepResults(statuses: model.enrollmentStepStatuses)
@@ -1447,6 +1463,37 @@ private struct ClaudeRemoteHostsSettingsRow: View {
             }
             .padding(.leading, 8)
             .padding(.bottom, 4)
+        }
+    }
+
+    /// The one-flow update's consent, inside the row whose button asked for it.
+    ///
+    /// Same shape as the plugin-update confirmation above it: the exact preview
+    /// the run will apply, then one confirming button. The run's own step list
+    /// renders below, shared with the enrollment sheet.
+    @ViewBuilder
+    private func updateHostConfirmation(
+        for host: ClaudeIntegrationSettingsModel.HostRow
+    ) -> some View {
+        let action = ClaudeIntegrationSettingsModel.EnrollmentAction.updateHost(hostID: host.id)
+        if let confirmation = model.enrollmentConfirmation,
+           confirmation.action == action {
+            Text(confirmation.title).font(.body).bold()
+            Text(confirmation.preview)
+                .font(.system(size: 12, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+                .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 4))
+            HStack {
+                Button("Cancel") { model.cancelEnrollmentActionConfirmation() }
+                Button(confirmation.confirmButtonTitle) {
+                    Task { await model.confirmEnrollmentAction() }
+                }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("integrations.remote.setup.run")
+            }
+            .controlSize(.small)
         }
     }
 
@@ -1546,6 +1593,77 @@ private struct ClaudeEnrollmentStepResults: View {
     }
 }
 
+/// One consented setup run, one line per step.
+///
+/// Shared by the enrollment sheet and the per-host update panel: both start the
+/// same run and both render the same six steps. The model owns every sentence;
+/// this renders strings.
+private struct ClaudeSetupRunSteps: View {
+    @Bindable var model: ClaudeIntegrationSettingsModel
+    var hostID: String
+
+    var body: some View {
+        if let run = model.setupRun, run.hostID == hostID {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(run.items) { item in
+                    HStack(spacing: 6) {
+                        Text(Self.glyph(for: item.state))
+                            .font(.body)
+                            .foregroundStyle(
+                                Self.isFailure(item.state)
+                                    ? AnyShapeStyle(.orange) : AnyShapeStyle(.primary))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(item.step.title)
+                                .font(.body)
+                            Text(Self.statusLine(for: item.state))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .lineLimit(1)
+                    .accessibilityIdentifier("integrations.remote.setup.step.\(item.step.rawValue)")
+                }
+            }
+            if model.isEnrollmentBusy {
+                Button("Cancel") { model.cancelSetupRun() }
+                    .controlSize(.small)
+                    .accessibilityIdentifier("integrations.remote.setup.cancel")
+            }
+            if let manual = model.setupManualInstructions {
+                Text(manual)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+
+    private static func glyph(for state: RemoteHostSetupRun.State) -> String {
+        switch state {
+        case .pending: return "○"
+        case .running: return "●"
+        case .done: return "✓"
+        case .skipped: return "–"
+        case .failed: return "✗"
+        }
+    }
+
+    private static func isFailure(_ state: RemoteHostSetupRun.State) -> Bool {
+        if case .failed = state { return true }
+        return false
+    }
+
+    private static func statusLine(for state: RemoteHostSetupRun.State) -> String {
+        switch state {
+        case .pending: return "Waiting."
+        case .running: return "Running."
+        case .done(let summary): return summary
+        case .skipped(let reason): return reason
+        case .failed(let reason, _): return reason
+        }
+    }
+}
+
 /// The token, shown exactly once.
 ///
 /// The registry stores only hashes, so this sheet is genuinely the user's one
@@ -1595,6 +1713,7 @@ private struct ClaudeRemoteEnrollmentSheet: View {
                         body: presentation.token,
                         note: "It cannot be shown again. If you lose it, rotate."
                     )
+                    setupRunSection
                     section(
                         "1. Add the SSH config",
                         body: plan.sshConfigSnippet,
@@ -1650,6 +1769,51 @@ private struct ClaudeRemoteEnrollmentSheet: View {
         }
         .padding(18)
         .frame(width: 580, height: 580)
+    }
+
+    /// The one flow: every numbered step below, in order, each self-verifying.
+    ///
+    /// Consent covers the whole run at once — the preview names what lands on
+    /// this Mac (the ssh block, the shell block) and what runs on the host —
+    /// and the run stops at the first failure with its remedy. The numbered
+    /// sections stay for copying each step by hand.
+    private var setupRunSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Set up this host").font(.headline)
+            Text("Runs all six steps in order, stopping at the first failure with its remedy.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            let action = ClaudeIntegrationSettingsModel.EnrollmentAction.setupHost
+            if let confirmation = model.enrollmentConfirmation,
+               confirmation.action == action {
+                Text(confirmation.preview)
+                    .font(.system(size: 12, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 4))
+                Text(confirmation.title).font(.body).bold()
+                HStack {
+                    Button("Cancel") { model.cancelEnrollmentActionConfirmation() }
+                    Button(confirmation.confirmButtonTitle) {
+                        Task { await model.confirmEnrollmentAction() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("integrations.remote.setup.run")
+                }
+                .controlSize(.small)
+            } else if !model.isEnrollmentBusy {
+                // Re-runnable on purpose: a failed run's remedy is usually
+                // "fix that, then run it again", and the reset (`setupRun`
+                // is cleared by `requestHostSetup`) makes the new run's list
+                // replace the old one rather than append to it.
+                Button("Run Setup", action: { model.requestHostSetup() })
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(actionsDisabled || !presentation.canRunRemoteSetup)
+            }
+            ClaudeSetupRunSteps(model: model, hostID: presentation.host.id)
+        }
     }
 
     /// Step 3: the app runs the checks and states the verdict.

@@ -452,6 +452,26 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
     }
 
+    func testSSHConfigCurrencyAcceptsTabsAndRepeatedSpacesBetweenDirectiveFields() throws {
+        let current = [
+            ClaudeRemoteEnrollmentService.blockBegin(hostID: host.id),
+            "Host sandbox-vpn",
+            "\tRemoteForward\t28542\t127.0.0.1:8473",
+            "    SendEnv   LC_LVX_TTY",
+            ClaudeRemoteEnrollmentService.blockEnd(hostID: host.id),
+        ].joined(separator: "\n")
+        let filesystem = MemorySSHConfigFileSystem(
+            state: ClaudeRemoteRemoteConfigStateFixture.state(configText: current)
+        )
+        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: filesystem)
+
+        XCTAssertEqual(
+            service.sshConfigBlockIsCurrent(port: 28_542, hostID: host.id),
+            true,
+            "OpenSSH accepts any horizontal whitespace between directive fields"
+        )
+    }
+
     func testForwardStateIgnoresARemoteForwardOutsideThisHostsBlock() throws {
         // Someone else's `RemoteForward 28511` elsewhere in the config is not
         // this host's block being current.
@@ -2309,6 +2329,306 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             directives(of: snippet.components(separatedBy: "\n")),
             "the README manual block drifted from sshConfigSnippet"
         )
+    }
+
+    // MARK: - One-flow setup probes
+
+    func testEnvironmentProbeExportsARandomValueAndAcceptsOnlyItsExactReturn() throws {
+        let invocations = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let service = ClaudeRemoteEnrollmentService(
+            runner: { invocation in
+                invocations.withLock { $0.append(invocation) }
+                // The frame with banner noise on both sides, exactly as the
+                // merged stdout/stderr capture would deliver it: the verdict
+                // must come from the framed line, not the raw bytes.
+                return .init(
+                    exitCode: 0,
+                    message: "Welcome to builder\n"
+                        + ClaudeRemoteEnrollmentService.envProbeFramePrefix
+                        + (invocation.environment["LC_LVX_TTY"] ?? "")
+                        + "\nLast login: today\n"
+                )
+            },
+            environmentProbeValue: { "lvx-probe-fixed-for-test" }
+        )
+
+        XCTAssertEqual(
+            try service.probeRemoteEnvironment(sshHostAlias: "builder"),
+            .crossed
+        )
+        let invocation = try XCTUnwrap(invocations.withLock { $0.first })
+        XCTAssertEqual(invocation.environment["LC_LVX_TTY"], "lvx-probe-fixed-for-test")
+        XCTAssertTrue(invocation.argv.contains("ClearAllForwardings=yes"))
+        XCTAssertFalse(invocation.argv.joined().contains("lvx-probe-fixed-for-test"))
+        XCTAssertFalse(String(decoding: invocation.standardInput, as: UTF8.self)
+            .contains("lvx-probe-fixed-for-test"))
+    }
+
+    func testEnvironmentProbeIgnoresABannerThatQuotesAWrongValue() throws {
+        // A hostile or merely chatty host can print anything around the frame;
+        // only the minted value's exact return may count, never a lookalike.
+        let service = ClaudeRemoteEnrollmentService(
+            runner: { invocation in
+                invocation.argv.contains("-G")
+                    ? .init(exitCode: 0, message: "hostname builder\nsendenv LANG LC_*\n")
+                    : .init(
+                        exitCode: 0,
+                        message: "LVX_TTY:not-the-probe-value"
+                    )
+            },
+            environmentProbeValue: { "lvx-probe-real" }
+        )
+        XCTAssertEqual(
+            try service.probeRemoteEnvironment(sshHostAlias: "builder"),
+            .remoteAcceptEnvMissing,
+            "a wrong echo is a mismatch, and the local side is sending"
+        )
+    }
+
+    func testEnvironmentProbeReadsFirstLVXTTYFramedLineIgnoringOtherLVXPrefixLines() throws {
+        let service = ClaudeRemoteEnrollmentService(
+            runner: { invocation in
+                .init(
+                    exitCode: 0,
+                    message: "LVX_WARNING: authorized access only\n"
+                        + "LVX_NODE=worker-42\n"
+                        + ClaudeRemoteEnrollmentService.envProbeFramePrefix
+                        + (invocation.environment["LC_LVX_TTY"] ?? "")
+                        + "\nLVX_TRAILING: ignored\n"
+                )
+            },
+            environmentProbeValue: { "lvx-probe-valid" }
+        )
+
+        XCTAssertEqual(
+            try service.probeRemoteEnvironment(sshHostAlias: "builder"),
+            .crossed,
+            "a banner line prefixed with LVX_ must not shadow the LVX_TTY: frame"
+        )
+    }
+
+    func testEnvironmentProbeDistinguishesMissingSendEnvFromMissingRemoteAcceptEnv() throws {
+        let call = Mutex(0)
+        let withoutSendEnv = ClaudeRemoteEnrollmentService(
+            runner: { invocation in
+                let index = call.withLock { value -> Int in
+                    defer { value += 1 }
+                    return value
+                }
+                if index == 0 { return .init(exitCode: 0, message: "") }
+                XCTAssertEqual(invocation.argv, ["ssh", "-G", "--", "builder"])
+                return .init(exitCode: 0, message: "hostname builder\nsendenv LANG\n")
+            },
+            environmentProbeValue: { "lvx-probe-a" }
+        )
+        XCTAssertEqual(
+            try withoutSendEnv.probeRemoteEnvironment(sshHostAlias: "builder"),
+            .localSendEnvMissing
+        )
+
+        let withWildcard = ClaudeRemoteEnrollmentService(
+            runner: { invocation in
+                invocation.argv.contains("-G")
+                    ? .init(exitCode: 0, message: "hostname builder\nsendenv LANG LC_*\n")
+                    : .init(exitCode: 0, message: "")
+            },
+            environmentProbeValue: { "lvx-probe-b" }
+        )
+        XCTAssertEqual(
+            try withWildcard.probeRemoteEnvironment(sshHostAlias: "builder"),
+            .remoteAcceptEnvMissing
+        )
+    }
+
+    func testPluginSetupUpdatesAnInstalledPluginAndVerifiesItsVersionInOneSSHSession() throws {
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            calls.withLock { $0.append(invocation) }
+            return .init(exitCode: 0, message: "LVX_PLUGIN_ALREADY_CURRENT")
+        })
+
+        XCTAssertEqual(
+            try service.setupRemotePlugin(
+                sshHostAlias: "builder", token: nil, remoteForwardPort: 28_511
+            ),
+            .alreadyCurrent
+        )
+        let recorded = calls.withLock { $0 }
+        XCTAssertEqual(recorded.count, 1, "detect, update, and version verification share one ssh session")
+        let script = String(decoding: recorded[0].standardInput, as: UTF8.self)
+        XCTAssertTrue(script.contains("claude plugin marketplace update"))
+        // The version check reads the listing line `claude plugin list` prints
+        // for our reference and matches the version as a space-delimited word
+        // (so 11.7.0 can never satisfy 1.7.0) — both before deciding AND after
+        // the install, in the same session.
+        XCTAssertTrue(
+            script.contains("grep -F '\(ClaudeRemoteEnrollmentService.remotePluginReference)' | head -n 1")
+        )
+        XCTAssertTrue(
+            script.contains("*\" \(ClaudeRemoteEnrollmentService.remotePluginVersion) \"*"),
+            "the version is matched as a word"
+        )
+        XCTAssertEqual(
+            script.components(separatedBy: "claude plugin list").count - 1,
+            2,
+            "the version is read before the decision and again after the install"
+        )
+    }
+
+    func testPluginSetupRefusesToInstallWithoutAToken() throws {
+        // The update path deliberately carries no credential. Installing
+        // tokenless would look exactly like a healthy enrollment failing open,
+        // so an absent plugin is reported for the remedy (rotate), not
+        // silently installed broken.
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            .init(exitCode: 44, message: "LVX_PLUGIN_ABSENT")
+        })
+
+        XCTAssertThrowsError(
+            try service.setupRemotePlugin(
+                sshHostAlias: "builder", token: nil, remoteForwardPort: 28_511
+            )
+        ) { error in
+            guard case ClaudeRemoteEnrollmentService.ServiceError
+                .commandFailed(_, _, 44, let message) = error else {
+                return XCTFail("expected exit 44 with the rotation remedy, got \(error)")
+            }
+            XCTAssertTrue(message.contains("Rotate this host's token"))
+        }
+    }
+
+    func testPluginSetupDistinguishesMissingCLICommandFailureAndVersionMismatch() throws {
+        func failure(exitCode: Int32) throws -> ClaudeRemoteEnrollmentService.ServiceError {
+            let service = ClaudeRemoteEnrollmentService(runner: { _ in
+                .init(exitCode: exitCode, message: "untrusted host output")
+            })
+            do {
+                _ = try service.setupRemotePlugin(
+                    sshHostAlias: "builder",
+                    token: "test-token",
+                    remoteForwardPort: 28_511
+                )
+                XCTFail("exit \(exitCode) must fail")
+                return .executionNotConfigured
+            } catch let error as ClaudeRemoteEnrollmentService.ServiceError {
+                return error
+            }
+        }
+
+        guard case .commandFailed(_, _, 127, let missingCLI) = try failure(exitCode: 127) else {
+            return XCTFail("expected the missing CLI diagnosis")
+        }
+        XCTAssertEqual(
+            missingCLI,
+            "Claude CLI was not found on the remote host. "
+                + "Install Claude Code there, or put it on the non-interactive SSH PATH."
+        )
+
+        guard case .commandFailed(_, _, 1, let commandFailure) = try failure(exitCode: 1) else {
+            return XCTFail("expected the generic command failure diagnosis")
+        }
+        XCTAssertEqual(commandFailure, "The remote plugin setup command failed.")
+
+        guard case .commandFailed(_, _, 43, let versionMismatch) = try failure(exitCode: 43) else {
+            return XCTFail("expected the version read-back diagnosis")
+        }
+        XCTAssertEqual(
+            versionMismatch,
+            "The plugin is installed but did not report version "
+                + ClaudeRemoteEnrollmentService.remotePluginVersion
+                + " when read back in the same session."
+        )
+    }
+
+    func testVerifiedPluginVersionMatchesTheRemotePluginManifest() throws {
+        let manifestURL = repositoryRoot
+            .appendingPathComponent("integrations/claude-code/plugins/localvoxtral-remote")
+            .appendingPathComponent(".claude-plugin/plugin.json")
+        let object = try JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL))
+        let manifest = try XCTUnwrap(object as? [String: Any])
+        XCTAssertEqual(
+            manifest["version"] as? String,
+            ClaudeRemoteEnrollmentService.remotePluginVersion
+        )
+    }
+
+    func testHerdrSetupReportsAbsentAndRefusesAnExistingAgentsTable() throws {
+        let assertInvocation: @Sendable (ClaudeRemoteEnrollmentService.Invocation) -> Void = {
+            invocation in
+            XCTAssertEqual(
+                invocation.argv,
+                [
+                    "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
+                    "builder", "/bin/sh", "-s",
+                ]
+            )
+            XCTAssertEqual(invocation.timeout, ClaudeRemoteEnrollmentService.defaultRemoteSetupTimeout)
+            XCTAssertTrue(invocation.environment.isEmpty)
+            let script = String(decoding: invocation.standardInput, as: UTF8.self)
+            XCTAssertTrue(script.contains("command -v herdr"))
+            XCTAssertTrue(script.contains(ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet))
+            XCTAssertTrue(script.contains("herdr server reload-config"))
+            XCTAssertTrue(script.contains("LVX_HERDR_CONFIGURED"))
+        }
+        let absent = ClaudeRemoteEnrollmentService(runner: { invocation in
+            assertInvocation(invocation)
+            return .init(exitCode: 0, message: "LVX_HERDR_ABSENT")
+        })
+        XCTAssertEqual(try absent.setupRemoteHerdr(sshHostAlias: "builder"), .notFound)
+
+        let customized = ClaudeRemoteEnrollmentService(runner: { invocation in
+            assertInvocation(invocation)
+            return .init(exitCode: 42, message: "LVX_HERDR_CUSTOMIZED")
+        })
+        XCTAssertEqual(try customized.setupRemoteHerdr(sshHostAlias: "builder"), .customized)
+    }
+
+    func testHerdrSetupRequiresTheConfiguredOutcomeFrame() throws {
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            XCTAssertEqual(
+                invocation.argv,
+                [
+                    "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
+                    "builder", "/bin/sh", "-s",
+                ]
+            )
+            XCTAssertTrue(
+                String(decoding: invocation.standardInput, as: UTF8.self)
+                    .contains("LVX_HERDR_CONFIGURED")
+            )
+            return .init(exitCode: 0, message: "")
+        })
+
+        XCTAssertThrowsError(try service.setupRemoteHerdr(sshHostAlias: "builder")) { error in
+            guard case ClaudeRemoteEnrollmentService.ServiceError
+                .runnerFailed(_, let command, let message) = error else {
+                return XCTFail("expected an unreported herdr outcome, got \(error)")
+            }
+            XCTAssertEqual(command, "configure remote herdr")
+            XCTAssertEqual(
+                message,
+                "The host did not report a herdr setup outcome. "
+                    + "Check its herdr config, then run setup again."
+            )
+        }
+    }
+
+    func testRemovingTheLocalSSHBlockUsesTheSameTrustedWriter() throws {
+        let applied = ClaudeRemoteEnrollmentService.applySSHConfigSnippet(
+            to: "Host other\n    User me\n",
+            snippet: try plan().sshConfigSnippet,
+            hostID: host.id
+        )
+        let fileSystem = MemorySSHConfigFileSystem(
+            state: ClaudeRemoteRemoteConfigStateFixture.state(configText: applied)
+        )
+        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
+
+        try service.removeSSHConfig(hostID: host.id)
+
+        let written = String(decoding: try XCTUnwrap(fileSystem.snapshot.writes.last?.data), as: UTF8.self)
+        XCTAssertFalse(written.contains("Host builder"))
+        XCTAssertTrue(written.contains("Host other"))
     }
 
 }

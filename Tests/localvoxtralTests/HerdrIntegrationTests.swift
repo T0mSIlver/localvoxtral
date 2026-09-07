@@ -56,6 +56,14 @@ final class HerdrIntegrationTests: XCTestCase {
             destination: enablement.destination,
             label: label
         )
+        print(
+            "[herdr-fixture] token.ttl_ms=\(HerdrPanelBindingProbe.tokenTTLMilliseconds) "
+                + "refresh_seconds=\(HerdrPanelMicIndicator.refreshInterval) "
+                + "surface_wait_seconds=20"
+        )
+        let sidebarWidth = fixture.primarySurface.observedSidebarWidth().map(String.init)
+            ?? "not-rendered"
+        print("[herdr-fixture] sidebar.observed_width=\(sidebarWidth) source=rendered-frame")
     }
 
     override func tearDown() async throws {
@@ -96,6 +104,11 @@ final class HerdrIntegrationTests: XCTestCase {
                 "the app's ssh -L forward to \(fixture.info.alias) never became dialable"
             )
         }
+        print(
+            "[herdr-fixture] ssh.forward alias=\(fixture.info.alias) "
+                + "local_socket=\(handle.localSocketPath) "
+                + "remote_socket=\(fixture.info.socketPath)"
+        )
         return (service, handle)
     }
 
@@ -140,6 +153,7 @@ final class HerdrIntegrationTests: XCTestCase {
         while true {
             if surface.textSinceMark()?.contains(token) == true { return }
             guard Date() < deadline else {
+                fixture.dumpSurfaceFrames(reason: "timed out waiting for \(token)")
                 throw HerdrLaneError.timedOut("the surface to paint \(token)")
             }
             if Date() >= nextRefresh {
@@ -149,6 +163,9 @@ final class HerdrIntegrationTests: XCTestCase {
                     "re-stamping the panel token was refused; the wait below would "
                         + "then be measuring an expired token, not a surface that will not paint"
                 )
+                if !refreshed {
+                    fixture.dumpSurfaceFrames(reason: "panel token refresh was refused")
+                }
                 nextRefresh = Date().addingTimeInterval(HerdrPanelMicIndicator.refreshInterval)
             }
             try? await Task.sleep(for: .milliseconds(100))
@@ -680,18 +697,33 @@ final class HerdrIntegrationTests: XCTestCase {
         let stamped = await stamp(token, through: client, socketPath: handle.localSocketPath)
         XCTAssertTrue(stamped)
 
-        // A clock of its own, so the refresh cadence cannot move the forward's
-        // idle deadline while the lease is still held.
-        let indicatorClock = AcceleratedClock()
+        // Hold the refresh behind a deterministic tick. The old accelerated
+        // 50 ms sleep let the first refresh race the clear below: on the CI
+        // runner it could restore the token before the immediate read, while
+        // the builder account happened to complete the clear last.
+        let (refreshTicks, refreshContinuation) = AsyncStream.makeStream(of: Void.self)
+        defer { refreshContinuation.finish() }
+        let refreshIntervals = Mutex<[TimeInterval]>([])
         let indicator = HerdrPanelMicIndicator(
             metadata: client,
             socketPath: handle.localSocketPath,
             paneID: fixture.info.paneID,
             token: token,
             forward: handle,
-            sleepFor: indicatorClock.sleep
+            sleepFor: { seconds in
+                refreshIntervals.withLock { $0.append(seconds) }
+                var iterator = refreshTicks.makeAsyncIterator()
+                _ = await iterator.next()
+            }
         )
         indicator.start()
+        try await HerdrLaneWait.until("the mic indicator to arm its refresh sleep") {
+            !refreshIntervals.withLock { $0.isEmpty }
+        }
+        XCTAssertEqual(
+            refreshIntervals.withLock { $0.first },
+            HerdrPanelMicIndicator.refreshInterval
+        )
 
         // Clear the token behind the indicator's back; its next refresh must
         // put the same value back — that is what keeps the row lit for a
@@ -699,7 +731,12 @@ final class HerdrIntegrationTests: XCTestCase {
         await HerdrPanelBindingProbe.clear(
             metadata: client, socketPath: handle.localSocketPath, paneID: fixture.info.paneID
         )
-        XCTAssertNil(try fixture.paneTokens()["lvmark"])
+        try await HerdrLaneWait.until(
+            "the deliberately cleared mic token to disappear before refresh", timeout: 5
+        ) {
+            (try? self.fixture.paneTokens()["lvmark"]) == nil
+        }
+        refreshContinuation.yield()
         try await HerdrLaneWait.until("the mic indicator to refresh the token", timeout: 30) {
             (try? self.fixture.paneTokens()["lvmark"]) == token
         }
