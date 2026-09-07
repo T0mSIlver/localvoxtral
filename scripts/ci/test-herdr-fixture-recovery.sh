@@ -188,4 +188,31 @@ release_account_files 2>/dev/null
   || fail "an ssh config the fixture created must be removed again, not left empty"
 pass "files the account never had are removed, not left behind"
 
+# The live server creates a provisional pane while its whole-view client is
+# starting. CI measured that pane surviving two one-second reads and then
+# being replaced immediately afterwards. Three stable reads must select the
+# replacement, not the provisional id.
+printf '0\n' > "$TMP_DIR/pane-read-count"
+herdr_cli() {
+  local group="$1" verb="$2" count
+  [[ "$group" == "pane" ]] || return 1
+  if [[ "$verb" == "get" ]]; then
+    return 0
+  fi
+  [[ "$verb" == "current" ]] || return 1
+  count="$(sed -n '1p' "$TMP_DIR/pane-read-count")"
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$TMP_DIR/pane-read-count"
+  case "$count" in
+    1|2) printf '{"pane_id":"w1:p1"}\n' ;;
+    *) printf '{"pane_id":"w2:p1"}\n' ;;
+  esac
+}
+sleep() { :; }
+READY_TIMEOUT_SECONDS=10
+settled="$(settle_focused_pane "$TMP_DIR" 2>/dev/null)"
+[[ "$settled" == "w2:p1" ]] \
+  || fail "pane settlement accepted provisional w1:p1 instead of stable w2:p1 (got $settled)"
+pass "pane settlement rejects an id that survives only two samples"
+
 printf '\nAll herdr fixture recovery checks passed.\n'
