@@ -59,25 +59,35 @@ Open **Settings** from the menu bar popover:
   per-mode keyboard shortcuts) and the menu-bar output mode
 - **Text Processing** — exact-match replacements, plus the LLM Polishing
   switch, the agent prompt profile, and spoken clipboard paste
-- **Integrations** — what the polisher may see (repo vocabulary, terminal
-  screen, Claude Code project files, clipboard), one row per harness with
-  in-app setup: the Claude Code plugin and status line, remote SSH hosts, the
-  opencode plugin, and herdr presence. Each row's help is one line naming
-  what leaves this Mac; the full terms per toggle are in
-  [Terminals & coding agents](coding-agents.md#polish-context-what-each-toggle-sends),
-  and each group's **Learn more** link opens the relevant page
+- **Integrations** — one pane per harness, each with a status dot: green
+  means detected and set up, yellow means a setup step is pending, grey
+  means not installed. **Context** holds what the polisher may see (repo
+  vocabulary, terminal screen, Claude Code project files, clipboard); each
+  toggle's help is one line naming what leaves this Mac, and the full terms
+  are in
+  [Terminals & coding agents](coding-agents.md#polish-context-what-each-toggle-sends).
+  **Claude Code** collects the plugin, status line, cmux join, and remote
+  SSH hosts; **opencode** and **herdr** hold their own rows
+- **Terminals** — one pane per terminal app (plus any you add), showing
+  whether it is installed and what it supports: dictation everywhere, session
+  join and screen context only on Ghostty (1.4+), iTerm2, Terminal.app, and
+  cmux. **Add app…** picks any application to treat as a terminal for
+  dictation; added apps are removed from their own pane
 - **About** — version, link to the repository, and Export Diagnostics
   (writes a redacted local report to the Desktop)
 
 The config folder at `~/Library/Application Support/localvoxtral/config`
-holds `replacement_dictionary.toml` for both output modes; the standard and
-agent `llm_system_prompt*.toml` and `llm_user_prompt*.toml` files; and
-`terminal_apps.toml` for extra terminal apps. Remove
-`{{replacement_dictionary}}` from a user prompt template to stop sending the
-dictionary to the LLM. When an update ships improved
-defaults, files you haven't edited are refreshed automatically; files you
-have edited are never touched without asking — the app offers to update them
-and keeps your versions as `.backup` files alongside.
+holds `replacement_dictionary.toml` for both output modes and the standard
+and agent `llm_system_prompt*.toml` and `llm_user_prompt*.toml` files.
+Remove `{{replacement_dictionary}}` from a user prompt template to stop
+sending the dictionary to the LLM. Extra terminal apps are managed in
+Settings → Terminals rather than a config file: the legacy
+`terminal_apps.toml`, if you had one, is read once at launch and its
+entries move into the Settings list; the file is left untouched. When an
+update ships improved defaults, files you haven't edited are refreshed
+automatically; files you have edited are never touched without asking —
+the app offers to update them and keeps your versions as `.backup` files
+alongside.
 
 ## Screenshots
 
@@ -109,11 +119,27 @@ and keeps your versions as `.backup` files alongside.
     <td width="50%"><img src="../assets/settings-text-processing.png" alt="localvoxtral text processing settings" width="100%" /></td>
   </tr>
   <tr>
-    <td width="50%" align="center"><b>Integrations</b></td>
-    <td width="50%"></td>
+    <td width="50%" align="center"><b>Context</b></td>
+    <td width="50%" align="center"><b>Claude Code</b></td>
   </tr>
   <tr>
-    <td width="50%"><img src="../assets/settings-integrations.png" alt="localvoxtral integrations settings" width="100%" /></td>
-    <td width="50%"></td>
+    <td width="50%"><img src="../assets/settings-integrations-context.png" alt="localvoxtral context settings" width="100%" /></td>
+    <td width="50%"><img src="../assets/settings-integrations-claude-code.png" alt="localvoxtral Claude Code settings" width="100%" /></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><b>opencode</b></td>
+    <td width="50%" align="center"><b>herdr</b></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="../assets/settings-integrations-opencode.png" alt="localvoxtral opencode settings" width="100%" /></td>
+    <td width="50%"><img src="../assets/settings-integrations-herdr.png" alt="localvoxtral herdr settings" width="100%" /></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><b>Terminals: Ghostty</b></td>
+    <td width="50%" align="center"><b>Terminals: cmux</b></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="../assets/settings-terminal-ghostty.png" alt="localvoxtral Ghostty terminal settings" width="100%" /></td>
+    <td width="50%"><img src="../assets/settings-terminal-cmux.png" alt="localvoxtral cmux terminal settings" width="100%" /></td>
   </tr>
 </table>
