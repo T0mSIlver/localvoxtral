@@ -797,15 +797,6 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         )
     }
 
-    /// One entry of `claude plugin list --json`. Only the keys the version
-    /// check reads; the decoder ignores everything else the CLI adds.
-    public struct RemotePluginListEntry: Decodable, Equatable, Sendable {
-        public let id: String
-        public let version: String
-        public let scope: String?
-        public let enabled: Bool?
-    }
-
     public static let pluginListFrameBegin = "LVX_PLUGIN_LIST_BEGIN"
     public static let pluginListFrameEnd = "LVX_PLUGIN_LIST_END"
     /// A listing is a few hundred bytes per installed plugin. Anything past
@@ -854,18 +845,14 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                 message: "The host's plugin listing is larger than a listing can be."
             )
         }
-        let entries: [RemotePluginListEntry]
-        do {
-            entries = try JSONDecoder().decode([RemotePluginListEntry].self, from: data)
-        } catch {
+        guard let entries = ClaudePluginListing.entries(in: String(decoding: data, as: UTF8.self)) else {
             throw ServiceError.runnerFailed(
                 step: 0,
                 command: "list remote plugins",
                 message: "The host's plugin listing could not be decoded."
             )
         }
-        let matches = entries.filter { $0.id == reference }
-        return (matches.first { $0.scope == "user" } ?? matches.first)?.version
+        return ClaudePluginListing.entry(for: reference, in: entries)?.knownVersion
     }
 
     /// Install or update the remote plugin and prove the installed version.
