@@ -50,7 +50,9 @@ jobs:
   # signing identity, so those steps are skipped here rather than duplicated.
   build-test:
     runs-on: macos-latest
-    timeout-minutes: 30
+    # PROBE BRANCH (throwaway, never merged): 25 supervised test iterations
+    # plus up to a handful of 900 s hangs need far more than the normal 30 min.
+    timeout-minutes: 150
     env:
       # Step-level `if:` can read `env`; job-level `if:` cannot. Computed once
       # here so every fork-only step reads the same expression.
@@ -243,46 +245,64 @@ jobs:
           echo "format-lint findings: $(wc -l < format-lint.txt | tr -d ' ')"
 
       - name: Test (unit suite)
-        # The integration suite needs a live inference backend and is exercised
-        # manually; see CLAUDE.md. This is also the job's compile gate: the
-        # old standalone `swift build` step built plain-debug products that
-        # nothing downstream consumed (tests rebuild with coverage flags,
-        # packaging builds release), so it was pure duplicate compilation.
+        # PROBE BRANCH (throwaway, never merged): instead of the single unit
+        # run, loop the suspect suites for the 2026-09-06/07 hosted hangs -
+        # 10x BackendManagerTests, 10x BackendProcessSupervisorTests, 5x the
+        # full suite - each iteration under run-supervised-command.sh with the
+        # new process-tree + pipe-holder forensics, so any hang names its
+        # holder before the kill. The #268 probe shape.
         if: steps.ci_scope.outputs.docs_only != 'true'
         run: |
-          # AgentDictationE2EEvalTests is skipped explicitly (belt) on top of
-          # the marker cleanup above (suspenders): it is the nightly
-          # eval-e2e.yml lane, never tier 0, and a leftover enable marker must
-          # not turn the unit step into a many-minute live-inference run.
-          #
-          # 900 s flat. This step used to pick 300 s on the self-hosted runner
-          # and 900 s on hosted; it now only ever runs hosted, where the build
-          # is cold (~70 s) and the machine is a 3-core shared VM, so the
-          # generous bound is the right one. The point of the supervisor is
-          # forensics on a HANG (it samples the wedged xctest before killing
-          # it), not a tight performance budget.
-          ./scripts/ci/run-supervised-command.sh \
-            900 "$RUNNER_TEMP/localvoxtral-unit-tests.log" -- \
-            swift test \
-            --skip RealtimeAPIVLLMIntegrationTests \
-            --skip SpeechHelperIntegrationTests \
-            --skip AgentDictationE2EEvalTests \
-            --skip HerdrIntegrationTests \
-            --enable-code-coverage
+          set -uo pipefail
+          PROBE_DIR="$RUNNER_TEMP/unit-hang-probe"
+          mkdir -p "$PROBE_DIR"
+          pass=0; fail=0; hang=0
+          run_one() {
+            local label="$1" bound="$2" rc=0 start end outcome
+            shift 2
+            start="$(date +%s)"
+            ./scripts/ci/run-supervised-command.sh "$bound" "$PROBE_DIR/$label.log" -- "$@" || rc=$?
+            end="$(date +%s)"
+            case "$rc" in
+              0)   pass=$((pass + 1)); outcome=PASS ;;
+              124) hang=$((hang + 1)); outcome=HANG ;;
+              *)   fail=$((fail + 1)); outcome=FAIL ;;
+            esac
+            echo "PROBE RESULT: $label -> $outcome rc=$rc in $((end - start))s"
+          }
+          SKIP_ARGS=(--skip RealtimeAPIVLLMIntegrationTests
+                     --skip SpeechHelperIntegrationTests
+                     --skip AgentDictationE2EEvalTests
+                     --skip HerdrIntegrationTests
+                     --enable-code-coverage)
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            run_one "BackendManagerTests-$i" 900 swift test "${SKIP_ARGS[@]}" --filter BackendManagerTests
+          done
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            run_one "BackendProcessSupervisorTests-$i" 900 swift test "${SKIP_ARGS[@]}" --filter BackendProcessSupervisorTests
+          done
+          for i in 1 2 3 4 5; do
+            run_one "full-$i" 900 swift test "${SKIP_ARGS[@]}"
+          done
+          echo "PROBE SUMMARY: pass=$pass fail=$fail hang=$hang"
+          (( fail > 0 || hang > 0 )) && exit 1
+          exit 0
 
-      - name: Upload complete unit-test log
+      - name: Upload probe logs
         if: ${{ always() && steps.ci_scope.outputs.docs_only != 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: unit-test-log-${{ runner.os }}
-          path: ${{ runner.temp }}/localvoxtral-unit-tests.log
+          name: unit-hang-probe-logs
+          path: ${{ runner.temp }}/unit-hang-probe/
           if-no-files-found: error
           retention-days: 7
 
       - name: Coverage summary
+        # PROBE BRANCH: disabled - the probe step above already ran the suite
+        # repeatedly; the coverage table adds nothing to a reproduction hunt.
+        if: false
         # Visibility, not a gate: lets a PR's Proof section cite real coverage
         # of the changed files instead of "a test exists".
-        if: steps.ci_scope.outputs.docs_only != 'true'
         run: |
           set -euo pipefail
           BIN="$(find .build -type f -name localvoxtralPackageTests -path '*.xctest/Contents/MacOS/*' | head -n 1)"
@@ -419,8 +439,11 @@ jobs:
   #
   # NEVER runs for a fork PR — the whole point of the split above.
   mac-lanes:
-    if: >-
-      github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # PROBE BRANCH (throwaway, never merged): this probe needs nothing from
+    # this Mac, and the single self-hosted runner is the scarcest resource in
+    # the repo - do not spend ~30 min of it on a hosted-lane reproduction
+    # (#268 probe shape).
+    if: false
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 30
     steps:
