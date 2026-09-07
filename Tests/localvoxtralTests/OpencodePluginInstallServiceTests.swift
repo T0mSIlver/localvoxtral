@@ -125,6 +125,43 @@ final class OpencodePluginInstallServiceTests: XCTestCase {
         XCTAssertNil(OpencodePluginInstallService.tuiByAddingPlugin(to: misshapen))
     }
 
+    func testNullPluginKeyMeansAbsent() throws {
+        // m1: `{"plugin": null}` is a shape JSON configs use for "unset" —
+        // it must read as absent, never brick install AND remove.
+        let nulled = try tuiJSON(["theme": "dark", "plugin": NSNull()])
+        XCTAssertEqual(
+            OpencodePluginInstallService.tuiListsPlugin(in: nulled), .notListed
+        )
+        let added = try XCTUnwrap(OpencodePluginInstallService.tuiByAddingPlugin(to: nulled))
+        XCTAssertEqual(OpencodePluginInstallService.tuiListsPlugin(in: added), .listed)
+        let parsedAdded = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: added) as? [String: Any]
+        )
+        XCTAssertEqual(parsedAdded["theme"] as? String, "dark", "other keys survive")
+        let removal = try XCTUnwrap(OpencodePluginInstallService.tuiByRemovingPlugin(from: nulled))
+        guard case .rewrite(let data) = removal else {
+            return XCTFail("null entry with other keys rewrites, preserving them")
+        }
+        let parsedRemoval = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        XCTAssertEqual(parsedRemoval["theme"] as? String, "dark")
+        XCTAssertNil(parsedRemoval["plugin"], "the null entry is dropped")
+        let nulledAlone = try tuiJSON(["plugin": NSNull()])
+        XCTAssertEqual(
+            OpencodePluginInstallService.tuiByRemovingPlugin(from: nulledAlone), .deleteFile
+        )
+        let (service, fs) = service(state: OpencodePluginState(
+            pluginFileExists: true,
+            pluginData: Self.bundledJS,
+            tuiFileExists: true,
+            tuiData: nulled
+        ))
+        XCTAssertEqual(service.status(), .installedUnlisted, "null is not unknown")
+        XCTAssertNoThrow(try service.install(), "install treats null as absent")
+        XCTAssertNotNil(fs.writtenTUI)
+    }
+
     // MARK: - Install
 
     func testInstallCopiesAndLists() throws {

@@ -102,6 +102,9 @@ public struct OpencodePluginInstallService: Sendable {
             let tui = json as? [String: Any]
         else { return .unparseable }
         guard let entries = tui[tuiPluginKey] else { return .notListed }
+        // m1: `null` means unset, not misshapen — a shape JSON configs
+        // routinely use, and one opencode itself could plausibly write.
+        if entries is NSNull { return .notListed }
         guard let list = entries as? [String] else { return .unparseable }
         return list.contains(tuiPluginEntry) ? .listed : .notListed
     }
@@ -117,7 +120,8 @@ public struct OpencodePluginInstallService: Sendable {
                 let parsed = json as? [String: Any]
             else { return nil }
             tui = parsed
-            if let entries = tui[tuiPluginKey], !(entries is [String]) { return nil }
+            if let entries = tui[tuiPluginKey],
+               !(entries is NSNull), !(entries is [String]) { return nil }
         }
         var list = (tui[tuiPluginKey] as? [String]) ?? []
         if !list.contains(tuiPluginEntry) { list.append(tuiPluginEntry) }
@@ -140,6 +144,14 @@ public struct OpencodePluginInstallService: Sendable {
             let tui = json as? [String: Any]
         else { return nil }
         guard let entries = tui[tuiPluginKey] else { return .rewrite(existing) }
+        // m1: a null entry is "no entry" — drop the key, preserving the rest.
+        if entries is NSNull {
+            var remaining = tui
+            remaining.removeValue(forKey: tuiPluginKey)
+            guard !remaining.isEmpty else { return .deleteFile }
+            guard let rewritten = renderTUI(remaining) else { return nil }
+            return .rewrite(rewritten)
+        }
         guard let list = entries as? [String] else { return nil }
         var remaining = tui
         let kept = list.filter { $0 != tuiPluginEntry }
