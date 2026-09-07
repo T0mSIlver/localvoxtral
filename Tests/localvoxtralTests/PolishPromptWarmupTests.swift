@@ -86,9 +86,16 @@ final class PolishPromptWarmupTests: XCTestCase {
             started.fulfill()
             try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { continuation in
+                    // The test cancels as soon as `started` fires; on a loaded
+                    // host that cancellation can precede this store, in which
+                    // case the handler below already ran and found nothing.
+                    // Never park a continuation in a cancelled task (hosted
+                    // unit-suite hang, 2026-09-07).
                     lock.lock()
-                    self.continuation = continuation
+                    let orphaned = Task.isCancelled
+                    if !orphaned { self.continuation = continuation }
                     lock.unlock()
+                    if orphaned { continuation.resume(throwing: CancellationError()) }
                 }
             } onCancel: {
                 lock.lock()
@@ -129,9 +136,14 @@ final class PolishPromptWarmupTests: XCTestCase {
                 started.fulfill()
                 await withTaskCancellationHandler {
                     await withCheckedContinuation { continuation in
+                        // Same rule as above: a task already cancelled when
+                        // it gets here has had its handler run; resume now
+                        // instead of parking a continuation nobody holds.
                         lock.lock()
-                        self.continuation = continuation
+                        let orphaned = Task.isCancelled
+                        if !orphaned { self.continuation = continuation }
                         lock.unlock()
+                        if orphaned { continuation.resume() }
                     }
                 } onCancel: {
                     lock.lock()
