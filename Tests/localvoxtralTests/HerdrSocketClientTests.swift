@@ -509,5 +509,124 @@ final class HerdrSocketClientTests: XCTestCase {
         XCTAssertNil(info?.shellPID)
         XCTAssertEqual(info?.foregroundPIDs, [9001, 9002])
     }
+
+    // MARK: - Latency recorder (the lane's load-study tap)
+
+    private struct LatencyObservation: Sendable {
+        var method: String
+        var latencySeconds: TimeInterval
+        var success: Bool
+        var detail: String
+    }
+
+    /// Reference box so the `@Sendable` recorder can append from the
+    /// client's detached task. (`Mutex` itself is non-copyable and cannot be
+    /// passed by value into the escaping recorder closure.)
+    private final class LatencyLog: @unchecked Sendable {
+        private let lock = Mutex<[LatencyObservation]>([])
+        func append(_ observation: LatencyObservation) {
+            lock.withLock { $0.append(observation) }
+        }
+        var first: LatencyObservation? { lock.withLock { $0.first } }
+    }
+
+    private func recordingClient(
+        _ log: LatencyLog,
+        timeout: TimeInterval = 0.5
+    ) -> HerdrSocketClient {
+        HerdrSocketClient(timeout: timeout, latencyRecorder: { method, latencySeconds, success, detail in
+            log.append(LatencyObservation(
+                method: method,
+                latencySeconds: latencySeconds,
+                success: success,
+                detail: detail
+            ))
+        })
+    }
+
+    func testLatencyRecorderReceivesSuccessWithOkDetail() async throws {
+        let server = try HerdrOneShotServer { request in
+            herdrResponse(for: request, result: ["type": "ok"])
+        }
+        defer { server.stop() }
+
+        let log = LatencyLog()
+        let reported = await recordingClient(log).reportPanelToken(
+            socketPath: server.socketPath,
+            paneID: "pane-a",
+            value: "lv-mic-0000000001",
+            ttlMilliseconds: 8_000
+        )
+        XCTAssertTrue(reported)
+        let recorded = try XCTUnwrap(log.first)
+        XCTAssertEqual(recorded.method, "pane.report_metadata")
+        XCTAssertTrue(recorded.success)
+        XCTAssertEqual(recorded.detail, "ok")
+        XCTAssertGreaterThanOrEqual(recorded.latencySeconds, 0)
+    }
+
+    func testLatencyRecorderReceivesRefusalPayloadVerbatim() async throws {
+        let server = try HerdrOneShotServer { request in
+            herdrResponse(
+                for: request,
+                error: ["code": "pane_not_found", "message": "no such pane"]
+            )
+        }
+        defer { server.stop() }
+
+        let log = LatencyLog()
+        let pane = await recordingClient(log).focusedPane(
+            socketPath: server.socketPath
+        )
+        XCTAssertNil(pane)
+        let recorded = try XCTUnwrap(log.first)
+        XCTAssertEqual(recorded.method, "pane.current")
+        XCTAssertFalse(recorded.success)
+        XCTAssertEqual(recorded.detail, "pane_not_found: no such pane")
+    }
+
+    func testLatencyRecorderReceivesNoResponseOnTimeout() async throws {
+        let release = DispatchSemaphore(value: 0)
+        let server = try HerdrOneShotServer { _ in
+            release.wait()
+            return nil
+        }
+        defer {
+            release.signal()
+            server.stop()
+        }
+
+        let log = LatencyLog()
+        let pane = await recordingClient(log, timeout: 0.01).focusedPane(
+            socketPath: server.socketPath
+        )
+        XCTAssertNil(pane)
+        let recorded = try XCTUnwrap(log.first)
+        XCTAssertFalse(recorded.success)
+        XCTAssertEqual(recorded.detail, "no-response")
+    }
+
+    func testLatencyRecorderNeverCarriesPaneText() async throws {
+        // A pane.read that answers about the WRONG pane is invalid, and its
+        // body carries terminal text. The recorder must say
+        // "invalid-response", never the text.
+        let server = try HerdrOneShotServer { request in
+            herdrResponse(
+                for: request,
+                result: paneReadResult(paneID: "pane-B", text: "SECRET-TERMINAL-TEXT")
+            )
+        }
+        defer { server.stop() }
+
+        let log = LatencyLog()
+        let text = await recordingClient(log).paneVisibleText(
+            socketPath: server.socketPath, paneID: "pane-a"
+        )
+        XCTAssertNil(text)
+        let recorded = try XCTUnwrap(log.first)
+        XCTAssertFalse(recorded.success)
+        XCTAssertEqual(recorded.detail, "invalid-response")
+        XCTAssertFalse(recorded.detail.contains("SECRET"))
+    }
 }
 #endif

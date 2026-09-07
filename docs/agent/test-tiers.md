@@ -218,7 +218,9 @@ Fixture and host requirements (`scripts/herdr-integration-fixture.sh`):
 
 When must it run? For `scripts/ci/herdr-lane-filter.sh` path matches or the
 literal `[run-herdr-integration]` marker, on the same event-payload terms as
-the LLM lanes. The rule behind the list: anything that changes what the app
+the LLM lanes. A manual `ci.yml` dispatch also runs it, which is the supported
+way to repeat this live external contract without manufacturing commits. The
+rule behind the list: anything that changes what the app
 SAYS to herdr, what it BELIEVES herdr answered, how the forward reaching
 herdr is opened or leased, which host that forward reaches, or the recorded
 assumptions themselves. Editing
@@ -227,6 +229,36 @@ that was never re-measured is exactly the failure this lane exists to
 prevent. Not required for UI, insertion, audio, or model work. Either way the
 PR's Proof section carries the scoreboard or a one-line justification for
 skipping.
+
+The fixture records the runner account, herdr binary/version, inherited and
+isolated socket settings, terminal variables, requested and actual pty size,
+rendered sidebar width, sshd port, forward sockets, and pane lifecycle. CI
+uploads those files as `herdr-lane-diagnostics` even when the lane passes. The
+artifact deliberately excludes the fixture's ephemeral host and user keys.
+On 2026-09-07 this evidence exposed an account-sensitive startup race: the
+`tom` launchd runner kept provisional `w1:p1` alive across two one-second
+reads, then replaced it with `w2:p1` 50–200 ms after readiness; the `builder`
+SSH account reached `w2:p1` before the same check. Both used herdr 0.8.2,
+45×130 ptys, and a rendered 26-cell sidebar. Pane readiness therefore needs
+three consecutive resolving samples. Do not trade that condition for a longer
+token TTL or surface timeout; neither participates in this race.
+
+Worker builds on the Mac must not overlap the lane. Measured 2026-09-07 on
+the build host (per-request latency tap in `HerdrSocketClient`, 10 lane runs
+idle + 10 with one concurrent `swift build`): idle 10/10 green with
+p50/p99/max 110/121/126 ms; loaded 9/10 with p50/p99/max 108/123/137 ms and
+zero unexpected refusals or timeouts across 379 successful requests — but one
+loaded run failed `testMicIndicatorRefreshesTheTokenAndClearsItOnStop`
+because a `pane get` read immediately after the stop still showed the token
+while every socket request in that run had succeeded in ~100 ms. The socket
+path is NOT slow under load (36× inside the 5 s timeout); the read lags the
+server's ack under CPU contention. The lane therefore polls for the clear
+(bounded below the 8 s token TTL, so a truly lost clear still fails) — and a
+red lane with worker builds running beside it means re-run the lane alone
+before debugging the diff. The mic-indicator lifecycle test holds its injected
+first refresh until that deliberate clear is observed; accelerating the
+refresh onto a 50 ms wall-clock sleep makes clear-versus-refresh ordering a
+runner scheduler race instead of testing the four-second production cadence.
 
 The speechd live-model lane follows the same owner constraint: it runs only for
 `scripts/ci/speechd-lane-filter.sh` matches or `[run-speechd-integration]`.

@@ -56,6 +56,14 @@ final class HerdrIntegrationTests: XCTestCase {
             destination: enablement.destination,
             label: label
         )
+        print(
+            "[herdr-fixture] token.ttl_ms=\(HerdrPanelBindingProbe.tokenTTLMilliseconds) "
+                + "refresh_seconds=\(HerdrPanelMicIndicator.refreshInterval) "
+                + "surface_wait_seconds=20"
+        )
+        let sidebarWidth = fixture.primarySurface.observedSidebarWidth().map(String.init)
+            ?? "not-rendered"
+        print("[herdr-fixture] sidebar.observed_width=\(sidebarWidth) source=rendered-frame")
     }
 
     override func tearDown() async throws {
@@ -96,6 +104,11 @@ final class HerdrIntegrationTests: XCTestCase {
                 "the app's ssh -L forward to \(fixture.info.alias) never became dialable"
             )
         }
+        print(
+            "[herdr-fixture] ssh.forward alias=\(fixture.info.alias) "
+                + "local_socket=\(handle.localSocketPath) "
+                + "remote_socket=\(fixture.info.socketPath)"
+        )
         return (service, handle)
     }
 
@@ -140,6 +153,7 @@ final class HerdrIntegrationTests: XCTestCase {
         while true {
             if surface.textSinceMark()?.contains(token) == true { return }
             guard Date() < deadline else {
+                fixture.dumpSurfaceFrames(reason: "timed out waiting for \(token)")
                 throw HerdrLaneError.timedOut("the surface to paint \(token)")
             }
             if Date() >= nextRefresh {
@@ -149,6 +163,9 @@ final class HerdrIntegrationTests: XCTestCase {
                     "re-stamping the panel token was refused; the wait below would "
                         + "then be measuring an expired token, not a surface that will not paint"
                 )
+                if !refreshed {
+                    fixture.dumpSurfaceFrames(reason: "panel token refresh was refused")
+                }
                 nextRefresh = Date().addingTimeInterval(HerdrPanelMicIndicator.refreshInterval)
             }
             try? await Task.sleep(for: .milliseconds(100))
@@ -174,6 +191,18 @@ final class HerdrIntegrationTests: XCTestCase {
         return HerdrPanelBindingProbe.token(randomBits: generator.next())
     }
 
+    /// The lane's client: production timeout, plus a per-request timing tap
+    /// so the load study can attribute failures. Each line lands on stdout
+    /// (hence in the lane log): method, latency in ms, outcome, and — on
+    /// failure only — the server's error payload verbatim (content-free) or
+    /// the local cause. Pane ids and socket paths are never printed.
+    private static func makeLaneClient() -> HerdrSocketClient {
+        HerdrSocketClient(timeout: 5, latencyRecorder: { method, latencySeconds, success, detail in
+            let ms = Int((latencySeconds * 1000).rounded())
+            print("[herdr-lane-timing] method=\(method) ms=\(ms) ok=\(success) detail=\(detail)")
+        })
+    }
+
     // MARK: - External assumption: what a whole-view client renders
 
     /// The positive half of the panel-binding premise: a whole-view App client
@@ -186,7 +215,7 @@ final class HerdrIntegrationTests: XCTestCase {
         let (service, handle) = try await openForward()
         defer { handle.close(); service.stopAllForQuit() }
 
-        let client = HerdrSocketClient(timeout: 5)
+        let client = Self.makeLaneClient()
         let token = Self.freshToken()
         fixture.primarySurface.markCurrentEnd()
 
@@ -230,7 +259,7 @@ final class HerdrIntegrationTests: XCTestCase {
         let (service, handle) = try await openForward()
         defer { handle.close(); service.stopAllForQuit() }
 
-        let client = HerdrSocketClient(timeout: 5)
+        let client = Self.makeLaneClient()
         let token = Self.freshToken()
         fixture.primarySurface.markCurrentEnd()
         attachSurface.markCurrentEnd()
@@ -271,7 +300,7 @@ final class HerdrIntegrationTests: XCTestCase {
     func testPanelTokenIsClearedByBothNullAndEmptyValues() async throws {
         let (service, handle) = try await openForward()
         defer { handle.close(); service.stopAllForQuit() }
-        let client = HerdrSocketClient(timeout: 5)
+        let client = Self.makeLaneClient()
         let socketPath = handle.localSocketPath
 
         let first = Self.freshToken()
@@ -314,7 +343,7 @@ final class HerdrIntegrationTests: XCTestCase {
     func testPanelTokenTTLBoundsAreEnforcedAtTheDocumentedEdges() async throws {
         let (service, handle) = try await openForward()
         defer { handle.close(); service.stopAllForQuit() }
-        let client = HerdrSocketClient(timeout: 5)
+        let client = Self.makeLaneClient()
         let socketPath = handle.localSocketPath
 
         let belowMinimum = await stamp(
@@ -360,7 +389,7 @@ final class HerdrIntegrationTests: XCTestCase {
     func testFocusedPaneAndProcessInfoDecodeFromTheLiveServer() async throws {
         let (service, handle) = try await openForward()
         defer { handle.close(); service.stopAllForQuit() }
-        let client = HerdrSocketClient(timeout: 5)
+        let client = Self.makeLaneClient()
 
         guard let pane = await client.focusedPane(socketPath: handle.localSocketPath) else {
             return XCTFail("pane.current returned nothing through the forwarded socket")
@@ -396,7 +425,7 @@ final class HerdrIntegrationTests: XCTestCase {
 
         let (service, handle) = try await openForward()
         defer { handle.close(); service.stopAllForQuit() }
-        let client = HerdrSocketClient(timeout: 5)
+        let client = Self.makeLaneClient()
 
         var text: String?
         for _ in 0..<40 {
@@ -599,7 +628,7 @@ final class HerdrIntegrationTests: XCTestCase {
 
         let (service, handle) = try await openForward()
         defer { handle.close(); service.stopAllForQuit() }
-        let client = HerdrSocketClient(timeout: 5)
+        let client = Self.makeLaneClient()
         let target = TerminalScreenTarget(pid: 1, bundleID: "com.mitchellh.ghostty")
 
         let seenTargets = Mutex<[TerminalScreenTarget]>([])
@@ -663,23 +692,38 @@ final class HerdrIntegrationTests: XCTestCase {
         let forwardClock = AcceleratedClock()
         let (service, handle) = try await openForward(clock: forwardClock, idleTimeout: 60)
         defer { service.stopAllForQuit() }
-        let client = HerdrSocketClient(timeout: 5)
+        let client = Self.makeLaneClient()
         let token = Self.freshToken()
         let stamped = await stamp(token, through: client, socketPath: handle.localSocketPath)
         XCTAssertTrue(stamped)
 
-        // A clock of its own, so the refresh cadence cannot move the forward's
-        // idle deadline while the lease is still held.
-        let indicatorClock = AcceleratedClock()
+        // Hold the refresh behind a deterministic tick. The old accelerated
+        // 50 ms sleep let the first refresh race the clear below: on the CI
+        // runner it could restore the token before the immediate read, while
+        // the builder account happened to complete the clear last.
+        let (refreshTicks, refreshContinuation) = AsyncStream.makeStream(of: Void.self)
+        defer { refreshContinuation.finish() }
+        let refreshIntervals = Mutex<[TimeInterval]>([])
         let indicator = HerdrPanelMicIndicator(
             metadata: client,
             socketPath: handle.localSocketPath,
             paneID: fixture.info.paneID,
             token: token,
             forward: handle,
-            sleepFor: indicatorClock.sleep
+            sleepFor: { seconds in
+                refreshIntervals.withLock { $0.append(seconds) }
+                var iterator = refreshTicks.makeAsyncIterator()
+                _ = await iterator.next()
+            }
         )
         indicator.start()
+        try await HerdrLaneWait.until("the mic indicator to arm its refresh sleep") {
+            !refreshIntervals.withLock { $0.isEmpty }
+        }
+        XCTAssertEqual(
+            refreshIntervals.withLock { $0.first },
+            HerdrPanelMicIndicator.refreshInterval
+        )
 
         // Clear the token behind the indicator's back; its next refresh must
         // put the same value back — that is what keeps the row lit for a
@@ -687,7 +731,12 @@ final class HerdrIntegrationTests: XCTestCase {
         await HerdrPanelBindingProbe.clear(
             metadata: client, socketPath: handle.localSocketPath, paneID: fixture.info.paneID
         )
-        XCTAssertNil(try fixture.paneTokens()["lvmark"])
+        try await HerdrLaneWait.until(
+            "the deliberately cleared mic token to disappear before refresh", timeout: 5
+        ) {
+            (try? self.fixture.paneTokens()["lvmark"]) == nil
+        }
+        refreshContinuation.yield()
         try await HerdrLaneWait.until("the mic indicator to refresh the token", timeout: 30) {
             (try? self.fixture.paneTokens()["lvmark"]) == token
         }
@@ -695,10 +744,27 @@ final class HerdrIntegrationTests: XCTestCase {
         await indicator.stopAndWait()
         // The clear is issued while the forward is still open — it has to be,
         // it travels through it — and only then is the lease released.
-        XCTAssertNil(
-            try fixture.paneTokens()["lvmark"],
-            "stopping the indicator must clear the token before releasing the forward"
-        )
+        //
+        // The clear is WAITED for, not asserted immediately: the stop's socket
+        // request can complete (the server acked it) while a `pane get` read
+        // still shows the token. Measured 2026-09-07 on the build host: with
+        // one concurrent `swift build`, 1 run in 10 failed the immediate read
+        // while every socket request in that run succeeded in ~100 ms
+        // (loaded p99 123 ms, max 137 ms over 189 requests — 36× inside the
+        // 5 s client timeout, so the timeout is NOT the cause). The read
+        // lags the ack under CPU contention; it is not a lost clear.
+        //
+        // The bound stays BELOW the token TTL (8 s from the last refresh), so
+        // a genuinely lost clear still fails loudly instead of passing
+        // vacuously on expiry.
+        try await HerdrLaneWait.until(
+            "the stopped mic indicator's token to clear from the server "
+                + "(if the Mac was running worker builds concurrently, that load "
+                + "is the first suspect — re-run the lane alone)",
+            timeout: 5
+        ) {
+            (try? self.fixture.paneTokens()["lvmark"]) == nil
+        }
         let socketPath = handle.localSocketPath
         try await HerdrLaneWait.until(
             "the forward released by the indicator to be torn down", timeout: 30

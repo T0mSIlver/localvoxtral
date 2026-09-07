@@ -79,13 +79,26 @@ protocol HerdrPaneQuerying: Sendable {
 /// would let a slow connect, write, and response each consume the whole budget,
 /// while a per-read timeout would let a trickling peer retain the task forever.
 struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
+    /// Per-request observation: method name, latency in seconds, success, and
+    /// — on failure only — the server's error payload verbatim
+    /// (`"<code>: <message>"`, content-free) or a local failure cause
+    /// (`"no-response"`, `"invalid-response"`). Never carries pane ids,
+    /// socket paths, or response bodies.
+    typealias LatencyReport = @Sendable (_ method: String, _ latencySeconds: TimeInterval, _ success: Bool, _ detail: String) -> Void
+
     private let timeout: TimeInterval
     private let uptimeNanos: @Sendable () -> UInt64
     private let socketMetadata: @Sendable (String) -> ClaudeSocketGuard.PathMetadata?
+    private let latencyRecorder: LatencyReport?
 
     /// - Parameter socketMetadata: injectable so the ownership refusal is
     ///   testable — a real foreign-uid socket cannot be created from a
     ///   single-user test process.
+    /// - Parameter latencyRecorder: test/field observation of per-request
+    ///   latency and refusal payloads. Nil in production paths that do not
+    ///   record; the client still logs completions and failures loudly
+    ///   through `Log.claudeContext` (never silent — silent failure paths
+    ///   have cost hours of remote probing).
     init(
         timeout: TimeInterval = 0.5,
         uptimeNanos: @escaping @Sendable () -> UInt64 = {
@@ -93,20 +106,27 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
         },
         socketMetadata: @escaping @Sendable (String) -> ClaudeSocketGuard.PathMetadata? = {
             ClaudeSocketGuard.metadata(ofPath: $0)
-        }
+        },
+        latencyRecorder: LatencyReport? = nil
     ) {
         self.timeout = timeout
         self.uptimeNanos = uptimeNanos
         self.socketMetadata = socketMetadata
+        self.latencyRecorder = latencyRecorder
     }
 
     func focusedPane(socketPath: String) async -> HerdrFocusedPane? {
         await Task.detached(priority: .userInitiated) { [self] in
+            let startNanos = uptimeNanos()
             let request = Request(
                 id: Self.requestID(), method: "pane.current", params: [String: String]()
             )
-            guard let line = query(socketPath: socketPath, request: request),
-                  let envelope = try? JSONDecoder().decode(
+            guard let line = query(socketPath: socketPath, request: request) else {
+                noteLatency(method: "pane.current", startNanos: startNanos, success: false, detail: "no-response")
+                Log.claudeContext.info("Herdr focused-pane query abstained: invalid response")
+                return nil
+            }
+            guard let envelope = try? JSONDecoder().decode(
                     Envelope<PaneCurrentResult>.self, from: line
                   ),
                   envelope.id == request.id,
@@ -114,9 +134,12 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
                   result.type == "pane_current",
                   result.pane.focused
             else {
+                let detail = Self.errorPayload(from: line) ?? "invalid-response"
+                noteLatency(method: "pane.current", startNanos: startNanos, success: false, detail: detail)
                 Log.claudeContext.info("Herdr focused-pane query abstained: invalid response")
                 return nil
             }
+            noteLatency(method: "pane.current", startNanos: startNanos, success: true, detail: "ok")
             let claim = result.pane.agentSession.flatMap {
                 $0.kind == "id" ? $0.value : nil
             }
@@ -132,13 +155,18 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
         paneID: String
     ) async -> HerdrPaneForegroundInfo? {
         await Task.detached(priority: .userInitiated) { [self] in
+            let startNanos = uptimeNanos()
             let request = Request(
                 id: Self.requestID(),
                 method: "pane.process_info",
                 params: ["pane_id": paneID]
             )
-            guard let line = query(socketPath: socketPath, request: request),
-                  let envelope = try? JSONDecoder().decode(
+            guard let line = query(socketPath: socketPath, request: request) else {
+                noteLatency(method: "pane.process_info", startNanos: startNanos, success: false, detail: "no-response")
+                Log.claudeContext.info("Herdr foreground-process query abstained: invalid response")
+                return nil
+            }
+            guard let envelope = try? JSONDecoder().decode(
                     Envelope<PaneProcessInfoResult>.self, from: line
                   ),
                   envelope.id == request.id,
@@ -146,9 +174,12 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
                   result.type == "pane_process_info",
                   result.processInfo.paneID == paneID
             else {
+                let detail = Self.errorPayload(from: line) ?? "invalid-response"
+                noteLatency(method: "pane.process_info", startNanos: startNanos, success: false, detail: detail)
                 Log.claudeContext.info("Herdr foreground-process query abstained: invalid response")
                 return nil
             }
+            noteLatency(method: "pane.process_info", startNanos: startNanos, success: true, detail: "ok")
             return HerdrPaneForegroundInfo(
                 shellPID: result.processInfo.shellPID,
                 foregroundProcesses: result.processInfo.foregroundProcesses?.map {
@@ -160,13 +191,18 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
 
     func paneVisibleText(socketPath: String, paneID: String) async -> String? {
         await Task.detached(priority: .userInitiated) { [self] in
+            let startNanos = uptimeNanos()
             let request = Request(
                 id: Self.requestID(),
                 method: "pane.read",
                 params: PaneReadParams(paneID: paneID)
             )
-            guard let line = query(socketPath: socketPath, request: request),
-                  let envelope = try? JSONDecoder().decode(
+            guard let line = query(socketPath: socketPath, request: request) else {
+                noteLatency(method: "pane.read", startNanos: startNanos, success: false, detail: "no-response")
+                Log.claudeContext.info("Herdr pane read abstained: invalid response")
+                return nil
+            }
+            guard let envelope = try? JSONDecoder().decode(
                     Envelope<PaneReadResult>.self, from: line
                   ),
                   envelope.id == request.id,
@@ -177,9 +213,15 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
                   // text must never be attributed to the joined pane.
                   result.read.paneID == paneID
             else {
+                // Never log the raw line here: a pane.read body carries the
+                // user's terminal text. Only the server's error envelope
+                // (code + message, content-free) is safe to record verbatim.
+                let detail = Self.errorPayload(from: line) ?? "invalid-response"
+                noteLatency(method: "pane.read", startNanos: startNanos, success: false, detail: detail)
                 Log.claudeContext.info("Herdr pane read abstained: invalid response")
                 return nil
             }
+            noteLatency(method: "pane.read", startNanos: startNanos, success: true, detail: "ok")
             return result.read.text
         }.value
     }
@@ -191,6 +233,7 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
         ttlMilliseconds: Int?
     ) async -> Bool {
         await Task.detached(priority: .userInitiated) { [self] in
+            let startNanos = uptimeNanos()
             let request = Request(
                 id: Self.requestID(),
                 method: "pane.report_metadata",
@@ -200,16 +243,48 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
                     ttlMilliseconds: ttlMilliseconds
                 )
             )
-            guard let line = query(socketPath: socketPath, request: request),
-                  let envelope = try? JSONDecoder().decode(Envelope<OKResult>.self, from: line),
-                  envelope.id == request.id,
-                  envelope.result?.type == "ok"
-            else {
+            guard let line = query(socketPath: socketPath, request: request) else {
+                noteLatency(method: "pane.report_metadata", startNanos: startNanos, success: false, detail: "no-response")
                 Log.claudeContext.info("Herdr panel metadata report abstained: invalid response")
                 return false
             }
+            guard let envelope = try? JSONDecoder().decode(Envelope<OKResult>.self, from: line),
+                  envelope.id == request.id,
+                  envelope.result?.type == "ok"
+            else {
+                let detail = Self.errorPayload(from: line) ?? "invalid-response"
+                noteLatency(method: "pane.report_metadata", startNanos: startNanos, success: false, detail: detail)
+                Log.claudeContext.info("Herdr panel metadata report abstained: invalid response")
+                return false
+            }
+            noteLatency(method: "pane.report_metadata", startNanos: startNanos, success: true, detail: "ok")
             return true
         }.value
+    }
+
+    /// Record one request's outcome: always to the unified log (loud paths,
+    /// no ids or paths), and additionally to the injected recorder when one
+    /// is set (the lane's timing/Log capture).
+    private func noteLatency(method: String, startNanos: UInt64, success: Bool, detail: String) {
+        let nowNanos = uptimeNanos()
+        let elapsedNanos = nowNanos >= startNanos ? nowNanos - startNanos : 0
+        let elapsedSeconds = TimeInterval(elapsedNanos) / 1_000_000_000
+        let elapsedMs = Int((elapsedSeconds * 1000).rounded())
+        Log.claudeContext.info(
+            "Herdr \(method, privacy: .public) \(success ? "completed" : "abstained", privacy: .public) in \(elapsedMs, privacy: .public) ms (\(detail, privacy: .public))"
+        )
+        latencyRecorder?(method, elapsedSeconds, success, detail)
+    }
+
+    /// The server's error envelope verbatim (`"<code>: <message>"`), or nil
+    /// when the line is not an error envelope at all. Only error envelopes
+    /// are ever recorded: success bodies carry pane ids and terminal text
+    /// and must never reach a log.
+    private static func errorPayload(from line: Data) -> String? {
+        guard let envelope = try? JSONDecoder().decode(ErrorEnvelope.self, from: line) else {
+            return nil
+        }
+        return "\(envelope.error.code): \(envelope.error.message)"
     }
 
     private func query(socketPath: String, request: some Encodable) -> Data? {
@@ -474,6 +549,15 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
     private struct ErrorBody: Decodable {
         var code: String
         var message: String
+    }
+
+    /// Error-only envelope for verbatim refusal logging. Decodes ONLY
+    /// responses carrying `error`; a success body never matches (its `error`
+    /// key is absent and required here), so success payloads cannot leak
+    /// through this path.
+    private struct ErrorEnvelope: Decodable {
+        var id: String
+        var error: ErrorBody
     }
 
     private struct OKResult: Decodable {
