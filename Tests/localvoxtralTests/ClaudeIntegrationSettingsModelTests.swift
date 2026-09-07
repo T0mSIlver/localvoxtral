@@ -2951,6 +2951,55 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     }
 
     @MainActor
+    func testDismissingAHostUpdateClearsItsConfirmationAndRetainedRun() async throws {
+        let registry = try makeRegistry()
+        let sshFS = StubSSHConfigFileSystem()
+        let recorder = SetupFlowRecorder()
+        var script = SetupFlowScript()
+        script.herdr = .init(exitCode: 42, message: "LVX_HERDR_CUSTOMIZED")
+        let service = ClaudeRemoteEnrollmentService(
+            runner: setupFlowRunner(script: script, recorder: recorder),
+            sshConfigFileSystem: sshFS
+        )
+        let listener = StubListener(hosts: registry)
+        listener.isListening = true
+        let model = setupFlowModel(registry: registry, listener: listener, service: service)
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let presentation = try XCTUnwrap(model.presentedPlan)
+        sshFS.configText = ClaudeRemoteEnrollmentService.applySSHConfigSnippet(
+            to: "",
+            snippet: presentation.plan.sshConfigSnippet,
+            hostID: presentation.host.id
+        )
+        model.dismissPlan()
+
+        model.requestPluginUpdate(hostID: presentation.host.id)
+        model.requestHostUpdateRun()
+        await model.confirmEnrollmentAction()
+        XCTAssertNotNil(model.setupRun)
+        XCTAssertNotNil(model.setupManualInstructions)
+
+        model.dismissPluginUpdate()
+
+        XCTAssertNil(model.setupRun)
+        XCTAssertNil(model.setupManualInstructions)
+        XCTAssertNil(model.presentedPluginUpdate)
+
+        model.requestPluginUpdate(hostID: presentation.host.id)
+        model.requestHostUpdateRun()
+        guard case .updateHost? = model.enrollmentConfirmation?.action else {
+            return XCTFail("expected an update-host confirmation")
+        }
+
+        model.dismissPluginUpdate()
+
+        XCTAssertNil(model.enrollmentConfirmation)
+        XCTAssertNil(model.presentedPluginUpdate)
+    }
+
+    @MainActor
     func testRemoveReversesTheMacSideQuietlyOnSuccess() async throws {
         let registry = try makeRegistry()
         let sshFS = StubSSHConfigFileSystem()

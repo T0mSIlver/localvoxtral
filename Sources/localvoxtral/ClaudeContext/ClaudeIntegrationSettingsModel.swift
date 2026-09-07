@@ -1426,13 +1426,21 @@ public final class ClaudeIntegrationSettingsModel {
     static let unknownAliasPlaceholder = "your-ssh-host"
 
     public func dismissPluginUpdate() {
-        if case .updateRemotePlugin? = enrollmentResultsAction {
+        switch enrollmentResultsAction {
+        case .updateRemotePlugin?, .updateHost?:
             enrollmentStepStatuses = []
             enrollmentResultsAction = nil
+        default:
+            break
         }
-        if case .updateRemotePlugin? = enrollmentConfirmation?.action {
+        switch enrollmentConfirmation?.action {
+        case .updateRemotePlugin?, .updateHost?:
             enrollmentConfirmation = nil
+        default:
+            break
         }
+        setupRun = nil
+        setupManualInstructions = nil
         presentedPluginUpdate = nil
     }
 
