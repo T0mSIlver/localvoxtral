@@ -517,9 +517,13 @@ public final class ClaudeIntegrationSettingsModel {
     /// Copies the bundled opencode plugin and edits `tui.json`. Nil disables
     /// the row's actions.
     private let opencodeService: @Sendable () -> OpencodePluginInstallService?
-    /// Whether herdr is present: a binary on this Mac, or any live session
-    /// reporting a herdr pane. Injected so tests pin row visibility without
-    /// a herdr install.
+    /// Whether a herdr binary is on this Mac's PATH. Synchronous and fast,
+    /// so the row's visibility is reserved at construction instead of
+    /// popping in after the first async refresh.
+    private let herdrBinaryAvailable: @Sendable () -> Bool
+    /// Whether any live session — local or remote — reports a herdr pane.
+    /// Refreshed with the rest of the pane. Injected so tests pin row
+    /// visibility without a herdr install.
     private let herdrPresenceReport: @Sendable () -> Bool
     private let listener: (any ClaudeRemoteListenerControlling)?
     private let pluginService: @Sendable () -> any ClaudePluginInstalling
@@ -623,6 +627,7 @@ public final class ClaudeIntegrationSettingsModel {
         statuslineService: @escaping @Sendable () -> ClaudeStatuslineInstallService? = { nil },
         statuslineHookCommand: @escaping @Sendable () -> String? = { nil },
         opencodeService: @escaping @Sendable () -> OpencodePluginInstallService? = { nil },
+        herdrBinaryAvailable: @escaping @Sendable () -> Bool = { false },
         herdrPresenceReport: @escaping @Sendable () -> Bool = { false }
     ) {
         self.loginShell = loginShell
@@ -633,7 +638,13 @@ public final class ClaudeIntegrationSettingsModel {
         self.statuslineService = statuslineService
         self.statuslineHookCommand = statuslineHookCommand
         self.opencodeService = opencodeService
+        self.herdrBinaryAvailable = herdrBinaryAvailable
         self.herdrPresenceReport = herdrPresenceReport
+        // m8: reserve the herdr row's visibility synchronously — the binary
+        // check is a fast PATH scan, so herdr machines paint the row on
+        // first paint instead of gaining it one beat late. The session half
+        // still refreshes below.
+        isHerdrDetected = herdrBinaryAvailable()
         self.registry = registry
         self.listener = listener
         self.pluginService = pluginService
@@ -1121,7 +1132,7 @@ public final class ClaudeIntegrationSettingsModel {
         )
         refreshStatuslineStatus()
         refreshOpencodeStatus()
-        isHerdrDetected = herdrPresenceReport()
+        isHerdrDetected = herdrBinaryAvailable() || herdrPresenceReport()
     }
 
     // MARK: Local plugin status

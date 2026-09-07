@@ -16,6 +16,7 @@ final class IntegrationsSettingsModelTests: XCTestCase {
         statusline: ClaudeStatuslineInstallService? = nil,
         statuslineHookCommand: (@Sendable () -> String?)? = nil,
         opencode: OpencodePluginInstallService? = nil,
+        herdrBinaryAvailable: @escaping @Sendable () -> Bool = { false },
         herdrPresenceReport: @escaping @Sendable () -> Bool = { false }
     ) -> ClaudeIntegrationSettingsModel {
         ClaudeIntegrationSettingsModel(
@@ -37,6 +38,7 @@ final class IntegrationsSettingsModelTests: XCTestCase {
             statuslineService: { statusline },
             statuslineHookCommand: statuslineHookCommand ?? { nil },
             opencodeService: { opencode },
+            herdrBinaryAvailable: herdrBinaryAvailable,
             herdrPresenceReport: herdrPresenceReport
         )
     }
@@ -266,6 +268,17 @@ final class IntegrationsSettingsModelTests: XCTestCase {
         XCTAssertFalse(
             model.isHerdrDetected,
             "the view hides the row on this flag: a row that can only say 'not found' is noise"
+        )
+    }
+
+    @MainActor
+    func testHerdrRowReservedAtConstructionWhenBinaryPresent() {
+        // m8: the binary check seeds visibility synchronously — no refresh,
+        // no await — so the row paints on first paint instead of popping in.
+        let model = makeModel(herdrBinaryAvailable: { true })
+        XCTAssertTrue(
+            model.isHerdrDetected,
+            "binary on PATH reserves the row at construction"
         )
     }
 

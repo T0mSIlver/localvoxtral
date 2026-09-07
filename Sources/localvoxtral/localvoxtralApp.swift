@@ -742,10 +742,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     fileSystem: LiveOpencodePluginFileSystem()
                 )
             },
-            // A binary on this Mac, or any live session — local or remote —
-            // reporting a herdr pane. Reads the registry, never the screen.
+            // A binary on this Mac: a synchronous PATH scan, decided at model
+            // construction so the row paints on first paint.
+            herdrBinaryAvailable: {
+                ClaudeHerdrAvailability.isHerdrBinaryAvailable()
+            },
+            // Any live session — local or remote — reporting a herdr pane.
+            // Reads the registry, never the screen. Refreshes with the pane.
             herdrPresenceReport: { [weak claudeSessionRegistry] in
-                if ClaudeHerdrAvailability.isHerdrBinaryAvailable() { return true }
                 guard let sessions = claudeSessionRegistry?.liveSessions() else { return false }
                 return sessions.contains { snapshot in
                     snapshot.process?.herdrPaneID != nil
