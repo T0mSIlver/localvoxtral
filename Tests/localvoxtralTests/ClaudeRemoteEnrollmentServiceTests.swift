@@ -2365,6 +2365,28 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
     }
 
+    func testEnvironmentProbeReadsFirstLVXTTYFramedLineIgnoringOtherLVXPrefixLines() throws {
+        let service = ClaudeRemoteEnrollmentService(
+            runner: { invocation in
+                .init(
+                    exitCode: 0,
+                    message: "LVX_WARNING: authorized access only\n"
+                        + "LVX_NODE=worker-42\n"
+                        + ClaudeRemoteEnrollmentService.envProbeFramePrefix
+                        + (invocation.environment["LC_LVX_TTY"] ?? "")
+                        + "\nLVX_TRAILING: ignored\n"
+                )
+            },
+            environmentProbeValue: { "lvx-probe-valid" }
+        )
+
+        XCTAssertEqual(
+            try service.probeRemoteEnvironment(sshHostAlias: "builder"),
+            .crossed,
+            "a banner line prefixed with LVX_ must not shadow the LVX_TTY: frame"
+        )
+    }
+
     func testEnvironmentProbeDistinguishesMissingSendEnvFromMissingRemoteAcceptEnv() throws {
         let call = Mutex(0)
         let withoutSendEnv = ClaudeRemoteEnrollmentService(

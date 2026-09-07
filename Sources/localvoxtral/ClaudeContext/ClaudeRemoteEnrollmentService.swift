@@ -954,8 +954,8 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                 message: "SSH did not complete the environment check."
             )
         }
-        let echoed = Self.framedProbeAnswer(in: result.message)
-            .flatMap { $0.hasPrefix(Self.envProbeFramePrefix) ? String($0.dropFirst(Self.envProbeFramePrefix.count)) : nil }
+        let echoed = Self.framedProbeAnswer(in: result.message, prefix: Self.envProbeFramePrefix)
+            .map { String($0.dropFirst(Self.envProbeFramePrefix.count)) }
         guard echoed == probe else {
             let configResult: RunResult
             do {
@@ -1488,11 +1488,11 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     }
 
     /// The first framed line, or nil when the probe never spoke.
-    static func framedProbeAnswer(in output: String) -> String? {
+    static func framedProbeAnswer(in output: String, prefix: String = probeFramePrefix) -> String? {
         output
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
-            .first { $0.hasPrefix(probeFramePrefix) }
+            .first { $0.hasPrefix(prefix) }
     }
 
     /// The local half of the tunnel verdict, as its own value.
