@@ -99,9 +99,15 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
     func testWrapperAroundOurBinaryIsStillForeign() throws {
         // The README's composition recipe wraps our binary inside the user's
         // own script. That script is theirs: re-applying must not replace it
-        // with a bare command.
+        // with a bare command. m5: the fixture must actually mention our
+        // binary and flag (a comment noting what the wrapper calls) — the old
+        // fixture contained neither string, so it passed trivially and could
+        // not regress the substring match.
         let existing = try settingsJSON([
-            "statusLine": ["type": "command", "command": "sh ~/.claude/combined.sh"],
+            "statusLine": [
+                "type": "command",
+                "command": "sh ~/.claude/combined.sh # wraps localvoxtral-claude-hook --statusline",
+            ],
         ])
         XCTAssertEqual(
             ClaudeStatuslineInstallService.deriveStatus(settingsData: existing), .foreign
