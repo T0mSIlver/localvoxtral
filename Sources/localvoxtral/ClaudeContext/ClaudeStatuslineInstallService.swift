@@ -281,6 +281,9 @@ public struct ClaudeStatuslineInstallService: Sendable {
     public enum Removal: Sendable, Equatable {
         case deleteFile
         case rewrite(Data)
+        /// Nothing of ours is present: the caller must not touch the file
+        /// (no mtime churn, no last-writer-wins window).
+        case noChange
     }
 
     public static func removalSettingsData(existing: Data) -> Removal? {
@@ -288,10 +291,10 @@ public struct ClaudeStatuslineInstallService: Sendable {
             let json = try? JSONSerialization.jsonObject(with: existing),
             let settings = json as? [String: Any]
         else { return nil }
-        guard let entry = settings[settingsKey] else { return .rewrite(existing) }
+        guard let entry = settings[settingsKey] else { return .noChange }
         guard
             let command = statuslineCommand(from: entry),
-            isCanonical(command: command)
+            Self.isCanonical(command: command)
         else { return nil }
         var remaining = settings
         remaining.removeValue(forKey: settingsKey)
@@ -320,6 +323,7 @@ public struct ClaudeStatuslineInstallService: Sendable {
             switch removal {
             case .deleteFile: return .delete
             case .rewrite(let data): return .rewrite(data)
+            case .noChange: return .noChange
             }
         }
     }
@@ -328,6 +332,7 @@ public struct ClaudeStatuslineInstallService: Sendable {
         /// Write these bytes (nil = file already in the desired state).
         case rewrite(Data?)
         case delete
+        case noChange
     }
 
     private func write(_ transform: (Data?) throws -> WriteOutcome) throws {
@@ -358,6 +363,8 @@ public struct ClaudeStatuslineInstallService: Sendable {
                 try fileSystem.atomicWrite(data, permissions: state.permissions ?? 0o600)
             case .delete:
                 try fileSystem.deleteFile()
+            case .noChange:
+                return
             }
             Log.claudeContext.info("Claude status line edit completed")
         } catch {

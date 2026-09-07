@@ -422,6 +422,21 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
         XCTAssertFalse(fs.deleted)
     }
 
+    func testRemoveWithNoEntryWritesNothing() throws {
+        // m3: a file that never had our entry must not be rewritten with
+        // byte-identical content — no mtime churn, no race window.
+        let existing = try settingsJSON(["theme": "dark"])
+        XCTAssertEqual(
+            ClaudeStatuslineInstallService.removalSettingsData(existing: existing), .noChange
+        )
+        let fs = StubStatuslineFS(state: ClaudeStatuslineState(
+            fileExists: true, data: existing, permissions: 0o644
+        ))
+        XCTAssertNoThrow(try ClaudeStatuslineInstallService(fileSystem: fs).remove())
+        XCTAssertNil(fs.written, "no write call when the entry is absent")
+        XCTAssertFalse(fs.deleted)
+    }
+
     func testRemoveOnAnAbsentFileIsANoOp() throws {
         let fs = StubStatuslineFS(state: ClaudeStatuslineState(fileExists: false))
         try ClaudeStatuslineInstallService(fileSystem: fs).remove()

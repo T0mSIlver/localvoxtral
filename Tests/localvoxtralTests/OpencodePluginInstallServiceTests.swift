@@ -328,6 +328,22 @@ final class OpencodePluginInstallServiceTests: XCTestCase {
         XCTAssertFalse(fs.deletedTUI)
     }
 
+    func testRemoveWithNoEntryWritesNothing() throws {
+        // m3: a tui.json that never listed our entry must not be rewritten
+        // with byte-identical content.
+        let tui = try tuiJSON(["theme": "dark"])
+        XCTAssertEqual(
+            OpencodePluginInstallService.tuiByRemovingPlugin(from: tui), .noChange
+        )
+        let (service, fs) = service(state: OpencodePluginState(
+            tuiFileExists: true, tuiData: tui, tuiPermissions: 0o644
+        ))
+        XCTAssertNoThrow(try service.remove())
+        XCTAssertNil(fs.writtenTUI, "no write call when the entry is absent")
+        XCTAssertFalse(fs.deletedTUI)
+        XCTAssertFalse(fs.deletedPlugin)
+    }
+
     func testRemoveOnNothingInstalledIsANoOp() throws {
         let (service, fs) = service(state: OpencodePluginState())
         try service.remove()

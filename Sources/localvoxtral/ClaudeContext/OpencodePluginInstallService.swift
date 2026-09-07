@@ -143,12 +143,13 @@ public struct OpencodePluginInstallService: Sendable {
     }
 
     /// `tui.json` bytes with our entry removed, or `.deleteFile` when nothing
-    /// would remain. Nil when the existing content refuses. Removing our
-    /// entry from a file that never had one rewrites it unchanged — callers
-    /// that need a no-op check `tuiListsPlugin` first.
+    /// would remain. `.noChange` when our entry was never there (no write).
+    /// Nil when the existing content refuses.
     public enum TUIRemoval: Sendable, Equatable {
         case deleteFile
         case rewrite(Data)
+        /// Our entry is absent: the caller must not rewrite the file.
+        case noChange
     }
 
     public static func tuiByRemovingPlugin(from existing: Data) -> TUIRemoval? {
@@ -156,7 +157,7 @@ public struct OpencodePluginInstallService: Sendable {
             let json = try? JSONSerialization.jsonObject(with: existing),
             let tui = json as? [String: Any]
         else { return nil }
-        guard let entries = tui[tuiPluginKey] else { return .rewrite(existing) }
+        guard let entries = tui[tuiPluginKey] else { return .noChange }
         // m1: a null entry is "no entry" — drop the key, preserving the rest.
         if entries is NSNull {
             var remaining = tui
@@ -242,6 +243,7 @@ public struct OpencodePluginInstallService: Sendable {
             case .deleteFile: try fileSystem.deleteTUI()
             case .rewrite(let data):
                 try fileSystem.atomicWriteTUI(data, permissions: state.tuiPermissions ?? 0o600)
+            case .noChange: break
             }
         }
         if state.pluginFileExists {
