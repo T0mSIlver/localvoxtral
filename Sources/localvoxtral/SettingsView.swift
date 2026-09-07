@@ -1352,7 +1352,7 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                             }
                         }
                         Spacer()
-                        Button("Update Plugin…") { model.requestPluginUpdate(hostID: host.id) }
+                        Button("Update Host…") { model.requestPluginUpdate(hostID: host.id) }
                             .controlSize(.small)
                             .disabled(model.isEnrollmentBusy)
                         Button("Rotate Token") { Task { await model.rotate(hostID: host.id) } }
