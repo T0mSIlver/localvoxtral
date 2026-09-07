@@ -346,6 +346,7 @@ herdr_cli() {
 
 record_pane_snapshot() {
   local dir="$1" event="$2" pane="${3:-}"
+  [[ -S "$HERDR_SOCKET_PATH" ]] || return 0
   {
     printf '\n[%s] event=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" "$event"
     printf 'current='; herdr_cli pane current 2>&1 || true
@@ -527,28 +528,37 @@ start_surface() {
   record_pane_snapshot "$dir" "surface-$name-started" "$pane"
 }
 
-# Print the focused pane id once it is stable: UNCHANGED across two reads a
+# Print the focused pane id once it is stable: UNCHANGED across three reads a
 # second apart AND still resolving via `pane get`. Dies loudly past the
 # readiness timeout. Callers that act on the id (report-agent) must still
 # handle it dying afterwards — settle narrows the race, it does not close it.
 settle_focused_pane() {
-  local dir="$1" pane_id="" previous="" waited=0
+  local dir="$1" pane_id="" candidate="" stable_reads=0 waited=0
   while true; do
     # `|| true`: before a pane exists, `pane current` answers with a
     # pane_not_found ERROR and a non-zero status, which `pipefail` would
     # otherwise turn into an abort on the very first poll.
     pane_id="$({ herdr_cli pane current 2>/dev/null || true; } \
       | sed -n 's/.*"pane_id":"\([^"]*\)".*/\1/p' | head -1)"
-    if [[ -n "$pane_id" && "$pane_id" == "$previous" ]] \
-      && herdr_cli pane get "$pane_id" >/dev/null 2>&1; then
-      log "focused pane: $pane_id"
-      printf '%s\n' "$pane_id"
-      return 0
+    if [[ -n "$pane_id" ]] && herdr_cli pane get "$pane_id" >/dev/null 2>&1; then
+      if [[ "$pane_id" == "$candidate" ]]; then
+        stable_reads=$((stable_reads + 1))
+      else
+        candidate="$pane_id"
+        stable_reads=1
+      fi
+      if (( stable_reads >= 3 )); then
+        log "focused pane: $pane_id (stable across $stable_reads reads)"
+        printf '%s\n' "$pane_id"
+        return 0
+      fi
+    else
+      candidate=""
+      stable_reads=0
     fi
     if (( waited >= READY_TIMEOUT_SECONDS )); then
       die "herdr never settled on a focused pane; see $dir/surface-primary.log and $dir/server.log"
     fi
-    previous="$pane_id"
     sleep 1
     waited=$((waited + 1))
   done
@@ -632,6 +642,7 @@ EOF
 
   herdr_cli server </dev/null >"$dir/server.log" 2>&1 &
   echo $! > "$dir/server.child.pid"
+
   local waited=0
   until [[ -S "$HERDR_SOCKET_PATH" ]]; do
     (( waited < READY_TIMEOUT_SECONDS )) || die "herdr server never created $HERDR_SOCKET_PATH; see $dir/server.log"
@@ -640,18 +651,15 @@ EOF
   done
   log "herdr server listening on $HERDR_SOCKET_PATH"
 
-  # The whole-view client is what CREATES the first pane, so the pane the
-  # lane binds to and the surface that renders it are the same real client.
+  # The whole-view client creates the pane whose rendered output the lane
+  # reads. Require its id to be unchanged across three reads and to resolve.
   : > "$dir/surface.pids"
   start_surface "$dir" "primary" "app"
 
-  # The pane the lane binds to must be the one the CLIENT owns, not herdr's
-  # transient startup pane. A headless server spawns a pane of its own before
-  # any client connects; the whole-view client then retires it and creates its
-  # own in a new workspace. Reading `pane current` once can latch that dying
-  # pane, and every later request answers `pane_not_found` for it (seen on the
-  # CI runner, where the timing differed from the dev box). So: require the id
-  # to be UNCHANGED across two reads a second apart AND to still resolve.
+  # The failed runner artifact measured the provisional w1:p1 surviving the old
+  # two-read check, then disappearing 50–200 ms later as w2:p1 arrived. The
+  # third one-second sample rejects that measured transient without changing
+  # any token TTL or failure timeout.
   #
   # Even that is not airtight: the settled pane can still die between the
   # settle and the `report-agent` below (seen on the CI runner 2026-09-07 as

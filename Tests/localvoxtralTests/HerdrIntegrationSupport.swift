@@ -164,6 +164,23 @@ final class HerdrSurfaceLog: @unchecked Sendable {
         text(fromOffset: 0)
     }
 
+    /// Reconstruct the last fixed-size terminal frame from the typescript.
+    /// Herdr redraws with absolute CSI cursor positions, so this small parser
+    /// needs only the cursor and erase operations emitted by its renderer.
+    func lastRenderedFrame(rows: Int = 45, columns: Int = 130) -> String? {
+        guard let data = FileManager.default.contents(atPath: path),
+              let raw = String(data: data, encoding: .utf8)
+        else { return nil }
+        return TerminalDiagnosticFrame(raw: raw, rows: rows, columns: columns).text
+    }
+
+    func observedSidebarWidth(rows: Int = 45, columns: Int = 130) -> Int? {
+        guard let data = FileManager.default.contents(atPath: path),
+              let raw = String(data: data, encoding: .utf8)
+        else { return nil }
+        return TerminalDiagnosticFrame(raw: raw, rows: rows, columns: columns).sidebarWidth
+    }
+
     private func text(fromOffset offset: UInt64) -> String? {
         guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
         defer { try? handle.close() }
@@ -217,6 +234,153 @@ final class HerdrSurfaceLog: @unchecked Sendable {
             }
         }
         return String(output)
+    }
+}
+
+private struct TerminalDiagnosticFrame {
+    private(set) var cells: [[Character]]
+    private var row = 0
+    private var column = 0
+    private var savedRow = 0
+    private var savedColumn = 0
+    private let rows: Int
+    private let columns: Int
+
+    init(raw: String, rows: Int, columns: Int) {
+        self.rows = rows
+        self.columns = columns
+        self.cells = Array(
+            repeating: Array(repeating: " ", count: columns), count: rows
+        )
+        consume(Array(raw))
+    }
+
+    var text: String {
+        cells.map { String($0).replacingOccurrences(of: #"\s+$"#, with: "", options: .regularExpression) }
+            .joined(separator: "\n")
+    }
+
+    /// The most common rendered vertical divider column, in terminal cells.
+    /// The desktop layout paints `│` at column 26, so its sidebar is 26 cells.
+    var sidebarWidth: Int? {
+        var counts: [Int: Int] = [:]
+        for line in cells {
+            for (index, cell) in line.enumerated() where cell == "│" {
+                counts[index + 1, default: 0] += 1
+            }
+        }
+        return counts.max { lhs, rhs in lhs.value < rhs.value }?.key
+    }
+
+    private mutating func consume(_ characters: [Character]) {
+        var index = 0
+        while index < characters.count {
+            let character = characters[index]
+            if character == "\u{1B}" {
+                index += 1
+                guard index < characters.count else { break }
+                if characters[index] == "[" {
+                    index = consumeCSI(characters, from: index + 1)
+                } else if characters[index] == "]" {
+                    index = consumeOSC(characters, from: index + 1)
+                } else if characters[index] == "7" {
+                    savedRow = row
+                    savedColumn = column
+                    index += 1
+                } else if characters[index] == "8" {
+                    row = savedRow
+                    column = savedColumn
+                    index += 1
+                } else {
+                    index += 1
+                }
+                continue
+            }
+            switch character {
+            case "\r": column = 0
+            case "\n": row = min(row + 1, rows - 1)
+            case "\u{08}": column = max(column - 1, 0)
+            case "\t": column = min(((column / 8) + 1) * 8, columns - 1)
+            default:
+                if character.unicodeScalars.allSatisfy({ $0.value >= 32 }) {
+                    if row >= 0, row < rows, column >= 0, column < columns {
+                        cells[row][column] = character
+                    }
+                    column = min(column + 1, columns)
+                }
+            }
+            index += 1
+        }
+    }
+
+    private mutating func consumeCSI(_ characters: [Character], from start: Int) -> Int {
+        var index = start
+        var body = ""
+        while index < characters.count {
+            guard let scalar = characters[index].unicodeScalars.first else {
+                index += 1
+                continue
+            }
+            if (0x40...0x7E).contains(scalar.value) {
+                applyCSI(final: characters[index], body: body)
+                return index + 1
+            }
+            body.append(characters[index])
+            index += 1
+        }
+        return index
+    }
+
+    private mutating func consumeOSC(_ characters: [Character], from start: Int) -> Int {
+        var index = start
+        while index < characters.count {
+            if characters[index] == "\u{07}" { return index + 1 }
+            if characters[index] == "\u{1B}",
+               index + 1 < characters.count,
+               characters[index + 1] == "\\"
+            {
+                return index + 2
+            }
+            index += 1
+        }
+        return index
+    }
+
+    private mutating func applyCSI(final: Character, body: String) {
+        let values = body
+            .trimmingCharacters(in: CharacterSet(charactersIn: "?<>"))
+            .split(separator: ";", omittingEmptySubsequences: false)
+            .map { Int($0) ?? 0 }
+        let first = max(values.first ?? 1, 1)
+        switch final {
+        case "H", "f":
+            row = min(max((values.first ?? 1) - 1, 0), rows - 1)
+            column = min(max((values.dropFirst().first ?? 1) - 1, 0), columns - 1)
+        case "A": row = max(row - first, 0)
+        case "B": row = min(row + first, rows - 1)
+        case "C": column = min(column + first, columns - 1)
+        case "D": column = max(column - first, 0)
+        case "G": column = min(first - 1, columns - 1)
+        case "d": row = min(first - 1, rows - 1)
+        case "J" where values.first == 2 || values.first == 3:
+            cells = Array(repeating: Array(repeating: " ", count: columns), count: rows)
+        case "K":
+            let mode = values.first ?? 0
+            if mode == 0 {
+                for cell in column..<columns { cells[row][cell] = " " }
+            } else if mode == 1 {
+                for cell in 0...min(column, columns - 1) { cells[row][cell] = " " }
+            } else if mode == 2 {
+                cells[row] = Array(repeating: " ", count: columns)
+            }
+        case "s":
+            savedRow = row
+            savedColumn = column
+        case "u":
+            row = savedRow
+            column = savedColumn
+        default: break
+        }
     }
 }
 
@@ -383,6 +547,16 @@ final class HerdrLiveFixture {
             ) {
                 guard try item.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true
                 else { continue }
+                let safeNames: Set<String> = [
+                    "environment.txt", "fixture.json", "herdr.bin", "pane-lifecycle.log",
+                    "report-agent.err", "report-agent.out", "server.log", "sshd.log",
+                    "sshd.out", "sshd.port",
+                ]
+                let isSurfaceEvidence = item.lastPathComponent.hasPrefix("surface-")
+                    && (item.pathExtension == "log" || item.pathExtension == "geometry")
+                guard safeNames.contains(item.lastPathComponent) || isSurfaceEvidence else {
+                    continue
+                }
                 try fileManager.copyItem(
                     at: item,
                     to: destination.appendingPathComponent(item.lastPathComponent)
@@ -395,10 +569,26 @@ final class HerdrLiveFixture {
                     atomically: true,
                     encoding: .utf8
                 )
+                let frame = surface.lastRenderedFrame() ?? "<frame unavailable>"
+                try frame.write(
+                    to: destination.appendingPathComponent("surface-\(name).last-frame.txt"),
+                    atomically: true,
+                    encoding: .utf8
+                )
             }
             print("[herdr-fixture] diagnostics: \(destination.path)")
         } catch {
             print("[herdr-fixture] WARNING: could not preserve diagnostics: \(error)")
+        }
+    }
+
+    func dumpSurfaceFrames(reason: String) {
+        print("[herdr-fixture] SURFACE DUMP: \(reason)")
+        for name in surfaces.keys.sorted() {
+            let surface = surfaces[name]!
+            let width = surface.observedSidebarWidth().map(String.init) ?? "not-rendered"
+            print("[herdr-fixture] surface=\(name) observed_sidebar_width=\(width)")
+            print(surface.lastRenderedFrame() ?? "<frame unavailable>")
         }
     }
 

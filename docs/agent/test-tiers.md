@@ -230,6 +230,19 @@ prevent. Not required for UI, insertion, audio, or model work. Either way the
 PR's Proof section carries the scoreboard or a one-line justification for
 skipping.
 
+The fixture records the runner account, herdr binary/version, inherited and
+isolated socket settings, terminal variables, requested and actual pty size,
+rendered sidebar width, sshd port, forward sockets, and pane lifecycle. CI
+uploads those files as `herdr-lane-diagnostics` even when the lane passes. The
+artifact deliberately excludes the fixture's ephemeral host and user keys.
+On 2026-09-07 this evidence exposed an account-sensitive startup race: the
+`tom` launchd runner kept provisional `w1:p1` alive across two one-second
+reads, then replaced it with `w2:p1` 50–200 ms after readiness; the `builder`
+SSH account reached `w2:p1` before the same check. Both used herdr 0.8.2,
+45×130 ptys, and a rendered 26-cell sidebar. Pane readiness therefore needs
+three consecutive resolving samples. Do not trade that condition for a longer
+token TTL or surface timeout; neither participates in this race.
+
 Worker builds on the Mac must not overlap the lane. Measured 2026-09-07 on
 the build host (per-request latency tap in `HerdrSocketClient`, 10 lane runs
 idle + 10 with one concurrent `swift build`): idle 10/10 green with

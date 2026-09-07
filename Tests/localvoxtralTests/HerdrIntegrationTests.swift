@@ -61,6 +61,9 @@ final class HerdrIntegrationTests: XCTestCase {
                 + "refresh_seconds=\(HerdrPanelMicIndicator.refreshInterval) "
                 + "surface_wait_seconds=20"
         )
+        let sidebarWidth = fixture.primarySurface.observedSidebarWidth().map(String.init)
+            ?? "not-rendered"
+        print("[herdr-fixture] sidebar.observed_width=\(sidebarWidth) source=rendered-frame")
     }
 
     override func tearDown() async throws {
@@ -101,6 +104,11 @@ final class HerdrIntegrationTests: XCTestCase {
                 "the app's ssh -L forward to \(fixture.info.alias) never became dialable"
             )
         }
+        print(
+            "[herdr-fixture] ssh.forward alias=\(fixture.info.alias) "
+                + "local_socket=\(handle.localSocketPath) "
+                + "remote_socket=\(fixture.info.socketPath)"
+        )
         return (service, handle)
     }
 
@@ -145,6 +153,7 @@ final class HerdrIntegrationTests: XCTestCase {
         while true {
             if surface.textSinceMark()?.contains(token) == true { return }
             guard Date() < deadline else {
+                fixture.dumpSurfaceFrames(reason: "timed out waiting for \(token)")
                 throw HerdrLaneError.timedOut("the surface to paint \(token)")
             }
             if Date() >= nextRefresh {
@@ -154,6 +163,9 @@ final class HerdrIntegrationTests: XCTestCase {
                     "re-stamping the panel token was refused; the wait below would "
                         + "then be measuring an expired token, not a surface that will not paint"
                 )
+                if !refreshed {
+                    fixture.dumpSurfaceFrames(reason: "panel token refresh was refused")
+                }
                 nextRefresh = Date().addingTimeInterval(HerdrPanelMicIndicator.refreshInterval)
             }
             try? await Task.sleep(for: .milliseconds(100))
