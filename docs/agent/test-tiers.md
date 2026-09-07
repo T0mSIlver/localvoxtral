@@ -255,7 +255,10 @@ path is NOT slow under load (36× inside the 5 s timeout); the read lags the
 server's ack under CPU contention. The lane therefore polls for the clear
 (bounded below the 8 s token TTL, so a truly lost clear still fails) — and a
 red lane with worker builds running beside it means re-run the lane alone
-before debugging the diff.
+before debugging the diff. The mic-indicator lifecycle test holds its injected
+first refresh until that deliberate clear is observed; accelerating the
+refresh onto a 50 ms wall-clock sleep makes clear-versus-refresh ordering a
+runner scheduler race instead of testing the four-second production cadence.
 
 The speechd live-model lane follows the same owner constraint: it runs only for
 `scripts/ci/speechd-lane-filter.sh` matches or `[run-speechd-integration]`.
