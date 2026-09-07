@@ -8,7 +8,7 @@ enum SettingsTab: String, Hashable, CaseIterable, Sendable {
     case endpoints
     case dictation
     case textProcessing
-    case context
+    case integrations
     case about
 }
 
@@ -130,8 +130,8 @@ struct SettingsView: View {
                     settings: settings,
                     viewModel: viewModel
                 )
-            case .context:
-                ContextSettingsPane(
+            case .integrations:
+                IntegrationsSettingsPane(
                     settings: settings,
                     viewModel: viewModel
                 )
@@ -857,14 +857,14 @@ private struct TextProcessingSettingsPane: View {
 }
 
 /// Everything that lets something OTHER than your spoken words reach the
-/// polisher, plus the Claude Code plumbing those sources depend on.
+/// polisher, plus one row per harness that feeds it.
 ///
 /// Split out of Text Processing (2026-08-04): these are consent-grade toggles
 /// whose help text is the consent, and they were being read past as formatting
-/// options next to "Exact match". The three groups here are STATIC — a toggle
+/// options next to "Exact match". The four groups here are STATIC — a toggle
 /// switches a group's content, never the number or identity of the groups
 /// (owner rule, 2026-07-04).
-private struct ContextSettingsPane: View {
+private struct IntegrationsSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
 
@@ -883,7 +883,7 @@ private struct ContextSettingsPane: View {
     }
 
     var body: some View {
-        SettingsPage(tab: .context) {
+        SettingsPage(tab: .integrations) {
             SettingsGroup(title: "Polish context") {
                 if !isLLMPolishingReachable {
                     SettingsAvailabilityCard(

@@ -7,7 +7,7 @@ set -euo pipefail
 #   assets/settings-endpoints.png          (Settings > Endpoints)
 #   assets/settings-dictation.png          (Settings > Dictation)
 #   assets/settings-text-processing.png    (Settings > Text Processing)
-#   assets/settings-context.png            (Settings > Context)
+#   assets/settings-integrations.png       (Settings > Integrations)
 #   assets/settings-enrollment.png         (the remote-SSH enrollment sheet)
 #
 # settings-enrollment.png is deliberately NOT in the README table — it exists
@@ -42,12 +42,12 @@ BUNDLE_ID="com.localvoxtral.app"
 PERSISTENT_DEFAULTS_BACKUP="${HOME}/.localvoxtral-capture-assets.pre.plist"
 PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN="${PERSISTENT_DEFAULTS_BACKUP}.had-domain"
 ASSETS_DIR="assets"
-TAB_NAMES=("General" "Endpoints" "Dictation" "Text Processing" "Context")
+TAB_NAMES=("General" "Endpoints" "Dictation" "Text Processing" "Integrations")
 # SettingsTab raw values — the sidebar rows carry them as AXIdentifiers
 # (settings.tab.<raw>). SettingsTabTests pins both the raw values and the
 # identifier scheme.
-TAB_IDS=("general" "endpoints" "dictation" "textProcessing" "context")
-TAB_FILES=("settings-general.png" "settings-endpoints.png" "settings-dictation.png" "settings-text-processing.png" "settings-context.png")
+TAB_IDS=("general" "endpoints" "dictation" "textProcessing" "integrations")
+TAB_FILES=("settings-general.png" "settings-endpoints.png" "settings-dictation.png" "settings-text-processing.png" "settings-integrations.png")
 # The three arrays are indexed together below; a mismatch would silently capture
 # one tab's window into another tab's file.
 if (( ${#TAB_NAMES[@]} != ${#TAB_IDS[@]} || ${#TAB_NAMES[@]} != ${#TAB_FILES[@]} )); then
@@ -322,9 +322,9 @@ for i in "${!TAB_NAMES[@]}"; do
 done
 
 # --- 3. enrollment sheet ------------------------------------------------------
-# A second launch, on purpose: the preview default is read ONCE when the Context
+# A second launch, on purpose: the preview default is read ONCE when the Integrations
 # pane is constructed, so arming it before the tab loop would have parked the
-# sheet on top of settings-context.png.
+# sheet on top of settings-integrations.png.
 echo "Capturing $ASSETS_DIR/settings-enrollment.png"
 osascript -e "tell application \"$APP_PROCESS\" to quit" >/dev/null 2>&1 || true
 for _ in $(seq 1 10); do pgrep -xq "$APP_PROCESS" || break; sleep 0.5; done
@@ -352,7 +352,7 @@ ENROLLMENT_SHOT="$ASSETS_DIR/settings-enrollment.png"
 rm -f "$ENROLLMENT_SHOT"
 if SETTINGS_ID="$(wait_for_window "$APP_PID" 0 10)"; then
   sleep 1
-  if swift "$AX_PROBE" "$APP_PID" --press "settings.tab.context" --title "Context" \
+  if swift "$AX_PROBE" "$APP_PID" --press "settings.tab.integrations" --title "Integrations" \
        --timeout 10 --dump-on-fail; then
     # The sheet is its own CGWindow and animates in, so wait for a layer-0
     # window that is NOT the settings window.
@@ -363,7 +363,7 @@ if SETTINGS_ID="$(wait_for_window "$APP_PID" 0 10)"; then
       echo "ERROR: the enrollment sheet never appeared." >&2
     fi
   else
-    echo "ERROR: could not select the Context tab for the enrollment sheet." >&2
+    echo "ERROR: could not select the Integrations tab for the enrollment sheet." >&2
   fi
 else
   echo "ERROR: Settings never reopened for the enrollment sheet." >&2

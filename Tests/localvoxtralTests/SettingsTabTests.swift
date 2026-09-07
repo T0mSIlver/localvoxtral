@@ -156,6 +156,13 @@ final class SettingsTabTests: XCTestCase {
         return entries
     }
 
+    /// The Context → Integrations rename (this tab never shipped, so the raw
+    /// value moved with it). Pins the owner decision: one row per harness.
+    func testIntegrationsTabChrome() {
+        XCTAssertEqual(SettingsTab.integrations.title, "Integrations")
+        XCTAssertEqual(SettingsTab.integrations.rawValue, "integrations")
+    }
+
     /// Presentation order is a UX contract of its own: the coverage tests
     /// above compare Sets, so an accidental reorder (an alphabetical sort, a
     /// careless merge) would pass every other test while moving rows the user
@@ -163,7 +170,7 @@ final class SettingsTabTests: XCTestCase {
     func testSidebarOrderIsThePresentationContract() {
         XCTAssertEqual(
             SettingsTab.primarySidebarItems,
-            [.general, .dictation, .endpoints, .textProcessing, .context]
+            [.general, .dictation, .endpoints, .textProcessing, .integrations]
         )
         XCTAssertEqual(SettingsTab.metaSidebarItems, [.about])
     }
@@ -173,7 +180,7 @@ final class SettingsTabTests: XCTestCase {
     func testRawValuesAreStable() {
         XCTAssertEqual(
             Set(SettingsTab.allCases.map(\.rawValue)),
-            ["general", "endpoints", "dictation", "textProcessing", "context", "about"]
+            ["general", "endpoints", "dictation", "textProcessing", "integrations", "about"]
         )
     }
 }

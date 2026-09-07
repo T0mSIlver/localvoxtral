@@ -503,14 +503,18 @@ assert_tab "dictation" "Dictation" "Start dictation with"
 assert_tab "textProcessing" "Text Processing" "Replacements"
 # The polish feature toggles live on Text Processing (moved from Endpoints).
 assert_tab "textProcessing" "Text Processing" "Polishing"
-# The consent-grade context sources and the Claude Code / SSH plumbing live on
-# their own pane (moved off Text Processing). Asserted on the remote-hosts row
-# title, which exists nowhere else.
-assert_tab "context" "Context" "Polish context"
-assert_tab "context" "Context" "Remote Claude Code over SSH"
+# The consent-grade context sources and the harness integrations live on their
+# own pane (moved off Text Processing). Asserted on the group titles, which
+# exist nowhere else.
+assert_tab "integrations" "Integrations" "Polish context"
+assert_tab "integrations" "Integrations" "Remote Claude Code over SSH"
 # The cmux join toggle binds $settings.cmuxSurfaceJoinEnabled in its new home;
 # without this, the row could be deleted or rebound with every lane green.
-assert_tab "context" "Context" "Join Claude Code sessions in cmux"
+assert_tab "integrations" "Integrations" "Join Claude Code sessions in cmux"
+# One row per harness: each row's status sentence is asserted by its AX
+# identifier, so a missing row fails here rather than in a screenshot diff.
+assert_tab "integrations" "Integrations" "Status line"
+assert_tab "integrations" "Integrations" "opencode"
 assert_tab "about" "About" "Diagnostics"
 
 # The launch phase forces external URL modes (managed mode now eagerly spawns
