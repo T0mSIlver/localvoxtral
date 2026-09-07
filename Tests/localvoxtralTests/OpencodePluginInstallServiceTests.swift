@@ -60,6 +60,25 @@ final class OpencodePluginInstallServiceTests: XCTestCase {
         XCTAssertEqual(OpencodePluginInstallService.sentence(for: .installed), "Installed.")
     }
 
+    func testStaleBytesReportUpdateAvailable() throws {
+        // m2: v1 installed, v2 bundled with a protocol fix — the row must
+        // say so instead of a flat "Installed.".
+        let tui = try tuiJSON(["plugin": [OpencodePluginInstallService.tuiPluginEntry]])
+        let (service, _) = service(
+            state: OpencodePluginState(
+                pluginFileExists: true,
+                pluginData: Data("v1".utf8),
+                tuiFileExists: true,
+                tuiData: tui
+            ),
+            bundled: Data("v2".utf8)
+        )
+        XCTAssertEqual(service.status(), .updateAvailable)
+        XCTAssertEqual(
+            OpencodePluginInstallService.sentence(for: .updateAvailable), "Update available."
+        )
+    }
+
     func testUnreadablePluginFileIsUnknown() {
         let (service, _) = service(state: OpencodePluginState(
             pluginFileExists: true, pluginData: nil

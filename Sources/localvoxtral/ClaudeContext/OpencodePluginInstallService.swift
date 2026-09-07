@@ -52,6 +52,9 @@ public struct OpencodePluginInstallService: Sendable {
         case installedUnlisted
         /// File copied and listed. Offers Remove (and re-Install).
         case installed
+        /// Copied and listed, but the bytes differ from what this build
+        /// ships: re-pressing Install refreshes them.
+        case updateAvailable
         /// A file exists but cannot be read, or `tui.json` is unparseable.
         /// Reported, never treated as absent.
         case unknown
@@ -63,6 +66,7 @@ public struct OpencodePluginInstallService: Sendable {
         case .notInstalled: return "Not installed."
         case .installedUnlisted: return "Installed, not listed in tui.json."
         case .installed: return "Installed."
+        case .updateAvailable: return "Update available."
         case .unknown: return "Could not read your opencode config."
         }
     }
@@ -77,7 +81,16 @@ public struct OpencodePluginInstallService: Sendable {
             return .installedUnlisted
         }
         switch Self.tuiListsPlugin(in: tuiData) {
-        case .listed: return .installed
+        case .listed:
+            // m2: a shipped protocol fix must surface — byte-compare against
+            // this build's bundle. Without bundled bytes there is nothing to
+            // compare against, so a listed plugin is just installed.
+            if let installed = state.pluginData,
+               let bundled = bundledPluginData(),
+               installed != bundled {
+                return .updateAvailable
+            }
+            return .installed
         case .notListed: return .installedUnlisted
         case .unparseable: return .unknown
         }
