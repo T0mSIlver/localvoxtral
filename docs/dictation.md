@@ -62,7 +62,10 @@ Open **Settings** from the menu bar popover:
 - **Integrations** — what the polisher may see (repo vocabulary, terminal
   screen, Claude Code project files, clipboard), one row per harness with
   in-app setup: the Claude Code plugin and status line, remote SSH hosts, the
-  opencode plugin, and herdr presence
+  opencode plugin, and herdr presence. Each row's help is one line naming
+  what leaves this Mac; the full terms per toggle are in
+  [Terminals & coding agents](coding-agents.md#polish-context-what-each-toggle-sends),
+  and each group's **Learn more** link opens the relevant page
 - **About** — version, link to the repository, and Export Diagnostics
   (writes a redacted local report to the Desktop)
 

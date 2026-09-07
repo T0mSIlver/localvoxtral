@@ -401,9 +401,7 @@ private struct ConnectionSettingsPane: View {
                         .labelsHidden()
                     } footer: {
                         if let managedPolishingModelHelp {
-                            Text(managedPolishingModelHelp)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            SettingsHelpText(managedPolishingModelHelp)
                         }
                     }
 
@@ -837,9 +835,29 @@ private struct TextProcessingSettingsPane: View {
 /// options next to "Exact match". The four groups here are STATIC — a toggle
 /// switches a group's content, never the number or identity of the groups
 /// (owner rule, 2026-07-04).
+///
+/// Copy rule (owner review, 2026-09-07): each toggle's help is ONE line
+/// stating what leaves the machine — the consequence, nothing else. The full
+/// terms live in `docs/coding-agents.md` behind each group's Learn more link.
 private struct IntegrationsSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
+
+    /// Where each group's Learn more link lands. Repo pages, not relative
+    /// links: Settings is a shipped app, not a doc site.
+    private enum LearnMore {
+        static let polishContext = URL(
+            string:
+                "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/coding-agents.md#polish-context-what-each-toggle-sends"
+        )!
+        static let claudeCode = URL(
+            string:
+                "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/claude-code/README.md#which-terminal-am-i-dictating-into"
+        )!
+        static let remoteHosts = URL(
+            string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/remote-claude-context.md"
+        )!
+    }
 
     /// Read ONCE, when the pane is constructed — like every other `debug.`
     /// default, this is a screenshot affordance, not a preference that may
@@ -857,7 +875,7 @@ private struct IntegrationsSettingsPane: View {
 
     var body: some View {
         SettingsPage(tab: .integrations) {
-            SettingsGroup(title: "Polish context") {
+            SettingsGroup(title: "Polish context", learnMoreURL: LearnMore.polishContext) {
                 if !isLLMPolishingReachable {
                     SettingsAvailabilityCard(
                         title: "No Overlay Buffer shortcut",
@@ -869,45 +887,30 @@ private struct IntegrationsSettingsPane: View {
                 }
 
                 Group {
+                    // Each help line names the SEND — the consequence of the
+                    // toggle — and nothing else. The full terms (supported
+                    // terminals, the remote-session clause, the locality
+                    // default and how "Non-local endpoints" relaxes it) are in
+                    // docs/coding-agents.md, one Learn more away.
                     SettingsFieldRow(
                         title: "Repo vocabulary",
-                        help:
-                            "Reads file names from the git repo in your terminal to fix spellings. Only with a polisher on this Mac."
+                        help: "Sends file names from the repo in your terminal to the polisher."
                     ) {
                         Toggle("", isOn: $settings.repoVocabularyEnabled)
                             .labelsHidden()
                     }
 
-                    // Names the send, not just the benefit: when the pane is
-                    // joined to a live Claude Code session, part of what is on
-                    // screen is attached to the prompt verbatim. "Fixes
-                    // spellings" describes only the matcher and would be consent
-                    // obtained for the smaller half.
                     SettingsFieldRow(
                         title: "Claude Code screen",
-                        help:
-                            "Reads names from your Claude Code terminal to fix spellings. When that terminal runs a Claude Code session, part of the text on screen also goes to the polisher. Ghostty, iTerm2, Terminal.app and cmux only. In cmux this needs the cmux join too. Only with a polisher on this Mac."
+                        help: "Sends the text on screen in your Claude Code terminal to the polisher."
                     ) {
                         Toggle("", isOn: $settings.terminalScreenContextEnabled)
                             .labelsHidden()
                     }
 
-                    // Says what is SENT, not just what is gained: this toggle
-                    // attaches file contents and diffs, which the vocabulary
-                    // toggle above does not. Someone who agreed to "spell my
-                    // filenames right" has not thereby agreed to this.
-                    //
-                    // All four things the toggle actually sends are named. The
-                    // prior request is the one a user would least expect from a
-                    // label about "project files", and it is their own typed
-                    // words. The remote clause is worded to describe what the
-                    // SESSION carries, not a second behavior: a remote session
-                    // sends the excerpts its hooks already reported, and never
-                    // causes anything on this machine to be read.
                     SettingsFieldRow(
                         title: "Claude Code project",
-                        help:
-                            "Sends your uncommitted changes, files Claude Code recently touched, and the last request you sent that session to the polisher. For a session on a remote host, only the session request and the short excerpts its hooks report go. No files are read from that host. Needs a Claude Code session in a supported terminal or a Remote Control session in the focused browser tab. Only with a polisher on this Mac."
+                        help: "Sends your uncommitted changes, recent files, and last prompt to the polisher."
                     ) {
                         Toggle("", isOn: $settings.claudeRepoContextEnabled)
                             .labelsHidden()
@@ -915,23 +918,15 @@ private struct IntegrationsSettingsPane: View {
 
                     SettingsFieldRow(
                         title: "Clipboard",
-                        help:
-                            "Checks technical terms against your clipboard. Only with a polisher on this Mac."
+                        help: "Sends a capped excerpt of your clipboard to the polisher."
                     ) {
                         Toggle("", isOn: $settings.polishClipboardContextEnabled)
                             .labelsHidden()
                     }
 
-                    // Names the trade in full: every "local polishing endpoints
-                    // only" promise above is exactly what this toggle relaxes,
-                    // so the help text says which content classes ride and where
-                    // they go. "You trust" puts the judgment where it now lives
-                    // — with the user — instead of implying the app can vouch
-                    // for their endpoint.
                     SettingsFieldRow(
                         title: "Non-local endpoints",
-                        help:
-                            "When off, context only ever goes to a polisher on this Mac. When on, the context enabled above also goes to the polishing endpoint you configured. Enable only for an endpoint you trust, such as a server on your own network."
+                        help: "Also sends the context enabled above to your non-local polishing endpoint."
                     ) {
                         Toggle("", isOn: $settings.polishContextTrustedEndpointEnabled)
                             .labelsHidden()
@@ -945,25 +940,20 @@ private struct IntegrationsSettingsPane: View {
             // the security off switch for an already-bound listener, and
             // plugin/session setup is independent of the current hotkey
             // configuration.
-            SettingsGroup(title: "Claude Code") {
+            SettingsGroup(title: "Claude Code", learnMoreURL: LearnMore.claudeCode) {
                 if let claude = viewModel.claudeIntegrationSettings {
                     ClaudePluginInstallRow(model: claude)
                     ClaudeStatuslineRow(model: claude)
                 }
 
-                // Not in Polish context above: this is a JOIN arm — it decides which session you are dictating
-                // into — and it works with no Overlay Buffer shortcut recorded.
-                //
-                // Names the prerequisite AND the send. cmux exposes no
-                // accessible text, so the socket is the only way to read the
-                // pane the user is dictating into — and that socket refuses
-                // everyone by default, which is a setup step in ANOTHER app
-                // that the user has to know about or this toggle will look
-                // broken.
+                // Not in Polish context above: this is a JOIN arm — it decides
+                // which session you are dictating into — and it works with no
+                // Overlay Buffer shortcut recorded. The two-step cmux setup
+                // (socket password mode, then this password) is in the group's
+                // Learn more page.
                 SettingsFieldRow(
                     title: "Join Claude Code sessions in cmux",
-                    help:
-                        "Uses the cmux automation socket to tell which session you dictate into, and reads that surface as context. In cmux, set Automation socket mode to Password and pick a socket password, then enter the same password below. Works for local surfaces and for sessions opened with cmux ssh."
+                    help: "Reads the cmux pane you dictate into, via cmux's automation socket."
                 ) {
                     Toggle("", isOn: $settings.cmuxSurfaceJoinEnabled)
                         .labelsHidden()
@@ -971,7 +961,8 @@ private struct IntegrationsSettingsPane: View {
 
                 if let claude = viewModel.claudeIntegrationSettings {
                     // Directly under the toggle whose prerequisite it is: the
-                    // help text above tells the user to enter it "below".
+                    // README's two-step setup ends with "enter the same
+                    // password below".
                     ClaudeCmuxPasswordSettingsRow(model: claude)
                 }
             }
@@ -979,7 +970,7 @@ private struct IntegrationsSettingsPane: View {
             // The integration model is built once at launch and cleared only on
             // terminate, so the `if let` is not a mode: in a running app both
             // groups above and this one always have their rows.
-            SettingsGroup(title: "Remote hosts") {
+            SettingsGroup(title: "Remote hosts", learnMoreURL: LearnMore.remoteHosts) {
                 if let claude = viewModel.claudeIntegrationSettings {
                     ClaudeRemoteHostsSettingsRow(model: claude)
                 }
@@ -1014,18 +1005,19 @@ private struct IntegrationsSettingsPane: View {
 /// Install/update the LOCAL Claude Code plugin.
 ///
 /// One explicit action, never anything at launch: putting a plugin into someone
-/// else's Claude Code is their decision. The result is one short line here; the
-/// CLI's actual output goes to an alert and the log (owner rule: no long text in
-/// the pane).
+/// else's Claude Code is their decision. The result is one short line next to
+/// the label; the CLI's actual output goes to an alert and the log (owner
+/// rule: no long text in the pane).
 private struct ClaudePluginInstallRow: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
 
     var body: some View {
-        // Stacked: the row's controls are a full button bar plus a status line,
-        // which would squeeze the label to a three-line stub beside them.
+        // One line (owner review, 2026-09-07): "label + status" leading, the
+        // small buttons in the row's trailing column.
         SettingsFieldRow(
             title: "Plugin on this Mac",
-            layout: .stacked
+            status: model.pluginResult ?? model.localPluginSentence,
+            statusAccessibilityIdentifier: "integrations.claude.plugin.status"
         ) {
             HStack(spacing: 8) {
                 Button("Install or update") {
@@ -1044,12 +1036,7 @@ private struct ClaudePluginInstallRow: View {
                     ProgressView().controlSize(.small)
                 }
             }
-
-            Text(model.pluginResult ?? model.localPluginSentence)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .accessibilityIdentifier("integrations.claude.plugin.status")
+            .controlSize(.small)
         }
     }
 }
@@ -1069,8 +1056,12 @@ private struct ClaudeStatuslineRow: View {
     )!
 
     var body: some View {
-        // Stacked like the plugin row above: button bar plus status line.
-        SettingsFieldRow(title: "Status line", layout: .stacked) {
+        // One line like the plugin row: status leads, small buttons trail.
+        SettingsFieldRow(
+            title: "Status line",
+            status: model.statuslineResult ?? model.statuslineSentence,
+            statusAccessibilityIdentifier: "integrations.claude.statusline.status"
+        ) {
             HStack(spacing: 8) {
                 switch model.statuslineStatus {
                 case .notConfigured:
@@ -1096,12 +1087,7 @@ private struct ClaudeStatuslineRow: View {
                     ProgressView().controlSize(.small)
                 }
             }
-
-            Text(model.statuslineResult ?? model.statuslineSentence)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .accessibilityIdentifier("integrations.claude.statusline.status")
+            .controlSize(.small)
         }
         .sheet(isPresented: $isShowingSetup) {
             ClaudeStatuslineSetupSheet(model: model) { isShowingSetup = false }
@@ -1119,8 +1105,12 @@ private struct OpencodePluginRow: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
 
     var body: some View {
-        // Stacked like the Claude Code rows: button bar plus status line.
-        SettingsFieldRow(title: "opencode", layout: .stacked) {
+        // One line like the Claude Code rows above.
+        SettingsFieldRow(
+            title: "opencode",
+            status: model.opencodeResult ?? model.opencodeSentence,
+            statusAccessibilityIdentifier: "integrations.opencode.status"
+        ) {
             HStack(spacing: 8) {
                 Button("Install") {
                     Task { await model.installOpencodePlugin() }
@@ -1138,12 +1128,7 @@ private struct OpencodePluginRow: View {
                     ProgressView().controlSize(.small)
                 }
             }
-
-            Text(model.opencodeResult ?? model.opencodeSentence)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .accessibilityIdentifier("integrations.opencode.status")
+            .controlSize(.small)
         }
     }
 }
@@ -1152,12 +1137,12 @@ private struct OpencodePluginRow: View {
 /// row is status-only, and hidden entirely until something reports herdr.
 private struct HerdrPresenceRow: View {
     var body: some View {
-        SettingsFieldRow(title: "herdr") {
-            Text(ClaudeIntegrationSettingsModel.herdrDetectedSentence)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .accessibilityIdentifier("integrations.herdr.status")
+        SettingsFieldRow(
+            title: "herdr",
+            status: ClaudeIntegrationSettingsModel.herdrDetectedSentence,
+            statusAccessibilityIdentifier: "integrations.herdr.status"
+        ) {
+            EmptyView()
         }
     }
 }
@@ -1173,8 +1158,7 @@ private struct ClaudeCmuxPasswordSettingsRow: View {
     var body: some View {
         SettingsFieldRow(
             title: "cmux socket password",
-            help:
-                "Stored in your Keychain and sent only to cmux's local socket. Save an empty field to remove it."
+            help: "Stored in your Keychain, sent only to cmux's local socket."
         ) {
             HStack(alignment: .center, spacing: 8) {
                 SecureField("cmux socket password", text: $model.cmuxPasswordField)
@@ -1261,26 +1245,45 @@ private struct ClaudeRemoteHostsSettingsRow: View {
         }
     }
 
-    /// The plain-ssh join's one setup step: two short sentences and a button,
-    /// inside the group that already exists. Nothing is written until the sheet
-    /// has shown the exact text and been confirmed.
+    /// The plain-ssh join's one setup step: title + status leading, the small
+    /// buttons trailing on the TITLE'S line (the outer stack is
+    /// baseline-aligned, so a wrapped status never drags the buttons down).
+    /// The status may wrap to a SECOND line rather than truncate — the
+    /// crossing sentence ("Open a new terminal window for it to take
+    /// effect.") is an instruction, and an instruction must never be
+    /// ellipsized (owner rule, PR #282 review). The two facts the status
+    /// carries (is the export in the rc file; has a new session arrived
+    /// carrying it) stay separate texts for the drills, separated by a
+    /// middle dot. Nothing is written until the sheet has shown the exact
+    /// text and been confirmed.
     @ViewBuilder
     private var shellSetup: some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 1) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("Terminal setup for plain SSH")
                     .font(.callout)
                     .accessibilityIdentifier("claude.remote.shellSetup.title")
-                Text(model.shellSetupStatus.rcSentence)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("claude.remote.shellSetup.rcStatus")
-                Text(model.shellSetupStatus.crossingSentence)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("claude.remote.shellSetup.crossingStatus")
+
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(model.shellSetupStatus.rcSentence)
+                        .accessibilityIdentifier("claude.remote.shellSetup.rcStatus")
+                    Text("·")
+                        .accessibilityHidden(true)
+                        .foregroundStyle(.tertiary)
+                    Text(model.shellSetupStatus.crossingSentence)
+                        .accessibilityIdentifier("claude.remote.shellSetup.crossingStatus")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                // Two lines, not an ellipsis: lineLimit(2) lets the status
+                // wrap, fixedSize(horizontal: false, vertical: true) lets the
+                // row actually grow to the wrapped height inside the stack.
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer()
+
+            Spacer(minLength: 8)
+
             if model.shellSetupStatus.rc == .applied {
                 Button("Remove") { Task { await model.removeShellSetup() } }
                     .controlSize(.small)
@@ -1303,8 +1306,22 @@ private struct ClaudeRemoteHostsSettingsRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(model.hosts) { host in
                     HStack(spacing: 8) {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(host.label).font(.callout)
+                        // One line per host (owner review, 2026-09-07): label +
+                        // "last context" leading, the small buttons trailing.
+                        // The transient post-run status is the only thing that
+                        // ever adds a second line.
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            // Labels run to the registry's 64-character cap:
+                            // one line, truncating from the middle so head and
+                            // tail stay readable, at a priority BELOW the
+                            // status — a long name must never squeeze
+                            // "Last context: …" off its full line.
+                            Text(host.label)
+                                .font(.callout)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .layoutPriority(0)
+
                             // Rendered by the model against its injected clock —
                             // "Last context: 2 min ago" — and refreshed with the
                             // rest of the section. A tunnel that quietly stopped
@@ -1312,35 +1329,49 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                             Text(host.statusText)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            // The one-flow setup's last word for this host,
-                            // written by the run, not computed here.
-                            if let setupStatus = host.setupStatusText {
-                                Text(setupStatus)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
+                                .lineLimit(1)
+                                .layoutPriority(1)
                         }
-                        Spacer()
-                        Button("Update host…") { model.requestPluginUpdate(hostID: host.id) }
-                            .controlSize(.small)
-                            .disabled(model.isEnrollmentBusy)
-                        Button("Rotate token") { Task { await model.rotate(hostID: host.id) } }
-                            .controlSize(.small)
-                        if !host.isRevoked {
-                            Button("Revoke") { Task { await model.revoke(hostID: host.id) } }
+
+                        Spacer(minLength: 8)
+
+                        HStack(spacing: 8) {
+                            Button("Update host…") { model.requestPluginUpdate(hostID: host.id) }
                                 .controlSize(.small)
+                                .disabled(model.isEnrollmentBusy)
+                            Button("Rotate token") { Task { await model.rotate(hostID: host.id) } }
+                                .controlSize(.small)
+                            if !host.isRevoked {
+                                Button("Revoke") { Task { await model.revoke(hostID: host.id) } }
+                                    .controlSize(.small)
+                            }
+                            Button("Remove") { Task { await model.remove(hostID: host.id) } }
+                                .controlSize(.small)
+                                // Removing the row an action is reporting into is
+                                // handled (the late-result guard drops the outcome),
+                                // but offering it mid-run is still offering a race.
+                                .disabled(model.isEnrollmentBusy)
                         }
-                        Button("Remove") { Task { await model.remove(hostID: host.id) } }
-                            .controlSize(.small)
-                            // Removing the row an action is reporting into is
-                            // handled (the late-result guard drops the outcome),
-                            // but offering it mid-run is still offering a race.
-                            .disabled(model.isEnrollmentBusy)
                     }
+
+                    hostSetupStatus(host.setupStatusText)
+
                     persistentForwardRow(for: host)
                     pluginUpdatePanel(for: host)
                 }
             }
+        }
+    }
+
+    /// The one-flow setup's last word for this host, written by the run, not
+    /// computed here. Transient: the row is one line until a run has spoken.
+    @ViewBuilder
+    private func hostSetupStatus(_ text: String?) -> some View {
+        if let text {
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
     }
 
@@ -1516,17 +1547,21 @@ private struct ClaudeRemoteHostsSettingsRow: View {
             Text(model.listenerStatus.text)
                 .font(.caption)
                 .foregroundStyle(model.listenerStatus.isFailure ? .orange : .secondary)
-                .lineLimit(2)
+                .lineLimit(1)
             if model.listenerStatus.isFailure {
                 Button("Retry") { model.retryListener() }
                     .controlSize(.small)
             }
         }
         if let remedy = model.listenerStatus.remedy {
+            // Wrap, never truncate — the remedy is an instruction ("Quit it
+            // and press Retry."), same rule as the shell-setup crossing
+            // sentence (PR #282 review).
             Text(remedy)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(3)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -2046,12 +2081,25 @@ private struct SettingsPage<Content: View>: View {
 
 private struct SettingsGroup<Content: View>: View {
     let title: String
+    /// When set, the group's header row carries ONE "Learn more" link to this
+    /// page (owner review, 2026-09-07): details a row's one-line help can no
+    /// longer carry live in the docs, not repeated under every toggle.
+    var learnMoreURL: URL?
     @ViewBuilder var content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: SettingsLayout.sectionSpacing) {
-            Text(title)
-                .font(.headline)
+            HStack(alignment: .firstTextBaseline) {
+                Text(title)
+                    .font(.headline)
+
+                if let learnMoreURL {
+                    Spacer(minLength: 12)
+                    Link("Learn more", destination: learnMoreURL)
+                        .font(.callout)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 0) {
                 content
@@ -2185,11 +2233,20 @@ private struct SettingsFieldRow<Content: View, Footer: View>: View {
     /// `content`: a row cannot pull a nested view out of its control column, and
     /// the whole point is that this text is NOT in that column.
     ///
-    /// This is the STATIC explanation of what the row does. Anything that
-    /// changes with the row's state — "Not set.", a validation error, "Password
-    /// saved." — belongs in `footer:` instead, which is the same shape of line
-    /// but built from a view rather than a string.
+    /// This is the STATIC explanation of what the row does, ONE line at
+    /// `.callout` (owner review, 2026-09-07: readable size, secondary colour,
+    /// never a wall of text — the details live in the docs behind the group's
+    /// Learn more link). Anything that changes with the row's state — "Not
+    /// set.", a validation error, "Password saved." — belongs in `status` or
+    /// `footer:` instead.
     var help: String?
+    /// One-line dynamic status, rendered next to the label in the LEADING
+    /// column so a row with buttons reads "label + status … [buttons]" on a
+    /// single line instead of stacking them into a tall row.
+    var status: String?
+    /// Drill anchor for `status`, preserved from the stacked layout the rows
+    /// used before the horizontal rework.
+    var statusAccessibilityIdentifier: String?
     var layout: SettingsFieldRowLayout
     /// How the label sits against the control in an `.inline` row. See
     /// `inlineRow` for why the default is `.center`.
@@ -2209,6 +2266,8 @@ private struct SettingsFieldRow<Content: View, Footer: View>: View {
     init(
         title: String,
         help: String? = nil,
+        status: String? = nil,
+        statusAccessibilityIdentifier: String? = nil,
         layout: SettingsFieldRowLayout = .inline,
         controlAlignment: VerticalAlignment = .center,
         @ViewBuilder content: () -> Content,
@@ -2216,6 +2275,8 @@ private struct SettingsFieldRow<Content: View, Footer: View>: View {
     ) {
         self.title = title
         self.help = help
+        self.status = status
+        self.statusAccessibilityIdentifier = statusAccessibilityIdentifier
         self.layout = layout
         self.controlAlignment = controlAlignment
         self.content = content()
@@ -2226,12 +2287,16 @@ private struct SettingsFieldRow<Content: View, Footer: View>: View {
     init(
         title: String,
         help: String? = nil,
+        status: String? = nil,
+        statusAccessibilityIdentifier: String? = nil,
         layout: SettingsFieldRowLayout = .inline,
         controlAlignment: VerticalAlignment = .center,
         @ViewBuilder content: () -> Content
     ) where Footer == EmptyView {
         self.title = title
         self.help = help
+        self.status = status
+        self.statusAccessibilityIdentifier = statusAccessibilityIdentifier
         self.layout = layout
         self.controlAlignment = controlAlignment
         self.content = content()
@@ -2270,6 +2335,23 @@ private struct SettingsFieldRow<Content: View, Footer: View>: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
+    /// The row's one-line status. The drill anchor is applied only when the
+    /// row names one: an unconditional `.accessibilityIdentifier("")` would
+    /// put empty ids in every AX dump.
+    @ViewBuilder
+    private func statusText(_ text: String) -> some View {
+        let base = Text(text)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+
+        if let statusAccessibilityIdentifier {
+            base.accessibilityIdentifier(statusAccessibilityIdentifier)
+        } else {
+            base
+        }
+    }
+
     private var inlineRow: some View {
         // Centered by default, top-aligned only where a row asks for it. The
         // default used to be `.top`, which is right for a tall composite control
@@ -2278,9 +2360,18 @@ private struct SettingsFieldRow<Content: View, Footer: View>: View {
         // misaligned against System Settings (PR #201 review). A row with a
         // genuinely tall control passes `controlAlignment: .top`.
         HStack(alignment: controlAlignment, spacing: SettingsLayout.rowSpacing) {
-            label
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .layoutPriority(0)
+            // "Label + one-line status" on the left (owner review, 2026-09-07):
+            // baselines aligned, the status truncates rather than wrapping so a
+            // row with buttons stays one line tall.
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                label
+
+                if let status {
+                    statusText(status)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(0)
 
             VStack(alignment: .trailing, spacing: 6) {
                 content
@@ -2310,9 +2401,14 @@ private struct SettingsHelpText: View {
     }
 
     var body: some View {
+        // ONE line, at a readable size (owner review, 2026-09-07): `.callout`
+        // in secondary colour, truncating rather than wrapping, so no row can
+        // grow a wall of text under its control. What does not fit lives in
+        // the docs behind the group's Learn more link.
         Text(text)
-            .font(.caption)
+            .font(.callout)
             .foregroundStyle(.secondary)
+            .lineLimit(1)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
     }

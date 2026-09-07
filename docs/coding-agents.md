@@ -51,6 +51,42 @@ polisher running on this Mac. To send enabled context sources to a configured
 non-local polishing endpoint, turn on **Non-local endpoints** in **Settings →
 Integrations**. Use it only with an endpoint you trust.
 
+## Polish context: what each toggle sends
+
+Each **Settings → Integrations → Polish context** row states its consequence
+in one line; this section is the full text behind those lines.
+
+The first four sources share one default: they run only while the polisher
+runs on this Mac (the bundled helper). **Non-local endpoints** is the single
+toggle that relaxes that.
+
+- **Repo vocabulary** — reads file names from the git repo in your terminal
+  (one sandboxed `git ls-files`) so near-miss spellings resolve to real names.
+- **Claude Code screen** — reads file and identifier names from your Claude
+  Code terminal to fix spellings. When that terminal runs a Claude Code
+  session, part of the text on screen also goes to the polisher, verbatim.
+  Ghostty, iTerm2, Terminal.app, and cmux only; in cmux this needs the cmux
+  join as well (see the next section).
+- **Claude Code project** — sends your uncommitted changes, the files Claude
+  Code recently touched, and the last request you sent that session. For a
+  session on a remote host, only the session request and the short excerpts
+  its hooks report go; no files are read from that host. Needs a Claude Code
+  session in a supported terminal, or a Remote Control session in the focused
+  browser tab.
+- **Clipboard** — sends an excerpt of your clipboard text to the polisher,
+  sanitized and length-capped, used only as a spelling reference.
+- **Non-local endpoints** — when on, the context enabled above also goes to
+  the polishing endpoint you configured. Enable it only for an endpoint you
+  trust, such as a server on your own network.
+
+The **Join Claude Code sessions in cmux** toggle (in the Claude Code group)
+and its **cmux socket password** row are covered in the
+[plugin README](../integrations/claude-code/README.md#which-terminal-am-i-dictating-into):
+the join uses cmux's automation socket to tell which session you are dictating
+into and reads that surface as context, for local surfaces and for sessions
+opened with `cmux ssh`. The socket password is stored in your Keychain and
+sent only to cmux's local socket; saving an empty field removes it.
+
 ## Dictating into Claude Code
 
 localvoxtral ships a
