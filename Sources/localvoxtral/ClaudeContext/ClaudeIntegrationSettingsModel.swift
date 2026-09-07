@@ -236,7 +236,7 @@ public final class ClaudeIntegrationSettingsModel {
 
         public var text: String {
             switch self {
-            case .idle: return "Not listening — no hosts enrolled."
+            case .idle: return "Not listening because no hosts are enrolled."
             case .listening(let port): return "Listening on 127.0.0.1:\(port)."
             case .portConflict(let port): return "Port \(port) is already in use."
             case .failed: return "Could not start listening."
@@ -249,7 +249,7 @@ public final class ClaudeIntegrationSettingsModel {
             switch self {
             case .idle, .listening: return nil
             case .portConflict(let port):
-                return "Another app — often a second copy of localvoxtral — holds \(port). "
+                return "Another app holds \(port), often a second copy of localvoxtral. "
                     + "Quit it and press Retry."
             case .failed: return "See Console for details, then press Retry."
             }
@@ -457,7 +457,7 @@ public final class ClaudeIntegrationSettingsModel {
 
     /// The herdr row's one status sentence. A constant: the row is
     /// status-only, and presence is the whole fact.
-    public static let herdrDetectedSentence = "Found — panes join automatically."
+    public static let herdrDetectedSentence = "Found; panes join automatically."
 
     /// The password field's live text. Never seeded from the Keychain: the
     /// stored secret is not shown back to anyone, and an empty field on a
@@ -868,13 +868,13 @@ public final class ClaudeIntegrationSettingsModel {
         case (true, true):
             cause = "an outdated plugin or a stale token"
         case (true, false):
-            cause = "an outdated plugin — use Update Plugin"
+            return "Rejected connections suggest an outdated plugin; use Update plugin."
         case (false, true):
-            cause = "a stale token — rotate it and re-run setup"
+            return "Rejected connections suggest a stale token; rotate it and rerun setup."
         case (false, false):
             cause = "a malformed authorization header"
         }
-        return "Rejected connections detected — a host may have \(cause)."
+        return "Rejected connections suggest \(cause)."
     }
 
     public func refreshListenerStatus() {
@@ -904,7 +904,7 @@ public final class ClaudeIntegrationSettingsModel {
         guard ClaudeRemoteEnrollmentService.isValidHostAlias(alias) else {
             alert = DetailAlert(
                 title: "Invalid SSH host",
-                detail: "“\(alias)” is not an SSH host alias. Use the name from your ~/.ssh/config — "
+                detail: "\"\(alias)\" is not an SSH host alias. Use the name from your ~/.ssh/config. "
                     + "letters, digits, dots, dashes and underscores only."
             )
             return
@@ -1345,7 +1345,7 @@ public final class ClaudeIntegrationSettingsModel {
             // one-click actions repeat their exact text does not get weaker
             // because an action now has two parts — it gets more important.
             preview: Self.updatePreview(for: presentation),
-            confirmButtonTitle: "Confirm Update"
+            confirmButtonTitle: "Confirm update"
         )
         Log.claudeContext.info("Claude remote plugin update confirmation requested")
     }
@@ -1362,7 +1362,7 @@ public final class ClaudeIntegrationSettingsModel {
             action: .insertSSHConfig,
             title: "Insert this exact block into ~/.ssh/config?",
             preview: presentation.plan.sshConfigSnippet,
-            confirmButtonTitle: "Confirm Insert"
+            confirmButtonTitle: "Confirm insert"
         )
         Log.claudeContext.info("Claude remote ssh config confirmation requested")
     }
@@ -1382,7 +1382,7 @@ public final class ClaudeIntegrationSettingsModel {
             action: .runRemoteSetup,
             title: "Run these commands on the SSH host?",
             preview: Self.redactedRemoteCommands(for: presentation),
-            confirmButtonTitle: "Confirm Run"
+            confirmButtonTitle: "Confirm run"
         )
         Log.claudeContext.info("Claude remote setup confirmation requested")
     }
@@ -1398,7 +1398,7 @@ public final class ClaudeIntegrationSettingsModel {
             action: .configureHerdrPanel(hostID: hostID),
             title: "Configure this exact herdr agents-panel row?",
             preview: ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet,
-            confirmButtonTitle: "Confirm Configure"
+            confirmButtonTitle: "Confirm configuration"
         )
         Log.claudeContext.info("Claude remote herdr panel configuration confirmation requested")
     }
@@ -1844,8 +1844,8 @@ public final class ClaudeIntegrationSettingsModel {
         case .invalidSSHConfigEncoding:
             return "~/.ssh/config is not valid UTF-8, so localvoxtral left it unchanged."
         case .sshConfigIsSymlink:
-            return "~/.ssh/config (or ~/.ssh) is a symlink — likely a dotfiles setup. "
-                + "localvoxtral won't replace the link; use the Copy button and add the block "
+            return "~/.ssh/config or ~/.ssh is a symlink, likely from a dotfiles setup. "
+                + "localvoxtral won't replace the link. Use Copy and add the block "
                 + "to the real file yourself."
         case .sshDirectoryNotTrusted:
             return "~/.ssh is not exclusively writable by you (wrong owner or group/world-"
@@ -1919,7 +1919,7 @@ public final class ClaudeIntegrationSettingsModel {
            code == EADDRINUSE {
             return "localvoxtral could not bind 127.0.0.1:\(port), because something else already has it.\n\n"
                 + "This is usually a second copy of localvoxtral. Note that a squatter on this port would "
-                + "receive your remote hosts' context — it cannot authenticate them (it does not have the "
+                + "receive your remote hosts' context. It cannot authenticate them because it does not have the "
                 + "token hashes), but it does see what they send before the request is rejected. Find and "
                 + "quit whatever holds the port rather than moving off it.\n\n"
                 + "`lsof -nP -iTCP:\(port) -sTCP:LISTEN` will name the process."

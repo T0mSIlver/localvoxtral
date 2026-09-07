@@ -222,7 +222,7 @@ extension DictationViewModel {
         logConnectionFailure(message: message, technicalDetails: technicalDetails)
         markRecentConnectionFailureIndicator()
         presentConnectionFailureAlert(
-            title: "Managed Backend Failed",
+            title: "Managed backend failed",
             message: message,
             technicalDetails: technicalDetails
         )

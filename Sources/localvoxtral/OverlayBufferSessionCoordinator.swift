@@ -200,7 +200,7 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
             // persistent failure panel, which keeps the text visible.
             guard copyToPasteboard(commitText) else {
                 let failureMessage =
-                    "Secure input blocked auto-paste and the clipboard copy failed — the text stays visible here."
+                    "Secure input blocked auto-paste, and the clipboard copy failed; the text remains visible."
                 stateMachine.commitFailed(
                     error: failureMessage,
                     anchor: anchorResolver.resolveAnchor()
@@ -209,7 +209,7 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
                 Log.overlay.error("overlay commit skipped: secure input active AND clipboard write failed")
                 return .failed(message: failureMessage)
             }
-            let fallbackMessage = "Secure input blocked auto-paste — text copied, paste it manually."
+            let fallbackMessage = "Secure input blocked auto-paste, so the text was copied for manual paste."
             stateMachine.commitFailed(
                 error: fallbackMessage,
                 anchor: anchorResolver.resolveAnchor()

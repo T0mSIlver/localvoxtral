@@ -163,6 +163,11 @@ final class SettingsTabTests: XCTestCase {
         XCTAssertEqual(SettingsTab.integrations.rawValue, "integrations")
     }
 
+    func testEndpointsTabKeepsRawValueWhileDisplayingEngines() {
+        XCTAssertEqual(SettingsTab.endpoints.title, "Engines")
+        XCTAssertEqual(SettingsTab.endpoints.rawValue, "endpoints")
+    }
+
     /// Presentation order is a UX contract of its own: the coverage tests
     /// above compare Sets, so an accidental reorder (an alphabetical sort, a
     /// careless merge) would pass every other test while moving rows the user

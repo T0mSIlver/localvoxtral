@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 /// Identifies each Settings tab so navigation can be driven programmatically
-/// (e.g. the onboarding "I run my own server" link jumps to Endpoints).
+/// (e.g. the onboarding "I run my own server" link jumps to Engines).
 enum SettingsTab: String, Hashable, CaseIterable, Sendable {
     case general
     case endpoints
@@ -159,18 +159,16 @@ private struct GeneralSettingsPane: View {
 
             SettingsGroup(title: "App") {
                 SettingsFieldRow(
-                    title: "Copy final segment",
-                    help: "Copies to the clipboard on stop."
+                    title: "Copy on stop"
                 ) {
                     Toggle("", isOn: $settings.autoCopyEnabled)
                         .labelsHidden()
                 }
 
                 SettingsFieldRow(
-                    title: "Setup",
-                    help: "Reopen the first-launch setup wizard for permissions and downloads."
+                    title: "Setup wizard"
                 ) {
-                    Button("Re-run Setup…") {
+                    Button("Re-run setup…") {
                         viewModel.reRunOnboarding()
                     }
                 }
@@ -289,8 +287,7 @@ private struct ConnectionSettingsPane: View {
         SettingsPage(tab: .endpoints) {
             SettingsGroup(title: "Dictation") {
                 SettingsFieldRow(
-                    title: "Mode",
-                    help: settings.dictationBackendMode.dictationDescription
+                    title: "Mode"
                 ) {
                     Picker("", selection: dictationBackendModeBinding) {
                         ForEach(BackendMode.allCases) { mode in
@@ -303,7 +300,7 @@ private struct ConnectionSettingsPane: View {
 
                 switch settings.dictationBackendMode {
                 case .externalURL:
-                    SettingsFieldRow(title: "Endpoint") {
+                    SettingsFieldRow(title: "Server URL") {
                         TextField(settings.endpointPlaceholder, text: endpointBinding)
                             .textFieldStyle(.roundedBorder)
                             .frame(maxWidth: SettingsLayout.textFieldWidth)
@@ -332,8 +329,7 @@ private struct ConnectionSettingsPane: View {
                     }
 
                     SettingsFieldRow(
-                        title: "Step interval",
-                        help: "Lower values show words sooner; higher values use less compute."
+                        title: "Step interval"
                     ) {
                         Picker("", selection: speechdStepCadenceBinding) {
                             ForEach(SpeechdStepCadence.allCases) { cadence in
@@ -353,8 +349,7 @@ private struct ConnectionSettingsPane: View {
 
             SettingsGroup(title: "Polishing") {
                 SettingsFieldRow(
-                    title: "Mode",
-                    help: settings.polishingBackendMode.polishingDescription
+                    title: "Mode"
                 ) {
                     Picker("", selection: polishingBackendModeBinding) {
                         ForEach(BackendMode.allCases) { mode in
@@ -368,10 +363,7 @@ private struct ConnectionSettingsPane: View {
                 switch settings.polishingBackendMode {
                 case .externalURL:
                     SettingsFieldRow(
-                        title: "Endpoint",
-                        help: "Enter a base URL (e.g. http://127.0.0.1:8080); "
-                            + "/v1/chat/completions is appended automatically. "
-                            + "A full …/v1/chat/completions URL still works."
+                        title: "Server URL"
                     ) {
                         TextField(
                             "http://127.0.0.1:8080",
@@ -399,7 +391,7 @@ private struct ConnectionSettingsPane: View {
                         .frame(maxWidth: SettingsLayout.textFieldWidth)
                     }
                 case .managedLocal:
-                    SettingsFieldRow(title: "Model", help: managedPolishingModelHelp) {
+                    SettingsFieldRow(title: "Model") {
                         Picker("", selection: managedPolishingModelBinding) {
                             ForEach(managedPolishingModelEntries) { entry in
                                 Text(entry.label).tag(entry.repoID)
@@ -407,6 +399,12 @@ private struct ConnectionSettingsPane: View {
                         }
                         .pickerStyle(.menu)
                         .labelsHidden()
+                    } footer: {
+                        if let managedPolishingModelHelp {
+                            Text(managedPolishingModelHelp)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
 
                     ManagedBackendStatusRow(
@@ -473,7 +471,7 @@ private struct ManagedBackendStatusLabel: View {
         case .stopped:
             return "Stopped"
         case .failed(let summary, _):
-            return "Failed: \(summary)"
+            return "Failed. \(summary)"
         }
     }
 
@@ -495,7 +493,7 @@ private struct ManagedBackendStatusLabel: View {
             // Bytes moving but no total (CDN sent no length for some file):
             // show movement rather than pretending we are still checking.
             if progress.downloadedBytes > 0 {
-                return "Downloading model - \(Self.byteText(progress.downloadedBytes))"
+                return "Downloading model, \(Self.byteText(progress.downloadedBytes))"
             }
             // No total yet: the downloader is still resolving what (if
             // anything) needs fetching — on a warm cache this phase is all
@@ -505,7 +503,7 @@ private struct ManagedBackendStatusLabel: View {
         // Clamp: the downloader's aggregate can transiently disagree with the
         // dry-run total (retries, resumed partials); never render > 100%.
         let downloaded = min(progress.downloadedBytes, totalBytes)
-        return "Downloading model - \(Self.byteText(downloaded)) of \(Self.byteText(totalBytes))"
+        return "Downloading model, \(Self.byteText(downloaded)) of \(Self.byteText(totalBytes))"
     }
 
     private static func byteText(_ bytes: Int64) -> String {
@@ -539,8 +537,8 @@ private struct DictationSettingsPane: View {
 
     var body: some View {
         SettingsPage(tab: .dictation) {
-            SettingsGroup(title: "Start dictation with") {
-                SettingsFieldRow(title: "Trigger") {
+            SettingsGroup(title: "Trigger") {
+                SettingsFieldRow(title: "Method") {
                     Picker("", selection: Binding(
                         get: { settings.modifierOnlyHotKeyEnabled },
                         set: { newValue in
@@ -574,13 +572,13 @@ private struct DictationSettingsPane: View {
                     }
 
                     SettingsFieldRow(title: "Tap") {
-                        Text("Overlay Buffer — toggle dictation on and off.")
+                        Text("Toggles Overlay Buffer dictation.")
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
                     }
 
                     SettingsFieldRow(title: "Hold") {
-                        Text("Live Auto-Paste — talk while held, stops on release.")
+                        Text("Streams text live while held.")
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
                     }
@@ -678,8 +676,7 @@ private struct DictationSettingsPane: View {
                     }
 
                     SettingsFieldRow(
-                        title: "Shortcut behavior",
-                        help: settings.dictationShortcutMode.description
+                        title: "Shortcut action"
                     ) {
                         Picker("", selection: $settings.dictationShortcutMode) {
                             ForEach(DictationShortcutMode.allCases) { mode in
@@ -694,8 +691,7 @@ private struct DictationSettingsPane: View {
 
             SettingsGroup(title: "Overlay Buffer") {
                 SettingsFieldRow(
-                    title: "Font size",
-                    help: "Scales the whole dictation overlay panel."
+                    title: "Font size"
                 ) {
                     HStack(spacing: 8) {
                         Slider(
@@ -716,8 +712,7 @@ private struct DictationSettingsPane: View {
 
             SettingsGroup(title: "Menu bar") {
                 SettingsFieldRow(
-                    title: "Output mode",
-                    help: settings.dictationOutputMode.description
+                    title: "Output mode"
                 ) {
                     Picker("", selection: dictationOutputModeBinding) {
                         ForEach(DictationOutputMode.allCases) { mode in
@@ -765,7 +760,7 @@ private struct TextProcessingSettingsPane: View {
                     Toggle("", isOn: $settings.replacementDictionaryEnabled)
                         .labelsHidden()
                         .help(
-                            "In Live Auto-Paste, corrections briefly retype the last word in place. In apps that don't report the cursor position, avoid clicking elsewhere mid-dictation — a correction landing after the cursor moved can overwrite a few characters at the new position."
+                            "In Live Auto-Paste, corrections briefly retype the last word in place. In apps that do not report the cursor position, stay in place mid-dictation. A correction after a move can overwrite characters at the new position."
                         )
                 }
             }
@@ -775,7 +770,7 @@ private struct TextProcessingSettingsPane: View {
                     SettingsAvailabilityCard(
                         title: "No Overlay Buffer shortcut",
                         message:
-                            "Polishing runs on Overlay Buffer dictations. Record a shortcut in Dictation to enable it.",
+                            "Polishing runs on Overlay Buffer dictations. Record a shortcut in Dictation.",
                         systemImage: "exclamationmark.triangle.fill",
                         tint: .orange
                     )
@@ -783,8 +778,7 @@ private struct TextProcessingSettingsPane: View {
 
                 Group {
                     SettingsFieldRow(
-                        title: "Enable",
-                        help: "Overlay Buffer dictations only."
+                        title: "Enable for Overlay Buffer"
                     ) {
                         Toggle("", isOn: llmPolishingEnabledBinding)
                             .labelsHidden()
@@ -792,8 +786,7 @@ private struct TextProcessingSettingsPane: View {
 
                     SettingsFieldRow(
                         title: "Agent prompt profile in terminals",
-                        help:
-                            "Agent-tuned instructions that trust the model's technical formatting. Clipboard safety checks remain active."
+                        help: "Clipboard safety checks stay on."
                     ) {
                         Toggle("", isOn: $settings.agentPolishProfileEnabled)
                             .labelsHidden()
@@ -802,7 +795,7 @@ private struct TextProcessingSettingsPane: View {
                     SettingsFieldRow(
                         title: "Spoken clipboard paste",
                         help:
-                            "Say “paste clipboard” to insert your clipboard as a code block on commit."
+                            "Say \"paste clipboard\" to insert your clipboard as a code block on commit."
                     ) {
                         Toggle("", isOn: $settings.clipboardPayloadMacroEnabled)
                             .labelsHidden()
@@ -814,41 +807,21 @@ private struct TextProcessingSettingsPane: View {
 
             SettingsGroup(title: "Configuration") {
                 SettingsFieldRow(title: "Config folder") {
-                    Button("Open Config Folder") {
+                    Button("Open config folder") {
                         viewModel.openConfigFolder()
                     }
                 }
 
                 // Stacked: a list of file names with descriptions is a
                 // full-width block, not a control.
-                SettingsFieldRow(title: "Included files", layout: .stacked) {
+                SettingsFieldRow(title: "Files", layout: .stacked) {
                     SettingsFileNotes(notes: [
-                        SettingsFileNote(
-                            name: "replacement_dictionary.toml",
-                            description:
-                                "Replacements used in both output modes."
-                        ),
-                        SettingsFileNote(
-                            name: "llm_system_prompt.toml",
-                            description: "System prompt for polishing."
-                        ),
-                        SettingsFileNote(
-                            name: "llm_user_prompt.toml",
-                            description:
-                                "User prompt template for polishing. Remove {{replacement_dictionary}} to stop sending the dictionary to the LLM."
-                        ),
-                        SettingsFileNote(
-                            name: "llm_system_prompt_agent.toml",
-                            description: "System prompt for the agent profile in terminals."
-                        ),
-                        SettingsFileNote(
-                            name: "llm_user_prompt_agent.toml",
-                            description: "User prompt template for the agent profile."
-                        ),
-                        SettingsFileNote(
-                            name: "terminal_apps.toml",
-                            description: "Extra apps to treat as terminals."
-                        ),
+                        SettingsFileNote(name: "replacement_dictionary.toml"),
+                        SettingsFileNote(name: "llm_system_prompt.toml"),
+                        SettingsFileNote(name: "llm_user_prompt.toml"),
+                        SettingsFileNote(name: "llm_system_prompt_agent.toml"),
+                        SettingsFileNote(name: "llm_user_prompt_agent.toml"),
+                        SettingsFileNote(name: "terminal_apps.toml"),
                     ])
                 }
             }
@@ -889,7 +862,7 @@ private struct IntegrationsSettingsPane: View {
                     SettingsAvailabilityCard(
                         title: "No Overlay Buffer shortcut",
                         message:
-                            "Polishing runs on Overlay Buffer dictations. Record a shortcut in Dictation to enable it.",
+                            "Polishing runs on Overlay Buffer dictations. Record a shortcut in Dictation.",
                         systemImage: "exclamationmark.triangle.fill",
                         tint: .orange
                     )
@@ -897,9 +870,9 @@ private struct IntegrationsSettingsPane: View {
 
                 Group {
                     SettingsFieldRow(
-                        title: "Repo vocabulary from terminal",
+                        title: "Repo vocabulary",
                         help:
-                            "Reads file names from the git repo in your terminal to fix technical spellings. Local polishing endpoints only."
+                            "Reads file names from the git repo in your terminal to fix spellings. Only with a polisher on this Mac."
                     ) {
                         Toggle("", isOn: $settings.repoVocabularyEnabled)
                             .labelsHidden()
@@ -911,9 +884,9 @@ private struct IntegrationsSettingsPane: View {
                     // spellings" describes only the matcher and would be consent
                     // obtained for the smaller half.
                     SettingsFieldRow(
-                        title: "Use Claude Code terminal screen as polish context",
+                        title: "Claude Code screen",
                         help:
-                            "Reads file names and identifiers from your Claude Code terminal to fix technical spellings. When the terminal is running a Claude Code session, part of the text on screen is also sent to the polisher. Supported terminals (Ghostty, iTerm2, Terminal.app, cmux) only — in cmux this also needs the join set up below. Local polishing endpoints only."
+                            "Reads names from your Claude Code terminal to fix spellings. When that terminal runs a Claude Code session, part of the text on screen also goes to the polisher. Ghostty, iTerm2, Terminal.app and cmux only. In cmux this needs the cmux join too. Only with a polisher on this Mac."
                     ) {
                         Toggle("", isOn: $settings.terminalScreenContextEnabled)
                             .labelsHidden()
@@ -932,18 +905,18 @@ private struct IntegrationsSettingsPane: View {
                     // sends the excerpts its hooks already reported, and never
                     // causes anything on this machine to be read.
                     SettingsFieldRow(
-                        title: "Use Claude Code project files as polish context",
+                        title: "Claude Code project",
                         help:
-                            "Sends your uncommitted changes, the contents of files Claude Code recently touched, and the last request you sent that session to the polisher, so it can spell code and file names exactly. For a session on a remote host, only the session's own request and the short excerpts its hooks report are sent — no files are read from that host. Requires a Claude Code session in a supported terminal, or a Remote Control session in the focused browser tab; local polishing endpoints only."
+                            "Sends your uncommitted changes, files Claude Code recently touched, and the last request you sent that session to the polisher. For a session on a remote host, only the session request and the short excerpts its hooks report go. No files are read from that host. Needs a Claude Code session in a supported terminal or a Remote Control session in the focused browser tab. Only with a polisher on this Mac."
                     ) {
                         Toggle("", isOn: $settings.claudeRepoContextEnabled)
                             .labelsHidden()
                     }
 
                     SettingsFieldRow(
-                        title: "Use clipboard as polish context",
+                        title: "Clipboard",
                         help:
-                            "Grounds technical terms against your clipboard. Local polishing endpoints only."
+                            "Checks technical terms against your clipboard. Only with a polisher on this Mac."
                     ) {
                         Toggle("", isOn: $settings.polishClipboardContextEnabled)
                             .labelsHidden()
@@ -956,9 +929,9 @@ private struct IntegrationsSettingsPane: View {
                     // — with the user — instead of implying the app can vouch
                     // for their endpoint.
                     SettingsFieldRow(
-                        title: "Send polish context to non-local endpoints",
+                        title: "Non-local endpoints",
                         help:
-                            "Off: clipboard, screen, and project context are only ever sent to a polisher on this Mac. On: the context enabled above is also sent to the polishing endpoint you configured — enable only for an endpoint you trust, such as a server on your own network."
+                            "When off, context only ever goes to a polisher on this Mac. When on, the context enabled above also goes to the polishing endpoint you configured. Enable only for an endpoint you trust, such as a server on your own network."
                     ) {
                         Toggle("", isOn: $settings.polishContextTrustedEndpointEnabled)
                             .labelsHidden()
@@ -990,7 +963,7 @@ private struct IntegrationsSettingsPane: View {
                 SettingsFieldRow(
                     title: "Join Claude Code sessions in cmux",
                     help:
-                        "Uses cmux's automation socket to tell which session you are dictating into, and to read that one surface as context. In cmux, set Settings → Automation socket mode to Password and choose a socket password, then enter the same password below. Works for local surfaces and for sessions opened with cmux ssh."
+                        "Uses the cmux automation socket to tell which session you dictate into, and reads that surface as context. In cmux, set Automation socket mode to Password and pick a socket password, then enter the same password below. Works for local surfaces and for sessions opened with cmux ssh."
                 ) {
                     Toggle("", isOn: $settings.cmuxSurfaceJoinEnabled)
                         .labelsHidden()
@@ -1051,13 +1024,11 @@ private struct ClaudePluginInstallRow: View {
         // Stacked: the row's controls are a full button bar plus a status line,
         // which would squeeze the label to a three-line stub beside them.
         SettingsFieldRow(
-            title: "Claude Code plugin (this Mac)",
-            help:
-                "Lets localvoxtral see which Claude Code session owns your terminal, so dictation lands in the right one. Runs `claude plugin` — nothing is installed until you press this.",
+            title: "Plugin on this Mac",
             layout: .stacked
         ) {
             HStack(spacing: 8) {
-                Button("Install or Update") {
+                Button("Install or update") {
                     Task { await model.updatePlugin() }
                 }
                 .disabled(model.isPerformingPluginAction)
@@ -1103,7 +1074,7 @@ private struct ClaudeStatuslineRow: View {
             HStack(spacing: 8) {
                 switch model.statuslineStatus {
                 case .notConfigured:
-                    Button("Set Up…") { isShowingSetup = true }
+                    Button("Set up…") { isShowingSetup = true }
                         .disabled(model.statuslinePreview == nil)
                         .accessibilityIdentifier("integrations.claude.statusline.install")
                 case .installed, .stalePath:
@@ -1237,9 +1208,7 @@ private struct ClaudeRemoteHostsSettingsRow: View {
     var body: some View {
         // Stacked: host rows and the enrollment form are full-width composites.
         SettingsFieldRow(
-            title: "Remote Claude Code over SSH",
-            help:
-                "Dictate into Claude Code running on another machine. Each host gets its own token; revoking one takes effect immediately.",
+            title: "Claude Code over SSH",
             layout: .stacked
         ) {
             VStack(alignment: .leading, spacing: 8) {
@@ -1317,7 +1286,7 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                     .controlSize(.small)
                     .accessibilityIdentifier("claude.remote.shellSetup.remove")
             }
-            Button("Set Up…") { isShowingShellSetup = true }
+            Button("Set up…") { isShowingShellSetup = true }
                 .controlSize(.small)
                 .disabled(model.shellSetupPreview == nil)
                 .accessibilityIdentifier("claude.remote.shellSetup.setUp")
@@ -1345,10 +1314,10 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Button("Update Plugin…") { model.requestPluginUpdate(hostID: host.id) }
+                        Button("Update plugin…") { model.requestPluginUpdate(hostID: host.id) }
                             .controlSize(.small)
                             .disabled(model.isEnrollmentBusy)
-                        Button("Rotate Token") { Task { await model.rotate(hostID: host.id) } }
+                        Button("Rotate token") { Task { await model.rotate(hostID: host.id) } }
                             .controlSize(.small)
                         if !host.isRevoked {
                             Button("Revoke") { Task { await model.revoke(hostID: host.id) } }
@@ -1468,7 +1437,7 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                         .controlSize(.small)
                         .disabled(model.isEnrollmentBusy)
                 } else {
-                    Text("Replace your-ssh-host with the alias from your ~/.ssh/config, then apply both steps above yourself — the ssh-config block first.")
+                    Text("Replace your-ssh-host with the alias from your ~/.ssh/config, then apply both steps above yourself. Do the ssh-config block first.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1622,7 +1591,7 @@ private struct ClaudeRemoteEnrollmentSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     section(
-                        "Token — copy it now",
+                        "Copy the token now",
                         body: presentation.token,
                         note: "It cannot be shown again. If you lose it, rotate."
                     )
@@ -1641,14 +1610,8 @@ private struct ClaudeRemoteEnrollmentSheet: View {
                         body: plan.remoteCommands.joined(separator: "\n"),
                         displayedBody: ClaudeIntegrationSettingsModel.redactedRemoteCommands(for: presentation),
                         note: presentation.canRunRemoteSetup
-                            // Accurate about WHERE the guarantee holds: the
-                            // token never enters an argv on this Mac, but
-                            // `claude plugin install` takes it as a flag, so on
-                            // the host it is in that command's arguments while
-                            // it runs. Overclaiming here is worse than saying
-                            // nothing (review finding, round 2).
-                            ? "The token never enters a process argument on this Mac. On the host it is in the install command's arguments while it runs, and stored under ~/.claude after — rotate if that host is shared."
-                            : "Replace \(ClaudeIntegrationSettingsModel.unknownAliasPlaceholder) with the alias from your ~/.ssh/config and run these yourself — this host was enrolled before localvoxtral recorded its alias.",
+                            ? "The token never enters a process argument on this Mac. On the host it is in the install command arguments while it runs, and stored under ~/.claude after. Rotate if that host is shared."
+                            : "Replace \(ClaudeIntegrationSettingsModel.unknownAliasPlaceholder) with the alias from your ~/.ssh/config and run these yourself. This host was enrolled before localvoxtral recorded its alias.",
                         primaryActionTitle: presentation.canRunRemoteSetup ? "Run on SSH host" : nil,
                         enrollmentAction: .runRemoteSetup,
                         action: presentation.canRunRemoteSetup ? { model.requestRemoteSetup() } : nil
@@ -1656,7 +1619,7 @@ private struct ClaudeRemoteEnrollmentSheet: View {
                     section(
                         "3. Show the dictation indicator in herdr",
                         body: ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet,
-                        note: "After confirmation, localvoxtral appends this only when no agents table or rows key exists; otherwise it leaves the file unchanged.",
+                        note: "After confirmation, localvoxtral appends this only when no agents table or rows key exists. Otherwise it leaves the file unchanged.",
                         primaryActionTitle: presentation.canRunRemoteSetup ? "Configure on SSH host" : nil,
                         enrollmentAction: .configureHerdrPanel(hostID: presentation.host.id),
                         action: presentation.canRunRemoteSetup
@@ -1667,16 +1630,11 @@ private struct ClaudeRemoteEnrollmentSheet: View {
                     section(
                         "Update later",
                         body: plan.updateCommands.joined(separator: "\n"),
-                        note: "Re-running step 2 is not an update. Also offered per host in Settings, once localvoxtral ships a newer plugin."
+                        note: "Re-running step 2 does not update the plugin."
                     )
 
-                    HStack(spacing: 6) {
-                        Text("Uninstalling, caveats, and manual checks:")
-                            .font(.body)
-                            .foregroundStyle(.secondary)
-                        Link("Learn more", destination: Self.documentationURL)
-                            .font(.body)
-                    }
+                    Link("Uninstall or check manually", destination: Self.documentationURL)
+                        .font(.body)
                 }
             }
             .frame(minHeight: 280)
@@ -1710,11 +1668,11 @@ private struct ClaudeRemoteEnrollmentSheet: View {
                     // Same reason step 2 withholds its button: with no alias on
                     // file, checking the placeholder would report on whatever
                     // machine answers to that name.
-                    : "Unavailable until this host's SSH alias is known — localvoxtral did not record one when it was enrolled. Re-enrol it, or run the checks from the linked page yourself."
+                    : "Unavailable until this host's SSH alias is known. localvoxtral did not record one when it was enrolled. Re-enrol it, or run the checks from the linked page yourself."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
-            Button("Check Setup") { Task { await model.runVerification() } }
+            Button("Check setup") { Task { await model.runVerification() } }
                 .controlSize(.small)
                 .disabled(actionsDisabled || !presentation.canRunRemoteSetup)
             ForEach(model.verificationChecks) { check in
@@ -1874,14 +1832,21 @@ private struct AboutSettingsPane: View {
                         destination: URL(string: "https://github.com/T0mSIlver/localvoxtral")!
                     )
                 }
+
+                SettingsFieldRow(title: "Issues") {
+                    Link(
+                        "Report an Issue",
+                        destination: URL(string: "https://github.com/T0mSIlver/localvoxtral/issues")!
+                    )
+                }
             }
 
             SettingsGroup(title: "Diagnostics") {
                 SettingsFieldRow(
-                    title: "Export",
-                    help: "Writes a redacted report to the Desktop; review before sharing."
+                    title: "Report",
+                    help: "Writes a redacted report to the Desktop. Review before sharing."
                 ) {
-                    Button("Export Diagnostics…") {
+                    Button("Export diagnostics…") {
                         viewModel.exportDiagnostics()
                     }
                 }
@@ -2192,7 +2157,6 @@ private struct SettingsHelpText: View {
 private struct SettingsFileNote: Identifiable {
     let id = UUID()
     let name: String
-    let description: String
 }
 
 private struct SettingsFileNotes: View {
@@ -2201,15 +2165,8 @@ private struct SettingsFileNotes: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(notes) { note in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(note.name)
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-
-                    Text(note.description)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Text(note.name)
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -2246,7 +2203,7 @@ private struct ClaudeShellSetupSheet: View {
                 .font(.headline)
                 .accessibilityIdentifier("claude.shellSetupSheet.title")
             Text(
-                "This adds one block to \(model.shellSetupStatus.relativeRCPath ?? "your shell startup file"), so a Claude Code session over plain SSH can be matched to the window you are dictating into. Open a new terminal window afterwards — the value is fixed when a session starts."
+                "This adds one block to \(model.shellSetupStatus.relativeRCPath ?? "your shell startup file"), so a Claude Code session over plain SSH can be matched to the window you are dictating into. Open a new terminal window afterwards. The value is fixed when a session starts."
             )
             .font(.callout)
             .fixedSize(horizontal: false, vertical: true)
@@ -2268,7 +2225,7 @@ private struct ClaudeShellSetupSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .accessibilityIdentifier("claude.shellSetupSheet.cancel")
-                Button("Add to My Shell") {
+                Button("Add to my shell") {
                     Task {
                         await model.applyShellSetup()
                         dismiss()
@@ -2317,7 +2274,7 @@ private struct ClaudeStatuslineSetupSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .accessibilityIdentifier("integrations.statuslineSheet.cancel")
-                Button("Add Status Line") {
+                Button("Add status line") {
                     Task {
                         await model.applyStatuslineSetup()
                         dismiss()

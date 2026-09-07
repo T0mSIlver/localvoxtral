@@ -48,7 +48,7 @@ struct DictationTriggerSummary: Equatable {
 
         return DictationTriggerSummary(
             primary: "Menu bar",
-            explanation: "No shortcut is set — start dictation from the menu bar icon."
+            explanation: "No shortcut is set. Start dictation from the menu bar icon."
         )
     }
 }

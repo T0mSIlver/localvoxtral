@@ -40,9 +40,9 @@ public struct ClaudeStatuslineInstallService: Sendable {
     /// JSON round-trip (pretty-printed, sorted keys) — the sheet must never
     /// claim the file is otherwise byte-untouched.
     public static let sheetExplanation =
-        "This adds one entry to ~/.claude/settings.json pointing at this app's publisher, "
-        + "so Claude Code's bottom bar shows whether localvoxtral is connected to the session. "
-        + "Every other entry is kept (formatting is normalized)."
+        "This adds one entry to ~/.claude/settings.json pointing at localvoxtral's publisher, "
+        + "so the Claude Code bottom bar shows whether localvoxtral is connected. "
+        + "Every other entry is kept, and formatting is normalized."
 
     private let fileSystem: (any ClaudeStatuslineFileSystem)?
     /// Whether an invoked path resolves to an existing executable. Injected
@@ -87,8 +87,8 @@ public struct ClaudeStatuslineInstallService: Sendable {
         switch status {
         case .notConfigured: return "Not installed."
         case .installed: return "Installed."
-        case .stalePath: return "Installed, path no longer exists — Update."
-        case .edited: return "Edited by you; remove it in settings.json."
+        case .stalePath: return "The installed path moved; update the status line."
+        case .edited: return "Edited in settings.json; remove it there."
         case .foreign: return "Your own status line is configured."
         case .unknown: return "Could not read your Claude settings."
         }

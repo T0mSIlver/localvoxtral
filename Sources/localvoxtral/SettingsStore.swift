@@ -31,14 +31,6 @@ enum DictationOutputMode: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    var description: String {
-        switch self {
-        case .overlayBuffer:
-            return "Keeps text in an on-screen buffer until stop."
-        case .liveAutoPaste:
-            return "Streams text directly into the focused app."
-        }
-    }
 }
 
 enum DictationShortcutMode: String, CaseIterable, Identifiable {
@@ -56,14 +48,6 @@ enum DictationShortcutMode: String, CaseIterable, Identifiable {
         }
     }
 
-    var description: String {
-        switch self {
-        case .toggle:
-            return "Press once to start dictation, press again to stop."
-        case .pushToTalk:
-            return "Hold the shortcut to dictate, release to stop."
-        }
-    }
 }
 
 enum BackendMode: String, CaseIterable, Identifiable {
@@ -81,23 +65,6 @@ enum BackendMode: String, CaseIterable, Identifiable {
         }
     }
 
-    var dictationDescription: String {
-        switch self {
-        case .managedLocal:
-            return "Runs the bundled dictation engine on this Mac."
-        case .externalURL:
-            return "Use an OpenAI Realtime-compatible endpoint you run yourself."
-        }
-    }
-
-    var polishingDescription: String {
-        switch self {
-        case .managedLocal:
-            return "Runs the bundled polishing engine on this Mac."
-        case .externalURL:
-            return "Use an OpenAI-compatible chat completions endpoint you run yourself."
-        }
-    }
 }
 
 /// Metal buffer-pool cache limit for the managed dictation helper. `Auto`
@@ -335,7 +302,7 @@ final class SettingsStore {
     /// True once the user has completed (or skipped) the first-launch onboarding
     /// wizard. Resolved once at init (see `resolveOnboardingCompleted`) and
     /// persisted immediately so the wizard shows exactly once for fresh installs.
-    /// The General settings pane's "Re-run Setup…" resets it to false.
+    /// The General settings pane's "Re-run setup…" resets it to false.
     var onboardingCompleted: Bool {
         didSet { defaults.set(onboardingCompleted, forKey: Keys.onboardingCompleted) }
     }
@@ -717,7 +684,7 @@ final class SettingsStore {
         // values back off.
         //
         // The gate needs the onboarding key to be ABSENT, not merely resolved
-        // false. "Re-run Setup…" resets that flag to false on an existing
+        // false. "Re-run setup…" resets that flag to false on an existing
         // install (DictationViewModel.reRunOnboarding), so a crash or force-quit
         // before the wizard closes would otherwise leave a configured user
         // looking fresh on the next launch — and claim Right Command from them.

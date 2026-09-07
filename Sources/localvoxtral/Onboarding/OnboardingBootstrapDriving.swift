@@ -19,15 +19,6 @@ enum OnboardingItemID: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// One short line describing what gets downloaded.
-    var detail: String {
-        switch self {
-        case .dictation:
-            return "the bundled dictation engine + Voxtral model"
-        case .polishing:
-            return "the polishing LLM (bundled engine)"
-        }
-    }
 }
 
 /// UI-facing state of a single onboarding download item. Deliberately decoupled
@@ -90,7 +81,7 @@ extension OnboardingItemState {
             // rather than pretending we are still checking.
             if progress.downloadedBytes > 0 {
                 let megabytes = progress.downloadedBytes / 1_048_576
-                return "Downloading model - \(megabytes) MB"
+                return "Downloading model, \(megabytes) MB"
             }
             return "Checking model..."
         }

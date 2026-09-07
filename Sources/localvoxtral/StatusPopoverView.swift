@@ -2,14 +2,9 @@ import AppKit
 import SwiftUI
 
 struct StatusPopoverConnectionFailurePresenter {
-    static func detail(statusText: String, lastError: String?, endpoint: String) -> String? {
+    static func detail(statusText: String) -> String? {
         guard isConnectionFailureStatus(statusText) else { return nil }
-        if statusText != "Invalid endpoint URL.",
-           lastError?.contains(endpoint) != true
-        {
-            return nil
-        }
-        return "Endpoint: \(endpoint)"
+        return "Check the engine in Settings."
     }
 
     private static func isConnectionFailureStatus(_ statusText: String) -> Bool {
@@ -19,7 +14,7 @@ struct StatusPopoverConnectionFailurePresenter {
              "Host unreachable.",
              "Connection timed out.",
              "Endpoint path rejected.",
-             "Network lost. Dictation stopped.",
+             "Dictation stopped after the network disconnected.",
              "Connection failed.":
             return true
         default:
@@ -46,29 +41,11 @@ struct StatusPopoverView: View {
         if viewModel.isConnectingRealtimeSession {
             return "Connecting..."
         }
-        return viewModel.isDictating ? "Stop Dictation" : "Start Dictation"
+        return viewModel.isDictating ? "Stop dictation" : "Start dictation"
     }
 
     private var connectionFailureDetail: String? {
-        StatusPopoverConnectionFailurePresenter.detail(
-            statusText: viewModel.statusText,
-            lastError: viewModel.lastError,
-            endpoint: sanitizedRealtimeEndpointDescription
-        )
-    }
-
-    private var sanitizedRealtimeEndpointDescription: String {
-        guard let endpoint = viewModel.settings.resolvedWebSocketURL(for: viewModel.settings.realtimeProvider) else {
-            return "<invalid endpoint>"
-        }
-        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else {
-            return endpoint.absoluteString
-        }
-        components.user = nil
-        components.password = nil
-        components.query = nil
-        components.fragment = nil
-        return components.string ?? endpoint.absoluteString
+        StatusPopoverConnectionFailurePresenter.detail(statusText: viewModel.statusText)
     }
 
     var body: some View {
@@ -82,7 +59,7 @@ struct StatusPopoverView: View {
 
             Menu("Microphone") {
                 if viewModel.availableInputDevices.isEmpty {
-                    Text("No Input Devices")
+                    Text("No input devices")
                 } else {
                     ForEach(viewModel.availableInputDevices) { device in
                         Button {
@@ -104,7 +81,7 @@ struct StatusPopoverView: View {
             // devices, where the standard downmix applies and the choice would
             // be meaningless.
             if viewModel.selectedInputDeviceChannelCount > 2 {
-                Menu("Input Channel") {
+                Menu("Input channel") {
                     ForEach(0..<Int(viewModel.selectedInputDeviceChannelCount), id: \.self) {
                         channel in
                         Button {
@@ -120,7 +97,7 @@ struct StatusPopoverView: View {
                 }
             }
 
-            Button("Copy Latest Segment") {
+            Button("Copy latest segment") {
                 viewModel.copyLatestSegment()
             }
             .disabled(!hasLatestSegment)
@@ -130,7 +107,7 @@ struct StatusPopoverView: View {
             // only after a polish-changed commit; a one-line action, never the
             // transcript itself (owner rule: no long text in the popover).
             if viewModel.canCopyRawTranscript {
-                Button("Copy Raw Transcript") {
+                Button("Copy raw transcript") {
                     viewModel.copyRawTranscript()
                 }
             }
@@ -162,7 +139,7 @@ struct StatusPopoverView: View {
                     .frame(width: Self.contentWidth, alignment: .leading)
             }
 
-            Text("Status: \(viewModel.statusText)")
+            Text(viewModel.statusText)
                 .foregroundStyle(.secondary)
                 .lineLimit(nil)
                 .fixedSize(horizontal: false, vertical: true)
@@ -170,8 +147,8 @@ struct StatusPopoverView: View {
 
             if let connectionFailureDetail {
                 statusDetailView(connectionFailureDetail)
-            } else if let lastError = viewModel.lastError {
-                statusDetailView("Error: \(lastError)")
+            } else if viewModel.lastError != nil {
+                statusDetailView("See Console for details.")
             }
 
             Divider()

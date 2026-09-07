@@ -117,21 +117,17 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
         viewModel.handleConnectFailure(reason: .networkLost)
 
-        XCTAssertEqual(viewModel.statusText, "Network lost. Dictation stopped.")
+        XCTAssertEqual(viewModel.statusText, "Dictation stopped after the network disconnected.")
         XCTAssertNotNil(viewModel.lastError)
     }
 
     func testConnectionFailurePopoverDetailDoesNotRepeatStatusText() {
         let status = "Connection refused."
-        let endpoint = "ws://127.0.0.1:8001/v1/realtimeaa"
-        let detail = StatusPopoverConnectionFailurePresenter.detail(
-            statusText: status,
-            lastError: "Connection refused at \(endpoint). Make sure the backend is running and the port is correct.",
-            endpoint: endpoint
-        )
+        let detail = StatusPopoverConnectionFailurePresenter.detail(statusText: status)
 
-        XCTAssertEqual(detail, "Endpoint: \(endpoint)")
+        XCTAssertEqual(detail, "Check the engine in Settings.")
         XCTAssertFalse(detail?.contains(status) == true)
+        XCTAssertFalse(detail?.contains("://") == true)
     }
 
     // MARK: - Accessibility gate at dictation start

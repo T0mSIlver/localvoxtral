@@ -125,9 +125,9 @@ final class DictationViewModel {
         static let requestingMicrophonePermission = "Requesting microphone permission..."
         static let waitingForAccessibilityPermission = "Waiting for Accessibility permission."
         static let pasteBlockedByAccessibilityPermission = "Paste blocked by Accessibility permission."
-        static let networkLostDictationStopped = "Network lost. Dictation stopped."
-        static let liveDictationBlockedBySecureInput = "Blocked: Secure Keyboard Entry is on."
-        static let overlayCopiedToClipboard = "Copied — paste it manually."
+        static let networkLostDictationStopped = "Dictation stopped after the network disconnected."
+        static let liveDictationBlockedBySecureInput = "Secure Keyboard Entry blocks Live Auto-Paste."
+        static let overlayCopiedToClipboard = "Copied for manual paste."
         static let noNetworkConnection = "No network connection."
         static let microphoneAccessDenied = "Microphone access denied."
         static let finalizing = "Finalizing..."
@@ -147,7 +147,7 @@ final class DictationViewModel {
     /// events, so dictated text may silently land nowhere. Warn only — the
     /// session still runs. One short sentence (popover copy rule).
     static let secureKeyboardEntryWarningMessage =
-        "Secure Keyboard Entry is on; dictated text may not appear."
+        "Secure Keyboard Entry may hide dictated text."
 
     var isDictating = false
     var isFinalizingStop = false
@@ -1414,7 +1414,7 @@ final class DictationViewModel {
         }
 
         // Owner-specified UX: required managed backends install/download/start
-        // eagerly, with progress rendered inline in Endpoints.
+        // eagerly, with progress rendered inline in Engines.
         // Failures land in the manager statuses; dictation-time ensureReady remains the
         // backstop and retry path.
         Log.backends.info(
@@ -2333,7 +2333,7 @@ final class DictationViewModel {
     }
 
     /// Reset the first-launch flag and ask the app delegate to re-present the
-    /// onboarding wizard. Invoked by the General settings pane's "Re-run Setup…".
+    /// onboarding wizard. Invoked by the General settings pane's "Re-run setup…".
     func reRunOnboarding() {
         settings.onboardingCompleted = false
         onRequestReRunOnboarding?()

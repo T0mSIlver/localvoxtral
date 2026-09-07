@@ -59,7 +59,7 @@ struct OnboardingWizardView: View {
 
     private var primaryActionTitle: String {
         if model.page == .downloads, !model.downloadsStarted {
-            return "Begin Download"
+            return "Begin download"
         }
         return model.isFinalPage ? "Get Started" : "Continue"
     }
@@ -106,43 +106,8 @@ private struct WelcomePage: View {
             OnboardingHeader(
                 systemImage: "waveform.circle",
                 title: "Welcome to localvoxtral",
-                subtitle:
-                    "Realtime dictation for macOS. Start dictation, speak, and text appears as you talk — right in the app you're using."
+                subtitle: "Dictate into any app from the menu bar."
             )
-
-            VStack(alignment: .leading, spacing: 12) {
-                FeatureBullet(
-                    systemImage: "menubar.arrow.up.rectangle",
-                    text: "Lives in your menu bar and opens instantly.")
-                FeatureBullet(
-                    systemImage: "bolt.horizontal.circle",
-                    text: "Streams words while you're still speaking.")
-                FeatureBullet(
-                    systemImage: "lock.laptopcomputer",
-                    text: "Runs fully on-device with the managed local engine.")
-            }
-
-            Text("This quick setup grants permissions and downloads the local engine.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-}
-
-private struct FeatureBullet: View {
-    let systemImage: String
-    let text: String
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Image(systemName: systemImage)
-                .font(.system(size: 15))
-                .foregroundStyle(.tint)
-                .frame(width: 22)
-            Text(text)
-                .font(.system(size: 13))
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -157,14 +122,13 @@ private struct PermissionsPage: View {
             OnboardingHeader(
                 systemImage: "hand.raised.circle",
                 title: "Grant permissions",
-                subtitle:
-                    "localvoxtral needs the microphone to hear you, and Accessibility to type text into other apps."
+                subtitle: "Allow microphone recording and typing into other apps."
             )
 
             PermissionRowsView(viewModel: viewModel)
 
             Text(
-                "You can continue without granting these now and enable them later in Settings ▸ General."
+                "You can grant these later in Settings > General."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -189,8 +153,7 @@ private struct DownloadsPage: View {
             OnboardingHeader(
                 systemImage: "arrow.down.circle",
                 title: "Set up the local engine",
-                subtitle:
-                    "localvoxtral will prepare the bundled dictation engine and download its Voxtral model. Nothing downloads until you start it below."
+                subtitle: "Start the model download when you are ready."
             )
 
             Toggle(isOn: $model.polishingConsent) {
@@ -198,7 +161,7 @@ private struct DownloadsPage: View {
                     Text("Also set up LLM polishing")
                         .font(.system(size: 13, weight: .medium))
                     Text(
-                        "Downloads a small polishing model for the built-in engine. You can decline and turn it on later in Settings."
+                        "Downloads a small polishing model. You can add it later in Settings."
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -219,7 +182,7 @@ private struct DownloadsPage: View {
 
             if model.downloadsStarted {
                 Text(
-                    "Downloads continue in the background — you can press Continue while they finish."
+                    "You can continue while downloads finish in the background."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -246,9 +209,6 @@ private struct DownloadItemRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.title)
                     .font(.system(size: 13, weight: .medium))
-                Text(item.detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
 
                 if case .working(let detail, let fraction) = state ?? .pending {
                     HStack(spacing: 8) {
@@ -306,7 +266,7 @@ private struct FinishPage: View {
             OnboardingHeader(
                 systemImage: "checkmark.circle",
                 title: "You're all set",
-                subtitle: "Here's how to start dictating."
+                subtitle: "Try your dictation trigger in any text field."
             )
 
             VStack(alignment: .leading, spacing: 6) {
@@ -324,14 +284,14 @@ private struct FinishPage: View {
                     .fill(Color(nsColor: .quaternarySystemFill))
             }
 
-            Text("Press it in any text field to try it out. Escape cancels a dictation.")
+            Text("Escape cancels a dictation.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if !summary.isModifierOnly {
                 Text(
-                    "Prefer a single key? The trigger can be just a modifier like Fn / Globe — tap it for the overlay, hold it to type live. Switch anytime in Settings ▸ Dictation."
+                    "For one-key control, choose Fn / Globe in Settings > Dictation. Tap for the overlay or hold to type live."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)

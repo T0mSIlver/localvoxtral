@@ -72,7 +72,7 @@ struct PermissionRowsView: View {
         case .authorized:
             return nil
         case .notDetermined:
-            return PermissionRow.Action(label: "Allow Microphone…") {
+            return PermissionRow.Action(label: "Allow microphone…") {
                 viewModel.requestMicrophonePermission()
             }
         case .denied, .restricted:
@@ -86,7 +86,7 @@ struct PermissionRowsView: View {
 
     private var accessibilityAction: PermissionRow.Action? {
         guard !viewModel.isAccessibilityTrusted else { return nil }
-        return PermissionRow.Action(label: "Grant Access") {
+        return PermissionRow.Action(label: "Grant access") {
             viewModel.requestAccessibilityPermission()
             Self.openSettings(Self.accessibilitySettingsURL)
         }

@@ -164,7 +164,7 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
             // "up" comes first because that is the fact that matters. The
             // clause is there so a later plain "Tunnel up." does not read as a
             // change of state.
-            case .externallyForwarded: return "Tunnel up — an ssh session already holds it."
+            case .externallyForwarded: return "Tunnel up through an existing ssh session."
             case .staleConfiguredForward: return "Old RemoteForward in ~/.ssh/config blocks this."
             case .failed: return "Tunnel stopped."
             }

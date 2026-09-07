@@ -175,7 +175,7 @@ final class RealtimeConnectionFailureTests: XCTestCase {
         )
         // Must equal StatusStrings.networkLostDictationStopped so the menu-bar /
         // popover status token mapping still recognizes it.
-        XCTAssertEqual(description.status, "Network lost. Dictation stopped.")
+        XCTAssertEqual(description.status, "Dictation stopped after the network disconnected.")
         XCTAssertTrue(description.message.contains(endpoint))
     }
 

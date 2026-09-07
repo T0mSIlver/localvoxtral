@@ -614,7 +614,7 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
 
     func testTheExternallyForwardedCopyAsksTheUserForNothing() {
         let text = ClaudeRemoteForwardSupervisor.State.externallyForwarded.text
-        XCTAssertEqual(text, "Tunnel up — an ssh session already holds it.")
+        XCTAssertEqual(text, "Tunnel up through an existing ssh session.")
         XCTAssertLessThan(text.count, 60, "owner rule: one short sentence")
         XCTAssertFalse(
             text.lowercased().contains("close"),

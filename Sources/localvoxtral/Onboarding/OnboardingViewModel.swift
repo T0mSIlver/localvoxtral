@@ -36,7 +36,7 @@ final class OnboardingViewModel {
 
     /// Set by the window controller to dismiss the wizard.
     @ObservationIgnored var onRequestClose: (() -> Void)?
-    /// Set by the window controller to open Settings on the Endpoints tab.
+    /// Set by the window controller to open Settings on the Engines tab.
     @ObservationIgnored var onOpenEndpointsSettings: (() -> Void)?
 
     init(
@@ -89,7 +89,7 @@ final class OnboardingViewModel {
     }
 
     /// The "I run my own server instead" escape hatch: point both backends at
-    /// external URLs, finish onboarding, and jump the user to the Endpoints tab.
+    /// external URLs, finish onboarding, and jump the user to the Engines tab.
     func useOwnServer() {
         driver.cancel()
         // Undo any polishing opt-in from this wizard run: leaving it enabled

@@ -205,7 +205,7 @@ final class IntegrationsSettingsModelTests: XCTestCase {
         XCTAssertEqual(model.statuslineStatus, .edited)
         await model.removeStatusline()
         XCTAssertEqual(
-            model.statuslineResult, "Edited by you; remove it in settings.json."
+            model.statuslineResult, "Edited in settings.json; remove it there."
         )
         XCTAssertFalse(fs.deleted, "an edited entry is never deleted")
     }
@@ -297,7 +297,7 @@ final class IntegrationsSettingsModelTests: XCTestCase {
         XCTAssertTrue(model.isHerdrDetected)
         XCTAssertEqual(
             ClaudeIntegrationSettingsModel.herdrDetectedSentence,
-            "Found — panes join automatically."
+            "Found; panes join automatically."
         )
     }
 
