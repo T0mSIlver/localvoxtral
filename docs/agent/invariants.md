@@ -1136,6 +1136,20 @@ there is not.
   malicious process running as the user on the REMOTE host can still read
   `~/.claude/` and therefore the plugin's token no matter what we do. Say so
   rather than implying the token bounds it.
+- **The SendEnv probe uses a random value that is never logged and never
+  interpreted beyond equality.** `probeRemoteEnvironment` mints a fresh nonce
+  per call (a UUID by default, injected in tests), exports it into that one
+  ssh child's environment as `LC_LVX_TTY`, and compares the remote echo by
+  exact equality only. The echo travels framed (`LVX_TTY:`) and only the
+  first framed line is read, so banner or stderr noise sharing the capture
+  pipe cannot flip the verdict; the frame itself is never interpreted. The
+  value never appears in argv or stdin — where it would land in `ps`, the
+  log, or a build transcript — and never in a `Log` line, a
+  `VerificationCheck`, an alert, or an error. A mismatch reports only which
+  side refused, with its fixed remedy: no `sendenv` covering the host in
+  `ssh -G` means this Mac is not sending it; otherwise the remote sshd
+  refused it. Do not "improve" the diagnosis by quoting what came back: the
+  echo is remote output, and remote output never travels.
 - **The dogfood control socket is an accepted tradeoff, and the acceptance was
   bounded.** An instrumented build can expose a local AF_UNIX socket that
   starts dictations and reports what the context pipeline resolved
