@@ -36,6 +36,12 @@ rm -f "$timeout_marker"
 
 command_pid=""
 command_pgid=""
+# Comma-separated live pids of the supervised tree (descendants of the
+# command pid UNION its process group), filled by the tree dump and read by
+# the sampler: `swift test` puts xctest in a process group of its OWN, so a
+# group-only sampler captured the idle driver and never the wedged runner
+# (hosted hang, 2026-09-07 run 34161722328).
+forensic_tree_pids=""
 watchdog_pid=""
 watchdog_pgid=""
 monitor_was_enabled=0
@@ -240,6 +246,7 @@ dump_tree_and_pipes_for_forensics() {
     }
   ' "$ps_file")"
   candidates_csv="$(printf '%s\n' "$tree_out" | grep '^[0-9]' | tail -n 1 || true)"
+  forensic_tree_pids="$candidates_csv"
   {
     echo "--- supervised tree (ps pid ppid pgid stat etime command) ---"
     printf '%s\n' "$tree_out" | grep -v '^[0-9]' || true
@@ -280,9 +287,20 @@ sample_group_for_forensics() {
   fi
   {
     echo ""
-    echo "=== supervisor timeout forensics: sampling process group $pgid ==="
+    echo "=== supervisor timeout forensics: sampling process group $pgid (tree pids: ${forensic_tree_pids:-none}) ==="
   } >>"$log_file"
-  for pid in $(pgrep -g "$pgid" -x xctest 2>/dev/null; pgrep -g "$pgid" 2>/dev/null); do
+  # Order: xctest anywhere in the supervised tree first (the runner is the
+  # process that hangs, and `swift test` parks it in its own process group),
+  # then the rest of the tree, then the group. Capped at 3 samples.
+  local tree_xctest="" tree_rest="" p
+  for p in ${forensic_tree_pids//,/ }; do
+    if [[ "$(ps -o comm= -p "$p" 2>/dev/null)" == *xctest* ]]; then
+      tree_xctest="$tree_xctest $p"
+    else
+      tree_rest="$tree_rest $p"
+    fi
+  done
+  for pid in $tree_xctest $tree_rest $(pgrep -g "$pgid" -x xctest 2>/dev/null; pgrep -g "$pgid" 2>/dev/null); do
     (( sampled >= 3 )) && break
     kill -0 "$pid" 2>/dev/null || continue
     case " $seen_pids " in *" $pid "*) continue ;; esac

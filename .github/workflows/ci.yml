@@ -261,7 +261,14 @@ jobs:
           # generous bound is the right one. The point of the supervisor is
           # forensics on a HANG (it samples the wedged xctest before killing
           # it), not a tight performance budget.
-          ./scripts/ci/run-supervised-command.sh \
+          #
+          # NSUnbufferedIO: xctest's stdout is a pipe here, so without it the
+          # runner block-buffers and the log stops at a buffer boundary, up to
+          # several KB (dozens of test cases) BEFORE the test that hung. Four
+          # hosted hangs "always right after PolishModelCatalogTests" were
+          # that boundary, not that suite. Xcode sets the same variable for
+          # its own test runs.
+          NSUnbufferedIO=YES ./scripts/ci/run-supervised-command.sh \
             900 "$RUNNER_TEMP/localvoxtral-unit-tests.log" -- \
             swift test \
             --skip RealtimeAPIVLLMIntegrationTests \

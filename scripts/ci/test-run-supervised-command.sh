@@ -223,6 +223,49 @@ is_live_non_zombie "$stubborn_pid" && fail "tree-forensics run: descendant survi
 fixture_pid=""
 stubborn_pid=""
 
+# A descendant that has LEFT the process group must still be sampled: `swift
+# test` runs xctest in a process group of its own, so the hosted hang of
+# 2026-09-07 (run 34161722328) sampled the idle swift-package driver and
+# never the wedged runner. The tree dump tags it, and the sampler follows
+# the tree, not just the group.
+pid_fifo="$TMP_DIR/escape-pids"
+timeout_fifo="$TMP_DIR/escape-trigger"
+mkfifo "$pid_fifo" "$timeout_fifo"
+cat >"$TMP_DIR/bin/sample" <<'STUB'
+#!/usr/bin/env bash
+echo "stub-sample-of-pid-$1"
+STUB
+chmod +x "$TMP_DIR/bin/sample"
+rm -f "$TMP_DIR/bin/lsof"
+PATH="$TMP_DIR/bin:$PATH" \
+LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO="$timeout_fifo" \
+LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
+LOCALVOXTRAL_SUPERVISOR_LSOF_POLLS=10 \
+  "$SUPERVISOR" 999 "$TMP_DIR/escape.log" -- "$FIXTURE" "$pid_fifo" escape-group &
+supervisor_pid=$!
+read -r fixture_pid stubborn_pid <"$pid_fifo"
+escaped_pgid="$(ps -o pgid= -p "$stubborn_pid" | tr -d '[:space:]')"
+[[ -n "$escaped_pgid" && "$escaped_pgid" != "$fixture_pid" ]] \
+  || fail "escape-group fixture did not leave the leader's process group (pgid $escaped_pgid)"
+printf 'fire\n' >"$timeout_fifo"
+if wait "$supervisor_pid"; then
+  fail "escape-group run unexpectedly succeeded"
+else
+  status=$?
+fi
+supervisor_pid=""
+[[ "$status" == "124" ]] || fail "escape-group run: timeout status changed from 124 to $status"
+grep -q "DESCENDANT $stubborn_pid .* \[left pgroup\]" "$TMP_DIR/escape.log" \
+  || fail "tree dump does not tag the escaped descendant as having left the group"
+grep -q "stub-sample-of-pid-$stubborn_pid" "$TMP_DIR/escape.log" \
+  || fail "sampler skipped the descendant that left the process group"
+# The escaped child is outside the group the supervisor drains; it is this
+# test's to reap.
+kill -KILL "$stubborn_pid" 2>/dev/null || true
+is_live_non_zombie "$fixture_pid" && fail "escape-group run: leader survived"
+fixture_pid=""
+stubborn_pid=""
+
 # A command that finishes naturally while forensics are running must keep
 # its real exit status — the timeout marker is only written if the group is
 # still alive after sampling (PR #160 review: the marker used to be written
