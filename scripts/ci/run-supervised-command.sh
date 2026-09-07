@@ -202,7 +202,14 @@ dump_tree_and_pipes_for_forensics() {
       ppid[$1] = $2
       pgid[$1] = $3
       ids[++n] = $1
-      full[$1] = $0
+      # ps right-pads numeric columns (pid width varies with pid size, so the
+      # raw line has a pid-dependent number of spaces after the tag prefix).
+      # Rebuild the stored line from fields with single spaces so the dump is
+      # greppable and stable; the command (field 6 on) keeps its own spacing.
+      # Explicit field repetition, not intervals: BSD awk is what runs this.
+      cmd = $0
+      sub(/^[[:space:]]*[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+/, "", cmd)
+      full[$1] = $1 " " $2 " " $3 " " $4 " " $5 " " cmd
     }
     END {
       if (root in ppid) {
