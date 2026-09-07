@@ -202,7 +202,12 @@ dump_tree_and_pipes_for_forensics() {
       ppid[$1] = $2
       pgid[$1] = $3
       ids[++n] = $1
-      full[$1] = $0
+      # ps right-aligns the pid column, so short pids arrive with leading
+      # blanks; strip them so every line reads "DESCENDANT <pid> ..." and a
+      # reader (or a grep) can key on the pid without guessing the padding.
+      line = $0
+      sub(/^[ \t]+/, "", line)
+      full[$1] = line
     }
     END {
       if (root in ppid) {
