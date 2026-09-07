@@ -269,13 +269,21 @@ jobs:
               *)   fail=$((fail + 1)); outcome=FAIL ;;
             esac
             echo "PROBE RESULT: $label -> $outcome rc=$rc in $((end - start))s"
+            # PROBE-2: a timed-out swift-test leaves its xctest behind (own
+            # process group, out of the supervisor's group kill — probe 1
+            # proved it: pid 20105 still alive 15 min later). Reap strays here
+            # so one hang's leftover cannot shape the next iteration; the
+            # evidence is already in the per-iteration log file.
+            pkill -f 'localvoxtralPackageTests.xctest' 2>/dev/null || true
           }
           SKIP_ARGS=(--skip RealtimeAPIVLLMIntegrationTests
                      --skip SpeechHelperIntegrationTests
                      --skip AgentDictationE2EEvalTests
                      --skip HerdrIntegrationTests
                      --enable-code-coverage)
-          for i in 1 2 3 4 5 6 7 8 9 10; do
+          # PROBE-2: probe 1 hung 2/10 BackendManagerTests-filtered runs and
+          # 0/10 supervisor-filtered, 0/5 full — weight the reproducer 15x.
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
             run_one "BackendManagerTests-$i" 900 swift test "${SKIP_ARGS[@]}" --filter BackendManagerTests
           done
           for i in 1 2 3 4 5 6 7 8 9 10; do
