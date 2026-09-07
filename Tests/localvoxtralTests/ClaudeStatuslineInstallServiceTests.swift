@@ -190,6 +190,30 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
         )
     }
 
+    func testUpdatePreservesOtherEntryKeys() throws {
+        // M1: Claude Code's documented `padding` key (and any future key)
+        // must survive our own offered Update.
+        let existing = try settingsJSON([
+            "statusLine": [
+                "type": "command",
+                "command": Self.hookCommand,
+                "padding": 2,
+                "futureKey": "keep-me",
+            ],
+        ])
+        let updated = try XCTUnwrap(ClaudeStatuslineInstallService.updatedSettingsData(
+            existing: existing, hookCommand: Self.hookCommand
+        ))
+        let parsed = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: updated) as? [String: Any]
+        )
+        let entry = try XCTUnwrap(parsed["statusLine"] as? [String: Any])
+        XCTAssertEqual(entry["padding"] as? Int, 2, "padding survives Update")
+        XCTAssertEqual(entry["futureKey"] as? String, "keep-me", "unknown keys survive")
+        XCTAssertEqual(entry["type"] as? String, "command")
+        XCTAssertEqual(entry["command"] as? String, Self.hookCommand)
+    }
+
     func testReapplyIsByteIdentical() throws {
         let fs = StubStatuslineFS(state: ClaudeStatuslineState(fileExists: false))
         let service = ClaudeStatuslineInstallService(fileSystem: fs)

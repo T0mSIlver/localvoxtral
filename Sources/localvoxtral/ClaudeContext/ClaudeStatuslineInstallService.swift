@@ -200,7 +200,15 @@ public struct ClaudeStatuslineInstallService: Sendable {
                 return nil
             }
         }
-        settings[settingsKey] = [commandTypeKey: commandType, commandKey: hookCommand]
+        // M1: preserve every other key on the user's entry (`padding` and
+        // any future Claude Code key) — only `type`/`command` are ours to set.
+        var entry: [String: Any] = [:]
+        if let existingEntry = settings[settingsKey] as? [String: Any] {
+            entry = existingEntry
+        }
+        entry[commandTypeKey] = commandType
+        entry[commandKey] = hookCommand
+        settings[settingsKey] = entry
         return renderSettings(settings)
     }
 
