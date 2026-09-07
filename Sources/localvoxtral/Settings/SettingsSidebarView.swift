@@ -157,9 +157,15 @@ private struct SettingsSidebarRow: View {
             )
         }
         .buttonStyle(.plain)
+        // No focus ring on sidebar rows (owner review, 2026-09-07): when the
+        // window becomes key, SwiftUI hands first-responder to the FIRST row
+        // (General), which then draws a blue ring while another row is
+        // selected. Disabling only the focus EFFECT keeps the button a real,
+        // keyboard-navigable, AX-pressable button — it just never paints the
+        // ring. Selection is already shown by the row's own fill.
+        .focusEffectDisabled()
         .onHover { isHovering = $0 }
         .animation(.easeInOut(duration: 0.12), value: isSelected)
-        .help(tab.subtitle)
         .accessibilityLabel(tab.title)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
         .accessibilityIdentifier(tab.accessibilityIdentifier)
