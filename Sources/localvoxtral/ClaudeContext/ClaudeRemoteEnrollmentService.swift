@@ -156,12 +156,39 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         public var argv: [String]
         public var standardInput: Data
         public var timeout: TimeInterval
+        /// Values added to the child process environment. Used by the
+        /// SendEnv probe so its nonce never appears in argv or stdin.
+        public var environment: [String: String]
 
-        public init(argv: [String], standardInput: Data, timeout: TimeInterval) {
+        public init(
+            argv: [String],
+            standardInput: Data,
+            timeout: TimeInterval,
+            environment: [String: String] = [:]
+        ) {
             self.argv = argv
             self.standardInput = standardInput
             self.timeout = timeout
+            self.environment = environment
         }
+    }
+
+    public enum PluginSetupOutcome: Sendable, Equatable {
+        case installed
+        case updated
+        case alreadyCurrent
+    }
+
+    public enum EnvironmentCrossingOutcome: Sendable, Equatable {
+        case crossed
+        case localSendEnvMissing
+        case remoteAcceptEnvMissing
+    }
+
+    public enum HerdrSetupOutcome: Sendable, Equatable {
+        case configured
+        case notFound
+        case customized
     }
 
     public struct ExecutionStep: Sendable, Equatable {
@@ -229,6 +256,10 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// `.claude-plugin/marketplace.json` listing both plugins for exactly this.
     public static let repositoryMarketplaceReference = "T0mSIlver/localvoxtral"
 
+    /// Kept next to the installer that verifies it. A manifest contract test
+    /// pins this value to the remote plugin's plugin.json.
+    public static let remotePluginVersion = "1.7.0"
+
     /// The plugin's sensitive userConfig key. Claude Code exposes it to the
     /// plugin's COMMAND-hook shim as `CLAUDE_PLUGIN_OPTION_TOKEN`; the shim
     /// hands it to curl through a private header file, never an argv. (It is
@@ -257,13 +288,19 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
 
     private let runner: Runner?
     private let sshConfigFileSystem: (any ClaudeRemoteSSHConfigFileSystem)?
+    private let now: @Sendable () -> Date
+    private let environmentProbeValue: @Sendable () -> String
 
     public init(
         runner: Runner? = nil,
-        sshConfigFileSystem: (any ClaudeRemoteSSHConfigFileSystem)? = nil
+        sshConfigFileSystem: (any ClaudeRemoteSSHConfigFileSystem)? = nil,
+        now: @escaping @Sendable () -> Date = Date.init,
+        environmentProbeValue: @escaping @Sendable () -> String = { UUID().uuidString }
     ) {
         self.runner = runner
         self.sshConfigFileSystem = sshConfigFileSystem
+        self.now = now
+        self.environmentProbeValue = environmentProbeValue
     }
 
     public static var remotePluginReference: String {
@@ -445,6 +482,12 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         }
     }
 
+    /// Whether this instance can edit `~/.ssh/config`. Production always wires
+    /// the live file system; a model that cannot edit also never wrote a block
+    /// through this service, so Remove Host has nothing to reverse through it
+    /// and must not treat that as a failure.
+    public var canEditSSHConfig: Bool { sshConfigFileSystem != nil }
+
     // MARK: - SSH config editing
 
     /// Insert or replace this host's block in an ssh config's text.
@@ -521,8 +564,28 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// disagree.
     public func insertSSHConfig(snippet: String, hostID: String) throws {
         Log.claudeContext.info("Claude remote ssh config insertion requested")
+        try writeSSHConfig(operation: "insertion") {
+            Self.applySSHConfigSnippet(to: $0, snippet: snippet, hostID: hostID)
+        }
+    }
+
+    /// Remove one marked host block through the same trust gate and atomic
+    /// writer used for enrollment.
+    public func removeSSHConfig(hostID: String) throws {
+        Log.claudeContext.info("Claude remote ssh config removal requested")
+        try writeSSHConfig(operation: "removal") {
+            Self.removeSSHConfigSnippet(from: $0, hostID: hostID)
+        }
+    }
+
+    private func writeSSHConfig(
+        operation: String,
+        transform: (String) -> String
+    ) throws {
         guard let sshConfigFileSystem else {
-            Log.claudeContext.error("Claude remote ssh config insertion failed: editing not configured")
+            Log.claudeContext.error(
+                "Claude remote ssh config \(operation, privacy: .public) failed: editing not configured"
+            )
             throw ServiceError.sshConfigEditingNotConfigured
         }
         do {
@@ -547,11 +610,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             } else {
                 existing = ""
             }
-            let updated = Self.applySSHConfigSnippet(
-                to: existing,
-                snippet: snippet,
-                hostID: hostID
-            )
+            let updated = transform(existing)
             if !state.directoryExists {
                 try sshConfigFileSystem.createSSHDirectory(permissions: 0o700)
             }
@@ -559,10 +618,12 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                 Data(updated.utf8),
                 permissions: state.configPermissions ?? 0o600
             )
-            Log.claudeContext.info("Claude remote ssh config insertion completed")
+            Log.claudeContext.info(
+                "Claude remote ssh config \(operation, privacy: .public) completed"
+            )
         } catch {
             Log.claudeContext.error(
-                "Claude remote ssh config insertion failed: \(String(describing: error), privacy: .public)"
+                "Claude remote ssh config \(operation, privacy: .public) failed: \(String(describing: error), privacy: .public)"
             )
             throw error
         }
@@ -599,15 +660,13 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         }) else { return false }
         let block = lines[beginIndex...endIndex]
         let forwardsPort = block.contains { line in
-            let fields = line.trimmingCharacters(in: .whitespaces)
-                .split(separator: " ", omittingEmptySubsequences: true)
+            let fields = line.split(whereSeparator: \.isWhitespace)
             guard fields.count >= 2, fields[0] == "RemoteForward" else { return false }
             return fields[1] == "\(port)"
         }
-        // An exact line: `# SendEnv LC_LVX_TTY` contains the substring too, and
-        // a commented-out directive sends nothing.
-        let sendsLocalTTY = block.contains {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines) == "SendEnv LC_LVX_TTY"
+        let sendsLocalTTY = block.contains { line in
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            return fields.count >= 2 && fields[0] == "SendEnv" && fields[1] == "LC_LVX_TTY"
         }
         return forwardsPort && sendsLocalTTY
     }
@@ -740,6 +799,309 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         )
     }
 
+    /// Install or update the remote plugin, then prove the installed version
+    /// before the SSH session exits — all in ONE ssh session, so the proof
+    /// describes the install that just ran. Plugin-list output is consumed
+    /// remotely because it can contain a stored token this process cannot
+    /// redact; only our own sentinel reaches this side.
+    ///
+    /// The version check reads the line `claude plugin list` prints for our
+    /// reference (`<name>@<marketplace> <version>` — the same line
+    /// `ClaudePluginStatus.installedVersion` reads) and matches the version as
+    /// a space-delimited word, so `11.7.0` can never satisfy `1.7.0`.
+    public func setupRemotePlugin(
+        sshHostAlias: String,
+        token: String?,
+        remoteForwardPort: UInt16,
+        timeout: TimeInterval = defaultRemoteSetupTimeout
+    ) throws -> PluginSetupOutcome {
+        guard let runner else { throw ServiceError.executionNotConfigured }
+        guard Self.isValidHostAlias(sshHostAlias) else { throw ServiceError.invalidHostAlias }
+        let reference = Self.remotePluginReference
+        let tokenArguments = token.map {
+            " --config '\(Self.tokenConfigKey)=\($0)'"
+        } ?? ""
+        // Decided HERE, not on the host: an absent plugin can only be installed
+        // with a credential, and the update path deliberately has none (the
+        // one-time enrollment token is long gone). Installing tokenless would
+        // look exactly like a healthy enrollment failing open, so the script
+        // reports the absence and the run names the remedy instead.
+        let absentBranch = token == nil
+            ? """
+              printf '%s\\n' LVX_PLUGIN_ABSENT
+              exit 44
+
+            """
+            : """
+              claude plugin marketplace add \(Self.repositoryMarketplaceReference)
+              claude plugin install \(reference)\(tokenArguments) --config '\(Self.portConfigKey)=\(remoteForwardPort)'
+              lv_outcome=LVX_PLUGIN_INSTALLED
+
+            """
+        let script = """
+            set -eu
+            \(Self.claudePathResolverPreamble)lv_line=$(claude plugin list 2>&1 | grep -F '\(reference)' | head -n 1)
+            if [ -z "$lv_line" ]; then
+            \(absentBranch)else
+              lv_current=0
+              case " $lv_line " in
+                *" \(Self.remotePluginVersion) "*) lv_current=1 ;;
+              esac
+              if [ "$lv_current" -eq 0 ]; then
+                claude plugin marketplace update \(ClaudePluginAssets.marketplaceName)
+                claude plugin update \(reference)
+                lv_outcome=LVX_PLUGIN_UPDATED
+              else
+                lv_outcome=LVX_PLUGIN_ALREADY_CURRENT
+              fi
+              claude plugin install \(reference)\(tokenArguments) --config '\(Self.portConfigKey)=\(remoteForwardPort)'
+            fi
+            lv_after=$(claude plugin list 2>&1 | grep -F '\(reference)' | head -n 1)
+            case " $lv_after " in
+              *" \(Self.remotePluginVersion) "*) : ;;
+              *) exit 43 ;;
+            esac
+            printf '%s\\n' "$lv_outcome"
+            """
+        let result: RunResult
+        do {
+            result = try runner(
+                Invocation(
+                    argv: [
+                        "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
+                        sshHostAlias, "/bin/sh", "-s",
+                    ],
+                    standardInput: Data(script.utf8),
+                    timeout: max(timeout, 0)
+                )
+            )
+        } catch {
+            throw sanitizedRunnerError(error, command: "install and verify remote plugin")
+        }
+        if result.exitCode == 44 {
+            throw ServiceError.commandFailed(
+                step: 0,
+                command: "install and verify remote plugin",
+                exitCode: 44,
+                message: ClaudeRemoteTokenRedaction.redact(
+                    "The plugin is not installed on the host, and this run has no token to "
+                        + "give it. Rotate this host's token, then run setup again.",
+                    token: token ?? ""
+                )
+            )
+        }
+        if result.exitCode == 43 {
+            throw ServiceError.commandFailed(
+                step: 0,
+                command: "install and verify remote plugin",
+                exitCode: 43,
+                message: ClaudeRemoteTokenRedaction.redact(
+                    "The plugin is installed but did not report version "
+                        + Self.remotePluginVersion
+                        + " when read back in the same session.",
+                    token: token ?? ""
+                )
+            )
+        }
+        guard result.succeeded else {
+            let message = result.exitCode == 127
+                ? "Claude CLI was not found on the remote host. "
+                    + "Install Claude Code there, or put it on the non-interactive SSH PATH."
+                : "The remote plugin setup command failed."
+            throw ServiceError.commandFailed(
+                step: 0,
+                command: "install and verify remote plugin",
+                exitCode: result.exitCode,
+                message: ClaudeRemoteTokenRedaction.redact(message, token: token ?? "")
+            )
+        }
+        if result.message.contains("LVX_PLUGIN_INSTALLED") { return .installed }
+        if result.message.contains("LVX_PLUGIN_UPDATED") { return .updated }
+        if result.message.contains("LVX_PLUGIN_ALREADY_CURRENT") { return .alreadyCurrent }
+        throw ServiceError.runnerFailed(
+            step: 0,
+            command: "install and verify remote plugin",
+            message: "The host did not report a plugin setup outcome."
+        )
+    }
+
+    /// Prove that this process's LC_LVX_TTY value crosses sshd. The random
+    /// value exists only in the child environment and is never logged.
+    ///
+    /// The echo is FRAMED (`LVX_TTY:<value>`) and only the first framed line
+    /// is read, for the same reason every other probe frames: stderr shares
+    /// the capture pipe, and a login banner or MOTD glued to the value would
+    /// otherwise turn a healthy crossing into a "remote refused it" verdict.
+    /// The frame is never interpreted — the payload is compared by exact
+    /// equality with the minted value and nothing else.
+    public func probeRemoteEnvironment(
+        sshHostAlias: String,
+        timeout: TimeInterval = defaultVerificationTimeout
+    ) throws -> EnvironmentCrossingOutcome {
+        guard let runner else { throw ServiceError.executionNotConfigured }
+        guard Self.isValidHostAlias(sshHostAlias) else { throw ServiceError.invalidHostAlias }
+        let probe = environmentProbeValue()
+        let invocation = Invocation(
+            argv: [
+                "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
+                sshHostAlias, "/bin/sh", "-s",
+            ],
+            standardInput: Data("printf 'LVX_TTY:%s\\n' \"${LC_LVX_TTY-}\"\n".utf8),
+            timeout: max(timeout, 0),
+            environment: ["LC_LVX_TTY": probe]
+        )
+        let result: RunResult
+        do {
+            result = try runner(invocation)
+        } catch {
+            throw sanitizedRunnerError(error, command: "check remote environment")
+        }
+        guard result.succeeded else {
+            throw ServiceError.commandFailed(
+                step: 0,
+                command: "check remote environment",
+                exitCode: result.exitCode,
+                message: "SSH did not complete the environment check."
+            )
+        }
+        let echoed = Self.framedProbeAnswer(in: result.message, prefix: Self.envProbeFramePrefix)
+            .map { String($0.dropFirst(Self.envProbeFramePrefix.count)) }
+        guard echoed == probe else {
+            let configResult: RunResult
+            do {
+                configResult = try runner(
+                    Invocation(
+                        argv: ["ssh", "-G", "--", sshHostAlias],
+                        standardInput: Data(),
+                        timeout: max(timeout, 0)
+                    )
+                )
+            } catch {
+                throw sanitizedRunnerError(error, command: "inspect SSH SendEnv")
+            }
+            guard configResult.succeeded else {
+                throw ServiceError.commandFailed(
+                    step: 0,
+                    command: "inspect SSH SendEnv",
+                    exitCode: configResult.exitCode,
+                    message: "OpenSSH could not expand this host's configuration."
+                )
+            }
+            return Self.sshGOutputSendsLocalTTY(configResult.message)
+                ? .remoteAcceptEnvMissing
+                : .localSendEnvMissing
+        }
+        return .crossed
+    }
+
+    /// Configure the remote herdr panel when herdr exists. Absence and a
+    /// customized agents table are deliberate skipped outcomes, not failures.
+    public func setupRemoteHerdr(
+        sshHostAlias: String,
+        timeout: TimeInterval = defaultRemoteSetupTimeout
+    ) throws -> HerdrSetupOutcome {
+        guard Self.isValidHostAlias(sshHostAlias) else { throw ServiceError.invalidHostAlias }
+        let script = """
+            set -eu
+            if ! command -v herdr >/dev/null 2>&1; then
+              for lv_dir in "$HOME/.claude/local" "$HOME/.local/bin" "$HOME/bin" /opt/homebrew/bin /usr/local/bin "$HOME"/.nvm/versions/node/*/bin; do
+                if [ -x "$lv_dir/herdr" ]; then PATH="$lv_dir:$PATH"; break; fi
+              done
+            fi
+            if ! command -v herdr >/dev/null 2>&1; then
+              printf '%s\\n' LVX_HERDR_ABSENT
+              exit 0
+            fi
+            lv_config=${HERDR_CONFIG_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml}
+            if [ -f "$lv_config" ] && grep -Eq '^[[:space:]]*\\[ui\\.sidebar\\.agents\\][[:space:]]*(#.*)?$|^[[:space:]]*rows[[:space:]]*=' "$lv_config"; then
+              printf '%s\\n' LVX_HERDR_CUSTOMIZED
+              exit 42
+            fi
+            mkdir -p "$(dirname "$lv_config")"
+            touch "$lv_config"
+            cat >> "$lv_config" <<'LOCALVOXTRAL_HERDR_PANEL'
+            \(Self.herdrPanelConfigSnippet)
+            LOCALVOXTRAL_HERDR_PANEL
+            herdr server reload-config
+            printf '%s\\n' LVX_HERDR_CONFIGURED
+            """
+        guard let runner else { throw ServiceError.executionNotConfigured }
+        let invocation = Invocation(
+            argv: [
+                "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
+                sshHostAlias, "/bin/sh", "-s",
+            ],
+            standardInput: Data(script.utf8),
+            timeout: max(timeout, 0)
+        )
+        let result: RunResult
+        do {
+            result = try runner(invocation)
+        } catch {
+            throw sanitizedRunnerError(error, command: "configure remote herdr")
+        }
+        if result.exitCode == 42, result.message.contains("LVX_HERDR_CUSTOMIZED") {
+            return .customized
+        }
+        guard result.succeeded else {
+            throw ServiceError.commandFailed(
+                step: 0,
+                command: "configure remote herdr",
+                exitCode: result.exitCode,
+                message: "The remote herdr setup command failed."
+            )
+        }
+        if result.message.contains("LVX_HERDR_ABSENT") { return .notFound }
+        if result.message.contains("LVX_HERDR_CONFIGURED") { return .configured }
+        throw ServiceError.runnerFailed(
+            step: 0,
+            command: "configure remote herdr",
+            message: "The host did not report a herdr setup outcome. "
+                + "Check its herdr config, then run setup again."
+        )
+    }
+
+    private func sanitizedRunnerError(_ error: Error, command: String) -> ServiceError {
+        if let failure = error as? RunnerFailure {
+            switch failure {
+            case .timedOut(let seconds, _):
+                return .commandTimedOut(
+                    step: 0, command: command, seconds: seconds, message: "The host timed out."
+                )
+            case .outputTooLarge(let capBytes, _):
+                return .runnerFailed(
+                    step: 0,
+                    command: command,
+                    message: "The host exceeded the \(capBytes)-byte output limit."
+                )
+            }
+        }
+        return .runnerFailed(
+            step: 0, command: command, message: "The remote command could not be started."
+        )
+    }
+
+    private static func sshGOutputSendsLocalTTY(_ output: String) -> Bool {
+        output.split(whereSeparator: \.isNewline).contains { line in
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            guard fields.first?.lowercased() == "sendenv" else { return false }
+            return fields.dropFirst().contains { wildcard($0, matches: "LC_LVX_TTY") }
+        }
+    }
+
+    private static func wildcard(_ pattern: Substring, matches value: String) -> Bool {
+        let parts = pattern.split(separator: "*", omittingEmptySubsequences: false)
+        if parts.count == 1 { return String(pattern) == value }
+        var remainder = value[...]
+        for (index, part) in parts.enumerated() where !part.isEmpty {
+            guard let range = remainder.range(of: part) else { return false }
+            if index == 0, range.lowerBound != remainder.startIndex { return false }
+            remainder = remainder[range.upperBound...]
+        }
+        if let last = parts.last, !last.isEmpty { return remainder.isEmpty }
+        return true
+    }
+
     /// Append localvoxtral's agents-panel row only when the remote config has
     /// no agents table and no rows key. The caller must obtain explicit consent
     /// immediately before invoking this method.
@@ -852,14 +1214,14 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             )
             throw ServiceError.invalidHostAlias
         }
-        let deadline = Date().addingTimeInterval(max(timeout, 0))
+        let deadline = now().addingTimeInterval(max(timeout, 0))
         var completed: [ExecutionStep] = []
         for (index, command) in commands.enumerated() {
             let displayCommand = ClaudeRemoteTokenRedaction.redact(
                 command.trimmingCharacters(in: .whitespaces),
                 token: token
             )
-            let remaining = max(deadline.timeIntervalSinceNow, 0)
+            let remaining = max(deadline.timeIntervalSince(now()), 0)
             guard remaining > 0 else {
                 let failure = ServiceError.commandTimedOut(
                     step: index, command: displayCommand, seconds: timeout, message: ""
@@ -1127,6 +1489,8 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// completely different fixes — the plugin's shim IS curl, so a host
     /// without it can never deliver context no matter how healthy the tunnel.
     static let missingCurlSentinel = "LVX_NO_CURL"
+    /// Frame carrying the env probe's echo. Payload compared by equality only.
+    static let envProbeFramePrefix = "LVX_TTY:"
 
     static func tunnelProbeScript(remoteForwardPort: UInt16) -> Data {
         Data("""
@@ -1140,11 +1504,11 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     }
 
     /// The first framed line, or nil when the probe never spoke.
-    static func framedProbeAnswer(in output: String) -> String? {
+    static func framedProbeAnswer(in output: String, prefix: String = probeFramePrefix) -> String? {
         output
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
-            .first { $0.hasPrefix(probeFramePrefix) }
+            .first { $0.hasPrefix(prefix) }
     }
 
     /// The local half of the tunnel verdict, as its own value.
