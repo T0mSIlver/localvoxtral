@@ -2501,6 +2501,25 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertEqual(try customized.setupRemoteHerdr(sshHostAlias: "builder"), .customized)
     }
 
+    func testHerdrSetupRequiresTheConfiguredOutcomeFrame() throws {
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            .init(exitCode: 0, message: "")
+        })
+
+        XCTAssertThrowsError(try service.setupRemoteHerdr(sshHostAlias: "builder")) { error in
+            guard case ClaudeRemoteEnrollmentService.ServiceError
+                .runnerFailed(_, let command, let message) = error else {
+                return XCTFail("expected an unreported herdr outcome, got \(error)")
+            }
+            XCTAssertEqual(command, "configure remote herdr")
+            XCTAssertEqual(
+                message,
+                "The host did not report a herdr setup outcome. "
+                    + "Check its herdr config, then run setup again."
+            )
+        }
+    }
+
     func testRemovingTheLocalSSHBlockUsesTheSameTrustedWriter() throws {
         let applied = ClaudeRemoteEnrollmentService.applySSHConfigSnippet(
             to: "Host other\n    User me\n",

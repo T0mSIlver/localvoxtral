@@ -1042,7 +1042,13 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             )
         }
         if result.message.contains("LVX_HERDR_ABSENT") { return .notFound }
-        return .configured
+        if result.message.contains("LVX_HERDR_CONFIGURED") { return .configured }
+        throw ServiceError.runnerFailed(
+            step: 0,
+            command: "configure remote herdr",
+            message: "The host did not report a herdr setup outcome. "
+                + "Check its herdr config, then run setup again."
+        )
     }
 
     private func sanitizedRunnerError(_ error: Error, command: String) -> ServiceError {
