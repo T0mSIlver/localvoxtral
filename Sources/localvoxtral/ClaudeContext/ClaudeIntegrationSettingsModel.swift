@@ -926,7 +926,7 @@ public final class ClaudeIntegrationSettingsModel {
         case (true, true):
             cause = "an outdated plugin or a stale token"
         case (true, false):
-            return "Rejected connections suggest an outdated plugin; use Update plugin."
+            return "Rejected connections suggest an outdated plugin; use Update host."
         case (false, true):
             return "Rejected connections suggest a stale token; rotate it and rerun setup."
         case (false, false):

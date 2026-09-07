@@ -1888,7 +1888,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertNil(hint(ClaudeRemoteRejectionTally.Snapshot()))
         XCTAssertEqual(
             hint(ClaudeRemoteRejectionTally.Snapshot(emptyCredential: 1)),
-            "Rejected connections suggest an outdated plugin; use Update plugin."
+            "Rejected connections suggest an outdated plugin; use Update host."
         )
         XCTAssertEqual(
             hint(ClaudeRemoteRejectionTally.Snapshot(unknownToken: 1)),
