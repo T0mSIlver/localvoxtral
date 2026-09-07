@@ -799,16 +799,87 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         )
     }
 
-    /// Install or update the remote plugin, then prove the installed version
-    /// before the SSH session exits — all in ONE ssh session, so the proof
-    /// describes the install that just ran. Plugin-list output is consumed
-    /// remotely because it can contain a stored token this process cannot
-    /// redact; only our own sentinel reaches this side.
+    /// One entry of `claude plugin list --json`. Only the keys the version
+    /// check reads; the decoder ignores everything else the CLI adds.
+    public struct RemotePluginListEntry: Decodable, Equatable, Sendable {
+        public let id: String
+        public let version: String
+        public let scope: String?
+        public let enabled: Bool?
+    }
+
+    public static let pluginListFrameBegin = "LVX_PLUGIN_LIST_BEGIN"
+    public static let pluginListFrameEnd = "LVX_PLUGIN_LIST_END"
+    /// A listing is a few hundred bytes per installed plugin. Anything past
+    /// this is not a listing, and is never decoded.
+    public static let maxPluginListBytes = 256 * 1024
+
+    /// The script that prints the host's installed plugins as JSON inside a
+    /// frame. The frame is what makes the capture readable regardless of what
+    /// else the login writes to the pipe (banners, MOTD, stderr).
+    static var remotePluginListingScript: String {
+        """
+        set -eu
+        \(Self.claudePathResolverPreamble)printf '%s\\n' \(pluginListFrameBegin)
+        claude plugin list --json
+        printf '\\n%s\\n' \(pluginListFrameEnd)
+        """
+    }
+
+    /// The installed version of `reference` in a framed listing capture, or
+    /// nil when the host has no such plugin. A user-scope entry wins over a
+    /// project/local one; among equals the first entry wins. Throws when the
+    /// capture carries no frame or the frame's payload is not a JSON array of
+    /// entries — a host we could not read is a different verdict from a host
+    /// with nothing installed, and is never reported as the latter.
+    static func installedRemotePluginVersion(
+        inFramedOutput output: String,
+        reference: String
+    ) throws -> String? {
+        guard let beginRange = output.range(of: pluginListFrameBegin),
+              let endRange = output.range(
+                  of: pluginListFrameEnd, range: beginRange.upperBound..<output.endIndex
+              )
+        else {
+            throw ServiceError.runnerFailed(
+                step: 0,
+                command: "list remote plugins",
+                message: "The host did not return a plugin listing."
+            )
+        }
+        let payload = output[beginRange.upperBound..<endRange.lowerBound]
+        let data = Data(payload.utf8)
+        guard data.count <= maxPluginListBytes else {
+            throw ServiceError.runnerFailed(
+                step: 0,
+                command: "list remote plugins",
+                message: "The host's plugin listing is larger than a listing can be."
+            )
+        }
+        let entries: [RemotePluginListEntry]
+        do {
+            entries = try JSONDecoder().decode([RemotePluginListEntry].self, from: data)
+        } catch {
+            throw ServiceError.runnerFailed(
+                step: 0,
+                command: "list remote plugins",
+                message: "The host's plugin listing could not be decoded."
+            )
+        }
+        let matches = entries.filter { $0.id == reference }
+        return (matches.first { $0.scope == "user" } ?? matches.first)?.version
+    }
+
+    /// Install or update the remote plugin and prove the installed version.
     ///
-    /// The version check reads the line `claude plugin list` prints for our
-    /// reference (`<name>@<marketplace> <version>` — the same line
-    /// `ClaudePluginStatus.installedVersion` reads) and matches the version as
-    /// a space-delimited word, so `11.7.0` can never satisfy `1.7.0`.
+    /// Three ssh calls, each with one job: a framed `claude plugin list
+    /// --json` capture that THIS side decodes (never text-matched on the
+    /// host — the human listing's shape changed once already and took every
+    /// host with it), the install or update, then a second decoded listing
+    /// as the read-back. The listing carries ids, versions, scopes and paths;
+    /// it never carries a plugin's stored config or token (verified against
+    /// Claude Code 2.1.x on 2026-09-07), so decoding it here reads nothing
+    /// this process could not redact.
     public func setupRemotePlugin(
         sshHostAlias: String,
         token: String?,
@@ -818,112 +889,116 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         guard let runner else { throw ServiceError.executionNotConfigured }
         guard Self.isValidHostAlias(sshHostAlias) else { throw ServiceError.invalidHostAlias }
         let reference = Self.remotePluginReference
+        let expected = Self.remotePluginVersion
         let tokenArguments = token.map {
             " --config '\(Self.tokenConfigKey)=\($0)'"
         } ?? ""
-        // Decided HERE, not on the host: an absent plugin can only be installed
-        // with a credential, and the update path deliberately has none (the
-        // one-time enrollment token is long gone). Installing tokenless would
-        // look exactly like a healthy enrollment failing open, so the script
-        // reports the absence and the run names the remedy instead.
-        let absentBranch = token == nil
-            ? """
-              printf '%s\\n' LVX_PLUGIN_ABSENT
-              exit 44
 
-            """
-            : """
-              claude plugin marketplace add \(Self.repositoryMarketplaceReference)
-              claude plugin install \(reference)\(tokenArguments) --config '\(Self.portConfigKey)=\(remoteForwardPort)'
-              lv_outcome=LVX_PLUGIN_INSTALLED
+        func run(_ script: String, command: String) throws -> RunResult {
+            do {
+                return try runner(
+                    Invocation(
+                        argv: [
+                            "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
+                            sshHostAlias, "/bin/sh", "-s",
+                        ],
+                        standardInput: Data(script.utf8),
+                        timeout: max(timeout, 0)
+                    )
+                )
+            } catch {
+                throw sanitizedRunnerError(error, command: command)
+            }
+        }
 
-            """
-        let script = """
-            set -eu
-            \(Self.claudePathResolverPreamble)lv_line=$(claude plugin list 2>&1 | grep -F '\(reference)' | head -n 1)
-            if [ -z "$lv_line" ]; then
-            \(absentBranch)else
-              lv_current=0
-              case " $lv_line " in
-                *" \(Self.remotePluginVersion) "*) lv_current=1 ;;
-              esac
-              if [ "$lv_current" -eq 0 ]; then
-                claude plugin marketplace update \(ClaudePluginAssets.marketplaceName)
+        func installedVersion(command: String) throws -> String? {
+            let result = try run(Self.remotePluginListingScript, command: command)
+            guard result.succeeded else {
+                let message = result.exitCode == 127
+                    ? "Claude CLI was not found on the remote host. "
+                        + "Install Claude Code there, or put it on the non-interactive SSH PATH."
+                    : "The remote plugin listing command failed."
+                throw ServiceError.commandFailed(
+                    step: 0,
+                    command: command,
+                    exitCode: result.exitCode,
+                    message: ClaudeRemoteTokenRedaction.redact(message, token: token ?? "")
+                )
+            }
+            return try Self.installedRemotePluginVersion(
+                inFramedOutput: result.message, reference: reference
+            )
+        }
+
+        let before = try installedVersion(command: "list remote plugins")
+
+        let mutation: String
+        let outcome: PluginSetupOutcome
+        switch before {
+        case nil:
+            // Decided HERE, not on the host: an absent plugin can only be
+            // installed with a credential, and the update path deliberately
+            // has none (the one-time enrollment token is long gone).
+            // Installing tokenless would look exactly like a healthy
+            // enrollment failing open, so the absence names the remedy.
+            guard token != nil else {
+                throw ServiceError.commandFailed(
+                    step: 0,
+                    command: "install remote plugin",
+                    exitCode: 44,
+                    message: "The plugin is not installed on the host, and this run has no token to "
+                        + "give it. Rotate this host's token, then run setup again."
+                )
+            }
+            mutation = """
+                set -eu
+                \(Self.claudePathResolverPreamble)claude plugin marketplace add \(Self.repositoryMarketplaceReference)
+                claude plugin install \(reference)\(tokenArguments) --config '\(Self.portConfigKey)=\(remoteForwardPort)'
+                """
+            outcome = .installed
+        case expected?:
+            // Current already; the install re-applies the port config only.
+            mutation = """
+                set -eu
+                \(Self.claudePathResolverPreamble)claude plugin install \(reference)\(tokenArguments) --config '\(Self.portConfigKey)=\(remoteForwardPort)'
+                """
+            outcome = .alreadyCurrent
+        default:
+            mutation = """
+                set -eu
+                \(Self.claudePathResolverPreamble)claude plugin marketplace update \(ClaudePluginAssets.marketplaceName)
                 claude plugin update \(reference)
-                lv_outcome=LVX_PLUGIN_UPDATED
-              else
-                lv_outcome=LVX_PLUGIN_ALREADY_CURRENT
-              fi
-              claude plugin install \(reference)\(tokenArguments) --config '\(Self.portConfigKey)=\(remoteForwardPort)'
-            fi
-            lv_after=$(claude plugin list 2>&1 | grep -F '\(reference)' | head -n 1)
-            case " $lv_after " in
-              *" \(Self.remotePluginVersion) "*) : ;;
-              *) exit 43 ;;
-            esac
-            printf '%s\\n' "$lv_outcome"
-            """
-        let result: RunResult
-        do {
-            result = try runner(
-                Invocation(
-                    argv: [
-                        "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
-                        sshHostAlias, "/bin/sh", "-s",
-                    ],
-                    standardInput: Data(script.utf8),
-                    timeout: max(timeout, 0)
-                )
-            )
-        } catch {
-            throw sanitizedRunnerError(error, command: "install and verify remote plugin")
+                claude plugin install \(reference)\(tokenArguments) --config '\(Self.portConfigKey)=\(remoteForwardPort)'
+                """
+            outcome = .updated
         }
-        if result.exitCode == 44 {
-            throw ServiceError.commandFailed(
-                step: 0,
-                command: "install and verify remote plugin",
-                exitCode: 44,
-                message: ClaudeRemoteTokenRedaction.redact(
-                    "The plugin is not installed on the host, and this run has no token to "
-                        + "give it. Rotate this host's token, then run setup again.",
-                    token: token ?? ""
-                )
-            )
-        }
-        if result.exitCode == 43 {
-            throw ServiceError.commandFailed(
-                step: 0,
-                command: "install and verify remote plugin",
-                exitCode: 43,
-                message: ClaudeRemoteTokenRedaction.redact(
-                    "The plugin is installed but did not report version "
-                        + Self.remotePluginVersion
-                        + " when read back in the same session.",
-                    token: token ?? ""
-                )
-            )
-        }
-        guard result.succeeded else {
-            let message = result.exitCode == 127
+
+        let mutationResult = try run(mutation, command: "install and verify remote plugin")
+        guard mutationResult.succeeded else {
+            let message = mutationResult.exitCode == 127
                 ? "Claude CLI was not found on the remote host. "
                     + "Install Claude Code there, or put it on the non-interactive SSH PATH."
                 : "The remote plugin setup command failed."
             throw ServiceError.commandFailed(
                 step: 0,
                 command: "install and verify remote plugin",
-                exitCode: result.exitCode,
+                exitCode: mutationResult.exitCode,
                 message: ClaudeRemoteTokenRedaction.redact(message, token: token ?? "")
             )
         }
-        if result.message.contains("LVX_PLUGIN_INSTALLED") { return .installed }
-        if result.message.contains("LVX_PLUGIN_UPDATED") { return .updated }
-        if result.message.contains("LVX_PLUGIN_ALREADY_CURRENT") { return .alreadyCurrent }
-        throw ServiceError.runnerFailed(
-            step: 0,
-            command: "install and verify remote plugin",
-            message: "The host did not report a plugin setup outcome."
-        )
+
+        let after = try installedVersion(command: "verify remote plugin")
+        guard after == expected else {
+            throw ServiceError.commandFailed(
+                step: 0,
+                command: "install and verify remote plugin",
+                exitCode: 43,
+                message: "The plugin reports version \(after ?? "none") after setup, not \(expected)."
+            )
+        }
+        return outcome
     }
+
 
     /// Prove that this process's LC_LVX_TTY value crosses sshd. The random
     /// value exists only in the child environment and is never logged.

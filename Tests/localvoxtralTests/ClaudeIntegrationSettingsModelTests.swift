@@ -182,9 +182,14 @@ private final class StubForwarding: ClaudeRemoteForwarding {
 /// noise on both sides, as a real login shell's merged stdout/stderr would
 /// deliver it.
 private struct SetupFlowScript: Sendable {
-    var plugin = ClaudeRemoteEnrollmentService.RunResult(
-        exitCode: 0, message: "LVX_PLUGIN_INSTALLED"
-    )
+    /// The install/update call's result. Its message is never read: the
+    /// outcome comes from the two decoded listings around it.
+    var plugin = ClaudeRemoteEnrollmentService.RunResult(exitCode: 0, message: "")
+    /// What `claude plugin list --json` reports for our plugin before and
+    /// after the install call; nil = not installed. The defaults model a
+    /// fresh host: nothing before, the shipped version after the install.
+    var pluginVersionBefore: String?
+    var pluginVersionAfter: String? = ClaudeRemoteEnrollmentService.remotePluginVersion
     var envEchoesBack = true
     var sendEnvOutput = "hostname builder\nsendenv LANG LC_*\n"
     var herdr = ClaudeRemoteEnrollmentService.RunResult(
@@ -192,6 +197,45 @@ private struct SetupFlowScript: Sendable {
     )
     var tunnelMessage = "LVX_HTTP:401"
     var pluginListMessage = "localvoxtral-remote 1.7.0\n"
+}
+
+/// A `claude plugin list --json` capture as a login shell delivers it: a
+/// banner before the frame, the CLI's own array (a second, unrelated plugin
+/// first, ours at user scope), and the frame end after it. `version == nil`
+/// lists only the unrelated plugin.
+private func framedPluginListing(version: String?) -> String {
+    let ours = version.map {
+        """
+          ,
+          {
+            "id": "\(ClaudeRemoteEnrollmentService.remotePluginReference)",
+            "version": "\($0)",
+            "scope": "user",
+            "enabled": true,
+            "installPath": "/home/dev/.claude/plugins/cache/localvoxtral/localvoxtral-remote/\($0)",
+            "installedAt": "2026-07-27T20:59:23.439Z",
+            "lastUpdated": "2026-09-07T13:27:31.000Z"
+          }
+        """
+    } ?? ""
+    return """
+        Welcome to builder
+        \(ClaudeRemoteEnrollmentService.pluginListFrameBegin)
+        [
+          {
+            "id": "frontend-design@claude-plugins-official",
+            "version": "unknown",
+            "scope": "project",
+            "enabled": false,
+            "installPath": "/home/dev/.claude/plugins/cache/claude-plugins-official/frontend-design/unknown",
+            "installedAt": "2026-07-01T15:07:39.195Z",
+            "lastUpdated": "2026-07-01T15:07:39.195Z",
+            "projectPath": "/home/dev/work/other"
+          }\(ours)
+        ]
+        \(ClaudeRemoteEnrollmentService.pluginListFrameEnd)
+        Last login: today
+        """
 }
 
 /// Records every ssh invocation the run makes, from the nonisolated runner
@@ -2661,7 +2705,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         script: SetupFlowScript,
         recorder: SetupFlowRecorder
     ) -> ClaudeRemoteEnrollmentService.Runner {
-        { invocation in
+        let listingCalls = Mutex(0)
+        return { invocation in
             recorder.record(invocation)
             let stdin = String(decoding: invocation.standardInput, as: UTF8.self)
             if invocation.argv.contains("-G") {
@@ -2678,8 +2723,17 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
                     )
                     : .init(exitCode: 0, message: "")
             }
-            // Before "claude plugin list": the setup script contains both.
-            if stdin.contains("LVX_PLUGIN") { return script.plugin }
+            // The framed JSON listing runs twice: before the install call
+            // (decides install / update / current) and after it (read-back).
+            if stdin.contains(ClaudeRemoteEnrollmentService.pluginListFrameBegin) {
+                let isReadBack = listingCalls.withLock { calls -> Bool in
+                    calls += 1
+                    return calls > 1
+                }
+                let version = isReadBack ? script.pluginVersionAfter : script.pluginVersionBefore
+                return .init(exitCode: 0, message: framedPluginListing(version: version))
+            }
+            if stdin.contains("claude plugin install") { return script.plugin }
             if stdin.contains("LVX_HERDR") { return script.herdr }
             if stdin.contains("SessionStart") {
                 return .init(exitCode: 0, message: script.tunnelMessage)
@@ -2780,7 +2834,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertTrue(sshFS.configText?.contains("SendEnv LC_LVX_TTY") == true)
         let invocationOrder = recorder.all.map { invocation in
             let script = String(decoding: invocation.standardInput, as: UTF8.self)
-            if script.contains("LVX_PLUGIN") { return "remote plugin" }
+            if script.contains(ClaudeRemoteEnrollmentService.pluginListFrameBegin) { return "plugin listing" }
+            if script.contains("claude plugin install") { return "remote plugin" }
             if script.contains("LC_LVX_TTY") { return "environment crossing" }
             if script.contains("LVX_HERDR") { return "remote herdr" }
             if script.contains("SessionStart") { return "tunnel check" }
@@ -2789,7 +2844,10 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         }
         XCTAssertEqual(
             invocationOrder,
-            ["remote plugin", "environment crossing", "remote herdr", "tunnel check", "plugin check"],
+            [
+                "plugin listing", "remote plugin", "plugin listing",
+                "environment crossing", "remote herdr", "tunnel check", "plugin check",
+            ],
             "each step must finish before the next one starts"
         )
     }
@@ -2931,7 +2989,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let sshFS = StubSSHConfigFileSystem()
         let recorder = SetupFlowRecorder()
         var script = SetupFlowScript()
-        script.plugin = .init(exitCode: 0, message: "LVX_PLUGIN_UPDATED")
+        script.pluginVersionBefore = "1.6.0"
         let service = ClaudeRemoteEnrollmentService(
             runner: setupFlowRunner(script: script, recorder: recorder),
             sshConfigFileSystem: sshFS
