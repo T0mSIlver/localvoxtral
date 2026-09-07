@@ -47,10 +47,28 @@ public enum ClaudePluginStatus: Sendable, Equatable {
         guard let installed = installedVersion(in: listOutput) else {
             return listOutputContainsPlugin(in: listOutput) ? .installed(version: nil) : .notInstalled
         }
-        if let bundledVersion, installed != bundledVersion {
+        // m7: inequality is not ordering — a manually installed NEWER
+        // marketplace must read as installed, never as an update onto an
+        // older bundled one.
+        if let bundledVersion, compareVersions(installed, bundledVersion) == .orderedAscending {
             return .updateAvailable(installed: installed, bundled: bundledVersion)
         }
         return .installed(version: installed)
+    }
+
+    /// Dotted-numeric ordering (`1.5.0` > `1.4.0`; a missing component reads
+    /// as 0, so `1.4` == `1.4.0`). Non-numeric components read as 0 rather
+    /// than refusing: versions here come from our own regex and manifest.
+    static func compareVersions(_ lhs: String, _ rhs: String) -> ComparisonResult {
+        let lparts = lhs.split(separator: ".").map { Int($0) ?? 0 }
+        let rparts = rhs.split(separator: ".").map { Int($0) ?? 0 }
+        for index in 0..<max(lparts.count, rparts.count) {
+            let left = index < lparts.count ? lparts[index] : 0
+            let right = index < rparts.count ? rparts[index] : 0
+            if left < right { return .orderedAscending }
+            if left > right { return .orderedDescending }
+        }
+        return .orderedSame
     }
 
     /// The fully-qualified reference `claude plugin list` prints for an

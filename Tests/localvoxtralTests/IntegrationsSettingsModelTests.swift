@@ -71,6 +71,19 @@ final class IntegrationsSettingsModelTests: XCTestCase {
     }
 
     @MainActor
+    func testNewerInstalledPluginIsNotAnUpdate() async {
+        // m7: a manually installed 1.5.0 over a bundled 1.4.0 is newer, not
+        // stale — offering to "update" it would install the OLDER marketplace.
+        let model = makeModel(
+            fetchPluginListOutput: { "localvoxtral@localvoxtral 1.5.0" },
+            bundledPluginVersion: "1.4.0"
+        )
+        await model.refreshIntegrationsStatuses()
+        XCTAssertEqual(model.localPluginStatus, .installed(version: "1.5.0"))
+        XCTAssertEqual(model.localPluginSentence, "Installed 1.5.0.")
+    }
+
+    @MainActor
     func testAbsentPluginReportsNotInstalled() async {
         let model = makeModel(
             fetchPluginListOutput: { "some-other@market 2.0.0" },
