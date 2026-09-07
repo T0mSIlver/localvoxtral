@@ -223,6 +223,46 @@ is_live_non_zombie "$stubborn_pid" && fail "tree-forensics run: descendant survi
 fixture_pid=""
 stubborn_pid=""
 
+# A wedged `lsof` must be killed at its own cap and never postpone the group
+# kill — and the kill message must name the forensic, not crash on an
+# unset variable (an unbound variable under `set -u` would abort the
+# watchdog before the kill, turning the timeout into a permanent hang).
+pid_fifo="$TMP_DIR/hung-lsof-pids"
+timeout_fifo="$TMP_DIR/hung-lsof-trigger"
+mkfifo "$pid_fifo" "$timeout_fifo"
+cat >"$TMP_DIR/bin/sample" <<'STUB'
+#!/usr/bin/env bash
+echo "stub-sample-of-pid-$1"
+STUB
+cat >"$TMP_DIR/bin/lsof" <<'STUB'
+#!/usr/bin/env bash
+exec sleep 300
+STUB
+chmod +x "$TMP_DIR/bin/sample" "$TMP_DIR/bin/lsof"
+PATH="$TMP_DIR/bin:$PATH" \
+LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO="$timeout_fifo" \
+LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
+LOCALVOXTRAL_SUPERVISOR_LSOF_POLLS=3 \
+  "$SUPERVISOR" 999 "$TMP_DIR/hung-lsof.log" -- "$FIXTURE" "$pid_fifo" &
+supervisor_pid=$!
+read -r fixture_pid stubborn_pid <"$pid_fifo"
+printf 'fire\n' >"$timeout_fifo"
+if wait "$supervisor_pid"; then
+  fail "hung-lsof run unexpectedly succeeded"
+else
+  status=$?
+fi
+supervisor_pid=""
+[[ "$status" == "124" ]] || fail "hung-lsof run: timeout status changed from 124 to $status"
+grep -q -- '--- lsof killed at the 300 ms cap ---' "$TMP_DIR/hung-lsof.log" \
+  || fail "wedged lsof fd-table dump was not killed at the cap"
+grep -q -- '--- lsof-pipe-scan killed at the 300 ms cap ---' "$TMP_DIR/hung-lsof.log" \
+  || fail "wedged lsof pipe scan was not killed at the cap"
+is_live_non_zombie "$fixture_pid" && fail "hung-lsof run: leader survived"
+is_live_non_zombie "$stubborn_pid" && fail "hung-lsof run: descendant survived"
+fixture_pid=""
+stubborn_pid=""
+
 # A command that finishes naturally while forensics are running must keep
 # its real exit status — the timeout marker is only written if the group is
 # still alive after sampling (PR #160 review: the marker used to be written

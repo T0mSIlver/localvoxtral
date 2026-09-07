@@ -77,17 +77,17 @@ sample_one_bounded() {
 # whole process set is normally 1-3 s, but a wedged box must never turn the
 # diagnostic into a second hang.
 run_forensic_bounded() {
-  local label="$1" forensic_pid waited=0
+  local label="$1"
   shift
   ( "$@" ) >>"$log_file" 2>&1 &
-  local forensic_pid=$!
+  local forensic_pid=$! waited=0
   while kill -0 "$forensic_pid" 2>/dev/null && (( waited < lsof_polls )); do
     sleep 0.1
     waited=$((waited + 1))
   done
   if kill -0 "$forensic_pid" 2>/dev/null; then
     kill -KILL -- "-$forensic_pid" 2>/dev/null || kill -KILL "$forensic_pid" 2>/dev/null || true
-    echo "--- $runner killed at the ${lsof_polls}00 ms cap ---" >>"$log_file"
+    echo "--- $label killed at the ${lsof_polls}00 ms cap ---" >>"$log_file"
   fi
   wait "$forensic_pid" 2>/dev/null || true
 }
