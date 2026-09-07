@@ -1,0 +1,326 @@
+import Foundation
+import XCTest
+
+@testable import localvoxtral
+
+/// Installer tests for the Claude Code status line
+/// (`ClaudeStatuslineInstallService`): create, idempotent re-apply, removal,
+/// symlink refusal, unreadable refusal, and the foreign-statusline rule — the
+/// row must never overwrite a script the user wrote.
+final class ClaudeStatuslineInstallServiceTests: XCTestCase {
+    private static let hookCommand =
+        "/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook --statusline"
+
+    private func settingsJSON(_ entries: [String: Any]) throws -> Data {
+        try JSONSerialization.data(withJSONObject: entries, options: [.sortedKeys])
+    }
+
+    // MARK: - Status derivation
+
+    func testAbsentFileIsNotConfigured() {
+        let service = ClaudeStatuslineInstallService(fileSystem: StubStatuslineFS(
+            state: ClaudeStatuslineState(fileExists: false)
+        ))
+        XCTAssertEqual(service.status(), .notConfigured)
+        XCTAssertEqual(ClaudeStatuslineInstallService.sentence(for: .notConfigured), "Not installed.")
+    }
+
+    func testOurEntryIsInstalled() throws {
+        let existing = try XCTUnwrap(ClaudeStatuslineInstallService.updatedSettingsData(
+            existing: nil, hookCommand: Self.hookCommand
+        ))
+        let service = ClaudeStatuslineInstallService(fileSystem: StubStatuslineFS(
+            state: ClaudeStatuslineState(fileExists: true, data: existing)
+        ))
+        XCTAssertEqual(service.status(), .installed)
+        XCTAssertEqual(ClaudeStatuslineInstallService.sentence(for: .installed), "Installed.")
+    }
+
+    func testForeignCommandIsForeign() throws {
+        let existing = try settingsJSON([
+            "statusLine": ["type": "command", "command": "~/.claude/my-statusline.sh"],
+        ])
+        XCTAssertEqual(
+            ClaudeStatuslineInstallService.deriveStatus(settingsData: existing), .foreign
+        )
+        XCTAssertEqual(
+            ClaudeStatuslineInstallService.sentence(for: .foreign),
+            "Your own status line is configured."
+        )
+    }
+
+    func testWrapperAroundOurBinaryIsStillForeign() throws {
+        // The README's composition recipe wraps our binary inside the user's
+        // own script. That script is theirs: re-applying must not replace it
+        // with a bare command.
+        let existing = try settingsJSON([
+            "statusLine": ["type": "command", "command": "sh ~/.claude/combined.sh"],
+        ])
+        XCTAssertEqual(
+            ClaudeStatuslineInstallService.deriveStatus(settingsData: existing), .foreign
+        )
+    }
+
+    func testNonCommandShapeIsForeign() throws {
+        let existing = try settingsJSON(["statusLine": ["type": "unsupported"]])
+        XCTAssertEqual(
+            ClaudeStatuslineInstallService.deriveStatus(settingsData: existing), .foreign
+        )
+    }
+
+    func testUnparseableFileIsUnknown() {
+        XCTAssertEqual(
+            ClaudeStatuslineInstallService.deriveStatus(settingsData: Data("not json{".utf8)),
+            .unknown
+        )
+        XCTAssertEqual(
+            ClaudeStatuslineInstallService.sentence(for: .unknown),
+            "Could not read your Claude settings."
+        )
+    }
+
+    func testExistingButUnreadableFileIsUnknown() {
+        let service = ClaudeStatuslineInstallService(fileSystem: StubStatuslineFS(
+            state: ClaudeStatuslineState(fileExists: true, data: nil)
+        ))
+        XCTAssertEqual(service.status(), .unknown)
+    }
+
+    func testMissingServiceIsUnknown() {
+        XCTAssertEqual(ClaudeStatuslineInstallService(fileSystem: nil).status(), .unknown)
+    }
+
+    // MARK: - Preview
+
+    func testPreviewRendersTheExactEntry() throws {
+        let preview = try XCTUnwrap(ClaudeStatuslineInstallService.preview(
+            hookCommand: Self.hookCommand
+        ))
+        let parsed = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(preview.utf8)) as? [String: String]
+        )
+        XCTAssertEqual(parsed["type"], "command")
+        XCTAssertEqual(parsed["command"], Self.hookCommand)
+    }
+
+    func testPreviewIsNilWithoutAHookCommand() {
+        XCTAssertNil(ClaudeStatuslineInstallService.preview(hookCommand: nil))
+    }
+
+    // MARK: - Apply
+
+    func testApplyCreatesTheFileAt0600() throws {
+        let fs = StubStatuslineFS(state: ClaudeStatuslineState(
+            fileExists: false, directoryExists: false
+        ))
+        try ClaudeStatuslineInstallService(fileSystem: fs).apply(hookCommand: Self.hookCommand)
+        XCTAssertTrue(fs.createdDirectory, "the .claude directory is created")
+        let written = try XCTUnwrap(fs.written)
+        XCTAssertEqual(written.permissions, 0o600, "a file we create gets 0600")
+        XCTAssertEqual(
+            ClaudeStatuslineInstallService.deriveStatus(settingsData: written.data), .installed
+        )
+    }
+
+    func testApplyPreservesUnknownKeys() throws {
+        let existing = try settingsJSON(["theme": "dark", "other": ["nested": true]])
+        let fs = StubStatuslineFS(state: ClaudeStatuslineState(
+            fileExists: true, data: existing, permissions: 0o644
+        ))
+        try ClaudeStatuslineInstallService(fileSystem: fs).apply(hookCommand: Self.hookCommand)
+        let written = try XCTUnwrap(fs.written)
+        XCTAssertEqual(written.permissions, 0o644, "an existing file keeps its mode")
+        let parsed = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: written.data) as? [String: Any]
+        )
+        XCTAssertEqual(parsed["theme"] as? String, "dark")
+        XCTAssertEqual((parsed["other"] as? [String: Bool])?["nested"], true)
+        XCTAssertEqual(
+            ClaudeStatuslineInstallService.deriveStatus(settingsData: written.data), .installed
+        )
+    }
+
+    func testReapplyIsByteIdentical() throws {
+        let fs = StubStatuslineFS(state: ClaudeStatuslineState(fileExists: false))
+        let service = ClaudeStatuslineInstallService(fileSystem: fs)
+        try service.apply(hookCommand: Self.hookCommand)
+        let first = try XCTUnwrap(fs.written?.data)
+        fs.state = ClaudeStatuslineState(fileExists: true, data: first, permissions: 0o600)
+        fs.written = nil
+        try service.apply(hookCommand: Self.hookCommand)
+        XCTAssertEqual(fs.written?.data, first, "a second run changes nothing")
+    }
+
+    func testApplyRefusesAForeignEntry() throws {
+        let existing = try settingsJSON([
+            "statusLine": ["type": "command", "command": "~/.claude/mine.sh"],
+        ])
+        let fs = StubStatuslineFS(state: ClaudeStatuslineState(
+            fileExists: true, data: existing, permissions: 0o644
+        ))
+        XCTAssertThrowsError(
+            try ClaudeStatuslineInstallService(fileSystem: fs).apply(hookCommand: Self.hookCommand)
+        ) { error in
+            XCTAssertEqual(error as? ClaudeStatuslineError, .refused)
+        }
+        XCTAssertNil(fs.written, "a foreign status line is never overwritten")
+    }
+
+    func testApplyRefusesUnparseableJSON() throws {
+        let fs = StubStatuslineFS(state: ClaudeStatuslineState(
+            fileExists: true, data: Data("garbage{".utf8), permissions: 0o644
+        ))
+        XCTAssertThrowsError(
+            try ClaudeStatuslineInstallService(fileSystem: fs).apply(hookCommand: Self.hookCommand)
+        ) { error in
+            XCTAssertEqual(error as? ClaudeStatuslineError, .refused)
+        }
+        XCTAssertNil(fs.written)
+    }
+
+    func testApplyRefusesSymlinks() throws {
+        for state in [
+            ClaudeStatuslineState(fileExists: true, fileIsSymlink: true),
+            ClaudeStatuslineState(fileExists: false, directoryIsSymlink: true),
+        ] {
+            let fs = StubStatuslineFS(state: state)
+            XCTAssertThrowsError(
+                try ClaudeStatuslineInstallService(fileSystem: fs)
+                    .apply(hookCommand: Self.hookCommand)
+            ) { error in
+                XCTAssertEqual(error as? ClaudeStatuslineError, .isSymlink)
+            }
+            XCTAssertNil(fs.written, "nothing may be written through a link")
+        }
+    }
+
+    func testApplyRefusesAnUnreadableFile() throws {
+        let fs = StubStatuslineFS(state: ClaudeStatuslineState(
+            fileExists: true, data: nil
+        ))
+        XCTAssertThrowsError(
+            try ClaudeStatuslineInstallService(fileSystem: fs).apply(hookCommand: Self.hookCommand)
+        ) { error in
+            XCTAssertEqual(error as? ClaudeStatuslineError, .unreadable)
+        }
+        XCTAssertNil(fs.written, "an unreadable file is never blanked")
+    }
+
+    // MARK: - Remove
+
+    func testCreateThenRemoveReturnsToAbsent() throws {
+        // Byte-identical removal for the file we created: absent before,
+        // absent after.
+        let fs = StubStatuslineFS(state: ClaudeStatuslineState(fileExists: false))
+        let service = ClaudeStatuslineInstallService(fileSystem: fs)
+        try service.apply(hookCommand: Self.hookCommand)
+        fs.state = ClaudeStatuslineState(
+            fileExists: true, data: fs.written?.data, permissions: 0o600
+        )
+        fs.written = nil
+        try service.remove()
+        XCTAssertTrue(fs.deleted, "a file holding only our entry is deleted")
+        XCTAssertNil(fs.written)
+    }
+
+    func testRemoveRestoresAPreExistingFileSemantically() throws {
+        // A file the user had keeps every other key; only our entry goes.
+        // (Formatting normalizes through the JSON round-trip; the contract is
+        // semantic preservation, pinned here on parsed values.)
+        let before = try settingsJSON(["theme": "dark"])
+        let installed = try XCTUnwrap(ClaudeStatuslineInstallService.updatedSettingsData(
+            existing: before, hookCommand: Self.hookCommand
+        ))
+        let fs = StubStatuslineFS(state: ClaudeStatuslineState(
+            fileExists: true, data: installed, permissions: 0o644
+        ))
+        try ClaudeStatuslineInstallService(fileSystem: fs).remove()
+        let written = try XCTUnwrap(fs.written)
+        let parsed = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: written.data) as? [String: Any]
+        )
+        XCTAssertEqual(parsed["theme"] as? String, "dark")
+        XCTAssertNil(parsed["statusLine"], "only our key goes")
+    }
+
+    func testRemoveLeavesAForeignEntryUntouched() throws {
+        let existing = try settingsJSON([
+            "statusLine": ["type": "command", "command": "~/.claude/mine.sh"],
+        ])
+        let fs = StubStatuslineFS(state: ClaudeStatuslineState(
+            fileExists: true, data: existing, permissions: 0o644
+        ))
+        XCTAssertThrowsError(
+            try ClaudeStatuslineInstallService(fileSystem: fs).remove()
+        ) { error in
+            XCTAssertEqual(error as? ClaudeStatuslineError, .refused)
+        }
+        XCTAssertNil(fs.written)
+        XCTAssertFalse(fs.deleted)
+    }
+
+    func testRemoveOnAnAbsentFileIsANoOp() throws {
+        let fs = StubStatuslineFS(state: ClaudeStatuslineState(fileExists: false))
+        try ClaudeStatuslineInstallService(fileSystem: fs).remove()
+        XCTAssertNil(fs.written)
+        XCTAssertFalse(fs.deleted)
+    }
+
+    // MARK: - Live filesystem against a temp home
+
+    func testLiveRoundTripInATempHome() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-statusline-test.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let service = ClaudeStatuslineInstallService(
+            fileSystem: LiveClaudeStatuslineFileSystem(homeDirectoryURL: home)
+        )
+        XCTAssertEqual(service.status(), .notConfigured)
+        try service.apply(hookCommand: Self.hookCommand)
+        XCTAssertEqual(service.status(), .installed)
+        try service.apply(hookCommand: Self.hookCommand)
+        XCTAssertEqual(service.status(), .installed)
+        try service.remove()
+        XCTAssertEqual(service.status(), .notConfigured)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: home.appendingPathComponent(".claude/settings.json").path
+        ))
+    }
+
+    func testLiveRefusesASymlinkedClaudeDir() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-statusline-link.\(UUID().uuidString)", isDirectory: true)
+        let target = home.appendingPathComponent("real", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: home.appendingPathComponent(".claude", isDirectory: true), withDestinationURL: target
+        )
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let service = ClaudeStatuslineInstallService(
+            fileSystem: LiveClaudeStatuslineFileSystem(homeDirectoryURL: home)
+        )
+        XCTAssertThrowsError(try service.apply(hookCommand: Self.hookCommand)) { error in
+            XCTAssertEqual(error as? ClaudeStatuslineError, .isSymlink)
+        }
+    }
+}
+
+/// Fixture-driven test double for the statusline file system.
+private final class StubStatuslineFS: ClaudeStatuslineFileSystem, @unchecked Sendable {
+    var state: ClaudeStatuslineState
+    var written: (data: Data, permissions: UInt16)?
+    var createdDirectory = false
+    var deleted = false
+
+    init(state: ClaudeStatuslineState) { self.state = state }
+
+    func readState() throws -> ClaudeStatuslineState { state }
+    func createDirectory(permissions: UInt16) throws { createdDirectory = true }
+    func atomicWrite(_ data: Data, permissions: UInt16) throws {
+        written = (data, permissions)
+    }
+    func deleteFile() throws { deleted = true }
+}

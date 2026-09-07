@@ -103,4 +103,48 @@ final class ClaudePluginAssetsTests: XCTestCase {
         XCTAssertEqual(ClaudePluginAssets.pluginName, "localvoxtral")
         XCTAssertEqual(ClaudePluginAssets.marketplaceName, "localvoxtral")
     }
+
+    func testMarketplaceVersionReadsTheManifest() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mktver-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent(".claude-plugin"), withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        XCTAssertNil(ClaudePluginAssets.marketplaceVersion(marketplaceURL: root))
+        try Data("{\"metadata\":{\"version\":\"1.4.0\"}}".utf8).write(
+            to: root.appendingPathComponent(".claude-plugin/marketplace.json")
+        )
+        XCTAssertEqual(ClaudePluginAssets.marketplaceVersion(marketplaceURL: root), "1.4.0")
+    }
+
+    func testMarketplaceVersionOfTheBundledManifestIsPinned() throws {
+        // The Integrations pane compares this against `claude plugin list`.
+        // If the manifest version moves, the comparison moves with it — the
+        // pin here names the current value so the move is deliberate.
+        let url = try XCTUnwrap(ClaudePluginAssets.developmentMarketplaceURL())
+        XCTAssertEqual(ClaudePluginAssets.marketplaceVersion(marketplaceURL: url), "1.4.0")
+    }
+
+    func testOpencodePluginResolvesPackagedBeforeCheckout() throws {
+        let resources = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ocres-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: resources) }
+
+        // Packaged copy wins when present (this is what package_app.sh ships).
+        let packaged = resources.appendingPathComponent(ClaudePluginAssets.opencodePackagedFileName)
+        try Data("packaged".utf8).write(to: packaged)
+        XCTAssertEqual(
+            ClaudePluginAssets.opencodePluginURL(resourcesURL: resources)?.path, packaged.path
+        )
+
+        // Otherwise the repo checkout serves dev builds and tests.
+        try FileManager.default.removeItem(at: packaged)
+        let resolved = try XCTUnwrap(
+            ClaudePluginAssets.opencodePluginURL(resourcesURL: resources)
+        )
+        XCTAssertTrue(resolved.path.hasSuffix("integrations/opencode/localvoxtral.js"))
+    }
 }
