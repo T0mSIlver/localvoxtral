@@ -78,7 +78,7 @@ default:
    and choose a socket password. (The default `cmuxOnly` mode admits only
    processes cmux itself started, which localvoxtral is not. `allowAll` is
    developer-only and is not required.)
-2. In localvoxtral, enable **Settings → Text Processing → Polishing → "Join
+2. In localvoxtral, enable **Settings → Context → Claude Code → "Join
    Claude Code sessions in cmux"** and enter the same password in **cmux
    socket password**. It is stored in your Keychain and sent only to cmux's
    local socket.
@@ -111,7 +111,7 @@ out on the session's next hook.
 Supported browsers are **Google Chrome, Brave, and Safari**, and each one needs
 its OWN Automation grant the first time it is used (System Settings → Privacy &
 Security → Automation → localvoxtral). The grant is requested only while
-**Settings → Text Processing → Polishing → Claude Code project context** is on
+**Settings → Context → "Use Claude Code project files as polish context"** is on
 — that is the only feature a browser join can serve. Firefox is not supported:
 it exposes no AppleScript surface for the focused tab's URL. A browser join
 never reads anything on your screen (a web page is not a terminal grid, and
@@ -129,7 +129,7 @@ There are two ways it can identify your window, tried in that order.
 
 ### 1. The tty echo (works through jump hosts and `ControlMaster`)
 
-**The app can do this for you.** Settings → the Claude Code pane → *Remote
+**The app can do this for you.** Settings → Context → Remote hosts → *Remote
 Claude Code over SSH* → **Set Up…** next to "Terminal setup for plain SSH". It
 shows the exact block first, writes it only after you say yes, is idempotent
 (a second run replaces rather than duplicates), and has a **Remove**. The row
@@ -291,7 +291,7 @@ nothing to migrate, and you can drop
 
 ## Install / update / uninstall
 
-The app way: **Settings → Text Processing → Polishing → "Claude Code plugin
+The app way: **Settings → Context → Claude Code → "Claude Code plugin
 (this Mac)" → Install or Update**. That button registers the bundled marketplace
 and installs the plugin, then reports one short line. Nothing is installed until
 you press it — the app never touches your Claude Code setup at launch or on a
@@ -522,25 +522,37 @@ exchange (any HTTP status, even a 401) clears the backoff for everything else.
 
 ## Set it up
 
-In **Settings → Text Processing → Polishing → "Remote Claude Code over SSH"**,
+In **Settings → Context → Remote hosts → "Remote Claude Code over SSH"**,
 type a name and your SSH host alias and press **Enroll…**. The app issues a
-token, shows it once alongside every command below with a Copy button on each,
-and binds the listener immediately — there is no relaunch step. The list in that
-row shows each enrolled host, when it was last seen, and gives you **Update
-Plugin…**, **Rotate Token**, **Revoke** and **Remove**.
+token, binds the listener immediately — there is no relaunch step — and opens a
+sheet with four numbered steps: add the SSH config, install on the host, show
+the dictation indicator in herdr, check the setup. The list in that row shows each enrolled host, when it was last seen,
+and gives you **Update Plugin…**, **Rotate Token**, **Revoke** and **Remove**.
 
-The app hands you every command as copyable text, and can also do the two
-steps for you — **only after showing you exactly what will happen and asking
-you to confirm**: *Insert into ~/.ssh/config* previews the exact block (an
-idempotent, marker-delimited splice; the rest of the file is never touched)
-before atomically writing it, and *Run on SSH host* previews the commands
-(token redacted) before running them through `ssh -o BatchMode=yes` with the
-token fed over stdin — it never appears in any process's argument list, on
-either machine. Nothing runs or is written without that explicit confirmation,
-and the Copy buttons remain if you prefer to do it yourself.
+Steps 1 and 2 each offer a button that does the work and a Copy button that
+does not. The button paths act **only after showing you exactly what will happen
+and asking you to confirm**: *Insert into ~/.ssh/config* previews the exact
+block (an idempotent, marker-delimited splice; the rest of the file is never
+touched) before atomically writing it, and *Run on SSH host* previews the
+commands (token redacted) before running them through `ssh -o BatchMode=yes`
+with the token fed over the remote shell's stdin — so it never appears in any
+process's argument list **on your Mac**. On the host it does, briefly:
+`claude plugin install` takes its config as a flag and has no stdin path, so
+the token is in that one command's argv while it runs and in the plugin's
+userConfig under `~/.claude` afterwards, readable by anything running as you
+there. That is true whether the app runs the command or you paste it; see
+[docs/remote-claude-context.md](../../docs/remote-claude-context.md#3-a-token).
+Nothing runs or is written without that explicit confirmation.
+
+Everything the sheet gives you to copy is exactly what you run: no `#`
+commentary, no output to interpret. Step 4 is why — instead of handing you
+probe commands and explaining their output, the app runs them and reports two
+verdicts (see below). The full reference — what the token authorizes, the
+per-Mac port, multiplexer limits, uninstalling — is
+[docs/remote-claude-context.md](../../docs/remote-claude-context.md).
 
 The token is shown exactly once, because only its hash is stored. If you lose it,
-rotate — that is what rotation is for. Then:
+rotate — that is what rotation is for. What the four steps amount to:
 
 **1. Add the tunnel to `~/.ssh/config`:**
 
@@ -549,6 +561,7 @@ rotate — that is what rotation is for. Then:
 Host builder
     RemoteForward 28511 127.0.0.1:8473
     ExitOnForwardFailure no
+    SendEnv LC_LVX_TTY
 # END localvoxtral claude context (h1a2b3c4)
 ```
 
@@ -562,13 +575,7 @@ refuses to open the session at all when that port is already bound on the remote
 — now only by your own second window to the same host. **A dictation nicety must
 never cost you the shell.** The price of `no` is that a failed forward is
 silent: the hooks get connection refused, fail open, and you simply get no
-context. This is where you see whether it took:
-
-```sh
-ssh -v builder true 2>&1 | grep -q 'remote port forwarding failed' \
-  && echo 'port 28511 is already held on builder' \
-  || echo 'port 28511 forwards cleanly'
-```
+context. Breaking that silence is exactly what step 4 is for.
 
 **2. Install the plugin on the remote host:**
 
@@ -588,16 +595,38 @@ Nothing else is installed. The marketplace add resolves the repository root's
 POSIX-sh scripts — the hook shim, which needs only `sh` and `curl` on the
 host, and the opt-in status-line renderer below, which needs only `sh`.
 
-**3. Check it:**
+**3. Show the dictation indicator in herdr (optional):**
 
-```sh
-claude plugin list
-# From the remote, through the tunnel. 401 is the RIGHT answer here — it proves
-# the tunnel is up and the app is answering. A connection error means the
-# forward did not take.
-curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' \
-  -d '{}' http://127.0.0.1:28511/v1/hook/SessionStart
+After confirmation, the app appends the agents-panel row below to the remote
+host's herdr config — only when it has no agents table and no rows key,
+otherwise it leaves the file unchanged:
+
+```toml
+[ui.sidebar.agents]
+rows = [["state_icon", "workspace", "tab"], ["agent"], [{ token = "$lvmark", dim = true }]]
 ```
+
+**4. Check it — press "Check Setup" in the sheet.**
+
+The app runs two read-only checks over SSH and tells you what they mean:
+
+* **Connection & tunnel.** An unauthenticated `POST /v1/hook/SessionStart`
+  through the forward. HTTP 401 is the pass — being refused is what proves the
+  request crossed the tunnel and localvoxtral answered — but only when this Mac's
+  listener is actually bound, which the app also knows; a 401 arriving while our
+  bind failed came from whatever else holds the port, and is reported as that.
+  Nothing answering means no live tunnel right now, and a host with no `curl`
+  gets its own verdict, because the plugin's shim is a curl one-liner.
+* **Claude plugin on the host.** `claude plugin list` behind a PATH prefix, since
+  a non-interactive SSH command skips your login rc. "Not installed" and "Claude
+  Code was not found here" are separate answers with separate fixes.
+
+No probe output is shown, logged, or copied — only verdicts the app composed.
+`claude plugin list` prints the plugin's stored config, and after a rotation
+that is a token this app no longer knows and therefore could not redact.
+
+The equivalent commands, if you would rather run them by hand, are in
+[docs/remote-claude-context.md](../../docs/remote-claude-context.md#checking-the-setup).
 
 ## Connection indicator (opt-in status line)
 

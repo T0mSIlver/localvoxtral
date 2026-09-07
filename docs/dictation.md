@@ -54,9 +54,10 @@ Open **Settings** from the menu bar popover:
 - **Dictation** — the trigger (single modifier key with tap/hold gestures, or
   per-mode keyboard shortcuts) and the menu-bar output mode
 - **Text Processing** — exact-match replacements, plus the LLM Polishing
-  switch and its agent-dictation features (agent prompt profile, repo
-  vocabulary, clipboard context, spoken clipboard paste, and Claude Code
-  session context)
+  switch, the agent prompt profile, and spoken clipboard paste
+- **Context** — what the polisher may see (repo vocabulary, terminal screen,
+  Claude Code project files, clipboard), plus the Claude Code plugin and
+  remote SSH hosts
 - **About** — version, link to the repository, and Export Diagnostics
   (writes a redacted local report to the Desktop)
 
@@ -95,5 +96,13 @@ and keeps your versions as `.backup` files alongside.
   <tr>
     <td width="50%"><img src="../assets/settings-dictation.png" alt="localvoxtral dictation settings" width="100%" /></td>
     <td width="50%"><img src="../assets/settings-text-processing.png" alt="localvoxtral text processing settings" width="100%" /></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><b>Context</b></td>
+    <td width="50%"></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="../assets/settings-context.png" alt="localvoxtral context settings" width="100%" /></td>
+    <td width="50%"></td>
   </tr>
 </table>
