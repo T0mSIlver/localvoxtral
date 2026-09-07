@@ -46,6 +46,11 @@ how developers talk:
 The overlay shows a **Polished** badge whenever the LLM touched your text,
 and the raw transcript stays one click away in the menu bar popover.
 
+By default, clipboard, terminal screen, and project context goes only to a
+polisher running on this Mac. To send enabled context sources to a configured
+non-local polishing endpoint, turn on **Non-local endpoints** in **Settings →
+Integrations**. Use it only with an endpoint you trust.
+
 ## Dictating into Claude Code
 
 localvoxtral ships a
@@ -76,8 +81,8 @@ while the neighboring pane stays out of the prompt:
 
 https://github.com/user-attachments/assets/15e71c26-3d8b-490f-90d0-f5c507daf5eb
 
-Install is one click: **Settings → Integrations → Claude Code → "Claude Code
-plugin (this Mac)" → Install**. The app registers its bundled plugin
+Install is one click: **Settings → Integrations → Claude Code → "Plugin on
+this Mac" → Install or update**. The app registers its bundled plugin
 marketplace through Claude Code's own CLI. The same pane offers the opt-in
 status-line indicator (it writes exactly the `statusLine` key in
 `~/.claude/settings.json`, previewed first, never over your own script).

@@ -57,7 +57,7 @@ enum PolishModelCatalog {
             estimatedRAMGB: 1.2,
             samplingDefaults: nil,
             chatTemplateArguments: nil,
-            summary: "Lightest option, for constrained Macs"
+            summary: "Lightest option for constrained Macs"
         ),
         PolishModelOption(
             repoID: "mlx-community/Qwen3.5-4B-OptiQ-4bit",
@@ -70,7 +70,7 @@ enum PolishModelCatalog {
             estimatedRAMGB: 3.8,
             samplingDefaults: nil,
             chatTemplateArguments: ["enable_thinking": false],
-            summary: "For any Apple Silicon Mac"
+            summary: "Fits any Apple Silicon Mac"
         ),
         PolishModelOption(
             repoID: "mlx-community/Qwen3.5-9B-OptiQ-4bit",
@@ -81,7 +81,7 @@ enum PolishModelCatalog {
             estimatedRAMGB: 7.5,
             samplingDefaults: nil,
             chatTemplateArguments: ["enable_thinking": false],
-            summary: "For 32 GB+ Macs"
+            summary: "Needs a 32 GB or larger Mac"
         ),
     ]
 
@@ -134,7 +134,7 @@ enum PolishModelPickerSupport {
             return "Custom managed model. \(downloadState)."
         }
         return
-            "\(option.summary). \(option.sizeOnDiskGB.formatted(.number.precision(.fractionLength(1)))) GB · \(downloadState)"
+            "\(option.summary). \(option.sizeOnDiskGB.formatted(.number.precision(.fractionLength(1)))) GB, \(downloadState)"
     }
 }
 

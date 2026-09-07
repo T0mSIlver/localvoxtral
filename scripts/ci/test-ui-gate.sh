@@ -2811,7 +2811,7 @@ assert_allowed 'gate-log 3' 'gate-log masks token-shaped runs'
   || fail "gate-log emitted a token-shaped run verbatim"
 
 # `ax type`'s text is redacted AT WRITE TIME (it is how an API key reaches the
-# Endpoints pane), so reading the log back cannot resurrect it.
+# Engines pane), so reading the log back cannot resurrect it.
 assert_denied 'ax type role=AXTextField,title~Endpoint -- sk-secret-value' \
   'ax type with no app under test'
 assert_allowed 'gate-log 2' 'gate-log after an ax type'

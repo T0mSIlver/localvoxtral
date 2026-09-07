@@ -498,10 +498,10 @@ assert_tab() {
 assert_pane_scope_is_reachable
 
 assert_tab "general" "General" "Permissions"
-assert_tab "endpoints" "Endpoints" "Dictation"
+assert_tab "endpoints" "Engines" "Dictation"
 assert_tab "dictation" "Dictation" "Start dictation with"
 assert_tab "textProcessing" "Text Processing" "Replacements"
-# The polish feature toggles live on Text Processing (moved from Endpoints).
+# The polish feature toggles live on Text Processing (moved from Engines).
 assert_tab "textProcessing" "Text Processing" "Polishing"
 # The consent-grade context sources and the harness integrations live on their
 # own pane (moved off Text Processing). Asserted on the group titles, which
@@ -518,15 +518,15 @@ assert_tab "integrations" "Integrations" "opencode"
 assert_tab "about" "About" "Diagnostics"
 
 # The launch phase forces external URL modes (managed mode now eagerly spawns
-# at launch), so the Endpoints pane renders endpoint configuration fields, not
+# at launch), so the Engines pane renders endpoint configuration fields, not
 # the managed status rows. Managed-row AX coverage would need a second launch
 # that tolerates the eager spawn.
-select_tab "endpoints" "Endpoints" >/dev/null 2>&1 || true
+select_tab "endpoints" "Engines" >/dev/null 2>&1 || true
 if pane_shows_text "settings.pane.endpoints" "Endpoint" 10 \
   && pane_shows_text "settings.pane.endpoints" "API key" 10; then
-  record_pass "External-mode Endpoints pane shows endpoint configuration fields."
+  record_pass "External-mode Engines pane shows endpoint configuration fields."
 else
-  record_fail "External-mode Endpoints pane did not show endpoint configuration fields."
+  record_fail "External-mode Engines pane did not show endpoint configuration fields."
 fi
 
 quit_app

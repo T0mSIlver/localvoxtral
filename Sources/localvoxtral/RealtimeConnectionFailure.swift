@@ -119,7 +119,7 @@ enum RealtimeConnectionFailureClassifier {
             // (kept verbatim so StatusToken mapping continues to recognize it).
             let message = "Network connection was lost while connecting to \(endpoint). Reconnect to a network and try again."
             return RealtimeConnectionFailureDescription(
-                status: "Network lost. Dictation stopped.",
+                status: "Dictation stopped after the network disconnected.",
                 message: message,
                 technicalDetails: Self.technicalDetails(
                     rawError,

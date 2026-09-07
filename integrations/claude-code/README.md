@@ -547,7 +547,7 @@ enrolled host's row runs the same flow. The numbered sections below stay for
 copying each step by hand — the manual equivalent of every one is
 [docs/remote-claude-context.md](../../docs/remote-claude-context.md#how-enrollment-works).
 The list in that row shows each enrolled host, when it was last seen,
-and gives you **Update Plugin…**, **Rotate Token**, **Revoke** and **Remove**.
+and gives you **Update host…**, **Rotate Token**, **Revoke** and **Remove**.
 
 Steps 1 and 2 each offer a button that does the work and a Copy button that
 does not. The button paths act **only after showing you exactly what will happen

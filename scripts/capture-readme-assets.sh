@@ -4,7 +4,7 @@ set -euo pipefail
 # Regenerate the README screenshots:
 #   assets/popover.png                     (menu bar menu)
 #   assets/settings-general.png            (Settings > General)
-#   assets/settings-endpoints.png          (Settings > Endpoints)
+#   assets/settings-endpoints.png          (Settings > Engines)
 #   assets/settings-dictation.png          (Settings > Dictation)
 #   assets/settings-text-processing.png    (Settings > Text Processing)
 #   assets/settings-integrations.png       (Settings > Integrations)
@@ -42,7 +42,7 @@ BUNDLE_ID="com.localvoxtral.app"
 PERSISTENT_DEFAULTS_BACKUP="${HOME}/.localvoxtral-capture-assets.pre.plist"
 PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN="${PERSISTENT_DEFAULTS_BACKUP}.had-domain"
 ASSETS_DIR="assets"
-TAB_NAMES=("General" "Endpoints" "Dictation" "Text Processing" "Integrations")
+TAB_NAMES=("General" "Engines" "Dictation" "Text Processing" "Integrations")
 # SettingsTab raw values — the sidebar rows carry them as AXIdentifiers
 # (settings.tab.<raw>). SettingsTabTests pins both the raw values and the
 # identifier scheme.

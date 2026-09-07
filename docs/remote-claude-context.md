@@ -251,7 +251,7 @@ and the app holds the forward itself, reconnecting as needed.
 ## Hosts enrolled before per-Mac ports
 
 An enrollment made before this existed uses the legacy shared 8473 on both
-ends, and keeps working — migration is never forced. Use **Update Plugin…** in
+ends, and keeps working — migration is never forced. Use **Update host…** in
 the host's row when you want it: it updates the marketplace clone and the
 plugin, then stores this Mac's allocated port, and it rewrites this host's
 ssh-config block in the same action so the two halves can never disagree. Your

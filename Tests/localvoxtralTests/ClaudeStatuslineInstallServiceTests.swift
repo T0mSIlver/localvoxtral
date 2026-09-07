@@ -55,7 +55,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
         XCTAssertEqual(staleService.status(), .stalePath)
         XCTAssertEqual(
             ClaudeStatuslineInstallService.sentence(for: .stalePath),
-            "Installed, path no longer exists — Update."
+            "The installed path moved; update the status line."
         )
         let healthyService = ClaudeStatuslineInstallService(
             fileSystem: StubStatuslineFS(
@@ -181,7 +181,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
             )
             XCTAssertEqual(
                 ClaudeStatuslineInstallService.sentence(for: .edited),
-                "Edited by you; remove it in settings.json."
+                "Edited in settings.json; remove it there."
             )
             let applyFS = StubStatuslineFS(state: ClaudeStatuslineState(
                 fileExists: true, data: existing, permissions: 0o644

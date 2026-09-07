@@ -21,7 +21,7 @@ extension SettingsTab {
         switch self {
         case .general: return "General"
         case .dictation: return "Dictation"
-        case .endpoints: return "Endpoints"
+        case .endpoints: return "Engines"
         case .textProcessing: return "Text Processing"
         case .integrations: return "Integrations"
         case .about: return "About"
@@ -32,7 +32,7 @@ extension SettingsTab {
         switch self {
         case .general: return "Permissions and app-level behavior."
         case .dictation: return "How you start, stop, and see dictation."
-        case .endpoints: return "Where speech recognition and polishing run."
+        case .endpoints: return "Where dictation and polishing run."
         case .textProcessing: return "Replacements and LLM polishing of your transcript."
         case .integrations: return "What the polisher and your coding agents may see."
         case .about: return "Version, project, and diagnostics."

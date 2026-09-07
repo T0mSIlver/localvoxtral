@@ -47,10 +47,14 @@ prompts are editable (see the config folder below).
 Open **Settings** from the menu bar popover:
 
 - **General** — permission status for Microphone and Accessibility (with
-  grant buttons), copy-final-segment toggle, and Re-run Setup
-- **Endpoints** — Dictation and Polishing each switch independently between
+  grant buttons), copy-on-stop toggle, and Re-run setup
+- **Engines** — Dictation and Polishing each switch independently between
   `Managed local` (a model picker for polishing, plus a status light) and
-  `External URL` (endpoint URL, model name, API key)
+  `External URL` (server URL, model name, API key). Dictation accepts an
+  OpenAI Realtime-compatible endpoint. For polishing, enter either a base URL
+  such as `http://127.0.0.1:8080` or the full chat completions URL; the app
+  appends `/v1/chat/completions` to a base URL. Lower dictation step intervals
+  show words sooner, while higher values use less compute.
 - **Dictation** — the trigger (single modifier key with tap/hold gestures, or
   per-mode keyboard shortcuts) and the menu-bar output mode
 - **Text Processing** — exact-match replacements, plus the LLM Polishing
@@ -63,8 +67,11 @@ Open **Settings** from the menu bar popover:
   (writes a redacted local report to the Desktop)
 
 The config folder at `~/Library/Application Support/localvoxtral/config`
-holds `replacement_dictionary.toml`, the LLM prompt TOMLs (including the
-agent variants), and `terminal_apps.toml`. When an update ships improved
+holds `replacement_dictionary.toml` for both output modes; the standard and
+agent `llm_system_prompt*.toml` and `llm_user_prompt*.toml` files; and
+`terminal_apps.toml` for extra terminal apps. Remove
+`{{replacement_dictionary}}` from a user prompt template to stop sending the
+dictionary to the LLM. When an update ships improved
 defaults, files you haven't edited are refreshed automatically; files you
 have edited are never touched without asking — the app offers to update them
 and keeps your versions as `.backup` files alongside.
@@ -84,11 +91,11 @@ and keeps your versions as `.backup` files alongside.
 <table>
   <tr>
     <td width="50%" align="center"><b>General</b></td>
-    <td width="50%" align="center"><b>Endpoints</b></td>
+    <td width="50%" align="center"><b>Engines</b></td>
   </tr>
   <tr>
     <td width="50%"><img src="../assets/settings-general.png" alt="localvoxtral general settings" width="100%" /></td>
-    <td width="50%"><img src="../assets/settings-endpoints.png" alt="localvoxtral endpoints settings" width="100%" /></td>
+    <td width="50%"><img src="../assets/settings-endpoints.png" alt="localvoxtral engine settings" width="100%" /></td>
   </tr>
   <tr>
     <td width="50%" align="center"><b>Dictation</b></td>

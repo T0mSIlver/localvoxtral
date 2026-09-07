@@ -1888,19 +1888,19 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertNil(hint(ClaudeRemoteRejectionTally.Snapshot()))
         XCTAssertEqual(
             hint(ClaudeRemoteRejectionTally.Snapshot(emptyCredential: 1)),
-            "Rejected connections detected — a host may have an outdated plugin — use Update Plugin."
+            "Rejected connections suggest an outdated plugin; use Update host."
         )
         XCTAssertEqual(
             hint(ClaudeRemoteRejectionTally.Snapshot(unknownToken: 1)),
-            "Rejected connections detected — a host may have a stale token — rotate it and re-run setup."
+            "Rejected connections suggest a stale token; rotate it and rerun setup."
         )
         XCTAssertEqual(
             hint(ClaudeRemoteRejectionTally.Snapshot(emptyCredential: 1, unknownToken: 1)),
-            "Rejected connections detected — a host may have an outdated plugin or a stale token."
+            "Rejected connections suggest an outdated plugin or a stale token."
         )
         XCTAssertEqual(
             hint(ClaudeRemoteRejectionTally.Snapshot(malformedAuthorization: 1)),
-            "Rejected connections detected — a host may have a malformed authorization header."
+            "Rejected connections suggest a malformed authorization header."
         )
         for snapshot in [
             ClaudeRemoteRejectionTally.Snapshot(emptyCredential: 1),
@@ -1932,7 +1932,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         model.refreshHosts()
         XCTAssertEqual(
             model.rejectionHint,
-            "Rejected connections detected — a host may have a stale token — rotate it and re-run setup."
+            "Rejected connections suggest a stale token; rotate it and rerun setup."
         )
     }
 

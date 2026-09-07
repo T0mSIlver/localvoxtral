@@ -1686,7 +1686,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                     kind: .tunnel,
                     passed: false,
                     summary: "Nothing answered, and localvoxtral is not listening here.",
-                    hint: "Fix the listener on this Mac first — this check cannot tell you "
+                    hint: "Fix the listener on this Mac first. This check cannot tell you "
                         + "anything about the tunnel until it is bound.",
                     detail: "Nothing answered on the host's 127.0.0.1:\(remoteForwardPort), "
                         + "and this Mac's listener was not bound."
@@ -1769,7 +1769,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
           done
         fi
         if ! command -v claude >/dev/null 2>&1; then
-          echo "localvoxtral: 'claude' was not found on this host's non-interactive PATH, nor in ~/.claude/local, ~/.local/bin, ~/bin, /opt/homebrew/bin, /usr/local/bin, or ~/.nvm/versions/node/*/bin. Run 'command -v claude' in a normal shell on this host, then rerun setup — or add that directory to PATH for non-interactive SSH shells." >&2
+          echo "localvoxtral: 'claude' was not found on this host's non-interactive PATH, nor in ~/.claude/local, ~/.local/bin, ~/bin, /opt/homebrew/bin, /usr/local/bin, or ~/.nvm/versions/node/*/bin. Run 'command -v claude' in a normal shell on this host. Then rerun setup or add that directory to PATH for non-interactive SSH shells." >&2
           exit 127
         fi
 
