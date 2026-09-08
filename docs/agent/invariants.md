@@ -151,6 +151,16 @@ there is not.
     reach a herdr socket through it. On any pane.read failure the session falls
     back to the pre-existing behavior — composite AX text, vocabulary-only,
     nothing attached.
+    KNOWN HOLE, herdr 0.9.0, issue #286: a 0.9 client can federate several
+    machines (`herdr machine add`), and while a remote machine is selected the
+    local server keeps a focused pane it has merely stopped presenting. This
+    arm still joins that pane, and every cross-check above passes on it, so the
+    failure is a WRONG join rather than an abstention. The arm must first read
+    herdr's saved machine state (`herdr machine list --json`, or
+    `<state_dir>/client/endpoints.json` with `client/endpoint-selection.json`)
+    and abstain unless Local is selected, and abstain again when more than one
+    local herdr client is running, because that selection file is global and
+    the last client to switch wins.
   - cmux (github.com/manaflow-ai/cmux — a native Swift/AppKit terminal on
     libghostty) is a join target with its OWN arm, keyed on the surface id
     cmux injects into the session environment. It is opt-in
@@ -264,6 +274,20 @@ there is not.
     focus half remains unmeasured — see the panel-binding doc's "Pinned against
     a live server" section for exactly which assumptions are covered and which
     are still documented hopes.
+
+    herdr 0.9.0 CHANGED WHAT A RENDERED TOKEN PROVES, so the whole-view
+    sentence above is no longer the discriminator on a 0.9 client. That client
+    composes the agents panel itself, from every federated machine at once
+    (`src/client/shell/endpoint_agents.rs`), out of its OWN
+    `[ui.sidebar.agents]` rows (`ClientShellConfig::from_config`), and marks the
+    active machine by background color alone, which a text grid read cannot
+    see. A token stamped on machine B's pane therefore renders while the user
+    views machine A: the match proves that the surface federates that server,
+    not that it displays it. This costs nothing today, because the arm never
+    probes a surface with no ssh and a federated client has none. Anything that
+    extends the probe to those surfaces must name the machine from herdr's own
+    selection state first (issue #286) and only then use the token, which keeps
+    its freshness and mic-indicator roles.
 
     Any stamp refusal, unavailable grid, hidden/unconfigured/scrolled panel row,
     a row cut below the entropy floor, or a bounded settle timeout can only
