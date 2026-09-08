@@ -100,9 +100,9 @@ struct HerdrMachineFederationReader: Sendable {
         case .unreadable:
             return .unreadable
         case .contents(let data):
-            guard let catalog = try? JSONDecoder().decode(Catalog.self, from: data) else {
-                return .unreadable
-            }
+            guard let catalog = try? JSONDecoder().decode(Catalog.self, from: data),
+                  catalog.version == Self.supportedStateVersion
+            else { return .unreadable }
             let enabled = Set(catalog.ssh?.filter(\.enabled).map(\.id) ?? [])
             guard !enabled.isEmpty else { return .notFederated }
             switch selectedProfile(
@@ -118,11 +118,13 @@ struct HerdrMachineFederationReader: Sendable {
 
     /// Which machine the client is showing, or nil for Local.
     ///
-    /// herdr resolves this the same way (`src/client/endpoint/catalog.rs`): the
-    /// selection file wins when it names an enabled profile, the catalog's own
-    /// copy answers when it does not, and anything else is Local. A selection
-    /// file that exists and cannot be decoded fails instead, because the arm
-    /// cannot tell Local from a machine without it.
+    /// herdr resolves this in `load_from_paths` (`src/client/endpoint/catalog.rs`)
+    /// and this follows it exactly. A selection file naming an enabled profile
+    /// wins. A selection file saying Local wins too, and overrides the copy the
+    /// catalog carries. Only a selection that names a profile which is gone or
+    /// disabled loses, and then the catalog's copy answers. A selection file
+    /// that exists and cannot be decoded fails instead, because with machines
+    /// saved it is the only thing that separates Local from a machine.
     private func selectedProfile(
         inClientDirectory directory: URL,
         enabledProfiles: Set<String>,
@@ -135,17 +137,25 @@ struct HerdrMachineFederationReader: Sendable {
         case .unreadable:
             return .failure(SelectionUnreadable())
         case .contents(let data):
-            guard let selection = try? JSONDecoder().decode(Selection.self, from: data) else {
-                return .failure(SelectionUnreadable())
+            guard let selection = try? JSONDecoder().decode(Selection.self, from: data),
+                  selection.version == Self.supportedStateVersion
+            else { return .failure(SelectionUnreadable()) }
+            guard let selected = selection.selectedProfile else {
+                // herdr writes null for Local, and serde reads a missing field
+                // as the same None, so both mean Local here.
+                return .success(nil)
             }
-            guard let selected = selection.selectedProfile, enabledProfiles.contains(selected) else {
-                return .success(catalogSelection)
-            }
-            return .success(selected)
+            return .success(enabledProfiles.contains(selected) ? selected : catalogSelection)
         }
     }
 
     private struct SelectionUnreadable: Error {}
+
+    /// herdr refuses any other version in its own loader and runs the client
+    /// Local-only when it does. This reader abstains instead of guessing: a
+    /// future schema that renames or reinterprets these fields would otherwise
+    /// decode as "no machines saved" and silently retire the guard.
+    private static let supportedStateVersion = 1
 
     private struct Catalog: Decodable {
         struct Profile: Decodable {
@@ -153,19 +163,23 @@ struct HerdrMachineFederationReader: Sendable {
             var enabled: Bool
         }
 
+        var version: Int
         var selectedProfile: String?
         var ssh: [Profile]?
 
         enum CodingKeys: String, CodingKey {
+            case version
             case selectedProfile = "selected_profile"
             case ssh
         }
     }
 
     private struct Selection: Decodable {
+        var version: Int
         var selectedProfile: String?
 
         enum CodingKeys: String, CodingKey {
+            case version
             case selectedProfile = "selected_profile"
         }
     }

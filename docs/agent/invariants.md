@@ -166,11 +166,16 @@ there is not.
     selection per user rather than one per client, so a second client on screen
     makes the file unable to say which machine the FOCUSED surface shows. Users
     with no saved machines keep the pre-0.9 arm, second window included.
-    RESIDUAL, and it fails OPEN: herdr's state directory moves with
+    TWO RESIDUALS, both failing OPEN. First, herdr's state directory moves with
     `XDG_STATE_HOME`, which a GUI app cannot see in the user's shell, so such a
     user reads back "no machines saved" and keeps the unguarded behavior.
-    Closing it needs herdr's own CLI, whose path a GUI app cannot resolve
-    either.
+    Second, the files describe what a client STARTING NOW would show, so they
+    lag a live client that has not caught up: a client polls the catalog once a
+    second and returns to Local when the machine it displays is removed or
+    disabled (herdr `src/client/catalog_reload.rs`), which bounds the window
+    but does not close it. Neither is closable with the file interface herdr
+    offers. The real closure is herdr reporting its active endpoint on the
+    socket, which is an upstream ask (issue #288).
   - cmux (github.com/manaflow-ai/cmux — a native Swift/AppKit terminal on
     libghostty) is a join target with its OWN arm, keyed on the surface id
     cmux injects into the session environment. It is opt-in

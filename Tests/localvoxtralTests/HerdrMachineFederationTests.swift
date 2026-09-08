@@ -104,6 +104,41 @@ final class HerdrMachineFederationTests: XCTestCase {
         XCTAssertEqual(federation, .showingLocal)
     }
 
+    // herdr writes null for Local and that BEATS the copy the catalog carries,
+    // which is how a client that switched back to Local records it.
+    func testNullSelectionOverridesTheCatalogSelection() {
+        let federation = reader(
+            catalog: catalog(selected: profileA, profiles: [(profileA, true)]),
+            selection: json("{\"version\":1,\"selected_profile\":null}")
+        ).federation()
+        XCTAssertEqual(federation, .showingLocal)
+    }
+
+    // The startup-restore shape: the catalog carries the selection and no
+    // selection file has been written yet.
+    func testCatalogSelectionWithNoSelectionFileShowsThatMachine() {
+        let federation = reader(
+            catalog: catalog(selected: profileA, profiles: [(profileA, true)])
+        ).federation()
+        XCTAssertEqual(federation, .showingMachine)
+    }
+
+    // herdr refuses a version it does not know and runs Local-only. This reader
+    // abstains rather than decode a future schema as "no machines saved", which
+    // would retire the guard on a herdr upgrade alone.
+    func testUnknownCatalogVersionAbstains() {
+        let file = json("{\"version\":2,\"ssh\":[]}")
+        XCTAssertEqual(reader(catalog: file).federation(), .unreadable)
+    }
+
+    func testUnknownSelectionVersionAbstains() {
+        let federation = reader(
+            catalog: catalog(profiles: [(profileA, true)]),
+            selection: json("{\"version\":2,\"selected_profile\":null}")
+        ).federation()
+        XCTAssertEqual(federation, .unreadable)
+    }
+
     func testUnreadableCatalogAbstains() {
         XCTAssertEqual(reader(catalog: .unreadable).federation(), .unreadable)
     }
@@ -167,5 +202,11 @@ final class HerdrMachineFederationTests: XCTestCase {
         let asDirectory = root.appendingPathComponent("endpoint-selection.json", isDirectory: true)
         try FileManager.default.createDirectory(at: asDirectory, withIntermediateDirectories: true)
         XCTAssertEqual(HerdrMachineFederationReader.liveReadFile(asDirectory), .unreadable)
+
+        // A symlink is not the plain file this reader agreed to read, and the
+        // check is `lstat`, so it never follows one.
+        let link = root.appendingPathComponent("linked.json")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
+        XCTAssertEqual(HerdrMachineFederationReader.liveReadFile(link), .unreadable)
     }
 }

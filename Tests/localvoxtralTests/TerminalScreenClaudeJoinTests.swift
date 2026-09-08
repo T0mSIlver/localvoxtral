@@ -392,16 +392,24 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
     func testHerdrJoinAbstainsWhileTheClientShowsAFederatedMachine() async {
         let registry = makeRegistry()
         XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
-        let join = await resolver(
+        let paneQueries = Mutex(0)
+        var panes = herdrPanes(claim: "s1")
+        panes.onFocused = { paneQueries.withLock { $0 += 1 } }
+        let join = await ClaudeSessionJoinResolver(
             registry: registry,
-            focusedTTY: "/dev/ttys-outer",
-            herdrClient: true,
-            herdrFederation: .showingMachine,
-            herdrClientSurfaceCount: 1,
-            herdrPanes: herdrPanes(claim: "s1")
+            focusedTerminalTTY: { _ in "/dev/ttys-outer" },
+            focusedWindowID: { _ in self.windowA },
+            herdrClientProbe: { _ in true },
+            herdrFederation: { .showingMachine },
+            herdrClientSurfaceCount: { 1 },
+            herdrPanes: panes
         ).resolve(target: ghostty)
 
         XCTAssertNil(join)
+        // The guard runs BEFORE the socket question, so the stale pane is never
+        // even asked for. That ordering is what keeps the answer from aging
+        // between the read and the join.
+        XCTAssertEqual(paneQueries.withLock { $0 }, 0)
     }
 
     // Unreadable state is not "no machines saved": it is not knowing, and this
