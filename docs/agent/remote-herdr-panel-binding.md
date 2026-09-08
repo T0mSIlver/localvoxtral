@@ -5,6 +5,12 @@ enrollment = enroll-time offer; fallback = the argv path). Supersedes the argv
 invocation signal as the PRIMARY binding for `.remoteHerdrPane` joins; the argv
 path (#228/#229) remains as fallback.
 
+AMENDED 2026-09-08: herdr 0.9.0 federates several machines into one client,
+which changes what a rendered token proves and where the row config lives. The
+mechanism and the trust argument below describe a surface that displays ONE
+server, which is still what the `.remoteHerdrPane` arm probes. Read the herdr
+0.9.0 section at the end before extending any of it.
+
 AMENDED 2026-09-05: the window-title marker mechanism was removed from the app
 entirely (owner decision). Two things in this document changed with it — the
 "Title-marker arm suppression" section is gone, and the pane-level confirmation
@@ -276,7 +282,49 @@ Unpinnable from the Mac side, and still documented hopes: that all App-mode
 clients share one server-global focus (a second whole-view client on the same
 socket disturbed the fixture's own pane rather than mirroring it, so the lane
 does not assert it), and that `terminal_observe` behaves like
-`terminal_attach` (herdr 0.8.2's CLI exposes no observe subcommand).
+`terminal_attach`.
+
+CORRECTED 2026-09-08: the second one is pinnable and was never unpinnable. The
+CLI does expose an observer, `herdr terminal session observe <target> [--cols N]
+[--rows N]`, already present at tag v0.8.2 (`src/cli.rs:43`), printing
+newline-delimited `terminal.frame` records. The lane can assert that an observer
+of a stamped pane renders no panel token, the same way it already asserts it for
+`terminal attach`, instead of hoping.
+
+## herdr 0.9.0: what federation changes here
+
+Read from source at tag v0.9.0, not yet measured against a running server.
+
+A 0.9 client can attach several machines at once (`herdr machine add`, saved in
+`<state_dir>/client/endpoints.json`, the viewed one in
+`client/endpoint-selection.json`, rewritten on every switch at
+`src/client/mod.rs:1192`, and printed by `herdr machine list --json` without a
+running server). Federation lives in the CLIENT: each machine gets its own
+connection bridged over `ssh -T <target> herdr remote-client-bridge`
+(`src/remote/saved.rs:15`), which carries the CLIENT protocol to the remote's
+`herdr-client.sock` and serves one connection at a time. It is not a route to
+the JSON API socket this document's write and read channels use, so the `ssh -L`
+forward stays.
+
+Three consequences for the mechanism above:
+
+1. The App-mode discriminator no longer separates machines. The client composes
+   the agents panel from every federated machine at once
+   (`src/client/shell/endpoint_agents.rs`), and marks the active machine by
+   background color, which a text grid read cannot see. On a 0.9 client a
+   rendered token proves that the surface federates that server, not that it
+   displays it. The machine has to come from herdr's selection state instead.
+2. The row config moves to the LOCAL machine. A client shell renders those rows
+   from its own config (`ClientShellConfig::from_config` reads
+   `config.ui.sidebar.agents`), so the enrollment-time offer to patch a remote
+   `[ui.sidebar.agents]` over ssh does not apply to a federated client. The
+   equivalent offer is a local file edit. The new built-in `machine` token can
+   sit in the same row as `$lvmark`.
+3. A server can hold focus while presenting to nobody, through the new
+   `client_shell.surface.set` method and the `surface_interest` and
+   `health_check` capabilities (`src/api/schema/server.rs`). `pane.current`
+   still answers for such a server, so a focused pane is no longer evidence
+   that anyone is looking at it. Issue #286 is the local arm's version of this.
 
 ## Out of scope (recorded follow-ups)
 
