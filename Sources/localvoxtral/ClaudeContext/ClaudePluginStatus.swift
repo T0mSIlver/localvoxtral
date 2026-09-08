@@ -2,9 +2,11 @@ import Foundation
 
 /// What the Integrations pane can say about the local Claude Code plugin.
 ///
-/// Derived from `claude plugin list`, never from Claude Code's internals: the
-/// install lives in Claude Code's own config, and the CLI's listing is the
-/// supported way to ask about it. The bundled version comes from this repo's
+/// Derived from `claude plugin list --json`, never from Claude Code's
+/// internals: the install lives in Claude Code's own config, and the CLI's
+/// machine-readable listing is the supported way to ask about it. The human
+/// listing is never parsed: its shape changed once (the version moved to its
+/// own `Version:` line) and silently took the version out of this row. The bundled version comes from this repo's
 /// own marketplace manifest (`metadata.version`), so "update available" means
 /// "this app ships a newer marketplace than the listing names" — nothing
 /// about what Claude Code would do with it.
@@ -28,11 +30,11 @@ public enum ClaudePluginStatus: Sendable, Equatable {
         }
     }
 
-    /// Derive the status from a `claude plugin list` capture.
+    /// Derive the status from a `claude plugin list --json` capture.
     ///
     /// - Parameters:
-    ///   - listOutput: the CLI's stdout, or nil when the CLI is missing or
-    ///     the listing failed. A nil capture is `.unknown`, never
+    ///   - listOutput: the CLI's stdout (a JSON array of entries), or nil
+    ///     when the CLI is missing or the listing failed. A nil capture is `.unknown`, never
     ///     `.notInstalled`: absence of evidence is not evidence of absence,
     ///     and claiming "not installed" would invite an install over a setup
     ///     we simply failed to read.
@@ -44,9 +46,13 @@ public enum ClaudePluginStatus: Sendable, Equatable {
         bundledVersion: String?
     ) -> ClaudePluginStatus {
         guard let listOutput else { return .unknown }
-        guard let installed = installedVersion(in: listOutput) else {
-            return listOutputContainsPlugin(in: listOutput) ? .installed(version: nil) : .notInstalled
+        // An undecodable capture is a listing we could not read, which is
+        // the same verdict as no listing at all — never "not installed".
+        guard let entries = ClaudePluginListing.entries(in: listOutput) else { return .unknown }
+        guard let entry = ClaudePluginListing.entry(for: listReference(), in: entries) else {
+            return .notInstalled
         }
+        guard let installed = entry.knownVersion else { return .installed(version: nil) }
         // m7: inequality is not ordering — a manually installed NEWER
         // marketplace must read as installed, never as an update onto an
         // older bundled one.
@@ -80,25 +86,4 @@ public enum ClaudePluginStatus: Sendable, Equatable {
         "\(pluginName)@\(marketplaceName)"
     }
 
-    static func listOutputContainsPlugin(in output: String) -> Bool {
-        output.range(of: listReference(), options: .caseInsensitive) != nil
-    }
-
-    /// The version on the listing's plugin line, when it names one. Only the
-    /// line carrying our reference is read: a version elsewhere in the output
-    /// (another plugin, a CLI banner) must never be mistaken for ours.
-    static func installedVersion(in output: String) -> String? {
-        let reference = listReference()
-        for line in output.split(whereSeparator: \.isNewline) {
-            guard line.range(of: reference, options: .caseInsensitive) != nil else { continue }
-            return firstVersionToken(in: String(line))
-        }
-        return nil
-    }
-
-    static func firstVersionToken(in line: String) -> String? {
-        let pattern = #"\d+\.\d+(?:\.\d+)?"#
-        guard let range = line.range(of: pattern, options: .regularExpression) else { return nil }
-        return String(line[range])
-    }
 }

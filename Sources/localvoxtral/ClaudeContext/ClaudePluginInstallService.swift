@@ -199,14 +199,15 @@ public struct ClaudePluginInstallService: Sendable {
         return result
     }
 
-    /// stdout of `claude plugin list` for the Integrations pane's status row.
+    /// stdout of `claude plugin list --json` for the Integrations pane's
+    /// status row.
     ///
     /// Never throws for a listing that ran and failed: that is `.unknown`,
     /// not an action the pane reports. Throws only when the runner itself
     /// fails (timeout, output cap) — the same failures `perform` surfaces.
     public func pluginListOutput() throws -> String? {
         guard claudeExecutableURL != nil else { return nil }
-        let result = try runner(Invocation(arguments: ["plugin", "list"]))
+        let result = try runner(Invocation(arguments: ["plugin", "list", "--json"]))
         return result.succeeded ? result.message : nil
     }
 

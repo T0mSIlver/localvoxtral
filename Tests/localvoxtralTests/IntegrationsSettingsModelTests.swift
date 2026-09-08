@@ -84,7 +84,7 @@ final class IntegrationsSettingsModelTests: XCTestCase {
     func testInstalledPluginReportsItsVersion() async {
         let model = makeModel(
             fetchPluginListOutput: {
-                "localvoxtral@localvoxtral 1.4.0\nsome-other@market 2.0.0"
+                "[{\"id\":\"some-other@market\",\"version\":\"2.0.0\",\"scope\":\"user\",\"enabled\":true},{\"id\":\"localvoxtral@localvoxtral\",\"version\":\"1.4.0\",\"scope\":\"user\",\"enabled\":true}]"
             },
             bundledPluginVersion: "1.4.0"
         )
@@ -96,7 +96,7 @@ final class IntegrationsSettingsModelTests: XCTestCase {
     @MainActor
     func testOlderInstalledPluginReportsUpdateAvailable() async {
         let model = makeModel(
-            fetchPluginListOutput: { "localvoxtral@localvoxtral 1.3.0" },
+            fetchPluginListOutput: { "[{\"id\":\"localvoxtral@localvoxtral\",\"version\":\"1.3.0\",\"scope\":\"user\",\"enabled\":true}]" },
             bundledPluginVersion: "1.4.0"
         )
         await model.refreshIntegrationsStatuses()
@@ -112,7 +112,7 @@ final class IntegrationsSettingsModelTests: XCTestCase {
         // m7: a manually installed 1.5.0 over a bundled 1.4.0 is newer, not
         // stale — offering to "update" it would install the OLDER marketplace.
         let model = makeModel(
-            fetchPluginListOutput: { "localvoxtral@localvoxtral 1.5.0" },
+            fetchPluginListOutput: { "[{\"id\":\"localvoxtral@localvoxtral\",\"version\":\"1.5.0\",\"scope\":\"user\",\"enabled\":true}]" },
             bundledPluginVersion: "1.4.0"
         )
         await model.refreshIntegrationsStatuses()
@@ -123,7 +123,7 @@ final class IntegrationsSettingsModelTests: XCTestCase {
     @MainActor
     func testAbsentPluginReportsNotInstalled() async {
         let model = makeModel(
-            fetchPluginListOutput: { "some-other@market 2.0.0" },
+            fetchPluginListOutput: { "[{\"id\":\"some-other@market\",\"version\":\"2.0.0\",\"scope\":\"user\",\"enabled\":true}]" },
             bundledPluginVersion: "1.4.0"
         )
         await model.refreshIntegrationsStatuses()
@@ -146,7 +146,7 @@ final class IntegrationsSettingsModelTests: XCTestCase {
     @MainActor
     func testInstalledWithoutAVersionIsStillInstalled() async {
         let model = makeModel(
-            fetchPluginListOutput: { "localvoxtral@localvoxtral" },
+            fetchPluginListOutput: { "[{\"id\":\"localvoxtral@localvoxtral\",\"version\":\"unknown\",\"scope\":\"user\",\"enabled\":true}]" },
             bundledPluginVersion: "1.4.0"
         )
         await model.refreshIntegrationsStatuses()
@@ -159,7 +159,7 @@ final class IntegrationsSettingsModelTests: XCTestCase {
         // Only the line carrying our reference may supply a version: a CLI
         // banner or another plugin's number must never read as ours.
         let model = makeModel(
-            fetchPluginListOutput: { "claude 2.1.220\nlocalvoxtral@localvoxtral" },
+            fetchPluginListOutput: { "[{\"id\":\"claude-tools@other\",\"version\":\"2.1.220\",\"scope\":\"user\",\"enabled\":true},{\"id\":\"localvoxtral@localvoxtral\",\"version\":\"unknown\",\"scope\":\"user\",\"enabled\":true}]" },
             bundledPluginVersion: "2.1.220"
         )
         await model.refreshIntegrationsStatuses()
@@ -366,7 +366,7 @@ final class IntegrationsSettingsModelTests: XCTestCase {
 /// nil (unknown), never a throw — only the runner's own failures throw.
 ///
 /// M4: every test captures the invocation the seam received and pins it to
-/// `["plugin", "list"]` — the pane's entire plugin status rests on that argv,
+/// `["plugin", "list", "--json"]` — the pane's entire plugin status rests on that argv,
 /// and a stub discarding its input would let a wrong subcommand pass.
 final class ClaudePluginListProbeTests: XCTestCase {
     func testSuccessfulListingReturnsStdout() throws {
@@ -380,7 +380,7 @@ final class ClaudePluginListProbeTests: XCTestCase {
             }
         )
         XCTAssertEqual(try service.pluginListOutput(), "out")
-        XCTAssertEqual(catcher.invocations.map(\.arguments), [["plugin", "list"]])
+        XCTAssertEqual(catcher.invocations.map(\.arguments), [["plugin", "list", "--json"]])
     }
 
     func testFailedListingIsNil() throws {
@@ -394,7 +394,7 @@ final class ClaudePluginListProbeTests: XCTestCase {
             }
         )
         XCTAssertNil(try service.pluginListOutput())
-        XCTAssertEqual(catcher.invocations.map(\.arguments), [["plugin", "list"]])
+        XCTAssertEqual(catcher.invocations.map(\.arguments), [["plugin", "list", "--json"]])
     }
 
     func testMissingCLIIsNil() throws {
