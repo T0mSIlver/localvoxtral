@@ -6,7 +6,8 @@ import Foundation
 ///
 /// Intentionally NOT `TerminalTargetDetector`'s allowlist. That list answers
 /// "does this app reject AX value writes?" and spans every terminal emulator
-/// plus the user's own `terminal_apps.toml` additions — including Electron
+/// plus the user's own added apps (Settings → Terminals, formerly
+/// `terminal_apps.toml`) — including Electron
 /// apps (VS Code, Cursor, Tabby, Hyper) whose AX tree exposes the editor
 /// buffer, not just a terminal grid. Reading screen context through that list
 /// would pull source files, secrets, and unrelated documents out of an editor

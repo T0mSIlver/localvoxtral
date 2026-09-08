@@ -40,6 +40,93 @@ final class SettingsStoreTests: XCTestCase {
         )
     }
 
+    // MARK: - User-added terminal apps
+
+    /// The Settings → Terminals list persists as JSON in defaults and comes
+    /// back on the next store; a corrupt payload falls back to empty with
+    /// the failure logged. That empty list is NOT re-seeded from
+    /// `terminal_apps.toml`: the migration ledger already knows the ids it
+    /// imported, so they are gone for good and must be re-added in the UI.
+    func testUserTerminalApps_persistAcrossStores() {
+        let store = makeStore()
+        store.userTerminalApps = [
+            UserTerminalApp(bundleID: "dev.some.Editor", displayName: "Editor"),
+        ]
+        XCTAssertEqual(
+            makeStore().userTerminalApps,
+            [UserTerminalApp(bundleID: "dev.some.Editor", displayName: "Editor")]
+        )
+        XCTAssertEqual(
+            makeStore().userTerminalAppBundleIDs, ["dev.some.Editor"]
+        )
+    }
+
+    func testUserTerminalApps_corruptStoredValueFallsBackToEmpty() {
+        defaults.set(Data("not json".utf8), forKey: "settings.user_terminal_apps")
+        XCTAssertEqual(makeStore().userTerminalApps, [])
+    }
+
+    /// A decode failure is LOUD, not a silent `try?` (PR #284 review
+    /// finding): the failure is logged so a user's list going missing is
+    /// diagnosable, while the empty fallback stays. Pinned against the
+    /// source the same way the Settings copy pins are — os_log output has
+    /// no test seam.
+    func testUserTerminalApps_decodeFailureIsLogged() throws {
+        let storeURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // SettingsStoreTests.swift
+            .deletingLastPathComponent()  // localvoxtralTests
+            .deletingLastPathComponent()  // Tests
+            .appendingPathComponent("Sources/localvoxtral/SettingsStore.swift")
+        let source = try String(contentsOf: storeURL, encoding: .utf8)
+
+        let loader = try XCTUnwrap(
+            source.range(of: "private static func loadUserTerminalApps("),
+            "loadUserTerminalApps moved — update this pin"
+        )
+        let loaderBody = source[loader.upperBound...].prefix(600)
+
+        XCTAssertTrue(
+            loaderBody.contains("Log.persistence.error"),
+            "the decode-failure path must log an error — a silent try? made a lost list undiagnosable"
+        )
+        XCTAssertFalse(
+            loaderBody.contains("String(decoding: data"),
+            "the log line names the failure, never the payload"
+        )
+    }
+
+    func testUserTerminalApps_defaultIsEmpty() {
+        XCTAssertEqual(makeStore().userTerminalApps, [])
+        XCTAssertTrue(makeStore().userTerminalAppBundleIDs.isEmpty)
+    }
+
+    /// Removal is recorded in its own defaults ledger at removal time (not
+    /// inferred from the imported-ids ledger), which is what lets a lost
+    /// imported ledger keep a removed app gone — see
+    /// `TerminalAppsModelTests.testMigrationRemovedAppStaysGoneWhenTheImportedLedgerIsLost`.
+    func testRemoveUserTerminalApp_recordsTheRemovalInTheMigrationLedger() {
+        let store = makeStore()
+        store.userTerminalApps = [
+            UserTerminalApp(bundleID: "dev.some.Editor", displayName: "Editor"),
+            UserTerminalApp(bundleID: "dev.other.Editor", displayName: "Other"),
+        ]
+        store.removeUserTerminalApp(bundleID: "dev.some.Editor")
+        XCTAssertEqual(store.userTerminalApps.map(\.bundleID), ["dev.other.Editor"])
+        XCTAssertEqual(
+            defaults.stringArray(forKey: UserTerminalAppsMigrator.removedBundleIDsKey),
+            ["dev.some.Editor"],
+            "removal writes the id into the removed-ids ledger, once"
+        )
+        // Idempotent: removing an id that is already recorded does not
+        // duplicate the ledger entry.
+        store.addUserTerminalApp(UserTerminalApp(bundleID: "dev.some.Editor", displayName: "Editor"))
+        store.removeUserTerminalApp(bundleID: "dev.some.Editor")
+        XCTAssertEqual(
+            defaults.stringArray(forKey: UserTerminalAppsMigrator.removedBundleIDsKey),
+            ["dev.some.Editor"]
+        )
+    }
+
     // MARK: - Overlay Buffer session reachability
 
     func testOverlayBufferReachability_truthTable() {

@@ -5,8 +5,9 @@ primary target: prompt Claude Code — or any CLI coding agent — by voice and
 watch the words stream in live. SSH sessions work too, since text is typed
 into your local terminal. Terminal apps are detected automatically (Terminal,
 iTerm2, Ghostty, Warp, WezTerm, kitty, Alacritty, Hyper, Tabby, Rio, and
-more), and apps that embed a terminal can be added in `terminal_apps.toml`.
-Live dictation adapts:
+more), and apps that embed a terminal can be added in
+**Settings → Terminals → Add app…** (the list lives in the app; a legacy
+`terminal_apps.toml` is imported once at launch). Live dictation adapts:
 
 - **Prompt-safe output** — newlines and tabs are typed as spaces, so a stray
   line break never submits a half-finished prompt and a tab never triggers
@@ -49,11 +50,11 @@ and the raw transcript stays one click away in the menu bar popover.
 By default, clipboard, terminal screen, and project context goes only to a
 polisher running on this Mac. To send enabled context sources to a configured
 non-local polishing endpoint, turn on **Non-local endpoints** in **Settings →
-Integrations**. Use it only with an endpoint you trust.
+Integrations → Context**. Use it only with an endpoint you trust.
 
 ## Polish context: what each toggle sends
 
-Each **Settings → Integrations → Polish context** row states its consequence
+Each **Settings → Integrations → Context** row states its consequence
 in one line; this section is the full text behind those lines.
 
 The first four sources share one default: they run only while the polisher
@@ -165,5 +166,5 @@ fields and the threat model.
 > use asks for one Automation permission per terminal or browser.
 
 An [opencode plugin](../integrations/opencode/README.md) exists too, installed
-from **Settings → Integrations → Other agents** (copy plus the `tui.json`
+from **Settings → Integrations → opencode** (copy plus the `tui.json`
 entry, both reversible from the same row).

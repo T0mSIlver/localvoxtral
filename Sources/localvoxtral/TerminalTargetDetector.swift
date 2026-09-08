@@ -14,8 +14,8 @@ enum TerminalTargetDetector {
     enum Reason: String, Sendable {
         /// The frontmost app's bundle ID is on the built-in terminal allowlist.
         case bundleMatch = "bundle-match"
-        /// The frontmost app's bundle ID is in the user's terminal_apps.toml
-        /// list (apps that embed a terminal the built-in detection misses).
+        /// The frontmost app's bundle ID is in the user's added-apps list
+        /// (Settings → Terminals; formerly `terminal_apps.toml`).
         case userBundleMatch = "user-bundle-match"
         /// Unknown bundle, Accessibility trust present, and confirmed that
         /// nothing has AX focus.
@@ -89,7 +89,7 @@ enum TerminalTargetDetector {
     }
 
     /// Core decision: built-in allowlist first, then the user's
-    /// terminal_apps.toml bundle IDs; for unknown bundles fall back to the
+    /// added-apps bundle IDs; for unknown bundles fall back to the
     /// AX probe — a confirmed-missing focused element or a confirmed
     /// unsettable value attribute read as terminal-like, while an
     /// inconclusive probe does not. The probe closure is only invoked when

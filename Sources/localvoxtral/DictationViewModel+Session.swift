@@ -1915,8 +1915,8 @@ extension DictationViewModel {
         let targetBundleID = resolveTargetAppBundleID()
         let processFallbackPID: pid_t?
         if let targetBundleID,
-           TerminalTargetDetector.isTerminalLikeBundleID(targetBundleID)
-            || appConfigStore.loadTerminalAppBundleIDs().contains(targetBundleID)
+            TerminalTargetDetector.isTerminalLikeBundleID(targetBundleID)
+                || settings.userTerminalAppBundleIDs.contains(targetBundleID)
         {
             processFallbackPID = terminalApplicationPID
         } else {
@@ -1982,15 +1982,16 @@ extension DictationViewModel {
 
     /// Polishing prompt profile for a stop-commit: `.agent` iff the user has the
     /// agent profile enabled AND the captured target bundle ID is terminal-like
-    /// (built-in terminal allowlist, or the user's `terminal_apps.toml` list).
-    /// Mirrors the live-mode target combination (allowlist + user bundle IDs);
-    /// the AX-probe verdict is deliberately not consulted here — the polish
-    /// switch keys off the app identity, not the focused field's writability.
+    /// (built-in terminal allowlist, or the user's Settings → Terminals list —
+    /// the successor of `terminal_apps.toml`). Mirrors the live-mode target
+    /// combination (allowlist + user bundle IDs); the AX-probe verdict is
+    /// deliberately not consulted here — the polish switch keys off the app
+    /// identity, not the focused field's writability.
     func selectedPolishProfile(forTargetBundleID bundleID: String?) -> PolishPromptProfile {
         guard settings.agentPolishProfileEnabled else { return .standard }
         guard let bundleID, !bundleID.isEmpty else { return .standard }
         if TerminalTargetDetector.isTerminalLikeBundleID(bundleID) { return .agent }
-        if appConfigStore.loadTerminalAppBundleIDs().contains(bundleID) { return .agent }
+        if settings.userTerminalAppBundleIDs.contains(bundleID) { return .agent }
         return .standard
     }
 

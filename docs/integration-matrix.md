@@ -34,6 +34,12 @@ Statusline / connection indicator: the local `--statusline` query for local
 Claude Code sessions; the remote plugin's hook-status stamp for enrolled
 hosts; nothing for opencode.
 
+**Settings → Terminals shows this matrix per machine**: one pane per terminal
+app, with the row's status dot and the capabilities spelled out as Dictation /
+Session join / Screen context rows. The semantics are unchanged — the panes
+report what this table and the terminal allowlists on this Mac allow, they do
+not widen them.
+
 ## Why the gaps
 
 **No repo context for a remote session.** Repo context is read from the

@@ -7,7 +7,10 @@ set -euo pipefail
 #   assets/settings-endpoints.png          (Settings > Engines)
 #   assets/settings-dictation.png          (Settings > Dictation)
 #   assets/settings-text-processing.png    (Settings > Text Processing)
-#   assets/settings-integrations.png       (Settings > Integrations)
+#   assets/settings-integrations-*.png     (Settings > Integrations section:
+#                                          Context, Claude Code, opencode, herdr)
+#   assets/settings-terminal-*.png         (Settings > Terminals section, one
+#                                          pane per terminal)
 #   assets/settings-enrollment.png         (the remote-SSH enrollment sheet)
 #
 # settings-enrollment.png is deliberately NOT in the README table — it exists
@@ -42,12 +45,16 @@ BUNDLE_ID="com.localvoxtral.app"
 PERSISTENT_DEFAULTS_BACKUP="${HOME}/.localvoxtral-capture-assets.pre.plist"
 PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN="${PERSISTENT_DEFAULTS_BACKUP}.had-domain"
 ASSETS_DIR="assets"
-TAB_NAMES=("General" "Engines" "Dictation" "Text Processing" "Integrations")
+# Display names, one per captured pane, in sidebar order. The Integrations
+# section (Context, Claude Code, opencode, herdr) and the Terminals section
+# (one pane per terminal) replaced the single Integrations pane (2026-09-07
+# owner decision).
+TAB_NAMES=("General" "Engines" "Dictation" "Text Processing" "Context" "Claude Code" "opencode" "herdr" "Ghostty" "iTerm2" "Terminal.app" "cmux" "Warp" "WezTerm" "kitty" "Alacritty" "Hyper" "Tabby" "Rio")
 # SettingsTab raw values — the sidebar rows carry them as AXIdentifiers
 # (settings.tab.<raw>). SettingsTabTests pins both the raw values and the
 # identifier scheme.
-TAB_IDS=("general" "endpoints" "dictation" "textProcessing" "integrations")
-TAB_FILES=("settings-general.png" "settings-endpoints.png" "settings-dictation.png" "settings-text-processing.png" "settings-integrations.png")
+TAB_IDS=("general" "endpoints" "dictation" "textProcessing" "integrations.context" "integrations.claude" "integrations.opencode" "integrations.herdr" "terminals.ghostty" "terminals.iterm2" "terminals.apple-terminal" "terminals.cmux" "terminals.warp" "terminals.wezterm" "terminals.kitty" "terminals.alacritty" "terminals.hyper" "terminals.tabby" "terminals.rio")
+TAB_FILES=("settings-general.png" "settings-endpoints.png" "settings-dictation.png" "settings-text-processing.png" "settings-integrations-context.png" "settings-integrations-claude-code.png" "settings-integrations-opencode.png" "settings-integrations-herdr.png" "settings-terminal-ghostty.png" "settings-terminal-iterm2.png" "settings-terminal-apple-terminal.png" "settings-terminal-cmux.png" "settings-terminal-warp.png" "settings-terminal-wezterm.png" "settings-terminal-kitty.png" "settings-terminal-alacritty.png" "settings-terminal-hyper.png" "settings-terminal-tabby.png" "settings-terminal-rio.png")
 # The three arrays are indexed together below; a mismatch would silently capture
 # one tab's window into another tab's file.
 if (( ${#TAB_NAMES[@]} != ${#TAB_IDS[@]} || ${#TAB_NAMES[@]} != ${#TAB_FILES[@]} )); then
@@ -322,9 +329,9 @@ for i in "${!TAB_NAMES[@]}"; do
 done
 
 # --- 3. enrollment sheet ------------------------------------------------------
-# A second launch, on purpose: the preview default is read ONCE when the Integrations
-# pane is constructed, so arming it before the tab loop would have parked the
-# sheet on top of settings-integrations.png.
+# A second launch, on purpose: the preview default is read ONCE when the
+# Claude Code pane is constructed, so arming it before the tab loop would have
+# parked the sheet on top of settings-integrations-claude-code.png.
 echo "Capturing $ASSETS_DIR/settings-enrollment.png"
 osascript -e "tell application \"$APP_PROCESS\" to quit" >/dev/null 2>&1 || true
 for _ in $(seq 1 10); do pgrep -xq "$APP_PROCESS" || break; sleep 0.5; done
@@ -352,7 +359,7 @@ ENROLLMENT_SHOT="$ASSETS_DIR/settings-enrollment.png"
 rm -f "$ENROLLMENT_SHOT"
 if SETTINGS_ID="$(wait_for_window "$APP_PID" 0 10)"; then
   sleep 1
-  if swift "$AX_PROBE" "$APP_PID" --press "settings.tab.integrations" --title "Integrations" \
+  if swift "$AX_PROBE" "$APP_PID" --press "settings.tab.integrations.claude" --title "Claude Code" \
        --timeout 10 --dump-on-fail; then
     # The sheet is its own CGWindow and animates in, so wait for a layer-0
     # window that is NOT the settings window.
@@ -363,7 +370,7 @@ if SETTINGS_ID="$(wait_for_window "$APP_PID" 0 10)"; then
       echo "ERROR: the enrollment sheet never appeared." >&2
     fi
   else
-    echo "ERROR: could not select the Integrations tab for the enrollment sheet." >&2
+    echo "ERROR: could not select the Claude Code tab for the enrollment sheet." >&2
   fi
 else
   echo "ERROR: Settings never reopened for the enrollment sheet." >&2

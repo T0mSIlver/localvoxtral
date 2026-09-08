@@ -313,6 +313,24 @@ final class ClaudeRemoteHookPayloadTests: XCTestCase {
         )
     }
 
+    func testHostIDFromScopedSessionIDInvertsTheScoping() {
+        // The read-side inverse (the Settings herdr pane's host list): a
+        // scoped id yields its host, everything else yields nil.
+        let scoped = ClaudeRemoteSessionScope.scopedSessionID(hostID: "habc", sessionID: "s-1")
+        XCTAssertEqual(ClaudeRemoteSessionScope.hostID(fromScopedSessionID: scoped), "habc")
+        // A forged nested id still names the OUTER host — the one whose token
+        // authenticated the request.
+        let forged = ClaudeRemoteSessionScope.scopedSessionID(
+            hostID: "hAAA", sessionID: "remote:hBBB:victim"
+        )
+        XCTAssertEqual(ClaudeRemoteSessionScope.hostID(fromScopedSessionID: forged), "hAAA")
+
+        XCTAssertNil(ClaudeRemoteSessionScope.hostID(fromScopedSessionID: "s-1"))
+        XCTAssertNil(ClaudeRemoteSessionScope.hostID(fromScopedSessionID: "remote:"))
+        XCTAssertNil(ClaudeRemoteSessionScope.hostID(fromScopedSessionID: "remote::s-1"))
+        XCTAssertNil(ClaudeRemoteSessionScope.hostID(fromScopedSessionID: "remote:noseparator"))
+    }
+
     func testChannelsIdentifyTheHost() {
         XCTAssertEqual(ClaudeRemoteSessionScope.channel(hostID: "habc"), "ssh:habc")
         XCTAssertNotEqual(

@@ -491,6 +491,11 @@ public final class ClaudeIntegrationSettingsModel {
     /// Whether the herdr row is shown at all. Refreshed with the rest of the
     /// pane; hidden until something reports herdr.
     public private(set) var isHerdrDetected = false
+    /// Enrolled-host labels whose live sessions currently report a herdr pane,
+    /// refreshed with the rest of the pane. The herdr pane lists these names;
+    /// empty when no enrolled host reports one (a LOCAL herdr pane is never
+    /// listed — it belongs to no enrolled host).
+    public private(set) var herdrPaneHostLabels: [String] = []
 
     /// The herdr row's one status sentence. A constant: the row is
     /// status-only, and presence is the whole fact.
@@ -562,6 +567,10 @@ public final class ClaudeIntegrationSettingsModel {
     /// Refreshed with the rest of the pane. Injected so tests pin row
     /// visibility without a herdr install.
     private let herdrPresenceReport: @Sendable () -> Bool
+    /// Host ids whose live REMOTE sessions report a herdr pane, for the
+    /// herdr pane's host-name list. Injected for the same reason; the model
+    /// maps ids to the enrolled labels it already renders.
+    private let herdrPaneReportingHostIDs: @Sendable () -> [String]
     private let listener: (any ClaudeRemoteListenerControlling)?
     private let pluginService: @Sendable () -> any ClaudePluginInstalling
     private let enrollmentService: ClaudeRemoteEnrollmentService
@@ -665,7 +674,8 @@ public final class ClaudeIntegrationSettingsModel {
         statuslineHookCommand: @escaping @Sendable () -> String? = { nil },
         opencodeService: @escaping @Sendable () -> OpencodePluginInstallService? = { nil },
         herdrBinaryAvailable: @escaping @Sendable () -> Bool = { false },
-        herdrPresenceReport: @escaping @Sendable () -> Bool = { false }
+        herdrPresenceReport: @escaping @Sendable () -> Bool = { false },
+        herdrPaneReportingHostIDs: @escaping @Sendable () -> [String] = { [] }
     ) {
         self.loginShell = loginShell
         self.shellRCWriter = shellRCWriter
@@ -677,6 +687,7 @@ public final class ClaudeIntegrationSettingsModel {
         self.opencodeService = opencodeService
         self.herdrBinaryAvailable = herdrBinaryAvailable
         self.herdrPresenceReport = herdrPresenceReport
+        self.herdrPaneReportingHostIDs = herdrPaneReportingHostIDs
         // m8: reserve the herdr row's visibility synchronously — the binary
         // check is a fast PATH scan, so herdr machines paint the row on
         // first paint instead of gaining it one beat late. The session half
@@ -1225,6 +1236,17 @@ public final class ClaudeIntegrationSettingsModel {
         refreshStatuslineStatus()
         refreshOpencodeStatus()
         isHerdrDetected = herdrBinaryAvailable() || herdrPresenceReport()
+        refreshHerdrPaneHostLabels()
+    }
+
+    /// Maps the reporting host ids onto enrolled-host labels. An id with no
+    /// enrolled row (a host removed while its sessions were still live) is
+    /// dropped, not guessed from the id.
+    private func refreshHerdrPaneHostLabels() {
+        let reporting = Set(herdrPaneReportingHostIDs())
+        herdrPaneHostLabels = hosts
+            .filter { reporting.contains($0.id) }
+            .map(\.label)
     }
 
     // MARK: Local plugin status
