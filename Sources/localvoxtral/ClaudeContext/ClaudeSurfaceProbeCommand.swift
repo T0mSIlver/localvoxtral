@@ -107,6 +107,8 @@ enum ClaudeSurfaceProbeCommand {
             registry: registry,
             focusedTerminalTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) },
             herdrClientProbe: { HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0) },
+            herdrFederation: { HerdrMachineFederationReader.live().federation() },
+            herdrClientSurfaceCount: { HerdrClientTTYProbe.clientSurfaceCount() },
             herdrPanes: HerdrSocketClient(),
             sshDestinationProbe: { SSHDestinationTTYProbe.connection(onTTYDevicePath: $0) },
             enrolledHosts: { hosts?.hosts(matchingSSHDestination: $0) ?? [] },

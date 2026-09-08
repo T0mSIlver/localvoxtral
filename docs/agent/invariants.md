@@ -151,16 +151,26 @@ there is not.
     reach a herdr socket through it. On any pane.read failure the session falls
     back to the pre-existing behavior — composite AX text, vocabulary-only,
     nothing attached.
-    KNOWN HOLE, herdr 0.9.0, issue #286: a 0.9 client can federate several
-    machines (`herdr machine add`), and while a remote machine is selected the
-    local server keeps a focused pane it has merely stopped presenting. This
-    arm still joins that pane, and every cross-check above passes on it, so the
-    failure is a WRONG join rather than an abstention. The arm must first read
-    herdr's saved machine state (`herdr machine list --json`, or
-    `<state_dir>/client/endpoints.json` with `client/endpoint-selection.json`)
-    and abstain unless Local is selected, and abstain again when more than one
-    local herdr client is running, because that selection file is global and
-    the last client to switch wins.
+    A herdr 0.9 client can federate several machines (`herdr machine add`), and
+    while a remote machine is selected the local server keeps a focused pane it
+    has merely stopped presenting. `pane.current` would then name a pane nobody
+    is looking at, and every cross-check above would pass on it, so the failure
+    would be a WRONG join rather than an abstention (issue #286). The arm
+    therefore reads herdr's saved machine state FIRST
+    (`HerdrMachineFederationReader` over `<state dir>/client/endpoints.json`
+    and `client/endpoint-selection.json`, the two files `herdr machine list`
+    itself reads) and abstains unless Local is selected. Unreadable state
+    abstains too: it is not knowing, not "no machines saved". With machines
+    saved it also requires a LONE herdr client surface
+    (`HerdrClientTTYProbe.clientSurfaceCount`), because herdr keeps one
+    selection per user rather than one per client, so a second client on screen
+    makes the file unable to say which machine the FOCUSED surface shows. Users
+    with no saved machines keep the pre-0.9 arm, second window included.
+    RESIDUAL, and it fails OPEN: herdr's state directory moves with
+    `XDG_STATE_HOME`, which a GUI app cannot see in the user's shell, so such a
+    user reads back "no machines saved" and keeps the unguarded behavior.
+    Closing it needs herdr's own CLI, whose path a GUI app cannot resolve
+    either.
   - cmux (github.com/manaflow-ai/cmux — a native Swift/AppKit terminal on
     libghostty) is a join target with its OWN arm, keyed on the surface id
     cmux injects into the session environment. It is opt-in

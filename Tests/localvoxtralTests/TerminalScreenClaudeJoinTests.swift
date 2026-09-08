@@ -116,6 +116,8 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
         focusedTTY: String? = nil,
         windowID: CGWindowID? = 101,
         herdrClient: Bool = false,
+        herdrFederation: HerdrMachineFederation = .notFederated,
+        herdrClientSurfaceCount: Int? = nil,
         herdrPanes: HerdrPaneQuerying? = nil
     ) -> ClaudeSessionJoinResolver {
         ClaudeSessionJoinResolver(
@@ -123,6 +125,8 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             focusedTerminalTTY: { _ in focusedTTY },
             focusedWindowID: { _ in windowID },
             herdrClientProbe: { _ in herdrClient },
+            herdrFederation: { herdrFederation },
+            herdrClientSurfaceCount: { herdrClientSurfaceCount },
             herdrPanes: herdrPanes
         )
     }
@@ -377,6 +381,111 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
         XCTAssertEqual(join.mechanism, .herdrPane)
         XCTAssertEqual(join.windowID, windowA)
         XCTAssertTrue(joinResolver.isStillLive(join))
+    }
+
+    // MARK: - herdr 0.9 federation (issue #286)
+
+    // The case the guard exists for. Everything this arm checks still passes
+    // (the pane is registered, the claim agrees, the pid is in the foreground
+    // list) and it must abstain anyway, because the pane belongs to a server
+    // the client has stopped presenting.
+    func testHerdrJoinAbstainsWhileTheClientShowsAFederatedMachine() async {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        let join = await resolver(
+            registry: registry,
+            focusedTTY: "/dev/ttys-outer",
+            herdrClient: true,
+            herdrFederation: .showingMachine,
+            herdrClientSurfaceCount: 1,
+            herdrPanes: herdrPanes(claim: "s1")
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
+    }
+
+    // Unreadable state is not "no machines saved": it is not knowing, and this
+    // arm abstains on not knowing.
+    func testHerdrJoinAbstainsWhenTheMachineStateIsUnreadable() async {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        let join = await resolver(
+            registry: registry,
+            focusedTTY: "/dev/ttys-outer",
+            herdrClient: true,
+            herdrFederation: .unreadable,
+            herdrClientSurfaceCount: 1,
+            herdrPanes: herdrPanes(claim: "s1")
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
+    }
+
+    // Machines saved, client on Local, one herdr surface: the selection speaks
+    // for the surface the user is looking at, so the join stands.
+    func testHerdrJoinsWhenMachinesAreSavedAndTheClientShowsLocal() async throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        let join = await resolver(
+            registry: registry,
+            focusedTTY: "/dev/ttys-outer",
+            herdrClient: true,
+            herdrFederation: .showingLocal,
+            herdrClientSurfaceCount: 1,
+            herdrPanes: herdrPanes(claim: "s1")
+        ).resolve(target: ghostty)
+
+        XCTAssertEqual(try XCTUnwrap(join).mechanism, .herdrPane)
+    }
+
+    // Two surfaces, one selection. herdr stores the selection per user, so it
+    // cannot say which of them is showing Local.
+    func testHerdrJoinAbstainsWithMachinesSavedAndASecondHerdrSurface() async {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        let join = await resolver(
+            registry: registry,
+            focusedTTY: "/dev/ttys-outer",
+            herdrClient: true,
+            herdrFederation: .showingLocal,
+            herdrClientSurfaceCount: 2,
+            herdrPanes: herdrPanes(claim: "s1")
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
+    }
+
+    // An unwalkable process table is unknown, not one.
+    func testHerdrJoinAbstainsWhenTheSurfaceCountIsUnknown() async {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        let join = await resolver(
+            registry: registry,
+            focusedTTY: "/dev/ttys-outer",
+            herdrClient: true,
+            herdrFederation: .showingLocal,
+            herdrClientSurfaceCount: nil,
+            herdrPanes: herdrPanes(claim: "s1")
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
+    }
+
+    // Without saved machines the count is never asked, so two herdr windows
+    // keep working for everyone who does not use federation.
+    func testASecondHerdrSurfaceIsIrrelevantWithoutSavedMachines() async throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        let join = await resolver(
+            registry: registry,
+            focusedTTY: "/dev/ttys-outer",
+            herdrClient: true,
+            herdrFederation: .notFederated,
+            herdrClientSurfaceCount: 2,
+            herdrPanes: herdrPanes(claim: "s1")
+        ).resolve(target: ghostty)
+
+        XCTAssertEqual(try XCTUnwrap(join).mechanism, .herdrPane)
     }
 
     func testHerdrPaneWithNilSessionClaimStillJoins() async throws {

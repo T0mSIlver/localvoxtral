@@ -46,5 +46,43 @@ final class HerdrClientTTYProbeTests: XCTestCase {
             )
         )
     }
+
+    // MARK: - Counting client surfaces (issue #286)
+
+    private func entry(
+        pid: Int32, name: String, tty: dev_t?, uid: uid_t = 0
+    ) -> TTYProcessTable.Entry {
+        TTYProcessTable.Entry(
+            pid: pid, effectiveUserID: uid == 0 ? geteuid() : uid, name: name, ttyDevice: tty
+        )
+    }
+
+    // Two panes of one client are one surface, and the detached server has no
+    // controlling terminal to be counted on.
+    func testClientSurfaceCountCountsDevicesNotProcesses() {
+        let count = HerdrClientTTYProbe.clientSurfaceCount(processes: [
+            entry(pid: 1, name: "herdr", tty: dev_t(11)),
+            entry(pid: 2, name: "herdr", tty: dev_t(11)),
+            entry(pid: 3, name: "herdr", tty: dev_t(12)),
+            entry(pid: 4, name: "herdr", tty: nil),
+            entry(pid: 5, name: "zsh", tty: dev_t(13))
+        ])
+        XCTAssertEqual(count, 2)
+    }
+
+    // Another user's herdr is on another user's screen.
+    func testClientSurfaceCountIgnoresOtherUsers() {
+        let count = HerdrClientTTYProbe.clientSurfaceCount(processes: [
+            entry(pid: 1, name: "herdr", tty: dev_t(11)),
+            entry(pid: 2, name: "herdr", tty: dev_t(12), uid: geteuid() &+ 1)
+        ])
+        XCTAssertEqual(count, 1)
+    }
+
+    // An unwalkable process table is unknown, and the caller treats unknown as
+    // "not exactly one".
+    func testClientSurfaceCountIsNilWithoutAProcessTable() {
+        XCTAssertNil(HerdrClientTTYProbe.clientSurfaceCount(processes: nil))
+    }
 }
 #endif

@@ -198,6 +198,8 @@ struct ClaudeSessionJoinResolver {
     private let focusedBrowserTabURL: (String) async -> String?
     private let focusedWindowID: (pid_t) -> CGWindowID?
     private let herdrClientProbe: @Sendable (String) -> Bool
+    private let herdrFederation: @Sendable () -> HerdrMachineFederation
+    private let herdrClientSurfaceCount: @Sendable () -> Int?
     private let herdrPanes: HerdrPaneQuerying?
     private let cmuxSurfaces: CmuxSurfaceQuerying?
     private let cmuxJoinEnabled: @MainActor () -> Bool
@@ -241,6 +243,16 @@ struct ClaudeSessionJoinResolver {
     ///     Ghostty surface to a herdr client. It DEFAULTS TO ABSTAIN: a test
     ///     that forgets to inject must never consult the live process table.
     ///     The app wires the live probe explicitly.
+    ///   - herdrFederation: reads herdr's saved-machine state, which decides
+    ///     whether the local socket's focused pane still describes what the
+    ///     surface displays (issue #286). It defaults to `.notFederated`, the
+    ///     state of every herdr before 0.9 and of every 0.9 user who saved no
+    ///     machine, so a test that does not care about federation keeps the
+    ///     pre-0.9 arm. The two abstaining values are what a test injects.
+    ///   - herdrClientSurfaceCount: how many surfaces this user has a herdr
+    ///     client on, consulted only once machines are saved. DEFAULTS TO
+    ///     ABSTAIN (nil, unknown) so a federated case cannot silently pass by
+    ///     reaching the live process table.
     ///   - herdrPanes: queries herdr's local JSON socket after that surface
     ///     binding succeeds. It likewise DEFAULTS TO ABSTAIN so a test that
     ///     forgets to inject cannot connect to a real user socket. The app is
@@ -277,6 +289,8 @@ struct ClaudeSessionJoinResolver {
             TerminalScreenAXReader.focusedWindowIdentity(applicationPID: $0)
         },
         herdrClientProbe: @escaping @Sendable (String) -> Bool = { _ in false },
+        herdrFederation: @escaping @Sendable () -> HerdrMachineFederation = { .notFederated },
+        herdrClientSurfaceCount: @escaping @Sendable () -> Int? = { nil },
         herdrPanes: HerdrPaneQuerying? = nil,
         cmuxSurfaces: CmuxSurfaceQuerying? = nil,
         cmuxJoinEnabled: @escaping @MainActor () -> Bool = { false },
@@ -311,6 +325,8 @@ struct ClaudeSessionJoinResolver {
         self.focusedBrowserTabURL = focusedBrowserTabURL
         self.focusedWindowID = focusedWindowID
         self.herdrClientProbe = herdrClientProbe
+        self.herdrFederation = herdrFederation
+        self.herdrClientSurfaceCount = herdrClientSurfaceCount
         self.herdrPanes = herdrPanes
         self.cmuxSurfaces = cmuxSurfaces
         self.cmuxJoinEnabled = cmuxJoinEnabled
@@ -556,6 +572,37 @@ struct ClaudeSessionJoinResolver {
     }
 
     private func resolveViaHerdr(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {
+        // herdr 0.9 attaches several machines to one client, and while a remote
+        // machine is selected the local server keeps a focused pane it has
+        // merely stopped presenting. `pane.current` below would then describe a
+        // pane nobody is looking at, and every cross-check in this arm would
+        // pass on it, so the federation state is read BEFORE the socket
+        // question is asked at all (issue #286).
+        switch herdrFederation() {
+        case .notFederated:
+            break
+        case .showingMachine:
+            Self.abstainedHerdrJoin(outcome: "herdr is showing a federated remote machine")
+            return nil
+        case .unreadable:
+            Self.abstainedHerdrJoin(outcome: "herdr machine state unreadable")
+            return nil
+        case .showingLocal:
+            // The selection is one per USER, not one per client: the last
+            // client to switch machines wins the file
+            // (herdr `src/client/endpoint/catalog.rs`). With a second client on
+            // screen it cannot say which machine the FOCUSED surface shows, so
+            // only a lone client surface may rely on it. Gated on machines
+            // being saved, which leaves every user without them free to keep
+            // two herdr windows open.
+            guard herdrClientSurfaceCount() == 1 else {
+                Self.abstainedHerdrJoin(
+                    outcome: "machines are saved and this user has more than one herdr surface"
+                )
+                return nil
+            }
+        }
+
         let sockets = registry.liveLocalHerdrSocketPaths()
         guard sockets.count == 1, let socketPath = sockets.first else {
             Self.abstainedHerdrJoin(

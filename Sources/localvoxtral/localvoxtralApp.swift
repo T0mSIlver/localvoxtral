@@ -466,6 +466,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 herdrClientProbe: {
                     HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0)
                 },
+                herdrFederation: { HerdrMachineFederationReader.live().federation() },
+                herdrClientSurfaceCount: { HerdrClientTTYProbe.clientSurfaceCount() },
                 herdrPanes: herdrClient,
                 cmuxSurfaces: CmuxSocketClient(password: { cmuxPasswords.password() }),
                 cmuxJoinEnabled: { [weak viewModel] in
