@@ -112,6 +112,128 @@ struct LiveClaudeRemoteSSHConfigFileSystem: ClaudeRemoteSSHConfigFileSystem {
     }
 }
 
+/// The LOCAL herdr config, with the same discipline as the ssh-config
+/// writer: `lstat` so a symlink is seen as one, `O_NOFOLLOW` on the temp
+/// file, and an atomic same-directory rename.
+///
+/// The path is where herdr itself looks on macOS (`src/config/io.rs`):
+/// `~/.config/herdr/config.toml`, with `herdr-dev` in place of `herdr` for a
+/// development build. A user running a dev build has that directory; a user
+/// who is not has nothing there, so its EXISTENCE is the discriminator — dev
+/// first, release otherwise. RESIDUAL, same as the federation reader's
+/// `XDG_STATE_HOME` one: a GUI app does not see the shell's
+/// `XDG_CONFIG_HOME`, so a user who relocates herdr's config reads back as
+/// "no config yet" and the append targets the default location only.
+struct LiveClaudeLocalHerdrConfigFileSystem: ClaudeLocalHerdrConfigFileSystem {
+    private let configDirectoryURL: URL
+    private let configURL: URL
+
+    init(homeDirectoryURL: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        let configRoot = homeDirectoryURL.appendingPathComponent(".config", isDirectory: true)
+        let devDirectory = configRoot.appendingPathComponent("herdr-dev", isDirectory: true)
+        let releaseDirectory = configRoot.appendingPathComponent("herdr", isDirectory: true)
+        // A dev build's directory is only created by running one; its presence
+        // is the whole signal, and it wins because a user running both reads
+        // the dev one.
+        let directory = ClaudeSocketGuard.metadata(ofPath: devDirectory.path) != nil
+            ? devDirectory
+            : releaseDirectory
+        configDirectoryURL = directory
+        configURL = directory.appendingPathComponent("config.toml", isDirectory: false)
+    }
+
+    func readState() throws -> ClaudeLocalHerdrConfigState {
+        // lstat, not stat: an atomic rename would replace a symlink rather
+        // than follow it, so the writer has to see links as links.
+        let directoryMetadata = ClaudeSocketGuard.metadata(ofPath: configDirectoryURL.path)
+        let configMetadata = ClaudeSocketGuard.metadata(ofPath: configURL.path)
+        let data: Data?
+        if configMetadata != nil, configMetadata?.isSymlink != true {
+            data = try? Data(contentsOf: configURL)
+        } else {
+            data = nil
+        }
+        var permissions: UInt16?
+        if data != nil,
+           let number = try? FileManager.default
+               .attributesOfItem(atPath: configURL.path)[.posixPermissions] as? NSNumber {
+            permissions = number.uint16Value
+        }
+        return ClaudeLocalHerdrConfigState(
+            directoryExists: directoryMetadata?.isDirectory == true,
+            configData: data,
+            configPermissions: permissions,
+            configIsSymlink: configMetadata?.isSymlink == true
+        )
+    }
+
+    func createConfigDirectory(permissions: UInt16) throws {
+        try FileManager.default.createDirectory(
+            at: configDirectoryURL,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: NSNumber(value: permissions)]
+        )
+    }
+
+    func atomicWriteConfig(_ data: Data, permissions: UInt16) throws {
+        let temporaryURL = configDirectoryURL.appendingPathComponent(
+            ".config.localvoxtral.\(UUID().uuidString)",
+            isDirectory: false
+        )
+        let descriptor = temporaryURL.path.withCString {
+            open($0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        }
+        guard descriptor >= 0 else { throw POSIXFailure(operation: "open", code: errno) }
+        var renamed = false
+        defer {
+            close(descriptor)
+            if !renamed { _ = temporaryURL.path.withCString { unlink($0) } }
+        }
+        guard fchmod(descriptor, mode_t(permissions)) == 0 else {
+            throw POSIXFailure(operation: "fchmod", code: errno)
+        }
+        try data.withUnsafeBytes { raw in
+            guard let baseAddress = raw.baseAddress else { return }
+            var offset = 0
+            while offset < raw.count {
+                let written = Self.retryingOnEINTR {
+                    Darwin.write(
+                        descriptor,
+                        baseAddress.advanced(by: offset),
+                        raw.count - offset
+                    )
+                }
+                guard written > 0 else {
+                    throw POSIXFailure(operation: "write", code: errno)
+                }
+                offset += written
+            }
+        }
+        guard fsync(descriptor) == 0 else { throw POSIXFailure(operation: "fsync", code: errno) }
+        let moved = temporaryURL.path.withCString { source in
+            configURL.path.withCString { destination in rename(source, destination) }
+        }
+        guard moved == 0 else {
+            throw POSIXFailure(operation: "rename", code: errno)
+        }
+        renamed = true
+    }
+
+    private struct POSIXFailure: Error, CustomStringConvertible {
+        var operation: String
+        var code: Int32
+        var description: String { "\(operation) failed with errno \(code)" }
+    }
+
+    private static func retryingOnEINTR(_ body: () -> Int) -> Int {
+        while true {
+            let result = body()
+            if result == -1, errno == EINTR { continue }
+            return result
+        }
+    }
+}
+
 /// The user's shell rc file, with the same discipline as the ssh-config
 /// writer: `lstat` so a symlink is seen as one, `O_NOFOLLOW` on the temp file,
 /// and an atomic rename.
@@ -314,7 +436,8 @@ extension ClaudeRemoteEnrollmentService {
     static func live() -> ClaudeRemoteEnrollmentService {
         ClaudeRemoteEnrollmentService(
             runner: processRunner(),
-            sshConfigFileSystem: LiveClaudeRemoteSSHConfigFileSystem()
+            sshConfigFileSystem: LiveClaudeRemoteSSHConfigFileSystem(),
+            localHerdrConfigFileSystem: LiveClaudeLocalHerdrConfigFileSystem()
         )
     }
 

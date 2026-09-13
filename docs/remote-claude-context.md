@@ -398,6 +398,10 @@ from the app instead avoids the history question: the token goes through SSH
 stdin, never in a process argument on this Mac; on the host it is in that one
 `claude plugin install` command's argv while it runs (see above).
 
+### Federated herdr machines
+
+If your local herdr 0.9 client is showing a machine from another host, localvoxtral can join the Claude Code session on that machine without needing an ssh process in the terminal: it reads which machine herdr selected, reaches that machine's herdr over the app-managed tunnel, and checks a short-lived panel marker on your screen. If the marker does not appear, use Settings › Integrations › Remote hosts › **Federated herdr panel row** to add the indicator row to this Mac's herdr config, then reload config in herdr; localvoxtral cannot reload herdr for you.
+
 ## tmux, screen, and window titles
 
 There is no window-title marker anymore: it was removed in September 2026 (see

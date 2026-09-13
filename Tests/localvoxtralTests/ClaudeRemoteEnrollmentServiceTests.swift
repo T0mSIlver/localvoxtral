@@ -38,6 +38,41 @@ private final class MemorySSHConfigFileSystem: ClaudeRemoteSSHConfigFileSystem {
     }
 }
 
+private final class MemoryLocalHerdrConfigFileSystem: ClaudeLocalHerdrConfigFileSystem {
+    struct Storage: Sendable {
+        var state: ClaudeLocalHerdrConfigState
+        var createdDirectoryPermissions: [UInt16] = []
+        var writes: [(data: Data, permissions: UInt16)] = []
+    }
+
+    private let storage: Mutex<Storage>
+
+    init(state: ClaudeLocalHerdrConfigState) {
+        storage = Mutex(Storage(state: state))
+    }
+
+    var snapshot: Storage { storage.withLock { $0 } }
+
+    func readState() throws -> ClaudeLocalHerdrConfigState {
+        storage.withLock { $0.state }
+    }
+
+    func createConfigDirectory(permissions: UInt16) throws {
+        storage.withLock {
+            $0.createdDirectoryPermissions.append(permissions)
+            $0.state.directoryExists = true
+        }
+    }
+
+    func atomicWriteConfig(_ data: Data, permissions: UInt16) throws {
+        storage.withLock {
+            $0.writes.append((data, permissions))
+            $0.state.configData = data
+            $0.state.configPermissions = permissions
+        }
+    }
+}
+
 enum ClaudeRemoteRemoteConfigStateFixture {
     static func state(configText: String) -> ClaudeRemoteSSHConfigState {
         ClaudeRemoteSSHConfigState(
@@ -2254,6 +2289,112 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         }
         XCTAssertEqual(calls.withLock { $0 }, 0)
     }
+
+    // MARK: local herdr agents-panel configuration
+
+    func testLocalHerdrPanelConfigurationIsRefusedWithoutAnInjectedFileSystem() {
+        XCTAssertThrowsError(
+            try ClaudeRemoteEnrollmentService().configureLocalHerdrPanel()
+        ) { error in
+            XCTAssertEqual(
+                error as? ClaudeRemoteEnrollmentService.ServiceError,
+                .localHerdrConfigEditingNotConfigured
+            )
+        }
+    }
+
+    func testLocalHerdrPanelConfigurationAppendsTheRowOnce() throws {
+        let fileSystem = MemoryLocalHerdrConfigFileSystem(
+            state: ClaudeLocalHerdrConfigState(
+                directoryExists: false,
+                configData: nil,
+                configPermissions: nil
+            )
+        )
+        let service = ClaudeRemoteEnrollmentService(
+            localHerdrConfigFileSystem: fileSystem
+        )
+
+        let steps = try service.configureLocalHerdrPanel()
+
+        XCTAssertEqual(steps, [
+            .init(
+                index: 0,
+                command: "configure local herdr agents panel",
+                message: ClaudeRemoteEnrollmentService.localHerdrPanelReloadStatus
+            )
+        ])
+        XCTAssertEqual(fileSystem.snapshot.createdDirectoryPermissions, [0o755])
+        let writes = fileSystem.snapshot.writes
+        XCTAssertEqual(writes.count, 1)
+        XCTAssertEqual(writes.first?.permissions, 0o644)
+        XCTAssertEqual(
+            String(decoding: try XCTUnwrap(writes.first?.data), as: UTF8.self),
+            ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet + "\n"
+        )
+        // The appended config now carries the table, so a second offer must
+        // take the customized refusal path rather than duplicate the block.
+        XCTAssertThrowsError(try service.configureLocalHerdrPanel()) { error in
+            XCTAssertEqual(
+                error as? ClaudeRemoteEnrollmentService.ServiceError,
+                .localHerdrPanelConfigAlreadyCustomized
+            )
+        }
+        XCTAssertEqual(fileSystem.snapshot.writes.count, 1)
+    }
+
+    func testLocalHerdrPanelConfigurationRefusesACustomizedTable() {
+        let original = "[ui.sidebar.agents]\nrows = [[\"state_icon\"]]\n"
+        let fileSystem = MemoryLocalHerdrConfigFileSystem(
+            state: ClaudeLocalHerdrConfigState(
+                directoryExists: true,
+                configData: Data(original.utf8),
+                configPermissions: 0o644
+            )
+        )
+        let service = ClaudeRemoteEnrollmentService(
+            localHerdrConfigFileSystem: fileSystem
+        )
+
+        XCTAssertThrowsError(try service.configureLocalHerdrPanel()) { error in
+            XCTAssertEqual(
+                error as? ClaudeRemoteEnrollmentService.ServiceError,
+                .localHerdrPanelConfigAlreadyCustomized
+            )
+        }
+        XCTAssertTrue(fileSystem.snapshot.writes.isEmpty)
+        XCTAssertEqual(
+            fileSystem.snapshot.state.configData,
+            Data(original.utf8)
+        )
+    }
+
+    func testLocalHerdrPanelConfigurationRefusesAnExistingRowsKey() {
+        let original = "[ui.sidebar]\nrows = [[\"state_icon\"]]\n"
+        let fileSystem = MemoryLocalHerdrConfigFileSystem(
+            state: ClaudeLocalHerdrConfigState(
+                directoryExists: true,
+                configData: Data(original.utf8),
+                configPermissions: 0o644
+            )
+        )
+        let service = ClaudeRemoteEnrollmentService(
+            localHerdrConfigFileSystem: fileSystem
+        )
+
+        XCTAssertThrowsError(try service.configureLocalHerdrPanel()) { error in
+            XCTAssertEqual(
+                error as? ClaudeRemoteEnrollmentService.ServiceError,
+                .localHerdrPanelConfigAlreadyCustomized
+            )
+        }
+        XCTAssertTrue(fileSystem.snapshot.writes.isEmpty)
+        XCTAssertEqual(
+            fileSystem.snapshot.state.configData,
+            Data(original.utf8)
+        )
+    }
+
     // MARK: - SendEnv on an ALREADY-enrolled host
 
     /// The owner's host was enrolled before `SendEnv LC_LVX_TTY` existed, so

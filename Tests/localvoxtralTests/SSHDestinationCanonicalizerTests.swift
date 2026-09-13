@@ -242,6 +242,86 @@ final class SSHDestinationCanonicalizerTests: XCTestCase {
         XCTAssertTrue(direct.matches(jumped))
     }
 
+    // MARK: - ssh:// URI destinations (herdr machine targets)
+
+    func testSSHURIDestinationShapeTable() {
+        let accepted = [
+            "ssh://build.example",
+            "ssh://build.example:2222",
+            "ssh://dev@build.example",
+            "ssh://dev@build.example:2222",
+            "ssh://build.example:22",
+            // A username may contain an `@`; the split is on the last one.
+            "ssh://dev@box@build.example",
+            // herdr's own catalog test fixtures include IPv6 literals.
+            "ssh://dev@[::1]:2222",
+            "ssh://[2001:db8::1]",
+        ]
+        for operand in accepted {
+            XCTAssertTrue(
+                SSHDestinationCanonicalizer.isSSHURIDestination(operand),
+                "\(operand) should be accepted"
+            )
+        }
+
+        let refused = [
+            "",
+            "build.example",
+            "dev@build.example",
+            // A password in the userinfo is herdr's own refusal.
+            "ssh://dev:secret@build.example",
+            "ssh://@build.example",
+            // No path, query, or fragment is a destination.
+            "ssh://build.example/workspace",
+            "ssh://build.example?x=1",
+            "ssh://build.example#frag",
+            // A second colon is not a port.
+            "ssh://build.example:22:22",
+            "ssh://build.example:nope",
+            "ssh://build.example:0",
+            // Only the ssh scheme; anything else keeps the blanket refusal.
+            "http://build.example",
+            "ssh6://build.example",
+            "ssh:///no-host",
+            "ssh://[::1",
+        ]
+        for operand in refused {
+            XCTAssertFalse(
+                SSHDestinationCanonicalizer.isSSHURIDestination(operand),
+                "\(operand) should be refused"
+            )
+        }
+    }
+
+    func testAHerdrURITargetCanonicalizesAgainstEnrolledAliases() async {
+        // The exact target herdr's own catalog tests store: an `ssh://` URI
+        // with user and port. `ssh -G` parses URIs natively (verified on
+        // OpenSSH 10.0: hostname and port come back decoded), so the URI
+        // operand reaches the runner verbatim and matches on the decoded
+        // (hostname, port) alone.
+        let runner = CanonicalizerRecordingRunner(outputs: [
+            "ssh://dev@build.example:2222": output(hostname: "build.example", port: 2222),
+            "buildbox": output(hostname: "build.example", port: 2222),
+        ])
+        let canonicalizer = SSHDestinationCanonicalizer(
+            now: { [epoch] in epoch },
+            runner: runner.run
+        )
+
+        let matches = await canonicalizer.matchingHosts(
+            destination: "ssh://dev@build.example:2222",
+            enrolledHosts: [host(alias: "buildbox")]
+        )
+
+        XCTAssertEqual(matches.map(\.sshHostAlias), ["buildbox"])
+        XCTAssertEqual(
+            Set(runner.calls.withLock { $0.map(\.invocation.argv) }),
+            [
+                ["ssh", "-G", "--", "ssh://dev@build.example:2222"],
+                ["ssh", "-G", "--", "buildbox"],
+            ]
+        )
+    }
 }
 
 #endif

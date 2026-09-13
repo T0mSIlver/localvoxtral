@@ -44,6 +44,82 @@ private struct JoinTestHerdrPanes: HerdrPaneQuerying {
     }
 }
 
+private final class FederatedDispatchPanels: HerdrPaneQuerying, HerdrPanelMetadataReporting, @unchecked Sendable {
+    private let focused: HerdrFocusedPane?
+    private let foreground: HerdrPaneForegroundInfo?
+    private let panelReportSucceeds: Bool
+    let focusedSocketPaths = Mutex<[String]>([])
+    let panelReports = Mutex<[(socketPath: String, paneID: String, value: String?, ttl: Int?)]>([])
+
+    init(
+        focused: HerdrFocusedPane?,
+        foreground: HerdrPaneForegroundInfo? = HerdrPaneForegroundInfo(
+            shellPID: 8000,
+            foregroundProcesses: [HerdrForegroundProcess(pid: 9001, name: "claude")]
+        ),
+        panelReportSucceeds: Bool = true
+    ) {
+        self.focused = focused
+        self.foreground = foreground
+        self.panelReportSucceeds = panelReportSucceeds
+    }
+
+    func focusedPane(socketPath: String) async -> HerdrFocusedPane? {
+        focusedSocketPaths.withLock { $0.append(socketPath) }
+        return focused
+    }
+
+    func paneForegroundInfo(socketPath _: String, paneID _: String) async -> HerdrPaneForegroundInfo? {
+        foreground
+    }
+
+    func paneVisibleText(socketPath _: String, paneID _: String) async -> String? {
+        nil
+    }
+
+    func reportPanelToken(
+        socketPath: String,
+        paneID: String,
+        value: String?,
+        ttlMilliseconds: Int?
+    ) async -> Bool {
+        panelReports.withLock { $0.append((socketPath, paneID, value, ttlMilliseconds)) }
+        return panelReportSucceeds
+    }
+}
+
+@MainActor
+private final class FederatedDispatchForwards: ClaudeRemoteHerdrForwarding {
+    struct Opened: Equatable {
+        var alias: String
+        var remoteSocketPath: String
+    }
+
+    private final class CloseCounter: @unchecked Sendable {
+        let count = Mutex(0)
+    }
+
+    let opens = Mutex<[Opened]>([])
+    private let closeCounter = CloseCounter()
+    let localSocketPath: String
+
+    init(localSocketPath: String = "/tmp/lvx-federated-join-test/h.sock") {
+        self.localSocketPath = localSocketPath
+    }
+
+    var closes: Int { closeCounter.count.withLock { $0 } }
+
+    func open(alias: String, remoteSocketPath: String) async -> ClaudeRemoteHerdrForwardHandle? {
+        opens.withLock { $0.append(Opened(alias: alias, remoteSocketPath: remoteSocketPath)) }
+        let closeCounter = closeCounter
+        return ClaudeRemoteHerdrForwardHandle(
+            localSocketPath: localSocketPath,
+            isRunning: { true },
+            release: { closeCounter.count.withLock { $0 += 1 } }
+        )
+    }
+}
+
 /// The gate that decides which Claude session a dictation is about, and
 /// whether a captured Ghostty pane's raw text may be rendered into a prompt.
 ///
@@ -391,33 +467,97 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
         XCTAssertTrue(joinResolver.isStillLive(join))
     }
 
-    // MARK: - herdr 0.9 federation (issue #286)
+    // MARK: - herdr 0.9 federation (issues #286 and #288)
 
-    // The case the guard exists for. Everything this arm checks still passes
-    // (the pane is registered, the claim agrees, the pid is in the foreground
-    // list) and it must abstain anyway, because the pane belongs to a server
-    // the client has stopped presenting.
-    func testHerdrJoinAbstainsWhileTheClientShowsAFederatedMachine() async {
+    // This test used to assert that `.showingMachine` abstains. That was the
+    // deliberate #290 guard: without a way to name the selected machine, the
+    // local socket's stale focused pane could only produce a wrong join. The
+    // federated arm replaces that abstention with a different, fully wired
+    // resolution, so the same federation state now joins when every federated
+    // seam agrees.
+    func testShowingMachineDispatchesToTheFederatedHerdrArm() async throws {
+        let profile = HerdrMachineProfile(
+            id: String(repeating: "b", count: 32),
+            label: "box",
+            target: "box",
+            session: HerdrMachineProfile.defaultSessionName,
+            enabled: true
+        )
         let registry = makeRegistry()
-        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
-        let paneQueries = Mutex(0)
-        var panes = herdrPanes(claim: "s1")
-        panes.onFocused = { paneQueries.withLock { $0 += 1 } }
-        let join = await ClaudeSessionJoinResolver(
+        XCTAssertNotNil(registry.ingest(
+            ClaudeHookRecord(
+                event: .sessionStart,
+                sessionID: ClaudeRemoteSessionScope.scopedSessionID(
+                    hostID: "host-federated",
+                    sessionID: "s-federated"
+                ),
+                timestamp: epoch.timeIntervalSince1970,
+                rawCwd: "/repo",
+                process: ClaudeHookProcessInfo(
+                    hookPID: 11,
+                    claudePID: 12,
+                    tty: "/dev/pts/3"
+                )
+            ),
+            origin: .remote(channel: ClaudeRemoteSessionScope.channel(hostID: "host-federated")),
+            environment: ClaudeRemoteSessionEnvironment(
+                herdrPaneID: "pane-federated",
+                herdrSocketPath: "/home/dev/.config/herdr/herdr.sock",
+                hookParentPID: "4711"
+            )
+        ))
+        let panes = FederatedDispatchPanels(
+            focused: HerdrFocusedPane(paneID: "pane-federated", claimedClaudeSessionID: nil)
+        )
+        let forwards = FederatedDispatchForwards()
+        let token = HerdrPanelBindingProbe.token(randomBits: 23)
+        let resolved = await ClaudeSessionJoinResolver(
             registry: registry,
             focusedTerminalTTY: { _ in "/dev/ttys-outer" },
             focusedWindowID: { _ in self.windowA },
             herdrClientProbe: { _ in true },
-            herdrFederation: { .showingMachine(Self.federatedMachine) },
+            herdrFederation: { .showingMachine(profile) },
             herdrClientSurfaceCount: { 1 },
-            herdrPanes: panes
+            herdrPanes: panes,
+            enrolledHosts: { destination in
+                guard destination.lowercased() == "box" else { return [] }
+                return [ClaudeRemoteHost(
+                    id: "host-federated",
+                    label: "box",
+                    sshHostAlias: "box",
+                    createdAt: self.epoch,
+                    lastSeenAt: nil,
+                    revokedAt: nil
+                )]
+            },
+            canonicalizedEnrolledHosts: { _ in [] },
+            remoteHerdrForwards: forwards,
+            herdrPanelMetadata: panes,
+            readFocusedGrid: { _ in "agents  \(token)" },
+            panelNow: { self.epoch },
+            panelSleepFor: { _ in },
+            panelRandomBits: { 23 }
         ).resolve(target: ghostty)
+        let join = try XCTUnwrap(resolved)
 
-        XCTAssertNil(join)
-        // The guard runs BEFORE the socket question, so the stale pane is never
-        // even asked for. That ordering is what keeps the answer from aging
-        // between the read and the join.
-        XCTAssertEqual(paneQueries.withLock { $0 }, 0)
+        XCTAssertEqual(join.mechanism, .federatedHerdrPane)
+        XCTAssertEqual(join.herdrPane?.paneID, "pane-federated")
+        XCTAssertEqual(join.herdrPane?.socketPath, forwards.localSocketPath)
+        XCTAssertNotNil(join.remoteHerdrIndicator)
+        XCTAssertEqual(
+            forwards.opens.withLock { $0 },
+            [FederatedDispatchForwards.Opened(
+                alias: "box",
+                remoteSocketPath: "/home/dev/.config/herdr/herdr.sock"
+            )]
+        )
+        XCTAssertEqual(forwards.closes, 0)
+        XCTAssertEqual(
+            panes.focusedSocketPaths.withLock { $0 },
+            [forwards.localSocketPath],
+            "the dispatch must query the forwarded socket, never the stale local pane"
+        )
+        XCTAssertEqual(panes.panelReports.withLock { $0.first?.value }, token)
     }
 
     // Unreadable state is not "no machines saved": it is not knowing, and this

@@ -188,8 +188,17 @@ final class SSHDestinationCanonicalizer: Sendable {
     private func identity(for operand: String) async -> Identity? {
         // Apply the probe's existing operand policy BEFORE any subprocess sees
         // the string. In particular, refused URI/punctuation shapes never
-        // become arguments to a command.
-        guard SSHDestinationTTYProbe.normalizedDestination(operand) != nil else {
+        // become arguments to a command — with one deliberate addition: a
+        // herdr 0.9 machine target may be an `ssh://` URI (herdr's own
+        // `machine add` accepts and stores that shape, and herdr hands the
+        // target straight to `ssh -T`), so exactly that URI form is vetted by
+        // `isSSHURIDestination` and passed to `ssh -G`, which parses URIs
+        // natively (verified on OpenSSH 10.0: `ssh -G ssh://user@host:port`
+        // prints the parsed hostname and port). Every other scheme stays
+        // refused.
+        guard SSHDestinationTTYProbe.normalizedDestination(operand) != nil
+            || Self.isSSHURIDestination(operand)
+        else {
             Log.claudeContext.info(
                 "SSH destination canonicalization failed: operand refused before process spawn"
             )
@@ -296,6 +305,79 @@ final class SSHDestinationCanonicalizer: Sendable {
         }
         guard let hostname, let port else { return nil }
         return Identity(hostname: hostname, port: port, user: user, proxyJump: proxyJump)
+    }
+
+    // MARK: - ssh:// URI destinations
+
+    /// The maximum length herdr itself accepts for a machine target
+    /// (`src/client/endpoint/catalog.rs`, `MAX_TARGET_BYTES`).
+    private static let maximumURIDestinationBytes = 1_024
+    private static let maximumHostnameBytes = 253
+
+    /// Whether `operand` is an `ssh://` URI destination this canonicalizer may
+    /// hand to `ssh -G`.
+    ///
+    /// The probe's own operand policy refuses every URI shape, and it stays
+    /// that way there: an argv-carried destination the PROBE cannot parse must
+    /// not be half-interpreted. This is the one exception, and it exists for
+    /// herdr's saved-machine targets, which herdr stores verbatim and passes
+    /// to ssh verbatim (`ssh -T <target>` in `src/remote/attach.rs`) — so the
+    /// shapes accepted here mirror herdr's own `SavedSshEndpoint::validate`:
+    /// an `ssh://` scheme, an optional `user@` (a userinfo containing `:` is a
+    /// password, which herdr refuses and so do we), a bracketed IPv6 literal
+    /// or a hostname-charset host, an optional decimal port, and nothing after
+    /// it (a path or query is not a destination herdr or ssh would honor).
+    ///
+    /// Parsed here only enough to VET the shape: `ssh -G` remains the parser
+    /// that decides hostname and port, exactly as for plain operands.
+    static func isSSHURIDestination(_ operand: String) -> Bool {
+        guard operand.hasPrefix("ssh://"),
+              operand.utf8.count <= maximumURIDestinationBytes
+        else { return false }
+        var authority = Substring(operand.dropFirst("ssh://".count))
+
+        // Optional `user@`, split on the LAST `@` (a username may contain
+        // one), and never a password.
+        if let separator = authority.lastIndex(of: "@") {
+            let userinfo = authority[..<separator]
+            guard !userinfo.isEmpty, !userinfo.contains(":") else { return false }
+            authority = authority[authority.index(after: separator)...]
+        }
+        guard !authority.isEmpty else { return false }
+
+        if authority.hasPrefix("[") {
+            // IPv6 literal: `[::1]` with an optional `:port` after it.
+            guard let close = authority.firstIndex(of: "]") else { return false }
+            let address = authority[authority.index(after: authority.startIndex)..<close]
+            guard !address.isEmpty,
+                  address.allSatisfy({ $0.isHexDigit || $0 == ":" || $0 == "." })
+            else { return false }
+            authority = authority[authority.index(after: close)...]
+            guard authority.isEmpty || authority.hasPrefix(":") else { return false }
+            if authority.isEmpty { return true }
+        } else {
+            // A bare host swallows at most one `:port`; a second `:` is a
+            // shape ssh would not resolve as intended.
+            let parts = authority.split(separator: ":", maxSplits: 1)
+            let host = parts[0]
+            guard Self.isURIHostname(host) else { return false }
+            if parts.count == 1 { return true }
+            authority = parts[1]
+            guard !authority.isEmpty else { return false }
+        }
+
+        let port = authority.dropFirst()
+        guard port.count <= 5, port.allSatisfy(\.isNumber), port.first != "0" else { return false }
+        return UInt16(port) != nil
+    }
+
+    private static func isURIHostname(_ host: Substring) -> Bool {
+        guard !host.isEmpty, host.utf8.count <= maximumHostnameBytes else { return false }
+        return host.allSatisfy { character in
+            character.isASCII
+                && (character.isLetter || character.isNumber
+                    || character == "." || character == "-" || character == "_")
+        }
     }
 }
 

@@ -308,4 +308,40 @@ final class HerdrMachineFederationTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
         XCTAssertEqual(HerdrMachineFederationReader.liveReadFile(link), .unreadable)
     }
+
+    // MARK: - Session socket classification
+
+    func testSessionSocketClassificationTable() {
+        let defaultSession = HerdrMachineProfile.defaultSessionName
+        let cases: [(path: String, session: String, expected: Bool, note: String)] = [
+            // The default session: `<config dir>/herdr.sock`.
+            ("/home/dev/.config/herdr/herdr.sock", defaultSession, true, "release default"),
+            // A development build keeps the same layout under herdr-dev.
+            ("/home/dev/.config/herdr-dev/herdr.sock", defaultSession, true, "dev default"),
+            ("/home/dev/.local/state/herdr/herdr.sock", defaultSession, true, "state-dir shape"),
+            // A `sessions/` component is herdr's namespace for NAMED sessions,
+            // so these are never the default session's socket.
+            ("/home/dev/.config/herdr/sessions/herdr.sock", defaultSession, false, "sessions dir"),
+            ("/home/dev/.config/herdr/sessions/agents/herdr.sock", defaultSession, false, "named session"),
+            ("/home/dev/.config/herdr-dev/sessions/agents/herdr.sock", defaultSession, false, "dev named"),
+            // A named session: `<config dir>/sessions/<name>/herdr.sock`.
+            ("/home/dev/.config/herdr/sessions/agents/herdr.sock", "agents", true, "named"),
+            ("/home/dev/.config/herdr-dev/sessions/agents/herdr.sock", "agents", true, "dev named"),
+            // Wrong name, wrong component, or no sessions component at all.
+            ("/home/dev/.config/herdr/sessions/build/herdr.sock", "agents", false, "other name"),
+            ("/home/dev/.config/herdr/sessions/sessions/agents/herdr.sock", "agents", true, "doubled component still ends correctly"),
+            ("/home/dev/.config/herdr/agents/herdr.sock", "agents", false, "no sessions component"),
+            // Not a socket path herdr would derive from any session.
+            ("/home/dev/.config/herdr/herdr-client.sock", defaultSession, false, "client socket"),
+            ("/home/dev/.config/herdr", defaultSession, false, "no socket file name"),
+            ("herdr.sock", defaultSession, false, "bare file name"),
+        ]
+        for testCase in cases {
+            XCTAssertEqual(
+                HerdrSessionSocket.isSocket(testCase.path, ofSessionNamed: testCase.session),
+                testCase.expected,
+                "\(testCase.note): \(testCase.path) for session \(testCase.session)"
+            )
+        }
+    }
 }

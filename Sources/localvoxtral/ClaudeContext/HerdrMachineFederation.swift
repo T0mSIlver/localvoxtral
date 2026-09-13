@@ -44,6 +44,45 @@ enum HerdrMachineFederation: Sendable, Equatable {
     }
 }
 
+/// Whether a socket path is the API socket of one named herdr session.
+///
+/// herdr derives the socket from the session name alone
+/// (`src/session.rs::api_socket_path_for` → `data_dir_for`): the default
+/// session keeps it at `<config dir>/herdr.sock`, a named one at
+/// `<config dir>/sessions/<name>/herdr.sock`. A federated machine names its
+/// session in the profile, and the sessions it hosts publish
+/// `HERDR_SOCKET_PATH` — this is the pure classification that reconciles the
+/// two, so the federated join arm can keep only the candidates that live on
+/// the machine the client is showing.
+///
+/// The default session refuses any path under a `sessions/` component: that
+/// component is herdr's own namespace for named sessions, so
+/// `…/sessions/herdr.sock` is not a default-session socket in any herdr
+/// configuration (a session literally named "default" IS the default session
+/// and resolves to the bare `<config dir>/herdr.sock`).
+enum HerdrSessionSocket {
+    static let socketFileName = "herdr.sock"
+    static let sessionsDirectoryName = "sessions"
+
+    /// The socket path of the session named `sessionName`, or nil when the
+    /// path does not follow herdr's layout for that session.
+    static func isSocket(
+        _ path: String,
+        ofSessionNamed sessionName: String
+    ) -> Bool {
+        guard path.hasSuffix("/\(socketFileName)") else { return false }
+        let directory = String(path.dropLast(socketFileName.count + 1))
+        let components = directory.split(separator: "/", omittingEmptySubsequences: true)
+
+        if sessionName == HerdrMachineProfile.defaultSessionName {
+            return !components.contains(Substring(sessionsDirectoryName))
+        }
+        guard components.count >= 2 else { return false }
+        return components[components.count - 2] == Substring(sessionsDirectoryName)
+            && components[components.count - 1] == Substring(sessionName)
+    }
+}
+
 /// One saved machine, as `herdr machine add` recorded it. The fields are the
 /// ones `herdr machine list --json` prints; the catalog holds nothing else
 /// (no credentials, no key material, no control sockets).

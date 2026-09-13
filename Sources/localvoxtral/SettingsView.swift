@@ -1112,6 +1112,7 @@ private struct ClaudeCodeSettingsPane: View {
             SettingsGroup(title: "Remote hosts", learnMoreURL: LearnMore.remoteHosts) {
                 if let claude = viewModel.claudeIntegrationSettings {
                     ClaudeRemoteHostsSettingsRow(model: claude)
+                    ClaudeHerdrLocalPanelSettingsRow(model: claude)
                 }
             }
         }
@@ -2175,7 +2176,7 @@ private struct SettingsAvailabilityCard: View {
 /// now takes the leftover width (`layoutPriority(0)`, so the control keeps its
 /// intrinsic size) and the explanation is a row of its own, aligned to the
 /// label's leading edge.
-private enum SettingsFieldRowLayout {
+enum SettingsFieldRowLayout {
     /// Label leading, control trailing on the same line. The default.
     case inline
     /// Label on its own line, control full-width beneath it. For rows whose
@@ -2184,7 +2185,7 @@ private enum SettingsFieldRowLayout {
     case stacked
 }
 
-private struct SettingsFieldRow<Content: View, Footer: View>: View {
+struct SettingsFieldRow<Content: View, Footer: View>: View {
     let title: String
     /// The secondary explanation. A parameter rather than a view inside
     /// `content`: a row cannot pull a nested view out of its control column, and

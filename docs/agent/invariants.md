@@ -159,21 +159,42 @@ there is not.
     therefore reads herdr's saved machine state FIRST
     (`HerdrMachineFederationReader` over `<state dir>/client/endpoints.json`
     and `client/endpoint-selection.json`, the two files `herdr machine list`
-    itself reads) and abstains unless Local is selected. Unreadable state
-    abstains too: it is not knowing, not "no machines saved". With machines
-    saved it also requires a LONE herdr client surface
+    itself reads). `.notFederated` and `.showingLocal` take the local arm
+    exactly as before; `.unreadable` abstains because it is not knowing, not
+    "no machines saved". With machines saved the local selection also requires
+    a LONE herdr client surface
     (`HerdrClientTTYProbe.clientSurfaceCount`), because herdr keeps one
     selection per user rather than one per client, so a second client on screen
     makes the file unable to say which machine the FOCUSED surface shows. Users
     with no saved machines keep the pre-0.9 arm, second window included.
-    TWO RESIDUALS, both failing OPEN. First, herdr's state directory moves with
+    `.showingMachine(profile)` no longer abstains: it dispatches to the
+    federated `.federatedHerdrPane` arm (issue #288, Part B).
+    That arm's confirmation set is: one herdr client surface; the profile
+    target naming exactly one non-revoked enrolled host, by exact alias and
+    then by `ssh -G` canonicalization (`ssh://user@host:port` machine targets
+    included); live sessions on exactly one socket path with the shape of the
+    profile's named herdr session (`HerdrSessionSocket`); over the app-managed
+    forward, exactly one candidate claiming the focused pane, herdr's own
+    `agent_session` claim not disagreeing, and the registered agent in the
+    pane's foreground; and finally one panel stamp whose fresh token must
+    appear in the focused grid. The token no longer names the machine: the
+    selection state did. On a 0.9 client it proves the surface is a whole-view
+    client federating that server—attach/observe surfaces render no sidebar—and
+    that the selection is not stale for another surface. A match keeps the
+    token as the mic indicator with the same forward/indicator lifecycle as
+    the remote arm; a miss abstains under its own federated cause and points at
+    the LOCAL panel-row config. Like every herdr join, it authorizes no raw AX
+    capture and its screen context is a `pane.read` of exactly the joined pane.
+    THREE RESIDUALS. First, herdr's state directory moves with
     `XDG_STATE_HOME`, which a GUI app cannot see in the user's shell, so such a
     user reads back "no machines saved" and keeps the unguarded behavior.
     Second, the files describe what a client STARTING NOW would show, so they
     lag a live client that has not caught up: a client polls the catalog once a
     second and returns to Local when the machine it displays is removed or
     disabled (herdr `src/client/catalog_reload.rs`), which bounds the window
-    but does not close it. Neither is closable with the file interface herdr
+    but does not close it. Third, multi-client ambiguity remains: one selection
+    cannot name the focused surface when several herdr clients are visible, so
+    that state abstains. None is closable with the file interface herdr
     offers. The real closure is herdr reporting its active endpoint on the
     socket, which is an upstream ask (issue #288).
   - cmux (github.com/manaflow-ai/cmux — a native Swift/AppKit terminal on
@@ -298,11 +319,13 @@ there is not.
     active machine by background color alone, which a text grid read cannot
     see. A token stamped on machine B's pane therefore renders while the user
     views machine A: the match proves that the surface federates that server,
-    not that it displays it. This costs nothing today, because the arm never
-    probes a surface with no ssh and a federated client has none. Anything that
-    extends the probe to those surfaces must name the machine from herdr's own
-    selection state first (issue #286) and only then use the token, which keeps
-    its freshness and mic-indicator roles.
+    not that it displays it. This costs nothing for the argv-based arm,
+    because that arm never probes a surface with no ssh and a federated client
+    has none. The federated `.federatedHerdrPane` arm is the extension that
+    names the machine from herdr's own selection state first (issue #286) and
+    only then uses the token, which keeps its freshness and mic-indicator
+    roles. The argv-based `.remoteHerdrPane` arm below is otherwise untouched
+    and still serves non-federated ssh surfaces.
 
     Any stamp refusal, unavailable grid, hidden/unconfigured/scrolled panel row,
     a row cut below the entropy floor, or a bounded settle timeout can only
