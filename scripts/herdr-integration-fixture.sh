@@ -83,7 +83,7 @@ SSH_CONFIG_FED_END="# END localvoxtral herdr integration fixture federation"
 # The federated machine the `federation` verb adds: its label as shown in the
 # client's machines sidebar.
 FEDERATION_ALIAS_SUFFIX="-fed"
-FEDERATION_LABEL="lvx-federation"
+FEDERATION_LABEL="lvxfed"
 # The remote server's socket when the lane addresses it directly (hermetic
 # loopback only): a short path under the workdir. macOS caps sun_path at 104
 # bytes, and the lane's workdir names alone can reach 56 — a named session's
