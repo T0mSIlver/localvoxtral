@@ -2431,10 +2431,12 @@ final class RemoteHerdrJoinTests: XCTestCase {
         XCTAssertNil(join)
         XCTAssertEqual(statuses.recorded, [.likelyNotConfigured])
         XCTAssertEqual(forwards.closeCount, 1)
-        XCTAssertEqual(
-            panes.panelReports.withLock { $0.last?.value }, nil,
-            "the nonce is cleared before the forward closes"
-        )
+        // Stamp THEN clear, asserted as a pair: a `last == nil` alone would
+        // also pass when nothing was ever stamped (review-2 NIT-1).
+        let reports = panes.panelReports.withLock { $0 }
+        XCTAssertGreaterThanOrEqual(reports.count, 2, "one stamp and one clear")
+        XCTAssertNotNil(reports.first?.value, "the nonce was stamped before the settle timed out")
+        XCTAssertNil(reports.last?.value, "the nonce is cleared before the forward closes")
     }
 
     func testFederatedMachineAbstainsWhenForwardOrPanelCapabilityIsUnavailable() async {
@@ -2569,10 +2571,12 @@ final class RemoteHerdrJoinTests: XCTestCase {
             "a truncated row is configured; only settle-timeout reports likelyNotConfigured"
         )
         XCTAssertEqual(forwards.closeCount, 1)
-        XCTAssertEqual(
-            panes.panelReports.withLock { $0.last?.value }, nil,
-            "the nonce is cleared before the forward closes"
-        )
+        // Stamp THEN clear, asserted as a pair: a `last == nil` alone would
+        // also pass when nothing was ever stamped (review-2 NIT-1).
+        let reports = panes.panelReports.withLock { $0 }
+        XCTAssertGreaterThanOrEqual(reports.count, 2, "one stamp and one clear")
+        XCTAssertEqual(reports.first?.value, token, "the stamped nonce is the one the grid truncated")
+        XCTAssertNil(reports.last?.value, "the nonce is cleared before the forward closes")
     }
 
     func testUnreadableFederationStateStillAbstainsBeforeTheForward() async {
