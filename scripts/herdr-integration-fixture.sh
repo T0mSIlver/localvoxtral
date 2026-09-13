@@ -26,6 +26,13 @@
 # destination to aim the same lane at a real second host instead; the ssh half
 # is then the caller's own already-working configuration.
 #
+# Destination mode leaves the second host's herdr server running by design:
+# teardown closes only the workspace the federation step created
+# (`workspace close <id>` over the same ssh, best-effort, logged) and never
+# runs `herdr server stop` there — that server may hold a human's live
+# session. A `workspace create` + `report-agent` residue may briefly remain
+# if the close fails; the server itself is never stopped.
+#
 # ## Files this borrows from the account, and how they come back
 #
 # For the duration of a run the fixture replaces the account's herdr
@@ -50,7 +57,10 @@
 # modification, so a crash at any point leaves either nothing held or a
 # complete, restorable hold. `up` refuses to overwrite an existing hold; it
 # restores a dead run's hold first, and refuses outright while a live run owns
-# it. `recover` restores by hand.
+# it. `recover` restores by hand. The `federation` verb commits its own
+# teardown state (remote socket / destination target + created workspace) to
+# the same manifest BEFORE `machine add`, so a SIGKILL mid-federation still
+# leaves a record teardown can act on.
 #
 # Deliberately loud: every precondition that cannot be met exits non-zero with
 # the exact recovery or provisioning step. This lane must never look green
@@ -166,6 +176,22 @@ hold_field() {
   local key="$1"
   [[ -f "$HOLD_MANIFEST" ]] || return 0
   sed -n "s/^${key}=//p" "$HOLD_MANIFEST" | head -1
+}
+
+# Upsert one key=value line in the hold manifest — the stable path that
+# survives a SIGKILL of the run, unlike anything under the workdir.
+# `command_federation` commits its teardown state here BEFORE `machine add`
+# daemon-starts anything, so `down`, `recover` and stale-hold reclaim can
+# stop the hermetic remote server by the recorded socket (or close the
+# created destination workspace) even when federation.json was never written.
+record_hold_field() {
+  local key="$1" value="$2" tmp
+  [[ -f "$HOLD_MANIFEST" ]] || return 0
+  tmp="$(mktemp "${TMPDIR:-/tmp}/lvx-hold.XXXXXX")"
+  grep -v "^${key}=" "$HOLD_MANIFEST" > "$tmp" || true
+  printf '%s=%s\n' "$key" "$value" >> "$tmp"
+  cat "$tmp" > "$HOLD_MANIFEST"
+  rm -f "$tmp"
 }
 
 # Is the process that took the hold still running THIS script? A pid alone
@@ -297,10 +323,15 @@ reclaim_or_refuse_stale_hold() {
     $(recovery_hint)"
   fi
   log "found held state from an interrupted run (started $started, workdir $owner)"
-  if [[ -n "$owner" && -d "$owner" ]]; then
+  if [[ -n "$owner" ]]; then
+    # Manifest-aware: stops the daemon-started hermetic remote server by its
+    # recorded socket (or closes the created destination workspace) even when
+    # the workdir — and federation.json with it — is already gone.
     stop_federation_server "$owner"
-    stop_workdir_processes "$owner"
-    rm -rf "$owner"
+    if [[ -d "$owner" ]]; then
+      stop_workdir_processes "$owner"
+      rm -rf "$owner"
+    fi
   fi
   release_account_files
   if hold_is_present; then
@@ -338,9 +369,21 @@ resolve_herdr() {
 # Quiet, read-only probe for the `herdr machine` subcommand (herdr 0.9.0+).
 # Used by `up` to decide whether surfaces need client-state isolation, and by
 # the `federation` verb as its loud version gate. Reads only; never writes.
+# Always runs with XDG_STATE_HOME pointed at scratch — the caller's scratch
+# client dir when one exists, otherwise an empty temp dir — so the account's
+# ~/.local/state/herdr/client/ catalog is never read, even on a runner that
+# has a real 0.9 catalog of its own.
 machine_catalog_available_quietly() {
+  local state_home="${1:-}" scratch=""
   scrub_herdr_env
-  "$HERDR_BINARY" machine list --json </dev/null >/dev/null 2>&1
+  if [[ -z "$state_home" ]]; then
+    scratch="$(mktemp -d "${TMPDIR:-/tmp}/lvx-herdr-catalog-sniff.XXXXXX")"
+    state_home="$scratch"
+  fi
+  local status=0
+  XDG_STATE_HOME="$state_home" "$HERDR_BINARY" machine list --json </dev/null >/dev/null 2>&1 || status=$?
+  [[ -n "$scratch" ]] && rm -rf "$scratch"
+  return $status
 }
 
 validate_workdir() {
@@ -400,6 +443,7 @@ record_pane_snapshot() {
 # Kill whatever a run left behind in its own workdir. Touches no account files.
 stop_workdir_processes() {
   local dir="$1" pid binary
+  scrub_herdr_env
   [[ -d "$dir" ]] || return 0
   binary="$(cat "$dir/herdr.bin" 2>/dev/null || true)"
   if [[ -f "$dir/surface.pids" ]]; then
@@ -506,9 +550,10 @@ EOF
     printf '%s\n' "$SSH_CONFIG_END"
   } >> "$SSH_CONFIG_FILE"
   # The federation alias: same loopback sshd, the federation key (whose entry
-  # forces XDG_CONFIG_HOME, never HERDR_SOCKET_PATH — see above). `machine
-  # add` and every federated bridge resolve their target through the REAL ssh
-  # config (the bridge spawns plain `ssh`, measured 2026-09-13), which is why
+  # forces XDG_CONFIG_HOME and HERDR_SOCKET_PATH onto every remote herdr
+  # invocation over the `-fed` alias — see the authorized_keys entry above).
+  # `machine add` and every federated bridge resolve their target through the
+  # REAL ssh config (the bridge spawns plain `ssh`, measured 2026-09-13), which is why
   # this block lives here and not in a fixture-local file.
   {
     printf '%s\n' "$SSH_CONFIG_FED_BEGIN"
@@ -836,12 +881,6 @@ command_reload() {
   herdr_cli server reload-config
 }
 
-command_reload() {
-  local dir="$1"
-  load_context "$dir"
-  herdr_cli server reload-config
-}
-
 # ------------------------------------------------------- federation
 
 # Set up the federated 0.9 client the federation tests need. Deliberately NOT
@@ -852,7 +891,8 @@ command_reload() {
 # What it builds, in the fixture's existing style (loud failures, nothing of
 # the account's touched beyond what `up` already holds):
 # - the scratch CLIENT state dir is already `up`'s (XDG_STATE_HOME for every
-#   surface and every client/CLI process below); the account's
+#   surface, every client/CLI process below, and every `machine list` probe
+#   including the version gate here); the account's
 #   ~/.local/state/herdr/client/ is never read or written;
 # - one `herdr machine add` of the fixture's own loopback target (hermetic) or
 #   the caller's destination, targeting the DEFAULT remote session (no
@@ -873,6 +913,28 @@ command_reload() {
 # has room to spare. The remote side is still a genuinely separate server
 # with its own panes and its own config file, which is what the composition
 # tests need.
+# Commit federation teardown state to the hold manifest BEFORE `machine add`
+# daemon-starts anything. The manifest lives at a stable path outside the
+# workdir, so a SIGKILL between `machine add` and the final federation.json
+# still leaves a recoverable record: the hermetic remote socket (plus sshd
+# port and binary) for a socket-addressed `server stop`, or the destination
+# target for a workspace-scoped close. The destination workspace id itself is
+# recorded after `workspace create` (record_hold_field, same manifest).
+record_federation_hold_state() {
+  local dir="$1" hermetic="$2" target="${3:-}"
+  record_hold_field federationWorkdir "$dir"
+  record_hold_field federationHermetic "$hermetic"
+  record_hold_field federationHerdrBinary "${HERDR_BINARY:-$(command -v herdr 2>/dev/null || true)}"
+  if [[ "$hermetic" == "1" ]]; then
+    record_hold_field federationRemoteSocket "$dir/$FEDERATION_REMOTE_SOCKET_NAME"
+    if [[ -f "$dir/sshd.port" ]]; then
+      record_hold_field federationSshdPort "$(cat "$dir/sshd.port")"
+    fi
+  else
+    record_hold_field federationTarget "$target"
+  fi
+}
+
 command_federation() {
   local dir="$1"
   load_context "$dir"
@@ -883,7 +945,11 @@ command_federation() {
   local version version_json
   version="$("$HERDR_BINARY" --version 2>&1 | head -1)"
   log "herdr binary: $HERDR_BINARY ($version)"
-  if ! version_json="$("$HERDR_BINARY" machine list --json </dev/null 2>/dev/null)" \
+  # The scratch client dir may not exist yet on a pre-0.9 host (up only
+  # creates it when the sniff passes); a nonexistent XDG_STATE_HOME simply
+  # reads as an empty catalog, and the probe never writes. Either way the
+  # account's real catalog is never consulted.
+  if ! version_json="$(XDG_STATE_HOME="$client_state_home" "$HERDR_BINARY" machine list --json </dev/null 2>/dev/null)" \
     || ! grep -q '^\[' <<<"$version_json"; then
     die "the federated-machine lane needs herdr 0.9.0 or newer (the \`herdr machine\` subcommand).
   This machine has: ${version:-<herdr --version failed>}.
@@ -930,6 +996,15 @@ EOF
   # output (measured 2026-09-13: an open stdin hung `machine add` past 120 s).
   # No --remote-session flag: the profile targets the default session and the
   # remote socket comes from the forced HERDR_SOCKET_PATH (see above).
+  #
+  # Committed to the hold manifest FIRST: `machine add` daemon-starts the
+  # remote server, and a SIGKILL right after it would otherwise orphan that
+  # daemon with no record of its socket.
+  if (( hermetic )); then
+    record_federation_hold_state "$dir" 1
+  else
+    record_federation_hold_state "$dir" 0 "$fed_target"
+  fi
   local add_out profile_id
   add_out="$(XDG_STATE_HOME="$client_state_home" "$HERDR_BINARY" machine add "$fed_target" \
     --label "$FEDERATION_LABEL" </dev/null 2>&1)" \
@@ -948,8 +1023,17 @@ $add_out"
   # there is no --session flag to override it. Destination mode reaches it
   # over ssh in BatchMode so a credential prompt fails loudly instead of
   # hanging.
-  local create_out remote_pane_id
+  local create_out remote_pane_id remote_workspace_id=""
   local remote_socket="$dir/$FEDERATION_REMOTE_SOCKET_NAME"
+  # Destination mode only: snapshot the second host's existing workspaces so
+  # teardown closes ONLY the workspace this step creates. Best-effort — if
+  # the list fails, the close below still runs best-effort against the id
+  # `workspace create` returned.
+  local pre_existing_workspaces=""
+  if ! (( hermetic )); then
+    pre_existing_workspaces="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -T -- "$alias_used" \
+      "herdr workspace list" </dev/null 2>&1 || true)"
+  fi
   if (( hermetic )); then
     create_out="$(HERDR_SOCKET_PATH="$remote_socket" XDG_CONFIG_HOME="$remote_home" \
       "$HERDR_BINARY" workspace create </dev/null 2>&1)" \
@@ -964,6 +1048,23 @@ $create_out"
   remote_pane_id="$(sed -n 's/.*"pane_id":"\([^"]*\)".*/\1/p' <<<"$create_out" | head -1)"
   [[ -n "$remote_pane_id" ]] || die "could not parse a remote pane id from workspace create output:
 $create_out"
+  if ! (( hermetic )); then
+    # Exactly what this step CREATED on the second host: teardown closes this
+    # workspace and never stops that host's server. If the id pre-existed
+    # (an empty server answers create with its own w1, measured 2026-09-13),
+    # there is nothing of ours to close — record nothing.
+    remote_workspace_id="$(sed -n 's/.*"workspace_id":"\([^"]*\)".*/\1/p' <<<"$create_out" | head -1)"
+    if [[ -n "$remote_workspace_id" ]] \
+      && ! grep -qF "\"workspace_id\":\"$remote_workspace_id\"" <<<"$pre_existing_workspaces" 2>/dev/null; then
+      record_hold_field federationRemoteWorkspace "$remote_workspace_id"
+      log "remote workspace created: $remote_workspace_id (closed on teardown; the server is left running)"
+    elif [[ -n "$remote_workspace_id" ]]; then
+      log "remote workspace $remote_workspace_id pre-existed; teardown will not close it"
+      remote_workspace_id=""
+    else
+      log "WARNING: could not parse a remote workspace id from workspace create output; teardown will close nothing"
+    fi
+  fi
   if (( hermetic )); then
     HERDR_SOCKET_PATH="$remote_socket" XDG_CONFIG_HOME="$remote_home" "$HERDR_BINARY" \
       pane report-agent "$remote_pane_id" \
@@ -992,11 +1093,11 @@ $create_out"
     remote_config_path="$remote_home/herdr/config.toml"
     [[ -S "$remote_socket_path" ]] || die "remote server never created $remote_socket_path"
   fi
-  printf '{"profileID":"%s","label":"%s","target":"%s","session":"%s","remoteAgentSessionID":"%s","clientStateHome":"%s","clientDir":"%s","remoteSocketPath":"%s","remotePaneID":"%s","remoteConfigPath":"%s"}\n' \
+  printf '{"profileID":"%s","label":"%s","target":"%s","session":"%s","remoteAgentSessionID":"%s","clientStateHome":"%s","clientDir":"%s","remoteSocketPath":"%s","remotePaneID":"%s","remoteConfigPath":"%s","remoteWorkspaceID":"%s"}\n' \
     "$profile_id" "$FEDERATION_LABEL" "$fed_target" "default" \
     "$FEDERATION_AGENT_SESSION_ID" "$client_state_home" \
     "$client_state_home/herdr/client" "$remote_socket_path" "$remote_pane_id" \
-    "$remote_config_path" \
+    "$remote_config_path" "$remote_workspace_id" \
     | tee "$dir/federation.json"
 }
 
@@ -1020,31 +1121,88 @@ command_federation_select() {
   log "federation selection: $which"
 }
 
-# Stop the remote server this run daemon-started (hermetic), or ask the
-# second host to stop ours (destination). Never fails teardown: a dead server
-# is the common case on the way out.
+# Undo what `federation` created on the remote side. Hermetic mode stops the
+# daemon-started remote server by its recorded socket; destination mode
+# closes ONLY the created workspace and NEVER stops the second host's server
+# (that server may hold a human's live session — see the header). Both paths
+# prefer the workdir's records and fall back to the hold manifest, so they
+# work whether or not federation.json was ever written. Never fails
+# teardown: a dead server is the common case on the way out.
 stop_federation_server() {
-  local dir="$1" session_id target binary
-  [[ -f "$dir/federation.json" ]] || return 0
-  binary="$(cat "$dir/herdr.bin" 2>/dev/null || true)"
-  [[ -x "$binary" ]] || return 0
+  local dir="$1"
   scrub_herdr_env
-  session_id="$(sed -n 's/.*"session":"\([^"]*\)".*/\1/p' "$dir/federation.json" | head -1)"
-  target="$(sed -n 's/.*"target":"\([^"]*\)".*/\1/p' "$dir/federation.json" | head -1)"
-  [[ -n "$session_id" && -n "$target" ]] || return 0
-  # Default session on both paths, so no --session flag: hermetic names the
-  # remote socket EXPLICITLY (the exported HERDR_SOCKET_PATH points at the
-  # LOCAL server and must not leak in), destination mode relies on the remote
-  # default socket.
-  if [[ -f "$dir/id-fed" ]]; then
-    HERDR_SOCKET_PATH="$dir/$FEDERATION_REMOTE_SOCKET_NAME" \
+  # No federation was ever set up here: nothing to undo.
+  if [[ ! -f "$dir/federation.json" && -z "$(hold_field federationHermetic)" ]]; then
+    return 0
+  fi
+  local hold_workdir
+  hold_workdir="$(hold_field federationWorkdir)"
+  if [[ -f "$dir/id-fed" ]] \
+    || { [[ "$(hold_field federationHermetic)" == "1" ]] \
+      && { [[ "$hold_workdir" == "$dir" ]] || [[ "$(hold_field workdir)" == "$dir" ]]; }; }; then
+    stop_hermetic_federation_server "$dir"
+  else
+    close_destination_federation_workspace "$dir"
+  fi
+}
+
+# Hermetic teardown: the remote server is ours (daemon-started by
+# `machine add`), addressed by its explicit short socket. The exported
+# HERDR_SOCKET_PATH points at the LOCAL server and must not leak in, so the
+# socket is named explicitly — from the hold manifest first (survives a
+# SIGKILL that took the workdir), then the workdir layout.
+stop_hermetic_federation_server() {
+  local dir="$1" binary socket
+  binary="$(cat "$dir/herdr.bin" 2>/dev/null || true)"
+  [[ -x "$binary" ]] || binary="$(hold_field federationHerdrBinary)"
+  [[ -x "$binary" ]] || binary="$(command -v herdr 2>/dev/null || true)"
+  socket="$(hold_field federationRemoteSocket)"
+  if [[ "$(hold_field federationWorkdir)" != "$dir" && "$(hold_field workdir)" != "$dir" ]]; then
+    socket=""
+  fi
+  [[ -n "$socket" ]] || socket="$dir/$FEDERATION_REMOTE_SOCKET_NAME"
+  if [[ ! -x "$binary" ]]; then
+    log "no herdr binary on record for $dir; cannot stop its remote server"
+    return 0
+  fi
+  if [[ -d "$dir" ]]; then
+    HERDR_SOCKET_PATH="$socket" \
       XDG_CONFIG_HOME="$dir/remote-config-home" "$binary" \
       server stop </dev/null >/dev/null 2>&1 || true
   else
-    ssh -o BatchMode=yes -o ConnectTimeout=10 -T -- "$target" \
-      "herdr server stop" </dev/null >/dev/null 2>&1 || true
+    # The workdir (and its remote-config-home) is gone; the socket address
+    # alone is what `server stop` needs.
+    HERDR_SOCKET_PATH="$socket" "$binary" \
+      server stop </dev/null >/dev/null 2>&1 || true
   fi
-  log "federated remote server ($session_id) stopped"
+  log "federated hermetic remote server stopped (socket $socket)"
+}
+
+# Destination teardown: close only the workspace `federation` created, over
+# the same ssh, best-effort and logged. The remote server is left running by
+# design. A `workspace create` + `report-agent` residue may remain if the
+# close fails or no workspace id was recorded.
+close_destination_federation_workspace() {
+  local dir="$1" target workspace hold_workdir
+  hold_workdir="$(hold_field federationWorkdir)"
+  if [[ -f "$dir/federation.json" ]]; then
+    target="$(sed -n 's/.*"target":"\([^"]*\)".*/\1/p' "$dir/federation.json" | head -1)"
+    workspace="$(sed -n 's/.*"remoteWorkspaceID":"\([^"]*\)".*/\1/p' "$dir/federation.json" | head -1)"
+  fi
+  if [[ "$hold_workdir" == "$dir" || "$(hold_field workdir)" == "$dir" ]]; then
+    [[ -n "$target" ]] || target="$(hold_field federationTarget)"
+    [[ -n "$workspace" ]] || workspace="$(hold_field federationRemoteWorkspace)"
+  fi
+  if [[ -z "${workspace:-}" ]]; then
+    log "destination federation recorded no created workspace for $dir; leaving ${target:-the second host}'s server alone by design"
+    return 0
+  fi
+  if ssh -o BatchMode=yes -o ConnectTimeout=10 -T -- "$target" \
+    "herdr workspace close $workspace" </dev/null >/dev/null 2>&1; then
+    log "federated destination workspace $workspace closed on $target (server left running)"
+  else
+    log "WARNING: could not close destination workspace $workspace on $target; the server was left running by design"
+  fi
 }
 
 command_down() {
@@ -1075,10 +1233,14 @@ command_recover() {
   files. Stop it first, then re-run recover."
   fi
   log "recovering held state from $owner (started $(hold_field startedAt))"
-  if [[ -n "$owner" && -d "$owner" ]]; then
+  if [[ -n "$owner" ]]; then
+    # Manifest-aware like the reclaim path: the hermetic remote server stops
+    # by its recorded socket even when the workdir is already gone.
     stop_federation_server "$owner"
-    stop_workdir_processes "$owner"
-    rm -rf "$owner"
+    if [[ -d "$owner" ]]; then
+      stop_workdir_processes "$owner"
+      rm -rf "$owner"
+    fi
   fi
   release_account_files
 }
@@ -1126,7 +1288,8 @@ case "$VERB" in
   federation-select)
     [[ $# -eq 2 ]] || die "usage: $0 federation-select <workdir> <profile-id|local>"
     command_federation_select "$@"
-    ;;  reload)
+    ;;
+  reload)
     [[ $# -eq 1 ]] || die "usage: $0 reload <workdir>"
     command_reload "$@"
     ;;

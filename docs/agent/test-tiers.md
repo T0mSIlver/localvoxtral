@@ -202,12 +202,17 @@ Fixture and host requirements (`scripts/herdr-integration-fixture.sh`):
   touched), so the lane is hermetic and needs no second machine. Pass an ssh
   destination to run the identical lane against a real second host.
 - For the duration of a run the fixture OWNS the account's
-  `~/.config/herdr/config.toml` and `session.json` and appends two delimited
+  `~/.config/herdr/config.toml` and `session.json` and appends three delimited
   blocks to `~/.ssh/config`. It touches the REAL ssh config on purpose: the
   code under test never passes `-F`, so an alias that lived only in a
   fixture-local file would exercise an invocation shape the app never
   produces. The ssh config is restored by REMOVING those blocks, not by
-  writing a copy back, so an edit made while the lane runs survives.
+  writing a copy back, so an edit made while the lane runs survives. The three
+  blocks are the connection block, the canonicalization-test block, and the
+  federation block (the federated target's loopback alias); federated clients
+  run with `XDG_STATE_HOME` pointed at the run's scratch `client-state-home`
+  and the hermetic remote server listens on the run's short `remote.sock`,
+  never on the account's catalog or sockets.
 - Because nothing runs on SIGKILL, the pristine originals live at a stable
   path (`~/.localvoxtral-herdr-fixture-hold/`) with a manifest naming the run
   that took them — never in the run's own temp dir, which a killed run would

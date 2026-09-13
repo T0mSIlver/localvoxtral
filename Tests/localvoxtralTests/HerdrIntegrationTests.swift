@@ -851,6 +851,22 @@ final class HerdrIntegrationTests: XCTestCase {
     func testLocalServerAnswersPaneCurrentWhileFederatedMachineSelected() async throws {
         let federation = try fixture.federate()
         try fixture.setFederationSelection(profileID: federation.profileID)
+        // Precondition, not decoration: the local server's answer is
+        // selection-independent by construction, so without proving the
+        // client is actually viewing the machine this test would green even
+        // if federation-select were a silent no-op.
+        let listed = try fixture.federationMachineList(
+            clientStateHome: federation.clientStateHome
+        )
+        XCTAssertEqual(
+            listed.count, 1,
+            "the lane federates exactly one machine; without that the selection assertion below is meaningless"
+        )
+        XCTAssertTrue(
+            listed.first?.selected == true,
+            "herdr machine list --json must report selected:true for the federated profile "
+                + "before asserting anything about the selected state"
+        )
 
         let (service, handle) = try await openForward()
         defer { handle.close(); service.stopAllForQuit() }
@@ -946,6 +962,20 @@ final class HerdrIntegrationTests: XCTestCase {
             }
             try? await Task.sleep(for: .milliseconds(100))
         }
+        // Composition, not union-over-time: the cumulative wait above passes
+        // if the tokens painted at different moments (a flapping view, two
+        // sequential repaints). The 0.9 panel composes every machine's rows at
+        // once — the claim this lane retires the whole-view discriminator on
+        // — so require a single frame holding both tokens. Both carry the 8 s
+        // TTL refreshed seconds ago, so a composed client still shows them.
+        let composedFrame = surface.lastRenderedFrame()
+        XCTAssertTrue(
+            composedFrame?.contains(localToken) == true
+                && composedFrame?.contains(remoteToken) == true,
+            "the federated surface never painted both machines' tokens in ONE frame "
+                + "(viewing \(expectedBarName)): union-over-time is not composition, and the "
+                + "whole-view discriminator cannot retire on it"
+        )
     }
 
     /// The agents-panel row comes from the LOCAL client config
@@ -956,7 +986,11 @@ final class HerdrIntegrationTests: XCTestCase {
     /// to patch a remote row becomes load-bearing again and this test names it.
     func testFederatedPanelRowComesFromTheLocalClientConfig() async throws {
         let federation = try fixture.federate()
-        if fixture.info.provisionedSSH {
+        // Destination mode records no remote config path (that file lives on
+        // the second host), so the row-absence half below cannot run there —
+        // the whole file read stays inside this guard, and that gap is the
+        // disclosed destination-mode limitation, not a silent pass.
+        if fixture.info.provisionedSSH, !federation.remoteConfigPath.isEmpty {
             let remoteConfig = try String(
                 contentsOfFile: federation.remoteConfigPath, encoding: .utf8
             )
@@ -1001,6 +1035,13 @@ final class HerdrIntegrationTests: XCTestCase {
             }
             try? await Task.sleep(for: .milliseconds(100))
         }
+        // Same composition bar as the both-machines cases: one frame must
+        // hold the remote token, not merely the cumulative typescript.
+        XCTAssertTrue(
+            surface.lastRenderedFrame()?.contains(remoteToken) == true,
+            "the surface never painted the remote token in a single frame; "
+                + "union-over-time would not prove the row renders from the local config"
+        )
     }
 
     /// An observer of a stamped pane renders no panel token — sitting next to
@@ -1060,12 +1101,29 @@ final class HerdrIntegrationTests: XCTestCase {
             socketPath: handle.localSocketPath
         )
 
+        // Continued-liveness gate: the first sentinel proves the observer WAS
+        // connected; a second one typed AFTER the stamp window proves it still
+        // is at read time. A dead observer keeps only the old frames — which
+        // still contain the first sentinel and still lack the token — so
+        // without this the negative below would pass vacuously.
+        let postStampSentinel = "LVXHERDROBSERVE2\(Int.random(in: 100_000...999_999))"
+        _ = try fixture.herdrCLI(["pane", "send-text", fixture.info.paneID, postStampSentinel])
+        try await HerdrLaneWait.until("the observer to paint the post-stamp sentinel") {
+            HerdrObserveFrame.visibleTexts(sinceMark: observeSurface)
+                .joined(separator: "\n").contains(postStampSentinel)
+        }
+
         let observed = HerdrObserveFrame.visibleTexts(sinceMark: observeSurface)
             .joined(separator: "\n")
         XCTAssertTrue(
             observed.contains(sentinel),
             "the observer lost the pane it proved it had: the typed sentinel painted before "
                 + "the stamp is gone from the window, so the negative below would be vacuous"
+        )
+        XCTAssertTrue(
+            observed.contains(postStampSentinel),
+            "the observer stopped painting after the stamp window: without post-stamp frames "
+                + "the token's absence below proves nothing about observe mode"
         )
         XCTAssertFalse(
             observed.contains(token),

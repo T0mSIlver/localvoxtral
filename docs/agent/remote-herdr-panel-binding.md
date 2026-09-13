@@ -282,16 +282,17 @@ Measured against herdr 0.9.0 (scratch rig 2026-09-13; the lane pins the same
 against the Mac fixture):
 
 - `machine list --json` reports `selected: true` exactly when
-  `endpoint-selection.json` names that profile, and no selection for Local —
-  including when the file names a disabled profile or is absent (both fall
-  back to the catalog copy, then Local). The production reader resolves the
-  same answer for every VALID state.
+  `endpoint-selection.json` names that profile, and no selection for Local
+  (null). The lane pins exactly these two states — enabled profile selected,
+  Local via null — and the production reader resolves the same answer for
+  both. Scratch-measured only (not lane-pinned): a file naming a disabled
+  profile or an absent file also falls back to the catalog copy, then Local.
 - DELIBERATE DIVERGENCE, unit-pinned, do not "fix": a selection file that
   exists but cannot be decoded (malformed JSON, wrong version) makes herdr
   warn and show Local, while the production reader abstains (`unreadable`).
   Failing closed is the design (`HerdrMachineFederationTests` pins
   `testUndecodableSelectionAbstains` / `testUnknownSelectionVersionAbstains`);
-  the lane pins parity for valid states only.
+  the lane pins parity for the two states above only.
 - A starting client honors the selection file; a RUNNING client never re-reads
   it (only the profile list is polled, every 1 s) — so the fixture writes the
   file before starting a surface, mirroring what a UI switch persists.
