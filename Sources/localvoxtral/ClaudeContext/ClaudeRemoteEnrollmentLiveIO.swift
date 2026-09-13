@@ -133,9 +133,10 @@ struct LiveClaudeLocalHerdrConfigFileSystem: ClaudeLocalHerdrConfigFileSystem {
         let devDirectory = configRoot.appendingPathComponent("herdr-dev", isDirectory: true)
         let releaseDirectory = configRoot.appendingPathComponent("herdr", isDirectory: true)
         // A dev build's directory is only created by running one; its presence
-        // is the whole signal, and it wins because a user running both reads
-        // the dev one.
-        let directory = ClaudeSocketGuard.metadata(ofPath: devDirectory.path) != nil
+        // as an actual DIRECTORY is the whole signal, and it wins because a
+        // user running both reads the dev one. A non-directory at that path
+        // (a file, a symlink, a socket) must not divert the write.
+        let directory = ClaudeSocketGuard.metadata(ofPath: devDirectory.path)?.isDirectory == true
             ? devDirectory
             : releaseDirectory
         configDirectoryURL = directory
@@ -175,7 +176,7 @@ struct LiveClaudeLocalHerdrConfigFileSystem: ClaudeLocalHerdrConfigFileSystem {
         )
     }
 
-    func atomicWriteConfig(_ data: Data, permissions: UInt16) throws {
+    func atomicWriteConfig(_ data: Data, permissions: UInt16, expectedConfigPresent: Bool) throws {
         let temporaryURL = configDirectoryURL.appendingPathComponent(
             ".config.localvoxtral.\(UUID().uuidString)",
             isDirectory: false
@@ -210,6 +211,18 @@ struct LiveClaudeLocalHerdrConfigFileSystem: ClaudeLocalHerdrConfigFileSystem {
             }
         }
         guard fsync(descriptor) == 0 else { throw POSIXFailure(operation: "fsync", code: errno) }
+        // Re-lstat the destination AFTER the payload is durable and BEFORE
+        // the rename: a swap between the service's `readState` and now — a
+        // planted symlink (whose replace would destroy the user's link
+        // layout), a file appearing where none was, or the file vanishing —
+        // refuses fail-closed instead of renaming over it.
+        let current = ClaudeSocketGuard.metadata(ofPath: configURL.path)
+        let stillExpected: Bool = if expectedConfigPresent {
+            current.map { !$0.isSymlink && !$0.isDirectory && !$0.isSocket } ?? false
+        } else {
+            current == nil
+        }
+        guard stillExpected else { throw POSIXFailure(operation: "revalidate", code: EPERM) }
         let moved = temporaryURL.path.withCString { source in
             configURL.path.withCString { destination in rename(source, destination) }
         }

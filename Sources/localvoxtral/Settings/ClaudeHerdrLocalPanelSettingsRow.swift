@@ -19,7 +19,7 @@ struct ClaudeHerdrLocalPanelSettingsRow: View {
         if model.hasEnabledHerdrMachine {
             SettingsFieldRow(
                 title: "Federated herdr panel row",
-                help: "Adds the mic-indicator row to this Mac's herdr config.",
+                help: "Adds the mic-indicator row to ~/.config/herdr/config.toml.",
                 status: model.localHerdrPanelResult,
                 statusAccessibilityIdentifier: "integrations.claude.localHerdrPanel.status"
             ) {

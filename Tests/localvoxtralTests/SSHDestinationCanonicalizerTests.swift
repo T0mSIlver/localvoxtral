@@ -248,6 +248,8 @@ final class SSHDestinationCanonicalizerTests: XCTestCase {
         let accepted = [
             "ssh://build.example",
             "ssh://build.example:2222",
+            // Ports compare numerically: `ssh -G` parses `:00022` as 22.
+            "ssh://build.example:00022",
             "ssh://dev@build.example",
             "ssh://dev@build.example:2222",
             "ssh://build.example:22",
@@ -271,6 +273,19 @@ final class SSHDestinationCanonicalizerTests: XCTestCase {
             // A password in the userinfo is herdr's own refusal.
             "ssh://dev:secret@build.example",
             "ssh://@build.example",
+            // herdr's `--remote` rule, mirrored: never start with `-`.
+            "ssh://-oProxyCommand=x@build.example",
+            // Whitespace and control characters cannot occur in a username
+            // ssh would honor, but they CAN shape what `ssh -G` evaluates.
+            "ssh://a b@build.example",
+            "ssh://a\tb@build.example",
+            "ssh://a\n@build.example",
+            "ssh://a\u{7}@build.example",
+            // `/ ? #` would start a path, query, or fragment — none of which
+            // is a destination.
+            "ssh://a/b@build.example",
+            "ssh://a?b@build.example",
+            "ssh://a#b@build.example",
             // No path, query, or fragment is a destination.
             "ssh://build.example/workspace",
             "ssh://build.example?x=1",

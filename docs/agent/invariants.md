@@ -179,8 +179,15 @@ there is not.
     pane's foreground; and finally one panel stamp whose fresh token must
     appear in the focused grid. The token no longer names the machine: the
     selection state did. On a 0.9 client it proves the surface is a whole-view
-    client federating that server—attach/observe surfaces render no sidebar—and
-    that the selection is not stale for another surface. A match keeps the
+    client federating that server—attach/observe surfaces render no sidebar.
+    It does NOT prove the selection is fresh: a token stamped on machine B's
+    pane renders while the user views machine A, so a selection file lagging
+    the live client joins B, the #286 wrong-join shape. That lag is bounded by
+    the lone-surface rule and herdr's own selection writes (herdr rewrites
+    `endpoint-selection.json` on every switch, and `machine remove/disable`
+    rewrite it too; a failed write is only a warning), and closing it needs an
+    upstream herdr change (an active-endpoint report on the socket), not a
+    stronger token. A match keeps the
     token as the mic indicator with the same forward/indicator lifecycle as
     the remote arm; a miss abstains under its own federated cause and points at
     the LOCAL panel-row config. Like every herdr join, it authorizes no raw AX
@@ -323,9 +330,11 @@ there is not.
     because that arm never probes a surface with no ssh and a federated client
     has none. The federated `.federatedHerdrPane` arm is the extension that
     names the machine from herdr's own selection state first (issue #286) and
-    only then uses the token, which keeps its freshness and mic-indicator
-    roles. The argv-based `.remoteHerdrPane` arm below is otherwise untouched
-    and still serves non-federated ssh surfaces.
+    only then uses the token, which keeps its whole-view-prover and
+    mic-indicator roles (it never proved freshness or display — see the
+    federated arm paragraph above). The argv-based `.remoteHerdrPane` arm below
+    is a behavior- and string-preserving refactor into `confirmRemoteHerdrPane`
+    — no argv semantics changed — and still serves non-federated ssh surfaces.
 
     Any stamp refusal, unavailable grid, hidden/unconfigured/scrolled panel row,
     a row cut below the entropy floor, or a bounded settle timeout can only

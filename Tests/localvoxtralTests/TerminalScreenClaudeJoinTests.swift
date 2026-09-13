@@ -46,6 +46,7 @@ private struct JoinTestHerdrPanes: HerdrPaneQuerying {
 
 private final class FederatedDispatchPanels: HerdrPaneQuerying, HerdrPanelMetadataReporting, @unchecked Sendable {
     private let focused: HerdrFocusedPane?
+    private let focusedForSocket: (@Sendable (String) -> HerdrFocusedPane?)?
     private let foreground: HerdrPaneForegroundInfo?
     private let panelReportSucceeds: Bool
     let focusedSocketPaths = Mutex<[String]>([])
@@ -53,6 +54,7 @@ private final class FederatedDispatchPanels: HerdrPaneQuerying, HerdrPanelMetada
 
     init(
         focused: HerdrFocusedPane?,
+        focusedForSocket: (@Sendable (String) -> HerdrFocusedPane?)? = nil,
         foreground: HerdrPaneForegroundInfo? = HerdrPaneForegroundInfo(
             shellPID: 8000,
             foregroundProcesses: [HerdrForegroundProcess(pid: 9001, name: "claude")]
@@ -60,12 +62,14 @@ private final class FederatedDispatchPanels: HerdrPaneQuerying, HerdrPanelMetada
         panelReportSucceeds: Bool = true
     ) {
         self.focused = focused
+        self.focusedForSocket = focusedForSocket
         self.foreground = foreground
         self.panelReportSucceeds = panelReportSucceeds
     }
 
     func focusedPane(socketPath: String) async -> HerdrFocusedPane? {
         focusedSocketPaths.withLock { $0.append(socketPath) }
+        if let focusedForSocket { return focusedForSocket(socketPath) }
         return focused
     }
 
@@ -475,6 +479,15 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
     // federated arm replaces that abstention with a different, fully wired
     // resolution, so the same federation state now joins when every federated
     // seam agrees.
+    //
+    // The local decoy below is what #290 guarded: a live LOCAL session whose
+    // pane, claim, and foreground would all confirm through the local arm. It
+    // keeps the `focusedSocketPaths` assertion below from being vacuous — with
+    // only the remote session ingested, `liveLocalHerdrSocketPaths` is empty
+    // and the local arm abstains before any socket read, so a regression that
+    // queries the local socket first (or falls through to it) would still
+    // pass. With the decoy present, any local-socket query is recorded and the
+    // test fails.
     func testShowingMachineDispatchesToTheFederatedHerdrArm() async throws {
         let profile = HerdrMachineProfile(
             id: String(repeating: "b", count: 32),
@@ -483,7 +496,17 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             session: HerdrMachineProfile.defaultSessionName,
             enabled: true
         )
+        let localSocketPath = "/tmp/local-herdr.sock"
         let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(
+            herdrRecord(
+                session: "s-local",
+                claudePID: 9001,
+                paneID: "pane-local",
+                socketPath: localSocketPath
+            ),
+            origin: local
+        ))
         XCTAssertNotNil(registry.ingest(
             ClaudeHookRecord(
                 event: .sessionStart,
@@ -507,7 +530,16 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             )
         ))
         let panes = FederatedDispatchPanels(
-            focused: HerdrFocusedPane(paneID: "pane-federated", claimedClaudeSessionID: nil)
+            focused: HerdrFocusedPane(paneID: "pane-federated", claimedClaudeSessionID: nil),
+            focusedForSocket: { socketPath in
+                // The decoy answers for the stale local socket exactly as a
+                // live local server would: its own pane, its own claim, and a
+                // foreground (pid 9001) holding its registered agent. The
+                // federated arm must never ask it.
+                socketPath == localSocketPath
+                    ? HerdrFocusedPane(paneID: "pane-local", claimedClaudeSessionID: "s-local")
+                    : HerdrFocusedPane(paneID: "pane-federated", claimedClaudeSessionID: nil)
+            }
         )
         let forwards = FederatedDispatchForwards()
         let token = HerdrPanelBindingProbe.token(randomBits: 23)
@@ -552,6 +584,11 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             )]
         )
         XCTAssertEqual(forwards.closes, 0)
+        XCTAssertEqual(
+            registry.liveLocalHerdrSocketPaths(),
+            [localSocketPath],
+            "precondition: the decoy gives a local-first regression something to query"
+        )
         XCTAssertEqual(
             panes.focusedSocketPaths.withLock { $0 },
             [forwards.localSocketPath],

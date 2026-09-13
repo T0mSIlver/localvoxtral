@@ -332,7 +332,9 @@ Implemented for issue #288, Part B. This arm runs only after a surface TTY
 positively binds to a local herdr client and herdr's selection state names a
 remote machine. It replaces the #290 `.showingMachine` abstention with a
 deterministic resolution; there is no surface ssh here, so the argv-based
-`.remoteHerdrPane` arm cannot apply and is unchanged.
+`.remoteHerdrPane` arm cannot apply. The shared pane-confirmation helper is a
+behavior- and string-preserving refactor into `confirmRemoteHerdrPane` with no
+argv semantics changed.
 
 The fail-closed sequence is:
 
@@ -351,8 +353,14 @@ The fail-closed sequence is:
    pane, herdr's `agent_session` claim does not disagree, and the registered
    agent is foreground.
 5. Stamp that one pane once and require the fresh token in the focused grid.
-   The token proves a whole-view client federates the stamped server and that
-   the named selection is fresh; it does not select the machine. On a match,
+   The token proves a whole-view client federates the stamped server; it does
+   not select the machine, and it does not prove the selection is fresh — a
+   token stamped on machine B renders while the surface shows A, so a lagging
+   selection file still joins B (the #286 wrong-join shape). That lag is
+   bounded by the lone-surface rule and herdr's own selection writes (every
+   switch and every `machine remove/disable` rewrite the selection file; a
+   failed write is only a warning); closing it needs an upstream
+   active-endpoint report on the socket. On a match,
    the join carries the forward and mic-indicator lease. On a miss, the arm
    clears the token, closes the forward, and abstains with its own
    content-free `federated-herdr` cause.

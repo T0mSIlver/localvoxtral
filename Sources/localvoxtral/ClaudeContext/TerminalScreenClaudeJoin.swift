@@ -715,12 +715,16 @@ struct ClaudeSessionJoinResolver {
     /// 5. the agents-panel nonce, REQUIRED, as the SURFACE confirmation: the
     ///    stamped pane must render the fresh token in the focused grid. On a
     ///    0.9 client that proves the surface is a WHOLE-VIEW client that
-    ///    federates this server (an attach/observe surface renders no sidebar)
-    ///    and that the selection file is not stale for a surface that is not
-    ///    this client. It does NOT name the machine — the selection state
-    ///    did, in step 2 — because a 0.9 client composes its agents panel
-    ///    from every federated machine at once and marks the active one by
-    ///    background color, which a text grid read cannot see.
+    ///    federates this server (an attach/observe surface renders no sidebar).
+    ///    It does NOT name the machine — the selection state did, in step 2 —
+    ///    because a 0.9 client composes its agents panel from every federated
+    ///    machine at once and marks the active one by background color, which a
+    ///    text grid read cannot see. And it does NOT prove the selection is
+    ///    fresh: a token stamped on machine B's pane renders while the surface
+    ///    shows A, so a selection file lagging the live client still joins B.
+    ///    That lag is bounded by the lone-surface rule and herdr's own
+    ///    selection writes, and closing it needs an upstream herdr change (an
+    ///    active-endpoint report on the socket), not a stronger token.
     ///
     /// Speculative probing does not exist in this arm: the machine is named,
     /// so exactly one server is stamped, once, and only after every pane-level
@@ -750,8 +754,13 @@ struct ClaudeSessionJoinResolver {
         // 2. The machine's target names the enrolled host. Exact alias
         //    equality first; only when that finds nothing, `ssh -G`
         //    canonicalization — the same order and the same seams the argv
-        //    arm uses, so no new process runs on the joining path.
-        var hosts = enrolledHosts(profile.target)
+        //    arm uses, so no new process runs on the joining path. The exact
+        //    hits are filtered to non-revoked hosts with an alias here, like
+        //    the panel path filters its own: a withdrawn credential must read
+        //    as "matches no enrolled host", never as a join.
+        var hosts = enrolledHosts(profile.target).filter {
+            !$0.isRevoked && $0.sshHostAlias != nil
+        }
         if hosts.isEmpty {
             hosts = await canonicalizedEnrolledHosts(profile.target)
         }
@@ -773,12 +782,17 @@ struct ClaudeSessionJoinResolver {
         //    classification is pure path shape — and two distinct paths both
         //    classifying for one session name means two herdr servers (say, a
         //    relocated XDG config dir and a stock one) with no way to tell
-        //    which one this client federates.
+        //    which one this client federates. The count is over NORMALIZED
+        //    paths (`HerdrSessionSocket`): two spellings of one server are one
+        //    server, and the forward opens the normalized spelling so a
+        //    trailing `/.` cannot break the connect.
         let candidates = registry.liveRemoteHerdrSessions(hostID: host.id).filter {
             guard let path = $0.remoteSessionEnvironment?.herdrSocketPath else { return false }
             return HerdrSessionSocket.isSocket(path, ofSessionNamed: profile.session)
         }
-        let socketPaths = Set(candidates.compactMap { $0.remoteSessionEnvironment?.herdrSocketPath })
+        let socketPaths = Set(candidates.compactMap {
+            $0.remoteSessionEnvironment?.herdrSocketPath.map(HerdrSessionSocket.normalizedSocketPath)
+        })
         guard !socketPaths.isEmpty else {
             Self.abstainedFederatedHerdrJoin(
                 outcome: "no live session on the selected herdr session"

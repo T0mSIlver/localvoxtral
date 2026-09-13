@@ -42,7 +42,7 @@ private final class MemoryLocalHerdrConfigFileSystem: ClaudeLocalHerdrConfigFile
     struct Storage: Sendable {
         var state: ClaudeLocalHerdrConfigState
         var createdDirectoryPermissions: [UInt16] = []
-        var writes: [(data: Data, permissions: UInt16)] = []
+        var writes: [(data: Data, permissions: UInt16, expectedConfigPresent: Bool)] = []
     }
 
     private let storage: Mutex<Storage>
@@ -64,9 +64,9 @@ private final class MemoryLocalHerdrConfigFileSystem: ClaudeLocalHerdrConfigFile
         }
     }
 
-    func atomicWriteConfig(_ data: Data, permissions: UInt16) throws {
+    func atomicWriteConfig(_ data: Data, permissions: UInt16, expectedConfigPresent: Bool) throws {
         storage.withLock {
-            $0.writes.append((data, permissions))
+            $0.writes.append((data, permissions, expectedConfigPresent))
             $0.state.configData = data
             $0.state.configPermissions = permissions
         }
@@ -2393,6 +2393,105 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             fileSystem.snapshot.state.configData,
             Data(original.utf8)
         )
+    }
+
+    func testLocalHerdrPanelConfigurationDeclaresWhetherTheConfigExisted() throws {
+        // The write declares what `readState` saw, so the live writer's
+        // pre-rename revalidation can refuse a swapped destination: absent
+        // stays absent, present stays a plain file.
+        let absent = MemoryLocalHerdrConfigFileSystem(
+            state: ClaudeLocalHerdrConfigState(
+                directoryExists: false,
+                configData: nil,
+                configPermissions: nil
+            )
+        )
+        try ClaudeRemoteEnrollmentService(localHerdrConfigFileSystem: absent)
+            .configureLocalHerdrPanel()
+        XCTAssertEqual(absent.snapshot.writes.map(\.expectedConfigPresent), [false])
+
+        let present = MemoryLocalHerdrConfigFileSystem(
+            state: ClaudeLocalHerdrConfigState(
+                directoryExists: true,
+                configData: Data("# herdr\n".utf8),
+                configPermissions: 0o644
+            )
+        )
+        try ClaudeRemoteEnrollmentService(localHerdrConfigFileSystem: present)
+            .configureLocalHerdrPanel()
+        XCTAssertEqual(present.snapshot.writes.map(\.expectedConfigPresent), [true])
+    }
+
+    // MARK: - Live local herdr config: destination revalidation
+
+    private func temporaryHome() throws -> URL {
+        let home = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent(
+                "herdr-local-config-\(UUID().uuidString)", isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: home, withIntermediateDirectories: true
+        )
+        return home
+    }
+
+    func testLiveLocalHerdrConfigWriteEnforcesTheDeclaredPresence() throws {
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let fileSystem = LiveClaudeLocalHerdrConfigFileSystem(homeDirectoryURL: home)
+        let configURL = home
+            .appendingPathComponent(".config", isDirectory: true)
+            .appendingPathComponent("herdr", isDirectory: true)
+            .appendingPathComponent("config.toml", isDirectory: false)
+
+        // Absent destination, declared absent: writes.
+        try fileSystem.createConfigDirectory(permissions: 0o755)
+        try fileSystem.atomicWriteConfig(
+            Data("[ui]\n".utf8), permissions: 0o644, expectedConfigPresent: false
+        )
+        XCTAssertEqual(try Data(contentsOf: configURL), Data("[ui]\n".utf8))
+
+        // Present destination, still declared absent: refuses (a planted file).
+        XCTAssertThrowsError(
+            try fileSystem.atomicWriteConfig(
+                Data("[ui]\n".utf8), permissions: 0o644, expectedConfigPresent: false
+            )
+        )
+
+        // Declared present but swapped for a symlink: refuses, and the link
+        // target is untouched because the rename never ran.
+        let victim = home.appendingPathComponent("victim.toml", isDirectory: false)
+        try Data("victim".utf8).write(to: victim)
+        try FileManager.default.removeItem(at: configURL)
+        try FileManager.default.createSymbolicLink(at: configURL, withDestinationURL: victim)
+        XCTAssertThrowsError(
+            try fileSystem.atomicWriteConfig(
+                Data("[ui]\n".utf8), permissions: 0o644, expectedConfigPresent: true
+            )
+        )
+        XCTAssertEqual(try Data(contentsOf: victim), Data("victim".utf8))
+    }
+
+    func testLiveLocalHerdrConfigIgnoresANonDirectoryHerdrDev() throws {
+        // A file (or symlink, or socket) at the dev path must not divert the
+        // write: only an actual directory selects the dev build.
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        try FileManager.default.createDirectory(
+            at: home.appendingPathComponent(".config", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try Data("not a directory".utf8).write(
+            to: home.appendingPathComponent(".config/herdr-dev", isDirectory: false)
+        )
+        let fileSystem = LiveClaudeLocalHerdrConfigFileSystem(homeDirectoryURL: home)
+        try fileSystem.createConfigDirectory(permissions: 0o755)
+        try fileSystem.atomicWriteConfig(
+            Data("[ui]\n".utf8), permissions: 0o644, expectedConfigPresent: false
+        )
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: home.appendingPathComponent(".config/herdr/config.toml").path
+        ))
     }
 
     // MARK: - SendEnv on an ALREADY-enrolled host

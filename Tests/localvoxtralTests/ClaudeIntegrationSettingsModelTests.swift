@@ -253,7 +253,7 @@ private final class SetupFlowRecorder: @unchecked Sendable {
 
 private final class LocalPanelMemoryFileSystem: ClaudeLocalHerdrConfigFileSystem, @unchecked Sendable {
     var state: ClaudeLocalHerdrConfigState
-    var writes: [(data: Data, permissions: UInt16)] = []
+    var writes: [(data: Data, permissions: UInt16, expectedConfigPresent: Bool)] = []
 
     init(state: ClaudeLocalHerdrConfigState) {
         self.state = state
@@ -267,8 +267,8 @@ private final class LocalPanelMemoryFileSystem: ClaudeLocalHerdrConfigFileSystem
         state.directoryExists = true
     }
 
-    func atomicWriteConfig(_ data: Data, permissions: UInt16) throws {
-        writes.append((data, permissions))
+    func atomicWriteConfig(_ data: Data, permissions: UInt16, expectedConfigPresent: Bool) throws {
+        writes.append((data, permissions, expectedConfigPresent))
         state.configData = data
         state.configPermissions = permissions
     }
@@ -984,6 +984,43 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertFalse(model.hasEnabledHerdrMachine)
         model.requestLocalHerdrPanelConfiguration()
         XCTAssertNil(model.enrollmentConfirmation)
+    }
+
+    /// The offer gate is re-checked at perform time, not just at request time.
+    private final class EnabledMachineBox: @unchecked Sendable {
+        var value = true
+    }
+
+    func testLocalHerdrPanelOfferRechecksTheEnabledMachineAtPerformTime() async throws {
+        let enabled = EnabledMachineBox()
+        let fileSystem = LocalPanelMemoryFileSystem(
+            state: ClaudeLocalHerdrConfigState(
+                directoryExists: false,
+                configData: nil,
+                configPermissions: nil
+            )
+        )
+        let service = ClaudeRemoteEnrollmentService(
+            localHerdrConfigFileSystem: fileSystem
+        )
+        let model = makeModel(
+            registry: nil,
+            listener: nil,
+            enrollmentService: service,
+            hasEnabledHerdrMachineReport: { enabled.value }
+        )
+        await model.refreshIntegrationsStatuses()
+        XCTAssertTrue(model.hasEnabledHerdrMachine)
+
+        model.requestLocalHerdrPanelConfiguration()
+        XCTAssertNotNil(model.enrollmentConfirmation)
+
+        // The last enabled machine is disabled between consent and confirm.
+        enabled.value = false
+        await model.confirmEnrollmentAction()
+
+        XCTAssertTrue(fileSystem.writes.isEmpty, "no write after the gate closed")
+        XCTAssertNil(model.localHerdrPanelResult)
     }
 
     func testANewEnrollmentSheetDoesNotInheritThePreviousHostsStepResults() async throws {

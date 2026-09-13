@@ -322,11 +322,13 @@ final class SSHDestinationCanonicalizer: Sendable {
     /// not be half-interpreted. This is the one exception, and it exists for
     /// herdr's saved-machine targets, which herdr stores verbatim and passes
     /// to ssh verbatim (`ssh -T <target>` in `src/remote/attach.rs`) — so the
-    /// shapes accepted here mirror herdr's own `SavedSshEndpoint::validate`:
-    /// an `ssh://` scheme, an optional `user@` (a userinfo containing `:` is a
-    /// password, which herdr refuses and so do we), a bracketed IPv6 literal
-    /// or a hostname-charset host, an optional decimal port, and nothing after
-    /// it (a path or query is not a destination herdr or ssh would honor).
+    /// shapes accepted here mirror herdr's own `SavedSshEndpoint::validate`
+    /// (`src/client/endpoint/catalog.rs`) plus `validate_remote_target`
+    /// (`src/remote/args.rs`): an `ssh://` scheme, an optional `user@` (a
+    /// userinfo containing `:` is a password, which herdr refuses and so do
+    /// we), a bracketed IPv6 literal or a hostname-charset host, an optional
+    /// decimal port, and nothing after it (a path or query is not a
+    /// destination herdr or ssh would honor).
     ///
     /// Parsed here only enough to VET the shape: `ssh -G` remains the parser
     /// that decides hostname and port, exactly as for plain operands.
@@ -340,7 +342,7 @@ final class SSHDestinationCanonicalizer: Sendable {
         // one), and never a password.
         if let separator = authority.lastIndex(of: "@") {
             let userinfo = authority[..<separator]
-            guard !userinfo.isEmpty, !userinfo.contains(":") else { return false }
+            guard Self.isURIUserinfo(userinfo) else { return false }
             authority = authority[authority.index(after: separator)...]
         }
         guard !authority.isEmpty else { return false }
@@ -367,8 +369,38 @@ final class SSHDestinationCanonicalizer: Sendable {
         }
 
         let port = authority.dropFirst()
-        guard port.count <= 5, port.allSatisfy(\.isNumber), port.first != "0" else { return false }
-        return UInt16(port) != nil
+        // Numeric compare, not string shape: `ssh -G` parses `:00022` as 22,
+        // so a leading zero is an accepted spelling, while `0` is no port.
+        guard port.count <= 5,
+              port.allSatisfy(\.isNumber),
+              let value = UInt16(port),
+              value > 0
+        else { return false }
+        return true
+    }
+
+    /// What a `user@` in an `ssh://` machine target may carry.
+    ///
+    /// herdr refuses control characters and passwords in the target
+    /// (`catalog.rs`), and refuses a `--remote` value starting with `-`
+    /// (`args.rs`); the rest is what `ssh -G` must never be asked to evaluate.
+    /// `ssh -G` honors `--` (the argv shape is fixed in test), so none of this
+    /// is an option-splitting hole — but `ssh -G` DOES evaluate the user's
+    /// `Match exec` blocks per operand, so attacker-shaped selection-file
+    /// content reaches a subprocess the plain-operand policy would have
+    /// refused. Whitespace, control characters, and `/ ? #` (which would start
+    /// a path, query, or fragment ssh never honors as a destination) are
+    /// refused here rather than left to that parser.
+    private static func isURIUserinfo(_ userinfo: Substring) -> Bool {
+        guard !userinfo.isEmpty,
+              !userinfo.contains(":"),
+              userinfo.first != "-",
+              !userinfo.contains(where: { $0.isWhitespace || "/?#".contains($0) }),
+              !userinfo.unicodeScalars.contains(where: {
+                  $0.properties.generalCategory == .control
+              })
+        else { return false }
+        return true
     }
 
     private static func isURIHostname(_ host: Substring) -> Bool {

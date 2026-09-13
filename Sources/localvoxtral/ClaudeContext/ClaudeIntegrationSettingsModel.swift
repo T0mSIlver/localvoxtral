@@ -1812,7 +1812,13 @@ public final class ClaudeIntegrationSettingsModel {
     }
 
     private func performLocalHerdrPanelConfiguration(_ confirmation: EnrollmentConfirmation) async {
-        guard case .configureLocalHerdrPanel = confirmation.action else { return }
+        // Re-check the offer gate at perform time, not just at request time:
+        // a machine disabled between consent and confirm must not be written
+        // for. The report is live (production re-reads the catalog per call),
+        // never the cached row value.
+        guard case .configureLocalHerdrPanel = confirmation.action,
+              hasEnabledHerdrMachineReport()
+        else { return }
         enrollmentConfirmation = nil
         isPerformingEnrollmentAction = true
         enrollmentStepStatuses = []

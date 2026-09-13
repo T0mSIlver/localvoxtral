@@ -65,7 +65,12 @@ public struct ClaudeLocalHerdrConfigState: Sendable, Equatable {
 public protocol ClaudeLocalHerdrConfigFileSystem: Sendable {
     func readState() throws -> ClaudeLocalHerdrConfigState
     func createConfigDirectory(permissions: UInt16) throws
-    func atomicWriteConfig(_ data: Data, permissions: UInt16) throws
+    /// - Parameter expectedConfigPresent: what `readState` saw. The
+    ///   implementation re-checks the destination immediately before the final
+    ///   rename and refuses when it changed (a planted symlink, a swapped
+    ///   file, or a file appearing where none was): the check-then-write gap
+    ///   is a local-attacker TOCTOU otherwise.
+    func atomicWriteConfig(_ data: Data, permissions: UInt16, expectedConfigPresent: Bool) throws
 }
 
 /// Generates and, after a separate UI confirmation, applies the setup for a
@@ -1392,7 +1397,8 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         }
         try localHerdrConfigFileSystem.atomicWriteConfig(
             Data(updated.utf8),
-            permissions: state.configPermissions ?? 0o644
+            permissions: state.configPermissions ?? 0o644,
+            expectedConfigPresent: state.configData != nil
         )
         Log.claudeContext.info("Local herdr panel configuration completed")
         return [
