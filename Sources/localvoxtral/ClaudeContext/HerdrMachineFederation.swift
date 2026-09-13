@@ -21,8 +21,8 @@ enum HerdrMachineFederation: Sendable, Equatable {
     case notFederated
     /// Machines are saved and the client is showing Local.
     case showingLocal
-    /// Machines are saved and the client is showing one of them.
-    case showingMachine
+    /// Machines are saved and the client is showing this one.
+    case showingMachine(HerdrMachineProfile)
     /// herdr's state is present but could not be read or decoded.
     case unreadable
 
@@ -42,6 +42,52 @@ enum HerdrMachineFederation: Sendable, Equatable {
         }
         return rank(first) >= rank(second) ? first : second
     }
+}
+
+/// One saved machine, as `herdr machine add` recorded it. The fields are the
+/// ones `herdr machine list --json` prints; the catalog holds nothing else
+/// (no credentials, no key material, no control sockets).
+struct HerdrMachineProfile: Sendable, Equatable, Hashable, Identifiable {
+    /// herdr's opaque profile id (32 lowercase hex digits).
+    var id: String
+    /// The user-facing name given at `machine add`.
+    var label: String
+    /// The ssh destination exactly as the user typed it: an ssh config alias,
+    /// `user@host`, or an `ssh://` URL. Never canonicalized here.
+    var target: String
+    /// The remote herdr session the profile attaches. herdr's default session
+    /// keeps its socket at `<config dir>/herdr.sock`; a named one lives at
+    /// `<config dir>/sessions/<name>/herdr.sock`.
+    var session: String
+    var enabled: Bool
+
+    static let defaultSessionName = "default"
+}
+
+/// herdr's saved-machine catalog, resolved the way a client starting now
+/// would resolve it: every profile in file order, and the selected one after
+/// the selection file and the catalog's own copy have been reconciled.
+struct HerdrMachineCatalog: Sendable, Equatable {
+    var profiles: [HerdrMachineProfile]
+    /// The enabled profile the client is showing, or nil for Local.
+    var selectedProfileID: String?
+
+    var selectedProfile: HerdrMachineProfile? {
+        guard let selectedProfileID else { return nil }
+        return profiles.first { $0.id == selectedProfileID && $0.enabled }
+    }
+
+    var enabledProfiles: [HerdrMachineProfile] { profiles.filter(\.enabled) }
+}
+
+/// The catalog as the reader found it. `absent` and `unreadable` are kept
+/// apart for the same reason `HerdrStateFile` keeps them apart.
+enum HerdrMachineCatalogReading: Sendable, Equatable {
+    /// No catalog file: this user never ran `herdr machine add`.
+    case absent
+    case catalog(HerdrMachineCatalog)
+    /// A catalog or selection file exists and could not be read or decoded.
+    case unreadable
 }
 
 /// One state file as the reader found it. `absent` and `unreadable` are kept
@@ -86,30 +132,88 @@ struct HerdrMachineFederationReader: Sendable {
 
     func federation() -> HerdrMachineFederation {
         clientDirectories
-            .map(federation(inClientDirectory:))
+            .map { Self.federation(from: catalog(inClientDirectory: $0)) }
             .reduce(.notFederated, HerdrMachineFederation.moreAbstaining)
     }
 
-    private func federation(inClientDirectory directory: URL) -> HerdrMachineFederation {
+    /// Every saved machine across the release and development state
+    /// directories, for callers that need the profiles themselves (the
+    /// Settings import offer, the federated join arm). A user runs one build,
+    /// so at most one directory has a catalog; two catalogs are concatenated
+    /// in directory order and the first selection wins. Any unreadable
+    /// directory makes the whole reading unreadable: a partial list would
+    /// silently omit the machine the user is looking at.
+    func catalog() -> HerdrMachineCatalogReading {
+        var merged: HerdrMachineCatalog?
+        for directory in clientDirectories {
+            switch catalog(inClientDirectory: directory) {
+            case .absent:
+                continue
+            case .unreadable:
+                return .unreadable
+            case .catalog(let found):
+                if var existing = merged {
+                    existing.profiles += found.profiles
+                    if existing.selectedProfileID == nil {
+                        existing.selectedProfileID = found.selectedProfileID
+                    }
+                    merged = existing
+                } else {
+                    merged = found
+                }
+            }
+        }
+        return merged.map(HerdrMachineCatalogReading.catalog) ?? .absent
+    }
+
+    /// What one catalog reading means for the local herdr arm. Disabled
+    /// machines are not connected and cannot be selected, so a catalog with no
+    /// enabled profile leaves the arm exactly where it was.
+    static func federation(from reading: HerdrMachineCatalogReading) -> HerdrMachineFederation {
+        switch reading {
+        case .absent:
+            return .notFederated
+        case .unreadable:
+            return .unreadable
+        case .catalog(let catalog):
+            guard !catalog.enabledProfiles.isEmpty else { return .notFederated }
+            return catalog.selectedProfile.map(HerdrMachineFederation.showingMachine) ?? .showingLocal
+        }
+    }
+
+    private func catalog(inClientDirectory directory: URL) -> HerdrMachineCatalogReading {
         let catalogFile = readFile(directory.appendingPathComponent("endpoints.json"))
         switch catalogFile {
         case .absent:
             // No catalog is the state of every herdr before 0.9 and of every
             // 0.9 user who saved no machine. Nothing to guard against.
-            return .notFederated
+            return .absent
         case .unreadable:
             return .unreadable
         case .contents(let data):
             guard let catalog = try? JSONDecoder().decode(Catalog.self, from: data),
                   catalog.version == Self.supportedStateVersion
             else { return .unreadable }
-            let enabled = Set(catalog.ssh?.filter(\.enabled).map(\.id) ?? [])
-            guard !enabled.isEmpty else { return .notFederated }
+            let profiles = (catalog.ssh ?? []).map {
+                HerdrMachineProfile(
+                    id: $0.id,
+                    label: $0.label,
+                    target: $0.target,
+                    session: $0.session,
+                    enabled: $0.enabled
+                )
+            }
+            let enabled = Set(profiles.filter(\.enabled).map(\.id))
+            guard !enabled.isEmpty else {
+                // With nothing enabled there is nothing to select, and the
+                // selection file cannot make a machine appear; it is not read.
+                return .catalog(HerdrMachineCatalog(profiles: profiles, selectedProfileID: nil))
+            }
             switch selectedProfile(
                 inClientDirectory: directory, enabledProfiles: enabled, catalog: catalog
             ) {
             case .success(let selected):
-                return selected == nil ? .showingLocal : .showingMachine
+                return .catalog(HerdrMachineCatalog(profiles: profiles, selectedProfileID: selected))
             case .failure:
                 return .unreadable
             }
@@ -157,9 +261,15 @@ struct HerdrMachineFederationReader: Sendable {
     /// decode as "no machines saved" and silently retire the guard.
     private static let supportedStateVersion = 1
 
+    /// herdr's `SavedSshEndpoint` is `deny_unknown_fields` and every field is
+    /// required, so a profile missing one of these is not a catalog herdr
+    /// itself would load; decoding fails and the reading is unreadable.
     private struct Catalog: Decodable {
         struct Profile: Decodable {
             var id: String
+            var label: String
+            var target: String
+            var session: String
             var enabled: Bool
         }
 

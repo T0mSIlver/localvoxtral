@@ -56,6 +56,14 @@ private struct JoinTestHerdrPanes: HerdrPaneQuerying {
 final class TerminalScreenClaudeJoinTests: XCTestCase {
     private let epoch = Date(timeIntervalSince1970: 2_000_000)
     private let local = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
+    /// A saved herdr machine the client is showing, for the federation guard.
+    nonisolated static let federatedMachine = HerdrMachineProfile(
+        id: String(repeating: "a", count: 32),
+        label: "box",
+        target: "box",
+        session: HerdrMachineProfile.defaultSessionName,
+        enabled: true
+    )
     private let ghostty = TerminalScreenTarget(
         pid: 4242,
         bundleID: TerminalScreenAllowlist.ghosttyBundleID
@@ -400,7 +408,7 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             focusedTerminalTTY: { _ in "/dev/ttys-outer" },
             focusedWindowID: { _ in self.windowA },
             herdrClientProbe: { _ in true },
-            herdrFederation: { .showingMachine },
+            herdrFederation: { .showingMachine(Self.federatedMachine) },
             herdrClientSurfaceCount: { 1 },
             herdrPanes: panes
         ).resolve(target: ghostty)
