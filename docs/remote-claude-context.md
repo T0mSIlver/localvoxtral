@@ -52,6 +52,14 @@ configured.
 
 ## How enrollment works
 
+If you use herdr's saved machines (herdr 0.9's `herdr machine add`), you do not
+have to type a destination at all: Settings › Integrations › Remote hosts lists
+them under **Saved herdr machines**, one row per machine with its saved ssh
+target, and **Import…** fills the enrollment form with the machine's name and
+target. A machine saved as `user@host` or an `ssh://` destination needs a
+`Host` alias in your `~/.ssh/config` first — add one, then import it.
+Everything after the form is the same flow for everyone.
+
 Enrolling a host is one flow that does everything, each step self-verifying.
 Press **Set Up** in the enrollment sheet, or **Update host…** and **Set Up** in an
 enrolled host's row — and it runs, in order, showing one short sentence of

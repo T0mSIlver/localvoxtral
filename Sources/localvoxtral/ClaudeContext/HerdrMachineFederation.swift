@@ -47,19 +47,22 @@ enum HerdrMachineFederation: Sendable, Equatable {
 /// One saved machine, as `herdr machine add` recorded it. The fields are the
 /// ones `herdr machine list --json` prints; the catalog holds nothing else
 /// (no credentials, no key material, no control sockets).
-struct HerdrMachineProfile: Sendable, Equatable, Hashable, Identifiable {
+///
+/// Public because the Settings model's injected catalog-reading seam names
+/// these types in its default argument.
+public struct HerdrMachineProfile: Sendable, Equatable, Hashable, Identifiable {
     /// herdr's opaque profile id (32 lowercase hex digits).
-    var id: String
+    public var id: String
     /// The user-facing name given at `machine add`.
-    var label: String
+    public var label: String
     /// The ssh destination exactly as the user typed it: an ssh config alias,
     /// `user@host`, or an `ssh://` URL. Never canonicalized here.
-    var target: String
+    public var target: String
     /// The remote herdr session the profile attaches. herdr's default session
     /// keeps its socket at `<config dir>/herdr.sock`; a named one lives at
     /// `<config dir>/sessions/<name>/herdr.sock`.
-    var session: String
-    var enabled: Bool
+    public var session: String
+    public var enabled: Bool
 
     static let defaultSessionName = "default"
 }
@@ -67,10 +70,15 @@ struct HerdrMachineProfile: Sendable, Equatable, Hashable, Identifiable {
 /// herdr's saved-machine catalog, resolved the way a client starting now
 /// would resolve it: every profile in file order, and the selected one after
 /// the selection file and the catalog's own copy have been reconciled.
-struct HerdrMachineCatalog: Sendable, Equatable {
-    var profiles: [HerdrMachineProfile]
+public struct HerdrMachineCatalog: Sendable, Equatable {
+    public var profiles: [HerdrMachineProfile]
     /// The enabled profile the client is showing, or nil for Local.
-    var selectedProfileID: String?
+    public var selectedProfileID: String?
+
+    public init(profiles: [HerdrMachineProfile], selectedProfileID: String?) {
+        self.profiles = profiles
+        self.selectedProfileID = selectedProfileID
+    }
 
     var selectedProfile: HerdrMachineProfile? {
         guard let selectedProfileID else { return nil }
@@ -82,7 +90,7 @@ struct HerdrMachineCatalog: Sendable, Equatable {
 
 /// The catalog as the reader found it. `absent` and `unreadable` are kept
 /// apart for the same reason `HerdrStateFile` keeps them apart.
-enum HerdrMachineCatalogReading: Sendable, Equatable {
+public enum HerdrMachineCatalogReading: Sendable, Equatable {
     /// No catalog file: this user never ran `herdr machine add`.
     case absent
     case catalog(HerdrMachineCatalog)
@@ -113,7 +121,7 @@ enum HerdrStateFile: Sendable, Equatable {
 /// reader cannot find, and reads back `notFederated`. That leaves them on the
 /// pre-0.9 behavior this guard exists to correct. Closing it needs herdr's own
 /// CLI, whose path a GUI app cannot resolve either.
-struct HerdrMachineFederationReader: Sendable {
+public struct HerdrMachineFederationReader: Sendable {
     private let clientDirectories: [URL]
     private let readFile: @Sendable (URL) -> HerdrStateFile
 
@@ -123,7 +131,7 @@ struct HerdrMachineFederationReader: Sendable {
     }
 
     /// Production reader over this user's home directory.
-    static func live() -> HerdrMachineFederationReader {
+    public static func live() -> HerdrMachineFederationReader {
         HerdrMachineFederationReader(
             clientDirectories: Self.liveClientDirectories(),
             readFile: Self.liveReadFile
@@ -143,7 +151,7 @@ struct HerdrMachineFederationReader: Sendable {
     /// in directory order and the first selection wins. Any unreadable
     /// directory makes the whole reading unreadable: a partial list would
     /// silently omit the machine the user is looking at.
-    func catalog() -> HerdrMachineCatalogReading {
+    public func catalog() -> HerdrMachineCatalogReading {
         var merged: HerdrMachineCatalog?
         for directory in clientDirectories {
             switch catalog(inClientDirectory: directory) {

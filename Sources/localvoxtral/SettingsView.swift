@@ -1482,6 +1482,9 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                     if let hint = model.rejectionHint {
                         SettingsInlineMessage(hint, color: .orange)
                     }
+                    // Saved herdr machines as an enrollment source: content
+                    // of this group, never a group of its own.
+                    HerdrMachinesSettingsList(model: model)
                     enrollmentForm
                     listenerStatus
                     shellSetup
