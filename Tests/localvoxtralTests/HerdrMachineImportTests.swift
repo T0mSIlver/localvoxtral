@@ -244,9 +244,59 @@ final class HerdrMachineImportTests: XCTestCase {
         )
     }
 
-    /// Only importable candidates import: an enrolled, needsAlias, or
-    /// disabled row must not enroll a second host through this path.
-    func testImportRefusesCandidatesThatAreNotImportable() async throws {
+    /// A stale `.importable` snapshot must not enroll a second host: the alias
+    /// was enrolled by hand through the typed form's `enroll()` after the
+    /// snapshot was taken, so the import re-derives freshness and refuses —
+    /// host count unchanged, no new plan.
+    func testStaleSnapshotAfterHandEnrollRefusesSecondHost() async throws {
+        let registry = try makeRegistry()
+        let reading = catalog([machine("m", label: "build machine", target: "builder")])
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            catalogReading: { reading }
+        )
+        let stale = try candidates(of: model.herdrMachines)[0]
+        XCTAssertEqual(stale.status, .importable)
+
+        // The hand enrollment the snapshot predates.
+        model.enrollLabel = "hand enrolled"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        XCTAssertNotNil(model.presentedPlan)
+        model.dismissPlan()
+
+        await model.importHerdrMachine(stale)
+
+        XCTAssertEqual(registry.hosts().count, 1)
+        XCTAssertNil(model.presentedPlan)
+    }
+
+    /// Two rapid `Import…` taps capture the same `.importable` snapshot; the
+    /// second must refuse — exactly one host enrolled, one plan presented.
+    func testBackToBackImportsEnrollExactlyOneHost() async throws {
+        let registry = try makeRegistry()
+        let reading = catalog([machine("n", label: "build machine", target: "builder")])
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            catalogReading: { reading }
+        )
+        let candidate = try candidates(of: model.herdrMachines)[0]
+
+        await model.importHerdrMachine(candidate)
+        let firstPlan = try XCTUnwrap(model.presentedPlan)
+        await model.importHerdrMachine(candidate)
+
+        XCTAssertEqual(registry.hosts().count, 1)
+        XCTAssertEqual(model.presentedPlan?.host.id, firstPlan.host.id)
+    }
+
+    /// Only freshly derived non-importable rows refuse here: an enrolled,
+    /// needsAlias, or disabled row must not enroll a host through this path.
+    /// (The stale-`.importable` case is covered by
+    /// `testStaleSnapshotAfterHandEnrollRefusesSecondHost`.)
+    func testFreshlyDerivedNonImportableRowsRefuse() async throws {
         let registry = try makeRegistry()
         let handEnrolled = try registry.enroll(label: "builder", sshHostAlias: "builder").host
         let reading = catalog([
@@ -268,5 +318,32 @@ final class HerdrMachineImportTests: XCTestCase {
         XCTAssertEqual(model.hosts.map(\.id), [handEnrolled.id])
         XCTAssertEqual(model.enrollLabel, "")
         XCTAssertEqual(model.enrollSSHAlias, "")
+    }
+
+    /// An empty catalog renders nothing: zero profiles is "no machines
+    /// saved", not a header with zero rows.
+    func testEmptyCatalogRendersNothing() throws {
+        let model = makeModel(registry: try makeRegistry(), catalogReading: { catalog([]) })
+        XCTAssertEqual(model.herdrMachines, .absent)
+    }
+
+    /// The needsAlias row's one sentence is pinned: it must not promise an
+    /// import the row does not offer.
+    func testNeedsAliasSentenceIsPinned() {
+        XCTAssertEqual(
+            HerdrMachineImportStatus.needsAlias.sentence,
+            "Add an SSH config alias for it first."
+        )
+        XCTAssertNil(HerdrMachineImportStatus.importable.sentence)
+    }
+
+    /// The sidebar's fixed dot meanings applied to import rows: green for
+    /// already enrolled, yellow for the row the pane can act on, grey for
+    /// the rows it cannot.
+    func testImportStatusDotMapping() {
+        XCTAssertEqual(HerdrMachineImportStatus.enrolled(hostID: "h").dot, .green)
+        XCTAssertEqual(HerdrMachineImportStatus.importable.dot, .yellow)
+        XCTAssertEqual(HerdrMachineImportStatus.needsAlias.dot, .grey)
+        XCTAssertEqual(HerdrMachineImportStatus.disabled.dot, .grey)
     }
 }

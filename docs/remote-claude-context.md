@@ -53,7 +53,7 @@ configured.
 ## How enrollment works
 
 If you use herdr's saved machines (herdr 0.9's `herdr machine add`), you do not
-have to type a destination at all: Settings › Integrations › Remote hosts lists
+have to type a destination at all: Settings › Integrations › Claude Code › Remote hosts lists
 them under **Saved herdr machines**, one row per machine with its saved ssh
 target, and **Import…** fills the enrollment form with the machine's name and
 target. A machine saved as `user@host` or an `ssh://` destination needs a

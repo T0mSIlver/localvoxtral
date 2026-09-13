@@ -2390,7 +2390,10 @@ private struct SettingsFileNotes: View {
     }
 }
 
-private struct SettingsInlineMessage: View {
+/// One short inline sentence in a Settings pane. Internal (not private) so
+/// pane-subviews in their own files — e.g. `HerdrMachinesSettingsList` — can
+/// reuse the idiom instead of copying it.
+struct SettingsInlineMessage: View {
     let message: String
     let color: Color
 

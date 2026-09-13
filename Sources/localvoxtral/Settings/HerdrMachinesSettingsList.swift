@@ -18,7 +18,7 @@ struct HerdrMachinesSettingsList: View {
             // empty-state row would be noise about a feature they do not use.
             EmptyView()
         case .unreadable:
-            HerdrMachineImportMessage("herdr's saved machines could not be read.", color: .orange)
+            SettingsInlineMessage("herdr's saved machines could not be read.", color: .orange)
         case .candidates(let candidates):
             VStack(alignment: .leading, spacing: 4) {
                 Text("Saved herdr machines")
@@ -71,6 +71,9 @@ private struct HerdrMachineImportRow: View {
                         Task { await model.importHerdrMachine(candidate) }
                     }
                     .controlSize(.small)
+                    // Same re-entrancy condition the import path guards on:
+                    // no second enrollment while the sheet is up or running.
+                    .disabled(model.presentedPlan != nil || model.isEnrollmentBusy)
                     .accessibilityIdentifier("claude.remote.herdrMachines.\(candidate.id).import")
                 }
             }
@@ -78,32 +81,13 @@ private struct HerdrMachineImportRow: View {
             if let sentence = candidate.status.sentence {
                 // Wraps, never truncates — it is an instruction, and an
                 // instruction must never be ellipsized (owner rule, PR #282).
-                HerdrMachineImportMessage(sentence, color: .secondary)
+                SettingsInlineMessage(sentence, color: .secondary)
                     .padding(.leading, 15)
                     .accessibilityIdentifier("claude.remote.herdrMachines.\(candidate.id).sentence")
             }
         }
         // herdr's own off switch: still listed, dimmed, no action.
         .opacity(candidate.status == .disabled ? 0.5 : 1)
-    }
-}
-
-/// The `SettingsInlineMessage` idiom, kept local so `SettingsView.swift`
-/// carries only the one-line insertion of the list itself.
-private struct HerdrMachineImportMessage: View {
-    let message: String
-    let color: Color
-
-    init(_ message: String, color: Color) {
-        self.message = message
-        self.color = color
-    }
-
-    var body: some View {
-        Text(message)
-            .font(.caption)
-            .foregroundStyle(color)
-            .fixedSize(horizontal: false, vertical: true)
     }
 }
 

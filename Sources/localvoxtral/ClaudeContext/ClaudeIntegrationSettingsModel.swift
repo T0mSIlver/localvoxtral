@@ -577,7 +577,8 @@ public final class ClaudeIntegrationSettingsModel {
     /// herdr's saved-machine catalog, re-read with the enrolled hosts so the
     /// candidate rows stay true to both. A `HerdrMachineFederationReader`-
     /// shaped seam: injected so tests pin candidates without herdr state on
-    /// disk, defaulting to the live reader's `catalog()` reading.
+    /// disk; production passes the live reader's `catalog()` at the
+    /// construction site, and the default is absent (no machines).
     private let herdrMachineCatalogReading: @Sendable () -> HerdrMachineCatalogReading
     private let listener: (any ClaudeRemoteListenerControlling)?
     private let pluginService: @Sendable () -> any ClaudePluginInstalling
@@ -685,7 +686,7 @@ public final class ClaudeIntegrationSettingsModel {
         herdrPresenceReport: @escaping @Sendable () -> Bool = { false },
         herdrPaneReportingHostIDs: @escaping @Sendable () -> [String] = { [] },
         herdrMachineCatalogReading: @escaping @Sendable () -> HerdrMachineCatalogReading = {
-            HerdrMachineFederationReader.live().catalog()
+            .absent
         }
     ) {
         self.loginShell = loginShell
@@ -904,10 +905,20 @@ public final class ClaudeIntegrationSettingsModel {
     /// the typed form runs. Nothing about enrollment itself changes — the
     /// sheet, its Set Up consent, and every step after it are the typed form's.
     public func importHerdrMachine(_ candidate: HerdrMachineImportCandidate) async {
-        // Only rows the pane offers the button on; a stale candidate (the
-        // host was enrolled by hand since the last refresh) must not enroll a
-        // second time through this path.
+        // No re-entrancy: a second tap while the sheet is up (or an action is
+        // running) must not enroll again — `enroll()` has no duplicate-alias
+        // check, so two passing calls would create two hosts on one alias.
+        guard presentedPlan == nil && !isEnrollmentBusy else { return }
+        // The snapshot's own status may predate a hand enrollment of the same
+        // alias, so it is only a fast path: freshness is re-derived below
+        // from a new catalog read and the current registry.
         guard candidate.status == .importable else { return }
+        let enrolledHosts = registry?.hosts() ?? []
+        guard case .catalog(let catalog) = herdrMachineCatalogReading(),
+              catalog.profiles.contains(where: { $0.id == candidate.profile.id }),
+              Self.herdrMachineStatus(profile: candidate.profile, enrolledHosts: enrolledHosts)
+                  == .importable
+        else { return }
         enrollLabel = candidate.profile.label
         enrollSSHAlias = candidate.profile.target
         await enroll()
@@ -925,6 +936,9 @@ public final class ClaudeIntegrationSettingsModel {
         case .unreadable:
             return .unreadable
         case .catalog(let catalog):
+            // Zero profiles is "no machines saved", not a header with zero
+            // rows: an empty catalog renders nothing, like an absent one.
+            guard !catalog.profiles.isEmpty else { return .absent }
             return .candidates(
                 catalog.profiles.map { profile in
                     HerdrMachineImportCandidate(
@@ -952,6 +966,9 @@ public final class ClaudeIntegrationSettingsModel {
         }) {
             return .enrolled(hostID: enrolled.id)
         }
+        // Deliberate precedence: herdr's own off switch wins over the
+        // alias-shape check, so a disabled non-alias target renders dimmed
+        // with no sentence rather than an instruction it cannot act on.
         guard profile.enabled else { return .disabled }
         return ClaudeRemoteEnrollmentService.isValidHostAlias(profile.target) ? .importable : .needsAlias
     }
@@ -2535,7 +2552,7 @@ public enum HerdrMachineImportStatus: Sendable, Equatable {
         case .enrolled, .importable, .disabled:
             return nil
         case .needsAlias:
-            return "Add an SSH config alias for it, then import."
+            return "Add an SSH config alias for it first."
         }
     }
 }

@@ -48,8 +48,8 @@ enum HerdrMachineFederation: Sendable, Equatable {
 /// ones `herdr machine list --json` prints; the catalog holds nothing else
 /// (no credentials, no key material, no control sockets).
 ///
-/// Public because the Settings model's injected catalog-reading seam names
-/// these types in its default argument.
+/// Public because the public `HerdrMachineImportCandidate` carries one: a
+/// public struct's public property cannot name an internal type.
 public struct HerdrMachineProfile: Sendable, Equatable, Hashable, Identifiable {
     /// herdr's opaque profile id (32 lowercase hex digits).
     public var id: String
@@ -70,15 +70,13 @@ public struct HerdrMachineProfile: Sendable, Equatable, Hashable, Identifiable {
 /// herdr's saved-machine catalog, resolved the way a client starting now
 /// would resolve it: every profile in file order, and the selected one after
 /// the selection file and the catalog's own copy have been reconciled.
+///
+/// Public because the public `HerdrMachineCatalogReading` carries one as an
+/// associated value; the members stay internal.
 public struct HerdrMachineCatalog: Sendable, Equatable {
-    public var profiles: [HerdrMachineProfile]
+    var profiles: [HerdrMachineProfile]
     /// The enabled profile the client is showing, or nil for Local.
-    public var selectedProfileID: String?
-
-    public init(profiles: [HerdrMachineProfile], selectedProfileID: String?) {
-        self.profiles = profiles
-        self.selectedProfileID = selectedProfileID
-    }
+    var selectedProfileID: String?
 
     var selectedProfile: HerdrMachineProfile? {
         guard let selectedProfileID else { return nil }
@@ -90,6 +88,9 @@ public struct HerdrMachineCatalog: Sendable, Equatable {
 
 /// The catalog as the reader found it. `absent` and `unreadable` are kept
 /// apart for the same reason `HerdrStateFile` keeps them apart.
+///
+/// Public because the public settings-model init takes a seam returning one;
+/// a public signature cannot name an internal type.
 public enum HerdrMachineCatalogReading: Sendable, Equatable {
     /// No catalog file: this user never ran `herdr machine add`.
     case absent
@@ -121,7 +122,7 @@ enum HerdrStateFile: Sendable, Equatable {
 /// reader cannot find, and reads back `notFederated`. That leaves them on the
 /// pre-0.9 behavior this guard exists to correct. Closing it needs herdr's own
 /// CLI, whose path a GUI app cannot resolve either.
-public struct HerdrMachineFederationReader: Sendable {
+struct HerdrMachineFederationReader: Sendable {
     private let clientDirectories: [URL]
     private let readFile: @Sendable (URL) -> HerdrStateFile
 
@@ -131,7 +132,7 @@ public struct HerdrMachineFederationReader: Sendable {
     }
 
     /// Production reader over this user's home directory.
-    public static func live() -> HerdrMachineFederationReader {
+    static func live() -> HerdrMachineFederationReader {
         HerdrMachineFederationReader(
             clientDirectories: Self.liveClientDirectories(),
             readFile: Self.liveReadFile
@@ -151,7 +152,7 @@ public struct HerdrMachineFederationReader: Sendable {
     /// in directory order and the first selection wins. Any unreadable
     /// directory makes the whole reading unreadable: a partial list would
     /// silently omit the machine the user is looking at.
-    public func catalog() -> HerdrMachineCatalogReading {
+    func catalog() -> HerdrMachineCatalogReading {
         var merged: HerdrMachineCatalog?
         for directory in clientDirectories {
             switch catalog(inClientDirectory: directory) {
