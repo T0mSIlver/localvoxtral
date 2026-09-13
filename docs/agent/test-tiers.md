@@ -182,7 +182,15 @@ empty string clear a `pane.report_metadata` token; the `ttl_ms` window is
 1…86_400_000 inclusive; `pane.process_info` still reports named foreground
 processes; `pane.read` answers only about the pane asked for; and `ssh -G`
 identity matching accepts an alias that differs only in `User` while
-rejecting one that differs in port.
+rejecting one that differs in port. On herdr 0.9+ the lane additionally pins
+federation: `machine list --json` reports `selected` for the viewed machine
+and none for Local, and the production catalog reader resolves the same
+answer; the local server still answers `pane.current` with its own focused
+pane while a machine is selected; the agents panel composes rows from every
+connected machine at once (a remote token renders while Local is displayed
+and vice versa, retiring the whole-view discriminator for federated
+clients); those rows render from the LOCAL client config alone; and
+`terminal session observe` renders no panel token, like `terminal attach`.
 
 Fixture and host requirements (`scripts/herdr-integration-fixture.sh`):
 

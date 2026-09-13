@@ -72,6 +72,9 @@ simulate_up_then_kill() {
     printf '%s\n' "$SSH_CONFIG_ALT_BEGIN"
     printf 'Host lvx-herdr-fixture-altuser\n  HostName 127.0.0.1\n'
     printf '%s\n' "$SSH_CONFIG_ALT_END"
+    printf '%s\n' "$SSH_CONFIG_FED_BEGIN"
+    printf 'Host lvx-herdr-fixture-fed\n  HostName 127.0.0.1\n  Port 24601\n'
+    printf '%s\n' "$SSH_CONFIG_FED_END"
   } >> "$SSH_CONFIG_FILE"
   # The manifest records THIS shell's pid, which is very much alive. A killed
   # run's pid is not, so overwrite it with one that cannot be running.

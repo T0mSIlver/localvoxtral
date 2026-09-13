@@ -393,6 +393,11 @@ enum HerdrSurfaceMode: String {
     /// `herdr terminal attach <pane>`: the raw pane stream, no sidebar. The
     /// discriminator the panel-binding trust argument rests on.
     case attach
+    /// `herdr terminal session observe <pane>`: newline-delimited
+    /// `terminal.frame` records of the raw pane stream, likewise no sidebar.
+    /// Pinned next to the attach case since herdr 0.9 federates the agents
+    /// panel across machines.
+    case observe
 }
 
 /// A live herdr server, a real pane, a real loopback sshd, and one or more
@@ -635,6 +640,182 @@ final class HerdrLiveFixture {
             arguments: [scriptURL.path, "reload", info.workdir],
             currentDirectory: repoRoot
         )
+    }
+
+    // MARK: - Federation (herdr 0.9)
+
+    /// Set up the federated 0.9 client: `herdr machine add` of the fixture's
+    /// own loopback target (or the caller's destination), one agent-bearing
+    /// pane on the remote server, and the selection left on Local.
+    /// On a host whose herdr predates `machine` the fixture verb refuses with
+    /// the required version — that loud failure is what the federation tests
+    /// assert there, not a skip.
+    @discardableResult
+    func federate() throws -> HerdrFederationInfo {
+        let result = try HerdrLaneProcess.run(
+            executable: URL(fileURLWithPath: "/bin/bash"),
+            arguments: [scriptURL.path, "federation", info.workdir],
+            currentDirectory: repoRoot
+        )
+        guard result.succeeded else {
+            throw HerdrLaneError.fixtureFailed(
+                "`federation` exited \(result.status)\n\(result.standardError)\(result.standardOutput)"
+            )
+        }
+        if !result.standardError.isEmpty {
+            print(result.standardError, terminator: result.standardError.hasSuffix("\n") ? "" : "\n")
+        }
+        guard let data = try? Data(
+            contentsOf: URL(fileURLWithPath: info.workdir).appendingPathComponent("federation.json")
+        ),
+            let federation = try? JSONDecoder().decode(HerdrFederationInfo.self, from: data)
+        else {
+            throw HerdrLaneError.fixtureFailed(
+                "`federation` printed no federation description\n\(result.standardOutput)\(result.standardError)"
+            )
+        }
+        return federation
+    }
+
+    /// Write the scratch client's endpoint selection before a whole-view
+    /// surface starts: a running client keeps its own selection while a
+    /// starting one honors this file. This is the file write a real sidebar
+    /// switch produces, called out as such — the lane does not drive the
+    /// switch through the pty.
+    func setFederationSelection(profileID: String?) throws {
+        let result = try HerdrLaneProcess.run(
+            executable: URL(fileURLWithPath: "/bin/bash"),
+            arguments: [scriptURL.path, "federation-select", info.workdir, profileID ?? "local"],
+            currentDirectory: repoRoot
+        )
+        guard result.succeeded else {
+            throw HerdrLaneError.fixtureFailed(
+                "`federation-select` exited \(result.status)\n\(result.standardError)"
+            )
+        }
+    }
+
+    /// `herdr machine list --json` against the scratch client state, with the
+    /// runner's own herdr session variables scrubbed (a runner living inside
+    /// a herdr pane would otherwise leak its pane id into the call).
+    func federationMachineList(clientStateHome: String) throws -> [HerdrFederationMachineRow] {
+        var environment = ProcessInfo.processInfo.environment
+        environment["XDG_STATE_HOME"] = clientStateHome
+        for key in ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID", "HERDR_SESSION"] {
+            environment.removeValue(forKey: key)
+        }
+        let result = try HerdrLaneProcess.run(
+            executable: URL(fileURLWithPath: info.herdrBinary),
+            arguments: ["machine", "list", "--json"],
+            currentDirectory: repoRoot,
+            environment: environment
+        )
+        guard result.succeeded,
+            let data = result.standardOutput.data(using: .utf8),
+            let rows = try? JSONDecoder().decode([HerdrFederationMachineRow].self, from: data)
+        else {
+            throw HerdrLaneError.fixtureFailed(
+                "`machine list --json` failed (\(result.status))\n\(result.standardError)\(result.standardOutput)"
+            )
+        }
+        return rows
+    }
+}
+
+/// One `herdr machine list --json` row: the fields the catalog holds (no
+/// credentials, no key material — herdr stores none).
+struct HerdrFederationMachineRow: Decodable {
+    let id: String
+    let label: String
+    let target: String
+    let session: String
+    let enabled: Bool
+    let selected: Bool
+}
+
+/// The federated half of a fixture run, written by the fixture's
+/// `federation` verb. `remoteSocketPath` and `remoteConfigPath` are empty
+/// when the lane runs against a real second host, whose files this Mac
+/// cannot read directly.
+struct HerdrFederationInfo: Decodable {
+    let profileID: String
+    let label: String
+    let target: String
+    let session: String
+    let remoteAgentSessionID: String
+    let clientStateHome: String
+    let clientDir: String
+    let remoteSocketPath: String
+    let remotePaneID: String
+    let remoteConfigPath: String
+}
+
+// MARK: - Observe-frame decoding
+
+/// One `herdr terminal session observe` surface: newline-delimited
+/// `terminal.frame` JSON records whose `bytes` are base64 terminal output.
+/// Unlike a whole-view typescript this needs decoding before the lane can
+/// read it — and it is the shape that proves an observer renders no panel.
+enum HerdrObserveFrame {
+    private struct Record: Decodable {
+        let type: String
+        let bytes: String
+    }
+
+    /// Visible text of every frame record painted since the mark, in order.
+    /// Empty when the observer has not painted yet, which lets the lane wait
+    /// for a connected observer instead of asserting about a silent surface.
+    ///
+    /// Records are recovered by brace matching, not line splitting: the pty
+    /// layer may split one JSON record across flushes, and a line-based
+    /// decoder would drop both halves. A truncated tail record is skipped
+    /// until the rest of it arrives.
+    static func visibleTexts(sinceMark surface: HerdrSurfaceLog) -> [String] {
+        guard let text = surface.textSinceMark() else { return [] }
+        var frames: [String] = []
+        var index = text.startIndex
+        while let open = text[index...].firstIndex(of: "{") {
+            var depth = 0
+            var inString = false
+            var escaped = false
+            var cursor = open
+            var end: String.Index?
+            while cursor < text.endIndex {
+                let ch = text[cursor]
+                if inString {
+                    if escaped {
+                        escaped = false
+                    } else if ch == "\\" {
+                        escaped = true
+                    } else if ch == "\"" {
+                        inString = false
+                    }
+                } else if ch == "\"" {
+                    inString = true
+                } else if ch == "{" {
+                    depth += 1
+                } else if ch == "}" {
+                    depth -= 1
+                    if depth == 0 {
+                        end = text.index(after: cursor)
+                        break
+                    }
+                }
+                cursor = text.index(after: cursor)
+            }
+            guard let end else { break }
+            let candidate = String(text[open..<end])
+            if let data = candidate.data(using: .utf8),
+                let record = try? JSONDecoder().decode(Record.self, from: data),
+                record.type == "terminal.frame",
+                let bytes = Data(base64Encoded: record.bytes, options: .ignoreUnknownCharacters),
+                let raw = String(data: bytes, encoding: .utf8)
+            {
+                frames.append(HerdrSurfaceLog.visibleText(raw))
+            }
+            index = end
+        }
+        return frames
     }
 }
 

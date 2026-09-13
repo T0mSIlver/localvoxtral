@@ -275,8 +275,39 @@ Measured against herdr 0.8.2 (protocol 20) while writing that lane:
   state — it can still catch a disagreement, but absence is the common case,
   and since the broker-marker confirmation was removed (2026-09-05) the pane-id
   match and the FOREGROUND PROCESS check are what carry the weight there. That
-  makes re-verifying this field on herdr upgrades more valuable than it was,
-  not less.
+   makes re-verifying this field on herdr upgrades more valuable than it was,
+   not less.
+
+Measured against herdr 0.9.0 (scratch rig 2026-09-13; the lane pins the same
+against the Mac fixture):
+
+- `machine list --json` reports `selected: true` exactly when
+  `endpoint-selection.json` names that profile, and no selection for Local —
+  including when the file names a disabled profile or is absent (both fall
+  back to the catalog copy, then Local). The production reader resolves the
+  same answer for every VALID state.
+- DELIBERATE DIVERGENCE, unit-pinned, do not "fix": a selection file that
+  exists but cannot be decoded (malformed JSON, wrong version) makes herdr
+  warn and show Local, while the production reader abstains (`unreadable`).
+  Failing closed is the design (`HerdrMachineFederationTests` pins
+  `testUndecodableSelectionAbstains` / `testUnknownSelectionVersionAbstains`);
+  the lane pins parity for valid states only.
+- A starting client honors the selection file; a RUNNING client never re-reads
+  it (only the profile list is polled, every 1 s) — so the fixture writes the
+  file before starting a surface, mirroring what a UI switch persists.
+- `machine add` needs the alias in the REAL ssh config (the federated bridges
+  spawn plain `ssh`), daemon-starts the remote server itself (a
+  directly-started server is refused as not ready), and must run with stdin
+  closed (an open stdin parked it past 120 s on an approval prompt). The lane
+  federates the DEFAULT remote session at an explicit short socket: a named
+  session's socket does not fit macOS's 104-byte sun_path under the lane's
+  workdir layout, while `herdr --session <name>` ignores HERDR_SOCKET_PATH
+  anyway (explicit session wins over the env).
+- An unfocused agent-bearing pane still gets an agents-panel row; no
+  presenting client on the remote side is needed for federated rows to render.
+- A runner living inside a herdr pane exports `HERDR_PANE_ID`, which retargets
+  every `pane current` the fixture runs — the fixture scrubs the herdr session
+  variables for every process it spawns.
 
 Unpinnable from the Mac side, and still documented hopes: that all App-mode
 clients share one server-global focus (a second whole-view client on the same
@@ -287,13 +318,17 @@ does not assert it), and that `terminal_observe` behaves like
 CORRECTED 2026-09-08: the second one is pinnable and was never unpinnable. The
 CLI does expose an observer, `herdr terminal session observe <target> [--cols N]
 [--rows N]`, already present at tag v0.8.2 (`src/cli.rs:43`), printing
-newline-delimited `terminal.frame` records. The lane can assert that an observer
+newline-delimited `terminal.frame` records. The lane asserts that an observer
 of a stamped pane renders no panel token, the same way it already asserts it for
-`terminal attach`, instead of hoping.
+`terminal attach` — measured 2026-09-13 against herdr 0.9.0: three frame
+records decoded from base64 `bytes`, the pane's prompt and typed text present,
+the stamped token absent.
 
 ## herdr 0.9.0: what federation changes here
 
-Read from source at tag v0.9.0, not yet measured against a running server.
+Measured against a running herdr 0.9.0 on 2026-09-13 (scratch server, client,
+and loopback sshd on Linux; the lane pins the same behaviors on the Mac).
+Source references are to tag v0.9.0.
 
 A 0.9 client can attach several machines at once (`herdr machine add`, saved in
 `<state_dir>/client/endpoints.json`, the viewed one in
@@ -314,17 +349,25 @@ Three consequences for the mechanism above:
    background color, which a text grid read cannot see. On a 0.9 client a
    rendered token proves that the surface federates that server, not that it
    displays it. The machine has to come from herdr's selection state instead.
+   Measured 2026-09-13: distinct tokens stamped on the local and the remote
+   pane both render while the machine is displayed AND while Local is
+   displayed, each in its endpoint's row (textually identical rows — the
+   machine distinction is color-only). The lane pins both directions.
 2. The row config moves to the LOCAL machine. A client shell renders those rows
    from its own config (`ClientShellConfig::from_config` reads
    `config.ui.sidebar.agents`), so the enrollment-time offer to patch a remote
    `[ui.sidebar.agents]` over ssh does not apply to a federated client. The
    equivalent offer is a local file edit. The new built-in `machine` token can
-   sit in the same row as `$lvmark`.
+   sit in the same row as `$lvmark`. Measured 2026-09-13: with the agents
+   table configured locally and absent on the remote side, a token stamped on
+   the remote pane renders on a Local-viewing surface. The lane pins it.
 3. A server can hold focus while presenting to nobody, through the new
    `client_shell.surface.set` method and the `surface_interest` and
    `health_check` capabilities (`src/api/schema/server.rs`). `pane.current`
    still answers for such a server, so a focused pane is no longer evidence
    that anyone is looking at it. Issue #286 is the local arm's version of this.
+   Measured 2026-09-13: with a machine selected, the local server answers
+   `pane.current` with its own focused pane. The lane pins it.
 
 ## Federated arm: `.federatedHerdrPane`
 

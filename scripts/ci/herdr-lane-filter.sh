@@ -33,6 +33,7 @@ MARKER='[run-herdr-integration]'
 PATTERNS=(
   '*HerdrSocketClient*'                              # the wire client: every request/response shape
   '*HerdrPanelBindingProbe*'                         # the nonce stamp, settle loop, and mic indicator
+  '*HerdrMachineFederation*'                         # the saved-machine catalog reader the federated arm trusts
   '*HerdrClientTTYProbe*'                            # which surface is bound to a herdr client at all
   '*ClaudeRemoteHerdrForward*'                       # the ssh -L forward, its argv, leases and teardown
   '*ClaudeRemoteForwardSupervisor*'                  # the process supervision under that forward

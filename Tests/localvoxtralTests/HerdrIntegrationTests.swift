@@ -773,6 +773,352 @@ final class HerdrIntegrationTests: XCTestCase {
         }
     }
 
+    // MARK: - Federation (herdr 0.9)
+
+    /// `herdr machine list --json` reports `selected: true` for the machine
+    /// the client is viewing and no selection when it shows Local — and the
+    /// production reader (`HerdrMachineFederationReader` over the fixture's
+    /// scratch client dir) resolves the SAME answer. This is the contract the
+    /// federated join arm (issue #288) will name its target machine by; if a
+    /// herdr upgrade changes what "viewing" means on disk, the arm would
+    /// ground dictation in the wrong server and this test is what says so.
+    ///
+    /// No surface is needed: selection is file state (`load_from_paths`), and
+    /// a running client keeps its own selection while the CLI reads the file
+    /// fresh — so both states are asserted against the files alone.
+    func testFederatedMachineSelectionMatchesBetweenCLIAndProductionReader() async throws {
+        let federation = try fixture.federate()
+        let reader = Self.federationReader(clientDir: federation.clientDir)
+        let expectedProfile = HerdrMachineProfile(
+            id: federation.profileID,
+            label: federation.label,
+            target: federation.target,
+            session: federation.session,
+            enabled: true
+        )
+
+        try fixture.setFederationSelection(profileID: federation.profileID)
+        let listedMachine = try fixture.federationMachineList(
+            clientStateHome: federation.clientStateHome
+        )
+        XCTAssertEqual(
+            listedMachine.count, 1,
+            "the lane federates exactly one machine; an unexpected catalog makes every selection assertion below meaningless"
+        )
+        XCTAssertTrue(
+            listedMachine[0].selected,
+            "herdr machine list --json must report selected:true for the machine the client is viewing "
+                + "(endpoint-selection.json names \(federation.profileID))"
+        )
+        XCTAssertEqual(
+            reader.federation(), .showingMachine(expectedProfile),
+            "the production reader must resolve the same viewed machine herdr's own CLI reports "
+                + "(herdr's load_from_paths over the fixture's client dir)"
+        )
+        guard case .catalog(let catalog) = reader.catalog() else {
+            return XCTFail(
+                "the production reader must decode the fixture's saved-machine catalog instead of abstaining"
+            )
+        }
+        XCTAssertEqual(
+            catalog.selectedProfileID, federation.profileID,
+            "the catalog's resolved selection must be the federated profile"
+        )
+
+        try fixture.setFederationSelection(profileID: nil)
+        let listedLocal = try fixture.federationMachineList(
+            clientStateHome: federation.clientStateHome
+        )
+        XCTAssertEqual(listedLocal.count, 1)
+        XCTAssertFalse(
+            listedLocal[0].selected,
+            "herdr machine list --json must report no selection when the client shows Local "
+                + "(selected_profile null)"
+        )
+        XCTAssertEqual(
+            reader.federation(), .showingLocal,
+            "the production reader must read Local exactly when herdr's CLI reports no selection"
+        )
+    }
+
+    /// While a remote machine is selected, the LOCAL server still answers
+    /// `pane.current` with its own focused pane. This is the shape behind
+    /// issue #286 (the local arm must not trust that answer while a machine
+    /// is displayed, but the server must still give it): selection lives in
+    /// the CLIENT, so the server's answer must not move with it. If herdr
+    /// ever scopes `pane.current` to the viewed machine, the guard's premise
+    /// is gone and this test names it.
+    func testLocalServerAnswersPaneCurrentWhileFederatedMachineSelected() async throws {
+        let federation = try fixture.federate()
+        try fixture.setFederationSelection(profileID: federation.profileID)
+
+        let (service, handle) = try await openForward()
+        defer { handle.close(); service.stopAllForQuit() }
+        let client = Self.makeLaneClient()
+        guard let pane = await client.focusedPane(socketPath: handle.localSocketPath) else {
+            return XCTFail(
+                "pane.current returned nothing through the forwarded socket while a federated "
+                    + "machine is selected; the local server must still answer with its own focused pane"
+            )
+        }
+        XCTAssertEqual(
+            pane.paneID, fixture.info.paneID,
+            "pane.current must describe the LOCAL server's focused pane even while the client "
+                + "views a federated machine; a machine-scoped answer would ground the local arm "
+                + "in the wrong server"
+        )
+    }
+
+    /// The 0.9 agents panel composes rows from EVERY federated machine at
+    /// once, so a token stamped on the remote machine renders while the
+    /// machine is displayed — alongside the local pane's own token. A
+    /// rendered token therefore proves the surface FEDERATES the stamped
+    /// server, not that it DISPLAYS it: this retires the whole-view App
+    /// client discriminator for 0.9 clients (docs/agent/remote-herdr-panel-binding.md).
+    func testFederatedAgentsPanelShowsBothMachinesWhileMachineDisplayed() async throws {
+        try await checkFederatedAgentsPanelRendersBothMachines(viewingMachine: true)
+    }
+
+    /// The mirror direction: with Local displayed, the remote machine's
+    /// stamped token still renders next to the local one. Together with the
+    /// machine-displayed case this pins that federation composes rather than
+    /// switches — the panel is the union of all connected machines, and the
+    /// viewed machine is marked by background color only, which a text grid
+    /// read cannot see (hence distinct tokens per side here).
+    func testFederatedAgentsPanelShowsBothMachinesWhileLocalDisplayed() async throws {
+        try await checkFederatedAgentsPanelRendersBothMachines(viewingMachine: false)
+    }
+
+    private func checkFederatedAgentsPanelRendersBothMachines(viewingMachine: Bool) async throws {
+        let federation = try fixture.federate()
+        try fixture.setFederationSelection(
+            profileID: viewingMachine ? federation.profileID : nil
+        )
+        // The selection file is startup state (a running client keeps its
+        // own), so the surface starts AFTER the write — mirroring what a UI
+        // switch persists, called out as such in the fixture.
+        let surface = try fixture.startSurface(
+            name: viewingMachine ? "fedmachine" : "fedlocal", mode: .app
+        )
+        try await HerdrLaneWait.until("the federated client to paint its frame") {
+            surface.byteCount > 0
+        }
+        // The viewed endpoint is marked by background color (invisible to a
+        // text read), but the status bar names it in plain text.
+        let expectedBarName = viewingMachine ? federation.label : "Local"
+        try await HerdrLaneWait.until("the federated client to show \(expectedBarName)") {
+            surface.lastRenderedFrame()?.contains("· \(expectedBarName)") == true
+        }
+
+        let (service, handle) = try await openForward()
+        defer { handle.close(); service.stopAllForQuit() }
+        let client = Self.makeLaneClient()
+        let localToken = Self.freshToken()
+        let remoteToken = Self.freshToken()
+        surface.markCurrentEnd()
+
+        let localStamped = await stamp(
+            localToken, through: client, socketPath: handle.localSocketPath
+        )
+        XCTAssertTrue(localStamped, "stamping the local pane was refused through the forwarded socket")
+        let remoteStamped = await stampRemote(
+            remoteToken, federation: federation, through: client
+        )
+        XCTAssertTrue(remoteStamped, "stamping the remote pane was refused")
+
+        // Kept alive the way the product does (see waitForToken): each token
+        // carries the 8 s TTL, so both sides are refreshed at the indicator's
+        // cadence while the surface paints.
+        let deadline = Date().addingTimeInterval(20)
+        var nextRefresh = Date().addingTimeInterval(HerdrPanelMicIndicator.refreshInterval)
+        while surface.textSinceMark().map({ !$0.contains(localToken) || !$0.contains(remoteToken) }) ?? true {
+            guard Date() < deadline else {
+                fixture.dumpSurfaceFrames(
+                    reason: "timed out waiting for both machines' tokens "
+                        + "(viewing \(expectedBarName))"
+                )
+                throw HerdrLaneError.timedOut("the federated surface to paint both machines' tokens")
+            }
+            if Date() >= nextRefresh {
+                _ = await stamp(localToken, through: client, socketPath: handle.localSocketPath)
+                _ = await stampRemote(remoteToken, federation: federation, through: client)
+                nextRefresh = Date().addingTimeInterval(HerdrPanelMicIndicator.refreshInterval)
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    /// The agents-panel row comes from the LOCAL client config
+    /// (`ClientShellConfig::from_config`): with `[ui.sidebar.agents]`
+    /// configured locally and absent on the remote side, a token stamped on
+    /// the REMOTE pane still renders on a Local-viewing surface. If herdr
+    /// ever renders rows from the machine's own config, the enrollment offer
+    /// to patch a remote row becomes load-bearing again and this test names it.
+    func testFederatedPanelRowComesFromTheLocalClientConfig() async throws {
+        let federation = try fixture.federate()
+        if fixture.info.provisionedSSH {
+            let remoteConfig = try String(
+                contentsOfFile: federation.remoteConfigPath, encoding: .utf8
+            )
+            XCTAssertFalse(
+                remoteConfig.contains("[ui.sidebar.agents]"),
+                "the REMOTE herdr config must carry no agents row for this test; the rendered "
+                    + "row may only come from the LOCAL client config"
+            )
+        }
+        let localConfig = try String(
+            contentsOfFile: fixture.herdrConfigPath, encoding: .utf8
+        )
+        XCTAssertTrue(
+            localConfig.contains("$lvmark"),
+            "the LOCAL herdr config must carry the lane's $lvmark row; without it no token could render anywhere"
+        )
+
+        try fixture.setFederationSelection(profileID: nil)
+        let surface = try fixture.startSurface(name: "fedrowconfig", mode: .app)
+        try await HerdrLaneWait.until("the federated client to paint its frame") {
+            surface.byteCount > 0
+        }
+
+        let client = Self.makeLaneClient()
+        let remoteToken = Self.freshToken()
+        surface.markCurrentEnd()
+        let remoteStamped = await stampRemote(
+            remoteToken, federation: federation, through: client
+        )
+        XCTAssertTrue(remoteStamped, "stamping the remote pane was refused")
+
+        let deadline = Date().addingTimeInterval(20)
+        var nextRefresh = Date().addingTimeInterval(HerdrPanelMicIndicator.refreshInterval)
+        while surface.textSinceMark()?.contains(remoteToken) != true {
+            guard Date() < deadline else {
+                fixture.dumpSurfaceFrames(reason: "timed out waiting for the remote token")
+                throw HerdrLaneError.timedOut("the surface to paint the remote token from local row config")
+            }
+            if Date() >= nextRefresh {
+                _ = await stampRemote(remoteToken, federation: federation, through: client)
+                nextRefresh = Date().addingTimeInterval(HerdrPanelMicIndicator.refreshInterval)
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    /// An observer of a stamped pane renders no panel token — sitting next to
+    /// the existing `terminal attach` case. herdr's render loop paints the
+    /// full UI for App-mode clients and only the raw terminal for
+    /// attach/observe clients; this closes the panel-binding doc's
+    /// "documented hope" about `terminal_observe` with a live assertion.
+    func testObserveClientRendersNoPanelToken() async throws {
+        // Version gate only: the observer needs no machine, but this case
+        // ships with the federation tests, so on a pre-0.9 herdr it refuses
+        // with the required version instead of passing vacuously.
+        _ = try fixture.federate()
+        let observeSurface = try fixture.startSurface(
+            name: "observe", mode: .observe, paneID: fixture.info.paneID
+        )
+        // The observer prints a frame record only when the pane's screen
+        // changes, so an idle pane keeps it silent. Type a sentinel first:
+        // seeing it in the records proves the observer is connected to THIS
+        // pane, and its later silence about the token proves something. One
+        // mark covers both: the stamp itself changes no screen bytes, so any
+        // frame in the window shows the pane without the panel.
+        let sentinel = "LVXHERDROBSERVE\(Int.random(in: 100_000...999_999))"
+        observeSurface.markCurrentEnd()
+        _ = try fixture.herdrCLI(["pane", "send-text", fixture.info.paneID, sentinel])
+        do {
+            try await HerdrLaneWait.until("the observer to paint the typed sentinel") {
+                HerdrObserveFrame.visibleTexts(sinceMark: observeSurface)
+                    .joined(separator: "\n").contains(sentinel)
+            }
+        } catch {
+            let raw = observeSurface.textSinceMark() ?? "<surface log unavailable>"
+            print(
+                "[herdr-fixture] OBSERVE DEBUG bytes=\(observeSurface.byteCount) "
+                    + "frames=\(HerdrObserveFrame.visibleTexts(sinceMark: observeSurface).count) "
+                    + "head=\(String(raw.prefix(500)))"
+            )
+            throw error
+        }
+
+        let (service, handle) = try await openForward()
+        defer { handle.close(); service.stopAllForQuit() }
+
+        let client = Self.makeLaneClient()
+        let token = Self.freshToken()
+        fixture.primarySurface.markCurrentEnd()
+
+        let stamped = await stamp(token, through: client, socketPath: handle.localSocketPath)
+        XCTAssertTrue(stamped)
+
+        // Positive control first: the whole-view surface DOES render it, so
+        // the negative below is about observe mode and not about a fixture
+        // that painted nothing at all.
+        try await waitForToken(
+            token,
+            on: fixture.primarySurface,
+            refreshingThrough: client,
+            socketPath: handle.localSocketPath
+        )
+
+        let observed = HerdrObserveFrame.visibleTexts(sinceMark: observeSurface)
+            .joined(separator: "\n")
+        XCTAssertTrue(
+            observed.contains(sentinel),
+            "the observer lost the pane it proved it had: the typed sentinel painted before "
+                + "the stamp is gone from the window, so the negative below would be vacuous"
+        )
+        XCTAssertFalse(
+            observed.contains(token),
+            """
+            A `herdr terminal session observe` client rendered the agents-panel token. \
+            Observers must render only the raw pane, exactly like `terminal attach` \
+            (docs/agent/remote-herdr-panel-binding.md). If this is the new \
+            behavior, the remote-herdr surface authorization argument no \
+            longer holds and must be reworked — do not relax this lane.
+            """
+        )
+    }
+
+    // MARK: - Federation helpers
+
+    private static func federationReader(clientDir: String) -> HerdrMachineFederationReader {
+        HerdrMachineFederationReader(
+            clientDirectories: [URL(fileURLWithPath: clientDir, isDirectory: true)],
+            readFile: HerdrMachineFederationReader.liveReadFile
+        )
+    }
+
+    /// Stamp the REMOTE pane's panel token. Hermetic mode dials the remote
+    /// server's explicit short socket directly (same box); against a real second host the
+    /// stamp travels over ssh instead. Pane ids are scoped to one server, so
+    /// the remote id is only ever used with the remote path.
+    private func stampRemote(
+        _ token: String,
+        federation: HerdrFederationInfo,
+        through client: HerdrSocketClient,
+        ttl: Int = HerdrPanelBindingProbe.tokenTTLMilliseconds
+    ) async -> Bool {
+        if fixture.info.provisionedSSH {
+            return await client.reportPanelToken(
+                socketPath: federation.remoteSocketPath,
+                paneID: federation.remotePaneID,
+                value: token,
+                ttlMilliseconds: ttl
+            )
+        }
+        let remoteCommand = "herdr pane report-metadata "
+            + "\(federation.remotePaneID) --source localvoxtral --token lvmark=\(token) --ttl-ms \(ttl)"
+        let result = try? HerdrLaneProcess.run(
+            executable: URL(fileURLWithPath: "/usr/bin/ssh"),
+            arguments: [
+                "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-T", "--",
+                fixture.info.alias, remoteCommand,
+            ],
+            currentDirectory: repoRoot
+        )
+        return result?.succeeded == true
+    }
+
 }
 
 // MARK: - Test seams
