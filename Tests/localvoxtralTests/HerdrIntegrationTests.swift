@@ -968,7 +968,21 @@ final class HerdrIntegrationTests: XCTestCase {
         // once — the claim this lane retires the whole-view discriminator on
         // — so require a single frame holding both tokens. Both carry the 8 s
         // TTL refreshed seconds ago, so a composed client still shows them.
-        let composedFrame = surface.lastRenderedFrame()
+        // Bounded like the wait above and re-stamped on the product cadence:
+        // a healthy client caught mid-repaint by ONE frame read is a
+        // timing-shaped red, not a finding (review-2 NEW-2).
+        var composedFrame = surface.lastRenderedFrame()
+        let composeDeadline = Date().addingTimeInterval(HerdrPanelMicIndicator.refreshInterval * 2)
+        while !(composedFrame?.contains(localToken) == true && composedFrame?.contains(remoteToken) == true),
+              Date() < composeDeadline {
+            if Date() >= nextRefresh {
+                _ = await stamp(localToken, through: client, socketPath: handle.localSocketPath)
+                _ = await stampRemote(remoteToken, federation: federation, through: client)
+                nextRefresh = Date().addingTimeInterval(HerdrPanelMicIndicator.refreshInterval)
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+            composedFrame = surface.lastRenderedFrame()
+        }
         XCTAssertTrue(
             composedFrame?.contains(localToken) == true
                 && composedFrame?.contains(remoteToken) == true,
@@ -1037,8 +1051,20 @@ final class HerdrIntegrationTests: XCTestCase {
         }
         // Same composition bar as the both-machines cases: one frame must
         // hold the remote token, not merely the cumulative typescript.
+        // Bounded and re-stamped for the same reason as the both-machines
+        // cases (review-2 NEW-2).
+        var rowFrame = surface.lastRenderedFrame()
+        let rowDeadline = Date().addingTimeInterval(HerdrPanelMicIndicator.refreshInterval * 2)
+        while rowFrame?.contains(remoteToken) != true, Date() < rowDeadline {
+            if Date() >= nextRefresh {
+                _ = await stampRemote(remoteToken, federation: federation, through: client)
+                nextRefresh = Date().addingTimeInterval(HerdrPanelMicIndicator.refreshInterval)
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+            rowFrame = surface.lastRenderedFrame()
+        }
         XCTAssertTrue(
-            surface.lastRenderedFrame()?.contains(remoteToken) == true,
+            rowFrame?.contains(remoteToken) == true,
             "the surface never painted the remote token in a single frame; "
                 + "union-over-time would not prove the row renders from the local config"
         )
@@ -1068,8 +1094,7 @@ final class HerdrIntegrationTests: XCTestCase {
         _ = try fixture.herdrCLI(["pane", "send-text", fixture.info.paneID, sentinel])
         do {
             try await HerdrLaneWait.until("the observer to paint the typed sentinel") {
-                HerdrObserveFrame.visibleTexts(sinceMark: observeSurface)
-                    .joined(separator: "\n").contains(sentinel)
+                HerdrObserveFrame.plainTexts(sinceMark: observeSurface).joined().contains(sentinel)
             }
         } catch {
             let raw = observeSurface.textSinceMark() ?? "<surface log unavailable>"
@@ -1107,14 +1132,30 @@ final class HerdrIntegrationTests: XCTestCase {
         // still contain the first sentinel and still lack the token — so
         // without this the negative below would pass vacuously.
         let postStampSentinel = "LVXHERDROBSERVE2\(Int.random(in: 100_000...999_999))"
-        _ = try fixture.herdrCLI(["pane", "send-text", fixture.info.paneID, postStampSentinel])
-        try await HerdrLaneWait.until("the observer to paint the post-stamp sentinel") {
-            HerdrObserveFrame.visibleTexts(sinceMark: observeSurface)
-                .joined(separator: "\n").contains(postStampSentinel)
+        let postStampSend = try fixture.herdrCLI(["pane", "send-text", fixture.info.paneID, postStampSentinel])
+        do {
+            try await HerdrLaneWait.until("the observer to paint the post-stamp sentinel") {
+                HerdrObserveFrame.plainTexts(sinceMark: observeSurface).joined().contains(postStampSentinel)
+            }
+        } catch {
+            // Same diagnostic as the first gate: what the observer DID emit
+            // since the mark, so a silent observer can be told apart from a
+            // decoder that dropped its records.
+            let frames = HerdrObserveFrame.plainTexts(sinceMark: observeSurface)
+            let primarySawIt = fixture.primarySurface.textSinceMark()?.contains(postStampSentinel) == true
+            print(
+                "[herdr-fixture] OBSERVE DEBUG (post-stamp) bytes=\(observeSurface.byteCount) "
+                    + "frames=\(frames.count) primarySurfaceShowsSentinel=\(primarySawIt) "
+                    + "sendTextOutput=\(String(postStampSend.prefix(300))) "
+                    + "lastFrame=\(String((frames.last ?? "").suffix(120)))"
+            )
+            throw error
         }
 
-        let observed = HerdrObserveFrame.visibleTexts(sinceMark: observeSurface)
-            .joined(separator: "\n")
+        // Escape-stripped raw bytes, frames concatenated: what the observer
+        // was SENT, not a screen reconstructed from diff frames (see
+        // `HerdrObserveFrame.plainTexts`).
+        let observed = HerdrObserveFrame.plainTexts(sinceMark: observeSurface).joined()
         XCTAssertTrue(
             observed.contains(sentinel),
             "the observer lost the pane it proved it had: the typed sentinel painted before "

@@ -762,6 +762,68 @@ enum HerdrObserveFrame {
         let bytes: String
     }
 
+    /// The text bytes of every frame record painted since the mark, in
+    /// order, with every escape sequence removed and nothing else interpreted.
+    ///
+    /// The observer is a JSONL stream of DIFF frames, not a screen: a frame
+    /// repaints only the cells that changed, positioned by cursor moves, and
+    /// the shell echoes typed text in chunks. Reconstructing a screen from
+    /// that (`visibleTexts`) is the wrong instrument for "did this text reach
+    /// the observer" — measured on the Mac 2026-09-13: the frame carrying the
+    /// post-stamp sentinel reconstructed to its last ten characters only. A
+    /// sentinel is contiguous ASCII in the byte stream, so stripping the
+    /// escapes and concatenating frames is exact, and a token that is absent
+    /// from the raw bytes is absent from the observer full stop.
+    static func plainTexts(sinceMark surface: HerdrSurfaceLog) -> [String] {
+        frameBytes(sinceMark: surface).map { bytes in
+            String(decoding: Self.strippingEscapes(bytes), as: UTF8.self)
+        }
+    }
+
+    /// CSI (`ESC [ … final`), OSC (`ESC ] … BEL` or `ESC ] … ESC \`), and
+    /// any other `ESC x` pair are removed; everything else passes through.
+    static func strippingEscapes(_ bytes: [UInt8]) -> [UInt8] {
+        var out: [UInt8] = []
+        out.reserveCapacity(bytes.count)
+        var index = 0
+        while index < bytes.count {
+            let byte = bytes[index]
+            guard byte == 0x1B else {
+                out.append(byte)
+                index += 1
+                continue
+            }
+            index += 1
+            guard index < bytes.count else { break }
+            switch bytes[index] {
+            case UInt8(ascii: "["):
+                index += 1
+                while index < bytes.count, !(0x40...0x7E).contains(bytes[index]) { index += 1 }
+                index += 1
+            case UInt8(ascii: "]"):
+                index += 1
+                while index < bytes.count {
+                    if bytes[index] == 0x07 { index += 1; break }
+                    if bytes[index] == 0x1B, index + 1 < bytes.count, bytes[index + 1] == UInt8(ascii: "\\") {
+                        index += 2
+                        break
+                    }
+                    index += 1
+                }
+            default:
+                index += 1
+            }
+        }
+        return out
+    }
+
+    /// Raw frame bytes since the mark, one entry per `terminal.frame` record.
+    static func frameBytes(sinceMark surface: HerdrSurfaceLog) -> [[UInt8]] {
+        records(sinceMark: surface).compactMap { record in
+            Data(base64Encoded: record.bytes, options: .ignoreUnknownCharacters).map(Array.init)
+        }
+    }
+
     /// Visible text of every frame record painted since the mark, in order.
     /// Empty when the observer has not painted yet, which lets the lane wait
     /// for a connected observer instead of asserting about a silent surface.
@@ -771,8 +833,18 @@ enum HerdrObserveFrame {
     /// decoder would drop both halves. A truncated tail record is skipped
     /// until the rest of it arrives.
     static func visibleTexts(sinceMark surface: HerdrSurfaceLog) -> [String] {
+        records(sinceMark: surface).compactMap { record in
+            guard let bytes = Data(base64Encoded: record.bytes, options: .ignoreUnknownCharacters),
+                  let raw = String(data: bytes, encoding: .utf8)
+            else { return nil }
+            return HerdrSurfaceLog.visibleText(raw)
+        }
+    }
+
+    /// Every complete `terminal.frame` record since the mark, brace-matched.
+    private static func records(sinceMark surface: HerdrSurfaceLog) -> [Record] {
         guard let text = surface.textSinceMark() else { return [] }
-        var frames: [String] = []
+        var frames: [Record] = []
         var index = text.startIndex
         while let open = text[index...].firstIndex(of: "{") {
             var depth = 0
@@ -807,11 +879,9 @@ enum HerdrObserveFrame {
             let candidate = String(text[open..<end])
             if let data = candidate.data(using: .utf8),
                 let record = try? JSONDecoder().decode(Record.self, from: data),
-                record.type == "terminal.frame",
-                let bytes = Data(base64Encoded: record.bytes, options: .ignoreUnknownCharacters),
-                let raw = String(data: bytes, encoding: .utf8)
+                record.type == "terminal.frame"
             {
-                frames.append(HerdrSurfaceLog.visibleText(raw))
+                frames.append(record)
             }
             index = end
         }

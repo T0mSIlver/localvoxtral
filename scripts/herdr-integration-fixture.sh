@@ -28,7 +28,9 @@
 #
 # Destination mode leaves the second host's herdr server running by design:
 # teardown closes only the workspace the federation step created
-# (`workspace close <id>` over the same ssh, best-effort, logged) and never
+# (`workspace close <id>` over the same ssh, best-effort, logged; a kill between
+# `workspace create` and the id record leaves that one workspace behind,
+# unrecorded — a workspace, never a stopped server; review-2 NEW-3) and never
 # runs `herdr server stop` there — that server may hold a human's live
 # session. A `workspace create` + `report-agent` residue may briefly remain
 # if the close fails; the server itself is never stopped.
@@ -186,7 +188,9 @@ hold_field() {
 # created destination workspace) even when federation.json was never written.
 record_hold_field() {
   local key="$1" value="$2" tmp
-  [[ -f "$HOLD_MANIFEST" ]] || return 0
+  # Never silent: a federation step with no hold to record into would reopen
+  # the orphan window this record exists to close (review-2 NEW-4).
+  [[ -f "$HOLD_MANIFEST" ]] || die "cannot record $key: no hold manifest at $HOLD_MANIFEST (run \`up\` first)"
   tmp="$(mktemp "${TMPDIR:-/tmp}/lvx-hold.XXXXXX")"
   grep -v "^${key}=" "$HOLD_MANIFEST" > "$tmp" || true
   printf '%s=%s\n' "$key" "$value" >> "$tmp"
@@ -1026,13 +1030,20 @@ $add_out"
   local create_out remote_pane_id remote_workspace_id=""
   local remote_socket="$dir/$FEDERATION_REMOTE_SOCKET_NAME"
   # Destination mode only: snapshot the second host's existing workspaces so
-  # teardown closes ONLY the workspace this step creates. Best-effort — if
-  # the list fails, the close below still runs best-effort against the id
-  # `workspace create` returned.
-  local pre_existing_workspaces=""
+  # teardown closes ONLY the workspace this step creates. FAIL CLOSED: if the
+  # list fails, or does not answer in the JSON shape the guard reads
+  # (`"workspace_id":"…"`), the created id is NOT recorded and teardown
+  # closes nothing — closing a workspace the lane cannot prove it created is
+  # the same harm class as stopping the host's server (review-2 NEW-1).
+  local pre_existing_workspaces="" pre_existing_known=0
   if ! (( hermetic )); then
-    pre_existing_workspaces="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -T -- "$alias_used" \
-      "herdr workspace list" </dev/null 2>&1 || true)"
+    if pre_existing_workspaces="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -T -- "$alias_used" \
+      "herdr workspace list" </dev/null 2>&1)" \
+      && grep -qF '"workspace_id":"' <<<"$pre_existing_workspaces"; then
+      pre_existing_known=1
+    else
+      log "WARNING: could not list the destination's workspaces (or the output was not JSON); teardown will close nothing"
+    fi
   fi
   if (( hermetic )); then
     create_out="$(HERDR_SOCKET_PATH="$remote_socket" XDG_CONFIG_HOME="$remote_home" \
@@ -1054,12 +1065,15 @@ $create_out"
     # (an empty server answers create with its own w1, measured 2026-09-13),
     # there is nothing of ours to close — record nothing.
     remote_workspace_id="$(sed -n 's/.*"workspace_id":"\([^"]*\)".*/\1/p' <<<"$create_out" | head -1)"
-    if [[ -n "$remote_workspace_id" ]] \
+    if [[ -n "$remote_workspace_id" ]] && (( pre_existing_known )) \
       && ! grep -qF "\"workspace_id\":\"$remote_workspace_id\"" <<<"$pre_existing_workspaces" 2>/dev/null; then
       record_hold_field federationRemoteWorkspace "$remote_workspace_id"
       log "remote workspace created: $remote_workspace_id (closed on teardown; the server is left running)"
-    elif [[ -n "$remote_workspace_id" ]]; then
+    elif [[ -n "$remote_workspace_id" ]] && (( pre_existing_known )); then
       log "remote workspace $remote_workspace_id pre-existed; teardown will not close it"
+      remote_workspace_id=""
+    elif [[ -n "$remote_workspace_id" ]]; then
+      log "remote workspace $remote_workspace_id left unrecorded (pre-existing set unknown); teardown will not close it"
       remote_workspace_id=""
     else
       log "WARNING: could not parse a remote workspace id from workspace create output; teardown will close nothing"
@@ -1198,7 +1212,7 @@ close_destination_federation_workspace() {
     return 0
   fi
   if ssh -o BatchMode=yes -o ConnectTimeout=10 -T -- "$target" \
-    "herdr workspace close $workspace" </dev/null >/dev/null 2>&1; then
+    "herdr workspace close '$workspace'" </dev/null >/dev/null 2>&1; then
     log "federated destination workspace $workspace closed on $target (server left running)"
   else
     log "WARNING: could not close destination workspace $workspace on $target; the server was left running by design"
