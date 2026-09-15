@@ -377,7 +377,13 @@ final class RemoteHerdrJoinTests: XCTestCase {
         panelRandomBits: UInt64 = 1,
         panelRandomBitsProvider: HerdrPanelBindingProbe.RandomBits? = nil,
         panelStatuses: PanelStatusRecorder? = nil,
-        indicatorSleepFor: @escaping HerdrPanelMicIndicator.SleepFor = { _ in }
+        indicatorSleepFor: @escaping HerdrPanelMicIndicator.SleepFor = { _ in },
+        herdrClient: Bool = false,
+        federation: HerdrMachineFederation = .notFederated,
+        clientSurfaces: Int? = nil,
+        // When set, the exact-alias seam returns these verbatim, unfiltered:
+        // the arm itself must refuse revoked or alias-less hits.
+        exactHosts: [ClaudeRemoteHost]? = nil
     ) -> ClaudeSessionJoinResolver {
         let hostList = hosts ?? [enrolledHost()]
         let fixedNow = epoch
@@ -387,11 +393,14 @@ final class RemoteHerdrJoinTests: XCTestCase {
             focusedWindowID: { _ in 101 },
             // The surface is NOT a local herdr client: that arm has to have
             // declined before this one is even reached.
-            herdrClientProbe: { _ in false },
+            herdrClientProbe: { _ in herdrClient },
+            herdrFederation: { federation },
+            herdrClientSurfaceCount: { clientSurfaces },
             herdrPanes: panes,
             sshDestinationProbe: { _ in sshResult },
             enrolledHosts: { destination in
-                hostList.filter { host in
+                if let exactHosts { return exactHosts }
+                return hostList.filter { host in
                     guard !host.isRevoked, let alias = host.sshHostAlias else { return false }
                     return alias.lowercased() == destination.lowercased()
                 }
@@ -2022,8 +2031,7 @@ final class RemoteHerdrJoinTests: XCTestCase {
 
     // MARK: Pane screen context over the forward
 
-    func testRemoteHerdrPaneTextIsCapturedAtStartAndReconciledAtStop() async throws {
-        let registry = makeRegistry()
+    func testRemoteHerdrPaneTextIsCapturedAtStartAndReconciledAtStop() async throws {        let registry = makeRegistry()
         ingestRemoteHerdrSession(into: registry)
         let panes = RemoteJoinHerdrPanes(
             focused: focusedPane(),
@@ -2091,6 +2099,537 @@ final class RemoteHerdrJoinTests: XCTestCase {
         // Gated BEFORE the socket, not after: a withheld consent must not
         // produce a request at all.
         XCTAssertEqual(panes.requests.withLock { $0.count }, requestsBefore)
+    }
+
+    // MARK: - The federated herdr arm
+
+    private let federatedTarget = "builder"
+    private let federatedSocketPath = "/home/dev/.config/herdr/herdr.sock"
+
+    private func federatedProfile(
+        target: String? = nil,
+        session: String = HerdrMachineProfile.defaultSessionName
+    ) -> HerdrMachineProfile {
+        HerdrMachineProfile(
+            id: String(repeating: "f", count: 32),
+            label: "federated box",
+            target: target ?? federatedTarget,
+            session: session,
+            enabled: true
+        )
+    }
+
+    private func federatedResolver(
+        registry: ClaudeSessionRegistry,
+        panes: HerdrPaneQuerying?,
+        forwards: (any ClaudeRemoteHerdrForwarding)?,
+        profile: HerdrMachineProfile? = nil,
+        hosts: [ClaudeRemoteHost]? = nil,
+        canonicalizer: SSHDestinationCanonicalizer? = nil,
+        panelMetadata: (any HerdrPanelMetadataReporting)? = nil,
+        panelGrid: String? = nil,
+        panelRandomBits: UInt64 = 23,
+        panelStatuses: PanelStatusRecorder? = nil,
+        clientSurfaces: Int? = 1,
+        federation: HerdrMachineFederation? = nil,
+        exactHosts: [ClaudeRemoteHost]? = nil
+    ) -> ClaudeSessionJoinResolver {
+        resolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            hosts: hosts,
+            canonicalizer: canonicalizer,
+            panelMetadata: panelMetadata,
+            panelGrid: panelGrid,
+            panelRandomBits: panelRandomBits,
+            panelStatuses: panelStatuses,
+            herdrClient: true,
+            federation: federation ?? .showingMachine(profile ?? federatedProfile()),
+            clientSurfaces: clientSurfaces,
+            exactHosts: exactHosts
+        )
+    }
+
+    func testFederatedMachineJoinsWithPanelConfirmationAndARetainedForward() async throws {
+        let profile = federatedProfile()
+        let registry = makeRegistry()
+        ingestRemoteHerdrSession(into: registry, socketPath: federatedSocketPath)
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let forwards = RecordingForwards()
+        let statuses = PanelStatusRecorder()
+        let token = HerdrPanelBindingProbe.token(randomBits: 23)
+
+        let join = try unwrapAsync(await federatedResolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            profile: profile,
+            panelMetadata: panes,
+            panelGrid: "agents  \(token)",
+            panelStatuses: statuses
+        ).resolve(target: ghostty))
+
+        XCTAssertEqual(join.mechanism, .federatedHerdrPane)
+        XCTAssertEqual(
+            join.snapshot.sessionID,
+            ClaudeRemoteSessionScope.scopedSessionID(hostID: hostID, sessionID: "s-remote-1")
+        )
+        XCTAssertEqual(join.herdrPane?.paneID, remotePaneID)
+        XCTAssertEqual(join.herdrPane?.socketPath, forwards.localSocketPath)
+        XCTAssertNotNil(join.remoteHerdrForward, "the stop-side pane read needs the same tunnel")
+        XCTAssertNotNil(join.remoteHerdrIndicator, "the matched token stays lit as the mic indicator")
+        XCTAssertEqual(
+            forwards.opens.withLock { $0 },
+            [RecordingForwards.Opened(alias: "Builder", remoteSocketPath: federatedSocketPath)]
+        )
+        XCTAssertEqual(forwards.closeCount, 0, "a joined forward stays open for the dictation")
+        XCTAssertEqual(statuses.recorded, [.ok])
+        XCTAssertEqual(
+            panes.requests.withLock { $0.map(\.method) },
+            ["pane.current", "pane.process_info"]
+        )
+        XCTAssertTrue(
+            panes.requests.withLock { $0 }.allSatisfy { $0.socketPath == forwards.localSocketPath }
+        )
+        XCTAssertEqual(panes.panelReports.withLock { $0.first?.value }, token)
+    }
+
+    func testFederatedMachineAbstainsWithASecondHerdrSurface() async {
+        let registry = makeRegistry()
+        ingestRemoteHerdrSession(into: registry, socketPath: federatedSocketPath)
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let forwards = RecordingForwards()
+
+        let join = await federatedResolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            panelMetadata: panes,
+            panelGrid: HerdrPanelBindingProbe.token(randomBits: 23),
+            clientSurfaces: 2
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
+        XCTAssertEqual(forwards.openCount, 0)
+        XCTAssertFalse(
+            panes.requests.withLock { $0 }.contains { $0.method == "pane.current" },
+            "an ambiguous selection must not query any herdr socket"
+        )
+    }
+
+    func testFederatedMachineAbstainsWhenItsTargetMatchesNoEnrolledHost() async {
+        let registry = makeRegistry()
+        ingestRemoteHerdrSession(into: registry, socketPath: federatedSocketPath)
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let forwards = RecordingForwards()
+
+        let join = await federatedResolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            profile: federatedProfile(target: "unknown-box"),
+            panelMetadata: panes,
+            panelGrid: HerdrPanelBindingProbe.token(randomBits: 23)
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
+        XCTAssertEqual(forwards.openCount, 0)
+    }
+
+    func testFederatedMachineAbstainsWhenItsTargetMatchesTwoEnrolledHosts() async {
+        let registry = makeRegistry()
+        ingestRemoteHerdrSession(into: registry, socketPath: federatedSocketPath)
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let forwards = RecordingForwards()
+
+        let join = await federatedResolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            hosts: [
+                enrolledHost(alias: "Builder"),
+                enrolledHost(id: "h99999999", alias: "builder"),
+            ],
+            panelMetadata: panes,
+            panelGrid: HerdrPanelBindingProbe.token(randomBits: 23)
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
+        XCTAssertEqual(forwards.openCount, 0)
+    }
+
+    func testFederatedMachineAbstainsWhenTheExactMatchIsRevoked() async {
+        // A withdrawn credential must read as "matches no enrolled host",
+        // never as a join: the arm filters exact-alias hits to non-revoked
+        // hosts with an alias itself, rather than relying on the registry
+        // seam to do it.
+        let registry = makeRegistry()
+        ingestRemoteHerdrSession(into: registry, socketPath: federatedSocketPath)
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let forwards = RecordingForwards()
+
+        let join = await federatedResolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            panelMetadata: panes,
+            panelGrid: HerdrPanelBindingProbe.token(randomBits: 23),
+            exactHosts: [enrolledHost(revoked: true)]
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
+        XCTAssertEqual(forwards.openCount, 0)
+    }
+
+    func testFederatedMachineAbstainsWithNoSessionOnTheSelectedSessionSocket() async {
+        let registry = makeRegistry()
+        ingestRemoteHerdrSession(into: registry, socketPath: "/run/user/1000/herdr/default.sock")
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let forwards = RecordingForwards()
+
+        let join = await federatedResolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            panelMetadata: panes,
+            panelGrid: HerdrPanelBindingProbe.token(randomBits: 23)
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
+        XCTAssertEqual(forwards.openCount, 0)
+        XCTAssertFalse(
+            panes.requests.withLock { $0 }.contains { $0.method == "pane.current" },
+            "a non-matching socket label must not be treated as the selected session"
+        )
+    }
+
+    func testFederatedMachineAbstainsWhenTwoServersAnswerForOneSessionName() async {
+        let registry = makeRegistry()
+        ingestRemoteHerdrSession(
+            into: registry,
+            sessionID: "s-remote-1",
+            socketPath: "/home/dev/.config/herdr/herdr.sock"
+        )
+        ingestRemoteHerdrSession(
+            into: registry,
+            sessionID: "s-remote-2",
+            paneID: "pane-other",
+            socketPath: "/home/dev/.config/herdr-dev/herdr.sock"
+        )
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let forwards = RecordingForwards()
+
+        let join = await federatedResolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            panelMetadata: panes,
+            panelGrid: HerdrPanelBindingProbe.token(randomBits: 23)
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
+        XCTAssertEqual(forwards.openCount, 0)
+        XCTAssertFalse(
+            panes.requests.withLock { $0 }.contains { $0.method == "pane.current" },
+            "two matching socket labels leave the surface ambiguous before any query"
+        )
+    }
+
+    func testFederatedMachineAbstainsWhenTwoSessionsClaimTheFocusedPane() async {
+        let registry = makeRegistry()
+        ingestRemoteHerdrSession(
+            into: registry,
+            sessionID: "s-remote-1",
+            socketPath: federatedSocketPath
+        )
+        ingestRemoteHerdrSession(
+            into: registry,
+            sessionID: "s-remote-2",
+            socketPath: federatedSocketPath
+        )
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let forwards = RecordingForwards()
+
+        let join = await federatedResolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            panelMetadata: panes,
+            panelGrid: HerdrPanelBindingProbe.token(randomBits: 23)
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
+        XCTAssertEqual(forwards.openCount, 1)
+        XCTAssertEqual(forwards.closeCount, 1)
+        XCTAssertTrue(
+            panes.panelReports.withLock { $0 }.isEmpty,
+            "a disputed pane must never be stamped"
+        )
+    }
+
+    func testFederatedMachineAbstainsWhenHerdrsOwnSessionClaimDisagrees() async {
+        let registry = makeRegistry()
+        ingestRemoteHerdrSession(into: registry, socketPath: federatedSocketPath)
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane(claim: "s-somebody-else"))
+        let forwards = RecordingForwards()
+
+        let join = await federatedResolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            panelMetadata: panes,
+            panelGrid: HerdrPanelBindingProbe.token(randomBits: 23)
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
+        XCTAssertEqual(forwards.closeCount, 1)
+        XCTAssertTrue(panes.panelReports.withLock { $0 }.isEmpty)
+    }
+
+    func testFederatedMachineAbstainsWhenTheAgentIsNotForeground() async {
+        let registry = makeRegistry()
+        ingestRemoteHerdrSession(into: registry, socketPath: federatedSocketPath)
+        let panes = RemoteJoinHerdrPanes(
+            focused: focusedPane(),
+            foreground: HerdrPaneForegroundInfo(
+                shellPID: 8000,
+                foregroundProcesses: [HerdrForegroundProcess(pid: 8000, name: "zsh")]
+            )
+        )
+        let forwards = RecordingForwards()
+
+        let join = await federatedResolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            panelMetadata: panes,
+            panelGrid: HerdrPanelBindingProbe.token(randomBits: 23)
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
+        XCTAssertEqual(forwards.closeCount, 1)
+        XCTAssertTrue(panes.panelReports.withLock { $0 }.isEmpty)
+    }
+
+    func testFederatedMachineAbstainsWhenTheStampedTokenDoesNotRender() async {
+        let registry = makeRegistry()
+        ingestRemoteHerdrSession(into: registry, socketPath: federatedSocketPath)
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let forwards = RecordingForwards()
+        let statuses = PanelStatusRecorder()
+
+        let join = await federatedResolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            panelMetadata: panes,
+            panelGrid: "agents panel without the configured row",
+            panelStatuses: statuses
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
+        XCTAssertEqual(statuses.recorded, [.likelyNotConfigured])
+        XCTAssertEqual(forwards.closeCount, 1)
+        // Stamp THEN clear, asserted as a pair: a `last == nil` alone would
+        // also pass when nothing was ever stamped (review-2 NIT-1).
+        let reports = panes.panelReports.withLock { $0 }
+        XCTAssertGreaterThanOrEqual(reports.count, 2, "one stamp and one clear")
+        XCTAssertNotNil(reports.first?.value, "the nonce was stamped before the settle timed out")
+        XCTAssertNil(reports.last?.value, "the nonce is cleared before the forward closes")
+    }
+
+    func testFederatedMachineAbstainsWhenForwardOrPanelCapabilityIsUnavailable() async {
+        // The `--probe-surface` shape: a resolver constructed without the
+        // forward/pane/metadata capabilities must abstain before any spawn —
+        // never open a forward it could not confirm.
+        let registry = makeRegistry()
+        ingestRemoteHerdrSession(into: registry, socketPath: federatedSocketPath)
+
+        let bare = await federatedResolver(
+            registry: registry,
+            panes: nil,
+            forwards: nil
+        ).resolve(target: ghostty)
+        XCTAssertNil(bare)
+
+        // Forward and metadata present but no pane query capability: still no
+        // spawn, and nothing stamped.
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let forwards = RecordingForwards()
+        let unqueryable = await federatedResolver(
+            registry: registry,
+            panes: nil,
+            forwards: forwards,
+            panelMetadata: panes,
+            panelGrid: HerdrPanelBindingProbe.token(randomBits: 23)
+        ).resolve(target: ghostty)
+        XCTAssertNil(unqueryable)
+        XCTAssertEqual(forwards.openCount, 0)
+        XCTAssertTrue(panes.panelReports.withLock { $0 }.isEmpty)
+    }
+
+    func testFederatedMachineAbstainsWhenTheForwardIsUnavailable() async {
+        // A stale socket from a previous herdr boot, still inside the
+        // registry TTL: the forward fails and the arm abstains before any
+        // pane query, let alone a stamp.
+        let registry = makeRegistry()
+        ingestRemoteHerdrSession(into: registry, socketPath: federatedSocketPath)
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let forwards = RecordingForwards(succeeds: false)
+        let statuses = PanelStatusRecorder()
+
+        let join = await federatedResolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            panelMetadata: panes,
+            panelGrid: HerdrPanelBindingProbe.token(randomBits: 23),
+            panelStatuses: statuses
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
+        XCTAssertEqual(forwards.openCount, 1)
+        XCTAssertEqual(forwards.closeCount, 0, "no forward opened, none to close")
+        XCTAssertTrue(
+            panes.requests.withLock { $0 }.isEmpty,
+            "no pane query without a forward"
+        )
+        XCTAssertTrue(panes.panelReports.withLock { $0 }.isEmpty, "nothing stamped")
+        XCTAssertTrue(statuses.recorded.isEmpty)
+    }
+
+    func testFederatedMachineAbstainsWhenTheFocusedPaneOrForegroundIsUnavailable() async {
+        // Every over-the-forward confirmation failing must close the forward
+        // it just opened and stamp nothing.
+        let cases: [(name: String, panes: RemoteJoinHerdrPanes)] = [
+            ("focused pane", RemoteJoinHerdrPanes(focused: nil)),
+            ("foreground query", RemoteJoinHerdrPanes(focused: focusedPane(), foreground: nil)),
+            (
+                "foreground detection",
+                RemoteJoinHerdrPanes(
+                    focused: focusedPane(),
+                    foreground: HerdrPaneForegroundInfo(
+                        shellPID: 8000, foregroundProcesses: nil
+                    )
+                )
+            ),
+        ]
+        for testCase in cases {
+            let registry = makeRegistry()
+            ingestRemoteHerdrSession(into: registry, socketPath: federatedSocketPath)
+            let forwards = RecordingForwards()
+            let statuses = PanelStatusRecorder()
+
+            let join = await federatedResolver(
+                registry: registry,
+                panes: testCase.panes,
+                forwards: forwards,
+                panelMetadata: testCase.panes,
+                panelGrid: HerdrPanelBindingProbe.token(randomBits: 23),
+                panelStatuses: statuses
+            ).resolve(target: ghostty)
+
+            XCTAssertNil(join, testCase.name)
+            XCTAssertEqual(forwards.closeCount, 1, testCase.name)
+            XCTAssertTrue(
+                testCase.panes.panelReports.withLock({ $0 }).isEmpty,
+                "a disputed pane must never be stamped (\(testCase.name))"
+            )
+            XCTAssertTrue(statuses.recorded.isEmpty, testCase.name)
+        }
+    }
+
+    func testFederatedMachineAbstainsWhenTheStampedTokenIsTruncated() async {
+        // A sidebar too narrow for the 17-column token: the row renders a
+        // truncated prefix, which is the OPPOSITE diagnosis from a missing
+        // row — widen the sidebar, do not reconfigure — so
+        // `likelyNotConfigured` must NOT fire, while the token is still
+        // cleared and the forward still closed.
+        let registry = makeRegistry()
+        ingestRemoteHerdrSession(into: registry, socketPath: federatedSocketPath)
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let forwards = RecordingForwards()
+        let statuses = PanelStatusRecorder()
+        let token = HerdrPanelBindingProbe.token(randomBits: 23)
+        // Seven of ten nonce digits survive: below the eight-digit floor.
+        let truncated = "lv-mic-"
+            + String(token.dropFirst(HerdrPanelBindingProbe.tokenPrefix.count).prefix(7)) + "…"
+
+        let join = await federatedResolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            panelMetadata: panes,
+            panelGrid: "agents  \(truncated)",
+            panelStatuses: statuses
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
+        XCTAssertTrue(
+            statuses.recorded.isEmpty,
+            "a truncated row is configured; only settle-timeout reports likelyNotConfigured"
+        )
+        XCTAssertEqual(forwards.closeCount, 1)
+        // Stamp THEN clear, asserted as a pair: a `last == nil` alone would
+        // also pass when nothing was ever stamped (review-2 NIT-1).
+        let reports = panes.panelReports.withLock { $0 }
+        XCTAssertGreaterThanOrEqual(reports.count, 2, "one stamp and one clear")
+        XCTAssertEqual(reports.first?.value, token, "the stamped nonce is the one the grid truncated")
+        XCTAssertNil(reports.last?.value, "the nonce is cleared before the forward closes")
+    }
+
+    func testUnreadableFederationStateStillAbstainsBeforeTheForward() async {
+        let registry = makeRegistry()
+        ingestRemoteHerdrSession(into: registry, socketPath: federatedSocketPath)
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let forwards = RecordingForwards()
+
+        let join = await federatedResolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            panelMetadata: panes,
+            panelGrid: HerdrPanelBindingProbe.token(randomBits: 23),
+            federation: .unreadable
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
+        XCTAssertEqual(forwards.openCount, 0)
+    }
+
+    func testShowingLocalStillTakesTheLocalHerdrArm() async throws {
+        let registry = makeRegistry()
+        registry.ingest(
+            ClaudeHookRecord(
+                event: .sessionStart,
+                sessionID: "s-local",
+                timestamp: epoch.timeIntervalSince1970,
+                rawCwd: "/repo",
+                process: ClaudeHookProcessInfo(
+                    hookPID: 777,
+                    claudePID: 9001,
+                    tty: "/dev/pts/9",
+                    herdrPaneID: remotePaneID,
+                    herdrSocketPath: "/tmp/local-herdr.sock"
+                )
+            ),
+            origin: .localAuthenticated(peerUID: 501)
+        )
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane(claim: "s-local"))
+        let forwards = RecordingForwards()
+
+        let join = try unwrapAsync(await federatedResolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            panelMetadata: panes,
+            panelGrid: HerdrPanelBindingProbe.token(randomBits: 23),
+            federation: .showingLocal
+        ).resolve(target: ghostty))
+
+        XCTAssertEqual(join.mechanism, .herdrPane)
+        XCTAssertEqual(forwards.openCount, 0, "the local arm never opens an ssh forward")
     }
 
     // MARK: Registry filters

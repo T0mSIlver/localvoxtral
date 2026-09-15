@@ -796,6 +796,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // public signature.
             herdrMachineCatalogReading: {
                 HerdrMachineFederationReader.live().catalog()
+            },
+            // The federated panel row is offered only when the live catalog
+            // has an enabled machine. Read at refresh, never cached at launch:
+            // machines can be added, removed, enabled, or disabled while the
+            // app runs.
+            hasEnabledHerdrMachineReport: {
+                switch HerdrMachineFederationReader.live().catalog() {
+                case .catalog(let catalog):
+                    return !catalog.enabledProfiles.isEmpty
+                case .absent, .unreadable:
+                    return false
+                }
             }
         )
 

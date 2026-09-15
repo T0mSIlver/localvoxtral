@@ -38,6 +38,41 @@ public protocol ClaudeRemoteSSHConfigFileSystem: Sendable {
     func atomicWriteConfig(_ data: Data, permissions: UInt16) throws
 }
 
+/// The local herdr config, as the panel-row writer found it.
+public struct ClaudeLocalHerdrConfigState: Sendable, Equatable {
+    public var directoryExists: Bool
+    public var configData: Data?
+    public var configPermissions: UInt16?
+    public var configIsSymlink: Bool
+
+    public init(
+        directoryExists: Bool,
+        configData: Data?,
+        configPermissions: UInt16?,
+        configIsSymlink: Bool = false
+    ) {
+        self.directoryExists = directoryExists
+        self.configData = configData
+        self.configPermissions = configPermissions
+        self.configIsSymlink = configIsSymlink
+    }
+}
+
+/// Filesystem seam for the LOCAL herdr config — the file a federated herdr
+/// 0.9 client reads its agents-panel rows from. Injected so tests can never
+/// reach the real `~/.config/herdr/config.toml`; nil in the service disables
+/// the local panel-row offer entirely.
+public protocol ClaudeLocalHerdrConfigFileSystem: Sendable {
+    func readState() throws -> ClaudeLocalHerdrConfigState
+    func createConfigDirectory(permissions: UInt16) throws
+    /// - Parameter expectedConfigPresent: what `readState` saw. The
+    ///   implementation re-checks the destination immediately before the final
+    ///   rename and refuses when it changed (a planted symlink, a swapped
+    ///   file, or a file appearing where none was): the check-then-write gap
+    ///   is a local-attacker TOCTOU otherwise.
+    func atomicWriteConfig(_ data: Data, permissions: UInt16, expectedConfigPresent: Bool) throws
+}
+
 /// Generates and, after a separate UI confirmation, applies the setup for a
 /// remote Claude Code host. Both mutation paths are injected so tests cannot
 /// reach the real home directory or a real SSH host.
@@ -241,6 +276,18 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         /// Automatic merging would overwrite user intent, so Settings points
         /// to the documented manual placement instead.
         case herdrPanelConfigAlreadyCustomized
+        /// The LOCAL herdr config already contains an agents table or a rows
+        /// key. Same conservative rule as the remote refusal: a federated
+        /// herdr 0.9 client renders the `$lvmark` row from its OWN local
+        /// config (`ClientShellConfig::from_config`), so this is the file the
+        /// enrollment offer patches — and only when it carries no agents
+        /// configuration of the user's to clobber.
+        case localHerdrPanelConfigAlreadyCustomized
+        /// No local herdr config filesystem was injected, which is the default.
+        case localHerdrConfigEditingNotConfigured
+        /// The local herdr config exists but cannot be read as UTF-8, or is a
+        /// symlink a rename would silently replace. Report, never repair.
+        case localHerdrConfigUnreadable
     }
 
     /// Invocation in, result out. The stdin field is load-bearing: the bearer
@@ -288,17 +335,23 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
 
     private let runner: Runner?
     private let sshConfigFileSystem: (any ClaudeRemoteSSHConfigFileSystem)?
+    /// The LOCAL herdr config writer, for the federated client's panel row.
+    /// Nil (the default) disables `configureLocalHerdrPanel`, exactly as a nil
+    /// runner disables every remote action.
+    private let localHerdrConfigFileSystem: (any ClaudeLocalHerdrConfigFileSystem)?
     private let now: @Sendable () -> Date
     private let environmentProbeValue: @Sendable () -> String
 
     public init(
         runner: Runner? = nil,
         sshConfigFileSystem: (any ClaudeRemoteSSHConfigFileSystem)? = nil,
+        localHerdrConfigFileSystem: (any ClaudeLocalHerdrConfigFileSystem)? = nil,
         now: @escaping @Sendable () -> Date = Date.init,
         environmentProbeValue: @escaping @Sendable () -> String = { UUID().uuidString }
     ) {
         self.runner = runner
         self.sshConfigFileSystem = sshConfigFileSystem
+        self.localHerdrConfigFileSystem = localHerdrConfigFileSystem
         self.now = now
         self.environmentProbeValue = environmentProbeValue
     }
@@ -1252,6 +1305,109 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         }
         Log.claudeContext.info("Claude remote herdr panel configuration completed")
         return [ExecutionStep(index: 0, command: "configure herdr agents panel", message: result.message)]
+    }
+
+    // MARK: Local herdr agents-panel configuration (federated 0.9 clients)
+
+    /// The consent sentence for the local panel-row offer. Names the file the
+    /// way the remote one names the channel: one sentence, no commands, no
+    /// config text (owner rule).
+    public static let localHerdrPanelConsentTitle =
+        "Add this exact herdr agents-panel row to this Mac's herdr config?"
+
+    /// One-line status for the row: the app appends the row but cannot reload
+    /// herdr's config itself (the binary's location is not something a GUI app
+    /// can resolve reliably), so the user must apply it in herdr. That
+    /// residual is stated in `docs/agent/remote-herdr-panel-binding.md`.
+    public static let localHerdrPanelReloadStatus =
+        "Added. Reload config in herdr to apply it."
+
+    /// Whether a herdr config's contents already carry an agents
+    /// configuration. The SAME conservative rule the remote patch refuses on,
+    /// ported line-for-line from the remote script's grep: an
+    /// `[ui.sidebar.agents]` table header (optionally followed by a comment)
+    /// or a `rows =` key at any indent.
+    public static func localHerdrPanelConfigIsCustomized(_ content: String) -> Bool {
+        content.split(whereSeparator: \.isNewline).contains { line in
+            let trimmedHeader = line.trimmingCharacters(in: .whitespaces)
+            if trimmedHeader.hasPrefix("[ui.sidebar.agents]") {
+                let after = trimmedHeader.dropFirst("[ui.sidebar.agents]".count)
+                    .trimmingCharacters(in: .whitespaces)
+                return after.isEmpty || after.hasPrefix("#")
+            }
+            let fields = line.split(maxSplits: 1, whereSeparator: { $0 == "=" })
+            guard fields.count == 2 else { return false }
+            return fields[0].trimmingCharacters(in: .whitespaces) == "rows"
+        }
+    }
+
+    /// Appends the agents-panel row block to the LOCAL herdr config — the
+    /// config a federated herdr 0.9 client renders its agents panel from
+    /// (`ClientShellConfig::from_config` reads `config.ui.sidebar.agents` on
+    /// the machine the CLIENT runs on, which for a federated surface is this
+    /// Mac, not the enrolled host).
+    ///
+    /// Same conservative rule as `configureRemoteHerdrPanel`: append the
+    /// three-row block only when the config carries no
+    /// `[ui.sidebar.agents]` table and no `rows` key; refuse — leaving the
+    /// file untouched — and point at the manual placement otherwise. The
+    /// caller must obtain explicit consent immediately before invoking this.
+    ///
+    /// One deliberate difference from the remote path: this does NOT run
+    /// `herdr server reload-config`. The app cannot locate the user's herdr
+    /// binary reliably (a GUI app sees neither the shell's PATH nor the
+    /// install prefix a non-brew install chose), so applying the change is
+    /// the user's one step, and the Settings row says so
+    /// (`localHerdrPanelReloadStatus`).
+    @discardableResult
+    public func configureLocalHerdrPanel() throws -> [ExecutionStep] {
+        guard let localHerdrConfigFileSystem else {
+            throw ServiceError.localHerdrConfigEditingNotConfigured
+        }
+        Log.claudeContext.info("Local herdr panel configuration requested")
+        let state = try localHerdrConfigFileSystem.readState()
+        guard !state.configIsSymlink else { throw ServiceError.localHerdrConfigUnreadable }
+
+        var existing = ""
+        if let data = state.configData {
+            guard let decoded = String(data: data, encoding: .utf8) else {
+                Log.claudeContext.error(
+                    "Local herdr panel configuration failed: config is not valid UTF-8"
+                )
+                throw ServiceError.localHerdrConfigUnreadable
+            }
+            existing = decoded
+        }
+        if Self.localHerdrPanelConfigIsCustomized(existing) {
+            Log.claudeContext.info(
+                "Local herdr panel configuration refused: existing table or rows key; add manually:\n\(Self.herdrPanelConfigSnippet, privacy: .public)"
+            )
+            throw ServiceError.localHerdrPanelConfigAlreadyCustomized
+        }
+
+        // Append, preserving whatever the user's file already ends with so
+        // the TOML stays one document: no gluing a table header onto the last
+        // key's line, and no run of blank lines either.
+        var updated = existing.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !updated.isEmpty { updated += "\n\n" }
+        updated += Self.herdrPanelConfigSnippet + "\n"
+
+        if !state.directoryExists {
+            try localHerdrConfigFileSystem.createConfigDirectory(permissions: 0o755)
+        }
+        try localHerdrConfigFileSystem.atomicWriteConfig(
+            Data(updated.utf8),
+            permissions: state.configPermissions ?? 0o644,
+            expectedConfigPresent: state.configData != nil
+        )
+        Log.claudeContext.info("Local herdr panel configuration completed")
+        return [
+            ExecutionStep(
+                index: 0,
+                command: "configure local herdr agents panel",
+                message: Self.localHerdrPanelReloadStatus
+            )
+        ]
     }
 
     private func execute(

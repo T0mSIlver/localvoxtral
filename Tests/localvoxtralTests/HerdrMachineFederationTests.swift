@@ -308,4 +308,67 @@ final class HerdrMachineFederationTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
         XCTAssertEqual(HerdrMachineFederationReader.liveReadFile(link), .unreadable)
     }
+
+    // MARK: - Session socket classification
+
+    func testSessionSocketClassificationTable() {
+        let defaultSession = HerdrMachineProfile.defaultSessionName
+        let cases: [(path: String, session: String, expected: Bool, note: String)] = [
+            // The default session: `<config dir>/herdr.sock`.
+            ("/home/dev/.config/herdr/herdr.sock", defaultSession, true, "release default"),
+            // A development build keeps the same layout under herdr-dev.
+            ("/home/dev/.config/herdr-dev/herdr.sock", defaultSession, true, "dev default"),
+            ("/home/dev/.local/state/herdr/herdr.sock", defaultSession, true, "state-dir shape"),
+            // A `sessions/` component is herdr's namespace for NAMED sessions,
+            // so these are never the default session's socket.
+            ("/home/dev/.config/herdr/sessions/herdr.sock", defaultSession, false, "sessions dir"),
+            ("/home/dev/.config/herdr/sessions/agents/herdr.sock", defaultSession, false, "named session"),
+            ("/home/dev/.config/herdr-dev/sessions/agents/herdr.sock", defaultSession, false, "dev named"),
+            // A session literally named "default" IS the default session, so
+            // the sessions-namespaced spelling is refused for it.
+            ("/home/dev/.config/herdr/sessions/default/herdr.sock", defaultSession, false, "sessions/default"),
+            // Only the LAST components decide: a `sessions` directory higher
+            // up (an XDG-relocated root, a directory literally named
+            // `sessions`) does not retire the default match.
+            ("/tmp/sessions/relocated/herdr/herdr.sock", defaultSession, true, "sessions above the config dir"),
+            // ...but exactly `sessions/<name>` stays ambiguous and refuses:
+            // it has the named-session shape and no name to check it against.
+            ("/tmp/sessions/herdr/herdr.sock", defaultSession, false, "bare sessions/<name>"),
+            // Normalization before classification: dot-dot, repeated
+            // separators, and a trailing `/.` are the same path herdr wrote.
+            ("/home/dev/.config/herdr/sessions/agents/../agents/herdr.sock", "agents", true, "dot-dot normalizes"),
+            ("//sessions//agents//herdr.sock", "agents", true, "repeated separators collapse"),
+            ("/home/dev/.config/herdr/sessions/agents/herdr.sock/.", "agents", true, "trailing /. normalizes away"),
+            ("/home/dev/.config/herdr/./herdr.sock", defaultSession, true, "dot normalizes"),
+            // Case is significant: herdr writes the paths, and the classifier
+            // may not assume the filesystem's case rules.
+            ("/home/dev/.config/herdr/Sessions/agents/herdr.sock", "agents", false, "Sessions is not sessions"),
+            ("/home/dev/.config/herdr/Sessions/agents/herdr.sock", defaultSession, true, "Sessions is not sessions/<name> either"),
+            // A named session: `<config dir>/sessions/<name>/herdr.sock`.
+            ("/home/dev/.config/herdr/sessions/agents/herdr.sock", "agents", true, "named"),
+            ("/home/dev/.config/herdr-dev/sessions/agents/herdr.sock", "agents", true, "dev named"),
+            // Wrong name, wrong component, or no sessions component at all.
+            ("/home/dev/.config/herdr/sessions/build/herdr.sock", "agents", false, "other name"),
+            ("/home/dev/.config/herdr/sessions/sessions/agents/herdr.sock", "agents", true, "doubled component still ends correctly"),
+            ("/home/dev/.config/herdr/agents/herdr.sock", "agents", false, "no sessions component"),
+            // The session name is herdr's `validate_name`: empty, `.`, `..`,
+            // overlong, and non-charset names classify nothing.
+            ("/home/dev/.config/herdr/sessions/agents/herdr.sock", "", false, "empty session name"),
+            ("/home/dev/.config/herdr/sessions/agents/herdr.sock", ".", false, "dot session name"),
+            ("/home/dev/.config/herdr/sessions/agents/herdr.sock", "..", false, "dot-dot session name"),
+            ("/home/dev/.config/herdr/sessions/agents/herdr.sock", "a gents", false, "session name charset"),
+            ("/home/dev/.config/herdr/sessions/agents/herdr.sock", String(repeating: "a", count: 65), false, "session name length"),
+            // Not a socket path herdr would derive from any session.
+            ("/home/dev/.config/herdr/herdr-client.sock", defaultSession, false, "client socket"),
+            ("/home/dev/.config/herdr", defaultSession, false, "no socket file name"),
+            ("herdr.sock", defaultSession, false, "bare file name"),
+        ]
+        for testCase in cases {
+            XCTAssertEqual(
+                HerdrSessionSocket.isSocket(testCase.path, ofSessionNamed: testCase.session),
+                testCase.expected,
+                "\(testCase.note): \(testCase.path) for session \(testCase.session)"
+            )
+        }
+    }
 }

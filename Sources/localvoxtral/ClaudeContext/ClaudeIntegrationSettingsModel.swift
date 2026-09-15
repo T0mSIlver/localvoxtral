@@ -388,6 +388,7 @@ public final class ClaudeIntegrationSettingsModel {
         case updateRemotePlugin(hostID: String)
         case updateHost(hostID: String)
         case configureHerdrPanel(hostID: String)
+        case configureLocalHerdrPanel
     }
 
     public struct EnrollmentConfirmation: Identifiable, Equatable, Sendable {
@@ -473,6 +474,13 @@ public final class ClaudeIntegrationSettingsModel {
     /// Set by the join probe after a successful stamp whose value never
     /// appeared in the focused grid. This is inferential, not a config read.
     var herdrPanelStatus: HerdrPanelConfigurationStatus = .ok
+    /// Whether the live herdr machine catalog has an enabled machine. The
+    /// federated panel row is offered only in that state; refreshed with the
+    /// rest of the pane.
+    public private(set) var hasEnabledHerdrMachine = false
+    /// The local panel-row action's one-line outcome. Set only after the
+    /// action runs; cleared when a new local panel offer is requested.
+    public private(set) var localHerdrPanelResult: String?
     /// The plain-ssh join's setup step, refreshed with the rest of the pane.
     var shellSetupStatus = ClaudeShellSetupStatus()
 
@@ -580,6 +588,10 @@ public final class ClaudeIntegrationSettingsModel {
     /// disk; production passes the live reader's `catalog()` at the
     /// construction site, and the default is absent (no machines).
     private let herdrMachineCatalogReading: @Sendable () -> HerdrMachineCatalogReading
+    /// Whether the live herdr machine catalog currently has an enabled
+    /// machine. Injected so tests pin the federated row's visibility without
+    /// reading herdr's state files.
+    private let hasEnabledHerdrMachineReport: @Sendable () -> Bool
     private let listener: (any ClaudeRemoteListenerControlling)?
     private let pluginService: @Sendable () -> any ClaudePluginInstalling
     private let enrollmentService: ClaudeRemoteEnrollmentService
@@ -687,7 +699,8 @@ public final class ClaudeIntegrationSettingsModel {
         herdrPaneReportingHostIDs: @escaping @Sendable () -> [String] = { [] },
         herdrMachineCatalogReading: @escaping @Sendable () -> HerdrMachineCatalogReading = {
             .absent
-        }
+        },
+        hasEnabledHerdrMachineReport: @escaping @Sendable () -> Bool = { false }
     ) {
         self.loginShell = loginShell
         self.shellRCWriter = shellRCWriter
@@ -701,6 +714,8 @@ public final class ClaudeIntegrationSettingsModel {
         self.herdrPresenceReport = herdrPresenceReport
         self.herdrPaneReportingHostIDs = herdrPaneReportingHostIDs
         self.herdrMachineCatalogReading = herdrMachineCatalogReading
+        self.hasEnabledHerdrMachineReport = hasEnabledHerdrMachineReport
+        hasEnabledHerdrMachine = hasEnabledHerdrMachineReport()
         // m8: reserve the herdr row's visibility synchronously — the binary
         // check is a fast PATH scan, so herdr machines paint the row on
         // first paint instead of gaining it one beat late. The session half
@@ -1328,6 +1343,7 @@ public final class ClaudeIntegrationSettingsModel {
         refreshStatuslineStatus()
         refreshOpencodeStatus()
         isHerdrDetected = herdrBinaryAvailable() || herdrPresenceReport()
+        hasEnabledHerdrMachine = hasEnabledHerdrMachineReport()
         refreshHerdrPaneHostLabels()
     }
 
@@ -1658,6 +1674,20 @@ public final class ClaudeIntegrationSettingsModel {
         Log.claudeContext.info("Claude remote herdr panel configuration confirmation requested")
     }
 
+    public func requestLocalHerdrPanelConfiguration() {
+        guard !isPerformingEnrollmentAction, hasEnabledHerdrMachine else { return }
+        enrollmentStepStatuses = []
+        enrollmentResultsAction = nil
+        localHerdrPanelResult = nil
+        enrollmentConfirmation = EnrollmentConfirmation(
+            action: .configureLocalHerdrPanel,
+            title: ClaudeRemoteEnrollmentService.localHerdrPanelConsentTitle,
+            preview: ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet,
+            confirmButtonTitle: "Confirm configuration"
+        )
+        Log.claudeContext.info("Claude local herdr panel configuration confirmation requested")
+    }
+
     public func cancelEnrollmentActionConfirmation() {
         enrollmentConfirmation = nil
     }
@@ -1673,6 +1703,8 @@ public final class ClaudeIntegrationSettingsModel {
             await performSetupRun(confirmation)
         case .configureHerdrPanel:
             await performHerdrPanelConfiguration(confirmation)
+        case .configureLocalHerdrPanel:
+            await performLocalHerdrPanelConfiguration(confirmation)
         }
     }
 
@@ -1737,7 +1769,7 @@ public final class ClaudeIntegrationSettingsModel {
             // Routed to performPluginUpdate: that action belongs to a host row,
             // has no plan and no token, and must not run against one.
             return
-        case .configureHerdrPanel:
+        case .configureHerdrPanel, .configureLocalHerdrPanel:
             return
         }
         enrollmentConfirmation = nil
@@ -1777,6 +1809,33 @@ public final class ClaudeIntegrationSettingsModel {
         guard hosts.contains(where: { $0.id == hostID }) else { return }
         publish(attempt, action: confirmation.action)
         if attempt.failure == nil { herdrPanelStatus = .ok }
+    }
+
+    private func performLocalHerdrPanelConfiguration(_ confirmation: EnrollmentConfirmation) async {
+        // Re-check the offer gate at perform time, not just at request time:
+        // a machine disabled between consent and confirm must not be written
+        // for. The report is live (production re-reads the catalog per call),
+        // never the cached row value.
+        guard case .configureLocalHerdrPanel = confirmation.action,
+              hasEnabledHerdrMachineReport()
+        else { return }
+        enrollmentConfirmation = nil
+        isPerformingEnrollmentAction = true
+        enrollmentStepStatuses = []
+        enrollmentResultsAction = nil
+        localHerdrPanelResult = nil
+        defer { isPerformingEnrollmentAction = false }
+
+        let service = enrollmentService
+        let attempt = await performEnrollmentAsync {
+            try service.configureLocalHerdrPanel()
+        }
+        publish(attempt, action: confirmation.action)
+        if attempt.failure == nil {
+            herdrPanelStatus = .ok
+            localHerdrPanelResult = attempt.steps.first?.message
+                ?? ClaudeRemoteEnrollmentService.localHerdrPanelReloadStatus
+        }
     }
 
     private func performSetupRun(_ confirmation: EnrollmentConfirmation) async {
@@ -2103,6 +2162,15 @@ public final class ClaudeIntegrationSettingsModel {
                     detail: attempt.steps.first?.message ?? ""
                 )
             ]
+        case .configureLocalHerdrPanel:
+            enrollmentStepStatuses = [
+                EnrollmentStepStatus(
+                    id: 0,
+                    text: "Configured the local herdr agents panel.",
+                    succeeded: true,
+                    detail: attempt.steps.first?.message ?? ""
+                )
+            ]
         case .setupHost, .updateHost:
             break
         }
@@ -2115,6 +2183,7 @@ public final class ClaudeIntegrationSettingsModel {
         case .updateRemotePlugin: return "Remote Claude Code plugin"
         case .updateHost: return "Remote host update"
         case .configureHerdrPanel: return "Remote herdr panel"
+        case .configureLocalHerdrPanel: return "Local herdr panel"
         }
     }
 
@@ -2342,8 +2411,10 @@ public final class ClaudeIntegrationSettingsModel {
             var text = "Remote setup failed."
             if case .updateRemotePlugin = action { text = "Plugin update failed." }
             if case .configureHerdrPanel = action { text = "Herdr panel setup failed." }
+            if case .configureLocalHerdrPanel = action { text = "Local herdr panel setup failed." }
             let detail: String
-            if failure.serviceError == .herdrPanelConfigAlreadyCustomized {
+            if failure.serviceError == .herdrPanelConfigAlreadyCustomized
+                || failure.serviceError == .localHerdrPanelConfigAlreadyCustomized {
                 detail = "Open Details for the manual herdr configuration."
             } else {
                 detail = failure.describedError
@@ -2373,6 +2444,7 @@ public final class ClaudeIntegrationSettingsModel {
         var subject = "SSH setup"
         if case .updateRemotePlugin = action { subject = "Plugin update" }
         if case .configureHerdrPanel = action { subject = "Herdr panel setup" }
+        if case .configureLocalHerdrPanel = action { subject = "Local herdr panel setup" }
         switch failure.serviceError {
         case .commandTimedOut(_, _, let seconds, let message):
             let output = message.isEmpty ? "" : "\n\n\(message)"
@@ -2400,6 +2472,14 @@ public final class ClaudeIntegrationSettingsModel {
         case .herdrPanelConfigAlreadyCustomized:
             return "The remote herdr config already has an agents table or rows key, so "
                 + "localvoxtral left it unchanged. Open Details for the manual remedy."
+        case .localHerdrPanelConfigAlreadyCustomized:
+            return "This Mac's herdr config already has an agents table or rows key, so "
+                + "localvoxtral left it unchanged. Open Details for the manual remedy."
+        case .localHerdrConfigEditingNotConfigured:
+            return "Editing this Mac's herdr config is not available in this build."
+        case .localHerdrConfigUnreadable:
+            return "This Mac's herdr config could not be read safely, so localvoxtral "
+                + "left it unchanged. Open Details for the manual remedy."
         case .none:
             return failure.describedError
         }

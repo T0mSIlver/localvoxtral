@@ -326,6 +326,61 @@ Three consequences for the mechanism above:
    still answers for such a server, so a focused pane is no longer evidence
    that anyone is looking at it. Issue #286 is the local arm's version of this.
 
+## Federated arm: `.federatedHerdrPane`
+
+Implemented for issue #288, Part B. This arm runs only after a surface TTY
+positively binds to a local herdr client and herdr's selection state names a
+remote machine. It replaces the #290 `.showingMachine` abstention with a
+deterministic resolution; there is no surface ssh here, so the argv-based
+`.remoteHerdrPane` arm cannot apply. The shared pane-confirmation helper is a
+behavior- and string-preserving refactor into `confirmRemoteHerdrPane` with no
+argv semantics changed.
+
+The fail-closed sequence is:
+
+1. Require one herdr client surface. The selection is per user, not per
+   client.
+2. Resolve the profile target to exactly one non-revoked enrolled host with an
+   alias: exact alias equality first, then `ssh -G` canonicalization. Saved
+   `ssh://user@host:port` targets are accepted at the canonicalizer, which
+   still lets `ssh -G` do the parsing.
+3. Keep only live sessions whose socket path has the shape of the profile's
+   herdr session: the default session is `<dir>/herdr.sock` with no
+   `sessions/` component; a named session ends in
+   `/sessions/<name>/herdr.sock`. Exactly one distinct socket path may remain.
+4. Open the app-managed forward with the stored alias, then apply the shared
+   over-the-forward confirmations: exactly one candidate claims the focused
+   pane, herdr's `agent_session` claim does not disagree, and the registered
+   agent is foreground.
+5. Stamp that one pane once and require the fresh token in the focused grid.
+   The token proves a whole-view client federates the stamped server; it does
+   not select the machine, and it does not prove the selection is fresh — a
+   token stamped on machine B renders while the surface shows A, so a lagging
+   selection file still joins B (the #286 wrong-join shape). That lag is
+   bounded by the lone-surface rule and herdr's own selection writes (every
+   switch and every `machine remove/disable` rewrite the selection file; a
+   failed write is only a warning); closing it needs an upstream
+   active-endpoint report on the socket. On a match,
+   the join carries the forward and mic-indicator lease. On a miss, the arm
+   clears the token, closes the forward, and abstains with its own
+   content-free `federated-herdr` cause.
+
+Diagnosability mirrors the remote arm. The probe's own `remoteHerdrPanel:`
+cause is still tapped, while the arm adds `federated-herdr:
+federated-panel-not-rendered (<probe cause>)`. Only a settle timeout reports
+`likelyNotConfigured`, and it points at the LOCAL config: a federated client
+renders rows from this Mac's `~/.config/herdr/config.toml` (`herdr-dev` for a
+dev build). The local offer appends the same three-row block only when no
+`[ui.sidebar.agents]` table or `rows` key exists, and refuses otherwise. It
+does not run `herdr server reload-config` because the app cannot reliably
+locate the user's herdr binary; the Settings row says to reload config in
+herdr. That reload gap is the residual.
+
+Mechanism handling follows the remote arm: `pane.read` of exactly the joined
+pane, no raw AX attachment, forward/indicator ownership in the view model, and
+`federatedHerdrPane` in `ClaudeSessionJoinSummary` for the dogfood record and
+`--probe-surface`.
+
 ## Out of scope (recorded follow-ups)
 
 - Per-socket distinct nonces to lift the single-socket-per-host abstention.

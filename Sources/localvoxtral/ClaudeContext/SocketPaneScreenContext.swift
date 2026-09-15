@@ -172,8 +172,8 @@ enum SocketPaneScreenContext {
         resolver: ClaudeSessionJoinResolver
     ) async -> String? {
         switch join.mechanism {
-        case .herdrPane, .remoteHerdrPane:
-            // One route for both herdr arms: a remote herdr differs only in
+        case .herdrPane, .remoteHerdrPane, .federatedHerdrPane:
+            // One route for every herdr arm: a remote herdr differs only in
             // WHERE its socket is — the local end of an app-managed `ssh -L`,
             // captured in the same binding — so the request, the sanitizing and
             // the caps are identical.

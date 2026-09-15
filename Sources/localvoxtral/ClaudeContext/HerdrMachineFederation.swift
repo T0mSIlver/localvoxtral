@@ -44,6 +44,101 @@ enum HerdrMachineFederation: Sendable, Equatable {
     }
 }
 
+/// Whether a socket path is the API socket of one named herdr session.
+///
+/// herdr derives the socket from the session name alone
+/// (`src/session.rs::api_socket_path_for` → `data_dir_for`): the default
+/// session keeps it at `<config dir>/herdr.sock`, a named one at
+/// `<config dir>/sessions/<name>/herdr.sock`. A federated machine names its
+/// session in the profile, and the sessions it hosts publish
+/// `HERDR_SOCKET_PATH` — this is the pure classification that reconciles the
+/// two, so the federated join arm can keep only the candidates that live on
+/// the machine the client is showing.
+///
+/// Every input is lexically normalized before splitting (see
+/// `normalizedSocketPath`), and the single-socket count in the arm is computed
+/// over those normalized paths: two spellings of one server must count as one,
+/// and one spelling must never join as another.
+///
+/// The default session refuses the trailing `sessions` namespace: a socket
+/// sitting directly in a `sessions` directory or in `sessions/<name>` is
+/// never the default session's socket in any herdr configuration. A
+/// `sessions` component HIGHER up (an XDG-relocated root, a directory
+/// literally named `sessions`) does not retire the default match — only the
+/// last components decide. A session literally named "default" IS the
+/// default session (`src/session.rs::normalize_name` maps it to the bare
+/// `<config dir>/herdr.sock`), so `…/sessions/default/herdr.sock` is refused
+/// for it.
+///
+/// The comparison is case-sensitive on the normalized string: herdr writes
+/// these paths, and a classifier may not assume the filesystem's case rules.
+enum HerdrSessionSocket {
+    static let socketFileName = "herdr.sock"
+    static let sessionsDirectoryName = "sessions"
+    /// herdr's `validate_name` (`src/session.rs`): ASCII letters, numbers,
+    /// `.`, `_`, `-`; non-empty, at most 64 bytes, never `.` or `..`.
+    static let maximumSessionNameBytes = 64
+
+    /// Lexically standardized path: collapses `.`, `..`, and `//`, and drops
+    /// a trailing `/` or `/.`. Pure string work with no filesystem access, so
+    /// an attacker-shaped `HERDR_SOCKET_PATH` label cannot make this touch the
+    /// disk. Case is preserved (see above).
+    static func normalizedSocketPath(_ path: String) -> String {
+        let isAbsolute = path.hasPrefix("/")
+        var components: [Substring] = []
+        for component in path.split(separator: "/", omittingEmptySubsequences: false) {
+            switch component {
+            case "", ".":
+                continue
+            case "..":
+                if !components.isEmpty { components.removeLast() }
+            default:
+                components.append(component)
+            }
+        }
+        let joined = components.joined(separator: "/")
+        return isAbsolute ? "/" + joined : joined
+    }
+
+    /// herdr's `validate_name`, mirrored so a profile session name that herdr
+    /// itself would refuse cannot classify any socket.
+    static func isValidSessionName(_ name: String) -> Bool {
+        guard !name.isEmpty,
+              name != ".",
+              name != "..",
+              name.utf8.count <= maximumSessionNameBytes
+        else { return false }
+        return name.allSatisfy {
+            $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "_" || $0 == "-")
+        }
+    }
+
+    /// The socket path of the session named `sessionName`, or nil when the
+    /// path does not follow herdr's layout for that session.
+    static func isSocket(
+        _ path: String,
+        ofSessionNamed sessionName: String
+    ) -> Bool {
+        let normalized = normalizedSocketPath(path)
+        guard normalized.hasPrefix("/") else { return false }
+        let components = normalized.split(separator: "/", omittingEmptySubsequences: true)
+        guard components.last == Substring(socketFileName) else { return false }
+        // Rebased to zero-based indices: the slice keeps the split's own.
+        let directory = Array(components.dropLast())
+
+        if sessionName == HerdrMachineProfile.defaultSessionName {
+            // Not a shape herdr writes for any session, and never the default
+            // one — refused fail-closed.
+            return !(directory.last == Substring(sessionsDirectoryName)
+                || (directory.count >= 2
+                    && directory[directory.count - 2] == Substring(sessionsDirectoryName)))
+        }
+        guard isValidSessionName(sessionName), directory.count >= 2 else { return false }
+        return directory[directory.count - 2] == Substring(sessionsDirectoryName)
+            && directory[directory.count - 1] == Substring(sessionName)
+    }
+}
+
 /// One saved machine, as `herdr machine add` recorded it. The fields are the
 /// ones `herdr machine list --json` prints; the catalog holds nothing else
 /// (no credentials, no key material, no control sockets).

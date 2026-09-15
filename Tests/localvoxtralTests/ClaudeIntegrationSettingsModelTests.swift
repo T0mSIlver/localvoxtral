@@ -251,6 +251,29 @@ private final class SetupFlowRecorder: @unchecked Sendable {
     var all: [ClaudeRemoteEnrollmentService.Invocation] { invocations.withLock { $0 } }
 }
 
+private final class LocalPanelMemoryFileSystem: ClaudeLocalHerdrConfigFileSystem, @unchecked Sendable {
+    var state: ClaudeLocalHerdrConfigState
+    var writes: [(data: Data, permissions: UInt16, expectedConfigPresent: Bool)] = []
+
+    init(state: ClaudeLocalHerdrConfigState) {
+        self.state = state
+    }
+
+    func readState() throws -> ClaudeLocalHerdrConfigState {
+        state
+    }
+
+    func createConfigDirectory(permissions: UInt16) throws {
+        state.directoryExists = true
+    }
+
+    func atomicWriteConfig(_ data: Data, permissions: UInt16, expectedConfigPresent: Bool) throws {
+        writes.append((data, permissions, expectedConfigPresent))
+        state.configData = data
+        state.configPermissions = permissions
+    }
+}
+
 @MainActor
 final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     private func makeRegistry() throws -> ClaudeRemoteHostRegistry {
@@ -280,7 +303,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         liveLocalTTYReport: @escaping @Sendable () -> ClaudeShellSetupStatus.CrossingState = {
             .noSessions
         },
-        herdrPaneReportingHostIDs: @escaping @Sendable () -> [String] = { [] }
+        herdrPaneReportingHostIDs: @escaping @Sendable () -> [String] = { [] },
+        hasEnabledHerdrMachineReport: @escaping @Sendable () -> Bool = { false }
     ) -> ClaudeIntegrationSettingsModel {
         ClaudeIntegrationSettingsModel(
             registry: registry,
@@ -324,7 +348,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             loginShell: loginShell,
             shellRCWriter: shellRCWriter,
             liveLocalTTYReport: liveLocalTTYReport,
-            herdrPaneReportingHostIDs: herdrPaneReportingHostIDs
+            herdrPaneReportingHostIDs: herdrPaneReportingHostIDs,
+            hasEnabledHerdrMachineReport: hasEnabledHerdrMachineReport
         )
     }
 
@@ -857,6 +882,145 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
                 == true
         )
         XCTAssertTrue(model.alert?.detail.contains("Open Details") == true)
+    }
+
+    // MARK: - Local federated herdr panel offer
+
+    func testLocalHerdrPanelOfferConfiguresTheRowAndReportsReload() async throws {
+        let fileSystem = LocalPanelMemoryFileSystem(
+            state: ClaudeLocalHerdrConfigState(
+                directoryExists: false,
+                configData: nil,
+                configPermissions: nil
+            )
+        )
+        let service = ClaudeRemoteEnrollmentService(
+            localHerdrConfigFileSystem: fileSystem
+        )
+        let model = makeModel(
+            registry: nil,
+            listener: nil,
+            enrollmentService: service,
+            hasEnabledHerdrMachineReport: { true }
+        )
+        await model.refreshIntegrationsStatuses()
+        XCTAssertTrue(model.hasEnabledHerdrMachine)
+
+        model.requestLocalHerdrPanelConfiguration()
+
+        let confirmation = try XCTUnwrap(model.enrollmentConfirmation)
+        XCTAssertEqual(confirmation.action, .configureLocalHerdrPanel)
+        XCTAssertEqual(
+            confirmation.title,
+            ClaudeRemoteEnrollmentService.localHerdrPanelConsentTitle
+        )
+        XCTAssertEqual(
+            confirmation.preview,
+            ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet
+        )
+
+        await model.confirmEnrollmentAction()
+
+        XCTAssertEqual(model.enrollmentResultsAction, .configureLocalHerdrPanel)
+        XCTAssertEqual(
+            model.enrollmentStepStatuses.first?.text,
+            "Configured the local herdr agents panel."
+        )
+        XCTAssertEqual(
+            model.localHerdrPanelResult,
+            ClaudeRemoteEnrollmentService.localHerdrPanelReloadStatus
+        )
+        XCTAssertEqual(model.herdrPanelStatus, .ok)
+        XCTAssertEqual(fileSystem.writes.count, 1)
+    }
+
+    func testLocalHerdrPanelOfferRefusesACustomizedConfig() async throws {
+        let original = "[ui.sidebar.agents]\nrows = [[\"state_icon\"]]\n"
+        let fileSystem = LocalPanelMemoryFileSystem(
+            state: ClaudeLocalHerdrConfigState(
+                directoryExists: true,
+                configData: Data(original.utf8),
+                configPermissions: 0o644
+            )
+        )
+        let service = ClaudeRemoteEnrollmentService(
+            localHerdrConfigFileSystem: fileSystem
+        )
+        let model = makeModel(
+            registry: nil,
+            listener: nil,
+            enrollmentService: service,
+            hasEnabledHerdrMachineReport: { true }
+        )
+        model.herdrPanelStatus = .likelyNotConfigured
+
+        model.requestLocalHerdrPanelConfiguration()
+        await model.confirmEnrollmentAction()
+
+        XCTAssertEqual(model.herdrPanelStatus, .likelyNotConfigured)
+        XCTAssertEqual(
+            model.enrollmentStepStatuses.first?.text,
+            "Local herdr panel setup failed."
+        )
+        XCTAssertEqual(
+            model.enrollmentStepStatuses.first?.detail,
+            "Open Details for the manual herdr configuration."
+        )
+        XCTAssertEqual(
+            model.alert?.title,
+            "Local herdr panel"
+        )
+        XCTAssertTrue(fileSystem.writes.isEmpty)
+    }
+
+    func testLocalHerdrPanelOfferIsUnavailableWithoutAnEnabledMachine() async {
+        let model = makeModel(
+            registry: nil,
+            listener: nil,
+            hasEnabledHerdrMachineReport: { false }
+        )
+        await model.refreshIntegrationsStatuses()
+
+        XCTAssertFalse(model.hasEnabledHerdrMachine)
+        model.requestLocalHerdrPanelConfiguration()
+        XCTAssertNil(model.enrollmentConfirmation)
+    }
+
+    /// The offer gate is re-checked at perform time, not just at request time.
+    private final class EnabledMachineBox: @unchecked Sendable {
+        var value = true
+    }
+
+    func testLocalHerdrPanelOfferRechecksTheEnabledMachineAtPerformTime() async throws {
+        let enabled = EnabledMachineBox()
+        let fileSystem = LocalPanelMemoryFileSystem(
+            state: ClaudeLocalHerdrConfigState(
+                directoryExists: false,
+                configData: nil,
+                configPermissions: nil
+            )
+        )
+        let service = ClaudeRemoteEnrollmentService(
+            localHerdrConfigFileSystem: fileSystem
+        )
+        let model = makeModel(
+            registry: nil,
+            listener: nil,
+            enrollmentService: service,
+            hasEnabledHerdrMachineReport: { enabled.value }
+        )
+        await model.refreshIntegrationsStatuses()
+        XCTAssertTrue(model.hasEnabledHerdrMachine)
+
+        model.requestLocalHerdrPanelConfiguration()
+        XCTAssertNotNil(model.enrollmentConfirmation)
+
+        // The last enabled machine is disabled between consent and confirm.
+        enabled.value = false
+        await model.confirmEnrollmentAction()
+
+        XCTAssertTrue(fileSystem.writes.isEmpty, "no write after the gate closed")
+        XCTAssertNil(model.localHerdrPanelResult)
     }
 
     func testANewEnrollmentSheetDoesNotInheritThePreviousHostsStepResults() async throws {
