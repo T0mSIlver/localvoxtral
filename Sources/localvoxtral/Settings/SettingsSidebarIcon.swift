@@ -48,11 +48,18 @@ extension TerminalAppDescriptor {
 @MainActor
 enum SettingsBrandMarks {
     private static var brandCache: [String: NSImage] = [:]
+    /// Marks that failed to load. The bundle cannot change under a running
+    /// app, so a miss is remembered: rows re-render on every hover, and the
+    /// failure is logged once instead of on each pass.
+    private static var brandMisses: Set<String> = []
     private static var appIconCache: [String: NSImage] = [:]
 
     static func image(resourceName: String) -> NSImage? {
         if let cached = brandCache[resourceName] {
             return cached
+        }
+        if brandMisses.contains(resourceName) {
+            return nil
         }
         guard
             let url = Bundle.localvoxtralResources.url(
@@ -60,6 +67,7 @@ enum SettingsBrandMarks {
             ),
             let image = NSImage(contentsOf: url)
         else {
+            brandMisses.insert(resourceName)
             Log.config.error(
                 "Settings brand mark \(resourceName, privacy: .public).svg did not load"
             )
@@ -90,6 +98,7 @@ enum SettingsBrandMarks {
     #if DEBUG
     static func resetCachesForTesting() {
         brandCache.removeAll()
+        brandMisses.removeAll()
         appIconCache.removeAll()
     }
     #endif

@@ -85,6 +85,14 @@ final class SettingsSidebarIconTests: XCTestCase {
         }
     }
 
+    func testMissingMarkStaysMissingAcrossRenders() {
+        XCTAssertNil(SettingsBrandMarks.image(resourceName: "BrandIcon-not-bundled"))
+        XCTAssertNil(
+            SettingsBrandMarks.image(resourceName: "BrandIcon-not-bundled"),
+            "a remembered miss still answers nil, not a stale or placeholder image"
+        )
+    }
+
     /// A mark nobody shows is dead weight in the bundle, and a mark a row
     /// names but the bundle lacks falls back to a placeholder silently.
     func testBundledMarksAreExactlyTheOnesTheSidebarNames() {
