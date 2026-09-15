@@ -339,13 +339,61 @@ final class IntegrationsSettingsModelTests: XCTestCase {
     // MARK: - Probe ordering
 
     @MainActor
-    func testHerdrCandidatesProbePathBeforeHomeLocalBin() {
+    func testHerdrCandidatesProbePathBeforeTheKnownInstallDirectories() {
         let candidates = ClaudeHerdrAvailability.herdrCandidates(environment: [
             "PATH": "/usr/bin:/bin",
             "HOME": "/Users/someone",
         ])
         XCTAssertEqual(candidates, [
-            "/usr/bin/herdr", "/bin/herdr", "/Users/someone/.local/bin/herdr",
+            "/usr/bin/herdr", "/bin/herdr",
+            "/Users/someone/.local/bin/herdr",
+            "/opt/homebrew/bin/herdr",
+            "/usr/local/bin/herdr",
+            "/Users/someone/.nix-profile/bin/herdr",
+            "/nix/var/nix/profiles/default/bin/herdr",
+            "/run/current-system/sw/bin/herdr",
+        ])
+    }
+
+    /// Field finding 2026-09-15: the owner's Mac has herdr from Homebrew at
+    /// `/opt/homebrew/bin`, which a GUI app's PATH (`/usr/bin:/bin:/usr/sbin:
+    /// /sbin`) never contains, so the Integrations pane said "Not found." The
+    /// fixed directories are the ones herdr itself probes on a remote Mac
+    /// (`src/remote/attach.rs`, 0.9.0): Homebrew, /usr/local, Nix.
+    @MainActor
+    func testHerdrProbeFindsAHomebrewHerdrOutsideTheGUIPATH() {
+        let guiEnvironment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": "/Users/someone"]
+        XCTAssertTrue(ClaudeHerdrAvailability.isHerdrBinaryAvailable(
+            environment: guiEnvironment,
+            isExecutable: { $0 == "/opt/homebrew/bin/herdr" }
+        ))
+        XCTAssertTrue(ClaudeHerdrAvailability.isHerdrBinaryAvailable(
+            environment: guiEnvironment,
+            isExecutable: { $0 == "/usr/local/bin/herdr" }
+        ))
+    }
+
+    /// A directory already on PATH is probed once, in its PATH position.
+    @MainActor
+    func testHerdrCandidatesDoNotRepeatADirectoryAlreadyOnPATH() {
+        let candidates = ClaudeHerdrAvailability.herdrCandidates(environment: [
+            "PATH": "/opt/homebrew/bin:/usr/bin",
+            "HOME": "/Users/someone",
+        ])
+        XCTAssertEqual(candidates.filter { $0 == "/opt/homebrew/bin/herdr" }.count, 1)
+        XCTAssertEqual(candidates.first, "/opt/homebrew/bin/herdr")
+    }
+
+    /// No HOME: the home-relative entries are skipped, the fixed ones stay.
+    @MainActor
+    func testHerdrCandidatesWithoutHOMEKeepTheFixedDirectories() {
+        let candidates = ClaudeHerdrAvailability.herdrCandidates(environment: ["PATH": "/usr/bin"])
+        XCTAssertEqual(candidates, [
+            "/usr/bin/herdr",
+            "/opt/homebrew/bin/herdr",
+            "/usr/local/bin/herdr",
+            "/nix/var/nix/profiles/default/bin/herdr",
+            "/run/current-system/sw/bin/herdr",
         ])
     }
 
