@@ -34,6 +34,43 @@ enum IntegrationTestSupport {
         throw XCTSkip("WAV audio does not contain a valid data chunk.")
     }
 
+    /// Synthesizes a spoken phrase with the system TTS and returns its raw
+    /// 16 kHz mono PCM16 samples — the same synthetic-speech source every live
+    /// realtime lane uses, so accuracy bars stay comparable across providers.
+    /// Skips (never fails) when `say` is unavailable or errors: that is an
+    /// environment problem, not a client regression.
+    static func makeSpokenPCM16Data(phrase: String) throws -> Data {
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("svxt-tts-\(UUID().uuidString)")
+            .appendingPathExtension("wav")
+
+        defer {
+            try? FileManager.default.removeItem(at: tempURL)
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+        process.arguments = [
+            "-o", tempURL.path,
+            "--file-format=WAVE",
+            "--data-format=LEI16@16000",
+            phrase,
+        ]
+
+        do {
+            try process.run()
+        } catch {
+            throw XCTSkip("Failed to execute /usr/bin/say for spoken-audio integration test: \(error.localizedDescription)")
+        }
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            throw XCTSkip("System TTS (say) failed with status \(process.terminationStatus).")
+        }
+
+        return try extractPCMDataFromWAV(at: tempURL)
+    }
+
     static func splitPCM16IntoChunks(_ pcm: Data, chunkSizeBytes: Int) -> [Data] {
         guard chunkSizeBytes > 0, !pcm.isEmpty else { return pcm.isEmpty ? [] : [pcm] }
 
