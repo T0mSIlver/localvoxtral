@@ -580,6 +580,7 @@ full-screen capture anywhere in it:
 | `launch [--dogfood] <artifact>` | launches a `.app` that is under an allowlisted root **and** has `CFBundleIdentifier com.localvoxtral.app`; records pid + start time + executable path; prints the pid. Refuses beside any running localvoxtral, including one this gate did not start |
 | `shot [settings\|popover\|overlay\|window <n>]` | base64 PNG of ONE window, resolved from the window list filtered to that pid, refused if the resolved window's owner is anything else. stdout is pure base64; the `shot: window …` line is on **stderr**, so pipe straight into `base64 -d` — no `tail` |
 | `ax dump [all\|settings\|overlay\|window <n>]` | the AX element tree of that pid's windows, as JSON |
+| `ax find <selector>` | `ax dump` narrowed to the nodes the selector matches, each with its own (bounded) subtree — same grammar and validator as `ax click`, so what it prints is what `click` would press. Read-only, no warning |
 | `ax click <selector>` | presses the one element the selector matches |
 | `ax type <selector> -- <text>` | types into a text-bearing element |
 | `key <escape\|tab\|return>` | one keycode from a three-entry allowlist; brings the app under test frontmost first and refuses if that did not take, so a keystroke never lands in whatever the owner last touched |
@@ -591,6 +592,7 @@ full-screen capture anywhere in it:
 | `quit` | terminates the recorded pid |
 | `term open <ghostty\|iterm\|terminal> <command> [args]` | opens a terminal window running an allowlisted command, resolved to an absolute path under `$HOME/bin` before anything opens. **The allowlist is empty by default** — see "What may go on `term open`'s allowlist" below |
 | `term focus <id>` / `term close <id>` | acts on one window this gate opened, identified by the CGWindowID that appeared while it was opening one |
+| `batch` | one verb per line on **stdin**, each one of the rows above (never `batch`), run in order through the same dispatcher. Every line is validated before any line runs — one bad line refuses the whole batch with nothing executed; execution stops at the first line that fails; each line is its own gate-log entry; each line's output is framed by `==lvui-batch-<tag>== line n/N begin\|end` lines carrying a per-batch random tag. Bounded to `LV_UI_BATCH_MAX_LINES` (64) and `LV_UI_BATCH_MAX_BYTES` (16384). See "Fast enough for click-by-click" |
 
 Selectors are `key<op>value` pairs joined by `,` — `=` exact, `~` contains,
 `+` for a space, keys `role`/`title`/`desc`/`value`/`index`/`window`:
@@ -622,11 +624,18 @@ Three refusals are load-bearing and are what the regression suite
   ui-smoke lane (`scripts/ci/screen-lock-state.sh`); an undeterminable state
   denies here and runs there, on purpose.
 - **Owner takeover rule.** Any verb that steals focus — `launch`, `ax click`,
-  `ax type`, `key`, `term open`, `term focus` — speaks a warning, waits 3 s,
-  then announces completion or failure (`LV_UI_WARN_SLEEP_SECONDS` in the conf
-  file relaxes the wait; the default is the rule as stated). `state`, `shot`,
-  `ax dump`, `quit` and `term close` do not warn: none of them takes the
-  keyboard or raises a window in front of what the owner is doing.
+  `ax type`, `key`, `menu open`, `menu click`, `dictate tap|hold`, `term
+  open`, `term focus` — speaks a warning, waits 3 s, then announces
+  completion or failure (`LV_UI_WARN_SLEEP_SECONDS` in the conf file relaxes
+  the wait; the default is the rule as stated). `state`, `shot`, `ax dump`,
+  `ax find`, `quit` and `term close` do not warn: none of them takes the
+  keyboard or raises a window in front of what the owner is doing. The
+  warning is per **burst**, not per verb: the first GUI verb warns and waits
+  as stated, then holds a takeover lease for `LV_UI_TAKEOVER_LEASE_SECONDS`
+  (120); GUI verbs inside the lease skip the warning and refresh it; "done"
+  is spoken once, a lease window after the burst's last verb; a failure is
+  spoken at once regardless. `LV_UI_TAKEOVER_LEASE_SECONDS=0` in the conf
+  restores warn-on-every-verb. Details under "Fast enough for click-by-click".
 
 ### One-time install (owner GUI session on the Mac)
 
@@ -680,6 +689,90 @@ question below about whether an SSH-hosted process can reach the GUI session at
 all. It is more moving parts than a single reviewed script, so it is not what
 v1 does.
 
+### Reinstalling after a gate change — by hand, always
+
+The installed copy is `~/bin/localvoxtral-ui-gate.sh` on the GUI account, and
+**nothing updates it but the owner**: no script, no CI step, no dispatch, no
+`try-pr.sh` flag reaches it, and none may be added — the forced command is the
+whole trust boundary, and a path that rewrites it from a PR is a path that
+rewrites the boundary. After a change to the gate lands on `main`, from an
+owner session on the Mac:
+
+```bash
+cd ~/work/localvoxtral && git pull
+install -m 0755 scripts/mac/localvoxtral-ui-gate.sh "$HOME/bin/localvoxtral-ui-gate.sh"
+```
+
+`authorized_keys` and the TCC grants are untouched by that; only the script
+body changes. `state`'s `setup.gate.revision` is the check: it equals the first
+12 hex of `shasum -a 256 scripts/mac/localvoxtral-ui-gate.sh` in your
+checkout when the installed copy is current. The first GUI verb after a
+reinstall compiles the helper once (below) — expect that one call to take
+tens of seconds and to say so on stderr.
+
+### Fast enough for click-by-click
+
+Measured 2026-09-15 from the Linux dev box, fresh ssh, LAN: `state` 2.3 s,
+`ax dump` 1.3 s, `ax click` 13.5 s. The ssh handshake was ~0.05 s of that
+(`gate-log` round-trips in 0.05 s); the rest was the gate. Four changes, none
+of which moves a trust boundary:
+
+- **Takeover lease.** The warning + 3 s wait + spoken "done" were paid on
+  every GUI verb. Now the first GUI verb of a burst does exactly that and
+  writes `~/.localvoxtral-ui-gate/takeover.lease` (0600: a timestamp and a
+  nonce, nothing else); a GUI verb inside `LV_UI_TAKEOVER_LEASE_SECONDS` (120)
+  skips the warning and refreshes the lease. "done" is spoken once per burst
+  by a detached announcer: each GUI verb starts one that sleeps one lease
+  window, re-reads the lease, and speaks only if its own nonce is still the
+  one on file — earlier announcers wake to a foreign nonce and exit. Nothing
+  to track, nothing to kill, lifetime bounded by `sleep` itself; it is what
+  "cannot leave a stuck background process" reduces to. A failing verb says
+  "failed" immediately, lease or not. `state` reports
+  `takeover.leased`/`remaining_seconds` so a caller knows whether the next
+  click will warn. The lease is never cached in memory — every verb re-reads
+  the file and the clock — and the lock state is never cached at all.
+- **Compiled helper.** The AX/CoreGraphics helper was `swift <file>` — about
+  a second of interpreter start-up per call, and some verbs call it twice.
+  It is now compiled once per revision of its source with `swiftc -O` into
+  `~/.localvoxtral-ui-gate/ui-gate-helper-<first 16 hex of the source's
+  SHA-256>` (0700) and run as that; a changed source compiles to a new name
+  and deletes the old one; a failed compile is remembered per digest
+  (`<binary>.failed`) and falls back to the interpreter, loudly on stderr and
+  in the gate log. `state` reports `setup.helper` (`compiled` + binary, or
+  `interpreted` + reason). Compiled for real on the build host through the
+  `swift build` payload (release configuration) on 2026-09-15; the TCC
+  attribution of the compiled binary under sshd is expected to match the
+  interpreter's (both are children of sshd) but is confirmed only by the
+  first `ax dump` after the owner reinstalls.
+- **`batch`.** One connection and one gate start for a whole step. The rules
+  are in the verb table; the one worth repeating is that a batch is
+  validated **whole** before any line runs, by the same code that validates
+  a lone command, and `batch` is never a valid line.
+- **`ax find`.** The dump narrowed to a selector, so a click-by-click session
+  stops shipping the whole tree every step.
+
+`state` runs its five live probes concurrently (lock, idle, power, helper
+preflight, control-socket connect) and joins them; the cost is the slowest
+probe rather than the sum. The slowest is the shared lock probe
+(`scripts/ci/screen-lock-state.sh`): its first arm is `swift -` on a heredoc,
+which is an interpreter start-up that, from sshd, always answers `no-session`
+before the ioreg arm answers for real. It is a shared file with its own
+policy and is deliberately not changed here; skipping arm 1 under an SSH
+session is the next step if the ~0.5 s floor matters.
+
+From the dev box, `scripts/mac-ui.sh` (docs/agent/field-debugging.md) passes
+verbs through one multiplexed ssh connection kept alive between calls:
+
+```bash
+./scripts/mac-ui.sh state
+./scripts/mac-ui.sh ax find role=AXButton,title~General
+./scripts/mac-ui.sh batch <<'EOF'
+menu open
+menu click Settings
+ax click role=AXButton,title=General
+EOF
+```
+
 ### `state`'s `setup` section — which verbs will work, before you try one
 
 Every refusal in this gate is deliberately uniform: `denied command`, exit 126,
@@ -694,6 +787,7 @@ So `state` reports setup:
 ```json
 "setup": {
   "gate": {"revision": "f44a91a15001"},
+  "helper": {"mode": "compiled", "binary": "ui-gate-helper-5dfd77c3401a1bbf"},
   "lock_probe": {"installed": true},
   "gate_conf": {"present": true, "status": "ok"},
   "artifacts": [{"name": "localvoxtral-dogfood.app", "dogfood": true}],
@@ -711,6 +805,11 @@ Reading it:
 - `gate.revision` is the first 12 hex of the installed script's SHA-256.
   Compare with `shasum -a 256 scripts/mac/localvoxtral-ui-gate.sh` to settle
   "is the gate old", which used to be an unfalsifiable theory.
+- `helper.mode` is `compiled` (with the digest-named binary every verb runs)
+  or `interpreted` with a `reason` — `no-swiftc`, `swiftc-failed` (the
+  compile log is `~/.localvoxtral-ui-gate/ui-gate-helper-compile.log`; remove
+  the `.failed` marker beside the would-be binary to retry) or `no-digest`.
+  Interpreted is the slow path and every verb on it says so on stderr.
 - `gate_conf.status` is `absent`, `ok` or `unparsable`. A conf with a syntax
   error used to take the **whole gate** down — `source` returns non-zero and
   `set -e` exits before anything prints. It now degrades to the built-in
