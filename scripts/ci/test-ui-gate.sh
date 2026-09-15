@@ -13,7 +13,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd -P)"
-GATE="$ROOT_DIR/scripts/mac/localvoxtral-ui-gate.sh"
+# Overridable so a NEW assertion can be shown failing against an OLDER copy
+# of the gate (the red half of red/green); CI never sets it.
+GATE="${LV_UI_GATE_TEST_GATE:-$ROOT_DIR/scripts/mac/localvoxtral-ui-gate.sh}"
 INSTALLER="$ROOT_DIR/scripts/mac/install-ui-artifact.sh"
 TRY_PR="$ROOT_DIR/scripts/try-pr.sh"
 LOCK_PROBE_SRC="$ROOT_DIR/scripts/ci/screen-lock-state.sh"
@@ -40,8 +42,16 @@ chmod 0700 "$ARTIFACT_ROOT"
 
 LOCK_STATE=unlocked
 
+# A failure ends the run. LV_UI_GATE_TEST_KEEP_GOING=1 records it and carries
+# on instead — for a red/green demonstration against an older gate (every new
+# assertion shown failing in one run), never for CI, where the default stays.
+FAILURES=0
 fail() {
   printf 'FAIL: %s\n' "$*" >&2
+  if [[ "${LV_UI_GATE_TEST_KEEP_GOING:-0}" == "1" ]]; then
+    FAILURES=$((FAILURES + 1))
+    return 0
+  fi
   exit 1
 }
 
@@ -58,8 +68,23 @@ cat >"$STUB_BIN/say" <<'STUB'
 printf '%s\n' "$*" >>"$STUB_SAY_LOG"
 STUB
 
+# Instant, and it records what it was asked to wait: the owner's 3 s warning
+# pause is a `sleep 3` the lease tests (section 29) need to see on the first
+# verb of a burst and NOT on the ones that follow. With STUB_SLEEP_HOLD_SECONDS
+# set, a call for exactly that duration blocks until STUB_SLEEP_HOLD_FILE
+# exists (bounded), which is how the suite holds a done-announcer's `sleep
+# <lease>` open while a later verb rewrites the lease's nonce.
 cat >"$STUB_BIN/sleep" <<'STUB'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >>"${STUB_SLEEP_LOG:-/dev/null}"
+if [[ -n "${STUB_SLEEP_HOLD_SECONDS:-}" && "$*" == "$STUB_SLEEP_HOLD_SECONDS" ]]; then
+  hold_polls=0
+  while (( hold_polls < 500 )); do
+    [[ -e "${STUB_SLEEP_HOLD_FILE:-/nonexistent}" ]] && exit 0
+    /bin/sleep 0.01
+    hold_polls=$((hold_polls + 1))
+  done
+fi
 exit 0
 STUB
 
@@ -188,12 +213,25 @@ STUB
 
 # Stands in for `swift <helper.swift> <subcommand> ...`: the gate's only route
 # to CoreGraphics/AX. $2 is the subcommand, $3.. the helper's own arguments.
+#
+# The same file is what the `swiftc` stub (section 30) installs as the
+# "compiled" helper binary, which the gate then runs as `<binary> <subcommand>
+# ...` with no source path in front. That form is normalised here by putting
+# the word `compiled` where the source path would be, so the case below and
+# every swift.log assertion in this suite read both forms alike — and so the
+# log says which path ran.
 cat >"$STUB_BIN/swift" <<'STUB'
 #!/usr/bin/env bash
+[[ "${1:-}" == *.swift ]] || set -- compiled "$@"
 printf '%s\n' "$*" >>"$STUB_SWIFT_LOG"
 case "$2" in
   preflight)
     echo "accessibility=1"; echo "screen_recording=1"; echo "frontmost_pid=$3"
+    ;;
+  axfind)
+    # $3 pid, $4 selector: one matched node, echoing the selector back so a
+    # test can see that the selector reached the helper unchanged.
+    printf '[{"role":"AXButton","subrole":"","title":"%s","desc":"","value":"","children":[]}]\n' "$4"
     ;;
   window)
     [[ -n "${STUB_WINDOW_RESULT:-}" ]] || exit 1
@@ -370,6 +408,18 @@ GATE_STDERR=""
 # deadline spins for the whole budget instead of polling through it. Both are
 # seams in the gate (defaults 20 s); here they are as short as the case needs.
 # `TERM_OPEN_TIMEOUT` / `LAUNCH_WAIT` override them for a single case.
+# The takeover LEASE is OFF here by default (`LEASE_SECONDS`, 0 = warn on every
+# verb, the v1 behaviour every section below was written against, and the
+# behaviour the owner gets with `LV_UI_TAKEOVER_LEASE_SECONDS=0`). Section 29
+# turns it on explicitly and moves the clock through `NOW_EPOCH`, which the
+# gate's now_epoch seam reads — no test here waits out a real lease window.
+# The helper compiler is pointed at a path that does not exist unless a case
+# sets `SWIFTC_CMD` (section 30's stand-in): the gate then runs the helper
+# through the `swift` stub as it always has, on a Linux runner AND on a Mac
+# that has the real swiftc — which must never compile the real helper under
+# this suite. `GATE_UNDER_TEST` runs a different copy of the gate (a
+# source-changed one). stdin is the caller's, so `run_gate batch … <<<"$lines"`
+# feeds a batch.
 run_gate() { # <command> [env assignments...]
   local command="$1"
   shift
@@ -382,23 +432,55 @@ run_gate() { # <command> [env assignments...]
     LV_UI_LOCK_PROBE="$FAKE_HOME/bin/localvoxtral-screen-lock-state.sh" \
     LV_UI_TERM_OPEN_TIMEOUT_SECONDS="${TERM_OPEN_TIMEOUT:-1}" \
     LV_UI_LAUNCH_WAIT_SECONDS="${LAUNCH_WAIT:-0}" \
+    LV_UI_TAKEOVER_LEASE_SECONDS="${LEASE_SECONDS:-0}" \
+    LV_UI_NOW_EPOCH="${NOW_EPOCH:-}" \
+    LV_UI_SWIFTC="${SWIFTC_CMD:-$TMP_DIR/no-swiftc-here}" \
     LV_SCREEN_LOCK_STATE="${LOCK_STATE:-unlocked}" \
     STUB_SAY_LOG="$TMP_DIR/say.log" \
+    STUB_SLEEP_LOG="$TMP_DIR/sleep.log" \
     STUB_OPEN_LOG="$TMP_DIR/open.log" \
     STUB_SWIFT_LOG="$TMP_DIR/swift.log" \
+    STUB_SWIFTC_LOG="$TMP_DIR/swiftc.log" \
     STUB_DEFAULTS_LOG="$TMP_DIR/defaults.log" \
     STUB_SCREENCAPTURE_LOG="$TMP_DIR/screencapture.log" \
     STUB_LOG_LOG="$TMP_DIR/log.log" \
     "$@" \
-    bash "$GATE" >"$out_file" 2>"$err_file" || GATE_STATUS=$?
+    bash "${GATE_UNDER_TEST:-$GATE}" >"$out_file" 2>"$err_file" || GATE_STATUS=$?
   # `$(<file)` and not `$(cat file)`: bash reads the file itself, and this runs
   # twice for every one of the ~240 gate invocations below.
   GATE_STDOUT="$(<"$out_file")"
   GATE_STDERR="$(<"$err_file")"
+  [[ -n "${SKIP_ANNOUNCER_WAIT:-}" ]] || wait_for_done_announcer
+}
+
+# With the lease on, "done" is spoken by a subshell the gate detaches and does
+# not wait for. Its pid is in the lease file for exactly this purpose: the
+# suite joins it here so every assertion about say.log is made after it has
+# had its say (under the instant `sleep` stub that is milliseconds), and no
+# announcer from one case can write into the next case's say.log.
+wait_for_done_announcer() {
+  local lease="$FAKE_HOME/.localvoxtral-ui-gate/takeover.lease" pid i
+  [[ -f "$lease" ]] || return 0
+  while IFS= read -r pid; do
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+    for (( i = 0; i < 200; i++ )); do
+      kill -0 "$pid" 2>/dev/null || break
+      /bin/sleep 0.01
+    done
+    kill -0 "$pid" 2>/dev/null && fail "the done-announcer (pid $pid) is still running 2 s after the gate exited"
+  done < <(sed -n 's/^announcer=//p' "$lease" 2>/dev/null || true)
+  return 0
 }
 
 log_tail() {
   tail -n 1 "$LOG_FILE" 2>/dev/null || true
+}
+
+# Octal permission bits of a file, GNU stat or BSD stat, never a failure (an
+# assignment from a failing substitution would end the run under `set -e`
+# before `fail` could say what was missing).
+file_mode() { # <path>
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null || true
 }
 
 # The embedded helper is a heredoc, so its subcommands cannot be exercised
@@ -1353,7 +1435,7 @@ echo "== 13. the embedded Swift helper compiles =="
 if command -v swiftc >/dev/null 2>&1; then
   HELPER_DIR="$TMP_DIR/helper"
   mkdir -p "$HELPER_DIR"
-  awk '/^  cat >"\$HELPER_PATH" <<.SWIFT.$/ { capture = 1; next }
+  awk '/^  cat <<.SWIFT.$/ { capture = 1; next }
        capture && /^SWIFT$/ { exit }
        capture { print }' "$GATE" >"$HELPER_DIR/main.swift"
   [[ -s "$HELPER_DIR/main.swift" ]] \
@@ -3002,6 +3084,527 @@ grep -q 'ui-gate-doctor.sh' "$ROOT_DIR/scripts/mac/README.md" \
   || fail "scripts/mac/README.md does not point at the doctor"
 
 echo
+echo "== 29. the takeover lease: one warning per burst, one done per burst =="
+
+# Measured 2026-09-15: `ax click` cost 13.5 s, of which the owner-rule warning
+# and its 3 s wait were paid on EVERY verb and "done" was spoken on every verb.
+# The rule is about the owner being surprised, and a burst surprises him once.
+# So the first GUI verb warns, waits and writes a lease; verbs inside the lease
+# window skip the warning and refresh it; "done" is spoken once, by a detached
+# announcer that only speaks if its nonce is still the one on file after a
+# lease window. The clock is the gate's now_epoch seam (NOW_EPOCH), so nothing
+# below waits out a real window.
+
+LEASE_FILE="$FAKE_HOME/.localvoxtral-ui-gate/takeover.lease"
+LEASE_SECONDS=120
+NOW_EPOCH=1000
+clear_state
+clear_conf
+write_app_state 4242
+
+# 1. The first GUI verb of a burst: warning, the 3 s wait, a lease, a "done".
+: >"$TMP_DIR/say.log"
+: >"$TMP_DIR/sleep.log"
+run_gate 'ax click role=AXButton,title=General' "${APP_ENV[@]}"
+(( GATE_STATUS == 0 )) || fail "lease: first ax click failed: $GATE_STDERR"
+grep -q "taking control in 3" "$TMP_DIR/say.log" \
+  || fail "lease: the first GUI verb of a burst did not speak the takeover warning"
+grep -qx "3" "$TMP_DIR/sleep.log" \
+  || fail "lease: the first GUI verb did not wait LV_UI_WARN_SLEEP_SECONDS (sleep.log: $(cat "$TMP_DIR/sleep.log"))"
+[[ -f "$LEASE_FILE" ]] || fail "lease: no lease file was written after the first GUI verb"
+lease_mode="$(file_mode "$LEASE_FILE")"
+[[ "$lease_mode" == "600" ]] || fail "lease: the lease file is mode '$lease_mode', not 0600"
+grep -qx "since=1000" "$LEASE_FILE" || fail "lease: the lease did not record the clock: $(cat "$LEASE_FILE")"
+grep -q "done" "$TMP_DIR/say.log" \
+  || fail "lease: the burst's done-announcer did not speak after the lease window"
+pass "the first GUI verb warns, waits, writes a 0600 lease, and done follows the window"
+
+# 2. A GUI verb inside the window: no warning, no wait, a refreshed lease.
+: >"$TMP_DIR/say.log"
+: >"$TMP_DIR/sleep.log"
+NOW_EPOCH=1050
+run_gate 'key escape' "${APP_ENV[@]}"
+(( GATE_STATUS == 0 )) || fail "lease: key inside the window failed: $GATE_STDERR"
+if grep -q "taking control" "$TMP_DIR/say.log"; then
+  fail "lease: a GUI verb 50 s into a 120 s lease spoke the takeover warning again"
+fi
+if grep -qx "3" "$TMP_DIR/sleep.log"; then
+  fail "lease: a GUI verb inside the lease still waited the warning pause"
+fi
+grep -qx "since=1050" "$LEASE_FILE" || fail "lease: the lease was not refreshed by the leased verb: $(cat "$LEASE_FILE")"
+pass "a GUI verb inside the lease window skips the warning and the wait, and refreshes the lease"
+
+# 3. Exactly at the window's edge the lease is spent, and the warning is back.
+: >"$TMP_DIR/say.log"
+: >"$TMP_DIR/sleep.log"
+NOW_EPOCH=1170
+run_gate 'ax click role=AXButton,title=General' "${APP_ENV[@]}"
+(( GATE_STATUS == 0 )) || fail "lease: ax click after expiry failed: $GATE_STDERR"
+grep -q "taking control in 3" "$TMP_DIR/say.log" \
+  || fail "lease: a GUI verb after the lease expired did not warn again"
+grep -qx "3" "$TMP_DIR/sleep.log" \
+  || fail "lease: a GUI verb after the lease expired did not wait again"
+pass "a GUI verb after the lease window warns and waits again"
+
+# 4. A failure inside the window still says "failed" at once — the owner may
+# be looking at whatever it left behind — and still skips the warning.
+: >"$TMP_DIR/say.log"
+NOW_EPOCH=1180
+run_gate 'menu open' "${APP_ENV[@]}" STUB_MENU_FAIL=1
+(( GATE_STATUS != 0 )) || fail "lease: menu open with a failing helper reported success"
+grep -q "failed" "$TMP_DIR/say.log" \
+  || fail "lease: a failed verb inside the lease did not say failed"
+if grep -q "taking control" "$TMP_DIR/say.log"; then
+  fail "lease: a failed verb inside the lease spoke the takeover warning"
+fi
+pass "a failed verb inside the lease says failed immediately, without re-warning"
+
+# 5. A clock that stepped back makes the lease worthless, not eternal.
+: >"$TMP_DIR/say.log"
+NOW_EPOCH=900
+run_gate 'key tab' "${APP_ENV[@]}"
+(( GATE_STATUS == 0 )) || fail "lease: key with a stepped-back clock failed: $GATE_STDERR"
+grep -q "taking control in 3" "$TMP_DIR/say.log" \
+  || fail "lease: a lease dated in the future was honoured"
+pass "a lease from the future is not a lease"
+
+# 6. Non-GUI verbs neither take nor extend the lease, and `state` reports it.
+NOW_EPOCH=2000
+run_gate 'ax dump all' "${APP_ENV[@]}"
+(( GATE_STATUS == 0 )) || fail "lease: ax dump failed: $GATE_STDERR"
+grep -qx "since=900" "$LEASE_FILE" || fail "lease: a read-only verb touched the lease: $(cat "$LEASE_FILE")"
+STATE="$(state_json 'state with an expired lease' "${APP_ENV[@]}")"
+[[ "$(state_field "$STATE" 's["takeover"]["leased"]')" == "False" ]] \
+  || fail "state reported a live lease 1100 s after it was written: $STATE"
+NOW_EPOCH=930
+STATE="$(state_json 'state with a live lease' "${APP_ENV[@]}")"
+[[ "$(state_field "$STATE" 's["takeover"]["leased"]')" == "True" ]] \
+  || fail "state did not report the live lease: $STATE"
+[[ "$(state_field "$STATE" 's["takeover"]["remaining_seconds"]')" == "90" ]] \
+  || fail "state did not report the lease's remaining seconds: $STATE"
+pass "read-only verbs leave the lease alone, and state reports whether the next click will warn"
+
+# 7. "done" is spoken ONCE per burst: an announcer whose nonce was superseded
+# by a later verb wakes and says nothing. The `sleep 120` of the announcers is
+# HELD by the sleep stub until the suite releases it, so two verbs arm two
+# announcers before either can speak; on release only the later one may.
+: >"$TMP_DIR/say.log"
+rm -f "$TMP_DIR/release-announcers"
+NOW_EPOCH=3000
+SKIP_ANNOUNCER_WAIT=1
+run_gate 'ax click role=AXButton,title=General' "${APP_ENV[@]}" \
+  STUB_SLEEP_HOLD_SECONDS=120 STUB_SLEEP_HOLD_FILE="$TMP_DIR/release-announcers"
+(( GATE_STATUS == 0 )) || fail "lease: burst verb 1 failed: $GATE_STDERR"
+first_announcer="$(sed -n 's/^announcer=//p' "$LEASE_FILE" 2>/dev/null || true)"
+NOW_EPOCH=3010
+run_gate 'key return' "${APP_ENV[@]}" \
+  STUB_SLEEP_HOLD_SECONDS=120 STUB_SLEEP_HOLD_FILE="$TMP_DIR/release-announcers"
+(( GATE_STATUS == 0 )) || fail "lease: burst verb 2 failed: $GATE_STDERR"
+second_announcer="$(sed -n 's/^announcer=//p' "$LEASE_FILE" 2>/dev/null || true)"
+[[ -n "$first_announcer" && -n "$second_announcer" && "$first_announcer" != "$second_announcer" ]] \
+  || fail "lease: expected two distinct announcers, got '$first_announcer' and '$second_announcer'"
+kill -0 "$first_announcer" 2>/dev/null \
+  || fail "lease: the first announcer exited before the window — the sleep hold did not take"
+if grep -q "done" "$TMP_DIR/say.log"; then
+  fail "lease: done was spoken while both announcers were still inside their window"
+fi
+: >"$TMP_DIR/release-announcers"
+unset SKIP_ANNOUNCER_WAIT
+for announcer in "$first_announcer" "$second_announcer"; do
+  for (( i = 0; i < 300; i++ )); do
+    kill -0 "$announcer" 2>/dev/null || break
+    /bin/sleep 0.01
+  done
+  kill -0 "$announcer" 2>/dev/null && fail "lease: announcer $announcer did not exit after release"
+done
+[[ "$(grep -c "done" "$TMP_DIR/say.log")" == "1" ]] \
+  || fail "lease: expected exactly one done for a two-verb burst, say.log: $(cat "$TMP_DIR/say.log")"
+pass "done is spoken exactly once per burst: a superseded announcer stays silent"
+
+# 8. Lease 0 is the v1 rule: warn on every verb, done on every verb, no file.
+clear_state
+write_app_state 4242
+: >"$TMP_DIR/say.log"
+LEASE_SECONDS=0
+run_gate 'ax click role=AXButton,title=General' "${APP_ENV[@]}"
+run_gate 'key escape' "${APP_ENV[@]}"
+[[ "$(grep -c "taking control" "$TMP_DIR/say.log")" == "2" ]] \
+  || fail "lease off: two GUI verbs should warn twice, say.log: $(cat "$TMP_DIR/say.log")"
+[[ "$(grep -c "done" "$TMP_DIR/say.log")" == "2" ]] \
+  || fail "lease off: two GUI verbs should announce done twice, say.log: $(cat "$TMP_DIR/say.log")"
+[[ ! -e "$LEASE_FILE" ]] || fail "lease off: a lease file was written with the lease disabled"
+pass "LV_UI_TAKEOVER_LEASE_SECONDS=0 restores warn-and-done on every verb"
+
+# 9. The conf can set the lease, and a typo in it falls back to the default
+# rather than taking the gate down mid-verb.
+write_conf 'LV_UI_TAKEOVER_LEASE_SECONDS="two minutes"'
+run_gate 'key escape' "${APP_ENV[@]}"
+(( GATE_STATUS == 0 )) || fail "lease: a junk lease value in the conf took the gate down: $GATE_STDERR"
+clear_conf
+pass "a junk lease value in the conf falls back to the default"
+
+unset NOW_EPOCH
+LEASE_SECONDS=0
+clear_state
+
+echo "== 30. the helper is compiled once per revision, and interpreted only as a fallback =="
+
+# Measured 2026-09-15: every helper call was `swift <file>` — the ~1,500-line
+# helper INTERPRETED, about a second each, and some verbs call it twice. The
+# gate now compiles it once with `swiftc -O` into a binary named by the
+# source's digest, runs that, and falls back to the interpreter only when
+# swiftc is missing or fails. There is no swiftc on the Linux runner, so one
+# is stubbed here and handed to the gate through its LV_UI_SWIFTC seam
+# (SWIFTC_CMD): it "compiles" by installing the swift stub as the output
+# binary, which is what lets every swift.log assertion in this suite read the
+# compiled form.
+
+SWIFTC_BIN="$TMP_DIR/swiftcbin"
+mkdir -p "$SWIFTC_BIN"
+cat >"$SWIFTC_BIN/swiftc" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$STUB_SWIFTC_LOG"
+if [[ -n "${STUB_SWIFTC_FAIL:-}" ]]; then
+  echo "error: fake compiler failure" >&2
+  exit 1
+fi
+out=""
+prev=""
+for arg in "$@"; do
+  [[ "$prev" == "-o" ]] && out="$arg"
+  prev="$arg"
+done
+[[ -n "$out" ]] || exit 1
+cp "$STUB_SWIFT_STUB" "$out"
+chmod +x "$out"
+STUB
+chmod +x "$SWIFTC_BIN/swiftc"
+COMPILED_ENV=("${APP_ENV[@]}" STUB_SWIFT_STUB="$STUB_BIN/swift")
+GATE_STATE_DIR="$FAKE_HOME/.localvoxtral-ui-gate"
+
+# The digest-named helper binaries in the state dir, one per line (never the
+# source, the compile log, a failure marker or a staging file).
+helper_binaries() {
+  local candidate
+  for candidate in "$GATE_STATE_DIR"/ui-gate-helper-*; do
+    [[ -f "$candidate" ]] || continue
+    [[ "${candidate##*/}" =~ ^ui-gate-helper-[0-9a-f]{16}$ ]] || continue
+    printf '%s\n' "$candidate"
+  done
+}
+
+clear_state
+write_app_state 4242
+: >"$TMP_DIR/swiftc.log"
+: >"$TMP_DIR/swift.log"
+: >"$LOG_FILE"
+
+# 1. First call compiles with -O, runs the binary, and says so in the log.
+SWIFTC_CMD="$SWIFTC_BIN/swiftc"
+run_gate 'ax dump all' "${COMPILED_ENV[@]}"
+(( GATE_STATUS == 0 )) || fail "compiled: ax dump failed: $GATE_STDERR"
+[[ "$(wc -l <"$TMP_DIR/swiftc.log" | tr -d ' ')" == "1" ]] \
+  || fail "compiled: expected exactly one swiftc invocation, got: $(cat "$TMP_DIR/swiftc.log")"
+grep -q -- "-O " "$TMP_DIR/swiftc.log" || fail "compiled: swiftc was not run with -O: $(cat "$TMP_DIR/swiftc.log")"
+grep -q -- "$GATE_STATE_DIR/ui-gate-helper.swift" "$TMP_DIR/swiftc.log" \
+  || fail "compiled: swiftc was not handed the staged helper source: $(cat "$TMP_DIR/swiftc.log")"
+helper_binary="$(helper_binaries)"
+[[ -n "$helper_binary" && -x "$helper_binary" ]] \
+  || fail "compiled: no digest-named helper binary in $GATE_STATE_DIR: $(ls "$GATE_STATE_DIR")"
+helper_mode="$(file_mode "$helper_binary")"
+[[ "$helper_mode" == "700" ]] || fail "compiled: the helper binary is mode '$helper_mode', not 0700"
+grep -q '^compiled axdump 4242 all' "$TMP_DIR/swift.log" \
+  || fail "compiled: ax dump did not run through the compiled binary: $(cat "$TMP_DIR/swift.log")"
+grep -q "HELPER compiled ${helper_binary##*/}" "$LOG_FILE" \
+  || fail "compiled: the gate log does not record the compile: $(cat "$LOG_FILE")"
+[[ "$GATE_STDERR" != *"INTERPRETED"* ]] \
+  || fail "compiled: stderr claims the interpreted path ran: $GATE_STDERR"
+pass "the first helper call compiles the source with swiftc -O and runs the binary"
+
+# 2. The second call is a cache hit: no swiftc, same binary, source untouched.
+source_before="$(ls -i "$GATE_STATE_DIR/ui-gate-helper.swift")"
+run_gate 'ax click role=AXButton,title=General' "${COMPILED_ENV[@]}"
+(( GATE_STATUS == 0 )) || fail "compiled: cached ax click failed: $GATE_STDERR"
+[[ "$(wc -l <"$TMP_DIR/swiftc.log" | tr -d ' ')" == "1" ]] \
+  || fail "compiled: a second invocation recompiled: $(cat "$TMP_DIR/swiftc.log")"
+grep -q '^compiled axclick 4242 role=AXButton,title=General' "$TMP_DIR/swift.log" \
+  || fail "compiled: the cached call did not run the binary: $(cat "$TMP_DIR/swift.log")"
+[[ "$(ls -i "$GATE_STATE_DIR/ui-gate-helper.swift")" == "$source_before" ]] \
+  || fail "compiled: an unchanged helper source was rewritten (inode changed)"
+if ls "$GATE_STATE_DIR"/ui-gate-helper.swift.new.* >/dev/null 2>&1; then
+  fail "compiled: a staged source file was left behind: $(ls "$GATE_STATE_DIR")"
+fi
+pass "an unchanged source reuses the binary and is not rewritten"
+
+# 3. A changed source invalidates the cache: a new binary, the old one gone.
+CHANGED_GATE="$TMP_DIR/gate-with-changed-helper.sh"
+sed 's|^import Darwin$|import Darwin // helper source changed for section 30|' "$GATE" >"$CHANGED_GATE"
+grep -q 'helper source changed for section 30' "$CHANGED_GATE" \
+  || fail "compiled: could not produce a gate copy with a changed helper source"
+GATE_UNDER_TEST="$CHANGED_GATE"
+run_gate 'ax dump all' "${COMPILED_ENV[@]}"
+unset GATE_UNDER_TEST
+(( GATE_STATUS == 0 )) || fail "compiled: ax dump with a changed helper failed: $GATE_STDERR"
+[[ "$(wc -l <"$TMP_DIR/swiftc.log" | tr -d ' ')" == "2" ]] \
+  || fail "compiled: a changed helper source did not recompile: $(cat "$TMP_DIR/swiftc.log")"
+new_binary="$(helper_binaries)"
+[[ -n "$new_binary" ]] || fail "compiled: no binary after the recompile: $(ls "$GATE_STATE_DIR")"
+[[ "$new_binary" != "$helper_binary" ]] \
+  || fail "compiled: the changed source compiled to the SAME digest name: $new_binary"
+[[ ! -e "$helper_binary" ]] \
+  || fail "compiled: the stale binary $helper_binary was not deleted"
+[[ "$(printf '%s\n' "$new_binary" | wc -l | tr -d ' ')" == "1" ]] \
+  || fail "compiled: more than one binary survived the recompile: $new_binary"
+pass "a changed helper source compiles to a new digest and deletes the stale binary"
+
+# 4. swiftc failing falls back to the interpreter — loudly, once per digest.
+clear_state
+write_app_state 4242
+: >"$TMP_DIR/swiftc.log"
+: >"$TMP_DIR/swift.log"
+: >"$LOG_FILE"
+run_gate 'ax dump all' "${COMPILED_ENV[@]}" STUB_SWIFTC_FAIL=1
+(( GATE_STATUS == 0 )) || fail "fallback: ax dump failed when swiftc failed: $GATE_STDERR"
+[[ "$GATE_STDOUT" == '[{"role":"AXWindow"'* ]] || fail "fallback: ax dump lost its output: $GATE_STDOUT"
+grep -q "^$GATE_STATE_DIR/ui-gate-helper.swift axdump 4242 all" "$TMP_DIR/swift.log" \
+  || fail "fallback: the verb did not run through the interpreter: $(cat "$TMP_DIR/swift.log")"
+grep -q "HELPER swiftc failed" "$LOG_FILE" \
+  || fail "fallback: the gate log does not record the failed compile: $(cat "$LOG_FILE")"
+[[ "$GATE_STDERR" == *"INTERPRETED (swiftc-failed)"* ]] \
+  || fail "fallback: stderr did not say the interpreted path ran and why: $GATE_STDERR"
+ls "$GATE_STATE_DIR"/ui-gate-helper-*.failed >/dev/null 2>&1 \
+  || fail "fallback: no failure marker was left for this digest: $(ls "$GATE_STATE_DIR")"
+run_gate 'ax dump all' "${COMPILED_ENV[@]}" STUB_SWIFTC_FAIL=1
+(( GATE_STATUS == 0 )) || fail "fallback: second ax dump failed: $GATE_STDERR"
+[[ "$(wc -l <"$TMP_DIR/swiftc.log" | tr -d ' ')" == "1" ]] \
+  || fail "fallback: a failed compile was retried on the next verb: $(cat "$TMP_DIR/swiftc.log")"
+[[ "$GATE_STDERR" == *"INTERPRETED (swiftc-failed)"* ]] \
+  || fail "fallback: the second interpreted run was silent about it: $GATE_STDERR"
+pass "a failing swiftc falls back to the interpreter, says so, and is not retried per verb"
+
+# 5. `state` reports which path the helper runs on.
+STATE="$(state_json 'state under a failed compile' "${COMPILED_ENV[@]}" STUB_SWIFTC_FAIL=1)"
+[[ "$(state_field "$STATE" 's["setup"]["helper"]["mode"]')" == "interpreted" ]] \
+  || fail "state did not report the interpreted helper: $STATE"
+[[ "$(state_field "$STATE" 's["setup"]["helper"]["reason"]')" == "swiftc-failed" ]] \
+  || fail "state did not report why the helper is interpreted: $STATE"
+clear_state
+write_app_state 4242
+STATE="$(state_json 'state with a compiled helper' "${COMPILED_ENV[@]}")"
+[[ "$(state_field "$STATE" 's["setup"]["helper"]["mode"]')" == "compiled" ]] \
+  || fail "state did not report the compiled helper: $STATE"
+[[ "$(state_field "$STATE" 's["setup"]["helper"]["binary"]')" =~ ^ui-gate-helper-[0-9a-f]{16}$ ]] \
+  || fail "state did not name the helper binary: $STATE"
+pass "state reports setup.helper: the mode, and the binary or the reason"
+
+# 6. No swiftc at all (the Linux runner's own situation): interpreted, said on
+# stderr, and the verb still works.
+unset SWIFTC_CMD
+clear_state
+write_app_state 4242
+run_gate 'ax dump all' "${APP_ENV[@]}"
+(( GATE_STATUS == 0 )) || fail "no swiftc: ax dump failed: $GATE_STDERR"
+[[ "$GATE_STDERR" == *"INTERPRETED (no-swiftc)"* ]] \
+  || fail "no swiftc: stderr did not say why the interpreted path ran: $GATE_STDERR"
+pass "without swiftc the helper runs interpreted and says so"
+clear_state
+
+echo "== 31. batch — several verbs, one connection, the same gate =="
+
+# A click-by-click session paid an ssh connection, a gate start and (before
+# section 30) an interpreted helper per verb. `batch` reads verbs from stdin
+# and runs them in order through the very same dispatcher. What this section
+# holds: every line is validated before ANY line runs (a bad line refuses the
+# whole batch with nothing executed), execution stops at the first failure,
+# `batch` is never a valid line, `ax type`'s `--` rule holds per line, and
+# each line is its own gate-log entry.
+
+clear_state
+write_app_state 4242
+: >"$TMP_DIR/swift.log"
+: >"$LOG_FILE"
+
+# 1. Happy path: framed output, one log entry per line, every line executed.
+batch_lines=$'ax dump all\nax click role=AXButton,title=General\nkey escape'
+run_gate 'batch' "${APP_ENV[@]}" <<<"$batch_lines"
+(( GATE_STATUS == 0 )) || fail "batch: a valid three-line batch failed: $GATE_STDERR"
+batch_tag="$(sed -n 's/^==lvui-batch-\([0-9-]*\)== lines=3$/\1/p' <<<"$GATE_STDOUT")"
+[[ -n "$batch_tag" ]] || fail "batch: no tagged header line in the output: $GATE_STDOUT"
+for n in 1 2 3; do
+  grep -q "^==lvui-batch-$batch_tag== line $n/3 begin " <<<"$GATE_STDOUT" \
+    || fail "batch: no begin frame for line $n: $GATE_STDOUT"
+  grep -q "^==lvui-batch-$batch_tag== line $n/3 end status=0$" <<<"$GATE_STDOUT" \
+    || fail "batch: no end frame with status 0 for line $n: $GATE_STDOUT"
+done
+grep -q "line 1/3 begin ax dump all" <<<"$GATE_STDOUT" || fail "batch: the begin frame does not name the verb: $GATE_STDOUT"
+[[ "$GATE_STDOUT" == *'[{"role":"AXWindow"'* ]] || fail "batch: ax dump's output is missing: $GATE_STDOUT"
+grep -q ' axdump 4242 all' "$TMP_DIR/swift.log" || fail "batch: line 1 did not run"
+grep -q ' axclick 4242 role=AXButton,title=General' "$TMP_DIR/swift.log" || fail "batch: line 2 did not run"
+grep -q ' key 4242 escape' "$TMP_DIR/swift.log" || fail "batch: line 3 did not run"
+grep -q ' ALLOW batch (lines=3)' "$LOG_FILE" || fail "batch: no batch-level ALLOW entry: $(cat "$LOG_FILE")"
+grep -q ' ALLOW ax dump all (batch line 1/3: pane=all)' "$LOG_FILE" \
+  || fail "batch: line 1 has no gate-log entry of its own: $(cat "$LOG_FILE")"
+grep -q ' ALLOW ax click role=AXButton,title=General (batch line 2/3: selector=' "$LOG_FILE" \
+  || fail "batch: line 2 has no gate-log entry of its own: $(cat "$LOG_FILE")"
+grep -q ' ALLOW key escape (batch line 3/3: key=escape)' "$LOG_FILE" \
+  || fail "batch: line 3 has no gate-log entry of its own: $(cat "$LOG_FILE")"
+pass "allowed: a valid batch runs every line in order, framed, each logged on its own"
+
+# 2. One malformed line refuses the WHOLE batch, and nothing before it runs.
+: >"$TMP_DIR/swift.log"
+: >"$TMP_DIR/say.log"
+for bad_batch in \
+  $'ax dump all\nax click bogus=1\nkey escape' \
+  $'ax dump all\necho pwned' \
+  $'key escape\nstate; id' \
+  $'ax dump all\nax type role=AXTextField hello' \
+  $'ax dump all\nkey cmd+q' \
+  $'ax dump all\nlaunch' \
+  $'ax dump all\nterm open ghostty bash -c id' \
+  $'ax dump all\ndictate hold soon'; do
+  assert_denied 'batch' "batch refused whole for: $(tr '\n' '|' <<<"$bad_batch")" \
+    "${APP_ENV[@]}" <<<"$bad_batch"
+  [[ ! -s "$TMP_DIR/swift.log" ]] \
+    || fail "batch: an earlier line ran before a later line failed validation: $(cat "$TMP_DIR/swift.log")"
+  [[ "$GATE_STDERR" == *"nothing was run"* ]] \
+    || fail "batch: the refusal did not say nothing was run: $GATE_STDERR"
+done
+[[ ! -s "$TMP_DIR/say.log" ]] || fail "batch: a refused batch spoke: $(cat "$TMP_DIR/say.log")"
+grep -q ' DENY ax click bogus=1 (batch line 2/3 check: malformed selector)' "$LOG_FILE" \
+  || fail "batch: the refusing line was not logged with its position and reason: $(cat "$LOG_FILE")"
+pass "denied: a batch with any invalid line is refused before anything runs"
+
+# 3. `batch` is never a valid line, wherever it sits.
+for nested in $'batch' $'ax dump all\nbatch' $'batch\nax dump all'; do
+  assert_denied 'batch' "batch containing batch: $(tr '\n' '|' <<<"$nested")" "${APP_ENV[@]}" <<<"$nested"
+  [[ ! -s "$TMP_DIR/swift.log" ]] || fail "batch: a line ran from a batch that contained batch"
+done
+grep -q 'batch cannot contain batch' "$LOG_FILE" || fail "batch: nesting was not logged as the reason"
+pass "denied: no batch line may be batch"
+
+# 4. Execution stops at the first failing verb; the lines after it never run.
+: >"$TMP_DIR/swift.log"
+: >"$TMP_DIR/say.log"
+run_gate 'batch' "${APP_ENV[@]}" STUB_MENU_FAIL=1 <<<$'ax dump all\nmenu open\nkey escape'
+(( GATE_STATUS == 1 )) || fail "batch: expected the failing line's status 1, got $GATE_STATUS ($GATE_STDERR)"
+grep -q "line 2/3 end status=1$" <<<"$GATE_STDOUT" || fail "batch: the failing line's end frame is missing: $GATE_STDOUT"
+if grep -q "line 3/3 begin" <<<"$GATE_STDOUT"; then
+  fail "batch: a line after the failure was started: $GATE_STDOUT"
+fi
+grep -q ' axdump 4242 all' "$TMP_DIR/swift.log" || fail "batch: line 1 did not run before the failure"
+grep -q ' menuopen 4242' "$TMP_DIR/swift.log" || fail "batch: the failing line was never attempted"
+if grep -q ' key 4242 escape' "$TMP_DIR/swift.log"; then
+  fail "batch: the line after the failure ran"
+fi
+[[ "$GATE_STDERR" == *"batch stopped at line 2/3"*"1 line(s) not run"* ]] \
+  || fail "batch: stderr did not say where it stopped: $GATE_STDERR"
+grep -q "failed" "$TMP_DIR/say.log" || fail "batch: the failing GUI line did not say failed"
+pass "a batch stops at the first failing verb"
+
+# 5. A runtime denial stops it too: a locked screen lets the read-only line
+# run and refuses the GUI line, in that order.
+: >"$TMP_DIR/swift.log"
+LOCK_STATE=locked
+run_gate 'batch' "${APP_ENV[@]}" <<<$'gate-log 1\nax dump all\nkey escape'
+LOCK_STATE=unlocked
+(( GATE_STATUS == 126 )) || fail "batch: a locked screen did not deny the GUI line (status $GATE_STATUS)"
+grep -q "line 1/3 end status=0$" <<<"$GATE_STDOUT" || fail "batch: gate-log did not run while locked: $GATE_STDOUT"
+grep -q "line 2/3 end status=126$" <<<"$GATE_STDOUT" || fail "batch: the locked-screen denial is not framed: $GATE_STDOUT"
+[[ ! -s "$TMP_DIR/swift.log" ]] || fail "batch: a GUI line ran on a locked screen"
+pass "denied: a batch stops at a locked-screen refusal, after the read-only lines before it"
+
+# 6. `ax type` keeps its `--` rule per line, its text reaches the helper, and
+# the text is redacted in the frame and in the log.
+: >"$TMP_DIR/swift.log"
+: >"$LOG_FILE"
+run_gate 'batch' "${APP_ENV[@]}" <<<$'ax type role=AXTextField,title=Endpoint -- sk-batch-secret-7!\nkey return'
+(( GATE_STATUS == 0 )) || fail "batch: ax type inside a batch failed: $GATE_STDERR"
+grep -q ' axtype 4242 role=AXTextField,title=Endpoint sk-batch-secret-7!' "$TMP_DIR/swift.log" \
+  || fail "batch: ax type's text did not reach the helper as argv: $(cat "$TMP_DIR/swift.log")"
+grep -q 'begin ax type role=AXTextField,title=Endpoint -- <redacted>$' <<<"$GATE_STDOUT" \
+  || fail "batch: the frame did not redact ax type's text: $GATE_STDOUT"
+if grep -q 'sk-batch-secret-7' <<<"$GATE_STDOUT"; then
+  fail "batch: the typed text leaked into stdout framing"
+fi
+if grep -q 'sk-batch-secret-7' "$LOG_FILE"; then
+  fail "batch: the typed text leaked into the gate log"
+fi
+grep -q ' ALLOW ax type role=AXTextField,title=Endpoint -- <redacted> (batch line 1/2' "$LOG_FILE" \
+  || fail "batch: ax type's log entry is missing or unredacted: $(cat "$LOG_FILE")"
+pass "ax type inside a batch keeps its -- rule, types the text, and redacts it everywhere"
+
+# 7. Bounds: lines, bytes, and an empty stdin.
+assert_denied 'batch' 'batch over the line cap' "${APP_ENV[@]}" LV_UI_BATCH_MAX_LINES=2 \
+  <<<$'ax dump all\nax dump all\nax dump all'
+assert_denied 'batch' 'batch over the byte cap' "${APP_ENV[@]}" LV_UI_BATCH_MAX_BYTES=20 \
+  <<<$'ax dump all\nax dump all'
+assert_denied 'batch' 'batch with nothing on stdin' "${APP_ENV[@]}" </dev/null
+assert_denied 'batch' 'batch with only blank lines' "${APP_ENV[@]}" <<<$'\n  \n'
+assert_denied 'batch now' 'batch takes no arguments' "${APP_ENV[@]}" <<<$'ax dump all'
+run_gate 'batch' "${APP_ENV[@]}" <<<$'\nax dump all\n\nkey escape\n'
+(( GATE_STATUS == 0 )) || fail "batch: blank spacer lines were not tolerated: $GATE_STDERR"
+grep -q "lines=2$" <<<"$GATE_STDOUT" || fail "batch: blank lines were counted as verbs: $GATE_STDOUT"
+pass "batch is bounded in lines and bytes, and blank lines are spacers, not verbs"
+
+# 8. With the lease on, a batch of GUI verbs warns ONCE.
+clear_state
+write_app_state 4242
+: >"$TMP_DIR/say.log"
+LEASE_SECONDS=120
+NOW_EPOCH=5000
+run_gate 'batch' "${APP_ENV[@]}" <<<$'ax click role=AXButton,title=General\nkey escape\nkey tab'
+(( GATE_STATUS == 0 )) || fail "batch: a leased GUI batch failed: $GATE_STDERR"
+[[ "$(grep -c "taking control" "$TMP_DIR/say.log")" == "1" ]] \
+  || fail "batch: three GUI lines under a lease warned $(grep -c "taking control" "$TMP_DIR/say.log") times"
+LEASE_SECONDS=0
+unset NOW_EPOCH
+pass "a batch of GUI verbs under the lease speaks the warning once"
+clear_state
+
+echo "== 32. ax find — the dump narrowed to a selector =="
+
+# `ax dump` ships the whole tree (8 KB and up) on every step of a click-by-
+# click session; `ax find` prints only what a selector matches. Same grammar,
+# same validator, same keys as `ax click` — an unknown key is refused here
+# exactly as it is there — and it is read-only, so no takeover warning.
+
+clear_state
+write_app_state 4242
+assert_denied 'ax find' 'ax find without a selector' "${APP_ENV[@]}"
+assert_denied 'ax find bogus=1' 'ax find with an unknown selector key' "${APP_ENV[@]}"
+assert_denied 'ax find index=1' 'ax find naming no matchable attribute' "${APP_ENV[@]}"
+assert_denied 'ax find title=' 'ax find with an empty value' "${APP_ENV[@]}"
+assert_denied 'ax find role=AXButton extra' 'ax find with two arguments' "${APP_ENV[@]}"
+assert_denied 'ax find role=AXButton;id' 'ax find with a metacharacter' "${APP_ENV[@]}"
+assert_denied 'ax find role=AXButton,' 'ax find with a trailing comma' "${APP_ENV[@]}"
+
+: >"$TMP_DIR/say.log"
+: >"$TMP_DIR/swift.log"
+assert_allowed 'ax find role=AXButton,title~Text+Processing' 'ax find by role and title' "${APP_ENV[@]}"
+[[ "$GATE_STDOUT" == '[{"role":"AXButton"'* ]] || fail "ax find did not print the helper's JSON: $GATE_STDOUT"
+grep -q 'axfind 4242 role=AXButton,title~Text+Processing' "$TMP_DIR/swift.log" \
+  || fail "ax find did not hand the selector to the helper scoped to the app pid: $(cat "$TMP_DIR/swift.log")"
+[[ ! -s "$TMP_DIR/say.log" ]] || fail "ax find spoke a takeover warning for a read-only verb: $(cat "$TMP_DIR/say.log")"
+pass "ax find is read-only, pid-scoped, and silent"
+
+LOCK_STATE=locked
+assert_denied 'ax find role=AXButton' 'ax find on a locked screen' "${APP_ENV[@]}"
+LOCK_STATE=unlocked
+clear_state
+assert_denied 'ax find role=AXButton' 'ax find with no app under test'
+
+# The helper's subcommand resolves matches with the same walker `axclick`
+# acts through, so what find shows is what click would press.
+AXFIND_BODY="$(helper_case_body axfind)"
+[[ -n "$AXFIND_BODY" ]] || fail "the helper has no axfind subcommand"
+grep -q 'collectMatches(selector' <<<"$AXFIND_BODY" \
+  || fail "axfind does not resolve its matches through collectMatches"
+grep -q 'ElementSelector(argv\[2\])' <<<"$AXFIND_BODY" \
+  || fail "axfind does not parse its selector with ElementSelector"
+grep -q 'renderNode(' <<<"$AXFIND_BODY" \
+  || fail "axfind does not render matches with the shared renderNode"
+pass "the helper's axfind shares the selector, walker and renderer with click and dump"
+
 echo "== 28. nothing here needs a bash newer than the Mac's /bin/bash 3.2 =="
 
 # The gate runs under the Mac's /bin/bash, which is 3.2 (Apple has shipped that
@@ -3052,7 +3655,7 @@ for bash4_file in "${BASH4_FILES[@]}"; do
   # nothing to bash and `${…}` is not an expansion at all.
   BASH4_CODE="$(awk '/BASH4-SCANNER-BEGIN/ { skip = 1 }
                      /BASH4-SCANNER-END/   { skip = 0; next }
-                     /^  cat >"\$HELPER_PATH" <<.SWIFT.$/ { skip = 1 }
+                     /^  cat <<.SWIFT.$/ { skip = 1 }
                      skip && /^SWIFT$/ { skip = 0; next }
                      skip { next }
                      { print }' "$bash4_file" | grep -v '^[[:space:]]*#' || true)"
@@ -3083,6 +3686,11 @@ while IFS= read -r slice_line; do
   fi
 done <<<"$GATE_SLICES"
 pass "every array slice in the gate sits behind a length guard"
+
+if (( FAILURES > 0 )); then
+  printf '\n%s assertion(s) FAILED (LV_UI_GATE_TEST_KEEP_GOING=1 kept the run going)\n' "$FAILURES" >&2
+  exit 1
+fi
 
 echo
 echo "ui gate tests passed"

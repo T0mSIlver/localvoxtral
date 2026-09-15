@@ -112,15 +112,19 @@ set -euo pipefail
 # takeover rule: any verb that steals focus or takes input (launch, ax click,
 # ax type, key, menu open, menu click, dictate tap/hold, term open, term focus)
 # speaks a warning, waits, and announces completion. `state`, `shot`,
-# `ax dump`, `menu dismiss`, `dictate cancel`, `log`, `gate-log`, `quit` and
-# `term close` do not warn: none of them takes the keyboard or raises a window in front of what the
-# owner is doing.
+# `ax dump`, `ax find`, `menu dismiss`, `dictate cancel`, `log`, `gate-log`,
+# `quit` and `term close` do not warn: none of them takes the keyboard or
+# raises a window in front of what the owner is doing. The warning is spoken
+# once per BURST, not once per click: a takeover LEASE (announce_takeover)
+# lets the verbs that follow within LV_UI_TAKEOVER_LEASE_SECONDS skip the
+# warning, and "done" is spoken once, after the burst has gone quiet.
 #
 # Verbs (each documented at its run_* function):
 #   state
 #   launch [--dogfood] <artifact>
 #   shot [settings|popover|overlay|window <n>]
 #   ax dump [settings|overlay|window <n>]
+#   ax find <selector>
 #   ax click <selector>
 #   ax type <selector> -- <text>
 #   key <escape|tab|return>
@@ -133,6 +137,9 @@ set -euo pipefail
 #   term open <ghostty|iterm|terminal> <command> [args...]
 #   term focus <id>
 #   term close <id>
+#   batch            (one verb per line on stdin — every line is one of the
+#                     above, validated exactly as if sent alone, and never
+#                     `batch` itself)
 #
 # Install notes, TCC grants and the deny check: scripts/mac/README.md.
 # Regression tests: scripts/ci/test-ui-gate.sh (runs in ci.yml; no GUI needed).
@@ -226,6 +233,23 @@ LV_UI_TERM_MAX_UNCONFIRMED="${LV_UI_TERM_MAX_UNCONFIRMED:-6}"
 # front of the machine — the default is the rule as stated.
 LV_UI_WARN_SLEEP_SECONDS="${LV_UI_WARN_SLEEP_SECONDS:-3}"
 
+# The takeover LEASE (2026-09-15). The rule above is about the owner being
+# surprised, and a click-by-click session surprises him once — at the first
+# click. Measured before this: `ax click` cost 13.5 s end to end, of which the
+# warning and its wait were 3 s on EVERY verb, followed by a spoken "done" on
+# every verb. So the first GUI verb of a burst warns and waits exactly as
+# before, then records a lease under the state dir; a GUI verb arriving while
+# the lease is live skips the warning and refreshes the lease; "done" is
+# spoken once, LV_UI_TAKEOVER_LEASE_SECONDS after the burst's last verb
+# (arm_done_announcer). A failed verb still says "failed" at once. 0 disables
+# the lease and restores warn-on-every-verb.
+LV_UI_TAKEOVER_LEASE_SECONDS="${LV_UI_TAKEOVER_LEASE_SECONDS:-120}"
+
+# `batch`'s bounds: how many lines and how many bytes one batch may carry.
+# Each line is still bounded by LV_UI_MAX_COMMAND_BYTES like a lone command.
+LV_UI_BATCH_MAX_LINES="${LV_UI_BATCH_MAX_LINES:-64}"
+LV_UI_BATCH_MAX_BYTES="${LV_UI_BATCH_MAX_BYTES:-16384}"
+
 # A window PNG is a few hundred KB; the cap exists so a pathological capture
 # cannot dump tens of MB into an agent transcript.
 LV_UI_SHOT_MAX_BYTES="${LV_UI_SHOT_MAX_BYTES:-8388608}"
@@ -237,6 +261,12 @@ LV_UI_MAX_HOLD_SECONDS="${LV_UI_MAX_HOLD_SECONDS:-30}"
 
 LV_UI_MAX_COMMAND_BYTES="${LV_UI_MAX_COMMAND_BYTES:-2048}"
 LV_UI_MAX_TEXT_BYTES="${LV_UI_MAX_TEXT_BYTES:-512}"
+
+# The compiler that builds the helper (prepare_helper): the Xcode CLT's
+# `swiftc` on the Mac. A seam, not a knob: the shell suite points it at a
+# stand-in on a box that has no swiftc, and at nothing at all to drive the
+# interpreted fallback, on a box that may well have the real one.
+LV_UI_SWIFTC="${LV_UI_SWIFTC:-swiftc}"
 
 # `app`'s target: the dogfood control socket of the app under test. Not
 # discovered, not passed in — the one path a dogfood build ever binds
@@ -317,6 +347,11 @@ fi
 # after something has already been opened.)
 case "$LV_UI_LAUNCH_WAIT_SECONDS" in "" | *[!0-9]*) LV_UI_LAUNCH_WAIT_SECONDS=20 ;; esac
 case "$LV_UI_TERM_OPEN_TIMEOUT_SECONDS" in "" | *[!0-9]*) LV_UI_TERM_OPEN_TIMEOUT_SECONDS=20 ;; esac
+# Same treatment for the three knobs added with the lease and `batch`: each is
+# consumed by `$(( ))`, and a typo in the conf must not take the gate down.
+case "$LV_UI_TAKEOVER_LEASE_SECONDS" in "" | *[!0-9]*) LV_UI_TAKEOVER_LEASE_SECONDS=120 ;; esac
+case "$LV_UI_BATCH_MAX_LINES" in "" | *[!0-9]*) LV_UI_BATCH_MAX_LINES=64 ;; esac
+case "$LV_UI_BATCH_MAX_BYTES" in "" | *[!0-9]*) LV_UI_BATCH_MAX_BYTES=16384 ;; esac
 
 # Second layer under the (empty by default) allowlist above: names that can run
 # a child command are refused even when the conf allowlists them. Deliberately
@@ -348,11 +383,33 @@ nc netcat curl wget rsync ftp"
 
 original_command="${SSH_ORIGINAL_COMMAND:-}"
 ARGV=()
-ANNOUNCED_TAKEOVER=0
 ACTION_COMPLETED=0
+# Set by announce_takeover whether it spoke or was covered by a live lease:
+# "this invocation acted under the takeover rule", which is what decides at
+# exit whether "failed"/"done" is owed.
+TAKEOVER_HELD=0
+# `batch` (run_batch) drives the dispatcher below once per line. CHECK_ONLY
+# stops every verb right after its argument validation, before any lock probe,
+# state read or side effect; DEPTH is what makes `batch` inside a batch a
+# denial; CONTEXT prefixes each line's log entry with its position.
+DISPATCH_CHECK_ONLY=0
+BATCH_DEPTH=0
+BATCH_CONTEXT=""
 
 timestamp() {
   date '+%Y-%m-%dT%H:%M:%S%z'
+}
+
+# The lease and the done-announcer read a clock. Injected here (the conf file
+# is owner-trust, like LV_UI_WARN_SLEEP_SECONDS=0) so the shell suite can move
+# time without sleeping through a real lease window; an unset or malformed
+# value is the wall clock.
+now_epoch() {
+  if [[ "${LV_UI_NOW_EPOCH:-}" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$LV_UI_NOW_EPOCH"
+  else
+    date '+%s'
+  fi
 }
 
 log_line() {
@@ -368,8 +425,10 @@ log_line() {
 # Every invocation is logged, allowed or denied. `ax type`'s text is NOT
 # logged: the legitimate use for it is filling in an endpoint's API key field,
 # and this log is read by agents and pasted into PRs.
-log_command() {
-  local verdict="$1" note="${2:-}" shown="${original_command:-<empty>}"
+# A command as it may be shown — in the log and in `batch`'s frame lines:
+# `ax type`'s text replaced, and only the first 512 bytes.
+shown_command() { # <command> -> one printable line, text redacted
+  local shown="${1:-<empty>}"
   case "$shown" in
     "ax type "*) shown="${shown%% -- *} -- <redacted>" ;;
   esac
@@ -377,7 +436,14 @@ log_command() {
   # newline in it would otherwise write a second line into this log that reads
   # exactly like a genuine ALLOW entry. Every non-printable byte becomes `?`,
   # so one invocation is always exactly one line.
-  shown="$(printf '%s' "${shown:0:512}" | tr -c '[:print:]' '?')"
+  printf '%s' "${shown:0:512}" | tr -c '[:print:]' '?'
+}
+
+log_command() {
+  local verdict="$1" note="${2:-}" shown
+  shown="$(shown_command "$original_command")"
+  # Inside a batch, every line's entry says which line it was.
+  [[ -z "$BATCH_CONTEXT" ]] || note="$BATCH_CONTEXT${note:+: $note}"
   # The note gets the same treatment, and for the same reason. Today every note
   # is built from already-charset-checked input, so there is no live injection
   # — but "one invocation is always exactly one line" was enforced on only half
@@ -403,6 +469,17 @@ fail() {
   exit "${2:-1}"
 }
 
+# Where `batch`'s validation pass ends for a verb. Every run_* calls this
+# right after its ARGUMENT checks and before its first lock probe, state read
+# or side effect, so a batch line is validated by the very code that would
+# validate it alone, and a batch is refused whole before anything runs. Only
+# ever reached with CHECK_ONLY set inside run_batch's per-line subshell, where
+# `exit 0` ends that subshell and nothing else.
+check_only_stop() {
+  (( DISPATCH_CHECK_ONLY == 1 )) || return 0
+  exit 0
+}
+
 # ---------------------------------------------------------------------------
 # Input validation
 # ---------------------------------------------------------------------------
@@ -425,6 +502,11 @@ validate_selector() {
   token_is_safe "$selector" || return 1
   (( ${#selector} <= 256 )) || return 1
   [[ "$selector" == *[=~]* ]] || return 1
+  # An empty pair is refused HERE, on the string: word-splitting on `,` below
+  # drops a leading, trailing or doubled comma's empty field before the loop
+  # can see it, so `role=AXButton,` used to pass this validator and fail only
+  # in the helper (found by test-ui-gate.sh section 32, 2026-09-15).
+  [[ "$selector" != ,* && "$selector" != *, && "$selector" != *,,* ]] || return 1
   local IFS=,
   for pair in $selector; do
     [[ -n "$pair" ]] || return 1
@@ -509,27 +591,112 @@ require_unlocked_screen() {
 # Owner rule: audible takeover warning
 # ---------------------------------------------------------------------------
 
+# The lease: `since=<epoch>` and `nonce=<token>` in a 0600 file under the
+# 0700 state dir. It is evidence that the owner was warned less than
+# LV_UI_TAKEOVER_LEASE_SECONDS ago and nothing more: no verb reads anything
+# else out of it, and forging it needs write access to the state dir, which is
+# the same trust as replacing this script. Never cached in memory across
+# invocations — every verb re-reads the file and the clock.
+LEASE_FILE="$STATE_DIR/takeover.lease"
+LEASE_NONCE=""
+
+lease_is_live() {
+  (( LV_UI_TAKEOVER_LEASE_SECONDS > 0 )) || return 1
+  [[ -f "$LEASE_FILE" ]] || return 1
+  local since now
+  since="$(sed -n 's/^since=//p' "$LEASE_FILE" 2>/dev/null | head -n 1)"
+  [[ "$since" =~ ^[0-9]+$ ]] || return 1
+  now="$(now_epoch)"
+  # A lease from the future (clock stepped back) is not evidence of anything.
+  (( now >= since && now - since < LV_UI_TAKEOVER_LEASE_SECONDS ))
+}
+
+lease_remaining_seconds() { # -> 0 when there is no live lease
+  local since now
+  lease_is_live || { printf '0'; return; }
+  since="$(sed -n 's/^since=//p' "$LEASE_FILE" 2>/dev/null | head -n 1)"
+  now="$(now_epoch)"
+  printf '%s' "$(( LV_UI_TAKEOVER_LEASE_SECONDS - (now - since) ))"
+}
+
+# (Re)write the lease with a fresh nonce. The nonce is what retires an older
+# done-announcer: it wakes, sees a nonce that is not its own, and exits.
+write_lease() {
+  (( LV_UI_TAKEOVER_LEASE_SECONDS > 0 )) || return 0
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  chmod 0700 "$STATE_DIR" 2>/dev/null || true
+  LEASE_NONCE="$$.$(now_epoch).$RANDOM$RANDOM"
+  local staged="$LEASE_FILE.tmp.$$"
+  ( umask 077; printf 'since=%s\nnonce=%s\n' "$(now_epoch)" "$LEASE_NONCE" >"$staged" ) || return 0
+  chmod 0600 "$staged" 2>/dev/null || true
+  mv -f "$staged" "$LEASE_FILE" 2>/dev/null || rm -f "$staged"
+}
+
 announce_takeover() {
   local what="$1"
+  TAKEOVER_HELD=1
+  if lease_is_live; then
+    # Warned less than a lease ago: this is the same burst. Refresh and go.
+    write_lease
+    return 0
+  fi
   say "localvoxtral u i gate taking control in 3: $what" >/dev/null 2>&1 || true
-  ANNOUNCED_TAKEOVER=1
   sleep "$LV_UI_WARN_SLEEP_SECONDS" 2>/dev/null || true
+  write_lease
+}
+
+# "done", once, after the burst has gone quiet.
+#
+# The simplest shape that cannot leave anything stuck: a detached subshell
+# that sleeps one lease window, re-reads the lease, and speaks only if its own
+# nonce is still the one on file. Every GUI verb arms one of these and
+# rewrites the nonce, so the announcers of the verbs before it wake to a
+# foreign nonce and exit silently; the LAST verb's announcer is the one that
+# speaks. There is no pid to track and nothing to kill (a recycled pid would
+# make `kill` the hazard), no loop, and a lifetime bounded by `sleep` itself.
+# Detached from the SSH channel on all three descriptors so the session ends
+# when the verb does; HUP is ignored so a client that disconnects right after
+# cannot take the announcement with it.
+#
+# `announcer=<pid>` is appended to the lease for the shell suite to wait on
+# and for nothing else — it is deliberately not read back by this script.
+arm_done_announcer() {
+  [[ -n "$LEASE_NONCE" && -f "$LEASE_FILE" ]] || return 0
+  local nonce="$LEASE_NONCE" file="$LEASE_FILE" window="$LV_UI_TAKEOVER_LEASE_SECONDS"
+  (
+    trap '' HUP
+    sleep "$window" 2>/dev/null || true
+    [[ "$(sed -n 's/^nonce=//p' "$file" 2>/dev/null | head -n 1)" == "$nonce" ]] || exit 0
+    say "localvoxtral u i gate done" >/dev/null 2>&1 || true
+  ) </dev/null >/dev/null 2>&1 &
+  printf 'announcer=%s\n' "$!" >>"$file" 2>/dev/null || true
+  disown "$!" 2>/dev/null || true
 }
 
 announce_result() {
-  (( ANNOUNCED_TAKEOVER == 1 )) || return 0
+  (( TAKEOVER_HELD == 1 )) || return 0
   if (( ACTION_COMPLETED == 1 )); then
-    say "localvoxtral u i gate done" >/dev/null 2>&1 || true
+    if (( LV_UI_TAKEOVER_LEASE_SECONDS > 0 )); then
+      arm_done_announcer
+    else
+      say "localvoxtral u i gate done" >/dev/null 2>&1 || true
+    fi
   else
+    # Failure is said at once, lease or no lease — the owner may be looking
+    # at whatever it left behind. The burst's "done" still follows.
     say "localvoxtral u i gate failed" >/dev/null 2>&1 || true
+    (( LV_UI_TAKEOVER_LEASE_SECONDS > 0 )) && arm_done_announcer
   fi
+  return 0
 }
 
 # One EXIT path for the whole gate: no capture file ever outlives the
 # invocation that took it, whatever exit the verb takes.
 SHOT_FILE=""
+STATE_PROBE_DIR=""
 on_exit() {
   [[ -n "$SHOT_FILE" ]] && rm -f "$SHOT_FILE"
+  [[ -n "$STATE_PROBE_DIR" ]] && rm -rf "$STATE_PROBE_DIR"
   announce_result
 }
 trap on_exit EXIT
@@ -538,17 +705,19 @@ trap on_exit EXIT
 # Swift helper — every CoreGraphics/AX call lives here
 # ---------------------------------------------------------------------------
 # The helper receives selectors, text and window kinds as ARGV, never as
-# interpolated source: the heredoc below is a constant. It is written into the
-# 0700 state dir on each invocation and run with `swift <file> <subcommand>`.
+# interpolated source: the heredoc below is a constant. It is staged into the
+# 0700 state dir on each invocation (and only replaces the file there when it
+# differs), compiled ONCE per revision of its source with `swiftc -O`, and run
+# as that binary; `swift <file> <subcommand>` — the interpreter, which cost
+# about a second per call — is the fallback when swiftc is absent or fails.
 
 HELPER_PATH=""
+HELPER_BIN=""
+HELPER_MODE=""     # compiled | interpreted, decided once per invocation
+HELPER_REASON=""   # why interpreted: no-swiftc | swiftc-failed | no-digest
 
-write_helper() {
-  [[ -n "$HELPER_PATH" ]] && return 0
-  mkdir -p "$STATE_DIR" 2>/dev/null || true
-  chmod 0700 "$STATE_DIR" 2>/dev/null || true
-  HELPER_PATH="$STATE_DIR/ui-gate-helper.swift"
-  cat >"$HELPER_PATH" <<'SWIFT'
+helper_source() {
+  cat <<'SWIFT'
 import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
@@ -560,6 +729,7 @@ import Foundation
 //   preflight
 //   window <pid> <settings|popover|overlay|window> [index]   -> "<winid> <ownerpid>"
 //   axdump <pid> [all|settings|overlay|window] [index]       -> JSON
+//   axfind <pid> <selector>                                  -> JSON (matches + subtrees)
 //   axclick <pid> <selector>
 //   axtype <pid> <selector> <text>
 //   key <pid> <escape|tab|return>
@@ -768,6 +938,27 @@ func uniqueMatch(_ selector: ElementSelector, pid: pid_t) -> AXUIElement {
     return matches[0]
 }
 
+// One AX node and its subtree as JSON. `budget` is shared across a whole
+// render (axdump: 20k nodes over 40 levels; axfind: 4k over 8) so neither
+// output can grow past what a transcript can carry.
+func renderNode(_ element: AXUIElement, depth: Int, maxDepth: Int, budget: inout Int) -> String {
+    if depth > maxDepth || budget <= 0 { return "" }
+    budget -= 1
+    var node = "{\"role\":\"\(jsonEscape(str(element, kAXRoleAttribute)))\""
+    node += ",\"subrole\":\"\(jsonEscape(str(element, kAXSubroleAttribute)))\""
+    node += ",\"title\":\"\(jsonEscape(str(element, kAXTitleAttribute)))\""
+    node += ",\"desc\":\"\(jsonEscape(str(element, kAXDescriptionAttribute)))\""
+    node += ",\"value\":\"\(jsonEscape(String(str(element, kAXValueAttribute).prefix(200))))\""
+    let children = (copyAttr(element, kAXChildrenAttribute) as? [AXUIElement]) ?? []
+    var rendered: [String] = []
+    for child in children {
+        let text = renderNode(child, depth: depth + 1, maxDepth: maxDepth, budget: &budget)
+        if !text.isEmpty { rendered.append(text) }
+    }
+    node += ",\"children\":[" + rendered.joined(separator: ",") + "]}"
+    return node
+}
+
 // MARK: - Subcommands
 
 func requirePID(_ raw: String) -> pid_t {
@@ -919,24 +1110,26 @@ case "axdump":
     default:
         die("unknown dump kind \(kind)")
     }
-    var out = "["
     var budget = 20_000
-    func renderNode(_ element: AXUIElement, depth: Int) -> String {
-        if depth > 40 || budget <= 0 { return "" }
-        budget -= 1
-        var node = "{\"role\":\"\(jsonEscape(str(element, kAXRoleAttribute)))\""
-        node += ",\"subrole\":\"\(jsonEscape(str(element, kAXSubroleAttribute)))\""
-        node += ",\"title\":\"\(jsonEscape(str(element, kAXTitleAttribute)))\""
-        node += ",\"desc\":\"\(jsonEscape(str(element, kAXDescriptionAttribute)))\""
-        node += ",\"value\":\"\(jsonEscape(String(str(element, kAXValueAttribute).prefix(200))))\""
-        let children = (copyAttr(element, kAXChildrenAttribute) as? [AXUIElement]) ?? []
-        let rendered = children.map { renderNode($0, depth: depth + 1) }.filter { !$0.isEmpty }
-        node += ",\"children\":[" + rendered.joined(separator: ",") + "]}"
-        return node
+    let rendered = roots.map { renderNode($0, depth: 0, maxDepth: 40, budget: &budget) }
+    print("[" + rendered.joined(separator: ",") + "]")
+
+// axfind <pid> <selector>: the nodes the selector matches, each with its own
+// subtree, and nothing else. Same grammar, same walker and the same ambiguity
+// rules as `axclick` (collectMatches / index=), so what `find` prints is what
+// `click` would act on — it exists so a caller can stop reading a whole
+// `axdump` to locate one button. Bounded per subtree so a match on a window
+// root is not a dump in disguise.
+case "axfind":
+    guard argv.count >= 3, let selector = ElementSelector(argv[2]) else { die("bad selector") }
+    var matches = collectMatches(selector, pid: requirePID(argv[1]))
+    if let index = selector.index {
+        matches = index < matches.count ? [matches[index]] : []
     }
-    out += roots.map { renderNode($0, depth: 0) }.joined(separator: ",")
-    out += "]"
-    print(out)
+    var findBudget = 4_000
+    let found = matches.map { renderNode($0, depth: 0, maxDepth: 8, budget: &findBudget) }
+        .filter { !$0.isEmpty }
+    print("[" + found.joined(separator: ",") + "]")
 
 case "axclick":
     guard argv.count >= 3, let selector = ElementSelector(argv[2]) else { die("bad selector") }
@@ -1373,12 +1566,116 @@ default:
     die("unknown subcommand \(subcommand)")
 }
 SWIFT
-  chmod 0600 "$HELPER_PATH" 2>/dev/null || true
+}
+
+sha256_of_file() { # <path> -> 64 hex chars, or nothing
+  local digest=""
+  if command -v shasum >/dev/null 2>&1; then
+    digest="$(shasum -a 256 "$1" 2>/dev/null || true)"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    digest="$(sha256sum "$1" 2>/dev/null || true)"
+  fi
+  digest="${digest%% *}"
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 0
+  printf '%s' "$digest"
+}
+
+# Idempotent: the source is staged beside the file and only moved into place
+# when it differs, so a gate that has not changed never rewrites (and never
+# re-dates) the file the compiled binary was built from.
+write_helper() {
+  [[ -n "$HELPER_PATH" ]] && return 0
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  chmod 0700 "$STATE_DIR" 2>/dev/null || true
+  HELPER_PATH="$STATE_DIR/ui-gate-helper.swift"
+  local staged="$HELPER_PATH.new.$$"
+  helper_source >"$staged"
+  chmod 0600 "$staged" 2>/dev/null || true
+  if cmp -s "$staged" "$HELPER_PATH" 2>/dev/null; then
+    rm -f "$staged"
+  else
+    mv -f "$staged" "$HELPER_PATH"
+  fi
+}
+
+# Decide compiled vs interpreted, once per invocation, and compile if needed.
+#
+# The binary is named by the first 16 hex of the SOURCE's SHA-256, so a gate
+# revision that changes the helper compiles to a new name and every older
+# binary is deleted; a revision that leaves the helper alone reuses the
+# binary. A failed compile is remembered per digest (`<binary>.failed`) so a
+# swiftc that cannot build this source costs one attempt and not one per
+# verb; the marker goes with the source's next change, or by hand.
+#
+# Which path ran is visible three ways: a compile (or a failed one) writes a
+# HELPER line to the gate log at the moment it happens; every invocation that
+# runs interpreted says so on stderr, because that is the slow path and a
+# quiet slow path is what this change exists to end; and `state` reports
+# `setup.helper` on demand.
+prepare_helper() {
+  [[ -z "$HELPER_MODE" ]] || return 0
+  write_helper
+  HELPER_MODE=interpreted
+  local digest bin stale compile_log
+  digest="$(sha256_of_file "$HELPER_PATH")"
+  if [[ -z "$digest" ]]; then
+    HELPER_REASON=no-digest
+  else
+    bin="$STATE_DIR/ui-gate-helper-${digest:0:16}"
+    if [[ -x "$bin" ]]; then
+      HELPER_BIN="$bin"
+      HELPER_MODE=compiled
+      return 0
+    fi
+    if [[ -e "$bin.failed" ]]; then
+      HELPER_REASON=swiftc-failed
+    elif ! command -v "$LV_UI_SWIFTC" >/dev/null 2>&1; then
+      HELPER_REASON=no-swiftc
+    else
+      compile_log="$STATE_DIR/ui-gate-helper-compile.log"
+      printf 'localvoxtral ui gate: compiling the helper once for this gate revision (%s)...\n' "${bin##*/}" >&2
+      if "$LV_UI_SWIFTC" -O -o "$bin.tmp.$$" "$HELPER_PATH" >"$compile_log" 2>&1 && [[ -x "$bin.tmp.$$" ]]; then
+        chmod 0700 "$bin.tmp.$$" 2>/dev/null || true
+        mv -f "$bin.tmp.$$" "$bin"
+        # Every binary and failure marker that is not this digest's is stale.
+        for stale in "$STATE_DIR"/ui-gate-helper-*; do
+          [[ -e "$stale" ]] || continue
+          case "$stale" in
+            "$bin" | "$bin".failed | *.log | *.tmp.*) continue ;;
+          esac
+          rm -f "$stale"
+        done
+        log_line "HELPER compiled ${bin##*/}"
+        HELPER_BIN="$bin"
+        HELPER_MODE=compiled
+        return 0
+      fi
+      rm -f "$bin.tmp.$$"
+      : >"$bin.failed" 2>/dev/null || true
+      HELPER_REASON=swiftc-failed
+      log_line "HELPER swiftc failed for ${bin##*/} (see $compile_log); falling back to the interpreter until the source changes or $bin.failed is removed"
+    fi
+  fi
+  printf 'localvoxtral ui gate: helper running INTERPRETED (%s) — slow; state reports setup.helper\n' \
+    "$HELPER_REASON" >&2
 }
 
 helper() {
-  write_helper
-  swift "$HELPER_PATH" "$@"
+  prepare_helper
+  if [[ "$HELPER_MODE" == compiled ]]; then
+    "$HELPER_BIN" "$@"
+  else
+    swift "$HELPER_PATH" "$@"
+  fi
+}
+
+helper_json() { # `state`'s setup.helper
+  prepare_helper
+  if [[ "$HELPER_MODE" == compiled ]]; then
+    printf '{"mode":"compiled","binary":%s}' "$(json_string "${HELPER_BIN##*/}")"
+  else
+    printf '{"mode":"interpreted","reason":%s}' "$(json_string "$HELPER_REASON")"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1548,14 +1845,9 @@ json_word_array() {
 # 12-character digest the operator can compare against
 # `shasum -a 256 scripts/mac/localvoxtral-ui-gate.sh` settles it in one line.
 gate_revision() {
-  local digest=""
-  if command -v shasum >/dev/null 2>&1; then
-    digest="$(shasum -a 256 "$0" 2>/dev/null || true)"
-  elif command -v sha256sum >/dev/null 2>&1; then
-    digest="$(sha256sum "$0" 2>/dev/null || true)"
-  fi
-  digest="${digest%% *}"
-  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || { printf 'unknown'; return; }
+  local digest
+  digest="$(sha256_of_file "$0")"
+  [[ -n "$digest" ]] || { printf 'unknown'; return; }
   printf '%s' "${digest:0:12}"
 }
 
@@ -1667,8 +1959,8 @@ control_socket_live() {
   fi
 }
 
-setup_json() {
-  local socket_consent gate_conf_present lock_probe_present
+setup_json() { # <control-socket-live: true|false>
+  local socket_live="$1" socket_consent gate_conf_present lock_probe_present
   local attach_installed attach_allowlisted
 
   attach_check
@@ -1689,8 +1981,9 @@ setup_json() {
   attach_allowlisted=0
   list_contains lv-attach "$LV_UI_TERM_COMMANDS" && attach_allowlisted=1
 
-  printf '{"gate":{"revision":%s},"lock_probe":{"installed":%s},"gate_conf":{"present":%s,"status":%s},"artifacts":%s,"term_open":{"terminals":%s,"commands":%s,"refused_by_denylist":%s,"unresolvable":%s},"lv_attach":{"installed":%s,"allowlisted":%s,"conf":%s,"destination":%s,"session_default":%s},"control_socket":{"present":%s,"consent":%s}}' \
+  printf '{"gate":{"revision":%s},"helper":%s,"lock_probe":{"installed":%s},"gate_conf":{"present":%s,"status":%s},"artifacts":%s,"term_open":{"terminals":%s,"commands":%s,"refused_by_denylist":%s,"unresolvable":%s},"lv_attach":{"installed":%s,"allowlisted":%s,"conf":%s,"destination":%s,"session_default":%s},"control_socket":{"present":%s,"consent":%s}}' \
     "$(json_string "$(gate_revision)")" \
+    "$(helper_json)" \
     "$(json_bool "$lock_probe_present")" \
     "$(json_bool "$gate_conf_present")" "$(json_string "$GATE_CONF_STATUS")" \
     "$(setup_artifacts_json)" \
@@ -1702,31 +1995,67 @@ setup_json() {
     "$(json_string "$ATTACH_CONF_STATUS")" \
     "$([[ -n "$ATTACH_DESTINATION" ]] && json_string "$ATTACH_DESTINATION" || printf 'null')" \
     "$(json_bool "$ATTACH_SESSION")" \
-    "$(control_socket_live)" \
+    "$socket_live" \
     "$(json_string "$socket_consent")"
 }
 
 # state — the only verb that answers while the screen is locked, because
 # "is it safe to drive right now" is exactly what it is for. Read-only.
+#
+# Its live probes run CONCURRENTLY, each into its own file under a private
+# temp dir, and are joined with `wait` before the JSON is assembled. Measured
+# serially (2026-09-15) `state` was 2.3 s, almost all of it two interpreted
+# helper runs plus the lock probe; none of the five probes below depends on
+# another, so the verb now costs the slowest of them rather than their sum.
+# Nothing here is cached across invocations — the lock state in particular is
+# a security gate and is read fresh every time, here and in
+# require_unlocked_screen.
 run_state() {
-  local lock idle power preflight accessibility screen_recording running_json terminals
-  lock="$(screen_lock_state)"
-  # `|| true` is load-bearing, not defensive noise: awk `exit`s on the first
-  # match while ioreg is still writing, so ioreg takes SIGPIPE and `pipefail`
-  # makes the whole substitution non-zero — under `set -e` that killed `state`
-  # with rc 141 and no output at all (first install, 2026-08-28). The validity
-  # guard on the next line already covers an empty result.
-  idle="$(ioreg -c IOHIDSystem 2>/dev/null \
-    | awk '/HIDIdleTime/ { gsub(/[^0-9]/, "", $NF); if ($NF != "") { print int($NF / 1000000000); exit } }' || true)"
+  local lock idle power preflight accessibility screen_recording running_json terminals socket_live
+  # The helper mode (and a first compile) is settled in THIS process before
+  # any probe forks, so the decision is made once and `setup.helper` reports
+  # what the probes ran.
+  prepare_helper
+  STATE_PROBE_DIR="$(mktemp -d "$STATE_DIR/state.XXXXXX")" \
+    || fail "could not create a probe directory under $STATE_DIR"
+  local probes="$STATE_PROBE_DIR"
+
+  screen_lock_state >"$probes/lock" &
+  {
+    # `|| true` is load-bearing, not defensive noise: awk `exit`s on the first
+    # match while ioreg is still writing, so ioreg takes SIGPIPE and `pipefail`
+    # makes the whole substitution non-zero — under `set -e` that killed `state`
+    # with rc 141 and no output at all (first install, 2026-08-28). The validity
+    # guard on the next line already covers an empty result.
+    idle="$(ioreg -c IOHIDSystem 2>/dev/null \
+      | awk '/HIDIdleTime/ { gsub(/[^0-9]/, "", $NF); if ($NF != "") { print int($NF / 1000000000); exit } }' || true)"
+    printf '%s' "$idle"
+  } >"$probes/idle" &
+  {
+    # Same SIGPIPE shape as the idle probe above: `head` closes the pipe while
+    # pmset is still writing. `*)` already yields "unknown" for an empty read.
+    case "$(pmset -g ps 2>/dev/null | head -n 1 || true)" in
+      *"AC Power"*) printf 'ac' ;;
+      *"Battery Power"* | *"UPS Power"*) printf 'battery' ;;
+      *) printf 'unknown' ;;
+    esac
+  } >"$probes/power" &
+  { helper preflight 2>/dev/null || true; } >"$probes/preflight" &
+  control_socket_live >"$probes/socket" &
+  wait
+
+  lock="$(<"$probes/lock")"
+  [[ -n "$lock" ]] || lock="error"
+  idle="$(<"$probes/idle")"
   [[ "$idle" =~ ^[0-9]+$ ]] || idle="null"
-  # Same SIGPIPE shape as the idle probe above: `head` closes the pipe while
-  # pmset is still writing. `*)` already yields "unknown" for an empty read.
-  case "$(pmset -g ps 2>/dev/null | head -n 1 || true)" in
-    *"AC Power"*) power="ac" ;;
-    *"Battery Power"* | *"UPS Power"*) power="battery" ;;
-    *) power="unknown" ;;
-  esac
-  preflight="$(helper preflight 2>/dev/null || true)"
+  power="$(<"$probes/power")"
+  [[ -n "$power" ]] || power="unknown"
+  preflight="$(<"$probes/preflight")"
+  socket_live="$(<"$probes/socket")"
+  [[ "$socket_live" == "true" ]] || socket_live=false
+  rm -rf "$STATE_PROBE_DIR"
+  STATE_PROBE_DIR=""
+
   accessibility="$(sed -n 's/^accessibility=//p' <<<"$preflight")"
   screen_recording="$(sed -n 's/^screen_recording=//p' <<<"$preflight")"
   [[ "$accessibility" == "1" ]] && accessibility=true || accessibility=false
@@ -1756,10 +2085,16 @@ run_state() {
     terminals+="{\"id\":$(json_string "$id"),\"terminal\":$(json_string "$term"),\"pid\":$pid,\"window\":$window,\"alive\":$( (( pid > 0 )) && kill -0 "$pid" 2>/dev/null && echo true || echo false),\"marker\":$(json_string "$marker"),\"unconfirmed\":$unconfirmed}"
   done
 
-  printf '{"screen_lock":%s,"idle_seconds":%s,"power":%s,"tcc":{"accessibility":%s,"screen_recording":%s},"app":%s,"terminals":[%s],"setup":%s}\n' \
+  # Whether the NEXT GUI verb will speak the warning, so a caller can plan a
+  # burst around it. Read from the lease file and the clock, never remembered.
+  local lease_left
+  lease_left="$(lease_remaining_seconds)"
+
+  printf '{"screen_lock":%s,"idle_seconds":%s,"power":%s,"tcc":{"accessibility":%s,"screen_recording":%s},"app":%s,"terminals":[%s],"takeover":{"leased":%s,"remaining_seconds":%s,"lease_seconds":%s},"setup":%s}\n' \
     "$(json_string "$lock")" "$idle" "$(json_string "$power")" \
     "$accessibility" "$screen_recording" "$running_json" "$terminals" \
-    "$(setup_json)"
+    "$(json_bool "$(( lease_left > 0 ))")" "$lease_left" "$LV_UI_TAKEOVER_LEASE_SECONDS" \
+    "$(setup_json "$socket_live")"
 }
 
 # launch [--dogfood] <artifact>
@@ -1777,6 +2112,7 @@ run_launch() {
     shift
   done
   [[ -n "$argument" ]] || deny "launch needs an artifact path"
+  check_only_stop
 
   bundle="$(resolve_artifact "$argument")" \
     || deny "artifact is not inside an allowlisted root ($LV_UI_ARTIFACT_ROOTS)"
@@ -1884,6 +2220,7 @@ run_shot() {
     window) [[ "$index" =~ ^[1-9][0-9]{0,2}$ ]] || deny "window needs an index 1..999" ;;
     *) deny "unknown shot target" ;;
   esac
+  check_only_stop
   require_unlocked_screen
   require_app_under_test
 
@@ -1924,6 +2261,7 @@ run_ax_dump() {
     window) [[ "$index" =~ ^[1-9][0-9]{0,2}$ ]] || deny "window needs an index 1..999" ;;
     *) deny "unknown dump pane" ;;
   esac
+  check_only_stop
   require_unlocked_screen
   require_app_under_test
   log_command ALLOW "pane=$kind${index:+ index=$index}"
@@ -1931,9 +2269,26 @@ run_ax_dump() {
   ACTION_COMPLETED=1
 }
 
+# ax find <selector> — `ax dump` narrowed to the nodes a selector matches (and
+# their bounded subtrees), so a caller locating one control stops paying for
+# the whole tree on every step. Same selector grammar and validator as
+# `ax click`, so what `find` shows is what `click` would act on; read-only and
+# focus-free like `ax dump`, so no takeover warning.
+run_ax_find() {
+  local selector="$1"
+  validate_selector "$selector" || deny "malformed selector"
+  check_only_stop
+  require_unlocked_screen
+  require_app_under_test
+  log_command ALLOW "selector=$selector"
+  helper axfind "$APP_PID" "$selector" || fail "AX find failed"
+  ACTION_COMPLETED=1
+}
+
 run_ax_click() {
   local selector="$1"
   validate_selector "$selector" || deny "malformed selector"
+  check_only_stop
   require_unlocked_screen
   require_app_under_test
   log_command ALLOW "selector=$selector"
@@ -1946,6 +2301,7 @@ run_ax_type() {
   local selector="$1" text="$2"
   validate_selector "$selector" || deny "malformed selector"
   validate_typed_text "$text" || deny "malformed text"
+  check_only_stop
   require_unlocked_screen
   require_app_under_test
   log_command ALLOW "selector=$selector"
@@ -1960,6 +2316,7 @@ run_key() {
     escape | tab | return) ;;
     *) deny "key not in allowlist" ;;
   esac
+  check_only_stop
   require_unlocked_screen
   require_app_under_test
   log_command ALLOW "key=$name"
@@ -1977,6 +2334,7 @@ run_key() {
 # and every UI verb was unusable). Scoped exactly like the others: the pid is
 # the one `launch` recorded, and the AX element is that app's own status item.
 run_menu_open() {
+  check_only_stop
   require_unlocked_screen
   require_app_under_test
   log_command ALLOW "menu=open pid=$APP_PID"
@@ -1988,6 +2346,7 @@ run_menu_open() {
 run_menu_click() {
   local title="$1"
   validate_menu_title "$title" || deny "malformed menu item title"
+  check_only_stop
   require_unlocked_screen
   require_app_under_test
   log_command ALLOW "menu=click item=$title"
@@ -1999,6 +2358,7 @@ run_menu_click() {
 # No takeover warning, for the same reason `quit` has none: closing a menu
 # takes nothing from the owner — it gives the screen back.
 run_menu_dismiss() {
+  check_only_stop
   require_unlocked_screen
   require_app_under_test
   log_command ALLOW "menu=dismiss pid=$APP_PID"
@@ -2066,6 +2426,13 @@ resolve_dictation_trigger() {
 
 run_dictate() {
   local gesture="$1" seconds="${2:-}"
+  # The duration's SHAPE is an argument check and is refused here, before any
+  # probe; whether it clears the app's hold delay needs the app's defaults and
+  # is decided below with the rest of the runtime checks.
+  if [[ "$gesture" == "hold" ]]; then
+    [[ "$seconds" =~ ^[0-9]+(\.[0-9]+)?$ ]] || deny "hold needs a duration in seconds"
+  fi
+  check_only_stop
   require_unlocked_screen
   require_app_under_test
 
@@ -2144,6 +2511,7 @@ run_app() {
       deny "not a forwardable control command: $line"
       ;;
   esac
+  check_only_stop
 
   # Lock before anything else the way `term open` does it, so no locked-screen
   # test can pass for an unrelated reason.
@@ -2233,6 +2601,7 @@ run_log() {
   (( minutes >= 1 )) || deny "log needs at least 1 minute"
   (( minutes <= LV_UI_LOG_MAX_MINUTES )) \
     || deny "log window is clamped to $LV_UI_LOG_MAX_MINUTES minutes"
+  check_only_stop
 
   # Scope, decided before anything is read. `load_app_state` is the same
   # pid-with-identity check every other verb goes through, so a recycled pid
@@ -2317,6 +2686,7 @@ run_gate_log() {
   (( lines >= 1 )) || deny "gate-log needs at least 1 line"
   (( lines <= LV_UI_GATE_LOG_MAX_LINES )) \
     || deny "gate-log is clamped to $LV_UI_GATE_LOG_MAX_LINES lines"
+  check_only_stop
 
   # Logged BEFORE the read, so this invocation is not in its own output and a
   # reader is never confused about which line is the one they are looking for.
@@ -2337,6 +2707,7 @@ run_gate_log() {
 }
 
 run_quit() {
+  check_only_stop
   require_app_under_test
   log_command ALLOW "pid=$APP_PID"
   kill -TERM "$APP_PID" 2>/dev/null || true
@@ -2466,8 +2837,10 @@ run_term_open() {
   local -a argv=("$@")
   # Lock first, like every other GUI-touching verb: on a locked screen this
   # denies before any argument is even considered, so no locked-screen test can
-  # pass for an argument-validation reason.
-  require_unlocked_screen
+  # pass for an argument-validation reason. (`batch`'s validation pass is the
+  # one caller that skips it: it probes nothing, and the lock is read when
+  # the line actually runs.)
+  (( DISPATCH_CHECK_ONLY == 1 )) || require_unlocked_screen
   list_contains "$terminal" "$LV_UI_TERMINALS" || deny "terminal not allowlisted"
   (( ${#argv[@]} >= 1 )) || deny "term open needs a command"
   (( ${#argv[@]} <= LV_UI_MAX_TERM_ARGS )) || deny "term open takes at most $LV_UI_MAX_TERM_ARGS tokens"
@@ -2484,6 +2857,7 @@ run_term_open() {
   for token in "${argv[@]}"; do
     token_is_safe "$token" || deny "unsafe token in term command"
   done
+  check_only_stop
 
   # Bash 3.2 (the Mac's /bin/bash) errors on an EMPTY array slice under set -u,
   # so the arguments after the command name are rendered once, guarded, rather
@@ -2751,6 +3125,8 @@ load_term_state() { # <id>
 
 run_term_focus() {
   local id="$1"
+  [[ "$id" =~ ^term-[0-9]+$ ]] || deny "malformed terminal id"
+  check_only_stop
   require_unlocked_screen
   load_term_state "$id"
   # An unconfirmed record names a window that appeared at the same instant as
@@ -2768,6 +3144,8 @@ run_term_focus() {
 
 run_term_close() {
   local id="$1"
+  [[ "$id" =~ ^term-[0-9]+$ ]] || deny "malformed terminal id"
+  check_only_stop
   require_unlocked_screen
   load_term_state "$id"
   log_command ALLOW "id=$id pid=$TERM_PID"
@@ -2788,29 +3166,46 @@ run_term_close() {
 # nothing needs to suppress dispatch — and an environment variable that turns
 # the gate into a no-op is attack surface with no user.
 #
-# Reject the whole command before it is split: no newlines (only the first
-# line would ever be parsed), no control characters, bounded length.
-[[ -n "$original_command" ]] || deny "empty command"
-(( ${#original_command} <= LV_UI_MAX_COMMAND_BYTES )) || deny "command too long"
-[[ "$original_command" =~ ^[[:print:]]+$ ]] || deny "non-printable byte in command"
+# ONE dispatcher for a lone command and for every line of a `batch`: the
+# command arrives as a string, is rejected whole before it is split, is split
+# into ARGV, and reaches its verb through the same `case`. `batch` runs this
+# once per line in CHECK_ONLY mode (every verb stops at check_only_stop, after
+# its argument validation) and then once per line for real.
+dispatch_command() { # <command line>
+  original_command="$1"
+  ARGV=()
+  local token
 
-read -r -a ARGV <<<"$original_command"
-(( ${#ARGV[@]} >= 1 )) || deny "empty command"
+  # Reject the whole command before it is split: no newlines (only the first
+  # line would ever be parsed), no control characters, bounded length.
+  [[ -n "$original_command" ]] || deny "empty command"
+  (( ${#original_command} <= LV_UI_MAX_COMMAND_BYTES )) || deny "command too long"
+  [[ "$original_command" =~ ^[[:print:]]+$ ]] || deny "non-printable byte in command"
 
-# Every token except `ax type`'s free text must survive the charset. The text
-# is validated separately (validate_typed_text) because API keys and URLs need
-# characters no other verb may carry.
-if [[ "${ARGV[0]} ${ARGV[1]:-}" != "ax type" ]]; then
-  for token in "${ARGV[@]}"; do
-    token_is_safe "$token" || deny "unsafe token: $token"
-  done
-fi
+  read -r -a ARGV <<<"$original_command"
+  (( ${#ARGV[@]} >= 1 )) || deny "empty command"
 
-case "${ARGV[0]}" in
+  # Every token except `ax type`'s free text must survive the charset. The text
+  # is validated separately (validate_typed_text) because API keys and URLs need
+  # characters no other verb may carry.
+  if [[ "${ARGV[0]} ${ARGV[1]:-}" != "ax type" ]]; then
+    for token in "${ARGV[@]}"; do
+      token_is_safe "$token" || deny "unsafe token: $token"
+    done
+  fi
+
+  case "${ARGV[0]}" in
   state)
     (( ${#ARGV[@]} == 1 )) || deny "state takes no arguments"
+    check_only_stop
     log_command ALLOW
     run_state
+    ;;
+  batch)
+    (( ${#ARGV[@]} == 1 )) || deny "batch takes no arguments (the verbs come on stdin)"
+    # Never from inside a batch: not in its validation pass, not when it runs.
+    (( BATCH_DEPTH == 0 && DISPATCH_CHECK_ONLY == 0 )) || deny "batch cannot contain batch"
+    run_batch
     ;;
   launch)
     (( ${#ARGV[@]} >= 2 )) || deny "launch needs an artifact"
@@ -2886,6 +3281,10 @@ case "${ARGV[0]}" in
         (( ${#ARGV[@]} <= 4 )) || deny "too many arguments for ax dump"
         if (( ${#ARGV[@]} == 2 )); then run_ax_dump; else run_ax_dump "${ARGV[@]:2}"; fi
         ;;
+      find)
+        (( ${#ARGV[@]} == 3 )) || deny "ax find takes exactly one selector"
+        run_ax_find "${ARGV[2]}"
+        ;;
       click)
         (( ${#ARGV[@]} == 3 )) || deny "ax click takes exactly one selector"
         run_ax_click "${ARGV[2]}"
@@ -2926,4 +3325,93 @@ case "${ARGV[0]}" in
   *)
     deny
     ;;
-esac
+  esac
+}
+
+# batch — one verb per line on stdin, run in order, through the dispatcher
+# above and nothing else.
+#
+# Why it exists: a click-by-click session over SSH paid a connection, a gate
+# start and a helper start per verb; a batch pays them once for a whole step
+# (`menu open`, `menu click Settings`, `ax find …`, `ax click …`, `shot …`).
+#
+# What keeps it from being a script interpreter:
+#   * every line is one gate verb, parsed and validated by dispatch_command in
+#     CHECK_ONLY mode before ANY line runs — a batch with one malformed line
+#     is refused whole, with nothing executed and the offending line named in
+#     the log. `batch` itself is not a valid line (BATCH_DEPTH).
+#   * it runs lines in order and stops at the first one that does not exit 0.
+#     Each line runs in its own subshell with the gate's EXIT trap installed,
+#     so a failing line says "failed" and a GUI line takes or refreshes the
+#     takeover lease exactly as it would alone.
+#   * stdin is bounded twice (bytes, then lines) before a line is looked at,
+#     and each line is bounded again by LV_UI_MAX_COMMAND_BYTES in dispatch.
+#   * `ax type`'s `--` rule holds per line because the per-line dispatch is
+#     the same code; its text is redacted in the frame lines and in the log.
+#   * each line's output is framed by lines carrying a per-batch random tag,
+#     `==lvui-batch-<tag>== line <n>/<total> begin|end …`, which no verb's
+#     output can forge without knowing the tag, so a caller can split the
+#     stream without guessing where one verb's JSON ends.
+run_batch() {
+  local raw line count=0 i status shown tag
+  local -a lines=()
+
+  # Bytes first, at the read, so a runaway stdin is never held in memory.
+  raw="$(head -c "$((LV_UI_BATCH_MAX_BYTES + 1))" 2>/dev/null || true)"
+  (( ${#raw} <= LV_UI_BATCH_MAX_BYTES )) \
+    || deny "batch input exceeds $LV_UI_BATCH_MAX_BYTES bytes"
+  [[ -n "${raw//[[:space:]]/}" ]] || deny "batch has no verbs on stdin"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # A blank line is the one thing a lone command cannot be that a batch may
+    # carry: a trailing newline or a spacer between steps, never a verb.
+    [[ -n "${line//[[:space:]]/}" ]] || continue
+    count=$((count + 1))
+    (( count <= LV_UI_BATCH_MAX_LINES )) \
+      || deny "batch exceeds $LV_UI_BATCH_MAX_LINES lines"
+    lines+=("$line")
+  done <<<"$raw"
+  (( count >= 1 )) || deny "batch has no verbs on stdin"
+
+  # Pass 1: validate every line, execute nothing. A denial inside the subshell
+  # has already logged its reason with the line and its position; the parent
+  # then exits with the same status and no second log line.
+  BATCH_DEPTH=1
+  DISPATCH_CHECK_ONLY=1
+  for (( i = 0; i < count; i++ )); do
+    status=0
+    ( BATCH_CONTEXT="batch line $((i + 1))/$count check"; dispatch_command "${lines[$i]}" ) || status=$?
+    if (( status != 0 )); then
+      printf 'localvoxtral ui gate: batch refused — line %s/%s did not validate; nothing was run\n' \
+        "$((i + 1))" "$count" >&2
+      exit "$status"
+    fi
+  done
+  DISPATCH_CHECK_ONLY=0
+
+  original_command="batch"
+  log_command ALLOW "lines=$count"
+  tag="$$-$RANDOM$RANDOM"
+  printf '==lvui-batch-%s== lines=%s\n' "$tag" "$count"
+
+  # Pass 2: run, in order, stop at the first failure.
+  for (( i = 0; i < count; i++ )); do
+    line="${lines[$i]}"
+    shown="$(shown_command "$line")"
+    printf '==lvui-batch-%s== line %s/%s begin %s\n' "$tag" "$((i + 1))" "$count" "$shown"
+    status=0
+    (
+      trap on_exit EXIT
+      BATCH_CONTEXT="batch line $((i + 1))/$count"
+      dispatch_command "$line"
+    ) || status=$?
+    printf '==lvui-batch-%s== line %s/%s end status=%s\n' "$tag" "$((i + 1))" "$count" "$status"
+    if (( status != 0 )); then
+      printf 'localvoxtral ui gate: batch stopped at line %s/%s (status %s); %s line(s) not run\n' \
+        "$((i + 1))" "$count" "$status" "$((count - i - 1))" >&2
+      exit "$status"
+    fi
+  done
+  ACTION_COMPLETED=1
+}
+
+dispatch_command "$original_command"
