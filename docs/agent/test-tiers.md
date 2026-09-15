@@ -182,7 +182,15 @@ empty string clear a `pane.report_metadata` token; the `ttl_ms` window is
 1…86_400_000 inclusive; `pane.process_info` still reports named foreground
 processes; `pane.read` answers only about the pane asked for; and `ssh -G`
 identity matching accepts an alias that differs only in `User` while
-rejecting one that differs in port.
+rejecting one that differs in port. On herdr 0.9+ the lane additionally pins
+federation: `machine list --json` reports `selected` for the viewed machine
+and none for Local, and the production catalog reader resolves the same
+answer; the local server still answers `pane.current` with its own focused
+pane while a machine is selected; the agents panel composes rows from every
+connected machine at once (a remote token renders while Local is displayed
+and vice versa, retiring the whole-view discriminator for federated
+clients); those rows render from the LOCAL client config alone; and
+`terminal session observe` renders no panel token, like `terminal attach`.
 
 Fixture and host requirements (`scripts/herdr-integration-fixture.sh`):
 
@@ -194,12 +202,17 @@ Fixture and host requirements (`scripts/herdr-integration-fixture.sh`):
   touched), so the lane is hermetic and needs no second machine. Pass an ssh
   destination to run the identical lane against a real second host.
 - For the duration of a run the fixture OWNS the account's
-  `~/.config/herdr/config.toml` and `session.json` and appends two delimited
+  `~/.config/herdr/config.toml` and `session.json` and appends three delimited
   blocks to `~/.ssh/config`. It touches the REAL ssh config on purpose: the
   code under test never passes `-F`, so an alias that lived only in a
   fixture-local file would exercise an invocation shape the app never
   produces. The ssh config is restored by REMOVING those blocks, not by
-  writing a copy back, so an edit made while the lane runs survives.
+  writing a copy back, so an edit made while the lane runs survives. The three
+  blocks are the connection block, the canonicalization-test block, and the
+  federation block (the federated target's loopback alias); federated clients
+  run with `XDG_STATE_HOME` pointed at the run's scratch `client-state-home`
+  and the hermetic remote server listens on the run's short `remote.sock`,
+  never on the account's catalog or sockets.
 - Because nothing runs on SIGKILL, the pristine originals live at a stable
   path (`~/.localvoxtral-herdr-fixture-hold/`) with a manifest naming the run
   that took them — never in the run's own temp dir, which a killed run would

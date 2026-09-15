@@ -72,6 +72,9 @@ simulate_up_then_kill() {
     printf '%s\n' "$SSH_CONFIG_ALT_BEGIN"
     printf 'Host lvx-herdr-fixture-altuser\n  HostName 127.0.0.1\n'
     printf '%s\n' "$SSH_CONFIG_ALT_END"
+    printf '%s\n' "$SSH_CONFIG_FED_BEGIN"
+    printf 'Host lvx-herdr-fixture-fed\n  HostName 127.0.0.1\n  Port 24601\n'
+    printf '%s\n' "$SSH_CONFIG_FED_END"
   } >> "$SSH_CONFIG_FILE"
   # The manifest records THIS shell's pid, which is very much alive. A killed
   # run's pid is not, so overwrite it with one that cannot be running.
@@ -187,6 +190,48 @@ release_account_files 2>/dev/null
 [[ ! -e "$SSH_CONFIG_FILE" ]] \
   || fail "an ssh config the fixture created must be removed again, not left empty"
 pass "files the account never had are removed, not left behind"
+
+# --- 7. A SIGKILL between `machine add` and federation.json still stops the
+# daemon-started remote server ---------------------------------------------
+# `command_federation` commits the remote socket to the HOLD MANIFEST before
+# `machine add` runs, precisely because federation.json only lands at the
+# end. Teardown must therefore stop the server by the manifest-recorded
+# socket when the workdir (and federation.json with it) is already gone.
+# Herdr-free: a stub `herdr` records its argv; the manifest entry is created
+# the way `command_federation` creates it.
+
+setup_home
+STUB_DIR="$TMP_DIR/stubbin"
+mkdir -p "$STUB_DIR"
+STUB_HERDR="$STUB_DIR/herdr"
+cat > "$STUB_HERDR" <<EOF
+#!/bin/sh
+printf 'socket=%s argv=%s\n' "\$HERDR_SOCKET_PATH" "\$*" >> "$TMP_DIR/stub-argv.log"
+EOF
+chmod +x "$STUB_HERDR"
+: > "$TMP_DIR/stub-argv.log"
+export HERDR_BIN="$STUB_HERDR"
+FED_DIR="$TMP_DIR/lvx-herdr-fixture-fedkill"
+mkdir -p "$FED_DIR"
+hold_account_files "$FED_DIR" 2>/dev/null
+printf '24999\n' > "$FED_DIR/sshd.port"
+HERDR_BINARY="$(resolve_herdr)"
+record_federation_hold_state "$FED_DIR" 1
+# The killed run's pid is not running, and its workdir is gone before
+# teardown ever runs — federation.json never existed.
+sed -e 's/^pid=.*/pid=999999/' "$HOLD_MANIFEST" > "$HOLD_MANIFEST.tmp"
+mv "$HOLD_MANIFEST.tmp" "$HOLD_MANIFEST"
+rm -rf "$FED_DIR"
+command_recover 2>/dev/null
+grep -q 'server stop' "$TMP_DIR/stub-argv.log" \
+  || fail "recover never ran 'server stop' for the orphaned remote server:
+$(cat "$TMP_DIR/stub-argv.log" 2>&1)"
+grep -q 'lvx-herdr-fixture-fedkill/remote.sock' "$TMP_DIR/stub-argv.log" \
+  || fail "recover stopped the wrong socket (want the manifest-recorded remote.sock):
+$(cat "$TMP_DIR/stub-argv.log" 2>&1)"
+assert_account_is_pristine "after recovering a SIGKILLed federation"
+pass "a SIGKILLed federation's remote server stops by its manifest-recorded socket"
+unset HERDR_BIN
 
 # The live server creates a provisional pane while its whole-view client is
 # starting. CI measured that pane surviving two one-second reads and then

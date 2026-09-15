@@ -68,6 +68,8 @@ expect true "the remote herdr config patch runs the lane" \
   Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService.swift
 expect true "the join arm that consumes all of it runs the lane" \
   Sources/localvoxtral/ClaudeContext/TerminalScreenClaudeJoin.swift
+expect true "the saved-machine catalog reader runs the lane" \
+  Sources/localvoxtral/ClaudeContext/HerdrMachineFederation.swift
 
 # --- The assumptions themselves -------------------------------------------
 # The doc is the record of what the lane pins. Editing it without re-running
