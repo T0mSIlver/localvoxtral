@@ -232,10 +232,14 @@ struct LiveOpencodePluginFileSystem: OpencodePluginFileSystem {
 
 /// Whether a `herdr` binary is reachable on this Mac.
 ///
-/// `~/.local/bin` is probed explicitly alongside PATH: a GUI app's PATH is
-/// not the user's shell PATH, and `~/.local/bin` is where the herdr install
-/// script puts it without touching a shell rc. Pure over its inputs so the
-    /// probe order is testable without depending on the machine's own PATH.
+/// A GUI app's PATH is `/usr/bin:/bin:/usr/sbin:/sbin`, not the user's shell
+/// PATH, so the directories herdr installs into are probed explicitly after
+/// PATH: `~/.local/bin` (herdr's own install script), Homebrew on Apple
+/// silicon and Intel, and the Nix profiles — the same list herdr probes on a
+/// remote Mac (`src/remote/attach.rs`, 0.9.0). A Homebrew herdr used to read
+/// "Not found." in the Integrations pane (field finding, 2026-09-15). Pure
+/// over its inputs so the probe order is testable without depending on the
+/// machine's own PATH.
 enum ClaudeHerdrAvailability {
     /// - Parameters:
     ///   - environment: process environment (`PATH`, `HOME`).
@@ -251,15 +255,31 @@ enum ClaudeHerdrAvailability {
         return false
     }
 
+    /// Install directories probed after PATH, in herdr's own order. A
+    /// directory already on PATH is probed once, in its PATH position.
     static func herdrCandidates(environment: [String: String]) -> [String] {
-        var candidates: [String] = []
+        var directories: [String] = []
         if let path = environment["PATH"] {
             for directory in path.split(separator: ":") where !directory.isEmpty {
-                candidates.append("\(directory)/herdr")
+                directories.append(String(directory))
             }
         }
-        if let home = environment["HOME"], !home.isEmpty {
-            candidates.append("\(home)/.local/bin/herdr")
+        let home = environment["HOME"].flatMap { $0.isEmpty ? nil : $0 }
+        if let home {
+            directories.append("\(home)/.local/bin")
+        }
+        directories.append("/opt/homebrew/bin")
+        directories.append("/usr/local/bin")
+        if let home {
+            directories.append("\(home)/.nix-profile/bin")
+        }
+        directories.append("/nix/var/nix/profiles/default/bin")
+        directories.append("/run/current-system/sw/bin")
+
+        var seen = Set<String>()
+        var candidates: [String] = []
+        for directory in directories where seen.insert(directory).inserted {
+            candidates.append("\(directory)/herdr")
         }
         return candidates
     }
