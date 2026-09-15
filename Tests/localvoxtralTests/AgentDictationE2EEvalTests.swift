@@ -9,10 +9,21 @@ import XCTest
 /// corpus and its contract are Phase 1, `EvalCorpus/agent-dictation/`):
 ///
 ///   recorded human WAV OR TTS(spokenForm, /usr/bin/say)
-///     -> production websocket ASR (speechd STT service)
-///     -> production polish stop-commit path (bundled polishd helper or an
-///        explicitly selected OpenAI-compatible endpoint)
+///     -> production websocket ASR (speechd STT service, or Mistral's hosted
+///        transcription socket in the Mistral arm)
+///     -> production polish stop-commit path (bundled polishd helper, an
+///        explicitly selected OpenAI-compatible endpoint, or Mistral's hosted
+///        chat/completions in the Mistral arm)
 ///     -> corpus-contract scoring -> scoreboard
+///
+/// Provider arms (`Enablement.provider`): the default `speechd` arm is the
+/// nightly baseline and runs entirely on the build host. The `mistral` arm
+/// moves BOTH live stages to Mistral's hosted API, driven exactly as the app's
+/// `Mistral API` backend mode drives them — the hosted realtime client for
+/// ASR, and a polish configuration built by `SettingsStore` itself in
+/// `.mistralAPI` mode. It bills the owner's account, so it is by-hand only
+/// (`MISTRAL_API_KEY=… ./scripts/remote-build.sh eval-e2e --provider mistral`)
+/// and never scheduled.
 ///
 /// What each stage exercises (documented per the Phase-2 contract):
 /// - ASR: the production `RealtimeAPIWebSocketClient` against a live speechd STT
@@ -54,10 +65,14 @@ import XCTest
 ///   LV_AGENT_EVAL_E2E_RECORDING_SUBSET=1 explicitly selects an exploratory
 ///   partial-set run. LV_AGENT_EVAL_E2E_POLISH_ENDPOINT bypasses the bundled
 ///   helper while preserving the production Qwen 4B sampling/template shape.
+///   LV_AGENT_EVAL_E2E_PROVIDER=mistral selects the hosted arm and reads its
+///   bearer token from MISTRAL_API_KEY (the same variable every other Mistral
+///   lane reads).
 /// - marker file `.agent-eval-e2e-enable.json` at the repo root, written by
 ///   `./scripts/remote-build.sh eval-e2e` (the SSH gate can't pass env, so
 ///   enablement rides the rsynced tree — the PolishHelperIntegrationTests
-///   pattern)
+///   pattern); the Mistral arm's marker carries `provider` and `apiKey`, is
+///   written 0600 and removed on exit
 ///
 /// Synthesized WAVs are cached under
 /// `~/Library/Caches/localvoxtral-eval/wav/<sha256(text|voice|format)>.wav`
@@ -90,8 +105,9 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
     func testAgentDictationE2EEvalScoreboard() async throws {
         let enablement = try resolveEnablementOrSkip()
+        let asrConfiguration = Support.asrStageConfiguration(enablement)
         let binary: URL?
-        if enablement.polishEndpoint == nil {
+        if enablement.usesBundledPolishHelper {
             binary = try resolveHelperBinary(enablement.helperPath)
         } else {
             binary = nil
@@ -124,35 +140,66 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
         let polishConfiguration: LLMPolishingConfiguration
         let polishBackend: String
-        if let endpoint = enablement.polishEndpoint {
-            // The external alias may not be a catalog repo ID (llama.cpp uses
-            // aliases such as qwen35-4b), but this experiment must still send
-            // the shipped 4B request shape: greedy sampling and thinking off.
-            polishConfiguration = LLMPolishEvalSupport.configuration(
-                endpointURL: endpoint,
-                apiKey: "",
-                model: enablement.polishModel,
-                requestShapeModel: PolishModelCatalog.defaultOption.repoID
-            )
-            polishBackend = "external \(endpoint.absoluteString)"
+        switch enablement.provider {
+        case .mistral:
+            // Built BY a settings store in the app's own Mistral mode, never
+            // hand-rolled beside it: what this eval scores has to be the
+            // request the app sends, and the store is the only thing that
+            // knows what that is.
+            let settings = makeSettings()
+            guard let configuration = Support.configureMistralPolishing(
+                settings, apiKey: enablement.apiKey, model: enablement.polishModel
+            ) else {
+                throw EvalInfraError(
+                    "the Mistral arm needs a non-empty API key "
+                        + "(marker \"apiKey\" or \(Support.apiKeyEnvKey))"
+                )
+            }
+            polishConfiguration = configuration
+            polishBackend = "mistral \(configuration.endpointURL.absoluteString)"
             print(
-                "agent-e2e: polish=external model=\(enablement.polishModel) "
-                    + "temperature=0 top_p=1 top_k=0 min_p=0 presence_penalty=0 "
-                    + "enable_thinking=false"
+                "agent-e2e: polish=mistral model=\(configuration.model) reasoning_effort=none"
             )
-        } else {
-            guard let binary else { throw EvalInfraError("missing bundled helper path") }
-            try await ensureModelCached(enablement.polishModel)
-            let helper = try await launchHelper(binary: binary, model: enablement.polishModel)
-            addTeardownBlock { await Self.reap(helper.process) }
-            polishConfiguration = LLMPolishEvalSupport.configuration(
-                endpointURL: URL(
-                    string: "http://127.0.0.1:\(helper.port)/v1/chat/completions"
-                )!,
-                apiKey: "",
-                model: enablement.polishModel
+            print(
+                "agent-e2e: asr=mistral model=\(asrConfiguration.model) "
+                    + "@ \(asrConfiguration.endpoint)"
             )
-            polishBackend = "helper \(binary.path)"
+            print(
+                "agent-e2e: polishContextTrustedEndpointEnabled=true — api.mistral.ai is not "
+                    + "loopback, so without this opt-in every clipboard and repo-vocabulary "
+                    + "case would run ungrounded"
+            )
+        case .speechd:
+            if let endpoint = enablement.polishEndpoint {
+                // The external alias may not be a catalog repo ID (llama.cpp uses
+                // aliases such as qwen35-4b), but this experiment must still send
+                // the shipped 4B request shape: greedy sampling and thinking off.
+                polishConfiguration = LLMPolishEvalSupport.configuration(
+                    endpointURL: endpoint,
+                    apiKey: "",
+                    model: enablement.polishModel,
+                    requestShapeModel: PolishModelCatalog.defaultOption.repoID
+                )
+                polishBackend = "external \(endpoint.absoluteString)"
+                print(
+                    "agent-e2e: polish=external model=\(enablement.polishModel) "
+                        + "temperature=0 top_p=1 top_k=0 min_p=0 presence_penalty=0 "
+                        + "enable_thinking=false"
+                )
+            } else {
+                guard let binary else { throw EvalInfraError("missing bundled helper path") }
+                try await ensureModelCached(enablement.polishModel)
+                let helper = try await launchHelper(binary: binary, model: enablement.polishModel)
+                addTeardownBlock { await Self.reap(helper.process) }
+                polishConfiguration = LLMPolishEvalSupport.configuration(
+                    endpointURL: URL(
+                        string: "http://127.0.0.1:\(helper.port)/v1/chat/completions"
+                    )!,
+                    apiKey: "",
+                    model: enablement.polishModel
+                )
+                polishBackend = "helper \(binary.path)"
+            }
         }
         // Pay each profile's prompt-prefix prefill up front (two cache slots,
         // one per profile) so no case's polish request times out behind a cold
@@ -250,8 +297,8 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
         let board = Support.renderScoreboard(
             results: results,
-            header: "polish model: \(enablement.polishModel), "
-                + "asr: \(enablement.asrModel) @ \(enablement.voxmlxEndpoint), "
+            header: "polish model: \(polishConfiguration.model), "
+                + "asr: \(asrConfiguration.model) @ \(asrConfiguration.endpoint), "
                 + "audio: \(recordedAudio.map { "human-recorded/\($0.name)" } ?? "macOS say"), "
                 + "polish backend: \(polishBackend)"
         )
@@ -346,6 +393,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                     input: polishInput,
                     evalCase: evalCase,
                     stratumName: stratumName,
+                    enablement: enablement,
                     polishConfiguration: polishConfiguration,
                     configStore: configStore,
                     fixtureRepos: fixtureRepos,
@@ -424,6 +472,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         input: String,
         evalCase: AgentDictationEvalCorpus.Case,
         stratumName: String,
+        enablement: Support.Enablement,
         polishConfiguration: LLMPolishingConfiguration,
         configStore: AppConfigStore,
         fixtureRepos: [String: URL],
@@ -431,11 +480,21 @@ final class AgentDictationE2EEvalTests: XCTestCase {
     ) async throws -> PolishStageOutcome {
         let settings = makeSettings()
         settings.llmPolishingEnabled = true
-        // External-URL mode carries the ephemeral helper port through the
-        // loopback privacy gates (clipboard context / repo vocabulary); the
-        // request itself uses the catalog-aware configuration below.
-        settings.polishingBackendMode = .externalURL
-        settings.llmPolishingEndpointURL = polishConfiguration.endpointURL.absoluteString
+        switch enablement.provider {
+        case .speechd:
+            // External-URL mode carries the ephemeral helper port through the
+            // loopback privacy gates (clipboard context / repo vocabulary); the
+            // request itself uses the catalog-aware configuration below.
+            settings.polishingBackendMode = .externalURL
+            settings.llmPolishingEndpointURL = polishConfiguration.endpointURL.absoluteString
+        case .mistral:
+            // The app's own Mistral mode, so the privacy gates see exactly the
+            // hosted endpoint a real user's polish would reach — plus the
+            // trusted-endpoint opt-in that arm requires.
+            Support.configureMistralPolishing(
+                settings, apiKey: enablement.apiKey, model: enablement.polishModel
+            )
+        }
         settings.agentPolishProfileEnabled = true
 
         let service = EvalRecordingPolishingService(configuration: polishConfiguration)
@@ -689,8 +748,14 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         pcm: Data,
         enablement: Support.Enablement
     ) async throws -> String {
+        // The provider decides the client, endpoint, key and model; the event
+        // choreography below is identical for both. Mistral has no
+        // partial-commit concept and ignores the non-final commit, and its
+        // `.finalTranscript` carries the whole utterance in one event, which
+        // the join below handles as the one-element case it already is.
+        let configuration = Support.asrStageConfiguration(enablement)
         let chunks = IntegrationTestSupport.splitPCM16IntoChunks(pcm, chunkSizeBytes: 3_200)
-        let client = RealtimeAPIWebSocketClient()
+        let client = Support.makeRealtimeClient(for: enablement.provider)
         let finals = LockedStrings()
         let socketErrors = LockedStrings()
         let firstFinal = XCTestExpectation(description: "final transcript")
@@ -721,9 +786,9 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
         try client.connect(
             configuration: .init(
-                endpoint: enablement.voxmlxEndpoint,
-                apiKey: "",
-                model: enablement.asrModel
+                endpoint: configuration.endpoint,
+                apiKey: configuration.apiKey,
+                model: configuration.model
             )
         )
         let outcome = await XCTWaiter.fulfillment(of: [firstFinal], timeout: Self.asrTimeout)
@@ -741,10 +806,10 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         }
         if outcome != .completed {
             throw EvalInfraError(
-                "no final transcript within \(Int(Self.asrTimeout))s from \(enablement.voxmlxEndpoint)"
+                "no final transcript within \(Int(Self.asrTimeout))s from \(configuration.endpoint)"
             )
         }
-        throw EvalInfraError("empty final transcript from \(enablement.voxmlxEndpoint)")
+        throw EvalInfraError("empty final transcript from \(configuration.endpoint)")
     }
 
     // MARK: - Fixture repos (real git, env-isolated)
@@ -828,6 +893,9 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                 ./scripts/remote-build.sh eval-e2e from the dev box \
                 (after a `package` run has built the polishing helper). \
                 Expect many minutes: ~150 TTS+ASR cases plus live 4B polish inference.
+                A marker that IS present also lands here when it cannot be resolved — \
+                an unparseable endpoint URL, or a `provider` other than \
+                \(Support.Provider.speechd.rawValue)/\(Support.Provider.mistral.rawValue).
                 """
             )
         }

@@ -309,6 +309,18 @@ justify skipping it in one line. Only the 7 migrated punctuation cases are
 across server states (restarts / prompt-cache configurations) to `required` —
 promotion PRs must carry that cross-state evidence.
 
+Mistral arm of the same eval: `MISTRAL_API_KEY=… ./scripts/remote-build.sh
+eval-e2e --provider mistral [EvalRecordings/agent-dictation/<set>]` moves BOTH
+live stages to Mistral's hosted API — the hosted realtime socket for ASR, and a
+polish configuration built by `SettingsStore` itself in `.mistralAPI` mode — so
+its scoreboard is what proves `Mistral API` mode end to end. It needs no local
+speechd and no prior `package` run (nothing bundled is in the loop), and it
+turns `polishContextTrustedEndpointEnabled` on, because `api.mistral.ai` is not
+loopback and every clipboard/repo-vocabulary case would otherwise score an
+ungrounded polish. It BILLS the owner's account (≈0.006 USD/min of audio plus
+Medium 3.5 polish tokens), so it is by-hand only: never scheduled, never in CI,
+and the key rides a 0600 marker the script removes on exit.
+
 ## Human agent-eval recordings and ablations
 
 On the Mac in a GUI terminal, `./scripts/record-agent-eval.sh --set owner`
