@@ -790,6 +790,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         fromScopedSessionID: snapshot.sessionID
                     )
                 }
+            },
+            // The live herdr catalog: wired here, not defaulted in the model,
+            // so the filesystem-reading reader stays out of the model's
+            // public signature.
+            herdrMachineCatalogReading: {
+                HerdrMachineFederationReader.live().catalog()
             }
         )
 

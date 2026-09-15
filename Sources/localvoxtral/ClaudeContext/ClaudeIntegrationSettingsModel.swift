@@ -416,6 +416,9 @@ public final class ClaudeIntegrationSettingsModel {
     // MARK: - Observable state
 
     public private(set) var hosts: [HostRow] = []
+    /// Saved herdr machines as enrollment sources, derived with `hosts` so an
+    /// import (or a host removal) re-derives the rows on the same refresh.
+    public private(set) var herdrMachines: HerdrMachineImportSection = .absent
     public private(set) var listenerStatus: ListenerStatus = .idle
     /// One short sentence when connections have been rejected since launch, nil
     /// otherwise. See `rejectionHint(for:)`.
@@ -571,6 +574,12 @@ public final class ClaudeIntegrationSettingsModel {
     /// herdr pane's host-name list. Injected for the same reason; the model
     /// maps ids to the enrolled labels it already renders.
     private let herdrPaneReportingHostIDs: @Sendable () -> [String]
+    /// herdr's saved-machine catalog, re-read with the enrolled hosts so the
+    /// candidate rows stay true to both. A `HerdrMachineFederationReader`-
+    /// shaped seam: injected so tests pin candidates without herdr state on
+    /// disk; production passes the live reader's `catalog()` at the
+    /// construction site, and the default is absent (no machines).
+    private let herdrMachineCatalogReading: @Sendable () -> HerdrMachineCatalogReading
     private let listener: (any ClaudeRemoteListenerControlling)?
     private let pluginService: @Sendable () -> any ClaudePluginInstalling
     private let enrollmentService: ClaudeRemoteEnrollmentService
@@ -675,7 +684,10 @@ public final class ClaudeIntegrationSettingsModel {
         opencodeService: @escaping @Sendable () -> OpencodePluginInstallService? = { nil },
         herdrBinaryAvailable: @escaping @Sendable () -> Bool = { false },
         herdrPresenceReport: @escaping @Sendable () -> Bool = { false },
-        herdrPaneReportingHostIDs: @escaping @Sendable () -> [String] = { [] }
+        herdrPaneReportingHostIDs: @escaping @Sendable () -> [String] = { [] },
+        herdrMachineCatalogReading: @escaping @Sendable () -> HerdrMachineCatalogReading = {
+            .absent
+        }
     ) {
         self.loginShell = loginShell
         self.shellRCWriter = shellRCWriter
@@ -688,6 +700,7 @@ public final class ClaudeIntegrationSettingsModel {
         self.herdrBinaryAvailable = herdrBinaryAvailable
         self.herdrPresenceReport = herdrPresenceReport
         self.herdrPaneReportingHostIDs = herdrPaneReportingHostIDs
+        self.herdrMachineCatalogReading = herdrMachineCatalogReading
         // m8: reserve the herdr row's visibility synchronously — the binary
         // check is a fast PATH scan, so herdr machines paint the row on
         // first paint instead of gaining it one beat late. The session half
@@ -854,7 +867,8 @@ public final class ClaudeIntegrationSettingsModel {
         // One clock reading for the whole list, so two rows of the same age
         // cannot disagree about what "now" was.
         let timestamp = now()
-        hosts = (registry?.hosts() ?? []).map { host in
+        let enrolledHosts = registry?.hosts() ?? []
+        hosts = enrolledHosts.map { host in
             let forwardState = forwards?.states[host.id]
             return HostRow(
                 id: host.id,
@@ -878,7 +892,85 @@ public final class ClaudeIntegrationSettingsModel {
                 setupStatusText: setupSummaries[host.id]
             )
         }
+        herdrMachines = Self.herdrMachineSection(
+            reading: herdrMachineCatalogReading(), enrolledHosts: enrolledHosts
+        )
         refreshRejectionHint()
+    }
+
+    // MARK: - Saved herdr machines
+
+    /// Import one saved herdr machine: pre-fill the enrollment form with the
+    /// profile's target and label, then run the SAME consent-gated enrollment
+    /// the typed form runs. Nothing about enrollment itself changes — the
+    /// sheet, its Set Up consent, and every step after it are the typed form's.
+    public func importHerdrMachine(_ candidate: HerdrMachineImportCandidate) async {
+        // No re-entrancy: a second tap while the sheet is up (or an action is
+        // running) must not enroll again — `enroll()` has no duplicate-alias
+        // check, so two passing calls would create two hosts on one alias.
+        guard presentedPlan == nil && !isEnrollmentBusy else { return }
+        // The snapshot's own status may predate a hand enrollment of the same
+        // alias, so it is only a fast path: freshness is re-derived below
+        // from a new catalog read and the current registry.
+        guard candidate.status == .importable else { return }
+        let enrolledHosts = registry?.hosts() ?? []
+        guard case .catalog(let catalog) = herdrMachineCatalogReading(),
+              catalog.profiles.contains(where: { $0.id == candidate.profile.id }),
+              Self.herdrMachineStatus(profile: candidate.profile, enrolledHosts: enrolledHosts)
+                  == .importable
+        else { return }
+        enrollLabel = candidate.profile.label
+        enrollSSHAlias = candidate.profile.target
+        await enroll()
+    }
+
+    /// Derives the Saved-herdr-machines section from one catalog reading.
+    /// Candidates keep the catalog's file order.
+    static func herdrMachineSection(
+        reading: HerdrMachineCatalogReading,
+        enrolledHosts: [ClaudeRemoteHost]
+    ) -> HerdrMachineImportSection {
+        switch reading {
+        case .absent:
+            return .absent
+        case .unreadable:
+            return .unreadable
+        case .catalog(let catalog):
+            // Zero profiles is "no machines saved", not a header with zero
+            // rows: an empty catalog renders nothing, like an absent one.
+            guard !catalog.profiles.isEmpty else { return .absent }
+            return .candidates(
+                catalog.profiles.map { profile in
+                    HerdrMachineImportCandidate(
+                        profile: profile,
+                        status: herdrMachineStatus(profile: profile, enrolledHosts: enrolledHosts)
+                    )
+                }
+            )
+        }
+    }
+
+    /// One saved machine's status against the enrolled hosts.
+    static func herdrMachineStatus(
+        profile: HerdrMachineProfile,
+        enrolledHosts: [ClaudeRemoteHost]
+    ) -> HerdrMachineImportStatus {
+        // EXACT match only. Settings never canonicalizes a target with
+        // `ssh -G`: that comparison belongs to the join arm, at join time,
+        // where its cost and its failures are accounted for. Here a target
+        // that merely RESOLVES to the same (hostname, port) as an enrolled
+        // alias is not that alias, and saying so would hide an Import the
+        // user needs.
+        if let enrolled = enrolledHosts.first(where: {
+            !$0.isRevoked && $0.sshHostAlias == profile.target
+        }) {
+            return .enrolled(hostID: enrolled.id)
+        }
+        // Deliberate precedence: herdr's own off switch wins over the
+        // alias-shape check, so a disabled non-alias target renders dimmed
+        // with no sentence rather than an instruction it cannot act on.
+        guard profile.enabled else { return .disabled }
+        return ClaudeRemoteEnrollmentService.isValidHostAlias(profile.target) ? .importable : .needsAlias
     }
 
     /// Re-read the listener's rejection counters.
@@ -2413,6 +2505,54 @@ public final class ClaudeIntegrationSettingsModel {
             return "The host list was written by a newer version of localvoxtral."
         case .unknownHost, .idAllocationFailed, .none:
             return String(describing: error)
+        }
+    }
+}
+
+/// What herdr's saved-machine catalog means for the Remote hosts group's
+/// import list. `absent` and `unreadable` are kept apart for the same reason
+/// `HerdrMachineCatalogReading` keeps them apart: no catalog is a user who
+/// saved no machines (render nothing at all), while a catalog that cannot be
+/// read is a fact worth one inline sentence.
+public enum HerdrMachineImportSection: Sendable, Equatable {
+    case absent
+    case unreadable
+    case candidates([HerdrMachineImportCandidate])
+}
+
+/// One saved herdr machine, offered as an enrollment source.
+public struct HerdrMachineImportCandidate: Identifiable, Sendable, Equatable {
+    public var profile: HerdrMachineProfile
+    public var status: HerdrMachineImportStatus
+    public var id: String { profile.id }
+}
+
+/// What the pane can do with one saved machine.
+public enum HerdrMachineImportStatus: Sendable, Equatable {
+    /// An enrolled, non-revoked host whose `sshHostAlias` equals the
+    /// profile's target EXACTLY. Exact match only — Settings does not
+    /// canonicalize with `ssh -G`; the join arm does that at join time, not
+    /// the pane. A revoked host never counts: its credential is withdrawn,
+    /// and the machine is importable again.
+    case enrolled(hostID: String)
+    /// Not enrolled, and the target is a plain ssh config alias or hostname
+    /// the enrollment form accepts as-is.
+    case importable
+    /// Not enrolled, and the target is a `user@host` or `ssh://` form the
+    /// enrollment flow cannot take — it needs a `Host` alias for the
+    /// ssh-config block it writes. The row says so in one sentence.
+    case needsAlias
+    /// `enabled == false` in herdr: rendered dimmed, no action.
+    case disabled
+
+    /// The row's one short sentence, when it has one. Nil for every status
+    /// whose dot and the enrolled-host list above already say everything.
+    public var sentence: String? {
+        switch self {
+        case .enrolled, .importable, .disabled:
+            return nil
+        case .needsAlias:
+            return "Add an SSH config alias for it first."
         }
     }
 }

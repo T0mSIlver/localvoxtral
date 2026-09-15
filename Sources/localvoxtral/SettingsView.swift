@@ -1482,6 +1482,9 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                     if let hint = model.rejectionHint {
                         SettingsInlineMessage(hint, color: .orange)
                     }
+                    // Saved herdr machines as an enrollment source: content
+                    // of this group, never a group of its own.
+                    HerdrMachinesSettingsList(model: model)
                     enrollmentForm
                     listenerStatus
                     shellSetup
@@ -2387,7 +2390,10 @@ private struct SettingsFileNotes: View {
     }
 }
 
-private struct SettingsInlineMessage: View {
+/// One short inline sentence in a Settings pane. Internal (not private) so
+/// pane-subviews in their own files — e.g. `HerdrMachinesSettingsList` — can
+/// reuse the idiom instead of copying it.
+struct SettingsInlineMessage: View {
     let message: String
     let color: Color
 

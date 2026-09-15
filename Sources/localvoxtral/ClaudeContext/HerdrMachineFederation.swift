@@ -47,19 +47,22 @@ enum HerdrMachineFederation: Sendable, Equatable {
 /// One saved machine, as `herdr machine add` recorded it. The fields are the
 /// ones `herdr machine list --json` prints; the catalog holds nothing else
 /// (no credentials, no key material, no control sockets).
-struct HerdrMachineProfile: Sendable, Equatable, Hashable, Identifiable {
+///
+/// Public because the public `HerdrMachineImportCandidate` carries one: a
+/// public struct's public property cannot name an internal type.
+public struct HerdrMachineProfile: Sendable, Equatable, Hashable, Identifiable {
     /// herdr's opaque profile id (32 lowercase hex digits).
-    var id: String
+    public var id: String
     /// The user-facing name given at `machine add`.
-    var label: String
+    public var label: String
     /// The ssh destination exactly as the user typed it: an ssh config alias,
     /// `user@host`, or an `ssh://` URL. Never canonicalized here.
-    var target: String
+    public var target: String
     /// The remote herdr session the profile attaches. herdr's default session
     /// keeps its socket at `<config dir>/herdr.sock`; a named one lives at
     /// `<config dir>/sessions/<name>/herdr.sock`.
-    var session: String
-    var enabled: Bool
+    public var session: String
+    public var enabled: Bool
 
     static let defaultSessionName = "default"
 }
@@ -67,7 +70,10 @@ struct HerdrMachineProfile: Sendable, Equatable, Hashable, Identifiable {
 /// herdr's saved-machine catalog, resolved the way a client starting now
 /// would resolve it: every profile in file order, and the selected one after
 /// the selection file and the catalog's own copy have been reconciled.
-struct HerdrMachineCatalog: Sendable, Equatable {
+///
+/// Public because the public `HerdrMachineCatalogReading` carries one as an
+/// associated value; the members stay internal.
+public struct HerdrMachineCatalog: Sendable, Equatable {
     var profiles: [HerdrMachineProfile]
     /// The enabled profile the client is showing, or nil for Local.
     var selectedProfileID: String?
@@ -82,7 +88,10 @@ struct HerdrMachineCatalog: Sendable, Equatable {
 
 /// The catalog as the reader found it. `absent` and `unreadable` are kept
 /// apart for the same reason `HerdrStateFile` keeps them apart.
-enum HerdrMachineCatalogReading: Sendable, Equatable {
+///
+/// Public because the public settings-model init takes a seam returning one;
+/// a public signature cannot name an internal type.
+public enum HerdrMachineCatalogReading: Sendable, Equatable {
     /// No catalog file: this user never ran `herdr machine add`.
     case absent
     case catalog(HerdrMachineCatalog)
