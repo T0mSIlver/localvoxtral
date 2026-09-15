@@ -249,6 +249,15 @@ final class DictationViewModel {
     let settings: SettingsStore
     let textInsertion = TextInsertionService()
 
+    /// Result of the Engines pane's "Check key" row. Observable so the row's
+    /// one-line label follows it; reset to `.idle` is the caller's business.
+    var mistralAPIKeyCheckState: MistralAPIKeyCheckState = .idle
+
+    /// The in-flight key check. Kept awaitable so the unit suite observes the
+    /// result without polling a clock.
+    @ObservationIgnored
+    private(set) var mistralAPIKeyCheckTask: Task<Void, Never>?
+
     /// Secure Keyboard Entry state sampled for the CURRENT session — drives
     /// the menu bar warning icon independently of `lastError` (whose popover
     /// line a higher-priority warning may own). Set when the session verdict
@@ -317,6 +326,16 @@ final class DictationViewModel {
     @ObservationIgnored
     let realtimeAPIClient = RealtimeAPIWebSocketClient()
     @ObservationIgnored
+    let mistralRealtimeClient = MistralRealtimeWebSocketClient()
+    /// The client THIS session speaks to, latched at session start from
+    /// `settings.dictationBackendMode` (`latchActiveRealtimeClient`). A stored
+    /// latch rather than a lookup on every call: flipping the mode in Settings
+    /// mid-dictation must not leave the running session sending audio to one
+    /// client and its stop to another. While idle the latch simply decides
+    /// nothing until the next start.
+    @ObservationIgnored
+    lazy var activeRealtimeClient: any RealtimeClient = realtimeAPIClient
+    @ObservationIgnored
     let audioChunkBuffer = AudioChunkBuffer()
     @ObservationIgnored
     let healthMonitor = AudioCaptureHealthMonitor()
@@ -324,6 +343,10 @@ final class DictationViewModel {
     var llmPolishingService: any LLMPolishingServicing = LLMPolishingService()
     @ObservationIgnored
     var appConfigStore: any AppConfigServing = AppConfigStore()
+    /// `var` for the same reason `llmPolishingService` is: tests and previews
+    /// point it at a fake so nothing reaches api.mistral.ai off a button press.
+    @ObservationIgnored
+    var mistralAPIKeyVerifier: any MistralAPIKeyVerifying = MistralAPIKeyVerifier()
     #if LOCALVOXTRAL_DOGFOOD
     /// `var` for the same reason `llmPolishingService` is: tests point it at a
     /// temp directory. Production uses the Application Support default.
@@ -674,7 +697,11 @@ final class DictationViewModel {
             )
         }
 
-        realtimeAPIClient.setEventHandler { [weak self] event in
+        // BOTH realtime clients report into the same handler. Only the latched
+        // one is ever connected, so which client an event came from carries no
+        // information the session path needs — and wiring both here means a
+        // mode switch can never leave a client emitting into nothing.
+        let realtimeEventHandler: @Sendable (RealtimeEvent) -> Void = { [weak self] event in
             // Preserve callback order for back-to-back events (e.g. final transcript
             // followed by transcription finalized) by routing through main-queue FIFO.
             DispatchQueue.main.async { [weak self] in
@@ -684,6 +711,8 @@ final class DictationViewModel {
                 }
             }
         }
+        realtimeAPIClient.setEventHandler(realtimeEventHandler)
+        mistralRealtimeClient.setEventHandler(realtimeEventHandler)
 
         if startRuntimeServices {
             microphone.onConfigurationChange = { [weak self] in
@@ -802,7 +831,7 @@ final class DictationViewModel {
                 microphone.stop()
             }
             networkMonitor.stop()
-            realtimeAPIClient.disconnect()
+            activeRealtimeClient.disconnect()
             hotKeyManager.unregister()
         }
     }
@@ -978,7 +1007,7 @@ final class DictationViewModel {
                 statusText = StatusStrings.networkLostDictationStopped
                 lastError = "Network connection was lost during dictation."
             } else if isFinalizingStop {
-                realtimeAPIClient.disconnect()
+                activeRealtimeClient.disconnect()
                 finishStoppedSession(promotePendingSegment: true)
                 statusText = StatusStrings.networkLostDictationStopped
                 lastError = "Network connection was lost during dictation."
@@ -1134,7 +1163,7 @@ final class DictationViewModel {
             abortConnectingSession()
             statusText = StatusStrings.ready
         } else if isFinalizingStop {
-            realtimeAPIClient.disconnect()
+            activeRealtimeClient.disconnect()
             finishStoppedSession(promotePendingSegment: false)
         }
     }
@@ -1185,13 +1214,18 @@ final class DictationViewModel {
             preflightDictationEndpoint(reason: "dictation backend switched to external")
         }
 
-        if previousMode == .externalURL, mode == .managedLocal {
+        // Every non-managed mode is the same thing to the managed engine: it is
+        // not needed. Switching BETWEEN two hosted modes (external ↔ Mistral)
+        // therefore starts and stops nothing.
+        if !previousMode.isManaged, mode.isManaged {
             startManagedBackendWarmup(dictation: true, polishing: false)
             return
         }
 
-        if previousMode == .managedLocal, mode == .externalURL {
-            Log.backends.info("dictation backend mode switched to external; stopping managed speechd")
+        if previousMode.isManaged, !mode.isManaged {
+            Log.backends.info(
+                "dictation backend mode switched to \(mode.rawValue, privacy: .public); stopping managed speechd"
+            )
             cancelManagedStartupTask()
             dictationWarmupTask?.cancel()
             if isConnectingRealtimeSession {
@@ -1214,15 +1248,17 @@ final class DictationViewModel {
             preflightPolishingEndpoint(reason: "polishing backend switched to external")
         }
 
-        if previousMode == .externalURL, mode == .managedLocal {
+        if !previousMode.isManaged, mode.isManaged {
             if isManagedPolishingWarmupWanted {
                 startPolishingWarmup()
             }
             return
         }
 
-        if previousMode == .managedLocal, mode == .externalURL {
-            Log.backends.info("polishing backend mode switched to external; stopping managed polishd")
+        if previousMode.isManaged, !mode.isManaged {
+            Log.backends.info(
+                "polishing backend mode switched to \(mode.rawValue, privacy: .public); stopping managed polishd"
+            )
             cancelManagedStartupTask()
             // Mirror the dictation sibling above: cancelling the startup task
             // mid-connect without aborting would leave the connecting flag
@@ -1237,6 +1273,60 @@ final class DictationViewModel {
                 guard !Task.isCancelled else { return }
                 await backendManager.stopPolishing()
             }
+        }
+    }
+
+    // MARK: - Mistral API
+
+    /// The realtime client a session in `mode` speaks to.
+    func realtimeClient(for mode: BackendMode) -> any RealtimeClient {
+        mode == .mistralAPI ? mistralRealtimeClient : realtimeAPIClient
+    }
+
+    /// Point `activeRealtimeClient` at the mode the session ABOUT to start was
+    /// configured with. Called once per session start, before anything connects.
+    func latchActiveRealtimeClient() {
+        let latched = realtimeClient(for: settings.dictationBackendMode)
+        guard latched !== activeRealtimeClient else { return }
+        // The mode changed since the last session: make sure the client we are
+        // leaving behind is not left holding a socket nobody will ever stop.
+        activeRealtimeClient.disconnect()
+        activeRealtimeClient = latched
+        Log.backends.info(
+            "realtime client latched for mode=\(self.settings.dictationBackendMode.rawValue, privacy: .public)"
+        )
+    }
+
+    /// One press of "Use Mistral for dictation and polishing": store the key,
+    /// move BOTH engines to the hosted API, and turn polishing on — it is the
+    /// half of the offer a user cannot see a switch for.
+    func applyMistralQuickSetup(apiKey: String) {
+        settings.mistralAPIKey = apiKey.trimmed
+        Log.backends.info("mistral quick setup requested for dictation and polishing")
+        applyDictationBackendModeChange(.mistralAPI)
+        applyPolishingBackendModeChange(.mistralAPI)
+        settings.llmPolishingEnabled = true
+        Log.backends.info(
+            "mistral quick setup applied dictation=\(self.settings.dictationBackendMode.rawValue, privacy: .public) polishing=\(self.settings.polishingBackendMode.rawValue, privacy: .public)"
+        )
+    }
+
+    /// Ask Mistral whether a key works. Returns the verdict rather than storing
+    /// it: Settings and the onboarding wizard check different strings and hold
+    /// their own state.
+    func verifyMistralAPIKey(_ apiKey: String) async -> MistralAPIKeyVerification {
+        await mistralAPIKeyVerifier.verify(apiKey: apiKey)
+    }
+
+    /// The Engines pane's "Check key" button: checks the STORED key.
+    func checkMistralAPIKey() {
+        guard !mistralAPIKeyCheckState.isChecking else { return }
+        let apiKey = settings.mistralAPIKey
+        mistralAPIKeyCheckState = .checking
+        mistralAPIKeyCheckTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let verification = await self.verifyMistralAPIKey(apiKey)
+            self.mistralAPIKeyCheckState = .finished(verification)
         }
     }
 
@@ -1823,7 +1913,7 @@ final class DictationViewModel {
         escapeCancelHandler.stop()
 
         guard finalizeRemainingAudio else {
-            realtimeAPIClient.disconnect()
+            activeRealtimeClient.disconnect()
             finishStoppedSession(promotePendingSegment: true)
             return
         }

@@ -22,7 +22,12 @@ enum RealtimeEvent: Sendable {
     case error(String)
 }
 
-protocol RealtimeClient: AnyObject {
+/// `Sendable` because the session's audio-send and periodic-commit tasks hold
+/// the client across a suspension point. Both conformers are final classes
+/// whose mutable state lives behind a `Mutex` (`@unchecked Sendable`); the
+/// view model reaches them through `any RealtimeClient`, which has to carry the
+/// same guarantee for those captures to compile under strict concurrency.
+protocol RealtimeClient: AnyObject, Sendable {
     var supportsPeriodicCommit: Bool { get }
     var isConnected: Bool { get }
 

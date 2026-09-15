@@ -29,6 +29,10 @@ enum RealtimeConnectionFailureKind: Sendable, Equatable {
     /// The server refused the upgrade because the account is over its request
     /// quota (HTTP 429).
     case rateLimited
+    /// No credentials were configured, so the client refused to open a socket
+    /// at all. Distinct from `.unauthorized`: no server was asked, and the
+    /// action is to fill in the key rather than to fix the one that is there.
+    case credentialsMissing
     /// The system reported the network path was lost while opening the socket.
     case networkLost
     /// Any other failure (unexpected socket close, TLS error, etc.).
@@ -138,6 +142,21 @@ enum RealtimeConnectionFailureClassifier {
                 technicalDetails: Self.technicalDetails(rawError, message: message)
             )
 
+        case .credentialsMissing:
+            // The endpoint is fine — it was never dialled. The generic
+            // "check the endpoint in Settings" copy would point at the wrong
+            // field, so the client's own sentence (which names the provider and
+            // the Settings row) IS the message when it gave one.
+            let clientMessage = rawError?.trimmed ?? ""
+            let message = clientMessage.isEmpty
+                ? "No API key is set for \(endpoint). Add one in Settings → Engines."
+                : clientMessage
+            return RealtimeConnectionFailureDescription(
+                status: "API key missing.",
+                message: message,
+                technicalDetails: Self.technicalDetails(rawError, message: message)
+            )
+
         case .networkLost:
             // Matches DictationViewModel.StatusStrings.networkLostDictationStopped
             // (kept verbatim so StatusToken mapping continues to recognize it).
@@ -177,6 +196,15 @@ enum RealtimeConnectionFailureClassifier {
             ":-1001", "NSURLErrorTimedOut", "timed out", "timed out)"
         ], in: message) {
             return .timedOut
+        }
+
+        // A client that refused to dial for want of credentials is tested
+        // FIRST: its message is about an API key, and every phrase below that
+        // mentions one describes a server's answer, which there is none of.
+        if matches(any: [
+            "api key is missing", "no api key", "api key is not set"
+        ], in: message) {
+            return .credentialsMissing
         }
 
         // Credential and quota rejections MUST be tested before the

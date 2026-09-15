@@ -53,6 +53,10 @@ enum DictationShortcutMode: String, CaseIterable, Identifiable {
 enum BackendMode: String, CaseIterable, Identifiable {
     case managedLocal = "managed_local"
     case externalURL = "external_url"
+    /// Mistral's hosted API: the realtime transcription socket for dictation
+    /// (`MistralRealtimeWebSocketClient`) and `/v1/chat/completions` for
+    /// polishing, both authenticated with the one shared Mistral API key.
+    case mistralAPI = "mistral_api"
 
     var id: String { rawValue }
 
@@ -62,9 +66,15 @@ enum BackendMode: String, CaseIterable, Identifiable {
             return "Managed local"
         case .externalURL:
             return "External URL"
+        case .mistralAPI:
+            return "Mistral API"
         }
     }
 
+    /// Whether this mode runs on a bundled helper this app supervises. The
+    /// engine lifecycle (warmup, shutdown, readiness) keys off this rather
+    /// than off `.externalURL`, so every hosted mode behaves the same way.
+    var isManaged: Bool { self == .managedLocal }
 }
 
 /// Metal buffer-pool cache limit for the managed dictation helper. `Auto`
@@ -199,6 +209,12 @@ final class SettingsStore {
         static let realtimeAPIEndpointURL = "settings.realtime_api_endpoint_url"
         static let apiKey = "settings.api_key"
         static let realtimeAPIModelName = "settings.realtime_api_model_name"
+        /// ONE key for both Mistral engines — the account is one account, and
+        /// asking for the same secret twice is how a working dictation ends up
+        /// beside a 401-ing polish.
+        static let mistralAPIKey = "settings.mistral_api_key"
+        static let mistralDictationModel = "settings.mistral_dictation_model"
+        static let mistralPolishingModel = "settings.mistral_polishing_model"
         static let dictationBackendMode = "settings.dictation_backend_mode"
         static let speechdCacheLimit = "settings.speechd_cache_limit"
         static let speechdStepCadence = "settings.speechd_step_cadence"
@@ -321,6 +337,24 @@ final class SettingsStore {
 
     var realtimeAPIModelName: String {
         didSet { defaults.set(realtimeAPIModelName, forKey: Keys.realtimeAPIModelName) }
+    }
+
+    /// The Mistral API key, shared by the dictation socket and the polishing
+    /// request. Stored in UserDefaults like the other two API keys this app
+    /// holds; moving all three to the Keychain is its own change.
+    var mistralAPIKey: String {
+        didSet { defaults.set(mistralAPIKey, forKey: Keys.mistralAPIKey) }
+    }
+
+    /// Hosted transcription model. Empty means
+    /// `MistralRealtimeWebSocketClient.defaultModel`.
+    var mistralDictationModel: String {
+        didSet { defaults.set(mistralDictationModel, forKey: Keys.mistralDictationModel) }
+    }
+
+    /// Hosted polishing model. Empty means `MistralPolishDefaults.model`.
+    var mistralPolishingModel: String {
+        didSet { defaults.set(mistralPolishingModel, forKey: Keys.mistralPolishingModel) }
     }
 
     var autoCopyEnabled: Bool {
@@ -816,6 +850,25 @@ final class SettingsStore {
             environment: environment
         )
 
+        mistralAPIKey = Self.loadString(
+            defaults: defaults, key: Keys.mistralAPIKey,
+            envKey: "MISTRAL_API_KEY", fallback: "",
+            environment: environment
+        )
+        // Empty is the stored form of "use the pinned default": the defaults
+        // live in one place (the client / MistralPolishDefaults) and a user who
+        // clears the field gets them back, rather than a blank model name.
+        mistralDictationModel = Self.loadString(
+            defaults: defaults, key: Keys.mistralDictationModel,
+            envKey: "MISTRAL_DICTATION_MODEL", fallback: "",
+            environment: environment
+        )
+        mistralPolishingModel = Self.loadString(
+            defaults: defaults, key: Keys.mistralPolishingModel,
+            envKey: "MISTRAL_POLISHING_MODEL", fallback: "",
+            environment: environment
+        )
+
         autoCopyEnabled = Self.loadBool(
             defaults: defaults, key: Keys.autoCopyEnabled, fallback: false)
         if let storedOutputMode = defaults.string(forKey: Keys.dictationOutputMode),
@@ -1117,7 +1170,40 @@ final class SettingsStore {
         // `trimmedAPIKey` is only ever used as the realtime connection bearer
         // token (see RealtimeAPIWebSocketClient, which omits the Authorization
         // header when it is empty). Managed local servers need no key.
-        dictationBackendMode == .managedLocal ? "" : apiKey.trimmed
+        switch dictationBackendMode {
+        case .managedLocal:
+            return ""
+        case .externalURL:
+            return apiKey.trimmed
+        case .mistralAPI:
+            return trimmedMistralAPIKey
+        }
+    }
+
+    // MARK: - Mistral API
+
+    var trimmedMistralAPIKey: String { mistralAPIKey.trimmed }
+
+    var resolvedMistralDictationModel: String {
+        let model = mistralDictationModel.trimmed
+        return model.isEmpty ? MistralRealtimeWebSocketClient.defaultModel : model
+    }
+
+    var resolvedMistralPolishingModel: String {
+        let model = mistralPolishingModel.trimmed
+        return model.isEmpty ? MistralPolishDefaults.model : model
+    }
+
+    /// Whether the Mistral engines have everything they need. The key is the
+    /// only thing a user can get wrong here — the endpoints are pinned and the
+    /// models have defaults.
+    var isMistralAPIConfigured: Bool { !trimmedMistralAPIKey.isEmpty }
+
+    /// The Engines pane's one-line Mistral status. Deliberately says nothing
+    /// about reachability: Settings never fires a request of its own, and the
+    /// "Check key" row is where a user asks Mistral anything.
+    var mistralAPIStatusSummary: String {
+        isMistralAPIConfigured ? "Ready" : "API key missing"
     }
 
     var effectiveModelName: String {
@@ -1248,6 +1334,11 @@ final class SettingsStore {
     }
 
     func effectiveModelName(for provider: RealtimeProvider) -> String {
+        if dictationBackendMode == .mistralAPI {
+            // Hosted Voxtral ids have nothing to do with the external
+            // provider's placeholder or the managed HF repo pin.
+            return resolvedMistralDictationModel
+        }
         if dictationBackendMode == .managedLocal {
             // The bundled Swift engine needs its dedicated HF-layout pin.
             // Keep the external provider's placeholder/default independent:
@@ -1268,6 +1359,11 @@ final class SettingsStore {
     }
 
     func resolvedWebSocketURL(for provider: RealtimeProvider) -> URL? {
+        if dictationBackendMode == .mistralAPI {
+            // Pinned, not user-editable: the client appends the `?model=` query
+            // item itself, so a hand-typed endpoint could only break it.
+            return MistralRealtimeWebSocketClient.defaultEndpoint
+        }
         if dictationBackendMode == .managedLocal {
             return URL(string: ManagedBackendEndpoints.realtimeURLString)
         }
@@ -1326,6 +1422,20 @@ final class SettingsStore {
                 model: model,
                 samplingDefaults: option?.samplingDefaults,
                 chatTemplateArguments: option?.chatTemplateArguments
+            )
+        }
+        if polishingBackendMode == .mistralAPI {
+            // No key, no request. A polish sent to Mistral without credentials
+            // can only come back 401, and the commit path reports a nil
+            // configuration as one actionable line — which is strictly better
+            // than an HTTP status the user cannot act on.
+            let key = trimmedMistralAPIKey
+            guard !key.isEmpty else { return nil }
+            return LLMPolishingConfiguration(
+                endpointURL: MistralPolishDefaults.endpoint,
+                apiKey: key,
+                model: resolvedMistralPolishingModel,
+                requestShape: .mistral
             )
         }
         let trimmedEndpoint = llmPolishingEndpointURL.trimmed

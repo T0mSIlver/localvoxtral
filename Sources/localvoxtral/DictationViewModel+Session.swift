@@ -280,8 +280,12 @@ extension DictationViewModel {
         }
 
         let model = settings.effectiveModelName(for: provider)
+        // Pick THIS session's client before anything else touches one: from
+        // here to the stop, every send, poll and disconnect goes to the latched
+        // client, whatever Settings does in the meantime.
+        latchActiveRealtimeClient()
         // Reset the realtime client from any prior session before reconnecting.
-        realtimeAPIClient.disconnect()
+        activeRealtimeClient.disconnect()
         let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
         sessionProvider = provider
         sessionModelName = model
@@ -369,7 +373,7 @@ extension DictationViewModel {
         )
 
         do {
-            try realtimeAPIClient.connect(configuration: .init(
+            try activeRealtimeClient.connect(configuration: .init(
                 endpoint: endpoint,
                 apiKey: settings.trimmedAPIKey,
                 model: model
@@ -422,7 +426,7 @@ extension DictationViewModel {
             escapeCancelHandler.stop()
             healthMonitor.stop()
             microphone.stop()
-            realtimeAPIClient.disconnect()
+            activeRealtimeClient.disconnect()
             setRealtimeIndicatorIdle()
             Log.dictation.error("Failed to start microphone after realtime connect: \(error.localizedDescription, privacy: .public)")
             debugLog("startAudioCaptureAfterConnection failed error=\(error.localizedDescription)")
@@ -472,7 +476,7 @@ extension DictationViewModel {
         commitTask = nil
 
         let interval = TimingConstants.commitInterval
-        let client = realtimeAPIClient
+        let client = activeRealtimeClient
         guard client.supportsPeriodicCommit else { return }
         commitTask = Task(priority: .utility) {
             while !Task.isCancelled {
@@ -487,7 +491,7 @@ extension DictationViewModel {
         audioSendTask?.cancel()
 
         let interval = TimingConstants.audioSendInterval
-        let client = realtimeAPIClient
+        let client = activeRealtimeClient
         let chunkBuffer = audioChunkBuffer
         let debugLoggingEnabled = debugLoggingEnabled
         audioSendTask = Task(priority: .utility) {
@@ -513,7 +517,7 @@ extension DictationViewModel {
     func flushBufferedAudio() {
         let chunk = audioChunkBuffer.takeAll()
         guard !chunk.isEmpty else { return }
-        realtimeAPIClient.sendAudioChunk(chunk)
+        activeRealtimeClient.sendAudioChunk(chunk)
     }
 
     // MARK: - Stop Finalization
@@ -524,16 +528,16 @@ extension DictationViewModel {
             guard let self else { return }
             guard self.isFinalizingStop else { return }
 
-            if !self.realtimeAPIClient.isConnected {
+            if !self.activeRealtimeClient.isConnected {
                 self.debugLog("socket already disconnected before final commit; finishing stop")
                 self.finishStoppedSession(promotePendingSegment: true)
                 return
             }
             let startedAt = Date()
             self.realtimeFinalizationLastActivityAt = startedAt
-            self.realtimeAPIClient.sendCommit(final: true)
+            self.activeRealtimeClient.sendCommit(final: true)
             while self.isFinalizingStop {
-                if !self.realtimeAPIClient.isConnected {
+                if !self.activeRealtimeClient.isConnected {
                     self.debugLog("socket disconnected during finalization; finishing stop")
                     self.finishStoppedSession(promotePendingSegment: true)
                     return
@@ -546,7 +550,7 @@ extension DictationViewModel {
 
                 if elapsed >= TimingConstants.stopFinalizationTimeout {
                     self.debugLog("stop finalization timeout (\(TimingConstants.stopFinalizationTimeout)s); forcing disconnect")
-                    self.realtimeAPIClient.disconnect()
+                    self.activeRealtimeClient.disconnect()
                     self.finishStoppedSession(promotePendingSegment: true)
                     return
                 }
@@ -557,7 +561,7 @@ extension DictationViewModel {
                     self.debugLog(
                         "realtime finalization idle for \(String(format: "%.2f", inactivity))s; disconnecting"
                     )
-                    self.realtimeAPIClient.disconnect()
+                    self.activeRealtimeClient.disconnect()
                     self.finishStoppedSession(promotePendingSegment: true)
                     return
                 }
@@ -630,11 +634,18 @@ extension DictationViewModel {
             let workingText = clipboardMacro.placeholderText
             let clipboardPayload = clipboardMacro.payload
             let payloadProvenanceSummary = clipboardMacro.summary
+            // In Mistral mode the endpoint is pinned, so the only way to get no
+            // configuration is a missing key — and "set a valid endpoint URL"
+            // would send the user hunting for a field that is not on the pane.
             let llmConfigurationFailure: (message: String, technicalDetails: String?)? =
                 settings.llmPolishingEnabled && polishingConfig == nil
                 ? (
-                    "Set a valid LLM polishing endpoint URL in Settings.",
-                    "Settings value could not be normalized to an HTTP endpoint URL."
+                    settings.polishingBackendMode == .mistralAPI
+                        ? "Mistral API key missing. Add it in Settings → Engines."
+                        : "Set a valid LLM polishing endpoint URL in Settings.",
+                    settings.polishingBackendMode == .mistralAPI
+                        ? "No Mistral API key is configured; the polish request was not sent."
+                        : "Settings value could not be normalized to an HTTP endpoint URL."
                 )
                 : nil
 
@@ -2120,7 +2131,7 @@ extension DictationViewModel {
         textInsertion.endLiveReplacementSession()
         overlayBufferCoordinator.reset()
         if disconnectSocket {
-            realtimeAPIClient.disconnect()
+            activeRealtimeClient.disconnect()
         }
         healthMonitor.stop()
     }
@@ -2549,7 +2560,7 @@ extension DictationViewModel {
                 guard let self else { return }
                 guard self.isFinalizingStop else { return }
 
-                if !self.realtimeAPIClient.isConnected {
+                if !self.activeRealtimeClient.isConnected {
                     self.debugLog("watchdog observed disconnected socket during finalization; finishing stop")
                     self.finishStoppedSession(promotePendingSegment: true)
                     return
@@ -2557,7 +2568,7 @@ extension DictationViewModel {
 
                 if Date().timeIntervalSince(startedAt) >= timeout {
                     self.debugLog("finalization watchdog fired after \(timeout)s; forcing stop cleanup")
-                    self.realtimeAPIClient.disconnect()
+                    self.activeRealtimeClient.disconnect()
                     self.finishStoppedSession(promotePendingSegment: true)
                     return
                 }

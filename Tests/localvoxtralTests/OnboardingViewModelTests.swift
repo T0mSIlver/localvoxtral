@@ -24,7 +24,9 @@ final class OnboardingViewModelTests: XCTestCase {
 
     // MARK: - Fixture
 
-    private func makeModel() -> (
+    private func makeModel(
+        keyVerification: MistralAPIKeyVerification = .accepted
+    ) -> (
         model: OnboardingViewModel,
         settings: SettingsStore,
         driver: PreviewOnboardingBootstrapDriver,
@@ -39,6 +41,9 @@ final class OnboardingViewModelTests: XCTestCase {
             overlayBufferCoordinator: OnboardingNoopOverlayCoordinator(),
             startRuntimeServices: false
         )
+        // The wizard's key check must never reach api.mistral.ai from a test
+        // or a preview.
+        viewModel.mistralAPIKeyVerifier = FakeOnboardingKeyVerifier(result: keyVerification)
         let driver = PreviewOnboardingBootstrapDriver()
         let model = OnboardingViewModel(settings: settings, viewModel: viewModel, driver: driver)
 
@@ -109,10 +114,31 @@ final class OnboardingViewModelTests: XCTestCase {
         XCTAssertTrue(model.canGoBack)
 
         model.advance()
+        XCTAssertEqual(model.page, .engine)
+        XCTAssertEqual(model.engineChoice, .local, "local is the default choice")
+
+        model.advance()
         XCTAssertEqual(model.page, .downloads)
 
         model.advance()
         XCTAssertEqual(model.page, .finish)
+        XCTAssertTrue(model.isFinalPage)
+
+        XCTAssertEqual(model.pageOrder, [.welcome, .permissions, .engine, .downloads, .finish])
+    }
+
+    func testAdvance_mistralPathSkipsTheDownloadsPage() {
+        let (model, _, _, _, _) = makeModel()
+        model.advance()  // permissions
+        model.advance()  // engine
+        model.engineChoice = .mistralAPI
+        model.mistralAPIKeyDraft = "mk-mistral"
+
+        XCTAssertEqual(model.pageOrder, [.welcome, .permissions, .engine, .finish])
+
+        model.advance()
+
+        XCTAssertEqual(model.page, .finish, "there is nothing to download for a hosted engine")
         XCTAssertTrue(model.isFinalPage)
     }
 
@@ -120,7 +146,11 @@ final class OnboardingViewModelTests: XCTestCase {
         let (model, _, _, _, _) = makeModel()
         model.advance()
         model.advance()
+        model.advance()
         XCTAssertEqual(model.page, .downloads)
+
+        model.goBack()
+        XCTAssertEqual(model.page, .engine)
 
         model.goBack()
         XCTAssertEqual(model.page, .permissions)
@@ -132,9 +162,36 @@ final class OnboardingViewModelTests: XCTestCase {
         XCTAssertEqual(model.page, .welcome)
     }
 
+    func testGoBackFromFinish_routesByTheEngineThatWasChosen() {
+        let (localModel, _, _, _, _) = makeModel()
+        localModel.advance()  // permissions
+        localModel.advance()  // engine
+        localModel.advance()  // downloads
+        localModel.advance()  // finish
+        XCTAssertEqual(localModel.page, .finish)
+
+        localModel.goBack()
+        XCTAssertEqual(localModel.page, .downloads)
+
+        let (mistralModel, _, _, _, _) = makeModel()
+        mistralModel.advance()  // permissions
+        mistralModel.advance()  // engine
+        mistralModel.engineChoice = .mistralAPI
+        mistralModel.mistralAPIKeyDraft = "mk-mistral"
+        mistralModel.advance()  // finish (no downloads page was shown)
+        XCTAssertEqual(mistralModel.page, .finish)
+
+        mistralModel.goBack()
+        XCTAssertEqual(
+            mistralModel.page, .engine,
+            "there was no downloads page to go back to"
+        )
+    }
+
     func testAdvanceOnFinalPage_finishesTheWizard() {
         let (model, settings, _, closeCount, _) = makeModel()
         model.advance()  // permissions
+        model.advance()  // engine
         model.advance()  // downloads
         model.advance()  // finish
         XCTAssertEqual(model.page, .finish)
@@ -143,6 +200,109 @@ final class OnboardingViewModelTests: XCTestCase {
 
         XCTAssertTrue(settings.onboardingCompleted)
         XCTAssertEqual(closeCount(), 1)
+    }
+
+
+    // MARK: - Engine choice
+
+    func testEnginePage_mistralPathSetsBothModes_enablesPolishing_andNeverDownloads() {
+        let (model, settings, driver, _, _) = makeModel()
+        model.advance()  // permissions
+        model.advance()  // engine
+        model.engineChoice = .mistralAPI
+        model.mistralAPIKeyDraft = "  mk-mistral  "
+
+        model.advance()
+
+        XCTAssertEqual(settings.mistralAPIKey, "mk-mistral")
+        XCTAssertEqual(settings.dictationBackendMode, .mistralAPI)
+        XCTAssertEqual(settings.polishingBackendMode, .mistralAPI)
+        XCTAssertTrue(settings.llmPolishingEnabled)
+        XCTAssertEqual(driver.startCallCount, 0, "a hosted engine downloads nothing")
+        XCTAssertEqual(driver.cancelCallCount, 1, "any local download in flight is cancelled")
+        XCTAssertEqual(model.page, .finish)
+    }
+
+    func testEnginePage_localPathIsUnchanged() {
+        let (model, settings, driver, _, _) = makeModel()
+        model.advance()  // permissions
+        model.advance()  // engine
+
+        model.advance()  // downloads
+        XCTAssertEqual(model.page, .downloads)
+        XCTAssertEqual(driver.startCallCount, 0, "nothing runs before Begin download")
+        XCTAssertEqual(settings.mistralAPIKey, "")
+
+        model.startDownloads()
+
+        XCTAssertEqual(driver.startCallCount, 1)
+        XCTAssertEqual(settings.dictationBackendMode, .managedLocal)
+        XCTAssertEqual(settings.polishingBackendMode, .managedLocal)
+    }
+
+    func testEnginePage_emptyKeyBlocksContinue() {
+        let (model, settings, _, _, _) = makeModel()
+        model.advance()  // permissions
+        model.advance()  // engine
+        model.engineChoice = .mistralAPI
+
+        XCTAssertFalse(model.canContinue)
+        model.advance()
+        XCTAssertEqual(model.page, .engine, "Continue does nothing without a key")
+        XCTAssertEqual(settings.dictationBackendMode, .managedLocal)
+
+        // Whitespace is not a key.
+        model.mistralAPIKeyDraft = "   "
+        XCTAssertFalse(model.canContinue)
+
+        model.mistralAPIKeyDraft = "mk-mistral"
+        XCTAssertTrue(model.canContinue)
+    }
+
+    func testEnginePage_localChoiceNeverBlocksContinue() {
+        let (model, _, _, _, _) = makeModel()
+        model.advance()  // permissions
+        model.advance()  // engine
+
+        XCTAssertTrue(model.canContinue)
+        XCTAssertTrue(model.mistralAPIKeyDraft.isEmpty)
+    }
+
+    func testEnginePage_rejectedKeyIsAdvisoryAndDoesNotBlockContinue() async {
+        let (model, settings, _, _, _) = makeModel(
+            keyVerification: .rejected(statusCode: 401)
+        )
+        model.advance()  // permissions
+        model.advance()  // engine
+        model.engineChoice = .mistralAPI
+        model.mistralAPIKeyDraft = "mk-wrong"
+
+        model.checkMistralAPIKeyDraft()
+        await model.mistralAPIKeyCheckTask?.value
+
+        XCTAssertEqual(
+            model.mistralAPIKeyCheckState, .finished(.rejected(statusCode: 401))
+        )
+        XCTAssertEqual(model.mistralAPIKeyCheckState.statusLine, "Rejected (HTTP 401)")
+        // The check is advisory: it can be wrong (offline, proxy, a key minted
+        // seconds ago), and the owner still gets to proceed.
+        XCTAssertTrue(model.canContinue)
+
+        model.advance()
+        XCTAssertEqual(model.page, .finish)
+        XCTAssertEqual(settings.dictationBackendMode, .mistralAPI)
+    }
+
+    func testEngineSummaryNamesTheEngineThatWasSetUp() {
+        let (model, _, _, _, _) = makeModel()
+
+        XCTAssertEqual(model.engineSummary, "Dictation and polishing run on this Mac.")
+
+        model.engineChoice = .mistralAPI
+        XCTAssertEqual(
+            model.engineSummary,
+            "Dictation and polishing use Mistral's hosted models."
+        )
     }
 
     // MARK: - Downloads consent wiring
@@ -247,4 +407,15 @@ private final class OnboardingNoopOverlayCoordinator: OverlayBufferSessionCoordi
     func dismissAfterHold(minimumVisibility: TimeInterval) {}
     func reset() {}
     func captureLiveCommitTargetAppPID() {}
+}
+
+/// Answers the wizard's key check without a socket.
+private final class FakeOnboardingKeyVerifier: MistralAPIKeyVerifying {
+    private let result: MistralAPIKeyVerification
+
+    init(result: MistralAPIKeyVerification) {
+        self.result = result
+    }
+
+    func verify(apiKey: String) async -> MistralAPIKeyVerification { result }
 }

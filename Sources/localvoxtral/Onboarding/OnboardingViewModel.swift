@@ -12,13 +12,42 @@ final class OnboardingViewModel {
     enum Page: Int, CaseIterable, Identifiable, Sendable {
         case welcome
         case permissions
+        case engine
         case downloads
         case finish
 
         var id: Int { rawValue }
     }
 
+    /// Which engine the user picked on the `.engine` page. Also decides the
+    /// page order: the Mistral path has nothing to download.
+    enum EngineChoice: String, CaseIterable, Identifiable, Sendable {
+        case local
+        case mistralAPI
+
+        var id: String { rawValue }
+    }
+
     private(set) var page: Page = .welcome
+
+    /// Default local: the app's promise is that dictation works with nothing
+    /// leaving the Mac, and a wizard that defaults to a hosted API would ship
+    /// a different product than the one on the box.
+    var engineChoice: EngineChoice = .local
+
+    /// The key typed on the `.engine` page. Wizard-local until Continue: a
+    /// half-typed key must not land in Settings, and nothing is persisted for a
+    /// user who backs out.
+    var mistralAPIKeyDraft = ""
+
+    /// Result of the `.engine` page's own "Check key" press. Advisory — a
+    /// rejected key does not block Continue, because the check can be wrong
+    /// (offline, proxy, a key minted seconds ago) and the user owns the choice.
+    var mistralAPIKeyCheckState: MistralAPIKeyCheckState = .idle
+
+    /// The in-flight check. Kept awaitable so the unit suite observes the
+    /// result without polling a clock.
+    @ObservationIgnored private(set) var mistralAPIKeyCheckTask: Task<Void, Never>?
 
     /// Consent to download the polishing LLM during setup. Default ON;
     /// declining skips the polishing download now (it downloads later, the first
@@ -51,20 +80,75 @@ final class OnboardingViewModel {
 
     // MARK: - Navigation
 
-    var canGoBack: Bool { page != Page.allCases.first }
-    var isFinalPage: Bool { page == Page.allCases.last }
+    /// The pages this run actually shows. Picking Mistral removes `.downloads`
+    /// outright — there is nothing to download, and a page that says so would
+    /// be a step the user has to dismiss.
+    var pageOrder: [Page] {
+        switch engineChoice {
+        case .local:
+            return Page.allCases
+        case .mistralAPI:
+            return [.welcome, .permissions, .engine, .finish]
+        }
+    }
+
+    var canGoBack: Bool { page != pageOrder.first }
+    var isFinalPage: Bool { page == pageOrder.last }
+
+    /// Whether the primary button may move on. Only the Mistral engine choice
+    /// can block it, and only for want of a key to store.
+    var canContinue: Bool {
+        guard page == .engine, engineChoice == .mistralAPI else { return true }
+        return !mistralAPIKeyDraft.trimmed.isEmpty
+    }
 
     func advance() {
-        guard let next = Page(rawValue: page.rawValue + 1) else {
+        guard canContinue else { return }
+
+        // Leaving the engine page with Mistral chosen IS the setup: it stores
+        // the key and switches both engines, so nothing needs downloading and
+        // the driver must never be started.
+        if page == .engine, engineChoice == .mistralAPI {
+            applyMistralEngineChoice()
+        }
+
+        let order = pageOrder
+        guard let index = order.firstIndex(of: page), index + 1 < order.count else {
             finish()
             return
         }
-        page = next
+        page = order[index + 1]
     }
 
     func goBack() {
-        guard let previous = Page(rawValue: page.rawValue - 1) else { return }
-        page = previous
+        let order = pageOrder
+        guard let index = order.firstIndex(of: page), index > 0 else { return }
+        page = order[index - 1]
+    }
+
+    // MARK: - Engine choice
+
+    /// Store the drafted key and move both engines to Mistral. The driver is
+    /// cancelled rather than left alone: a user who started the local download,
+    /// went back, and switched to Mistral must not keep a download running for
+    /// an engine nothing will use.
+    private func applyMistralEngineChoice() {
+        driver.cancel()
+        viewModel.applyMistralQuickSetup(apiKey: mistralAPIKeyDraft)
+    }
+
+    /// The `.engine` page's "Check key" button. Advisory only — see
+    /// `mistralAPIKeyCheckState`.
+    func checkMistralAPIKeyDraft() {
+        guard !mistralAPIKeyCheckState.isChecking else { return }
+        let apiKey = mistralAPIKeyDraft
+        guard !apiKey.trimmed.isEmpty else { return }
+        mistralAPIKeyCheckState = .checking
+        mistralAPIKeyCheckTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let verification = await self.viewModel.verifyMistralAPIKey(apiKey)
+            self.mistralAPIKeyCheckState = .finished(verification)
+        }
     }
 
     // MARK: - Downloads
@@ -131,5 +215,16 @@ final class OnboardingViewModel {
 
     var triggerSummary: DictationTriggerSummary {
         DictationTriggerSummary.make(settings: settings)
+    }
+
+    /// One line naming the engine this run set up, so the last page confirms
+    /// the choice made two pages earlier.
+    var engineSummary: String {
+        switch engineChoice {
+        case .local:
+            return "Dictation and polishing run on this Mac."
+        case .mistralAPI:
+            return "Dictation and polishing use Mistral's hosted models."
+        }
     }
 }

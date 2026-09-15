@@ -26,7 +26,7 @@
 
 https://github.com/user-attachments/assets/81a341ff-0c53-4fcf-9b7f-ef148b24dfae
 
-Unlike tools that transcribe after you stop speaking, localvoxtral streams text as the audio arrives, powered by Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) running on your own Apple Silicon. It is built first for [prompting coding agents by voice](docs/coding-agents.md), and it stays a solid general dictation app everywhere else. Everything runs on-device — no account, no subscription, nothing leaving your Mac.
+Unlike tools that transcribe after you stop speaking, localvoxtral streams text as the audio arrives, powered by Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) running on your own Apple Silicon. It is built first for [prompting coding agents by voice](docs/coding-agents.md), and it stays a solid general dictation app everywhere else. Everything runs on-device by default — no account, no subscription, nothing leaving your Mac.
 
 ## Install
 
@@ -41,9 +41,9 @@ Or download the latest `.dmg` from [Releases](https://github.com/T0mSIlver/local
 - **Built for coding agents** — dictate prompts straight into any CLI agent ([opencode](integrations/opencode/README.md) gets its own plugin), in any terminal — Warp, WezTerm, kitty, Alacritty, and more; polishing understands developer speech: "dash dash force" → `--force`, "use auth dot t s" → `useAuth.ts` ([details](docs/coding-agents.md))
 - **Claude Code aware** — dictation joins the *exact* session under your cursor — Ghostty, iTerm2, Terminal.app, a single [herdr](https://herdr.dev) or [cmux](https://github.com/manaflow-ai/cmux) pane, over SSH, or a [claude.ai/code](https://claude.ai/code) Remote Control tab in your browser — and grounds polishing in its screen, your last prompt, the files Claude just touched, and that repo's vocabulary ([details](docs/coding-agents.md#dictating-into-claude-code))
 - **One key, two modes** — tap for a reviewable overlay with optional LLM polishing, hold to stream words live into the focused app ([shortcuts](docs/dictation.md))
-- **Private by default** — audio, transcription, and polishing are local processes; no telemetry, no account, no cloud fallback ([how it works](docs/under-the-hood.md))
+- **Private by default** — out of the box, audio, transcription, and polishing are local processes; no telemetry, no account, no silent cloud fallback — a hosted engine is only ever used if you choose one ([how it works](docs/under-the-hood.md))
 - **Menu bar native** — instant popover with dictation status at a glance, microphone picker, auto-copy of the final text, and the raw transcript one click away after a polished commit
-- **Bring your own server** — dictation and polishing can each point at any OpenAI-compatible endpoint instead of the built-in local engines
+- **Local, hosted, or your own server** — the built-in engines run on-device; one Mistral API key switches dictation and polishing to Mistral's hosted Voxtral and Mistral Medium 3.5; or point either at any OpenAI-compatible endpoint ([details](docs/under-the-hood.md#mistral-api))
 - **Multilingual** — dictate in English, French, or any language [Voxtral](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) understands; polishing answers in the language you spoke (English and French are covered by the test suite)
 
 > [!TIP]
@@ -55,7 +55,7 @@ Or download the latest `.dmg` from [Releases](https://github.com/T0mSIlver/local
 - [Dictating](docs/dictation.md) — shortcuts, output modes, settings, screenshots
 - [Terminals & coding agents](docs/coding-agents.md) — Claude Code session joins, the SSH remote plugin, repo vocabulary
 - [Integration matrix](docs/integration-matrix.md) — what each harness and terminal gets (join, screen, repo, prompt) and why the gaps are gaps
-- [Under the hood](docs/under-the-hood.md) — privacy, the bundled engines and their pinned models, vLLM example
+- [Under the hood](docs/under-the-hood.md) — privacy, the bundled engines and their pinned models, the Mistral API mode, vLLM example
 - [Building from source](docs/building.md) · [Roadmap](docs/roadmap.md)
 
 ## License

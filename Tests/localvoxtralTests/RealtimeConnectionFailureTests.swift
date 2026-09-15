@@ -342,4 +342,56 @@ final class RealtimeConnectionFailureTests: XCTestCase {
         )
         XCTAssertEqual(description.status, DictationViewModel.StatusStrings.networkLostDictationStopped)
     }
+
+    // MARK: - Missing credentials
+
+    func testClientRefusalForAMissingKeyIsNotAnEndpointProblem() {
+        // The Mistral client throws before it opens a socket when no key is
+        // configured. Classifying that as `.unknown` would print "check the
+        // endpoint in Settings" — the wrong field entirely.
+        let kind = RealtimeConnectionFailureClassifier.classify(
+            socketErrorMessage:
+                "Mistral API key is missing. Add your Mistral API key in Settings → Engines."
+        )
+        XCTAssertEqual(kind, .credentialsMissing)
+    }
+
+    func testCredentialsMissingSurfacesTheClientsOwnSentence() {
+        let clientMessage =
+            "Mistral API key is missing. Add your Mistral API key in Settings → Engines."
+        let description = RealtimeConnectionFailureClassifier.describe(
+            kind: .credentialsMissing,
+            endpointDescription: endpoint,
+            rawError: clientMessage
+        )
+
+        XCTAssertEqual(description.status, "API key missing.")
+        XCTAssertEqual(description.message, clientMessage)
+        XCTAssertNil(
+            description.technicalDetails,
+            "the details would only repeat the message"
+        )
+    }
+
+    func testCredentialsMissingFallsBackToEndpointNamingCopy() {
+        let description = RealtimeConnectionFailureClassifier.describe(
+            kind: .credentialsMissing,
+            endpointDescription: endpoint,
+            rawError: nil
+        )
+
+        XCTAssertEqual(description.status, "API key missing.")
+        XCTAssertTrue(description.message.contains(endpoint))
+    }
+
+    func testAServerSideRejectionIsStillUnauthorizedNotCredentialsMissing() {
+        // A key that IS set and got refused is a different problem with a
+        // different fix; the two must not collapse into one.
+        let kind = RealtimeConnectionFailureClassifier.classify(
+            socketErrorMessage:
+                "Mistral rejected the connection (HTTP 401): check the API key. WebSocket failed"
+        )
+        XCTAssertEqual(kind, .unauthorized)
+    }
+
 }

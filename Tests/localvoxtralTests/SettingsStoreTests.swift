@@ -944,4 +944,196 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertFalse(reloadedStore.debugLogRealtimeDeltas)
     }
 
+
+    // MARK: - Mistral API mode
+
+    func testMistralAPIModeRawValueAndOrder() {
+        XCTAssertEqual(BackendMode.mistralAPI.rawValue, "mistral_api")
+        XCTAssertEqual(BackendMode.mistralAPI.displayName, "Mistral API")
+        // The pickers render `allCases` in order: the local default first, the
+        // two hosted options after it.
+        XCTAssertEqual(BackendMode.allCases, [.managedLocal, .externalURL, .mistralAPI])
+    }
+
+    func testUnknownStoredBackendModeStillFallsBackToManaged() {
+        defaults.set("mistral_api_v2_from_the_future", forKey: "settings.dictation_backend_mode")
+        defaults.set("mistral_api_v2_from_the_future", forKey: "settings.polishing_backend_mode")
+
+        let store = makeStore()
+
+        XCTAssertEqual(store.dictationBackendMode, .managedLocal)
+        XCTAssertEqual(store.polishingBackendMode, .managedLocal)
+    }
+
+    func testFreshInstallStillDefaultsToManagedLocal() {
+        let store = makeStore()
+
+        XCTAssertEqual(store.dictationBackendMode, .managedLocal)
+        XCTAssertEqual(store.polishingBackendMode, .managedLocal)
+    }
+
+    func testMistralSettingsRoundTripUnderDocumentedKeys() {
+        let store = makeStore()
+        store.mistralAPIKey = "  mk-secret  "
+        store.mistralDictationModel = "voxtral-mini-transcribe-realtime-latest"
+        store.mistralPolishingModel = "mistral-medium-latest"
+
+        XCTAssertEqual(defaults.string(forKey: "settings.mistral_api_key"), "  mk-secret  ")
+        XCTAssertEqual(
+            defaults.string(forKey: "settings.mistral_dictation_model"),
+            "voxtral-mini-transcribe-realtime-latest"
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: "settings.mistral_polishing_model"),
+            "mistral-medium-latest"
+        )
+
+        let reloaded = makeStore()
+        XCTAssertEqual(reloaded.mistralAPIKey, "  mk-secret  ")
+        // Trimming happens on read, so the stored value is what the user typed.
+        XCTAssertEqual(reloaded.trimmedMistralAPIKey, "mk-secret")
+        XCTAssertEqual(
+            reloaded.resolvedMistralDictationModel,
+            "voxtral-mini-transcribe-realtime-latest"
+        )
+        XCTAssertEqual(reloaded.resolvedMistralPolishingModel, "mistral-medium-latest")
+    }
+
+    func testMistralModelsFallBackToPinnedDefaultsWhenEmpty() {
+        let store = makeStore()
+
+        XCTAssertEqual(store.mistralDictationModel, "")
+        XCTAssertEqual(store.mistralPolishingModel, "")
+        XCTAssertEqual(
+            store.resolvedMistralDictationModel,
+            "voxtral-mini-transcribe-realtime-2602"
+        )
+        XCTAssertEqual(store.resolvedMistralPolishingModel, "mistral-medium-3-5")
+
+        // Whitespace is not a model name either.
+        store.mistralDictationModel = "   "
+        store.mistralPolishingModel = "\n"
+        XCTAssertEqual(
+            store.resolvedMistralDictationModel,
+            MistralRealtimeWebSocketClient.defaultModel
+        )
+        XCTAssertEqual(store.resolvedMistralPolishingModel, MistralPolishDefaults.model)
+    }
+
+    func testResolvedWebSocketURL_mistralAPI_usesThePinnedHostedEndpoint() {
+        let store = makeStore()
+        store.dictationBackendMode = .mistralAPI
+        // A leftover external endpoint must not leak into the hosted mode.
+        store.realtimeAPIEndpointURL = "ws://127.0.0.1:8000/v1/realtime"
+
+        XCTAssertEqual(
+            store.resolvedWebSocketURL(for: store.realtimeProvider),
+            MistralRealtimeWebSocketClient.defaultEndpoint
+        )
+        XCTAssertEqual(
+            store.resolvedWebSocketURL?.absoluteString,
+            "wss://api.mistral.ai/v1/audio/transcriptions/realtime"
+        )
+    }
+
+    func testEffectiveModelName_mistralAPI_usesTheMistralDictationModel() {
+        let store = makeStore()
+        store.dictationBackendMode = .mistralAPI
+        store.realtimeAPIModelName = "some/external-repo"
+
+        XCTAssertEqual(
+            store.effectiveModelName,
+            MistralRealtimeWebSocketClient.defaultModel
+        )
+
+        store.mistralDictationModel = "voxtral-mini-transcribe-realtime-latest"
+        XCTAssertEqual(store.effectiveModelName, "voxtral-mini-transcribe-realtime-latest")
+    }
+
+    func testTrimmedAPIKey_mistralAPI_returnsTheMistralKeyNotTheExternalOne() {
+        let store = makeStore()
+        store.dictationBackendMode = .mistralAPI
+        store.apiKey = "sk-external"
+        store.mistralAPIKey = "  mk-mistral  "
+
+        XCTAssertEqual(store.trimmedAPIKey, "mk-mistral")
+
+        // And the other two modes are untouched by the new key.
+        store.dictationBackendMode = .externalURL
+        XCTAssertEqual(store.trimmedAPIKey, "sk-external")
+        store.dictationBackendMode = .managedLocal
+        XCTAssertEqual(store.trimmedAPIKey, "")
+    }
+
+    func testLLMPolishingConfiguration_mistralAPI_usesHostedEndpointModelAndShape() {
+        let store = makeStore()
+        store.polishingBackendMode = .mistralAPI
+        store.llmPolishingEnabled = true
+        store.mistralAPIKey = "  mk-mistral  "
+        // External-mode fields must never leak into a Mistral configuration.
+        store.llmPolishingEndpointURL = "http://127.0.0.1:8080"
+        store.llmPolishingAPIKey = "sk-ignored"
+        store.llmPolishingModel = "gpt-4o-mini"
+
+        let configuration = store.llmPolishingConfiguration
+        XCTAssertEqual(configuration?.endpointURL, MistralPolishDefaults.endpoint)
+        XCTAssertEqual(configuration?.apiKey, "mk-mistral")
+        XCTAssertEqual(configuration?.model, MistralPolishDefaults.model)
+        XCTAssertEqual(configuration?.requestShape, .mistral)
+        XCTAssertNil(configuration?.samplingDefaults)
+        XCTAssertNil(configuration?.chatTemplateArguments)
+    }
+
+    func testLLMPolishingConfiguration_mistralAPI_usesTheConfiguredPolishingModel() {
+        let store = makeStore()
+        store.polishingBackendMode = .mistralAPI
+        store.llmPolishingEnabled = true
+        store.mistralAPIKey = "mk-mistral"
+        store.mistralPolishingModel = "  mistral-medium-latest  "
+
+        XCTAssertEqual(store.llmPolishingConfiguration?.model, "mistral-medium-latest")
+    }
+
+    func testLLMPolishingConfiguration_mistralAPI_withoutKeyReturnsNil() {
+        let store = makeStore()
+        store.polishingBackendMode = .mistralAPI
+        store.llmPolishingEnabled = true
+        store.mistralAPIKey = "   "
+
+        // A polish request with no key can only come back 401; the commit path
+        // reports a nil configuration as one actionable line instead.
+        XCTAssertNil(store.llmPolishingConfiguration)
+    }
+
+    func testMistralPolishingEndpointIsNotAPermittedContextEndpointWithoutTheOptIn() {
+        // The trust boundary is unchanged by this mode: api.mistral.ai is not
+        // loopback, so every polish-context surface stays behind the explicit
+        // trusted-endpoint opt-in, exactly as for any External URL.
+        XCTAssertFalse(
+            PolishContextClipboardReader.isLoopbackEndpoint(MistralPolishDefaults.endpoint)
+        )
+        XCTAssertFalse(
+            PolishContextClipboardReader.isPermittedContextEndpoint(
+                MistralPolishDefaults.endpoint,
+                trustedEndpointEnabled: false
+            )
+        )
+        XCTAssertTrue(
+            PolishContextClipboardReader.isPermittedContextEndpoint(
+                MistralPolishDefaults.endpoint,
+                trustedEndpointEnabled: true
+            )
+        )
+    }
+
+    func testMistralAPIStatusSummaryNamesTheOnlyThingTheUserCanGetWrong() {
+        let store = makeStore()
+        XCTAssertFalse(store.isMistralAPIConfigured)
+        XCTAssertEqual(store.mistralAPIStatusSummary, "API key missing")
+
+        store.mistralAPIKey = "mk-mistral"
+        XCTAssertTrue(store.isMistralAPIConfigured)
+        XCTAssertEqual(store.mistralAPIStatusSummary, "Ready")
+    }
+
 }
