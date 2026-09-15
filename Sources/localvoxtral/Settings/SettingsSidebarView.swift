@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Chrome (display copy, symbol, tint, AX identity) for each Settings tab.
+/// Chrome (display copy, icon, AX identity) for each Settings tab.
 ///
 /// The raw values are a contract with the AX drills — `scripts/ui-smoke.sh` and
 /// `scripts/capture-readme-assets.sh` press `settings.tab.<rawValue>` and scope
@@ -23,33 +23,23 @@ extension SettingsTab {
         }
     }
 
-    var systemImage: String {
+    /// The app's own panes keep a colored tile; each harness and terminal row
+    /// shows that product's real mark in black and white (CodexBar's Providers
+    /// idiom). Context is a feature pane, not a harness, so it keeps a tile.
+    var sidebarIcon: SettingsSidebarIcon {
         switch kind {
-        case .general: return "gearshape.fill"
-        case .dictation: return "mic.fill"
-        case .endpoints: return "cpu"
-        case .textProcessing: return "text.badge.checkmark"
-        case .integrationsContext: return "checklist"
-        case .integrationsClaude: return "terminal.fill"
-        case .integrationsOpencode: return "chevron.left.forwardslash.chevron.right"
-        case .integrationsHerdr: return "rectangle.split.2x1"
-        case .terminal: return "terminal"
-        case .about: return "info.circle.fill"
-        }
-    }
-
-    var tint: Color {
-        switch kind {
-        case .general: return Color(nsColor: .systemGray)
-        case .dictation: return Color(nsColor: .systemRed)
-        case .endpoints: return Color(nsColor: .systemBlue)
-        case .textProcessing: return Color(nsColor: .systemPurple)
-        case .integrationsContext: return Color(nsColor: .systemTeal)
-        case .integrationsClaude: return Color(nsColor: .systemOrange)
-        case .integrationsOpencode: return Color(nsColor: .systemMint)
-        case .integrationsHerdr: return Color(nsColor: .systemIndigo)
-        case .terminal: return Color(nsColor: .systemGray)
-        case .about: return Color(nsColor: .systemGray)
+        case .general: return .tile(systemImage: "gearshape.fill", tint: Color(nsColor: .systemGray))
+        case .dictation: return .tile(systemImage: "mic.fill", tint: Color(nsColor: .systemRed))
+        case .endpoints: return .tile(systemImage: "cpu", tint: Color(nsColor: .systemBlue))
+        case .textProcessing:
+            return .tile(systemImage: "text.badge.checkmark", tint: Color(nsColor: .systemPurple))
+        case .integrationsContext:
+            return .tile(systemImage: "checklist", tint: Color(nsColor: .systemTeal))
+        case .integrationsClaude: return .brandMark(resourceName: "BrandIcon-claude")
+        case .integrationsOpencode: return .brandMark(resourceName: "BrandIcon-opencode")
+        case .integrationsHerdr: return .brandMark(resourceName: "BrandIcon-herdr")
+        case .terminal: return terminalApp?.sidebarIcon ?? .symbolMark(systemName: "terminal")
+        case .about: return .tile(systemImage: "info.circle.fill", tint: Color(nsColor: .systemGray))
         }
     }
 
@@ -69,6 +59,11 @@ enum SettingsSidebarMetrics {
     static let topInset: CGFloat = 28
     static let rowHeight: CGFloat = 34
     static let rowCornerRadius: CGFloat = 8
+    /// The leading icon slot, which a colored tile fills edge to edge.
+    static let iconSide: CGFloat = 22
+    /// A monochrome brand mark inside that slot. Marks are drawn full-bleed,
+    /// so they sit a little inside the slot to match a tile's glyph weight.
+    static let markSide: CGFloat = 17
     static let horizontalInset: CGFloat = 10
     /// Vertical breathing room around a section header. Sides match the rows'
     /// horizontal padding so the caps text aligns with the icon tiles' edge.
@@ -100,7 +95,7 @@ extension SettingsStatusDot {
 /// Sections (owner decision, 2026-09-07, modelled on CodexBar's Providers
 /// group): the main panes, then a small-caps grey **Integrations** header over
 /// one row per harness, then **Terminals** over one row per terminal plus the
-/// Add app… row. Rows keep the row idiom — icon tile, name, trailing dot.
+/// Add app… row. Rows keep the row idiom — icon, name, trailing dot.
 struct SettingsSidebarView: View {
     @Binding var selection: SettingsTab
     /// Full Terminals section list (built-ins + user-added), from
@@ -241,7 +236,7 @@ private struct SettingsSidebarRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 9) {
-                SettingsSidebarIconTile(systemImage: tab.systemImage, tint: tab.tint)
+                SettingsSidebarIconView(icon: tab.sidebarIcon, markStyle: labelStyle)
 
                 Text(tab.title)
                     .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
@@ -291,8 +286,9 @@ private struct SettingsSidebarRow: View {
 }
 
 /// The Terminals section's last row (owner decision, 2026-09-07): opens the
-/// application picker. Same idiom as the tab rows — icon tile, one word — but
-/// no dot and its own AX identity, since it selects no pane.
+/// application picker. Same idiom as the tab rows — icon, one word — but no
+/// dot and its own AX identity, since it selects no pane. Its plus is a
+/// monochrome mark like the terminal rows above it, not a tile.
 private struct SettingsSidebarAddAppRow: View {
     let action: () -> Void
 
@@ -301,9 +297,9 @@ private struct SettingsSidebarAddAppRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 9) {
-                SettingsSidebarIconTile(
-                    systemImage: "plus",
-                    tint: Color(nsColor: .systemGray)
+                SettingsSidebarIconView(
+                    icon: .symbolMark(systemName: "plus"),
+                    markStyle: .secondary
                 )
 
                 Text("Add app…")
@@ -338,6 +334,61 @@ private struct SettingsSidebarAddAppRow: View {
     }
 }
 
+/// The leading icon slot of a sidebar row. Every variant occupies the same
+/// square so titles align whether a row shows a tile or a mark.
+private struct SettingsSidebarIconView: View {
+    let icon: SettingsSidebarIcon
+    /// Color of a monochrome mark: the row's label color, so a mark turns
+    /// white with its title on the selected row.
+    let markStyle: Color
+
+    var body: some View {
+        Group {
+            switch icon {
+            case .tile(let systemImage, let tint):
+                SettingsSidebarIconTile(systemImage: systemImage, tint: tint)
+            case .brandMark(let resourceName):
+                if let image = SettingsBrandMarks.image(resourceName: resourceName) {
+                    Image(nsImage: image)
+                        .renderingMode(.template)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(
+                            width: SettingsSidebarMetrics.markSide,
+                            height: SettingsSidebarMetrics.markSide
+                        )
+                        .foregroundStyle(markStyle)
+                } else {
+                    symbolMark("app.dashed")
+                }
+            case .symbolMark(let systemName):
+                symbolMark(systemName)
+            case .appIcon(let bundleIDs):
+                if let image = SettingsBrandMarks.appIcon(bundleIDs: bundleIDs) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .grayscale(1)
+                        .frame(
+                            width: SettingsSidebarMetrics.iconSide,
+                            height: SettingsSidebarMetrics.iconSide
+                        )
+                } else {
+                    symbolMark("terminal")
+                }
+            }
+        }
+        .frame(width: SettingsSidebarMetrics.iconSide, height: SettingsSidebarMetrics.iconSide)
+        .accessibilityHidden(true)
+    }
+
+    private func symbolMark(_ systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 14, weight: .medium))
+            .foregroundStyle(markStyle)
+    }
+}
+
 private struct SettingsSidebarIconTile: View {
     let systemImage: String
     let tint: Color
@@ -345,7 +396,7 @@ private struct SettingsSidebarIconTile: View {
     var body: some View {
         RoundedRectangle(cornerRadius: 6, style: .continuous)
             .fill(tint)
-            .frame(width: 22, height: 22)
+            .frame(width: SettingsSidebarMetrics.iconSide, height: SettingsSidebarMetrics.iconSide)
             .overlay {
                 Image(systemName: systemImage)
                     .font(.system(size: 12.5, weight: .semibold))
