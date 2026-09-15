@@ -44,6 +44,11 @@ final class HerdrMachineFederationTests: XCTestCase {
     private let profileA = String(repeating: "a", count: 32)
     private let profileB = String(repeating: "b", count: 32)
 
+    /// The profile `catalog(profiles:)` writes for `id`.
+    private func machine(_ id: String, enabled: Bool = true) -> HerdrMachineProfile {
+        HerdrMachineProfile(id: id, label: "box", target: "box", session: "default", enabled: enabled)
+    }
+
     // Every herdr before 0.9, and every 0.9 user who never ran `machine add`.
     func testNoCatalogIsNotFederated() {
         XCTAssertEqual(reader(catalog: .absent).federation(), .notFederated)
@@ -75,7 +80,7 @@ final class HerdrMachineFederationTests: XCTestCase {
             catalog: catalog(profiles: [(profileA, true)]),
             selection: json("{\"version\":1,\"selected_profile\":\"\(profileA)\"}")
         ).federation()
-        XCTAssertEqual(federation, .showingMachine)
+        XCTAssertEqual(federation, .showingMachine(machine(profileA)))
     }
 
     // herdr writes `null` for Local rather than deleting the file.
@@ -94,7 +99,7 @@ final class HerdrMachineFederationTests: XCTestCase {
             catalog: catalog(selected: profileA, profiles: [(profileA, true)]),
             selection: json("{\"version\":1,\"selected_profile\":\"\(profileB)\"}")
         ).federation()
-        XCTAssertEqual(federation, .showingMachine)
+        XCTAssertEqual(federation, .showingMachine(machine(profileA)))
     }
 
     func testCatalogSelectionOfADisabledMachineShowsLocal() {
@@ -120,7 +125,7 @@ final class HerdrMachineFederationTests: XCTestCase {
         let federation = reader(
             catalog: catalog(selected: profileA, profiles: [(profileA, true)])
         ).federation()
-        XCTAssertEqual(federation, .showingMachine)
+        XCTAssertEqual(federation, .showingMachine(machine(profileA)))
     }
 
     // herdr refuses a version it does not know and runs Local-only. This reader
@@ -174,7 +179,101 @@ final class HerdrMachineFederationTests: XCTestCase {
             selection: json("{\"version\":1,\"selected_profile\":\"\(profileA)\"}"),
             directories: [other, directory]
         ).federation()
-        XCTAssertEqual(federation, .showingMachine)
+        XCTAssertEqual(federation, .showingMachine(machine(profileA)))
+    }
+
+    // MARK: - The catalog itself (Settings import, federated join arm)
+
+    func testNoCatalogReadsAbsent() {
+        XCTAssertEqual(reader(catalog: .absent).catalog(), .absent)
+    }
+
+    // Disabled machines stay in the list — the Settings import shows them as
+    // saved-but-disconnected — and the selection resolves the same way herdr
+    // does: the selection file wins, then the catalog's copy, then Local.
+    func testCatalogListsEveryProfileInFileOrderWithTheResolvedSelection() {
+        let reading = reader(
+            catalog: catalog(selected: profileA, profiles: [(profileB, false), (profileA, true)]),
+            selection: json("{\"version\":1,\"selected_profile\":null}")
+        ).catalog()
+        XCTAssertEqual(
+            reading,
+            .catalog(HerdrMachineCatalog(
+                profiles: [machine(profileB, enabled: false), machine(profileA)],
+                selectedProfileID: nil
+            ))
+        )
+    }
+
+    func testCatalogCarriesTheMachineFieldsHerdrListPrints() {
+        let file = json("""
+            {"version":1,"ssh":[{"id":"\(profileA)","label":"Build machine",
+             "target":"ssh://tom@build.example:2222","session":"agents","enabled":true}]}
+            """)
+        let reading = reader(catalog: file, selection: json("{\"version\":1,\"selected_profile\":\"\(profileA)\"}")).catalog()
+        let expected = HerdrMachineProfile(
+            id: profileA,
+            label: "Build machine",
+            target: "ssh://tom@build.example:2222",
+            session: "agents",
+            enabled: true
+        )
+        XCTAssertEqual(reading, .catalog(HerdrMachineCatalog(profiles: [expected], selectedProfileID: profileA)))
+        if case .catalog(let catalog) = reading {
+            XCTAssertEqual(catalog.selectedProfile, expected)
+        }
+        XCTAssertEqual(
+            HerdrMachineFederationReader.federation(from: reading),
+            .showingMachine(expected)
+        )
+    }
+
+    // herdr's own loader is deny_unknown_fields with every field required, so
+    // a profile missing one is not a catalog herdr would load either.
+    func testProfileMissingARequiredFieldIsUnreadable() {
+        let file = json("{\"version\":1,\"ssh\":[{\"id\":\"\(profileA)\",\"enabled\":true}]}")
+        XCTAssertEqual(reader(catalog: file).catalog(), .unreadable)
+        XCTAssertEqual(reader(catalog: file).federation(), .unreadable)
+    }
+
+    // A selection file is only consulted once something is enabled; with
+    // nothing enabled there is nothing it could name.
+    func testSelectionIsNotReadWhenNothingIsEnabled() {
+        let reading = reader(
+            catalog: catalog(profiles: [(profileA, false)]),
+            selection: .unreadable
+        ).catalog()
+        XCTAssertEqual(
+            reading,
+            .catalog(HerdrMachineCatalog(profiles: [machine(profileA, enabled: false)], selectedProfileID: nil))
+        )
+    }
+
+    func testUnreadableSelectionMakesTheCatalogUnreadable() {
+        let reading = reader(
+            catalog: catalog(profiles: [(profileA, true)]),
+            selection: .unreadable
+        ).catalog()
+        XCTAssertEqual(reading, .unreadable)
+    }
+
+    // Release and development directories: the absent one contributes
+    // nothing, an unreadable one poisons the whole reading.
+    func testCatalogMergesTheReleaseAndDevelopmentDirectories() {
+        let other = URL(fileURLWithPath: "/state/herdr-dev/client", isDirectory: true)
+        let reading = reader(
+            catalog: catalog(profiles: [(profileA, true)]),
+            directories: [other, directory]
+        ).catalog()
+        XCTAssertEqual(
+            reading,
+            .catalog(HerdrMachineCatalog(profiles: [machine(profileA)], selectedProfileID: nil))
+        )
+
+        let unreadableEverywhere = HerdrMachineFederationReader(clientDirectories: [other, directory]) { url in
+            url.path.hasPrefix(other.path) ? .unreadable : .absent
+        }
+        XCTAssertEqual(unreadableEverywhere.catalog(), .unreadable)
     }
 
     // MARK: - The live file read
