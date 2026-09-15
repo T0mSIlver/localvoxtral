@@ -40,7 +40,12 @@ set -euo pipefail
 #                  optional args = chat/completions endpoint and external
 #                  model alias (default endpoint
 #                  http://127.0.0.1:8080/v1/chat/completions, the
-#                  com.localvoxtral.testpolishd service — runbook scripts/mac/README.md)
+#                  com.localvoxtral.testpolishd service — runbook scripts/mac/README.md).
+#                  A model alias may carry a request-shape prefix:
+#                    llamacpp/<model>  llama.cpp via Bifrost (passthrough extras)
+#                    mistral/<model>   Mistral's closed request schema; reads the
+#                                      key from MISTRAL_API_KEY on THIS box, e.g.
+#                                      eval-llm https://api.mistral.ai mistral/mistral-medium-3-5
 #     eval-e2e     agent-dictation end-to-end eval: human WAVs or TTS -> live
 #                  voxmlx ASR -> bundled polishd via the production stop-commit
 #                  path, scored against EvalCorpus/agent-dictation (run
@@ -495,7 +500,23 @@ case "$CMD" in
     # Trap registered before the marker exists, so no kill window leaves a
     # stale marker behind (locally or in the remote work dir).
     trap 'cleanup_transient_marker "$EVAL_MARKER"' EXIT
-    if [[ "$EVAL_MODEL" == llamacpp/* ]]; then
+    if [[ "$EVAL_MODEL" == mistral/* ]]; then
+      # Mistral rejects unknown body fields, so the app sends a different
+      # request shape entirely (no top_k/min_p/chat_template_kwargs/
+      # thinking_budget_tokens, reasoning_effort=none). The key is a secret:
+      # it is read from this box's environment into the gitignored marker the
+      # EXIT trap removes — never into the SSH command line or the repo.
+      if [[ -z "${MISTRAL_API_KEY:-}" ]]; then
+        echo "eval-llm: a mistral/ model alias needs MISTRAL_API_KEY set in this shell" >&2
+        echo "  e.g. MISTRAL_API_KEY=... $0 eval-llm https://api.mistral.ai mistral/mistral-medium-3-5" >&2
+        exit 1
+      fi
+      # No useDefaultRequestShape: production Mistral mode sends no catalog
+      # sampling defaults (temperature 0.3 + reasoning_effort=none only), and
+      # the eval must score exactly the request shape the app sends.
+      printf '{"endpoint": "%s", "model": "%s", "requestShape": "mistral", "apiKey": "%s"}\n' \
+        "$EVAL_ENDPOINT" "${EVAL_MODEL#mistral/}" "$MISTRAL_API_KEY" >"$EVAL_MARKER"
+    elif [[ "$EVAL_MODEL" == llamacpp/* ]]; then
       # Bifrost requires the passthrough opt-in for llama.cpp-specific fields;
       # current llama.cpp disables Qwen 3.5 reasoning per request with a zero
       # thinking budget. Keep the production catalog's enable_thinking=false

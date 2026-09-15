@@ -84,6 +84,167 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
         )
     }
 
+    /// A hosted provider answers a bad key / an unaccepted body field / an
+    /// exhausted quota with an HTTP status and a JSON error body. Before the
+    /// Mistral request shape landed this threw `requestFailed` into a log line
+    /// and NOTHING else: no status text, no `lastError`, no alert — a silent
+    /// polish failure. It must now surface as ONE line carrying the status and
+    /// the provider's own reason, with the raw body left out of `lastError`
+    /// (which Settings renders as the one-line failure summary).
+    func testHTTPRejectionSurfacesTheStatusAndProviderReasonWithoutTheRawBody() async throws {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.polishingBackendMode = .managedLocal
+
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = MockAppConfigStore()
+        viewModel.llmPolishingService = RejectingPolishingService()
+        // Same modal-alert guard as the sibling tests (AGENTS.md).
+        viewModel.isShowingConnectionFailureAlert = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "polish this text"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+        await waitUntilStoppedSessionCompletes(viewModel)
+
+        XCTAssertEqual(viewModel.statusText, "LLM polishing failed.")
+        let lastError = try XCTUnwrap(
+            viewModel.lastError,
+            "an HTTP rejection must not fail silently"
+        )
+        XCTAssertTrue(lastError.contains("HTTP 401"), "must name the status: \(lastError)")
+        XCTAssertTrue(
+            lastError.contains("Unauthorized"),
+            "must carry the provider's own reason: \(lastError)"
+        )
+        // The envelope around that reason is noise: a JSON body in a one-line
+        // summary is exactly what the popover/Settings copy rule forbids.
+        XCTAssertFalse(
+            lastError.contains("request_id"),
+            "the provider's raw body must stay in the log, not the summary: \(lastError)"
+        )
+        XCTAssertFalse(
+            lastError.contains("invalid_request_error"),
+            "the provider's raw body must stay in the log, not the summary: \(lastError)"
+        )
+        XCTAssertFalse(
+            lastError.contains("\n"),
+            "the failure summary is one line: \(lastError)"
+        )
+        XCTAssertTrue(
+            lastError.contains("127.0.0.1:8472"),
+            "must name the endpoint the request went to: \(lastError)"
+        )
+    }
+
+    /// The summary copy itself: one line, naming the status and — where the
+    /// status says which — what to check. A wrong key must never read as
+    /// "unable to connect", which sends field debugging after a network that
+    /// was never at fault.
+    func testRejectionMessagesAreOneLineNamingTheStatus() {
+        let cases: [(status: Int, needle: String)] = [
+            (400, "rejected the request"),
+            (401, "API key"),
+            (403, "API key"),
+            (404, "model or path"),
+            (422, "request body"),
+            (429, "rate limiting"),
+            (503, "failed to answer"),
+            (418, "rejected the request"),
+        ]
+        for (status, needle) in cases {
+            let message = DictationViewModel.llmPolishingRejectionMessage(
+                statusCode: status,
+                body: ""
+            )
+            XCTAssertTrue(
+                message.contains("HTTP \(status)"),
+                "HTTP \(status) summary must name the status: \(message)"
+            )
+            XCTAssertTrue(
+                message.contains(needle),
+                "HTTP \(status) summary must read sensibly: \(message)"
+            )
+            XCTAssertFalse(
+                message.lowercased().contains("unable to connect"),
+                "HTTP \(status) is an answered request, not a connection failure: \(message)"
+            )
+            XCTAssertFalse(
+                message.contains("\n"),
+                "the summary is one line: \(message)"
+            )
+        }
+    }
+
+    /// The live 2026-09-15 Mistral probe: an unsupported body field comes back
+    /// as HTTP 400 whose `message` IS the diagnosis. Without it the summary
+    /// would say only "rejected the request", which names no field and sends
+    /// the reader to the log for a one-line answer.
+    func testRejectionMessageCarriesTheProviderReasonForABadBodyField() {
+        let body = #"{"object":"error","message":"top_k sampling is not enabled for this model","type":"invalid_request_invalid_args","param":null,"code":"3051","raw_status_code":400}"#
+        let message = DictationViewModel.llmPolishingRejectionMessage(statusCode: 400, body: body)
+
+        XCTAssertEqual(
+            message,
+            "The LLM polishing endpoint rejected the request (HTTP 400): "
+                + "top_k sampling is not enabled for this model."
+        )
+    }
+
+    /// Body-to-one-line extraction, across the error envelopes we actually
+    /// meet — and the refusals: an unparseable or empty body must NOT become
+    /// UI text, and a paragraph must not widen the alert.
+    func testProviderErrorMessageExtractionIsBoundedAndShapeTolerant() {
+        // Mistral's envelope.
+        XCTAssertEqual(
+            DictationViewModel.providerErrorMessage(
+                inBody: #"{"object":"error","message":"Unauthorized","code":"1100"}"#
+            ),
+            "Unauthorized."
+        )
+        // OpenAI-shaped servers nest it.
+        XCTAssertEqual(
+            DictationViewModel.providerErrorMessage(
+                inBody: #"{"error":{"message":"Incorrect API key provided.","type":"invalid_request_error"}}"#
+            ),
+            "Incorrect API key provided."
+        )
+        // A nested `detail`, as the realtime surface can send.
+        XCTAssertEqual(
+            DictationViewModel.providerErrorMessage(
+                inBody: #"{"error":{"message":{"detail":"Model not found"}}}"#
+            ),
+            "Model not found."
+        )
+        // Newlines are flattened — the summary is one line, always.
+        XCTAssertEqual(
+            DictationViewModel.providerErrorMessage(
+                inBody: #"{"message":"first line\nsecond line"}"#
+            ),
+            "first line second line."
+        )
+        // A paragraph is truncated rather than pasted whole.
+        let long = String(repeating: "x", count: 400)
+        let truncated = DictationViewModel.providerErrorMessage(
+            inBody: #"{"message":"\#(long)"}"#
+        )
+        // 160 characters of provider text plus the ellipsis that says so.
+        XCTAssertEqual(truncated?.count, 161)
+        XCTAssertEqual(truncated?.hasSuffix("…"), true)
+        // Not JSON, no message, empty message: no UI text at all.
+        XCTAssertNil(DictationViewModel.providerErrorMessage(inBody: "<html>502 Bad Gateway</html>"))
+        XCTAssertNil(DictationViewModel.providerErrorMessage(inBody: ""))
+        XCTAssertNil(DictationViewModel.providerErrorMessage(inBody: #"{"object":"error"}"#))
+        XCTAssertNil(DictationViewModel.providerErrorMessage(inBody: #"{"message":"   "}"#))
+    }
+
     // MARK: - Harness (mirrors the token-guard suite)
 
     private func waitUntilStoppedSessionCompletes(_ viewModel: DictationViewModel) async {
@@ -120,6 +281,22 @@ private actor TimeoutFailingPolishingService: LLMPolishingServicing {
         configuration _: LLMPolishingConfiguration
     ) async throws -> LLMPolishingResult {
         throw LLMPolishingError.networkError("The request timed out.")
+    }
+}
+
+/// Always fails the way a hosted provider rejects a bad API key: an HTTP
+/// status plus a multi-line JSON error body.
+private actor RejectingPolishingService: LLMPolishingServicing {
+    /// The shape a live Mistral rejection actually has (probe, 2026-09-15):
+    /// an `object`/`message`/`type`/`code` envelope. `message` is the
+    /// diagnosis; everything around it is noise that must not reach the UI.
+    static let body = #"{"object":"error","message":"Unauthorized","type":"invalid_request_error","param":null,"code":"1100","request_id":"abc123"}"#
+
+    func polish(
+        request _: LLMPolishingRequest,
+        configuration _: LLMPolishingConfiguration
+    ) async throws -> LLMPolishingResult {
+        throw LLMPolishingError.requestFailed(statusCode: 401, body: Self.body)
     }
 }
 

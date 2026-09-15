@@ -17,7 +17,9 @@ import XCTest
 ///
 /// Enablement (both channels result in the same configuration):
 /// - env: LLM_POLISH_EVAL_ENABLE=1, optional LLM_POLISH_EVAL_ENDPOINT /
-///   LLM_POLISH_EVAL_MODEL / LLM_POLISH_EVAL_API_KEY
+///   LLM_POLISH_EVAL_MODEL / LLM_POLISH_EVAL_API_KEY /
+///   LLM_POLISH_EVAL_REQUEST_SHAPE (`mistral` to send Mistral's closed
+///   request schema instead of the OpenAI-compatible one)
 /// - marker file `.llm-polish-eval-enable.json` at the repo root, written by
 ///   `./scripts/remote-build.sh eval-llm [endpoint]` before rsync. The build
 ///   gate only allowlists exact `swift test ...` payloads (env prefixes are
@@ -36,11 +38,17 @@ final class LLMPolishPromptEvalTests: XCTestCase {
     private static let requestShapeModelEnv = "LLM_POLISH_EVAL_REQUEST_SHAPE_MODEL"
     private static let thinkingBudgetTokensEnv = "LLM_POLISH_EVAL_THINKING_BUDGET_TOKENS"
     private static let passthroughExtraParametersEnv = "LLM_POLISH_EVAL_PASSTHROUGH_EXTRA_PARAMS"
+    private static let requestShapeEnv = "LLM_POLISH_EVAL_REQUEST_SHAPE"
     private static let apiKeyEnv = "LLM_POLISH_EVAL_API_KEY"
     private static let markerFileName = ".llm-polish-eval-enable.json"
     private static let defaultEndpoint = "http://127.0.0.1:8080/v1/chat/completions"
 
-    private struct MarkerConfig: Decodable {
+    /// Decoded from the gitignored marker the eval lane writes. `requestShape`
+    /// is the WIRE DIALECT (`"mistral"`); `requestShapeModel` is the unrelated
+    /// catalog model whose sampling/template fields ride along. An absent or
+    /// unrecognized `requestShape` means the OpenAI-compatible dialect — the
+    /// only one every existing lane invocation has ever sent.
+    struct MarkerConfig: Decodable {
         let endpoint: String?
         let model: String?
         let requestShapeModel: String?
@@ -48,6 +56,11 @@ final class LLMPolishPromptEvalTests: XCTestCase {
         let thinkingBudgetTokens: Int?
         let passthroughExtraParameters: Bool?
         let apiKey: String?
+        let requestShape: String?
+
+        var resolvedRequestShape: LLMPolishingRequestShape {
+            requestShape.flatMap(LLMPolishingRequestShape.init(rawValue:)) ?? .openAICompatible
+        }
     }
 
     private func evalConfiguration() throws -> LLMPolishingConfiguration {
@@ -59,6 +72,7 @@ final class LLMPolishPromptEvalTests: XCTestCase {
         var thinkingBudgetTokens: Int?
         var passthroughExtraParameters = false
         var apiKey: String?
+        var requestShape: LLMPolishingRequestShape = .openAICompatible
 
         if env[Self.enableEnv] == "1" {
             endpointString = env[Self.endpointEnv]
@@ -67,6 +81,9 @@ final class LLMPolishPromptEvalTests: XCTestCase {
             thinkingBudgetTokens = env[Self.thinkingBudgetTokensEnv].flatMap(Int.init)
             passthroughExtraParameters = env[Self.passthroughExtraParametersEnv] == "1"
             apiKey = env[Self.apiKeyEnv]
+            requestShape =
+                env[Self.requestShapeEnv].flatMap(LLMPolishingRequestShape.init(rawValue:))
+                ?? .openAICompatible
         } else if let marker = try loadMarkerConfig() {
             endpointString = marker.endpoint
             model = marker.model
@@ -75,6 +92,7 @@ final class LLMPolishPromptEvalTests: XCTestCase {
             thinkingBudgetTokens = marker.thinkingBudgetTokens
             passthroughExtraParameters = marker.passthroughExtraParameters == true
             apiKey = marker.apiKey
+            requestShape = marker.resolvedRequestShape
         } else {
             throw XCTSkip(
                 """
@@ -107,7 +125,8 @@ final class LLMPolishPromptEvalTests: XCTestCase {
             model: model?.isEmpty == false ? model! : SettingsStore.defaultLLMPolishingModel,
             requestShapeModel: resolvedRequestShapeModel,
             thinkingBudgetTokens: thinkingBudgetTokens,
-            passthroughExtraParameters: passthroughExtraParameters
+            passthroughExtraParameters: passthroughExtraParameters,
+            requestShape: requestShape
         )
     }
 
