@@ -24,6 +24,28 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   artifact root's home, and that dispatch (and ONLY a dispatch — the
   `[dogfood-package]` marker must never write into the owner's home) installs
   the bundle and prints the `launch` command in the run summary.
+- **Driving the UI gate from the dev box**: `./scripts/mac-ui.sh <verb…>`
+  passes one gate verb through a multiplexed ssh connection that stays open
+  between calls (ControlMaster/ControlPersist, 600 s idle), so a
+  click-by-click session pays the handshake once. Host from
+  `git config localvoxtral.uihost` (default `tom@192.168.1.167`, override
+  per call with `LV_UI_HOST`), key `~/.ssh/localvoxtral-ui-gate`;
+  `--host` prints what it resolved, `--disconnect` closes the master. It
+  adds no verb of its own — everything is validated on the Mac. The loop
+  that is now fast: `state` once (read `takeover.leased` and
+  `setup.helper.mode`), then `ax find <selector>` instead of `ax dump` to
+  locate a control, then `batch` for a whole step
+  (`./scripts/mac-ui.sh batch <<'EOF' … EOF`, one verb per line, validated
+  whole before anything runs, stops at the first failure, output framed by
+  `==lvui-batch-<tag>==` lines). The owner's audible warning is still spoken
+  and waited for on the FIRST GUI verb of a burst; verbs inside the
+  120 s takeover lease skip it and "done" is spoken once when the burst
+  goes quiet. The first GUI verb after the owner reinstalls the gate
+  compiles the AX helper once (tens of seconds, said on stderr); every call
+  after that runs the binary. The gate itself is installed and updated BY
+  HAND by the owner only (`scripts/mac/README.md`, "Reinstalling after a
+  gate change"); `state`'s `setup.gate.revision` tells you whether the Mac
+  runs the revision in your tree.
 - **Code signing (why TCC used to reset)**: `package_app.sh` signs with
   `$LOCALVOXTRAL_CODESIGN_IDENTITY` when set, else ad-hoc. The owner's Mac
   has a self-signed code-signing cert `localvoxtral-dev`; the identity env
