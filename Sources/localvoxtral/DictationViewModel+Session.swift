@@ -144,6 +144,17 @@ extension DictationViewModel {
             } catch {
                 guard !Task.isCancelled else { return }
                 self.abortConnectingSession()
+                // Someone else cancelled the work this session was waiting on —
+                // the Engines pane's Pause/Cancel buttons, or a settings change
+                // that stops the backend — and this task was not cancelled with
+                // it. That is a user action, not a backend failure: unwind the
+                // connect without an alert. The abort above still has to run,
+                // or `isConnectingRealtimeSession` stays latched and blocks
+                // every later start.
+                if error is CancellationError {
+                    self.statusText = StatusStrings.ready
+                    return
+                }
                 self.handleManagedBackendStartupFailure(error)
                 return
             }

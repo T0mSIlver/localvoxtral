@@ -1543,6 +1543,17 @@ final class DictationViewModel {
         for spec: ManagedBackendSpec,
         _ body: @escaping @MainActor (any ManagedBackendManaging) async -> Void
     ) {
+        // A dictation session may be sitting on this very download ("Downloading
+        // dictation model (42%)..."). Both controls cancel the backend's shared
+        // single-flight ensure, which is exactly what that session is awaiting,
+        // so retire it here the way a mode switch does — otherwise its await
+        // throws, its own task is not cancelled, and the user's Pause is
+        // reported back to them as "Managed backend failed".
+        cancelManagedStartupTask()
+        if isConnectingRealtimeSession {
+            abortConnectingSession()
+            statusText = StatusStrings.ready
+        }
         if spec.id == BackendCatalog.speechd.id {
             dictationWarmupTask?.cancel()
             dictationShutdownTask?.cancel()
