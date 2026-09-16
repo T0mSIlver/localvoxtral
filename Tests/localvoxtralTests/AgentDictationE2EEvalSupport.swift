@@ -27,6 +27,14 @@ enum AgentDictationE2EEvalSupport {
     static let recordingDirectoryEnvKey = "LV_AGENT_EVAL_E2E_RECORDING_DIRECTORY"
     static let recordingSubsetEnvKey = "LV_AGENT_EVAL_E2E_RECORDING_SUBSET"
     static let caseIDsEnvKey = "LV_AGENT_EVAL_E2E_CASE_IDS"
+    /// Which provider runs BOTH live stages (`Provider.rawValue`).
+    static let providerEnvKey = "LV_AGENT_EVAL_E2E_PROVIDER"
+    /// The hosted provider's bearer token. Deliberately the repo-wide
+    /// `MISTRAL_API_KEY` name rather than an `LV_AGENT_EVAL_E2E_*` one: the
+    /// settings store, `integration-mistral` and the `eval-llm` mistral shape
+    /// all read that variable, and a second name for the same secret is how an
+    /// operator ends up exporting the one the lane does not read.
+    static let apiKeyEnvKey = "MISTRAL_API_KEY"
 
     static let defaultHelperPath =
         "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd"
@@ -34,6 +42,21 @@ enum AgentDictationE2EEvalSupport {
     /// The realtime model the build host's speechd STT service serves (same pin
     /// as the tier-1 integration lane in `remote-build.sh integration`).
     static let defaultASRModel = "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead"
+
+    /// Which live services the two stages run against. Both stages move
+    /// together: the point of a provider arm is to prove ONE backend mode end
+    /// to end, exactly as the app drives it.
+    enum Provider: String, Equatable, Sendable {
+        /// ASR on the build host's local speechd STT service; polish on the
+        /// bundled helper, or on `polishEndpoint` when one is given. The
+        /// default, and what every marker written before the Mistral arm
+        /// existed still resolves to.
+        case speechd
+        /// Both stages on Mistral's hosted API, driven exactly as the app's
+        /// `Mistral API` backend mode drives them. Bills the owner's account
+        /// per minute of audio and per polish token, so it is by-hand only.
+        case mistral
+    }
 
     struct MarkerConfig: Decodable, Equatable {
         let helperPath: String?
@@ -43,6 +66,8 @@ enum AgentDictationE2EEvalSupport {
         let polishEndpoint: String?
         let recordingDirectory: String?
         let recordingSubset: Bool?
+        let provider: String?
+        let apiKey: String?
 
         init(
             helperPath: String? = nil,
@@ -51,7 +76,9 @@ enum AgentDictationE2EEvalSupport {
             polishModel: String? = nil,
             polishEndpoint: String? = nil,
             recordingDirectory: String? = nil,
-            recordingSubset: Bool? = nil
+            recordingSubset: Bool? = nil,
+            provider: String? = nil,
+            apiKey: String? = nil
         ) {
             self.helperPath = helperPath
             self.voxmlxEndpoint = voxmlxEndpoint
@@ -60,6 +87,8 @@ enum AgentDictationE2EEvalSupport {
             self.polishEndpoint = polishEndpoint
             self.recordingDirectory = recordingDirectory
             self.recordingSubset = recordingSubset
+            self.provider = provider
+            self.apiKey = apiKey
         }
     }
 
@@ -70,6 +99,8 @@ enum AgentDictationE2EEvalSupport {
         let polishModel: String
         /// Non-nil bypasses the bundled helper and sends production-shaped
         /// requests to this OpenAI-compatible chat/completions endpoint.
+        /// The Mistral arm ignores it: that arm polishes on Mistral by
+        /// definition, and the lane never writes both.
         let polishEndpoint: URL?
         /// Nil uses cached `say` synthesis. Non-nil is a strict human WAV set:
         /// no missing/stale recording silently falls back to TTS.
@@ -80,6 +111,18 @@ enum AgentDictationE2EEvalSupport {
         /// Optional explicit focused slice. Unlike recordingSubset, this does
         /// not add audio-independent cases: the operator asked for exact IDs.
         let caseIDs: Set<String>?
+        /// Which backend both live stages run against.
+        let provider: Provider
+        /// Bearer token for the hosted provider; empty for `.speechd`, which
+        /// authenticates nothing.
+        let apiKey: String
+
+        /// The bundled polishd helper is only in the loop for the local arm
+        /// with no explicit external endpoint. A hosted arm needs no `package`
+        /// run, so a missing helper binary must not fail it.
+        var usesBundledPolishHelper: Bool {
+            provider == .speechd && polishEndpoint == nil
+        }
     }
 
     static func parseMarker(_ data: Data) throws -> MarkerConfig {
@@ -90,6 +133,13 @@ enum AgentDictationE2EEvalSupport {
     /// is "1") or a parsed marker (when present); nil = the suite self-skips.
     /// Defaults are applied field-by-field so a marker only carrying
     /// `helperPath` still gets the pinned ASR endpoint/model.
+    ///
+    /// The provider selects the per-field DEFAULTS as well as the clients: a
+    /// Mistral marker that names no models gets Mistral's pinned transcription
+    /// and polishing models, never the local speechd/catalog pins, which would
+    /// be 404s on the hosted API. An unparseable endpoint or an unrecognized
+    /// provider resolves to nil (the suite self-skips) — same as it has always
+    /// treated a malformed marker.
     static func resolveEnablement(
         environment: [String: String],
         marker: MarkerConfig?
@@ -112,6 +162,11 @@ enum AgentDictationE2EEvalSupport {
             if let markerValue, !markerValue.isEmpty { return markerValue }
             return nil
         }
+
+        let providerString = pick(
+            providerEnvKey, marker?.provider, default: Provider.speechd.rawValue
+        )
+        guard let provider = Provider(rawValue: providerString) else { return nil }
 
         let endpointString = pick(
             voxmlxEndpointEnvKey, marker?.voxmlxEndpoint, default: defaultVoxmlxEndpoint
@@ -137,24 +192,112 @@ enum AgentDictationE2EEvalSupport {
         } else {
             caseIDs = nil
         }
-        return Enablement(
-            helperPath: pick(helperPathEnvKey, marker?.helperPath, default: defaultHelperPath),
-            voxmlxEndpoint: endpoint,
-            asrModel: pick(asrModelEnvKey, marker?.asrModel, default: defaultASRModel),
+        let defaultASRModelForProvider: String
+        let defaultPolishModelForProvider: String
+        switch provider {
+        case .speechd:
+            defaultASRModelForProvider = defaultASRModel
             // Same pin as production's default (SettingsStore
             // .defaultLLMPolishingModel resolves to this catalog entry; the
             // settings store itself is MainActor-isolated, the catalog is not).
+            defaultPolishModelForProvider = PolishModelCatalog.defaultOption.repoID
+        case .mistral:
+            // The hosted pins, stated where the app states them.
+            defaultASRModelForProvider = MistralRealtimeWebSocketClient.defaultModel
+            defaultPolishModelForProvider = MistralPolishDefaults.model
+        }
+        return Enablement(
+            helperPath: pick(helperPathEnvKey, marker?.helperPath, default: defaultHelperPath),
+            voxmlxEndpoint: endpoint,
+            asrModel: pick(
+                asrModelEnvKey, marker?.asrModel, default: defaultASRModelForProvider
+            ),
             polishModel: pick(
                 polishModelEnvKey, marker?.polishModel,
-                default: PolishModelCatalog.defaultOption.repoID
+                default: defaultPolishModelForProvider
             ),
             polishEndpoint: polishEndpoint,
             recordingDirectory: pickOptional(
                 recordingDirectoryEnvKey, marker?.recordingDirectory
             ),
             recordingSubset: recordingSubset,
-            caseIDs: caseIDs
+            caseIDs: caseIDs,
+            provider: provider,
+            apiKey: pickOptional(apiKeyEnvKey, marker?.apiKey) ?? ""
         )
+    }
+
+    // MARK: - Per-provider stage wiring
+
+    /// Everything the ASR stage needs to open its socket. The Mistral endpoint
+    /// is PINNED here exactly as `SettingsStore.resolvedWebSocketURL` pins it
+    /// in the app: the client appends its own `?model=` query item, so a
+    /// hand-supplied endpoint could only break it.
+    struct ASRStageConfiguration: Equatable {
+        let endpoint: URL
+        let apiKey: String
+        let model: String
+    }
+
+    static func asrStageConfiguration(_ enablement: Enablement) -> ASRStageConfiguration {
+        switch enablement.provider {
+        case .speechd:
+            // The local STT service authenticates nothing.
+            return ASRStageConfiguration(
+                endpoint: enablement.voxmlxEndpoint, apiKey: "", model: enablement.asrModel
+            )
+        case .mistral:
+            return ASRStageConfiguration(
+                endpoint: MistralRealtimeWebSocketClient.defaultEndpoint,
+                apiKey: enablement.apiKey,
+                model: enablement.asrModel
+            )
+        }
+    }
+
+    /// The PRODUCTION realtime client each provider's dictation runs through —
+    /// the same selection `DictationViewModel` makes from the backend mode.
+    /// Constructing one opens nothing; the caller connects.
+    static func makeRealtimeClient(for provider: Provider) -> any RealtimeClient {
+        switch provider {
+        case .speechd:
+            return RealtimeAPIWebSocketClient()
+        case .mistral:
+            return MistralRealtimeWebSocketClient()
+        }
+    }
+
+    /// Puts a settings store into the app's own `Mistral API` polishing mode
+    /// and returns the configuration THAT STORE produces.
+    ///
+    /// The eval must send what the app sends. Hand-rolling a second
+    /// `LLMPolishingConfiguration` beside `SettingsStore.llmPolishingConfiguration`
+    /// would let the two drift — and a drifted eval scores a request shape no
+    /// user ever gets. So the store is the only author of the configuration,
+    /// here and in the per-case polish stage.
+    ///
+    /// `polishContextTrustedEndpointEnabled` is the one thing this turns on
+    /// that a default install has off: `api.mistral.ai` is not loopback, so
+    /// without that opt-in every clipboard and repo-vocabulary case would run
+    /// ungrounded and score nothing but the gate. It is exactly the switch a
+    /// real user flips to use context with a hosted model; the gate itself is
+    /// untouched.
+    ///
+    /// Returns nil when polishing is off or the key is empty — the same
+    /// "no key, no request" answer production gives.
+    @MainActor
+    @discardableResult
+    static func configureMistralPolishing(
+        _ settings: SettingsStore,
+        apiKey: String,
+        model: String
+    ) -> LLMPolishingConfiguration? {
+        settings.llmPolishingEnabled = true
+        settings.polishingBackendMode = .mistralAPI
+        settings.mistralAPIKey = apiKey
+        settings.mistralPolishingModel = model
+        settings.polishContextTrustedEndpointEnabled = true
+        return settings.llmPolishingConfiguration
     }
 
     // MARK: - WAV cache

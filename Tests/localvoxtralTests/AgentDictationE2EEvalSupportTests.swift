@@ -44,6 +44,8 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertNil(marker.polishEndpoint)
         XCTAssertNil(marker.recordingDirectory)
         XCTAssertNil(marker.recordingSubset)
+        XCTAssertNil(marker.provider)
+        XCTAssertNil(marker.apiKey)
     }
 
     func testEnablementNilWithoutEnvOrMarker() {
@@ -99,6 +101,193 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         )
         XCTAssertTrue(enablement.recordingSubset)
         XCTAssertEqual(enablement.caseIDs, ["one", "two"])
+    }
+
+    // MARK: - Provider arms
+
+    func testParseMarkerReadsProviderAndAPIKey() throws {
+        let marker = try Support.parseMarker(
+            Data(#"{"provider": "mistral", "apiKey": "sk-test"}"#.utf8)
+        )
+        XCTAssertEqual(marker.provider, "mistral")
+        XCTAssertEqual(marker.apiKey, "sk-test")
+    }
+
+    /// The pin that keeps every marker written before the Mistral arm existed
+    /// resolving EXACTLY as it did: local provider, local pins, no key.
+    func testEnablementWithoutProviderStaysTheLocalSpeechdArm() throws {
+        let enablement = try XCTUnwrap(
+            Support.resolveEnablement(
+                environment: [:],
+                marker: Support.MarkerConfig(
+                    helperPath: "PolishHelper/.build/x/localvoxtral-polishd",
+                    asrModel: Support.defaultASRModel
+                )
+            )
+        )
+        XCTAssertEqual(enablement.provider, .speechd)
+        XCTAssertEqual(enablement.apiKey, "")
+        XCTAssertEqual(enablement.voxmlxEndpoint.absoluteString, Support.defaultVoxmlxEndpoint)
+        XCTAssertEqual(enablement.asrModel, Support.defaultASRModel)
+        XCTAssertEqual(enablement.polishModel, PolishModelCatalog.defaultOption.repoID)
+        XCTAssertTrue(enablement.usesBundledPolishHelper)
+    }
+
+    func testMistralMarkerResolvesHostedPinsAndKey() throws {
+        let enablement = try XCTUnwrap(
+            Support.resolveEnablement(
+                environment: [:],
+                marker: Support.MarkerConfig(provider: "mistral", apiKey: "sk-marker")
+            )
+        )
+        XCTAssertEqual(enablement.provider, .mistral)
+        XCTAssertEqual(enablement.apiKey, "sk-marker")
+        // The hosted pins, not the local speechd/catalog ones (which would be
+        // 404s on api.mistral.ai).
+        XCTAssertEqual(enablement.asrModel, MistralRealtimeWebSocketClient.defaultModel)
+        XCTAssertEqual(enablement.polishModel, MistralPolishDefaults.model)
+        // No `package` run is needed when both stages are hosted.
+        XCTAssertFalse(enablement.usesBundledPolishHelper)
+    }
+
+    func testMistralProviderAndKeyResolveFromTheEnvironmentToo() throws {
+        let enablement = try XCTUnwrap(
+            Support.resolveEnablement(
+                environment: [
+                    Support.enableEnvKey: "1",
+                    Support.providerEnvKey: "mistral",
+                    Support.apiKeyEnvKey: "sk-env",
+                    Support.asrModelEnvKey: "voxtral-experimental",
+                ],
+                marker: nil
+            )
+        )
+        XCTAssertEqual(enablement.provider, .mistral)
+        XCTAssertEqual(enablement.apiKey, "sk-env")
+        XCTAssertEqual(enablement.asrModel, "voxtral-experimental")
+    }
+
+    /// The key is only read from the environment through the explicit env
+    /// channel: an exported MISTRAL_API_KEY must not silently attach itself to
+    /// a marker-driven local run.
+    func testMarkerRunIgnoresAnAmbientMistralKey() throws {
+        let enablement = try XCTUnwrap(
+            Support.resolveEnablement(
+                environment: [Support.apiKeyEnvKey: "sk-ambient"],
+                marker: Support.MarkerConfig(helperPath: "custom/polishd")
+            )
+        )
+        XCTAssertEqual(enablement.provider, .speechd)
+        XCTAssertEqual(enablement.apiKey, "")
+    }
+
+    func testUnknownProviderResolvesToNilRatherThanTheWrongArm() {
+        XCTAssertNil(
+            Support.resolveEnablement(
+                environment: [:],
+                marker: Support.MarkerConfig(provider: "mistrall", apiKey: "sk-typo")
+            )
+        )
+    }
+
+    func testASRStageConfigurationPerProvider() throws {
+        let local = try XCTUnwrap(
+            Support.resolveEnablement(
+                environment: [:],
+                marker: Support.MarkerConfig(voxmlxEndpoint: "ws://127.0.0.1:9000/v1/realtime")
+            )
+        )
+        let localStage = Support.asrStageConfiguration(local)
+        XCTAssertEqual(localStage.endpoint.absoluteString, "ws://127.0.0.1:9000/v1/realtime")
+        XCTAssertEqual(localStage.apiKey, "")
+        XCTAssertEqual(localStage.model, Support.defaultASRModel)
+
+        let hosted = try XCTUnwrap(
+            Support.resolveEnablement(
+                environment: [:],
+                marker: Support.MarkerConfig(
+                    // Even a stale local endpoint in the marker cannot redirect
+                    // the hosted arm: the Mistral socket URL is pinned.
+                    voxmlxEndpoint: "ws://127.0.0.1:9000/v1/realtime",
+                    provider: "mistral",
+                    apiKey: "sk-hosted"
+                )
+            )
+        )
+        let hostedStage = Support.asrStageConfiguration(hosted)
+        XCTAssertEqual(hostedStage.endpoint, MistralRealtimeWebSocketClient.defaultEndpoint)
+        XCTAssertEqual(hostedStage.apiKey, "sk-hosted")
+        XCTAssertEqual(hostedStage.model, MistralRealtimeWebSocketClient.defaultModel)
+    }
+
+    func testRealtimeClientSelectionPerProvider() {
+        XCTAssertTrue(
+            Support.makeRealtimeClient(for: .speechd) is RealtimeAPIWebSocketClient
+        )
+        let mistral = Support.makeRealtimeClient(for: .mistral)
+        XCTAssertTrue(mistral is MistralRealtimeWebSocketClient)
+        // The choreography the ASR stage uses relies on this: Mistral has no
+        // partial-commit concept, so the non-final commit is a no-op there.
+        XCTAssertFalse(mistral.supportsPeriodicCommit)
+    }
+
+    // MARK: - Mistral polish configuration (built by the settings store)
+
+    func testMistralPolishConfigurationIsTheSettingsStoresOwn() throws {
+        let settings = makeTestSettings()
+        let configuration = try XCTUnwrap(
+            Support.configureMistralPolishing(
+                settings, apiKey: "sk-polish", model: MistralPolishDefaults.model
+            )
+        )
+        XCTAssertEqual(configuration.requestShape, .mistral)
+        XCTAssertEqual(configuration.endpointURL, MistralPolishDefaults.endpoint)
+        XCTAssertEqual(configuration.apiKey, "sk-polish")
+        XCTAssertEqual(configuration.model, MistralPolishDefaults.model)
+        // The store, not the eval, is the author — no drift is representable.
+        XCTAssertTrue(settings.llmPolishingEnabled)
+        XCTAssertEqual(settings.polishingBackendMode, .mistralAPI)
+        XCTAssertEqual(
+            settings.llmPolishingConfiguration?.endpointURL, configuration.endpointURL
+        )
+        // api.mistral.ai is not loopback: without this opt-in the privacy
+        // gates would withhold every clipboard/repo-vocabulary case's context.
+        XCTAssertTrue(settings.polishContextTrustedEndpointEnabled)
+        XCTAssertFalse(
+            PolishContextClipboardReader.isLoopbackEndpoint(configuration.endpointURL)
+        )
+        XCTAssertTrue(
+            PolishContextClipboardReader.isPermittedContextEndpoint(
+                configuration.endpointURL,
+                trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
+            )
+        )
+    }
+
+    func testMistralPolishConfigurationHonoursAnExplicitModel() throws {
+        let settings = makeTestSettings()
+        let configuration = try XCTUnwrap(
+            Support.configureMistralPolishing(
+                settings, apiKey: "sk-polish", model: "mistral-small-latest"
+            )
+        )
+        XCTAssertEqual(configuration.model, "mistral-small-latest")
+    }
+
+    func testMistralPolishConfigurationIsNilWithoutAKey() {
+        XCTAssertNil(
+            Support.configureMistralPolishing(
+                makeTestSettings(), apiKey: "", model: MistralPolishDefaults.model
+            )
+        )
+    }
+
+    private func makeTestSettings() -> SettingsStore {
+        let suiteName = "localvoxtral.AgentDictationE2EEvalSupportTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        return SettingsStore(defaults: defaults, environment: [:])
     }
 
     // MARK: - WAV cache key

@@ -50,7 +50,12 @@ set -euo pipefail
 #                  voxmlx ASR -> bundled polishd via the production stop-commit
 #                  path, scored against EvalCorpus/agent-dictation (run
 #                  `package` first; optional arg = a complete recording-set
-#                  directory made by scripts/record-agent-eval.sh)
+#                  directory made by scripts/record-agent-eval.sh).
+#                  `--provider mistral` (or a bare `mistral` argument) runs BOTH
+#                  live stages on Mistral's hosted API instead — no local
+#                  server, no `package` run, needs MISTRAL_API_KEY on THIS box,
+#                  and BILLS the owner's Mistral account (by hand only), e.g.
+#                  MISTRAL_API_KEY=... eval-e2e --provider mistral
 #     dogfood      build the instrumented (LOCALVOXTRAL_DOGFOOD) tree and run
 #                  the context-capture suite; the capture is a compile gate, so
 #                  no other lane ever builds it
@@ -201,6 +206,20 @@ ensure_remote_server() {
 # because a host that died mid-run must not wedge the exit path — the next
 # real sync deletes the marker anyway.
 TREE_SYNCED=0
+
+# The Mistral lanes write MISTRAL_API_KEY into a JSON marker with printf and
+# no escaping. A key is a plain token, so anything else (a pasted quote, a
+# backslash, trailing junk) would produce malformed JSON that the marker
+# reader rejects — and the suite would then SELF-SKIP after a full remote
+# build, with a skip message that never mentions the key. Fail here, first,
+# with the reason (GLM review, 2026-09-16).
+require_mistral_api_key_format() {
+  if [[ ! "${MISTRAL_API_KEY:-}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "MISTRAL_API_KEY must be a plain token ([A-Za-z0-9._-]); check for stray quotes or whitespace" >&2
+    exit 1
+  fi
+}
+
 cleanup_transient_marker() {
   local marker="$1"
   rm -f "$marker"
@@ -298,6 +317,7 @@ case "$CMD" in
       echo "  export MISTRAL_API_KEY=... && ./scripts/remote-build.sh integration-mistral" >&2
       exit 1
     fi
+    require_mistral_api_key_format
     MISTRAL_MARKER="$ROOT_DIR/.mistral-integration-enable.json"
     # Trap registered before the marker exists, so no kill window can strand a
     # key-bearing file (locally or in the remote work dir).
@@ -443,11 +463,57 @@ case "$CMD" in
     # pins env prefixes per-command). Expect many minutes: ~150 TTS+ASR cases
     # plus live 4B polish inference (synthesized WAVs are cached on the host
     # under ~/Library/Caches/localvoxtral-eval/wav, so reruns skip TTS).
-    if [[ $# -gt 1 ]]; then
-      echo "eval-e2e accepts at most one argument (recording-set directory)" >&2
+    #
+    # `--provider mistral` (or a bare `mistral` argument) moves BOTH live
+    # stages to Mistral's hosted API instead, exactly as the app's Mistral API
+    # mode drives them. That arm needs no local server and no prior `package`
+    # run — and it BILLS the owner's Mistral account, so it is by-hand only.
+    E2E_RECORDING_DIR=""
+    E2E_PROVIDER=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --provider)
+          if [[ $# -lt 2 ]]; then
+            echo "eval-e2e: --provider needs a value (mistral)" >&2
+            exit 1
+          fi
+          E2E_PROVIDER="$2"
+          shift 2
+          ;;
+        --provider=*)
+          E2E_PROVIDER="${1#--provider=}"
+          shift
+          ;;
+        mistral)
+          E2E_PROVIDER="mistral"
+          shift
+          ;;
+        -*)
+          echo "eval-e2e: unknown option $1" >&2
+          exit 1
+          ;;
+        *)
+          if [[ -n "$E2E_RECORDING_DIR" ]]; then
+            echo "eval-e2e accepts at most one recording-set directory" >&2
+            exit 1
+          fi
+          E2E_RECORDING_DIR="$1"
+          shift
+          ;;
+      esac
+    done
+    if [[ -n "$E2E_PROVIDER" && "$E2E_PROVIDER" != "mistral" ]]; then
+      echo "eval-e2e: unknown provider '$E2E_PROVIDER' (only 'mistral')" >&2
       exit 1
     fi
-    E2E_RECORDING_DIR="${1:-}"
+    if [[ "$E2E_PROVIDER" == "mistral" && -z "${MISTRAL_API_KEY:-}" ]]; then
+      echo "eval-e2e --provider mistral needs MISTRAL_API_KEY in this shell's environment:" >&2
+      echo "  export MISTRAL_API_KEY=... && ./scripts/remote-build.sh eval-e2e --provider mistral" >&2
+      exit 1
+    fi
+    if [[ "$E2E_PROVIDER" == "mistral" ]]; then
+      require_mistral_api_key_format
+    fi
     if [[ -n "$E2E_RECORDING_DIR" ]]; then
       # Keep the marker JSON trivially safe and make operator mistakes fail
       # before waking/model-loading the Mac. Human mode is strict: the Swift
@@ -462,12 +528,31 @@ case "$CMD" in
         exit 1
       fi
     fi
-    ENSURE_SERVER="speechd"
+    # The hosted arm touches no local server: warming speechd would load 4B
+    # weights on the Mac that nothing in the run would ever talk to.
+    if [[ "$E2E_PROVIDER" != "mistral" ]]; then
+      ENSURE_SERVER="speechd"
+    fi
     E2E_MARKER="$ROOT_DIR/.agent-eval-e2e-enable.json"
     # Trap registered before the marker exists, so no kill window leaves a
-    # stale marker behind (locally or in the remote work dir).
+    # stale marker behind (locally or in the remote work dir) — and in the
+    # Mistral arm that marker carries a real API key.
     trap 'cleanup_transient_marker "$E2E_MARKER"' EXIT
-    if [[ -n "$E2E_RECORDING_DIR" ]]; then
+    if [[ "$E2E_PROVIDER" == "mistral" ]]; then
+      # 0600 before a single byte of the key is written. No helperPath/asrModel:
+      # the harness resolves Mistral's own pins from the provider.
+      (umask 077; : >"$E2E_MARKER")
+      if [[ -n "$E2E_RECORDING_DIR" ]]; then
+        printf '{"provider": "mistral", "apiKey": "%s", "recordingDirectory": "%s"}\n' \
+          "$MISTRAL_API_KEY" \
+          "$E2E_RECORDING_DIR" \
+          >"$E2E_MARKER"
+      else
+        printf '{"provider": "mistral", "apiKey": "%s"}\n' \
+          "$MISTRAL_API_KEY" \
+          >"$E2E_MARKER"
+      fi
+    elif [[ -n "$E2E_RECORDING_DIR" ]]; then
       printf '{"helperPath": "%s", "asrModel": "%s", "recordingDirectory": "%s"}\n' \
         "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
         "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead" \
@@ -511,6 +596,7 @@ case "$CMD" in
         echo "  e.g. MISTRAL_API_KEY=... $0 eval-llm https://api.mistral.ai mistral/mistral-medium-3-5" >&2
         exit 1
       fi
+      require_mistral_api_key_format
       # 0600 before a single byte of the key is written — the same standard as
       # the integration-mistral marker (the redirect below keeps the mode).
       (umask 077; : >"$EVAL_MARKER")
