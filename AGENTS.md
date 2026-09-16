@@ -24,6 +24,7 @@ is machine-local config, set once per clone (never committed):
 ./scripts/remote-build.sh integration-polishd [hf-repo]  # bundled polish helper vs real model + eval baseline (run package first)
 ./scripts/remote-build.sh integration-speechd [hf-repo]  # packaged speech helper vs real audio/model (run package first)
 ./scripts/remote-build.sh integration-mistral  # realtime client vs the LIVE hosted Mistral API (needs MISTRAL_API_KEY)
+./scripts/remote-build.sh integration-keychain  # KeychainSecretStore vs the REAL login keychain (GUI session only; SSH writes get -60008)
 ./scripts/remote-build.sh integration-herdr [ssh-dest]   # remote-herdr join vs a LIVE herdr over a real ssh -L (hermetic by default)
 ./scripts/remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]  # agent-dictation E2E eval (run package first)
 ./scripts/remote-build.sh dogfood          # build the instrumented tree + run the context-capture suite

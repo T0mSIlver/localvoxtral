@@ -7,6 +7,10 @@ import XCTest
 final class SettingsStoreTests: XCTestCase {
     private var defaults: UserDefaults!
     private var defaultsSuiteName = ""
+    /// Shared across every `makeStore()` in a test, the way one login keychain
+    /// is shared across launches — that is what makes a reload assertion mean
+    /// anything.
+    private var secrets: InMemorySecretStore!
 
     override func setUp() async throws {
         try await super.setUp()
@@ -14,17 +18,19 @@ final class SettingsStoreTests: XCTestCase {
         let defaults = UserDefaults(suiteName: defaultsSuiteName)!
         defaults.removePersistentDomain(forName: defaultsSuiteName)
         self.defaults = defaults
+        secrets = InMemorySecretStore()
     }
 
     override func tearDown() async throws {
         defaults?.removePersistentDomain(forName: defaultsSuiteName)
         defaults = nil
         defaultsSuiteName = ""
+        secrets = nil
         try await super.tearDown()
     }
 
     private func makeStore() -> SettingsStore {
-        SettingsStore(defaults: defaults, environment: [:])
+        SettingsStore(defaults: defaults, environment: [:], secretStore: secrets)
     }
 
     // A stored value for the removed "Local Claude title fallback" toggle is
@@ -368,7 +374,8 @@ final class SettingsStoreTests: XCTestCase {
         // external setup (e.g. launched from a wrapper script).
         let store = SettingsStore(
             defaults: defaults,
-            environment: ["REALTIME_ENDPOINT": "ws://example.com/realtime"]
+            environment: ["REALTIME_ENDPOINT": "ws://example.com/realtime"],
+            secretStore: InMemorySecretStore()
         )
 
         XCTAssertEqual(store.dictationBackendMode, .externalURL)
@@ -978,7 +985,9 @@ final class SettingsStoreTests: XCTestCase {
         store.mistralDictationModel = "voxtral-mini-transcribe-realtime-latest"
         store.mistralPolishingModel = "mistral-medium-latest"
 
-        XCTAssertEqual(defaults.string(forKey: "settings.mistral_api_key"), "  mk-secret  ")
+        // The key goes to the secret store, trimmed, and NOWHERE near the plist.
+        XCTAssertNil(defaults.string(forKey: "settings.mistral_api_key"))
+        XCTAssertEqual(secrets.snapshot[.mistralAPIKey], "mk-secret")
         XCTAssertEqual(
             defaults.string(forKey: "settings.mistral_dictation_model"),
             "voxtral-mini-transcribe-realtime-latest"
@@ -989,8 +998,7 @@ final class SettingsStoreTests: XCTestCase {
         )
 
         let reloaded = makeStore()
-        XCTAssertEqual(reloaded.mistralAPIKey, "  mk-secret  ")
-        // Trimming happens on read, so the stored value is what the user typed.
+        XCTAssertEqual(reloaded.mistralAPIKey, "mk-secret")
         XCTAssertEqual(reloaded.trimmedMistralAPIKey, "mk-secret")
         XCTAssertEqual(
             reloaded.resolvedMistralDictationModel,

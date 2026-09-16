@@ -488,7 +488,7 @@ final class PolishPromptWarmupPlanTests: XCTestCase {
     }
 
     private func makeStore() -> SettingsStore {
-        SettingsStore(defaults: defaults, environment: [:])
+        SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
     }
 
     /// Implements only the zero-arg loader, so the protocol's default

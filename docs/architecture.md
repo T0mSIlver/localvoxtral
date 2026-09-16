@@ -36,7 +36,9 @@ Key subsystems:
   retired app-managed backend artifacts from existing installs. User-facing
   backend copy (pinned models, fork optimizations, vLLM example) lives in
   [under-the-hood.md](under-the-hood.md); keep it in sync when pins change.
-- Settings/config: `SettingsStore` (UserDefaults), `AppConfigStore` (TOML at
+- Settings/config: `SettingsStore` (UserDefaults, plus a `SecretStoring` seam —
+  `KeychainSecretStore` — that keeps the three API keys out of the plist and in
+  the login Keychain), `AppConfigStore` (TOML at
   `~/Library/Application Support/localvoxtral/config`)
 - Hotkey: `HotKeyManager` (Carbon, single global hotkey)
 - Claude Code session context (`Sources/ClaudeContext*`, `Sources/localvoxtral/ClaudeContext/`,

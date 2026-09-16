@@ -263,7 +263,7 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
             defaults.removePersistentDomain(forName: suiteName)
         }
 
-        let settings = SettingsStore(defaults: defaults, environment: [:])
+        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.dictationOutputMode = outputMode
         return settings
     }

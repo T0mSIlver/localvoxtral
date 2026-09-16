@@ -28,7 +28,7 @@ final class TerminalAppsModelTests: XCTestCase {
     }
 
     private func makeStore() -> SettingsStore {
-        SettingsStore(defaults: defaults, environment: [:])
+        SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
     }
 
     /// A model whose LaunchServices seam answers from a fixture table:

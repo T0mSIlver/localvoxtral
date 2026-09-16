@@ -272,7 +272,7 @@ final class TerminalAutomationConsentPrewarmTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         defer { defaults.removePersistentDomain(forName: suiteName) }
-        let settings = SettingsStore(defaults: defaults, environment: [:])
+        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         let executions = Mutex(0)
         let observer = TerminalAutomationConsentPrewarmSettingsObserver(settings: settings) {
             TerminalAutomationConsentPrewarm.fireOnceWhenTerminalIsAvailable(

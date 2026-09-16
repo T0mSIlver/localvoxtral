@@ -314,7 +314,7 @@ final class MistralAPIModeTests: XCTestCase {
         addTeardownBlock {
             defaults.removePersistentDomain(forName: suiteName)
         }
-        let settings = SettingsStore(defaults: defaults, environment: [:])
+        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.onboardingCompleted = true
         let backendManager = OnboardingTestBackendManager()
         let viewModel = DictationViewModel(

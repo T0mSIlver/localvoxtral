@@ -33,7 +33,7 @@ final class OnboardingViewModelTests: XCTestCase {
         closeCount: () -> Int,
         openEndpointsCount: () -> Int
     ) {
-        let settings = SettingsStore(defaults: defaults, environment: [:])
+        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         let manager = OnboardingTestBackendManager()
         let viewModel = DictationViewModel(
             settings: settings,

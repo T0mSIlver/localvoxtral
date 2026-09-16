@@ -377,7 +377,8 @@ final class BackendManagerTests: XCTestCase {
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
         let settings = SettingsStore(
-            defaults: UserDefaults(suiteName: UUID().uuidString)!
+            defaults: UserDefaults(suiteName: UUID().uuidString)!,
+            secretStore: InMemorySecretStore()
         )
         let manager = makeManager(
             modelPreparer: modelPreparer,

@@ -1558,7 +1558,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         addTeardownBlock {
             defaults.removePersistentDomain(forName: suiteName)
         }
-        let settings = SettingsStore(defaults: defaults, environment: [:])
+        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         // These tests exercise connection-failure UX against a user-configured
         // external endpoint (a closed port). Pin external mode so that the
         // configured realtimeAPIEndpointURL is honored rather than overridden

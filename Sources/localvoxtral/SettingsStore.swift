@@ -207,12 +207,21 @@ final class SettingsStore {
     private enum Keys {
         static let realtimeProvider = "settings.realtime_provider"
         static let realtimeAPIEndpointURL = "settings.realtime_api_endpoint_url"
+        /// LEGACY. The three API keys now live in the login Keychain
+        /// (`SecretKey` / `KeychainSecretStore`); these defaults keys exist
+        /// only so `loadSecrets` can find and remove a value
+        /// written by a build that predates the move. Nothing else may read
+        /// or write them.
         static let apiKey = "settings.api_key"
         static let realtimeAPIModelName = "settings.realtime_api_model_name"
-        /// ONE key for both Mistral engines — the account is one account, and
-        /// asking for the same secret twice is how a working dictation ends up
-        /// beside a 401-ing polish.
+        /// LEGACY, see `apiKey`. ONE key for both Mistral engines — the account
+        /// is one account, and asking for the same secret twice is how a
+        /// working dictation ends up beside a 401-ing polish.
         static let mistralAPIKey = "settings.mistral_api_key"
+        /// Set once the whole sweep out of UserDefaults succeeded, so later
+        /// launches never re-read the plist. Deliberately not cleared by
+        /// anything: a false value only costs one extra (cheap) sweep.
+        static let apiKeysMigratedToKeychain = "settings.api_keys_migrated_to_keychain"
         static let mistralDictationModel = "settings.mistral_dictation_model"
         static let mistralPolishingModel = "settings.mistral_polishing_model"
         static let dictationBackendMode = "settings.dictation_backend_mode"
@@ -233,6 +242,7 @@ final class SettingsStore {
             "settings.dictation_shortcut_carbon_modifiers"
         static let llmPolishingEnabled = "settings.llm_polishing_enabled"
         static let llmPolishingEndpointURL = "settings.llm_polishing_endpoint_url"
+        /// LEGACY, see `apiKey`.
         static let llmPolishingAPIKey = "settings.llm_polishing_api_key"
         static let llmPolishingModel = "settings.llm_polishing_model"
         static let managedLLMPolishingModel = "settings.managed_llm_polishing_model"
@@ -282,6 +292,20 @@ final class SettingsStore {
     }
 
     private let defaults: UserDefaults
+    /// Where the three API keys live. Injected so tests and previews can never
+    /// reach the real login keychain (`KeychainSecretStore.init` traps under
+    /// XCTest as a backstop).
+    private let secretStore: any SecretStoring
+
+    /// One short sentence when the secret store refused an operation, else nil.
+    /// Rendered in the Engines pane so a locked or broken keychain reads as
+    /// exactly that, instead of every key silently looking "not set".
+    ///
+    /// Sticky for the life of the process on purpose: a later successful write
+    /// proves only that ONE key round-tripped, while the others are still blank
+    /// in memory, and clearing the warning there would restore the very lie
+    /// this property exists to prevent.
+    private(set) var secretStoreFailureSummary: String?
 
     static let defaultDictationShortcut = DictationShortcut(
         keyCode: UInt32(kVK_Space),
@@ -332,7 +356,7 @@ final class SettingsStore {
     }
 
     var apiKey: String {
-        didSet { defaults.set(apiKey, forKey: Keys.apiKey) }
+        didSet { persistSecret(apiKey, for: .realtimeAPIKey) }
     }
 
     var realtimeAPIModelName: String {
@@ -340,10 +364,10 @@ final class SettingsStore {
     }
 
     /// The Mistral API key, shared by the dictation socket and the polishing
-    /// request. Stored in UserDefaults like the other two API keys this app
-    /// holds; moving all three to the Keychain is its own change.
+    /// request. Stored in the login Keychain like the other two API keys this
+    /// app holds — never in UserDefaults.
     var mistralAPIKey: String {
-        didSet { defaults.set(mistralAPIKey, forKey: Keys.mistralAPIKey) }
+        didSet { persistSecret(mistralAPIKey, for: .mistralAPIKey) }
     }
 
     /// Hosted transcription model. Empty means
@@ -407,7 +431,7 @@ final class SettingsStore {
     }
 
     var llmPolishingAPIKey: String {
-        didSet { defaults.set(llmPolishingAPIKey, forKey: Keys.llmPolishingAPIKey) }
+        didSet { persistSecret(llmPolishingAPIKey, for: .llmPolishingAPIKey) }
     }
 
     var llmPolishingModel: String {
@@ -768,9 +792,11 @@ final class SettingsStore {
 
     init(
         defaults: UserDefaults = .standard,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        secretStore: any SecretStoring = KeychainSecretStore()
     ) {
         self.defaults = defaults
+        self.secretStore = secretStore
 
         // Resolve onboarding completion BEFORE any migration below persists the
         // per-backend mode keys — the freshness heuristic reads whether those
@@ -838,11 +864,14 @@ final class SettingsStore {
             environment: environment
         )
 
-        apiKey = Self.loadString(
-            defaults: defaults, key: Keys.apiKey,
-            envKey: "OPENAI_API_KEY", fallback: "",
-            environment: environment
-        )
+        // One sweep out of UserDefaults, then the keychain is the only source
+        // of truth. Done here rather than lazily so a plist copy of a secret
+        // stops existing at the first launch that can remove it.
+        let secrets = Self.loadSecrets(defaults: defaults, secretStore: secretStore)
+        secretStoreFailureSummary = secrets.failureSummary
+
+        apiKey = Self.resolveSecret(
+            secrets, .realtimeAPIKey, envKey: "OPENAI_API_KEY", environment: environment)
 
         realtimeAPIModelName = Self.loadModelName(
             defaults: defaults, key: Keys.realtimeAPIModelName,
@@ -850,11 +879,8 @@ final class SettingsStore {
             environment: environment
         )
 
-        mistralAPIKey = Self.loadString(
-            defaults: defaults, key: Keys.mistralAPIKey,
-            envKey: "MISTRAL_API_KEY", fallback: "",
-            environment: environment
-        )
+        mistralAPIKey = Self.resolveSecret(
+            secrets, .mistralAPIKey, envKey: "MISTRAL_API_KEY", environment: environment)
         // Empty is the stored form of "use the pinned default": the defaults
         // live in one place (the client / MistralPolishDefaults) and a user who
         // clears the field gets them back, rather than a blank model name.
@@ -919,11 +945,9 @@ final class SettingsStore {
             fallback: "http://127.0.0.1:8080/v1/chat/completions",
             environment: environment
         )
-        llmPolishingAPIKey = Self.loadString(
-            defaults: defaults, key: Keys.llmPolishingAPIKey,
-            envKey: "LLM_POLISHING_API_KEY", fallback: "",
-            environment: environment
-        )
+        llmPolishingAPIKey = Self.resolveSecret(
+            secrets, .llmPolishingAPIKey, envKey: "LLM_POLISHING_API_KEY",
+            environment: environment)
         llmPolishingModel = Self.loadString(
             defaults: defaults, key: Keys.llmPolishingModel,
             envKey: "LLM_POLISHING_MODEL", fallback: Self.defaultLLMPolishingModel,
@@ -1066,6 +1090,133 @@ final class SettingsStore {
             : fallback
     }
 
+    // MARK: - API keys (login Keychain)
+
+    /// Engines-pane copy for a secret store that refused. One short sentence
+    /// each: Settings shows the summary, the `Secrets` log carries the OSStatus.
+    static let secretStoreReadFailureSummary =
+        "Keychain unavailable; API keys could not be read."
+    static let secretStoreWriteFailureSummary =
+        "Keychain unavailable; the API key was not saved."
+
+    /// Where each secret used to live in UserDefaults. Read ONLY by the
+    /// one-time migration below — nothing else may touch these keys again.
+    private static func legacyDefaultsKey(for key: SecretKey) -> String {
+        switch key {
+        case .realtimeAPIKey: return Keys.apiKey
+        case .llmPolishingAPIKey: return Keys.llmPolishingAPIKey
+        case .mistralAPIKey: return Keys.mistralAPIKey
+        }
+    }
+
+    /// What init resolved out of the secret store, plus the sentence the UI
+    /// must show when something refused.
+    private struct ResolvedSecrets {
+        var values: [SecretKey: String] = [:]
+        var failureSummary: String?
+    }
+
+    /// Migrates any plist-era keys into the secret store (once), then reads all
+    /// three back out of it.
+    ///
+    /// Two rules make the sweep safe to run on a half-migrated install:
+    /// - a plist value is only written when the store has nothing, so a stale
+    ///   copy can never clobber a newer key;
+    /// - a failed write leaves the plist value alone and keeps using it for
+    ///   this process, because losing a user's API key is worse than leaving a
+    ///   copy of it where it already was.
+    private static func loadSecrets(
+        defaults: UserDefaults,
+        secretStore: any SecretStoring
+    ) -> ResolvedSecrets {
+        var resolved = ResolvedSecrets()
+        var strandedInDefaults: [SecretKey: String] = [:]
+
+        if !defaults.bool(forKey: Keys.apiKeysMigratedToKeychain) {
+            var sweptEverything = true
+            for key in SecretKey.allCases {
+                let defaultsKey = legacyDefaultsKey(for: key)
+                guard
+                    let legacy = defaults.string(forKey: defaultsKey)?.trimmed,
+                    !legacy.isEmpty
+                else {
+                    // Nothing worth keeping; drop any blank leftover so the
+                    // plist stops carrying these keys at all.
+                    defaults.removeObject(forKey: defaultsKey)
+                    continue
+                }
+
+                do {
+                    let existing = try secretStore.secret(for: key) ?? ""
+                    if existing.isEmpty {
+                        try secretStore.setSecret(legacy, for: key)
+                    }
+                    defaults.removeObject(forKey: defaultsKey)
+                    Log.secrets.notice(
+                        "Migrated \(key.rawValue, privacy: .public) from UserDefaults into the keychain"
+                    )
+                } catch {
+                    sweptEverything = false
+                    strandedInDefaults[key] = legacy
+                    resolved.failureSummary = Self.secretStoreWriteFailureSummary
+                    Log.secrets.error(
+                        "Keychain migration of \(key.rawValue, privacy: .public) failed; the UserDefaults copy stays in place and is used for this launch: \(String(describing: error), privacy: .public)"
+                    )
+                }
+            }
+            if sweptEverything {
+                defaults.set(true, forKey: Keys.apiKeysMigratedToKeychain)
+            }
+        }
+
+        for key in SecretKey.allCases {
+            if let stranded = strandedInDefaults[key] {
+                resolved.values[key] = stranded
+                continue
+            }
+            do {
+                resolved.values[key] = try secretStore.secret(for: key) ?? ""
+            } catch {
+                resolved.values[key] = ""
+                resolved.failureSummary = Self.secretStoreReadFailureSummary
+                Log.secrets.error(
+                    "Reading \(key.rawValue, privacy: .public) from the keychain failed; it reads as unset for this launch: \(String(describing: error), privacy: .public)"
+                )
+            }
+        }
+
+        return resolved
+    }
+
+    /// The precedence `loadString` gave these keys, with the secret store
+    /// standing in for the plist: a stored key wins, then the env override,
+    /// then empty. An env value is never written back — it belongs to the
+    /// process that exported it, not to the user's keychain.
+    private static func resolveSecret(
+        _ secrets: ResolvedSecrets,
+        _ key: SecretKey,
+        envKey: String,
+        environment: [String: String]
+    ) -> String {
+        let stored = secrets.values[key] ?? ""
+        guard stored.isEmpty else { return stored }
+        return environment[envKey] ?? ""
+    }
+
+    /// Write-through for the three key properties. Trimmed, because a pasted
+    /// key routinely carries a trailing newline the wire never wants; empty
+    /// deletes the item rather than storing a blank.
+    private func persistSecret(_ value: String, for key: SecretKey) {
+        do {
+            try secretStore.setSecret(value.trimmed, for: key)
+        } catch {
+            secretStoreFailureSummary = Self.secretStoreWriteFailureSummary
+            Log.secrets.error(
+                "Storing \(key.rawValue, privacy: .public) in the keychain failed: \(String(describing: error), privacy: .public)"
+            )
+        }
+    }
+
     /// What a first-time user gets out of the box: the tap/hold gesture works
     /// without a trip to Settings, instead of the ⌥Space shortcut.
     ///
@@ -1203,7 +1354,10 @@ final class SettingsStore {
     /// about reachability: Settings never fires a request of its own, and the
     /// "Check key" row is where a user asks Mistral anything.
     var mistralAPIStatusSummary: String {
-        isMistralAPIConfigured ? "Ready" : "API key missing"
+        // A keychain that will not answer must never read as "API key missing":
+        // that sends the user to paste a key they already have.
+        if let secretStoreFailureSummary { return secretStoreFailureSummary }
+        return isMistralAPIConfigured ? "Ready" : "API key missing"
     }
 
     var effectiveModelName: String {

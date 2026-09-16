@@ -29,7 +29,7 @@ final class DiagnosticsExporterTests: XCTestCase {
     // MARK: - Helpers
 
     private func makeStore() -> SettingsStore {
-        SettingsStore(defaults: defaults, environment: [:])
+        SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
     }
 
     /// A store in external-URL mode with a user-entered endpoint, so the
@@ -126,6 +126,22 @@ final class DiagnosticsExporterTests: XCTestCase {
 
         XCTAssertFalse(report.contains("polish-DO-NOT-LEAK-9a4b"))
         XCTAssertTrue(report.contains("LLM polishing API key: set"))
+    }
+
+    func testReportExcludesMistralAPIKeyValueWhenSet() {
+        let store = makeStore()
+        store.dictationBackendMode = .mistralAPI
+        store.polishingBackendMode = .mistralAPI
+        store.llmPolishingEnabled = true
+        store.mistralAPIKey = "mk-DO-NOT-LEAK-MISTRAL-4d2e"
+
+        let snapshot = makeSnapshot(settings: store)
+        let report = DiagnosticsExporter.makeReport(snapshot: snapshot, now: Date())
+
+        // The snapshot reduces keys to booleans at build time, so no Mistral
+        // key can reach the report through the endpoint or the mode lines.
+        XCTAssertFalse(report.contains("mk-DO-NOT-LEAK-MISTRAL-4d2e"))
+        XCTAssertFalse(report.contains("mk-"))
     }
 
     func testReportExcludesEmbeddedEndpointCredentials() {

@@ -168,7 +168,7 @@ final class LocalNetworkPermissionPreflightTests: XCTestCase {
         let suiteName = "localvoxtral.LocalNetworkPreflight.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
-        return (SettingsStore(defaults: defaults, environment: [:]), suiteName)
+        return (SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore()), suiteName)
     }
 
     func testProductionPreflightDedupesRepeatedTargetsWithoutOpeningConnections() throws {
