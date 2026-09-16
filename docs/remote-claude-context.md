@@ -362,6 +362,14 @@ carries the host's events. This is why a raw `ssh -v` forward check is
 misleading on a healthy setup, and why the in-app check probes the port instead
 of grepping ssh's warnings.
 
+The catch is what happens when that first session ends. The port frees, but the
+sessions that lost the race never ask again, so a host whose every open session
+started while another one held the forward has no tunnel at all, with nothing
+in any terminal to say so. Long-lived sessions that are not shells are the usual
+survivors: an editor's remote server, a herdr federation link, a socket forward.
+**Keep the tunnel open** (below) is the fix, because the app re-binds the port
+on its own instead of leaving it to whichever session came first.
+
 ## Sessions with no terminal
 
 Hook events only reach your Mac while something holds the tunnel — normally one
@@ -399,6 +407,14 @@ stdin, never in a process argument on this Mac; on the host it is in that one
 ### Federated herdr machines
 
 If your local herdr 0.9 client is showing a machine from another host, localvoxtral can join the Claude Code session on that machine without needing an ssh process in the terminal: it reads which machine herdr selected, reaches that machine's herdr over the app-managed tunnel, and checks a short-lived panel marker on your screen. If the marker does not appear, use Settings › herdr › Saved machines › **Panel row** to add the indicator row to this Mac's herdr config, then reload config in herdr; localvoxtral cannot reload herdr for you.
+
+The join can only pick from sessions whose hooks have reached this Mac, and a
+federated view carries none of your own ssh sessions to hold the hook tunnel
+(herdr's link uses your ssh config, but it may have lost the forward to a
+session that has since ended — see "A second session to the same host"). Turn
+on **Keep the tunnel open** in that host's row; without it the join abstains
+with "no live session on the selected herdr session" in the log, and the
+status line on the host shows a grey dot.
 
 ## tmux, screen, and window titles
 
