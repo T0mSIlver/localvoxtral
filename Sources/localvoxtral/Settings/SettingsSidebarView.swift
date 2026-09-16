@@ -107,8 +107,8 @@ struct SettingsSidebarView: View {
     /// Full Terminals section list (built-ins + user-added), from
     /// `TerminalAppsSettingsModel.terminalApps`.
     let terminalApps: [TerminalAppDescriptor]
-    /// The dot a row trails, or nil for rows without a status (the main panes
-    /// other than Context, Add app…).
+    /// The dot a row trails, or nil for rows without a status (the app's own
+    /// panes, Context included, and Add app…).
     let statusDot: (SettingsTab) -> SettingsStatusDot?
     /// Opens the application picker and adds the chosen app (Terminals →
     /// Add app…). Owned here because the row lives in the sidebar.

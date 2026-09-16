@@ -218,6 +218,8 @@ final class OnboardingTestBackendManager: ManagedBackendManaging {
     @ObservationIgnored private(set) var stopAllCallCount = 0
     @ObservationIgnored private(set) var stopDictationCallCount = 0
     @ObservationIgnored private(set) var stopPolishingCallCount = 0
+    @ObservationIgnored private(set) var pausedDownloadSpecIDs: [String] = []
+    @ObservationIgnored private(set) var cancelledDownloadSpecIDs: [String] = []
     @ObservationIgnored private var ensureContinuation: CheckedContinuation<Void, Never>?
 
     func ensureReady(dictation: Bool, polishing: Bool) async throws {
@@ -229,6 +231,12 @@ final class OnboardingTestBackendManager: ManagedBackendManaging {
     func stopAll() async { stopAllCallCount += 1 }
     func stopDictation() async { stopDictationCallCount += 1 }
     func stopPolishing() async { stopPolishingCallCount += 1 }
+    func pauseModelDownload(for spec: ManagedBackendSpec) async {
+        pausedDownloadSpecIDs.append(spec.id)
+    }
+    func cancelModelDownload(for spec: ManagedBackendSpec) async {
+        cancelledDownloadSpecIDs.append(spec.id)
+    }
     func recentOutput(for spec: ManagedBackendSpec) -> [String] { [] }
 
     /// Suspends until `ensureReady` has been invoked at least once.

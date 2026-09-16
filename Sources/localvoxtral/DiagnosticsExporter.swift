@@ -212,6 +212,8 @@ enum DiagnosticsExporter {
         switch status {
         case .preparingModel(let progress):
             return "preparing model (\(describe(progress)))"
+        case .pausedModelDownload(let progress):
+            return "model download paused (\(describe(progress)))"
         case .starting:
             return "starting"
         case .ready:

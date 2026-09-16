@@ -7,11 +7,6 @@ import XCTest
 /// grey = not installed / not detected. Each derivation is pinned per input
 /// state so a future reshuffle of the enum cannot silently repaint a row.
 final class IntegrationsSidebarStatusTests: XCTestCase {
-    func testContextDotIsGreenWhenAnyConsentIsOn() {
-        XCTAssertEqual(IntegrationsSidebarStatus.contextDot(anyConsentEnabled: true), .green)
-        XCTAssertEqual(IntegrationsSidebarStatus.contextDot(anyConsentEnabled: false), .grey)
-    }
-
     func testClaudeDotFollowsThePluginStatus() {
         XCTAssertEqual(
             IntegrationsSidebarStatus.claudeDot(pluginStatus: .installed(version: "1.4.0")),

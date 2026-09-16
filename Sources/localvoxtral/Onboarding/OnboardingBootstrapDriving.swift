@@ -64,6 +64,11 @@ extension OnboardingItemState {
                 detail: Self.modelDownloadDetail(progress),
                 fraction: progress.fraction
             )
+        case .pausedModelDownload(let progress):
+            // Only reachable when the download is paused from Settings while
+            // the wizard is open. `.working` is the one case that keeps the
+            // bar, and the detail says plainly that nothing is moving.
+            self = .working(detail: "Paused", fraction: progress.fraction)
         case .starting:
             // Managed servers download the model weights internally before
             // /health responds, so "starting" can be a long, opaque wait.

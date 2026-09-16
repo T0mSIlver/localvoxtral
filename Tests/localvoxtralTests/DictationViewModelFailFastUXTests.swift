@@ -1279,6 +1279,119 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertNil(viewModel.polishingWarmupTask)
     }
 
+    // MARK: - Engines pane model-download controls
+
+    /// The Pause button reaches the manager, and parks in the backend's
+    /// shutdown slot so a later warmup serializes behind it exactly as a stop
+    /// does.
+    func testPauseButtonRoutesToTheManagerThroughTheShutdownSlot() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.onboardingCompleted = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.pauseManagedModelDownload(for: BackendCatalog.polishd)
+        await viewModel.polishingShutdownTask?.value
+
+        XCTAssertEqual(backendManager.pausedDownloadSpecIDs, [BackendCatalog.polishd.id])
+        XCTAssertTrue(backendManager.cancelledDownloadSpecIDs.isEmpty)
+        XCTAssertNil(viewModel.dictationShutdownTask, "polishing's controls must not touch dictation")
+    }
+
+    func testCancelButtonRoutesToTheManagerForTheDictationEngineToo() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.onboardingCompleted = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.cancelManagedModelDownload(for: BackendCatalog.speechd)
+        await viewModel.dictationShutdownTask?.value
+
+        XCTAssertEqual(backendManager.cancelledDownloadSpecIDs, [BackendCatalog.speechd.id])
+        XCTAssertTrue(backendManager.pausedDownloadSpecIDs.isEmpty)
+    }
+
+    /// Resume goes through the ordinary warmup, so it inherits the
+    /// shutdown/warmup serialization every other trigger relies on.
+    func testResumeButtonRunsTheWarmupEnsureForThatBackendOnly() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.onboardingCompleted = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.resumeManagedModelDownload(for: BackendCatalog.polishd)
+        await viewModel.polishingWarmupTask?.value
+
+        XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
+    }
+
+    /// Pressing Pause in Engines while a dictation session is sitting on
+    /// "Downloading dictation model (42%)…" is a user action, not a backend
+    /// failure. The session must unwind quietly: no "Managed backend failed."
+    /// status, no popover error, and the connecting latch released so the next
+    /// start is not blocked.
+    func testPausingTheDownloadDuringAConnectingSessionDoesNotReportAFailure() async {
+        let backendManager = FakeManagedBackendManager()
+        backendManager.suspendEnsure = true
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.dictationBackendMode = .managedLocal
+        viewModel.settings.polishingBackendMode = .externalURL
+        viewModel.settings.onboardingCompleted = true
+        // This test reaches beginDictationSession, which arms the real
+        // connect-timeout timer on a process-retained view model (AGENTS.md).
+        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.startDictation()
+        await backendManager.waitUntilEnsureStarted()
+        XCTAssertTrue(viewModel.isConnectingRealtimeSession)
+
+        // Captured before the pause: the fix retires the startup task slot.
+        let startupTask = viewModel.managedStartupTask
+        viewModel.pauseManagedModelDownload(for: BackendCatalog.speechd)
+        await viewModel.dictationShutdownTask?.value
+        await startupTask?.value
+
+        XCTAssertEqual(backendManager.pausedDownloadSpecIDs, [BackendCatalog.speechd.id])
+        XCTAssertFalse(
+            viewModel.isConnectingRealtimeSession,
+            "the connecting latch must be released or every later start is blocked"
+        )
+        XCTAssertNotEqual(viewModel.statusText, "Managed backend failed.")
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready)
+        XCTAssertNil(viewModel.lastError)
+    }
+
+    /// Same contract for Cancel, and for the polishing engine's controls.
+    func testCancellingTheDownloadDuringAConnectingSessionDoesNotReportAFailure() async {
+        let backendManager = FakeManagedBackendManager()
+        backendManager.suspendEnsure = true
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.dictationBackendMode = .managedLocal
+        viewModel.settings.polishingBackendMode = .managedLocal
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.settings.onboardingCompleted = true
+        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.startDictation()
+        await backendManager.waitUntilEnsureStarted()
+        XCTAssertTrue(viewModel.isConnectingRealtimeSession)
+
+        let startupTask = viewModel.managedStartupTask
+        viewModel.cancelManagedModelDownload(for: BackendCatalog.polishd)
+        await viewModel.polishingShutdownTask?.value
+        await startupTask?.value
+
+        XCTAssertEqual(backendManager.cancelledDownloadSpecIDs, [BackendCatalog.polishd.id])
+        XCTAssertFalse(viewModel.isConnectingRealtimeSession)
+        XCTAssertNotEqual(viewModel.statusText, "Managed backend failed.")
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready)
+        XCTAssertNil(viewModel.lastError)
+    }
+
     // MARK: - Menu bar backend readiness indicator
 
     func testMenuBarIndicatorShowsFailureWhenManagedDictationBackendIsNotReady() {
@@ -1666,8 +1779,13 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
     private(set) var stopAllCallCount = 0
     private(set) var stopDictationCallCount = 0
     private(set) var stopPolishingCallCount = 0
+    private(set) var pausedDownloadSpecIDs: [String] = []
+    private(set) var cancelledDownloadSpecIDs: [String] = []
     private var ensureStartedContinuation: CheckedContinuation<Void, Never>?
-    private var ensureResumeContinuation: CheckedContinuation<Void, Never>?
+    /// Throwing, so `pauseModelDownload` / `cancelModelDownload` can model what
+    /// the real manager does to a caller waiting on the shared single-flight
+    /// ensure: cancel it, so that `await ensureReady` throws `CancellationError`.
+    private var ensureResumeContinuation: CheckedContinuation<Void, Error>?
     private var stopDictationContinuation: CheckedContinuation<Void, Never>?
     private var stopDictationResumeContinuation: CheckedContinuation<Void, Never>?
     private var stopPolishingContinuation: CheckedContinuation<Void, Never>?
@@ -1678,7 +1796,7 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
         ensureStartedContinuation = nil
 
         if suspendEnsure {
-            await withCheckedContinuation { continuation in
+            try await withCheckedThrowingContinuation { continuation in
                 ensureResumeContinuation = continuation
             }
         }
@@ -1715,6 +1833,25 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
         stopPolishingCallCount += 1
         stopPolishingContinuation?.resume()
         stopPolishingContinuation = nil
+    }
+
+    func pauseModelDownload(for spec: ManagedBackendSpec) async {
+        pausedDownloadSpecIDs.append(spec.id)
+        cancelSuspendedEnsure()
+    }
+
+    func cancelModelDownload(for spec: ManagedBackendSpec) async {
+        cancelledDownloadSpecIDs.append(spec.id)
+        cancelSuspendedEnsure()
+    }
+
+    /// Both controls cancel the backend's single-flight ensure, so anyone
+    /// awaiting it — a dictation session waiting on the download — sees a
+    /// `CancellationError`.
+    private func cancelSuspendedEnsure() {
+        let continuation = ensureResumeContinuation
+        ensureResumeContinuation = nil
+        continuation?.resume(throwing: CancellationError())
     }
 
     func recentOutput(for spec: ManagedBackendSpec) -> [String] {
