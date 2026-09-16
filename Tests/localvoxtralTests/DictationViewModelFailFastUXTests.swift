@@ -1279,6 +1279,52 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertNil(viewModel.polishingWarmupTask)
     }
 
+    // MARK: - Engines pane model-download controls
+
+    /// The Pause button reaches the manager, and parks in the backend's
+    /// shutdown slot so a later warmup serializes behind it exactly as a stop
+    /// does.
+    func testPauseButtonRoutesToTheManagerThroughTheShutdownSlot() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.onboardingCompleted = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.pauseManagedModelDownload(for: BackendCatalog.polishd)
+        await viewModel.polishingShutdownTask?.value
+
+        XCTAssertEqual(backendManager.pausedDownloadSpecIDs, [BackendCatalog.polishd.id])
+        XCTAssertTrue(backendManager.cancelledDownloadSpecIDs.isEmpty)
+        XCTAssertNil(viewModel.dictationShutdownTask, "polishing's controls must not touch dictation")
+    }
+
+    func testCancelButtonRoutesToTheManagerForTheDictationEngineToo() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.onboardingCompleted = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.cancelManagedModelDownload(for: BackendCatalog.speechd)
+        await viewModel.dictationShutdownTask?.value
+
+        XCTAssertEqual(backendManager.cancelledDownloadSpecIDs, [BackendCatalog.speechd.id])
+        XCTAssertTrue(backendManager.pausedDownloadSpecIDs.isEmpty)
+    }
+
+    /// Resume goes through the ordinary warmup, so it inherits the
+    /// shutdown/warmup serialization every other trigger relies on.
+    func testResumeButtonRunsTheWarmupEnsureForThatBackendOnly() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.onboardingCompleted = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.resumeManagedModelDownload(for: BackendCatalog.polishd)
+        await viewModel.polishingWarmupTask?.value
+
+        XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
+    }
+
     // MARK: - Menu bar backend readiness indicator
 
     func testMenuBarIndicatorShowsFailureWhenManagedDictationBackendIsNotReady() {
@@ -1666,6 +1712,8 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
     private(set) var stopAllCallCount = 0
     private(set) var stopDictationCallCount = 0
     private(set) var stopPolishingCallCount = 0
+    private(set) var pausedDownloadSpecIDs: [String] = []
+    private(set) var cancelledDownloadSpecIDs: [String] = []
     private var ensureStartedContinuation: CheckedContinuation<Void, Never>?
     private var ensureResumeContinuation: CheckedContinuation<Void, Never>?
     private var stopDictationContinuation: CheckedContinuation<Void, Never>?
@@ -1715,6 +1763,14 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
         stopPolishingCallCount += 1
         stopPolishingContinuation?.resume()
         stopPolishingContinuation = nil
+    }
+
+    func pauseModelDownload(for spec: ManagedBackendSpec) async {
+        pausedDownloadSpecIDs.append(spec.id)
+    }
+
+    func cancelModelDownload(for spec: ManagedBackendSpec) async {
+        cancelledDownloadSpecIDs.append(spec.id)
     }
 
     func recentOutput(for spec: ManagedBackendSpec) -> [String] {

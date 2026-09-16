@@ -500,7 +500,11 @@ private struct ConnectionSettingsPane: View {
 
                     ManagedBackendStatusRow(
                         title: "Status",
-                        status: backendManager.speechdStatus
+                        status: backendManager.speechdStatus,
+                        identifierPrefix: "engines.dictation",
+                        onPause: { viewModel.pauseManagedModelDownload(for: BackendCatalog.speechd) },
+                        onResume: { viewModel.resumeManagedModelDownload(for: BackendCatalog.speechd) },
+                        onCancel: { viewModel.cancelManagedModelDownload(for: BackendCatalog.speechd) }
                     )
                 }
             }
@@ -585,7 +589,11 @@ private struct ConnectionSettingsPane: View {
 
                     ManagedBackendStatusRow(
                         title: "Status",
-                        status: backendManager.polishdStatus
+                        status: backendManager.polishdStatus,
+                        identifierPrefix: "engines.polishing",
+                        onPause: { viewModel.pauseManagedModelDownload(for: BackendCatalog.polishd) },
+                        onResume: { viewModel.resumeManagedModelDownload(for: BackendCatalog.polishd) },
+                        onCancel: { viewModel.cancelManagedModelDownload(for: BackendCatalog.polishd) }
                     )
                 }
             }
@@ -648,18 +656,70 @@ private struct MistralConfigurationStatusLabel: View {
     }
 }
 
-private struct ManagedBackendStatusRow: View {
+/// A managed engine's readiness, plus the controls for the model download it
+/// starts on its own. `identifierPrefix` namespaces those controls per engine
+/// ("engines.dictation" / "engines.polishing"); the rest of the row is
+/// identical for both.
+struct ManagedBackendStatusRow: View {
     let title: String
     let status: ManagedBackendStatus
+    let identifierPrefix: String
+    let onPause: () -> Void
+    let onResume: () -> Void
+    let onCancel: () -> Void
 
     var body: some View {
         SettingsFieldRow(title: title) {
-            ManagedBackendStatusLabel(status: status)
+            HStack(spacing: 8) {
+                ManagedBackendStatusLabel(status: status)
+                ManagedBackendDownloadControls(
+                    status: status,
+                    identifierPrefix: identifierPrefix,
+                    onPause: onPause,
+                    onResume: onResume,
+                    onCancel: onCancel
+                )
+            }
         }
     }
 }
 
-private struct ManagedBackendStatusLabel: View {
+/// Pause/Resume/Cancel for the automatic model download. Present only while
+/// there is a download to act on, so a ready or failed engine's row looks
+/// exactly as it did before.
+private struct ManagedBackendDownloadControls: View {
+    let status: ManagedBackendStatus
+    let identifierPrefix: String
+    let onPause: () -> Void
+    let onResume: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        switch status {
+        case .preparingModel:
+            button("Pause", identifier: "\(identifierPrefix).download.pause", action: onPause)
+            button("Cancel", identifier: "\(identifierPrefix).download.cancel", action: onCancel)
+        case .pausedModelDownload:
+            button("Resume", identifier: "\(identifierPrefix).download.resume", action: onResume)
+            button("Cancel", identifier: "\(identifierPrefix).download.cancel", action: onCancel)
+        case .starting, .ready, .stopped, .failed:
+            EmptyView()
+        }
+    }
+
+    private func button(
+        _ title: String,
+        identifier: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(title, action: action)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .accessibilityIdentifier(identifier)
+    }
+}
+
+struct ManagedBackendStatusLabel: View {
     let status: ManagedBackendStatus
 
     var body: some View {
@@ -673,7 +733,11 @@ private struct ManagedBackendStatusLabel: View {
             // indeterminate case is a circular spinner, which must NOT get
             // the bar's fixed width (it centers inside it, reading as a big
             // blob of horizontal padding next to the caption text).
-            if case .preparingModel(let progress) = status {
+            // A paused download keeps its bar — the bytes are still there and
+            // resuming continues from them — but never the spinner, which would
+            // claim movement that has stopped.
+            switch status {
+            case .preparingModel(let progress):
                 if let fraction = progress.fraction {
                     ProgressView(value: fraction)
                         .controlSize(.small)
@@ -682,6 +746,14 @@ private struct ManagedBackendStatusLabel: View {
                     ProgressView()
                         .controlSize(.mini)
                 }
+            case .pausedModelDownload(let progress):
+                if let fraction = progress.fraction {
+                    ProgressView(value: fraction)
+                        .controlSize(.small)
+                        .frame(width: 54)
+                }
+            case .starting, .ready, .stopped, .failed:
+                EmptyView()
             }
 
             Text(statusText)
@@ -695,6 +767,12 @@ private struct ManagedBackendStatusLabel: View {
         switch status {
         case .preparingModel(let progress):
             return modelDownloadText(progress)
+        case .pausedModelDownload(let progress):
+            guard let totalBytes = progress.totalBytes, totalBytes > 0 else {
+                return "Paused"
+            }
+            let downloaded = min(progress.downloadedBytes, totalBytes)
+            return "Paused, \(Self.byteText(downloaded)) of \(Self.byteText(totalBytes))"
         case .starting:
             return "Starting"
         case .ready:
@@ -714,7 +792,9 @@ private struct ManagedBackendStatusLabel: View {
             return .orange
         case .failed:
             return .red
-        case .stopped:
+        // Paused reads as inactive, like stopped: orange is this pane's
+        // "something is running" colour and nothing is.
+        case .stopped, .pausedModelDownload:
             return .secondary
         }
     }

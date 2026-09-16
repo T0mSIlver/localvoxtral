@@ -40,6 +40,13 @@ protocol ModelPreparing: Sendable {
         _ request: ModelPreparationRequest,
         progress: @MainActor @Sendable @escaping (ModelDownloadProgress) -> Void
     ) async throws
+
+    /// Forget the partially transferred bytes a cancelled `prepare` left
+    /// behind for this request's repo, so the next `prepare` restarts its
+    /// unfinished file from zero. Files already written into the snapshot
+    /// directory are untouched: they are complete, and the HF cache is what
+    /// lets the next `prepare` skip them.
+    func discardPartialDownloads(for request: ModelPreparationRequest)
 }
 
 enum ModelDownloadError: LocalizedError, Sendable {
@@ -86,18 +93,49 @@ struct HFModelRepositoryInfo: Equatable, Sendable {
 protocol HFModelDownloadTransport: Sendable {
     func repositoryInfo(from url: URL) async throws -> (data: Data, statusCode: Int)
     func contentLength(of url: URL) async throws -> Int64?
+    /// Bytes an earlier interrupted transfer of `url` left behind, ready to be
+    /// handed back to `download` so it continues instead of refetching the
+    /// whole file. Nil when nothing is retained for that URL.
+    func retainedResumeData(for url: URL) -> Data?
+    /// Drop retained resume data for every URL starting with `prefix`. Cancel
+    /// uses this: the in-flight file's bytes must NOT survive, or the next
+    /// download would silently continue the transfer the user cancelled.
+    func discardResumeData(withURLPrefix prefix: String)
     /// Download one file. `onBytes(received, expected)` reports cumulative
     /// bytes received for THIS file as the transfer runs (expected is nil when
     /// the server sends no length); required for live progress on multi-GB
     /// checkpoints, where a completion-only API would leave the UI frozen on
     /// "Checking model..." for the whole fetch (field-hit 2026-07-17).
+    ///
+    /// `resumeData` continues a transfer an earlier cancellation left behind;
+    /// `received` stays cumulative for the whole file across a resume, so the
+    /// caller's byte accounting is unchanged. Cancelling this call retains
+    /// resume data for `url` (see `retainedResumeData`).
     func download(
         from url: URL,
+        resumeData: Data?,
         onBytes: @escaping @Sendable (Int64, Int64?) -> Void
     ) async throws -> (temporaryURL: URL, statusCode: Int)
 }
 
-struct URLSessionHFModelDownloadTransport: HFModelDownloadTransport {
+final class URLSessionHFModelDownloadTransport: HFModelDownloadTransport {
+    /// Resume data from interrupted transfers, keyed by absolute file URL.
+    /// In-memory for the process lifetime only: a paused download that does not
+    /// survive a quit simply refetches its unfinished file, which is exactly
+    /// what every download did before Pause existed.
+    ///
+    /// Measured against live Hugging Face on 2026-09-16, which is what decides
+    /// whether a pause is worth anything: the weights (`model*.safetensors`) are
+    /// LFS objects served from `*.cdn.hf.co`, and resuming those DOES continue —
+    /// the reissued request comes back 206 and the bytes on disk are kept
+    /// (17.8 MB LFS file paused at 590 KB, resumed reporting 606 KB, final
+    /// SHA-256 identical to a clean fetch). The small non-LFS files in the same
+    /// snapshot (`config.json`, `tokenizer.json`, served from
+    /// `huggingface.co/api/resolve-cache/`) come back 200 and restart from zero
+    /// however the resume data is obtained. Both are correct downloads; only the
+    /// bytes saved differ, and the multi-gigabyte half is the half that resumes.
+    private let resumeDataByURL = Mutex<[String: Data]>([:])
+
     func repositoryInfo(from url: URL) async throws -> (data: Data, statusCode: Int) {
         let (data, response) = try await URLSession.shared.data(from: url)
         return (data, (response as? HTTPURLResponse)?.statusCode ?? 0)
@@ -113,19 +151,54 @@ struct URLSessionHFModelDownloadTransport: HFModelDownloadTransport {
         return response.expectedContentLength > 0 ? response.expectedContentLength : nil
     }
 
+    func retainedResumeData(for url: URL) -> Data? {
+        resumeDataByURL.withLock { $0[url.absoluteString] }
+    }
+
+    func discardResumeData(withURLPrefix prefix: String) {
+        resumeDataByURL.withLock { store in
+            for key in store.keys where key.hasPrefix(prefix) {
+                store[key] = nil
+            }
+        }
+    }
+
     func download(
         from url: URL,
+        resumeData: Data?,
         onBytes: @escaping @Sendable (Int64, Int64?) -> Void
     ) async throws -> (temporaryURL: URL, statusCode: Int) {
         let delegate = ProgressReportingDownloadDelegate(onBytes: onBytes)
         let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                delegate.begin(session: session, url: url, continuation: continuation)
+        do {
+            let result = try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    delegate.begin(
+                        session: session,
+                        url: url,
+                        resumeData: resumeData,
+                        continuation: continuation
+                    )
+                }
+            } onCancel: {
+                delegate.cancelProducingResumeData()
             }
-        } onCancel: {
-            delegate.cancel()
+            // The file landed whole; anything retained for it is stale.
+            resumeDataByURL.withLock { $0[url.absoluteString] = nil }
+            return result
+        } catch {
+            // Keep whatever the interrupted transfer salvaged so a later
+            // download of this same URL continues from those bytes. Cancel
+            // drops it again through `discardResumeData(withURLPrefix:)`.
+            //
+            // Measured against a live LFS fetch: resuming from this copy makes
+            // URLSession reissue the request with a range, the CDN answers 206,
+            // and the bytes already on disk are kept (see the delegate).
+            if let salvaged = delegate.takeResumeData() {
+                resumeDataByURL.withLock { $0[url.absoluteString] = salvaged }
+            }
+            throw error
         }
     }
 }
@@ -140,6 +213,7 @@ private final class ProgressReportingDownloadDelegate: NSObject, URLSessionDownl
         var task: URLSessionDownloadTask?
         var movedURL: URL?
         var moveError: Error?
+        var resumeData: Data?
     }
 
     private let onBytes: @Sendable (Int64, Int64?) -> Void
@@ -152,9 +226,11 @@ private final class ProgressReportingDownloadDelegate: NSObject, URLSessionDownl
     func begin(
         session: URLSession,
         url: URL,
+        resumeData: Data?,
         continuation: CheckedContinuation<(temporaryURL: URL, statusCode: Int), Error>
     ) {
-        let task = session.downloadTask(with: url)
+        let task = resumeData.map { session.downloadTask(withResumeData: $0) }
+            ?? session.downloadTask(with: url)
         state.withLock {
             $0.continuation = continuation
             $0.task = task
@@ -162,8 +238,35 @@ private final class ProgressReportingDownloadDelegate: NSObject, URLSessionDownl
         task.resume()
     }
 
-    func cancel() {
-        state.withLock { $0.task }?.cancel()
+    /// Cancel keeping the bytes already on disk. `cancel(byProducingResumeData:)`
+    /// reports them twice — through its own callback and through the completion
+    /// error's `NSURLSessionDownloadTaskResumeData` — and only the latter is
+    /// ordered before the continuation resumes. Both are recorded and whichever
+    /// arrives first wins; a live LFS pause/resume proved the error's copy (the
+    /// one that always wins this race) does resume the transfer.
+    func cancelProducingResumeData() {
+        guard let task = state.withLock({ $0.task }) else { return }
+        task.cancel { [weak self] data in
+            guard let data else { return }
+            self?.storeResumeDataIfAbsent(data)
+        }
+    }
+
+    /// Hands the retained bytes to the caller. Safe to read once the
+    /// continuation has resumed: `didCompleteWithError` records them before
+    /// resuming it.
+    func takeResumeData() -> Data? {
+        state.withLock {
+            let data = $0.resumeData
+            $0.resumeData = nil
+            return data
+        }
+    }
+
+    private func storeResumeDataIfAbsent(_ data: Data) {
+        state.withLock {
+            if $0.resumeData == nil { $0.resumeData = data }
+        }
     }
 
     func urlSession(
@@ -192,6 +295,11 @@ private final class ProgressReportingDownloadDelegate: NSObject, URLSessionDownl
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error,
+           let salvaged = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data
+        {
+            storeResumeDataIfAbsent(salvaged)
+        }
         let (continuation, movedURL, moveError) = state.withLock {
             let values = ($0.continuation, $0.movedURL, $0.moveError)
             $0.continuation = nil
@@ -319,7 +427,19 @@ struct HFModelDownloader: ModelPreparing {
                 let completedBase = downloaded
                 let granularity = progressByteGranularity
                 let lastReported = Mutex<Int64>(0)
-                let result = try await transport.download(from: source) { received, expected in
+                // Continue a paused transfer of this exact file when the
+                // transport still holds its bytes; `received` stays cumulative
+                // for the file either way, so the aggregate below is unchanged.
+                let resumeData = transport.retainedResumeData(for: source)
+                if resumeData != nil {
+                    Log.backends.info(
+                        "resuming paused model file \(fileName, privacy: .public) for \(request.displayName, privacy: .public)"
+                    )
+                }
+                let result = try await transport.download(
+                    from: source,
+                    resumeData: resumeData
+                ) { received, expected in
                     if let expected {
                         knownSizes.withLock { known in
                             if known[fileName] == nil { known[fileName] = expected }
@@ -385,6 +505,15 @@ struct HFModelDownloader: ModelPreparing {
         }
     }
 
+    func discardPartialDownloads(for request: ModelPreparationRequest) {
+        transport.discardResumeData(
+            withURLPrefix: Self.fileURLPrefix(repoID: request.repoID)
+        )
+        Log.backends.info(
+            "discarded partial model downloads for \(request.repoID, privacy: .public)"
+        )
+    }
+
     static func defaultCacheRoot(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: URL = FileManager.default.homeDirectoryForCurrentUser
@@ -409,7 +538,13 @@ struct HFModelDownloader: ModelPreparing {
     }
 
     static func fileURL(repoID: String, revision: String, fileName: String) -> URL {
-        URL(string: "https://huggingface.co/\(repoID)/resolve/\(revision)/\(fileName)")!
+        URL(string: "\(fileURLPrefix(repoID: repoID))\(revision)/\(fileName)")!
+    }
+
+    /// Every file URL of a repo shares this prefix, whatever revision it is
+    /// pinned to — the key space `discardPartialDownloads` sweeps.
+    static func fileURLPrefix(repoID: String) -> String {
+        "https://huggingface.co/\(repoID)/resolve/"
     }
 
     private func repositoryInfo(for request: ModelPreparationRequest) async throws -> HFModelRepositoryInfo {

@@ -9,6 +9,11 @@ struct ManagedBackendStatusUpdate: Equatable, Sendable {
 
 enum ManagedBackendStatus: Equatable, Sendable {
     case preparingModel(progress: ModelDownloadProgress)
+    /// The user paused the model download. The bytes already transferred are
+    /// kept (see `HFModelDownloadTransport.retainedResumeData`), and `progress`
+    /// is the last reading before the pause so the row keeps its bar. Nothing
+    /// resumes on its own: the next `ensureReady` for this backend does.
+    case pausedModelDownload(progress: ModelDownloadProgress)
     case starting
     case ready
     case stopped
@@ -68,6 +73,14 @@ protocol ManagedBackendManaging: AnyObject {
     /// Stop only the managed polishd (polishing) process, leaving speechd
     /// (dictation) untouched. A no-op if polishd was never started.
     func stopPolishing() async
+    /// Pause this backend's in-flight model download, keeping the bytes already
+    /// transferred. A no-op unless the status is `.preparingModel`. The next
+    /// `ensureReady` for the backend continues the paused file.
+    func pauseModelDownload(for spec: ManagedBackendSpec) async
+    /// Cancel this backend's model download and throw away the in-flight file's
+    /// bytes. Files that already landed in the Hugging Face cache stay — the
+    /// next download skips them. Leaves the backend `.stopped`.
+    func cancelModelDownload(for spec: ManagedBackendSpec) async
     /// Recent supervisor output lines for the given backend, or empty if the
     /// supervisor has not been created yet (backend never started). For local
     /// diagnostics export only.
@@ -104,6 +117,10 @@ final class BackendManager: ManagedBackendManaging {
     // share a slot.
     @ObservationIgnored private var dictationEnsureTask: Task<Void, Error>?
     @ObservationIgnored private var polishingEnsureTask: Task<Void, Error>?
+    /// Backend ids whose in-flight ensure is being cancelled BY a pause, so the
+    /// download's unwinding knows to land on `.pausedModelDownload` instead of
+    /// `.stopped`. Held only for the duration of `pauseModelDownload`.
+    @ObservationIgnored private var pauseRequestedBackendIDs: Set<String> = []
     @ObservationIgnored private var speechdStateMirrorTask: Task<Void, Never>?
     @ObservationIgnored private var polishdStateMirrorTask: Task<Void, Never>?
     @ObservationIgnored private var statusUpdateContinuations: [UUID: AsyncStream<ManagedBackendStatusUpdate>.Continuation] = [:]
@@ -239,31 +256,98 @@ final class BackendManager: ManagedBackendManaging {
     }
 
     func stopDictation() async {
-        let cancelledEnsure = await cancelEnsureTaskAndAwaitCompletion(for: BackendCatalog.speechd)
-        let hadSupervisor = speechdSupervisor != nil
-        await speechdSupervisor?.stop()
-        // See stopAll(): drop the supervisor so the next ensure rebuilds the
-        // launch arguments from the current settings providers.
-        speechdSupervisor = nil
-        speechdStateMirrorTask?.cancel()
-        speechdStateMirrorTask = nil
-        if cancelledEnsure || hadSupervisor {
-            setStatus(.stopped, for: BackendCatalog.speechd)
-        }
+        await stopBackend(BackendCatalog.speechd)
     }
 
     func stopPolishing() async {
-        // Stop only the polishing supervisor. speechd (dictation) keeps running
-        // and its state mirror is left intact. Modeled on stopAll()'s polishd
-        // branch: cancel the mirror task and pin the status to .stopped.
-        let cancelledEnsure = await cancelEnsureTaskAndAwaitCompletion(for: BackendCatalog.polishd)
-        let hadSupervisor = polishdSupervisor != nil
-        await polishdSupervisor?.stop()
-        polishdSupervisor = nil
-        polishdStateMirrorTask?.cancel()
-        polishdStateMirrorTask = nil
-        if cancelledEnsure || hadSupervisor {
-            setStatus(.stopped, for: BackendCatalog.polishd)
+        // Stop only the polishing supervisor: speechd (dictation) keeps running
+        // and its state mirror is left intact.
+        await stopBackend(BackendCatalog.polishd)
+    }
+
+    /// One backend's stop, shared by `stopDictation` / `stopPolishing` and by
+    /// the download Cancel button. `forceStoppedStatus` pins `.stopped` even
+    /// when there was nothing to cancel or stop, for callers that already tore
+    /// the ensure task down themselves and must not leave a stale status
+    /// behind.
+    private func stopBackend(
+        _ spec: ManagedBackendSpec,
+        forceStoppedStatus: Bool = false
+    ) async {
+        let cancelledEnsure = await cancelEnsureTaskAndAwaitCompletion(for: spec)
+        let supervisor = supervisorIfCreated(for: spec)
+        await supervisor?.stop()
+        // See stopAll(): drop the supervisor so the next ensure rebuilds the
+        // launch arguments from the current settings providers.
+        setSupervisor(nil, for: spec)
+        cancelStateMirrorTask(for: spec)
+        if forceStoppedStatus || cancelledEnsure || supervisor != nil {
+            setStatus(.stopped, for: spec)
+        }
+    }
+
+    func pauseModelDownload(for spec: ManagedBackendSpec) async {
+        guard case .preparingModel = status(for: spec) else {
+            Log.backends.info(
+                "\(spec.displayName, privacy: .public) download pause ignored: no download in flight"
+            )
+            return
+        }
+        Log.backends.info("\(spec.displayName, privacy: .public) model download pause requested")
+        // Latched across the cancellation so prepareModel's unwinding lands on
+        // .pausedModelDownload rather than flashing .stopped through the status
+        // stream (the Settings row and the onboarding wizard both mirror it).
+        pauseRequestedBackendIDs.insert(spec.id)
+        // Same discipline as stopPolishing(): the ensure task must finish
+        // unwinding before anything else touches this repo's cache (PR #99).
+        let cancelledEnsure = await cancelEnsureTaskAndAwaitCompletion(for: spec)
+        pauseRequestedBackendIDs.remove(spec.id)
+
+        guard cancelledEnsure, case .pausedModelDownload(let progress) = status(for: spec) else {
+            // The download finished while the click was in flight, so there is
+            // nothing to resume; unwind to a plain stop instead of leaving the
+            // backend half-started.
+            Log.backends.info(
+                "\(spec.displayName, privacy: .public) download pause arrived after the download ended; stopping instead"
+            )
+            await stopBackend(spec, forceStoppedStatus: true)
+            return
+        }
+        Log.backends.info(
+            "\(spec.displayName, privacy: .public) model download paused at \(progress.downloadedBytes, privacy: .public) bytes"
+        )
+    }
+
+    func cancelModelDownload(for spec: ManagedBackendSpec) async {
+        Log.backends.info("\(spec.displayName, privacy: .public) model download cancel requested")
+        // Stop first and await the unwinding: discarding resume data while a
+        // downloader is still live would race the transfer that owns it.
+        await stopBackend(spec, forceStoppedStatus: true)
+        modelPreparer.discardPartialDownloads(for: modelPreparationRequest(for: spec))
+        Log.backends.info(
+            "\(spec.displayName, privacy: .public) model download cancelled; in-flight file discarded"
+        )
+    }
+
+    private func supervisorIfCreated(for spec: ManagedBackendSpec) -> (any ManagedBackendSupervising)? {
+        spec.id == BackendCatalog.speechd.id ? speechdSupervisor : polishdSupervisor
+    }
+
+    private func setSupervisor(_ supervisor: (any ManagedBackendSupervising)?, for spec: ManagedBackendSpec) {
+        if spec.id == BackendCatalog.speechd.id {
+            speechdSupervisor = supervisor
+        } else {
+            polishdSupervisor = supervisor
+        }
+    }
+
+    private func cancelStateMirrorTask(for spec: ManagedBackendSpec) {
+        if spec.id == BackendCatalog.speechd.id {
+            speechdStateMirrorTask?.cancel()
+            speechdStateMirrorTask = nil
+        } else {
+            polishdStateMirrorTask?.cancel()
+            polishdStateMirrorTask = nil
         }
     }
 
@@ -347,7 +431,16 @@ final class BackendManager: ManagedBackendManaging {
                 self.setStatus(.preparingModel(progress: progress), for: spec)
             }
         } catch is CancellationError {
-            setStatus(.stopped, for: spec)
+            // A pause cancels this task too, but keeps the bytes and the last
+            // progress reading so the row stays on its bar instead of resetting
+            // to "Stopped".
+            if pauseRequestedBackendIDs.contains(spec.id),
+               case .preparingModel(let progress) = status(for: spec)
+            {
+                setStatus(.pausedModelDownload(progress: progress), for: spec)
+            } else {
+                setStatus(.stopped, for: spec)
+            }
             throw CancellationError()
         } catch {
             let summary = error.localizedDescription.trimmed.isEmpty
