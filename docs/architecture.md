@@ -13,7 +13,10 @@ Key subsystems:
 - Audio: `MicrophoneCaptureService` (raw CoreAudio AUHAL → 16kHz PCM16),
   `AudioChunkBuffer` (Mutex), `AudioCaptureHealthMonitor` (device changes)
 - Realtime clients: `RealtimeClient` protocol; `RealtimeAPIWebSocketClient`
-  (vLLM/voxmlx) over `BaseRealtimeWebSocketClient`
+  (managed speechd / vLLM / any OpenAI-Realtime server) and
+  `MistralRealtimeWebSocketClient` (Mistral API mode), both over
+  `BaseRealtimeWebSocketClient`. `DictationViewModel.activeRealtimeClient`
+  latches one of them per session from `settings.dictationBackendMode`
 - Text merge: `TextMergingAlgorithms` (pure functions — overlap merge,
   word-boundary stabilization, punctuation spacing), `FirstChunkPreprocessor`
 - Insertion: `TextInsertionService` (AX replace → Unicode CGEvents → Cmd+V);
@@ -22,6 +25,10 @@ Key subsystems:
   latency it costs
 - Overlay: `OverlayBufferSessionCoordinator` (session + hold-before-dismiss
   timing), `OverlayBufferStateMachine`, `DictationOverlayController` (NSPanel)
+- Backend modes: `BackendMode` is per engine — `managedLocal`, `externalURL`,
+  `mistralAPI`. Only the managed mode runs a supervised helper; the two hosted
+  modes are pure configuration (`SettingsStore.resolvedWebSocketURL` /
+  `llmPolishingConfiguration` resolve endpoint, model, key and request shape)
 - Backends: `BackendManager` lazily prepares pinned Hugging Face snapshots and
   starts the bundled Swift helpers: `localvoxtral-speechd` for ASR on port
   8471 and `localvoxtral-polishd` for polishing on port 8472. Supervisors

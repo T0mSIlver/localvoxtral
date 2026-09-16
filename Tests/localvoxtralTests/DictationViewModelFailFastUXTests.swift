@@ -235,6 +235,78 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.abortConnectingSession()
     }
 
+    func testMistralModeWithoutAKeyNamesTheMissingKeyAndOpensNoSocket() async {
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        viewModel.settings.dictationBackendMode = .mistralAPI
+        viewModel.settings.mistralAPIKey = ""
+        // This test reaches beginDictationSession, which arms the real 10s
+        // connect timeout on a process-retained view model (PR #66).
+        viewModel.isShowingConnectionFailureAlert = true
+        retainForTestProcessLifetime(viewModel)
+
+        await viewModel.beginDictationSession()
+
+        // The endpoint is pinned and fine — "check the endpoint in Settings"
+        // would send the user to a field that is not even on the pane.
+        XCTAssertEqual(viewModel.statusText, "API key missing.")
+        XCTAssertEqual(
+            viewModel.lastError,
+            "Mistral API key is missing. Add your Mistral API key in Settings → Engines."
+        )
+        XCTAssertFalse(viewModel.isConnectingRealtimeSession)
+        // The client throws before creating a URLSession, so nothing was dialled.
+        let snapshot = viewModel.mistralRealtimeClient.debugStateSnapshot()
+        XCTAssertFalse(snapshot.isConnected)
+        XCTAssertFalse(snapshot.hasPingTimer)
+        XCTAssertTrue(
+            viewModel.activeRealtimeClient === viewModel.mistralRealtimeClient,
+            "the session latched the Mistral transport"
+        )
+    }
+
+    /// A dictation start suspends between reading Settings and opening the
+    /// socket (screen-context capture: AppleScript, ssh). If the user flips
+    /// the dictation mode in that window, the session must still dial the
+    /// endpoint it was started for WITH the key that belongs to that endpoint
+    /// — never the other provider's key (GLM review, 2026-09-16).
+    func testModeFlipBetweenSnapshotAndConnectKeepsTheStartingProvidersKey() async {
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        viewModel.settings.dictationBackendMode = .externalURL
+        viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:9/v1/realtime"
+        viewModel.settings.apiKey = "external-server-key"
+        viewModel.settings.mistralAPIKey = "mistral-account-key"
+        viewModel.realtimeAPIClient.debugSkipSocketCreationForTesting()
+        viewModel.mistralRealtimeClient.debugSkipSocketCreationForTesting()
+        // This test reaches beginDictationSession, which arms the real 10s
+        // connect timeout on a process-retained view model (PR #66).
+        viewModel.isShowingConnectionFailureAlert = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.debugBeforeConnectHookForTesting = { [weak viewModel] in
+            viewModel?.applyDictationBackendModeChange(.mistralAPI)
+        }
+
+        await viewModel.beginDictationSession()
+
+        let dialled = viewModel.realtimeAPIClient.debugLastConnectConfigurationForTesting()
+        XCTAssertEqual(
+            dialled?.endpoint.absoluteString, "ws://127.0.0.1:9/v1/realtime",
+            "the session dials the endpoint it was started for"
+        )
+        XCTAssertEqual(
+            dialled?.apiKey, "external-server-key",
+            "the external server must never receive the Mistral account key"
+        )
+        XCTAssertTrue(
+            viewModel.activeRealtimeClient === viewModel.realtimeAPIClient,
+            "the latch is not swapped under a starting session"
+        )
+        XCTAssertNil(
+            viewModel.mistralRealtimeClient.debugLastConnectConfigurationForTesting(),
+            "the Mistral transport was never dialled by a session started in External URL mode"
+        )
+    }
+
     func testStartupPermissionPromptsAreSkippedUntilOnboardingCompletes() {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.onboardingCompleted = false

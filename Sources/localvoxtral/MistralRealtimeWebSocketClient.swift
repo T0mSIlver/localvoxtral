@@ -56,6 +56,7 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         #if DEBUG
         var skipsSocketCreationForTesting = false
         var recordedFrames: [String] = []
+        var lastConnectConfigurationForTesting: RealtimeSessionConfiguration?
         #endif
     }
 
@@ -181,6 +182,11 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
     // MARK: - RealtimeClient
 
     func connect(configuration: RealtimeSessionConfiguration) throws {
+        #if DEBUG
+        // Recorded before the key check so a socketless test can still see
+        // exactly what the session tried to dial with.
+        state.withLock { $0.lastConnectConfigurationForTesting = configuration }
+        #endif
         let request = try makeConnectRequest(configuration: configuration)
 
         #if DEBUG
@@ -633,6 +639,12 @@ extension MistralRealtimeWebSocketClient {
     }
 
     /// Every frame this client encoded for the wire, in order.
+    /// The configuration the most recent `connect(configuration:)` was handed,
+    /// nil when this transport was never dialled.
+    func debugLastConnectConfigurationForTesting() -> RealtimeSessionConfiguration? {
+        state.withLock { $0.lastConnectConfigurationForTesting }
+    }
+
     func debugRecordedFrames() -> [String] {
         state.withLock { $0.recordedFrames }
     }

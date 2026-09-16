@@ -7,9 +7,10 @@ curl -fsSL https://raw.githubusercontent.com/T0mSIlver/localvoxtral/main/scripts
 Or download the latest `.dmg` from [Releases](https://github.com/T0mSIlver/localvoxtral/releases/latest).
 
 On first launch, a setup wizard walks you through the microphone and
-Accessibility permissions and downloads the local engine with live progress.
-Dictate the moment it finishes. You can re-run the wizard any time from
-Settings.
+Accessibility permissions, then asks which engine to use: run locally (it
+downloads the models with live progress) or Mistral's hosted API (paste an
+API key and there is nothing to download). Dictate the moment it finishes.
+You can re-run the wizard any time from Settings.
 
 > [!NOTE]
 > **Requirements:** an Apple Silicon Mac running macOS 15 or later.

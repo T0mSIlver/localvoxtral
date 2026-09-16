@@ -13,6 +13,13 @@ only if you additionally enable the explicit trusted-endpoint opt-in
 (default off). If you point localvoxtral at your own External URL server
 instead, your data goes only where you send it.
 
+In **Mistral API** mode, the audio you dictate and the transcript being
+polished are sent to Mistral's API. The context features do not change with
+the mode: api.mistral.ai is not a local endpoint, so clipboard, terminal
+screen, repo vocabulary and Claude Code session context are attached only if
+you also turn on the explicit trusted-endpoint opt-in — exactly as for any
+other non-local endpoint.
+
 ## The managed local engines
 
 In **Managed local** mode (the default), localvoxtral launches and
@@ -41,6 +48,29 @@ quality is held by a nightly end-to-end eval — real audio through the
 production ASR and polishing path, scored against an agent-dictation corpus
 of ~160 cases — so a model or prompt change that regresses dictation gets
 caught before it ships.
+
+## Mistral API
+
+Rather run the same models without the download? Switch Dictation or
+Polishing to **Mistral API** in **Settings → Engines** and paste one API key
+from [console.mistral.ai](https://console.mistral.ai/api-keys):
+
+- **Dictation** — Voxtral Mini Transcribe Realtime
+  (`voxtral-mini-transcribe-realtime-2602`) over Mistral's hosted realtime
+  socket, at 0.006 USD per minute of audio.
+- **Polishing** — Mistral Medium 3.5 (`mistral-medium-3-5`), at 1.5 USD per
+  million input tokens and 7.5 USD per million output tokens. Reasoning is
+  switched off for polishing: a polish pays no reasoning trace.
+
+Both engines share one key and switch independently — hosted dictation with
+local polishing, or the reverse, is a supported combination. The **Mistral
+API** group on the Engines pane holds the key, a "Check key" button, and a
+one-click "Use Mistral for dictation and polishing" setup. Either model field
+can name another Mistral model; empty means the default above.
+
+What this trades away is the privacy paragraph at the top of this page: in
+this mode your audio and transcripts reach Mistral. The context features stay
+behind the trusted-endpoint opt-in regardless.
 
 ## Bring your own server
 

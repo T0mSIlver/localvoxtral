@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// The first-launch onboarding wizard: Welcome → Permissions → Downloads →
-/// Finish. All state and side effects live in `OnboardingViewModel`; this view
-/// is presentation only.
+/// The first-launch onboarding wizard: Welcome → Permissions → Engine →
+/// Downloads → Finish (the Mistral path skips Downloads). All state and side
+/// effects live in `OnboardingViewModel`; this view is presentation only.
 struct OnboardingWizardView: View {
     @Bindable var model: OnboardingViewModel
 
@@ -31,10 +31,12 @@ struct OnboardingWizardView: View {
             WelcomePage()
         case .permissions:
             PermissionsPage(viewModel: model.viewModel)
+        case .engine:
+            EnginePage(model: model)
         case .downloads:
             DownloadsPage(model: model)
         case .finish:
-            FinishPage(summary: model.triggerSummary)
+            FinishPage(summary: model.triggerSummary, engineSummary: model.engineSummary)
         }
     }
 
@@ -54,6 +56,7 @@ struct OnboardingWizardView: View {
                 performPrimaryAction()
             }
             .keyboardShortcut(.defaultAction)
+            .disabled(!model.canContinue)
         }
     }
 
@@ -134,6 +137,98 @@ private struct PermissionsPage: View {
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
+    }
+}
+
+// MARK: - Engine
+
+private struct EnginePage: View {
+    @Bindable var model: OnboardingViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            OnboardingHeader(
+                systemImage: "cpu",
+                title: "Choose your engine",
+                subtitle: "Where dictation and polishing run. You can change this later in Settings."
+            )
+
+            EngineChoiceRow(
+                title: "Run locally",
+                detail: "Downloads Voxtral and a polishing model to this Mac. Nothing leaves your Mac.",
+                isSelected: model.engineChoice == .local
+            ) {
+                model.engineChoice = .local
+            }
+
+            EngineChoiceRow(
+                title: "Mistral API",
+                detail:
+                    "Uses Mistral's hosted Voxtral and Mistral Medium 3.5 with your API key. Audio and text are sent to Mistral.",
+                isSelected: model.engineChoice == .mistralAPI
+            ) {
+                model.engineChoice = .mistralAPI
+            }
+
+            if model.engineChoice == .mistralAPI {
+                VStack(alignment: .leading, spacing: 8) {
+                    SecureField(
+                        "Paste a key from console.mistral.ai",
+                        text: $model.mistralAPIKeyDraft
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("onboarding.mistral.apiKey")
+
+                    HStack(spacing: 10) {
+                        Button("Check key") { model.checkMistralAPIKeyDraft() }
+                            .controlSize(.small)
+                            .disabled(
+                                model.mistralAPIKeyDraft.trimmed.isEmpty
+                                    || model.mistralAPIKeyCheckState.isChecking
+                            )
+                            .accessibilityIdentifier("onboarding.mistral.verify")
+
+                        if let statusLine = model.mistralAPIKeyCheckState.statusLine {
+                            Text(statusLine)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .accessibilityIdentifier("onboarding.mistral.verify.status")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct EngineChoiceRow: View {
+    let title: String
+    let detail: String
+    let isSelected: Bool
+    let select: () -> Void
+
+    var body: some View {
+        Button(action: select) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .medium))
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 }
 
@@ -260,6 +355,7 @@ private struct DownloadItemRow: View {
 
 private struct FinishPage: View {
     let summary: DictationTriggerSummary
+    let engineSummary: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -268,6 +364,11 @@ private struct FinishPage: View {
                 title: "You're all set",
                 subtitle: "Try your dictation trigger in any text field."
             )
+
+            Text(engineSummary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(summary.primary)

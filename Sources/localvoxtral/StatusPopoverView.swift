@@ -14,6 +14,9 @@ struct StatusPopoverConnectionFailurePresenter {
              "Host unreachable.",
              "Connection timed out.",
              "Endpoint path rejected.",
+             "API key rejected.",
+             "API key missing.",
+             "Rate limited.",
              "Dictation stopped after the network disconnected.",
              "Connection failed.":
             return true

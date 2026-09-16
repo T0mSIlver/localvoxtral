@@ -49,12 +49,14 @@ Open **Settings** from the menu bar popover:
 - **General** — permission status for Microphone and Accessibility (with
   grant buttons), copy-on-stop toggle, and Re-run setup
 - **Engines** — Dictation and Polishing each switch independently between
-  `Managed local` (a model picker for polishing, plus a status light) and
-  `External URL` (server URL, model name, API key). Dictation accepts an
-  OpenAI Realtime-compatible endpoint. For polishing, enter either a base URL
-  such as `http://127.0.0.1:8080` or the full chat completions URL; the app
-  appends `/v1/chat/completions` to a base URL. Lower dictation step intervals
-  show words sooner, while higher values use less compute.
+  `Managed local` (a model picker for polishing, plus a status light),
+  `External URL` (server URL, model name, API key), and `Mistral API`
+  (Mistral's hosted models on one API key, entered in the pane's Mistral API
+  group). Dictation accepts an OpenAI Realtime-compatible endpoint. For
+  polishing, enter either a base URL such as `http://127.0.0.1:8080` or the
+  full chat completions URL; the app appends `/v1/chat/completions` to a base
+  URL. Lower dictation step intervals show words sooner, while higher values
+  use less compute.
 - **Dictation** — the trigger (single modifier key with tap/hold gestures, or
   per-mode keyboard shortcuts) and the menu-bar output mode
 - **Text Processing** — exact-match replacements, plus the LLM Polishing

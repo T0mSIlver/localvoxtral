@@ -385,6 +385,13 @@ private struct ConnectionSettingsPane: View {
         )
     }
 
+    private enum LearnMore {
+        static let mistralAPI = URL(
+            string:
+                "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/under-the-hood.md#mistral-api"
+        )!
+    }
+
     private var managedPolishingModelEntries: [PolishModelPickerEntry] {
         PolishModelPickerSupport.entries(storedRepoID: settings.resolvedManagedLLMPolishingModel)
     }
@@ -440,6 +447,22 @@ private struct ConnectionSettingsPane: View {
                         SecureField("Required for remote providers", text: $settings.apiKey)
                             .textFieldStyle(.roundedBorder)
                             .frame(maxWidth: SettingsLayout.textFieldWidth)
+                    }
+                case .mistralAPI:
+                    SettingsFieldRow(title: "Model") {
+                        TextField(
+                            MistralRealtimeWebSocketClient.defaultModel,
+                            text: $settings.mistralDictationModel
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: SettingsLayout.textFieldWidth)
+                    }
+
+                    SettingsFieldRow(title: "Status") {
+                        MistralConfigurationStatusLabel(
+                            summary: settings.mistralAPIStatusSummary,
+                            isConfigured: settings.isMistralAPIConfigured
+                        )
                     }
                 case .managedLocal:
                     SettingsFieldRow(title: "Memory limit") {
@@ -514,6 +537,22 @@ private struct ConnectionSettingsPane: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: SettingsLayout.textFieldWidth)
                     }
+                case .mistralAPI:
+                    SettingsFieldRow(title: "Model") {
+                        TextField(
+                            MistralPolishDefaults.model,
+                            text: $settings.mistralPolishingModel
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: SettingsLayout.textFieldWidth)
+                    }
+
+                    SettingsFieldRow(title: "Status") {
+                        MistralConfigurationStatusLabel(
+                            summary: settings.mistralAPIStatusSummary,
+                            isConfigured: settings.isMistralAPIConfigured
+                        )
+                    }
                 case .managedLocal:
                     SettingsFieldRow(title: "Model") {
                         Picker("", selection: managedPolishingModelBinding) {
@@ -535,7 +574,58 @@ private struct ConnectionSettingsPane: View {
                     )
                 }
             }
+
+            // Always present, and its content never changes with a mode: this
+            // is the provider ACCOUNT, not one engine's configuration. Both
+            // pickers above can point at it, one, or neither.
+            SettingsGroup(title: "Mistral API", learnMoreURL: LearnMore.mistralAPI) {
+                SettingsFieldRow(title: "API key") {
+                    SecureField(
+                        "Paste a key from console.mistral.ai",
+                        text: $settings.mistralAPIKey
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: SettingsLayout.textFieldWidth)
+                    .accessibilityIdentifier("engines.mistral.apiKey")
+                }
+
+                SettingsFieldRow(
+                    title: "Verify",
+                    status: viewModel.mistralAPIKeyCheckState.statusLine,
+                    statusAccessibilityIdentifier: "engines.mistral.verify.status"
+                ) {
+                    Button("Check key") { viewModel.checkMistralAPIKey() }
+                        .disabled(
+                            !settings.isMistralAPIConfigured
+                                || viewModel.mistralAPIKeyCheckState.isChecking
+                        )
+                        .accessibilityIdentifier("engines.mistral.verify")
+                }
+
+                SettingsFieldRow(title: "Quick setup") {
+                    Button("Use Mistral for dictation and polishing") {
+                        viewModel.applyMistralQuickSetup(apiKey: settings.mistralAPIKey)
+                    }
+                    .disabled(!settings.isMistralAPIConfigured)
+                    .accessibilityIdentifier("engines.mistral.quickSetup")
+                }
+            }
         }
+    }
+}
+
+/// The Mistral engines' one-line readiness. Dimmed while unconfigured, so the
+/// pane reads at a glance without a second colour vocabulary beside the managed
+/// engines' status light.
+private struct MistralConfigurationStatusLabel: View {
+    let summary: String
+    let isConfigured: Bool
+
+    var body: some View {
+        Text(summary)
+            .font(.caption)
+            .foregroundStyle(isConfigured ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+            .lineLimit(1)
     }
 }
 

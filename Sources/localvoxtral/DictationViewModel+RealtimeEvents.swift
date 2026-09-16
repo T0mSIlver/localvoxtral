@@ -195,7 +195,7 @@ extension DictationViewModel {
     private func handleTranscriptionFinalizedEvent() {
         guard isFinalizingStop else { return }
         debugLog("transcription finalized, disconnecting")
-        realtimeAPIClient.disconnect()
+        activeRealtimeClient.disconnect()
     }
 
     private func handleErrorEvent(_ message: String) {
