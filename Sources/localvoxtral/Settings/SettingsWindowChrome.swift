@@ -4,54 +4,72 @@ import SwiftUI
 /// Makes the Settings window's titlebar transparent and full-size, so the
 /// sidebar material runs to the top edge and no window title is drawn over it.
 ///
-/// Applied three times on purpose: when the view is placed in a window, on
-/// every `didBecomeKey`, and on every window update that is found with the
-/// title back on. SwiftUI re-asserts its own titlebar configuration when it
-/// rebuilds the scene's window (observed with the `Settings` scene: close,
-/// reopen, and the title reappears), and there is no notification for "SwiftUI
-/// just reconfigured you".
+/// The chrome is not set once and left alone: SwiftUI re-asserts its own
+/// titlebar configuration behind the app's back, and there is no notification
+/// for "SwiftUI just reconfigured you". Two of those re-assertions are known:
 ///
-/// The window update pass is what the first two miss. On macOS 26 (field
-/// report on 0.8.5-nightly.20260916.2, reproduced on 26.6.2) SwiftUI puts
-/// `titleVisibility` back to `.visible` AFTER the scene's window has been
-/// placed and has become key, so "localvoxtral Settings" draws next to the
-/// traffic lights over the sidebar and nothing ever takes it down again —
-/// neither event fires for an in-window change. `NSWindow.didUpdateNotification`
-/// is posted once per event-loop pass over the window, before it draws, which
-/// is the one hook that covers a configuration flip nobody announces.
+///  * When it rebuilds the scene's window — close the Settings window, reopen
+///    it, and the title is back. `viewDidMoveToWindow` and `didBecomeKey`
+///    cover that one.
+///  * On macOS 26, whenever it updates the window's content. Field report on
+///    0.8.5-nightly.20260916.2, reproduced on 26.6.2: opening Settings and
+///    switching an Engines mode each put `titleVisibility` back to `.visible`,
+///    so "localvoxtral Settings" drew next to the traffic lights, over the
+///    sidebar. The logged state at the moment of correction was
+///    `titleVisible=true transparent=true fullSize=true toolbar=false`: the
+///    transparent full-size titlebar this view set had survived, only the
+///    title had been turned back on, and no toolbar was involved.
+///
+/// The second one has no event of its own, and the flip can land after the
+/// last window update of the turn — the app then sits idle with the title on
+/// screen until something else wakes it, which is what the owner saw. So the
+/// hook that has to catch it is KVO on `titleVisibility`, which runs
+/// synchronously with whoever set it. `NSWindow.didUpdateNotification` stays
+/// as a backstop for a re-assertion that reaches the property without going
+/// through the setter.
 struct SettingsWindowChrome: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         SettingsWindowChromeView()
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    /// SwiftUI calls this on every view-graph update of the Settings content,
+    /// which is the same work that re-asserts the titlebar. Cheap, and it
+    /// closes the gap if a system ever reconfigures the window before the
+    /// observations below are installed.
+    func updateNSView(_ nsView: NSView, context: Context) {
+        (nsView as? SettingsWindowChromeView)?.correctChromeIfStale()
+    }
 }
 
 final class SettingsWindowChromeView: NSView {
     private var observedWindow: NSWindow?
+    private var titleVisibilityObservation: NSKeyValueObservation?
 
-    /// Logged once per view, not per correction: the update pass runs on every
-    /// event loop turn, so a line per correction would be a firehose while a
-    /// single line still answers "did the titlebar need re-hiding on this
-    /// system, and what was the window when it did".
+    /// Logged once per view, not per correction: SwiftUI re-asserts the title
+    /// on every content update, so a line per correction would be a firehose
+    /// while a single line still answers "did this system put the titlebar
+    /// back, and what did the window look like when it did".
     private var hasLoggedCorrection = false
+    private var isApplyingChrome = false
+
+    /// Teardown happens on the way OUT, not on the way in. A KVO registration
+    /// that outlives its window takes the process down with it ("deallocated
+    /// while key value observers were still registered"), and this is the hook
+    /// AppKit calls while the window is still alive — including when the window
+    /// itself is going away and lets go of its content view.
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow !== observedWindow {
+            stopObserving()
+            observedWindow = nil
+        }
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
 
         if observedWindow !== window {
-            if let observedWindow {
-                NotificationCenter.default.removeObserver(
-                    self,
-                    name: NSWindow.didBecomeKeyNotification,
-                    object: observedWindow
-                )
-                NotificationCenter.default.removeObserver(
-                    self,
-                    name: NSWindow.didUpdateNotification,
-                    object: observedWindow
-                )
-            }
+            stopObserving()
             observedWindow = window
             if let window {
                 NotificationCenter.default.addObserver(
@@ -66,6 +84,15 @@ final class SettingsWindowChromeView: NSView {
                     name: NSWindow.didUpdateNotification,
                     object: window
                 )
+                // The correction re-enters this handler (it writes the very
+                // property being observed) and stops there, because by then
+                // the chrome is no longer stale.
+                titleVisibilityObservation = window.observe(
+                    \.titleVisibility,
+                    options: [.new]
+                ) { [weak self] _, _ in
+                    MainActor.assumeIsolated { self?.correctChromeIfStale() }
+                }
             }
         }
 
@@ -77,6 +104,22 @@ final class SettingsWindowChromeView: NSView {
         NotificationCenter.default.removeObserver(self)
     }
 
+    private func stopObserving() {
+        titleVisibilityObservation?.invalidate()
+        titleVisibilityObservation = nil
+        guard let observedWindow else { return }
+        NotificationCenter.default.removeObserver(
+            self,
+            name: NSWindow.didBecomeKeyNotification,
+            object: observedWindow
+        )
+        NotificationCenter.default.removeObserver(
+            self,
+            name: NSWindow.didUpdateNotification,
+            object: observedWindow
+        )
+    }
+
     @objc
     private func windowDidBecomeKey(_ notification: Notification) {
         guard let window else { return }
@@ -85,7 +128,18 @@ final class SettingsWindowChromeView: NSView {
 
     @objc
     private func windowDidUpdate(_ notification: Notification) {
+        correctChromeIfStale()
+    }
+
+    func correctChromeIfStale() {
+        // KVO on `titleVisibility` fires for every call to the setter, value
+        // change or not, so a correction that writes it re-enters here while
+        // the rest of the chrome is still half-applied and calls itself until
+        // the stack runs out (SIGSEGV in the suite before this guard existed).
+        guard !isApplyingChrome else { return }
         guard let window, Self.chromeIsStale(window) else { return }
+        isApplyingChrome = true
+        defer { isApplyingChrome = false }
         if !hasLoggedCorrection {
             hasLoggedCorrection = true
             let state = "titleVisible=\(window.titleVisibility != .hidden)"
@@ -100,8 +154,9 @@ final class SettingsWindowChromeView: NSView {
     }
 
     /// True when anything this view owns has been put back the way SwiftUI
-    /// wants it. Read on every window update, so it stays a field comparison —
-    /// the assignment in `applyChrome` is what costs, not this.
+    /// wants it. Read on every window update and on every write to
+    /// `titleVisibility`, so it stays a field comparison — the assignments in
+    /// `applyChrome` are what cost, not this.
     static func chromeIsStale(_ window: NSWindow) -> Bool {
         window.titleVisibility != .hidden
             || !window.titlebarAppearsTransparent
@@ -112,11 +167,17 @@ final class SettingsWindowChromeView: NSView {
     /// The window title itself is deliberately left alone: `scripts/ui-smoke.sh`
     /// pins every AX probe to the window named "Settings", so hiding the title
     /// is a titlebar setting, never an empty `window.title`.
+    ///
+    /// Each setting is written only when it is wrong. A window property
+    /// notifies its observers whether or not the value changed, and this runs
+    /// on every window update pass.
     static func applyChrome(to window: NSWindow) {
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
-        window.titlebarSeparatorStyle = .none
-        window.styleMask.insert(.fullSizeContentView)
+        if !window.titlebarAppearsTransparent { window.titlebarAppearsTransparent = true }
+        if window.titleVisibility != .hidden { window.titleVisibility = .hidden }
+        if window.titlebarSeparatorStyle != .none { window.titlebarSeparatorStyle = .none }
+        if !window.styleMask.contains(.fullSizeContentView) {
+            window.styleMask.insert(.fullSizeContentView)
+        }
     }
 }
 

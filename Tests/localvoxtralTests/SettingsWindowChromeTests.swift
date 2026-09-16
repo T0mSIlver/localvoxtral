@@ -62,18 +62,36 @@ final class SettingsWindowChromeTests: XCTestCase {
         XCTAssertTrue(SettingsWindowChromeView.chromeIsStale(window))
     }
 
-    /// The regression: a title turned back on with the view already installed
-    /// and the window already key. Neither `viewDidMoveToWindow` nor
-    /// `didBecomeKey` fires again for that, and before the fix nothing did.
-    func testTitleTurnedBackOnAfterSetupIsHiddenAgainOnTheNextWindowUpdate() {
+    /// The regression, in the shape the field bug actually had: the title is
+    /// turned back on with the view already installed and the window already
+    /// key, and NOTHING else happens afterwards — no further event, no window
+    /// update. A correction that waits for the next update pass leaves the
+    /// title on screen for as long as the app stays idle, which is what the
+    /// owner saw. So the title has to be down again by the time the write
+    /// returns.
+    func testTitleTurnedBackOnIsHiddenAgainWithoutWaitingForAnEvent() {
         let window = makeWindow()
         let chrome = SettingsWindowChromeView()
         window.contentView?.addSubview(chrome)
         XCTAssertEqual(window.titleVisibility, .hidden, "installing the view applies the chrome")
 
         window.titleVisibility = .visible
+
+        XCTAssertEqual(window.titleVisibility, .hidden)
+    }
+
+    /// The backstop, exercised through a titlebar setting that is NOT the
+    /// observed one: a re-assertion that never goes through `titleVisibility`
+    /// is caught on the window's next update pass.
+    func testTitlebarPutBackOffTheObservedPropertyIsFixedOnTheNextWindowUpdate() {
+        let window = makeWindow()
+        let chrome = SettingsWindowChromeView()
+        window.contentView?.addSubview(chrome)
+
+        window.titlebarAppearsTransparent = false
         NotificationCenter.default.post(name: NSWindow.didUpdateNotification, object: window)
 
+        XCTAssertTrue(window.titlebarAppearsTransparent)
         XCTAssertEqual(window.titleVisibility, .hidden)
     }
 
@@ -84,10 +102,10 @@ final class SettingsWindowChromeTests: XCTestCase {
         let chrome = SettingsWindowChromeView()
         window.contentView?.addSubview(chrome)
 
-        window.titleVisibility = .visible
+        window.titlebarAppearsTransparent = false
         NotificationCenter.default.post(name: NSWindow.didUpdateNotification, object: makeWindow())
 
-        XCTAssertEqual(window.titleVisibility, .visible)
+        XCTAssertFalse(window.titlebarAppearsTransparent)
     }
 
     /// Moving the view to a second window stops the first one's observation,
@@ -102,10 +120,9 @@ final class SettingsWindowChromeTests: XCTestCase {
 
         first.titleVisibility = .visible
         NotificationCenter.default.post(name: NSWindow.didUpdateNotification, object: first)
-        XCTAssertEqual(first.titleVisibility, .visible)
+        XCTAssertEqual(first.titleVisibility, .visible, "the left window is no longer observed")
 
         second.titleVisibility = .visible
-        NotificationCenter.default.post(name: NSWindow.didUpdateNotification, object: second)
         XCTAssertEqual(second.titleVisibility, .hidden)
     }
 }
