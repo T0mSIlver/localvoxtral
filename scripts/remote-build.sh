@@ -6,10 +6,14 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|integration|integration-polishd|integration-speechd|integration-herdr|speechd-bench|eval-llm|eval-e2e|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
+#   ./scripts/remote-build.sh [build|test|integration|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|eval-llm|eval-e2e|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
 #     build        swift build
 #     test         swift build + unit tests (default; skips live-backend suites)
 #     integration  realtime pipeline tests against the live speechd STT service
+#     integration-mistral
+#                  the realtime client against the LIVE hosted Mistral
+#                  transcription API; needs MISTRAL_API_KEY in this shell's
+#                  environment (spends real money, never runs in CI)
 #     integration-polishd
 #                  spawn the bundled polishing helper (built by `package`)
 #                  with the real model and score it against the polish eval
@@ -272,6 +276,30 @@ case "$CMD" in
     REMOTE_CMD=(env VLLM_REALTIME_TEST_ENABLE=1
       VLLM_REALTIME_TEST_MODEL=T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead
       swift test --filter RealtimeAPIVLLMIntegrationTests "$@")
+    ;;
+  integration-mistral)
+    # Live hosted Mistral realtime transcription API. The key comes from the
+    # dev box's own environment and travels as a gitignored, 0600 marker
+    # inside the synced tree, because the SSH build gate allowlists exact
+    # `swift test ...` payloads and cannot carry a per-run env prefix.
+    # Deliberately absent from CI: it spends real money per minute of audio
+    # and needs a secret the runner does not hold.
+    if [[ $# -gt 0 ]]; then
+      echo "integration-mistral takes no arguments" >&2
+      exit 1
+    fi
+    if [[ -z "${MISTRAL_API_KEY:-}" ]]; then
+      echo "integration-mistral needs MISTRAL_API_KEY in this shell's environment:" >&2
+      echo "  export MISTRAL_API_KEY=... && ./scripts/remote-build.sh integration-mistral" >&2
+      exit 1
+    fi
+    MISTRAL_MARKER="$ROOT_DIR/.mistral-integration-enable.json"
+    # Trap registered before the marker exists, so no kill window can strand a
+    # key-bearing file (locally or in the remote work dir).
+    trap 'cleanup_transient_marker "$MISTRAL_MARKER"' EXIT
+    (umask 077; : >"$MISTRAL_MARKER")
+    printf '{"apiKey": "%s"}\n' "$MISTRAL_API_KEY" >"$MISTRAL_MARKER"
+    REMOTE_CMD=(swift test --filter MistralRealtimeIntegrationTests)
     ;;
   integration-polishd)
     # Same marker-through-the-tree pattern as eval-llm (the gate pins env

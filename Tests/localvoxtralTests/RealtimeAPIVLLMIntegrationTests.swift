@@ -230,7 +230,7 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
             "the websocket client sends pcm sixteen audio at sixteen kilohertz in sequential chunks.",
             "if this transcript is non empty, end to end processing is confirmed.",
         ].joined(separator: " ")
-        let spokenPCM16 = try makeSpokenPCM16Data(phrase: longPhrase)
+        let spokenPCM16 = try IntegrationTestSupport.makeSpokenPCM16Data(phrase: longPhrase)
         XCTAssertGreaterThan(
             spokenPCM16.count,
             100_000,
@@ -447,38 +447,6 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
         }
 
         return samples.withUnsafeBytes { Data($0) }
-    }
-
-    private func makeSpokenPCM16Data(phrase: String) throws -> Data {
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("svxt-tts-\(UUID().uuidString)")
-            .appendingPathExtension("wav")
-
-        defer {
-            try? FileManager.default.removeItem(at: tempURL)
-        }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        process.arguments = [
-            "-o", tempURL.path,
-            "--file-format=WAVE",
-            "--data-format=LEI16@16000",
-            phrase,
-        ]
-
-        do {
-            try process.run()
-        } catch {
-            throw XCTSkip("Failed to execute /usr/bin/say for spoken-audio integration test: \(error.localizedDescription)")
-        }
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            throw XCTSkip("System TTS (say) failed with status \(process.terminationStatus).")
-        }
-
-        return try IntegrationTestSupport.extractPCMDataFromWAV(at: tempURL)
     }
 }
 

@@ -21,6 +21,14 @@ enum RealtimeConnectionFailureKind: Sendable, Equatable {
     /// The host/port accepted a connection but rejected the websocket upgrade,
     /// usually because the configured path is not a realtime websocket route.
     case endpointRejected
+    /// The server rejected the credentials on the upgrade request (HTTP
+    /// 401/403). Hosted providers report this as a plain bad-server-response
+    /// at the URLSession layer, so the status code has to be carried in the
+    /// socket error text for this to be distinguishable from a wrong path.
+    case unauthorized
+    /// The server refused the upgrade because the account is over its request
+    /// quota (HTTP 429).
+    case rateLimited
     /// The system reported the network path was lost while opening the socket.
     case networkLost
     /// Any other failure (unexpected socket close, TLS error, etc.).
@@ -114,6 +122,22 @@ enum RealtimeConnectionFailureClassifier {
                 technicalDetails: Self.technicalDetails(rawError, message: message)
             )
 
+        case .unauthorized:
+            let message = "The server rejected the API key at \(endpoint). Check the key in Settings → Engines."
+            return RealtimeConnectionFailureDescription(
+                status: "API key rejected.",
+                message: message,
+                technicalDetails: Self.technicalDetails(rawError, message: message)
+            )
+
+        case .rateLimited:
+            let message = "The server is rate limiting requests at \(endpoint). Wait a moment and try again."
+            return RealtimeConnectionFailureDescription(
+                status: "Rate limited.",
+                message: message,
+                technicalDetails: Self.technicalDetails(rawError, message: message)
+            )
+
         case .networkLost:
             // Matches DictationViewModel.StatusStrings.networkLostDictationStopped
             // (kept verbatim so StatusToken mapping continues to recognize it).
@@ -153,6 +177,24 @@ enum RealtimeConnectionFailureClassifier {
             ":-1001", "NSURLErrorTimedOut", "timed out", "timed out)"
         ], in: message) {
             return .timedOut
+        }
+
+        // Credential and quota rejections MUST be tested before the
+        // bad-server-response bucket: a hosted provider's 401/403/429 arrives
+        // as NSURLErrorBadServerResponse (-1011) with the real status only in
+        // the text the client folded in, and "check the path" is the wrong
+        // advice for a rejected key.
+        if matches(any: [
+            "http 401", "http 403", "status code 401", "status code 403",
+            "rejected the api key", "unauthorized", "invalid api key"
+        ], in: message) {
+            return .unauthorized
+        }
+
+        if matches(any: [
+            "http 429", "status code 429", "rate limit", "too many requests"
+        ], in: message) {
+            return .rateLimited
         }
 
         if matches(any: [

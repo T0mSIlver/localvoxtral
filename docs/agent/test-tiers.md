@@ -9,6 +9,7 @@
 | 1 | `PolishHelperIntegrationTests`: the packaged polishing helper vs the real pinned model — production request path, shared eval baseline, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches LLM-relevant paths or the PR opts in with `[run-llm-eval]` — see "When must the LLM lanes run?"; locally via `remote-build.sh integration-polishd` | minutes (4B weights + live inference) |
 | 1 | `SpeechHelperIntegrationTests`: packaged speechd vs real spoken audio/model through the production realtime client — word accuracy, append-only delta/done parity, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches speechd-relevant paths or the PR opts in with `[run-speechd-integration]`; locally via `remote-build.sh integration-speechd` | minutes (4B weights + live inference) |
 | 1 | `HerdrIntegrationTests`: the remote-herdr join machinery vs a LIVE `herdr` server over a REAL `ssh -L` forward — real socket client, real forward coordinator, real `ssh -G` canonicalization, real `~/.config/herdr/config.toml` patch; the only fixture is the focused surface (a real herdr client on a pty) | conditional in CI (self-hosted): only when the diff touches herdr-relevant paths or the PR opts in with `[run-herdr-integration]`; locally via `remote-build.sh integration-herdr [ssh-destination]` | ~1 min (no model weights) |
+| 1 | `MistralRealtimeIntegrationTests`: the realtime client vs the LIVE hosted Mistral transcription API — handshake, synthetic spoken audio through the production frames, word accuracy, delta/done parity, and the 401 rejection path | NEVER in CI (the runner holds no Mistral key and the lane bills per minute of audio); by hand from the dev box via `MISTRAL_API_KEY=... ./scripts/remote-build.sh integration-mistral` | ~1 min + a few cents |
 | 2 | `ui-smoke.yml` AX smoke drill (status item, settings tabs, lazy managed-backend launch invariant); dictation-with-audio remains future work | evening lock-aware slots (18:00/19:30/21:00 UTC; `ui-smoke-guard.sh` skips green when the Mac is on battery, the screen is locked, or a slot's drill already ran and passed that day — the drill needs an unlocked GUI session) + manual on the self-hosted GUI runner | — |
 | 2 | `AgentDictationE2EEvalTests` (`eval-e2e.yml`): wide agent-dictation eval — human WAVs or TTS(`say`) → live speechd ASR → bundled polishd through the production stop-commit path, scored against `EvalCorpus/agent-dictation/` (7 migrated required cases asserted; the rest XFAIL; WER informational; raw-model pre-safety diagnostic column) | nightly (skips green when the Mac is on battery — `ac-power-guard.sh`, owner rule 2026-07-24: scheduled lanes never run unplugged; manual dispatch always runs) + manual, NEVER per-PR (owner decision 2026-07-11); locally via `remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]` (run `package` first) | many minutes (live ASR/4B polish over ~160 cases; TTS WAVs cached on the host) |
 
@@ -48,6 +49,18 @@ scorer live in `LLMPolishEvalSupport`, shared with
 `PolishHelperIntegrationTests` (`remote-build.sh integration-polishd`), which
 holds the bundled MLX Swift polishing helper to the same baseline — engine or
 model-pin changes MUST run that one too.
+
+Mistral lane: `MistralRealtimeIntegrationTests` is the only lane that leaves the
+owner's machines — it talks to `wss://api.mistral.ai/v1/audio/transcriptions/realtime`
+with a real key and is billed per minute of audio, so it is deliberately absent
+from every workflow. Enablement is `MISTRAL_API_KEY` in the environment (a direct
+run on a Mac) or the gitignored `.mistral-integration-enable.json` marker that
+`remote-build.sh integration-mistral` writes 0600 into the synced tree and removes
+on exit; without either, the suite self-skips and the unit lane stays clean. Run it
+for any change to the Mistral wire path — frame shapes, the `model` query item, the
+`Authorization` header, the finalization gate, or the HTTP-status enrichment the
+`.unauthorized`/`.rateLimited` classifier kinds depend on — and paste the accuracy
+line in the PR's Proof section.
 
 ## When must the LLM lanes run?
 
