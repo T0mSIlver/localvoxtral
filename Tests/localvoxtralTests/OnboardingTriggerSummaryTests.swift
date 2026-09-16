@@ -24,7 +24,7 @@ final class OnboardingTriggerSummaryTests: XCTestCase {
     }
 
     private func makeStore() -> SettingsStore {
-        SettingsStore(defaults: defaults, environment: [:])
+        SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
     }
 
     /// A store in keyboard-shortcut mode. A fresh install now seeds the

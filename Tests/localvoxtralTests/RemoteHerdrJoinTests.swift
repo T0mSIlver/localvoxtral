@@ -1905,7 +1905,7 @@ final class RemoteHerdrJoinTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
-        let settings = SettingsStore(defaults: defaults, environment: [:])
+        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         let viewModel = DictationViewModel(settings: settings, startRuntimeServices: false)
         Self.retainedViewModels.append(viewModel)
         return viewModel

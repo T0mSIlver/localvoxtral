@@ -20,6 +20,11 @@ screen, repo vocabulary and Claude Code session context are attached only if
 you also turn on the explicit trusted-endpoint opt-in — exactly as for any
 other non-local endpoint.
 
+Any API key you enter — the External URL dictation and polishing keys, and
+the Mistral key — is stored in your login Keychain under the service
+`com.localvoxtral.api-keys`, never in the app's preferences file and so never
+in a backup or `defaults export` of it.
+
 ## The managed local engines
 
 In **Managed local** mode (the default), localvoxtral launches and

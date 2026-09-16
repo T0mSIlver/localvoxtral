@@ -29,6 +29,10 @@ enum Log {
     static let target = Logger(subsystem: subsystem, category: "Target")
     static let modifierKeys = Logger(subsystem: subsystem, category: "ModifierKeys")
     static let diagnostics = Logger(subsystem: subsystem, category: "Diagnostics")
+    /// Keychain access for the stored API keys (`KeychainSecretStore`) and the
+    /// one-time migration out of UserDefaults. Logs operations, accounts and
+    /// OSStatus values only — never a key, not even truncated.
+    static let secrets = Logger(subsystem: subsystem, category: "Secrets")
     /// Claude Code context ingest: broker lifecycle, rejected connections and
     /// records. NEVER logs hook content — a record carries the user's prompt
     /// and their file paths. Only event names, counts, and failure reasons.

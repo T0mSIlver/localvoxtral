@@ -582,7 +582,7 @@ final class DogfoodControlServiceTests: XCTestCase {
         defaults.removePersistentDomain(forName: suiteName)
         addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
 
-        let settings = SettingsStore(defaults: defaults, environment: [:])
+        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         let viewModel = DictationViewModel(settings: settings, startRuntimeServices: false)
         viewModel.isShowingConnectionFailureAlert = true
         Self.retainedViewModels.append(viewModel)

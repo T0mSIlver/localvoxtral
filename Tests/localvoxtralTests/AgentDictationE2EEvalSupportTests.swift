@@ -287,7 +287,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
-        return SettingsStore(defaults: defaults, environment: [:])
+        return SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
     }
 
     // MARK: - WAV cache key

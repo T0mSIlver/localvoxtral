@@ -6,10 +6,16 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|integration|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|eval-llm|eval-e2e|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
+#   ./scripts/remote-build.sh [build|test|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|eval-llm|eval-e2e|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
 #     build        swift build
 #     test         swift build + unit tests (default; skips live-backend suites)
 #     integration  realtime pipeline tests against the live speechd STT service
+#     integration-keychain
+#                  KeychainSecretStore against the REAL login keychain
+#                  (add/read/update/delete under a throwaway service). Needs a
+#                  GUI login session: over SSH the build user's keychain reads
+#                  but refuses writes with OSStatus -60008, and a merely locked
+#                  one answers -25308 — the suite fails naming the status
 #     integration-mistral
 #                  the realtime client against the LIVE hosted Mistral
 #                  transcription API; needs MISTRAL_API_KEY in this shell's
@@ -300,6 +306,26 @@ case "$CMD" in
     REMOTE_CMD=(env VLLM_REALTIME_TEST_ENABLE=1
       VLLM_REALTIME_TEST_MODEL=T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead
       swift test --filter RealtimeAPIVLLMIntegrationTests "$@")
+    ;;
+  integration-keychain)
+    # Round-trips the real Security.framework path. Enablement travels as a
+    # gitignored marker inside the synced tree for the same reason the Mistral
+    # lane's key does: the SSH build gate allowlists exact `swift test ...`
+    # payloads and cannot carry a per-run env prefix.
+    #
+    # Deliberately absent from CI: neither the hosted runner nor an SSH
+    # session has an authorised login keychain (writes come back -60008), and
+    # a lane that can only skip proves nothing. Run it from a terminal inside
+    # the owner's GUI session.
+    if [[ $# -gt 0 ]]; then
+      echo "integration-keychain takes no arguments" >&2
+      exit 1
+    fi
+    KEYCHAIN_MARKER="$ROOT_DIR/.keychain-integration-enable.json"
+    trap 'cleanup_transient_marker "$KEYCHAIN_MARKER"' EXIT
+    (umask 077; : >"$KEYCHAIN_MARKER")
+    printf '{"enabled": true}\n' >"$KEYCHAIN_MARKER"
+    REMOTE_CMD=(swift test --filter KeychainSecretStoreIntegrationTests)
     ;;
   integration-mistral)
     # Live hosted Mistral realtime transcription API. The key comes from the

@@ -31,7 +31,8 @@ final class SettingsStoreOutOfBoxDefaultsTests: XCTestCase {
     }
 
     private func makeStore(environment: [String: String] = [:]) -> SettingsStore {
-        SettingsStore(defaults: defaults, environment: environment)
+        SettingsStore(
+            defaults: defaults, environment: environment, secretStore: InMemorySecretStore())
     }
 
     // MARK: - Fresh install

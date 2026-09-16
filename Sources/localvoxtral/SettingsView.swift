@@ -443,7 +443,11 @@ private struct ConnectionSettingsPane: View {
                             .frame(maxWidth: SettingsLayout.textFieldWidth)
                     }
 
-                    SettingsFieldRow(title: "API key") {
+                    SettingsFieldRow(
+                        title: "API key",
+                        status: settings.secretStoreFailureSummary,
+                        statusAccessibilityIdentifier: "engines.dictation.apiKey.status"
+                    ) {
                         SecureField("Required for remote providers", text: $settings.apiKey)
                             .textFieldStyle(.roundedBorder)
                             .frame(maxWidth: SettingsLayout.textFieldWidth)
@@ -520,7 +524,11 @@ private struct ConnectionSettingsPane: View {
                         .frame(maxWidth: SettingsLayout.textFieldWidth)
                     }
 
-                    SettingsFieldRow(title: "API key") {
+                    SettingsFieldRow(
+                        title: "API key",
+                        status: settings.secretStoreFailureSummary,
+                        statusAccessibilityIdentifier: "engines.polishing.apiKey.status"
+                    ) {
                         SecureField(
                             "Required for remote providers",
                             text: $settings.llmPolishingAPIKey
@@ -579,7 +587,11 @@ private struct ConnectionSettingsPane: View {
             // is the provider ACCOUNT, not one engine's configuration. Both
             // pickers above can point at it, one, or neither.
             SettingsGroup(title: "Mistral API", learnMoreURL: LearnMore.mistralAPI) {
-                SettingsFieldRow(title: "API key") {
+                SettingsFieldRow(
+                    title: "API key",
+                    status: settings.secretStoreFailureSummary,
+                    statusAccessibilityIdentifier: "engines.mistral.apiKey.status"
+                ) {
                     SecureField(
                         "Paste a key from console.mistral.ai",
                         text: $settings.mistralAPIKey

@@ -783,7 +783,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         addTeardownBlock {
             defaults.removePersistentDomain(forName: suiteName)
         }
-        let settings = SettingsStore(defaults: defaults, environment: [:])
+        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.dictationOutputMode = outputMode
         // The user-added apps list is settings-backed now (the TOML is a
         // one-shot migration source at launch), so the fixture stages it the

@@ -968,7 +968,7 @@ final class TerminalScreenContextLifecycleTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
-        let settings = SettingsStore(defaults: defaults, environment: [:])
+        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         let viewModel = DictationViewModel(settings: settings, startRuntimeServices: false)
         Self.retainedViewModels.append(viewModel)
         return viewModel
@@ -1051,7 +1051,11 @@ final class TerminalScreenContextSettingTests: XCTestCase {
     private func makeStore() -> (SettingsStore, UserDefaults, String) {
         let suiteName = "TerminalScreenContextSettingTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
-        return (SettingsStore(defaults: defaults), defaults, suiteName)
+        return (
+            SettingsStore(defaults: defaults, secretStore: InMemorySecretStore()),
+            defaults,
+            suiteName
+        )
     }
 
     func testDefaultsOff() {
@@ -1069,10 +1073,14 @@ final class TerminalScreenContextSettingTests: XCTestCase {
 
         store.terminalScreenContextEnabled = true
         XCTAssertTrue(defaults.bool(forKey: "settings.terminal_screen_context_enabled"))
-        XCTAssertTrue(SettingsStore(defaults: defaults).terminalScreenContextEnabled)
+        XCTAssertTrue(
+            SettingsStore(defaults: defaults, secretStore: InMemorySecretStore())
+                .terminalScreenContextEnabled)
 
         store.terminalScreenContextEnabled = false
         XCTAssertFalse(defaults.bool(forKey: "settings.terminal_screen_context_enabled"))
-        XCTAssertFalse(SettingsStore(defaults: defaults).terminalScreenContextEnabled)
+        XCTAssertFalse(
+            SettingsStore(defaults: defaults, secretStore: InMemorySecretStore())
+                .terminalScreenContextEnabled)
     }
 }

@@ -33,7 +33,7 @@ final class DictationViewModelDeltaLoggingTests: XCTestCase {
             defaults.removePersistentDomain(forName: suiteName)
         }
 
-        let settings = SettingsStore(defaults: defaults, environment: [:])
+        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.debugLogRealtimeDeltas = enableDeltaLogging
 
         let viewModel = DictationViewModel(
