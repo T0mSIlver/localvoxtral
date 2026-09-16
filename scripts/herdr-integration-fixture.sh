@@ -346,7 +346,11 @@ reclaim_or_refuse_stale_hold() {
 # ------------------------------------------------------------- helpers
 
 # Absolute path to the herdr binary. PATH first (so an owner's own install
-# wins), then the two package-manager prefixes; never a relative path.
+# wins), then the install prefixes herdr itself uses — its install script
+# puts the binary in ~/.local/bin, which a launchd-started runner's PATH does
+# not include (field case 2026-09-16: the owner moved from Homebrew to the
+# script install and /opt/homebrew/bin/herdr vanished) — then the package
+# managers; never a relative path.
 resolve_herdr() {
   if [[ -n "${HERDR_BIN:-}" ]]; then
     [[ -x "$HERDR_BIN" ]] || die "HERDR_BIN is set but not executable: $HERDR_BIN"
@@ -358,7 +362,7 @@ resolve_herdr() {
     printf '%s\n' "$candidate"
     return 0
   fi
-  for candidate in /opt/homebrew/bin/herdr /usr/local/bin/herdr "$HOME/.cargo/bin/herdr" "$HOME/bin/herdr"; do
+  for candidate in "$HOME/.local/bin/herdr" /opt/homebrew/bin/herdr /usr/local/bin/herdr "$HOME/.cargo/bin/herdr" "$HOME/bin/herdr"; do
     if [[ -x "$candidate" ]]; then
       printf '%s\n' "$candidate"
       return 0
@@ -366,8 +370,9 @@ resolve_herdr() {
   done
   die "herdr is not installed on this machine.
   The integration-herdr lane exercises a LIVE herdr server; it cannot be
-  simulated. Install it (brew install herdr, or https://herdr.dev) or point
-  HERDR_BIN at an existing binary, then re-run the lane."
+  simulated. Install it (the script at https://herdr.dev puts it in
+  ~/.local/bin, or brew install herdr) or point HERDR_BIN at an existing
+  binary, then re-run the lane."
 }
 
 # Quiet, read-only probe for the `herdr machine` subcommand (herdr 0.9.0+).
