@@ -272,6 +272,20 @@ $output" ;;
 esac
 echo "PASS: no nightly in the list fails with a clear error"
 
+# An empty or unrecognizable response must produce that same clear error and
+# not a bare non-zero exit from a pipeline under `set -o pipefail`.
+printf '[]\n' > "$TMP_DIR/releases-empty.json"
+if output="$(run_resolve "$TMP_DIR/releases-empty.json" latest nightly 2>&1)"; then
+  fail "expected failure on an empty releases list, got:
+$output"
+fi
+case "$output" in
+  *"No nightly release found"*) ;;
+  *) fail "an empty releases list must still explain itself, got:
+$output" ;;
+esac
+echo "PASS: an empty releases list fails with the same clear error"
+
 # Release bodies carry generated notes, i.e. contributor-written PR titles. A
 # body that embeds release-shaped JSON must not be able to redirect the
 # download: the asset is still selected by exact name AND by the tag's own

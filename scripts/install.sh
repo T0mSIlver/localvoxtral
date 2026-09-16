@@ -72,7 +72,11 @@ select_newest_nightly_tag() {
         tag = ""
         next
       }
-    '
+    ' || true
+  # `|| true`: a response with none of these fields makes grep exit 1, and
+  # under `set -o pipefail` that would abort the installer with no message at
+  # all. Printing nothing is the right answer — the caller turns it into a
+  # clear "no nightly release found" error.
 }
 
 resolve_zip_url() {
