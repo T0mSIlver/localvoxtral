@@ -53,6 +53,14 @@ enum SettingsBrandMarks {
     /// failure is logged once instead of on each pass.
     private static var brandMisses: Set<String> = []
     private static var appIconCache: [String: NSImage] = [:]
+    /// Bundle IDs LaunchServices did not resolve. Remembered for the same
+    /// reason as `brandMisses`: a row for a removed app would otherwise ask
+    /// LaunchServices again on every hover.
+    private static var appIconMisses: Set<String> = []
+    /// Seam for tests; production asks LaunchServices.
+    static var applicationURLLookup: (String) -> URL? = {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)
+    }
 
     static func image(resourceName: String) -> NSImage? {
         if let cached = brandCache[resourceName] {
@@ -78,28 +86,39 @@ enum SettingsBrandMarks {
         return image
     }
 
-    /// The first installed app among `bundleIDs`. A miss is not cached, so an
-    /// app installed while Settings is open picks up its icon on the next
-    /// render.
+    /// The first installed app among `bundleIDs`. Hits and misses are both
+    /// cached until `forgetAppIcons()`, which the terminal model's installed
+    /// sweep calls, so icons refresh on the same schedule as the rows' dots:
+    /// each Settings open and each add or remove.
     static func appIcon(bundleIDs: [String]) -> NSImage? {
         for bundleID in bundleIDs {
             if let cached = appIconCache[bundleID] {
                 return cached
             }
-            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+            if appIconMisses.contains(bundleID) {
+                continue
+            }
+            if let url = applicationURLLookup(bundleID) {
                 let icon = NSWorkspace.shared.icon(forFile: url.path)
                 appIconCache[bundleID] = icon
                 return icon
             }
+            appIconMisses.insert(bundleID)
         }
         return nil
+    }
+
+    static func forgetAppIcons() {
+        appIconCache.removeAll()
+        appIconMisses.removeAll()
     }
 
     #if DEBUG
     static func resetCachesForTesting() {
         brandCache.removeAll()
         brandMisses.removeAll()
-        appIconCache.removeAll()
+        forgetAppIcons()
+        applicationURLLookup = { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }
     }
     #endif
 }

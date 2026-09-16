@@ -118,9 +118,33 @@ final class SettingsSidebarIconTests: XCTestCase {
         XCTAssertEqual(
             SettingsTab.terminal(app).sidebarIcon, .appIcon(bundleIDs: ["dev.some.Editor"])
         )
-        XCTAssertNil(
-            SettingsBrandMarks.appIcon(bundleIDs: ["dev.some.Editor"]),
-            "an app LaunchServices does not know falls back to the generic mark"
+    }
+
+    /// A row for a removed app re-renders on every hover; LaunchServices is
+    /// asked once per installed sweep, not once per render.
+    func testAppIconMissIsRememberedUntilTheInstalledSweep() {
+        var lookups: [String] = []
+        SettingsBrandMarks.applicationURLLookup = { bundleID in
+            lookups.append(bundleID)
+            return nil
+        }
+
+        XCTAssertNil(SettingsBrandMarks.appIcon(bundleIDs: ["dev.gone.App"]))
+        XCTAssertNil(SettingsBrandMarks.appIcon(bundleIDs: ["dev.gone.App"]))
+        XCTAssertEqual(lookups, ["dev.gone.App"])
+
+        let suiteName = "localvoxtral.SettingsSidebarIconTests.\(UUID().uuidString)"
+        defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+        let model = TerminalAppsSettingsModel(
+            settings: SettingsStore(defaults: UserDefaults(suiteName: suiteName)!, environment: [:]),
+            applicationURLForBundleID: { _ in nil }
+        )
+        model.refreshInstalledState()
+
+        XCTAssertNil(SettingsBrandMarks.appIcon(bundleIDs: ["dev.gone.App"]))
+        XCTAssertEqual(
+            lookups, ["dev.gone.App", "dev.gone.App"],
+            "the installed sweep (each Settings open, add, remove) lets a newly installed app show its icon"
         )
     }
 

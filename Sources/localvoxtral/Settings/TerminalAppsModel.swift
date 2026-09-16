@@ -313,6 +313,8 @@ final class TerminalAppsSettingsModel {
         }
         installedCache = newInstalled
         versionCache = newVersions
+        // Sidebar app icons follow the same schedule as the dots.
+        SettingsBrandMarks.forgetAppIcons()
     }
 
     /// The full Terminals section: built-ins in catalog order, then
