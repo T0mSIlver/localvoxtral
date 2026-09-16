@@ -1,8 +1,10 @@
 import AppKit
+import SwiftUI
 import XCTest
 
 @testable import localvoxtral
 
+@MainActor
 final class OverlayLayoutMetricsTests: XCTestCase {
     /// Scale 1.0 — the layout the fixed-size overlay historically rendered.
     private let baseMetrics = OverlayLayoutMetrics(
@@ -146,5 +148,66 @@ final class OverlayLayoutMetricsTests: XCTestCase {
         XCTAssertGreaterThan(with, without)
         // Blank errors are not rendered, so they must not add height.
         XCTAssertEqual(baseMetrics.contentHeight(text: "hello", errorMessage: "   "), without)
+    }
+
+    // MARK: - Measurement matches what SwiftUI draws (field report 2026-09-16)
+
+    /// Height SwiftUI gives a wrapped `Text` at a fixed width, measured apart
+    /// from `OverlayLayoutMetrics`: the same font and wrapping modifiers the
+    /// overlay's body and error rows use.
+    private func swiftUIRenderedHeight(_ text: String, fontSize: CGFloat, width: CGFloat) -> CGFloat {
+        let view = Text(text)
+            .font(.system(size: fontSize))
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(width: width, alignment: .topLeading)
+        return NSHostingController(rootView: view)
+            .sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude))
+            .height
+    }
+
+    private var fontSizeRange: StrideThrough<Double> {
+        stride(
+            from: OverlayLayoutMetrics.minimumBodyFontSize,
+            through: OverlayLayoutMetrics.maximumBodyFontSize,
+            by: 1)
+    }
+
+    private let wrappingTexts = [
+        // The dictation from the field screenshot: 3 lines, the last clipped at 16pt.
+        "And now I'm noticing that the bottom of the thing is cut off. And I'm gonna have to talk even more. Before I can take the screenshot of the real thing being cut off. Appearing like the bottom row is cut off.",
+        "hello",
+        String(repeating: "the quick brown fox jumps over the lazy dog ", count: 2),
+    ]
+
+    /// `NSString.boundingRect` put 3 lines of 16pt text at 54pt while SwiftUI
+    /// drew them at 57pt, so the panel came out 3pt short and the last line
+    /// lost its descenders. The body row the panel is sized for must hold
+    /// what SwiftUI actually renders, at every size of the setting.
+    func testBodyHeightHoldsTheSwiftUIRenderedTextAtEveryFontSize() {
+        for size in fontSizeRange {
+            let metrics = OverlayLayoutMetrics(bodyFontSize: size)
+            for text in wrappingTexts {
+                let rendered = swiftUIRenderedHeight(
+                    text, fontSize: metrics.bodyFontSize, width: metrics.textMeasurementWidth)
+                guard rendered <= metrics.maxScrollableBodyHeight else { continue }
+                XCTAssertGreaterThanOrEqual(
+                    metrics.bodyTextHeight(for: text), rendered,
+                    "body row clips its last line at font size \(size): \(text.prefix(24))")
+            }
+        }
+    }
+
+    func testErrorRowHeightHoldsTheSwiftUIRenderedTextAtEveryFontSize() {
+        let error = "Couldn't insert the text into the focused app. It is on the clipboard instead, paste it with Command-V."
+        for size in fontSizeRange {
+            let metrics = OverlayLayoutMetrics(bodyFontSize: size)
+            let rendered = swiftUIRenderedHeight(
+                error, fontSize: metrics.errorFontSize, width: metrics.textMeasurementWidth)
+            let added = metrics.contentHeight(text: "hello", errorMessage: error)
+                - metrics.contentHeight(text: "hello", errorMessage: nil)
+            XCTAssertGreaterThanOrEqual(
+                added, OverlayLayoutMetrics.stackSpacing + rendered,
+                "error row clips its last line at font size \(size)")
+        }
     }
 }
