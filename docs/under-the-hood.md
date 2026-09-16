@@ -2,26 +2,22 @@
 
 ## Privacy
 
-In the default Managed local mode, nothing you say or write is sent
-anywhere. Audio capture, transcription, and LLM polishing all run as local
-processes on your Mac, and the only network traffic is the one-time engine
-and model download. There is no telemetry, no account, and no cloud
-fallback. The context-aware polishing features (Claude Code session context,
-repo vocabulary, clipboard context) are opt-in and by default only ever talk
-to a loopback polishing endpoint — a non-local endpoint receives context
-only if you additionally enable the explicit trusted-endpoint opt-in
-(default off). If you point localvoxtral at your own External URL server
-instead, your data goes only where you send it.
+Nothing you say or write is sent anywhere. Audio capture, transcription,
+and LLM polishing run as local processes on your Mac, and the only network
+traffic is the one-time engine and model download. There is no telemetry,
+no account, and no cloud fallback. The context-aware polishing features
+(Claude Code session context, repo vocabulary, clipboard context) are
+opt-in and only ever talk to a loopback polishing endpoint. A non-local
+endpoint receives context only if you also enable the explicit
+trusted-endpoint opt-in (default off).
 
-In **Mistral API** mode, the audio you dictate and the transcript being
-polished are sent to Mistral's API. The context features do not change with
-the mode: api.mistral.ai is not a local endpoint, so clipboard, terminal
-screen, repo vocabulary and Claude Code session context are attached only if
-you also turn on the explicit trusted-endpoint opt-in — exactly as for any
-other non-local endpoint.
+If you point localvoxtral at your own External URL server or at the Mistral
+API instead, your audio and transcripts go where you send them. Neither is a
+local endpoint, so the context features stay behind the trusted-endpoint
+opt-in there too.
 
-Any API key you enter — the External URL dictation and polishing keys, and
-the Mistral key — is stored in your login Keychain under the service
+Any API key you enter (the External URL dictation and polishing keys, and
+the Mistral key) is stored in your login Keychain under the service
 `com.localvoxtral.api-keys`, never in the app's preferences file and so never
 in a backup or `defaults export` of it.
 
@@ -56,26 +52,17 @@ caught before it ships.
 
 ## Mistral API
 
-Rather run the same models without the download? Switch Dictation or
-Polishing to **Mistral API** in **Settings → Engines** and paste one API key
-from [console.mistral.ai](https://console.mistral.ai/api-keys):
-
-- **Dictation** — Voxtral Mini Transcribe Realtime
-  (`voxtral-mini-transcribe-realtime-2602`) over Mistral's hosted realtime
-  socket, at 0.006 USD per minute of audio.
-- **Polishing** — Mistral Medium 3.5 (`mistral-medium-3-5`), at 1.5 USD per
-  million input tokens and 7.5 USD per million output tokens. Reasoning is
-  switched off for polishing: a polish pays no reasoning trace.
-
-Both engines share one key and switch independently — hosted dictation with
-local polishing, or the reverse, is a supported combination. The **Mistral
-API** group on the Engines pane holds the key, a "Check key" button, and a
-one-click "Use Mistral for dictation and polishing" setup. Either model field
-can name another Mistral model; empty means the default above.
-
-What this trades away is the privacy paragraph at the top of this page: in
-this mode your audio and transcripts reach Mistral. The context features stay
-behind the trusted-endpoint opt-in regardless.
+Switch Dictation or Polishing to **Mistral API** in **Settings → Engines**
+and paste one API key from
+[console.mistral.ai](https://console.mistral.ai/api-keys). Dictation then
+uses Voxtral Mini Transcribe Realtime
+(`voxtral-mini-transcribe-realtime-2602`) over Mistral's hosted realtime
+socket, at 0.006 USD per minute of audio. Polishing uses Mistral Medium 3.5
+(`mistral-medium-3-5`) with reasoning switched off, at 1.5 USD per million
+input tokens and 7.5 USD per million output tokens. Both engines share the
+key and switch independently, so hosted dictation with local polishing
+works, and so does the reverse. Either model field can name another Mistral
+model. In this mode your audio and transcripts reach Mistral.
 
 ## Bring your own server
 
