@@ -158,7 +158,10 @@ the release body and the generated changelog is appended below it;
 `scripts/ci/resolve-release-notes.sh` decides, and its self-test runs in CI's
 shell-test step. The file is optional — with none, the release publishes with
 generated notes exactly as before — but a file that exists and is empty is a
-hard failure rather than a release with a blank human section.
+hard failure rather than a release with a blank human section. A nightly body
+also opens with a fixed header saying which commit it is, how to install it,
+and that it is not a stable release; a hand-written nightly file lands under
+that header.
 
 The tag is created only after every gate passes, so a failed release leaves
 no orphan tag. Releases are ad-hoc signed on purpose (a local signing cert
