@@ -119,7 +119,9 @@ ablation workflows: `docs/agent/test-tiers.md`.
   list --branch <ref>` first — `docs/agent/test-tiers.md` "Dispatching a run
   without deepening the queue".
 - Releases: `./scripts/release.sh [patch|minor|major|X.Y.Z]` — the pipeline
-  gates and owns the tags. Never push release tags by hand.
+  gates and owns the tags. Never push release tags by hand. Stable stays
+  deliberate; nightly ships main as a prerelease nightly (cron /
+  `release.sh nightly`), and `release.sh rehearse` gates any ref without tagging.
 - NEVER patch SwiftPM-generated DerivedSources (regenerated clean every
   build; shipped launch-broken artifacts, #87). App resources resolve via
   `Bundle.localvoxtralResources` (`AppResourceBundle.swift`); dependency

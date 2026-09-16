@@ -5,6 +5,10 @@ REPO="T0mSIlver/localvoxtral"
 APP_NAME="localvoxtral.app"
 INSTALL_PATH="/Applications/${APP_NAME}"
 VERSION="${LOCALVOXTRAL_VERSION:-latest}"
+# stable follows GitHub's /releases/latest pointer, which never points at a
+# prerelease. nightly follows the newest nightly prerelease built from main.
+# LOCALVOXTRAL_VERSION=<tag> overrides both and installs exactly that tag.
+CHANNEL="${LOCALVOXTRAL_CHANNEL:-stable}"
 DRYRUN="${LOCALVOXTRAL_INSTALL_DRYRUN:-0}"
 INSTALL_TMP_DIR=""
 
@@ -28,11 +32,47 @@ cleanup() {
 }
 
 resolve_release_api_url() {
-  if [ "$VERSION" = "latest" ]; then
-    printf 'https://api.github.com/repos/%s/releases/latest\n' "$REPO"
-  else
+  if [ "$VERSION" != "latest" ]; then
     printf 'https://api.github.com/repos/%s/releases/tags/%s\n' "$REPO" "$VERSION"
+  elif [ "$CHANNEL" = "nightly" ]; then
+    # /releases/latest never returns a prerelease, and every nightly is one,
+    # so the nightly channel reads the release list instead. The API returns
+    # it newest first; 30 covers the 7 nightlies that are kept plus the
+    # stable releases between them many times over.
+    printf 'https://api.github.com/repos/%s/releases?per_page=30\n' "$REPO"
+  else
+    printf 'https://api.github.com/repos/%s/releases/latest\n' "$REPO"
   fi
+}
+
+# Newest nightly tag in a releases-list response, or nothing.
+#
+# No jq (the installer runs on a bare macOS), so the JSON is reduced to the
+# three fields that matter, in document order, and walked as a stream: a
+# release object lists tag_name, then draft, then prerelease, then its
+# assets. The first release that is a published prerelease AND carries the
+# nightly tag shape wins, which is the newest one because the API orders the
+# list by creation date. A stable release is skipped (not a prerelease), and
+# so is an X.Y.Z-rc.N prerelease (not the nightly shape).
+select_newest_nightly_tag() {
+  printf '%s\n' "$1" |
+    grep -oE '"(tag_name|draft|prerelease)"[[:space:]]*:[[:space:]]*("[^"]*"|true|false)' |
+    sed -e 's/^"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)"$/TAG \1/' \
+        -e 's/^"draft"[[:space:]]*:[[:space:]]*\(.*\)$/DRAFT \1/' \
+        -e 's/^"prerelease"[[:space:]]*:[[:space:]]*\(.*\)$/PRE \1/' |
+    awk '
+      $1 == "TAG" { tag = $2; draft = ""; next }
+      $1 == "DRAFT" { draft = $2; next }
+      $1 == "PRE" {
+        if (tag != "" && draft != "true" && $2 == "true" &&
+            tag ~ /^v[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9](\.[0-9]+)?$/) {
+          print tag
+          exit
+        }
+        tag = ""
+        next
+      }
+    '
 }
 
 resolve_zip_url() {
@@ -62,16 +102,28 @@ resolve_zip_url() {
   # debug symbols (issue #131); exact-name selection is immune to new assets
   # appearing in any order. The tag comes from the metadata itself so
   # VERSION=latest resolves correctly too.
-  tag="$(printf '%s\n' "$release_json" |
-    sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
-    sed -n '1p')"
-  [ -n "$tag" ] || die "Could not read tag_name from GitHub release metadata for '${VERSION}'"
+  if [ "$VERSION" = "latest" ] && [ "$CHANNEL" = "nightly" ]; then
+    tag="$(select_newest_nightly_tag "$release_json")"
+    [ -n "$tag" ] || die "No nightly release found among the 30 most recent releases of ${REPO}. Nightlies are built from main every night; see https://github.com/${REPO}/releases"
+  else
+    tag="$(printf '%s\n' "$release_json" |
+      sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+      sed -n '1p')"
+    [ -n "$tag" ] || die "Could not read tag_name from GitHub release metadata for '${VERSION}'"
+  fi
 
   zip_urls="$(printf '%s\n' "$release_json" |
     grep '"browser_download_url"[[:space:]]*:' |
     sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\.zip\)".*/\1/p' || true)"
+  # The download URL of a release asset is always
+  # https://github.com/<repo>/releases/download/<tag>/<name>, so requiring
+  # that prefix keeps the exact-name rule above attached to the RIGHT release
+  # when the metadata holds several of them (the nightly channel reads a
+  # list), and keeps a URL that merely appears in a release body out of it.
   zip_url="$(printf '%s\n' "$zip_urls" |
-    awk -v want="localvoxtral-${tag}.zip" -F/ '$NF == want { print; exit }')"
+    awk -v want="localvoxtral-${tag}.zip" \
+        -v prefix="https://github.com/${REPO}/releases/download/${tag}/" \
+        -F/ 'index($0, prefix) == 1 && $NF == want { print; exit }')"
 
   [ -n "$zip_url" ] || die "Release '${tag}' has no asset named localvoxtral-${tag}.zip. Check https://github.com/${REPO}/releases"
   printf '%s\n' "$zip_url"
@@ -144,7 +196,16 @@ main() {
 
   require_command curl
 
-  step "Resolving localvoxtral release zip"
+  case "$CHANNEL" in
+    stable|nightly) ;;
+    *) die "Unknown LOCALVOXTRAL_CHANNEL: ${CHANNEL} (expected stable or nightly)" ;;
+  esac
+
+  if [ "$CHANNEL" = "nightly" ] && [ "$VERSION" = "latest" ]; then
+    step "Resolving the newest localvoxtral NIGHTLY release zip"
+  else
+    step "Resolving localvoxtral release zip"
+  fi
   zip_url="$(resolve_zip_url)"
   printf 'Resolved zip: %s\n' "$zip_url"
 

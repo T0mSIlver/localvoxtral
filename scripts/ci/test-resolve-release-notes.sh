@@ -50,6 +50,26 @@ expect_ok v1.0.0-rc.2 "docs/release-notes/v1.0.0-rc.2.md" "prerelease tags follo
 
 expect_ok v9.9.9 "" "an unrelated tag does not pick up another tag's file"
 
+# --- nightly tags ------------------------------------------------------------
+# The nightly channel tags vX.Y.Z-nightly.YYYYMMDD[.N] every night from main.
+# Those releases normally carry no hand-written file, so the common case must
+# be the quiet one (generated notes), and the shape must be accepted rather
+# than rejected mid-release.
+
+expect_ok v0.8.5-nightly.20260916 "" \
+  "a nightly tag with no notes file publishes with generated notes only"
+expect_ok v0.8.5-nightly.20260916.3 "" \
+  "a same-day nightly sequence tag is accepted too"
+
+printf 'nightly notes\n' >"$TMP_DIR/docs/release-notes/v0.8.5-nightly.20260917.md"
+expect_ok v0.8.5-nightly.20260917 "docs/release-notes/v0.8.5-nightly.20260917.md" \
+  "a nightly MAY still ship a hand-written file"
+
+expect_fail "a nightly tag with a short date is refused" "v0.8.5-nightly.2026091" "$TMP_DIR"
+expect_fail "a nightly tag with no date is refused" "v0.8.5-nightly" "$TMP_DIR"
+expect_fail "a nightly-ish tag with a trailing path segment is refused" \
+  "v0.8.5-nightly.20260916/../../etc/passwd" "$TMP_DIR"
+
 # --- the one hard failure ---------------------------------------------------
 # A file that exists but says nothing would publish a release whose human
 # section is blank, which reads as a broken pipeline rather than a missing file.

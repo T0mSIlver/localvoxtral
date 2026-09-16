@@ -49,3 +49,25 @@ asking (see [Settings](dictation.md#settings)).
 > Accessibility grant after an update. If the dictation hotkey stops
 > working, toggle localvoxtral off and on in **System Settings → Privacy &
 > Security → Accessibility**.
+
+## Nightly channel
+
+Nightlies are built from `main` every night and published as prereleases.
+They carry whatever landed that day and go through the same gates as a
+stable release: unit tests, live speech-to-text integration, packaging, and a
+launch smoke test. They are for people who want fixes and features as they
+land and can live with a rough edge.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/T0mSIlver/localvoxtral/main/scripts/install.sh | LOCALVOXTRAL_CHANNEL=nightly bash
+```
+
+Run that line again to update to the newest nightly. To go back to stable,
+run the installer without `LOCALVOXTRAL_CHANNEL`; the stable build replaces
+the nightly in `/Applications` and your settings and models are kept.
+
+Nightlies are ad-hoc signed exactly like stable releases, so the Gatekeeper
+note above applies to them too. To install one specific build, pass its tag:
+`LOCALVOXTRAL_VERSION=v0.8.5-nightly.20260916`. The seven most recent
+nightlies are kept and older ones are deleted, so pin a tag only for a build
+you are testing right now.
