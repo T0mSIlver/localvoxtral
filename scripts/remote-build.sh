@@ -511,6 +511,9 @@ case "$CMD" in
         echo "  e.g. MISTRAL_API_KEY=... $0 eval-llm https://api.mistral.ai mistral/mistral-medium-3-5" >&2
         exit 1
       fi
+      # 0600 before a single byte of the key is written — the same standard as
+      # the integration-mistral marker (the redirect below keeps the mode).
+      (umask 077; : >"$EVAL_MARKER")
       # No useDefaultRequestShape: production Mistral mode sends no catalog
       # sampling defaults (temperature 0.3 + reasoning_effort=none only), and
       # the eval must score exactly the request shape the app sends.
