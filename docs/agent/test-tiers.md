@@ -41,9 +41,18 @@ on-demand `com.localvoxtral.testpolishd` launchd service on port 8080 (the
 bundled `localvoxtral-polishd`, running the production default model), which the
 lane warms first via the gate's `ensure` verb (owner runbook: `scripts/mac/README.md`);
 a custom endpoint is left untouched. Don't point it at the app-managed instance
-on 8472, which dies whenever the app quits. Enablement is env
-(`LLM_POLISH_EVAL_ENABLE=1`) or the marker file the script writes into the
-synced tree (the SSH gate can't pass env vars). Prompt changes MUST re-run
+on 8472, which dies whenever the app quits. The optional second argument is the
+model alias, and its prefix selects the request shape: `llamacpp/<model>` sends
+the llama.cpp-via-Bifrost extras, `mistral/<model>` sends Mistral's closed
+request schema (prefix stripped from the model name, `reasoning_effort: none`,
+none of the `top_k`/`min_p`/`chat_template_kwargs`/`thinking_budget_tokens`
+extras) and copies this box's `MISTRAL_API_KEY` into the marker — e.g.
+`MISTRAL_API_KEY=… ./scripts/remote-build.sh eval-llm https://api.mistral.ai mistral/mistral-medium-3-5`.
+Enablement is env (`LLM_POLISH_EVAL_ENABLE=1`, with
+`LLM_POLISH_EVAL_REQUEST_SHAPE=mistral` for the shape) or the marker file the
+script writes into the synced tree (the SSH gate can't pass env vars). A change
+to the request shape MUST re-run this lane against the provider it changes.
+Prompt changes MUST re-run
 this eval and paste the scoreboard in the PR's Proof section. The corpus +
 scorer live in `LLMPolishEvalSupport`, shared with
 `PolishHelperIntegrationTests` (`remote-build.sh integration-polishd`), which

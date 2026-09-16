@@ -33,6 +33,33 @@ struct LLMPolishingRequest: Sendable {
     }
 }
 
+/// Which wire dialect one polish request is serialized in. The app talks to
+/// self-hosted OpenAI-compatible servers (llama.cpp, mlx-lm, vLLM, the bundled
+/// polishd) AND to Mistral's hosted API, and the two do not accept the same
+/// body.
+enum LLMPolishingRequestShape: String, Sendable {
+    /// Every self-hosted OpenAI-compatible server. Emits the union of fields
+    /// those servers understand — including the llama.cpp / mlx-lm / Bifrost
+    /// extras (`top_k`, `min_p`, `chat_template_kwargs`,
+    /// `thinking_budget_tokens`, the `x-bf-passthrough-extra-params` header),
+    /// which a server that does not know them ignores.
+    case openAICompatible
+
+    /// Mistral's hosted `/v1/chat/completions`. Its `ChatCompletionRequest`
+    /// schema is closed: it rejects unknown body fields, so this shape emits
+    /// ONLY `model`, `messages`, `temperature`, `top_p`, `presence_penalty`,
+    /// `max_tokens` and `reasoning_effort` — never `top_k`, `min_p`,
+    /// `chat_template_kwargs` or `thinking_budget_tokens`, and never the
+    /// `x-bf-passthrough-extra-params` header, even when the configuration
+    /// carries them (a catalog model's sampling defaults do). Those four are
+    /// llama.cpp / mlx-lm / Bifrost extras with no Mistral equivalent.
+    ///
+    /// `reasoning_effort` is pinned to `"none"`: `mistral-medium-3-5` is
+    /// reasoning-capable, and polishing must never pay a reasoning trace's
+    /// latency or output tokens to insert one space before a question mark.
+    case mistral
+}
+
 struct LLMPolishingConfiguration: Sendable {
     let endpointURL: URL
     let apiKey: String
@@ -45,6 +72,8 @@ struct LLMPolishingConfiguration: Sendable {
     /// Bifrost drops provider-specific body fields unless this opt-in header
     /// is present. Other OpenAI-compatible servers harmlessly ignore it.
     let passthroughExtraParameters: Bool
+    /// The wire dialect this configuration's requests are serialized in.
+    let requestShape: LLMPolishingRequestShape
 
     init(
         endpointURL: URL,
@@ -53,7 +82,8 @@ struct LLMPolishingConfiguration: Sendable {
         samplingDefaults: PolishSamplingDefaults? = nil,
         chatTemplateArguments: [String: Bool]? = nil,
         thinkingBudgetTokens: Int? = nil,
-        passthroughExtraParameters: Bool = false
+        passthroughExtraParameters: Bool = false,
+        requestShape: LLMPolishingRequestShape = .openAICompatible
     ) {
         self.endpointURL = endpointURL
         self.apiKey = apiKey
@@ -62,7 +92,20 @@ struct LLMPolishingConfiguration: Sendable {
         self.chatTemplateArguments = chatTemplateArguments
         self.thinkingBudgetTokens = thinkingBudgetTokens
         self.passthroughExtraParameters = passthroughExtraParameters
+        self.requestShape = requestShape
     }
+}
+
+/// Endpoint and model for Mistral's hosted polishing API. Settings wires these
+/// in separately; they live here so the request shape and its defaults are
+/// stated in one place.
+enum MistralPolishDefaults {
+    /// Base URL — `normalizedChatCompletionsURL` turns it into
+    /// `https://api.mistral.ai/v1/chat/completions`.
+    static let endpoint = URL(string: "https://api.mistral.ai")!
+    /// `mistral-medium-3-5` (aliases `mistral-medium-latest`,
+    /// `mistral-medium-3`).
+    static let model = "mistral-medium-3-5"
 }
 
 struct LLMPolishingResult: Sendable {
@@ -136,10 +179,7 @@ struct LLMPolishingService: LLMPolishingServicing {
         }
 
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]],
-              let firstChoice = choices.first,
-              let message = firstChoice["message"] as? [String: Any],
-              let content = message["content"] as? String
+              let content = Self.assistantText(inResponseObject: json)
         else {
             throw LLMPolishingError.invalidResponse
         }
@@ -156,6 +196,37 @@ struct LLMPolishingService: LLMPolishingServicing {
             polishedText: polished,
             durationSeconds: duration
         )
+    }
+
+    /// Extracts the assistant's answer from a decoded chat/completions
+    /// response object, for every server we talk to.
+    ///
+    /// `choices[0].message.content` is a plain string on every
+    /// OpenAI-compatible server, and on Mistral whenever reasoning is off.
+    /// A reasoning-capable Mistral model instead returns a LIST of content
+    /// chunks: `{"type":"thinking", …}` for the trace and
+    /// `{"type":"text","text":…}` for the answer. We always ask for
+    /// `reasoning_effort: "none"`, but a model that reasons anyway must not
+    /// turn a perfectly good polish into `invalidResponse` — so the list shape
+    /// is accepted defensively, keeping only the `text` chunks and dropping
+    /// the trace (which is never what the user dictated).
+    ///
+    /// Returns nil when no assistant text can be found; the caller maps that
+    /// to `invalidResponse`, as it always has.
+    static func assistantText(inResponseObject json: [String: Any]) -> String? {
+        guard let choices = json["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any]
+        else { return nil }
+
+        if let content = message["content"] as? String {
+            return content
+        }
+        guard let chunks = message["content"] as? [[String: Any]] else { return nil }
+        let text = chunks
+            .filter { $0["type"] as? String == "text" }
+            .compactMap { $0["text"] as? String }
+            .joined()
+        return text.isEmpty ? nil : text
     }
 
     /// Maps a user-entered polishing endpoint to the effective OpenAI-compatible
@@ -232,7 +303,10 @@ struct LLMPolishingService: LLMPolishingServicing {
         if !configuration.apiKey.isEmpty {
             urlRequest.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
         }
-        if configuration.passthroughExtraParameters {
+        // Bifrost's opt-in header only means anything to Bifrost, and Mistral
+        // is not it: the Mistral shape emits no passthrough extras at all, so
+        // the header would only advertise fields that are not there.
+        if configuration.passthroughExtraParameters, configuration.requestShape != .mistral {
             urlRequest.setValue("true", forHTTPHeaderField: "x-bf-passthrough-extra-params")
         }
         urlRequest.timeoutInterval = Self.requestTimeoutInterval
@@ -261,18 +335,30 @@ struct LLMPolishingService: LLMPolishingServicing {
             if let topP = defaults.topP {
                 body["top_p"] = topP
             }
-            if let topK = defaults.topK {
-                body["top_k"] = topK
-            }
-            if let minP = defaults.minP {
-                body["min_p"] = minP
-            }
             if let presencePenalty = defaults.presencePenalty {
                 body["presence_penalty"] = presencePenalty
             }
         }
         if let maxTokens = request.maxTokens {
             body["max_tokens"] = maxTokens
+        }
+
+        if configuration.requestShape == .mistral {
+            // Mistral's request schema is closed. Everything below this point
+            // is an extension some self-hosted server invented; sending one
+            // costs the whole request (422), so the Mistral shape stops here
+            // with only the fields the schema names.
+            body["reasoning_effort"] = "none"
+            return try JSONSerialization.data(withJSONObject: body)
+        }
+
+        if let defaults = configuration.samplingDefaults {
+            if let topK = defaults.topK {
+                body["top_k"] = topK
+            }
+            if let minP = defaults.minP {
+                body["min_p"] = minP
+            }
         }
         if let chatTemplateArguments = configuration.chatTemplateArguments {
             body["chat_template_kwargs"] = chatTemplateArguments

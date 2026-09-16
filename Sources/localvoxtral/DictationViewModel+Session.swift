@@ -1252,7 +1252,8 @@ extension DictationViewModel {
                         workingText != originalText ? workingText : nil
                     var polishingDuration: Double? = nil
                     var sessionStatus: DictationSessionStatus = .completed
-                    var llmConnectionFailure: (message: String, technicalDetails: String?)?
+                    var llmConnectionFailure:
+                        (title: String, message: String, technicalDetails: String?)?
                     #if LOCALVOXTRAL_DOGFOOD
                     // The model's raw reply and the (placeholder-bearing)
                     // committed text, hoisted out of the do-block for the
@@ -1342,8 +1343,10 @@ extension DictationViewModel {
                         } catch {
                             guard !Task.isCancelled else { return }
                             sessionStatus = .llmFailed
-                            if case .networkError(let details) = error as? LLMPolishingError {
+                            switch error as? LLMPolishingError {
+                            case .some(.networkError(let details)):
                                 llmConnectionFailure = (
+                                    "LLM Polishing Connection Failed",
                                     "Unable to connect to the configured LLM polishing endpoint.",
                                     // Name the endpoint the request was ACTUALLY
                                     // sent to — in managed mode the external-URL
@@ -1356,6 +1359,31 @@ extension DictationViewModel {
                                         endpointURL: config.endpointURL
                                     )
                                 )
+                            case .some(.requestFailed(let statusCode, let body)):
+                                // A hosted provider answers a bad key, an
+                                // unaccepted body field or an exhausted quota
+                                // with an HTTP status and a JSON error body.
+                                // The connection was fine, so "unable to
+                                // connect" would send debugging the wrong way;
+                                // surface the status and the provider's own
+                                // one-line reason instead. The raw body stays
+                                // in the log line below — never in
+                                // `lastError`, which Settings renders as the
+                                // one-line failure summary.
+                                let summary = Self.llmPolishingRejectionMessage(
+                                    statusCode: statusCode,
+                                    body: body
+                                )
+                                llmConnectionFailure = (
+                                    "LLM Polishing Request Rejected",
+                                    summary,
+                                    self.llmPolishingConnectionTechnicalDetails(
+                                        summary,
+                                        endpointURL: config.endpointURL
+                                    )
+                                )
+                            case .some(.emptyInput), .some(.invalidResponse), .none:
+                                break
                             }
                             Log.polishing.error(
                                 "LLM polishing failed: \(error.localizedDescription, privacy: .public)"
@@ -1499,6 +1527,7 @@ extension DictationViewModel {
 
                     if let llmConnectionFailure {
                         self.handleLLMPolishingConnectionFailure(
+                            title: llmConnectionFailure.title,
                             message: llmConnectionFailure.message,
                             technicalDetails: llmConnectionFailure.technicalDetails
                         )
@@ -2240,7 +2269,11 @@ extension DictationViewModel {
         return RealtimeConnectionFailureClassifier.classify(socketErrorMessage: rawError)
     }
 
-    func handleLLMPolishingConnectionFailure(message: String, technicalDetails: String? = nil) {
+    func handleLLMPolishingConnectionFailure(
+        title: String = "LLM Polishing Connection Failed",
+        message: String,
+        technicalDetails: String? = nil
+    ) {
         let trimmedMessage = message.trimmed
         let resolvedMessage =
             trimmedMessage.isEmpty
@@ -2256,7 +2289,7 @@ extension DictationViewModel {
         )
         markRecentConnectionFailureIndicator()
         presentConnectionFailureAlert(
-            title: "LLM Polishing Connection Failed",
+            title: title,
             message: resolvedMessage
         )
     }
@@ -2413,6 +2446,81 @@ extension DictationViewModel {
         guard let value else { return nil }
         let trimmed = value.trimmed
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// ONE LINE for a polish request the endpoint answered with a non-2xx
+    /// status — the hosted-provider failure mode (a wrong API key, a body
+    /// field the provider does not accept, an exhausted quota). It names the
+    /// status, what that status generally means, and the provider's own
+    /// one-sentence reason when the body carries one. A live Mistral probe
+    /// (2026-09-15) answered an unsupported `top_k` with HTTP 400 and
+    /// `{"object":"error","message":"top_k sampling is not enabled for this
+    /// model", …}`: that `message` is the whole diagnosis, and the status
+    /// alone would say only "something in the body".
+    ///
+    /// The RAW body never appears here — this text reaches the alert and (via
+    /// the technical details) `lastError`, which Settings renders as the
+    /// one-line failure summary. The body goes to the log.
+    nonisolated static func llmPolishingRejectionMessage(statusCode: Int, body: String) -> String {
+        let reason: String
+        switch statusCode {
+        case 401, 403:
+            reason = "rejected the API key"
+        case 404:
+            reason = "has no such model or path"
+        case 422:
+            reason = "rejected the request body"
+        case 429:
+            reason = "is rate limiting or out of quota"
+        case 500...599:
+            reason = "failed to answer"
+        default:
+            reason = "rejected the request"
+        }
+        let head = "The LLM polishing endpoint \(reason) (HTTP \(statusCode))"
+        guard let detail = providerErrorMessage(inBody: body) else {
+            return head + "."
+        }
+        return "\(head): \(detail)"
+    }
+
+    /// The provider's own error sentence, pulled out of a JSON error body and
+    /// flattened to one bounded line. Mistral answers
+    /// `{"object":"error","message":"…"}`; OpenAI-shaped servers answer
+    /// `{"error":{"message":"…"}}`; the realtime surface can nest a `detail`.
+    /// Anything else (HTML, a stack trace, an empty body) yields nil and the
+    /// caller falls back to the status alone, rather than pasting bytes into
+    /// the UI.
+    nonisolated static func providerErrorMessage(inBody body: String) -> String? {
+        // One line in a popover-sized surface: a provider that answers with a
+        // paragraph gets truncated rather than widening the alert.
+        let characterLimit = 160
+
+        guard let data = body.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+
+        let nested = json["error"] as? [String: Any]
+        let candidate =
+            (json["message"] as? String)
+            ?? ((json["message"] as? [String: Any])?["detail"] as? String)
+            ?? (nested?["message"] as? String)
+            ?? ((nested?["message"] as? [String: Any])?["detail"] as? String)
+            ?? (nested?["detail"] as? String)
+            ?? (json["error"] as? String)
+            ?? (json["detail"] as? String)
+
+        guard let candidate else { return nil }
+        let flattened = candidate
+            .replacingOccurrences(of: "[\r\n\t]+", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: " +", with: " ", options: .regularExpression)
+            .trimmed
+        guard !flattened.isEmpty else { return nil }
+
+        if flattened.count > characterLimit {
+            return String(flattened.prefix(characterLimit)).trimmed + "…"
+        }
+        return flattened.hasSuffix(".") ? flattened : flattened + "."
     }
 
     /// Failure details for the alert/`lastError`, naming `endpointURL` — the
