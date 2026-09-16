@@ -254,8 +254,13 @@ Fixture and host requirements (`scripts/herdr-integration-fixture.sh`):
 
 When must it run? For `scripts/ci/herdr-lane-filter.sh` path matches or the
 literal `[run-herdr-integration]` marker, on the same event-payload terms as
-the LLM lanes. A manual `ci.yml` dispatch also runs it, which is the supported
-way to repeat this live external contract without manufacturing commits. The
+the LLM lanes. A manual `ci.yml` dispatch also runs it by default, which is the
+supported way to repeat this live external contract without manufacturing
+commits; `-f herdr=false` opts one dispatch out. That is what
+`scripts/try-pr.sh --dogfood` passes: that dispatch exists to produce an
+artifact, and the fixture refuses to start beside the herdr the owner runs
+all day, so forcing the lane on made the one-command dogfood install
+unusable on the owner's Mac. The
 rule behind the list: anything that changes what the app
 SAYS to herdr, what it BELIEVES herdr answered, how the forward reaching
 herdr is opened or leased, which host that forward reaches, or the recorded

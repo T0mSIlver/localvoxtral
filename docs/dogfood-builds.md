@@ -43,8 +43,12 @@ blame exactly one of those four stages
 This downloads the CI-built `localvoxtral-app-dogfood` artifact, verifies its
 stamp, arms the runtime opt-in, and launches. The artifact is **opt-in in
 CI**: put the literal marker `[dogfood-package]` in the PR body / head commit
-message, or dispatch CI with `dogfood=true` — which is exactly what try-pr
-offers to do when the target run doesn't have the artifact.
+message, or dispatch CI with `dogfood=true -f herdr=false` — which is exactly
+what try-pr offers to do when the target run doesn't have the artifact.
+(`herdr=false` keeps the live herdr lane, which a dispatch otherwise forces
+on, from failing the run: its fixture refuses to start beside a herdr the
+account is already running. Packaging and the artifact uploads run before the
+live lanes either way, so a red lane no longer costs you the artifact.)
 
 Local-build equivalent: `./scripts/remote-build.sh dogfood-package`.
 The capture unit suite runs via `./scripts/remote-build.sh dogfood`.

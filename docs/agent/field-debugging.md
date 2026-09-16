@@ -19,7 +19,10 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   only on purpose, so the install destination moves rather than the roots
   (`scripts/mac/install-ui-artifact.sh`, runbook `scripts/mac/README.md`).
   An agent driving the gate has no shell on that account: for it, the install
-  is `gh workflow run CI --ref <branch> -f dogfood=true`. The self-hosted
+  is `gh workflow run CI --ref <branch> -f dogfood=true -f herdr=false`
+  (`herdr=false` because a dispatch otherwise forces the live herdr lane on,
+  and its fixture refuses to start beside the herdr the owner runs all day).
+  The self-hosted
   runner is a launchd agent in the owner's GUI session, so its `$HOME` is the
   artifact root's home, and that dispatch (and ONLY a dispatch — the
   `[dogfood-package]` marker must never write into the owner's home) installs

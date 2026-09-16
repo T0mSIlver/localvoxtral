@@ -8,12 +8,19 @@ on:
   # the opt-in dogfood build (scripts/try-pr.sh --dogfood offers to trigger
   # one). The dispatched ref already had its own push/PR run, so the
   # conditional live-model lanes skip on dispatch (see the lane decide steps).
+  # The live herdr lane is the exception — a dispatch is how that external
+  # contract gets repeated — so it defaults ON and is opted out per dispatch
+  # with `herdr=false`.
   workflow_dispatch:
     inputs:
       dogfood:
         description: "Also package the dogfood-instrumented app (artifact: localvoxtral-app-dogfood)"
         type: boolean
         default: false
+      herdr:
+        description: "Run the live herdr lane on this dispatch"
+        type: boolean
+        default: true
       # REDUNDANT since build-test moved to hosted runners for every event
       # (this PR): the job it used to redirect is now always on macos-latest,
       # so this input has no effect on anything. Kept for one release so a
@@ -709,16 +716,32 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           BASE_REF: ${{ github.base_ref }}
+          DISPATCH_HERDR: ${{ inputs.herdr }}
         run: |
           set -euo pipefail
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             # A dispatch is the repetition mechanism for this live external
             # contract. Unlike the model lanes, it needs no downloaded model
             # and is expected to be run several times while investigating
-            # runner-only behavior.
-            echo "run=true" >> "$GITHUB_OUTPUT"
-            echo "Herdr integration lane: RUNNING (manual dispatch)" \
-              | tee -a "$GITHUB_STEP_SUMMARY"
+            # runner-only behavior — so it stays ON by default here.
+            #
+            # `herdr=false` opts a single dispatch out. The dispatch that
+            # exists to produce an ARTIFACT (scripts/try-pr.sh --dogfood)
+            # passes it, because this lane carries a precondition that
+            # dispatch never asked for: the fixture refuses to start beside a
+            # herdr the account is already running (scripts/herdr-integration-fixture.sh),
+            # and the owner runs one all day. Pushes and PRs are untouched by
+            # this input — they keep the path filter + [run-herdr-integration]
+            # marker, which is what holds the contract.
+            if [[ "$DISPATCH_HERDR" == "false" ]]; then
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              echo "Herdr integration lane: SKIPPED (manual dispatch with herdr=false)" \
+                | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              echo "run=true" >> "$GITHUB_OUTPUT"
+              echo "Herdr integration lane: RUNNING (manual dispatch)" \
+                | tee -a "$GITHUB_STEP_SUMMARY"
+            fi
             exit 0
           fi
           FILES="$RUNNER_TEMP/herdr-lane-changed-files.txt"
@@ -922,40 +945,6 @@ jobs:
         # (~12 s per run for zero information).
         run: swift test --filter RealtimeAPIVLLMIntegrationTests --enable-code-coverage
 
-      - name: Live herdr integration (real server + real ssh -L forward)
-        # Drives the remote-herdr join machinery against a live herdr server
-        # over a forward the app's own coordinator opens, and pins the
-        # EXTERNAL herdr assumptions the surface-authorization argument rests
-        # on (docs/agent/remote-herdr-panel-binding.md). Self-hosted only, and
-        # not because of cost: the fixture provisions a loopback sshd and
-        # takes over the account's herdr config, which a hosted fork-PR runner
-        # must never be asked to do. Local equivalent:
-        # ./scripts/remote-build.sh integration-herdr
-        if: steps.ci_scope.outputs.docs_only != 'true' && steps.herdr_lane.outputs.run == 'true'
-        env:
-          HERDR_INTEGRATION_TEST_ENABLE: "1"
-          HERDR_INTEGRATION_DIAGNOSTICS_DIR: ${{ runner.temp }}/herdr-lane-diagnostics
-        # --enable-code-coverage matches the unit step's build flags (same
-        # rationale as the STT integration step above).
-        # Load flake hint (measured 2026-09-07: one concurrent swift build
-        # fails ~1 run in 10 on a clear-visibility race, with socket p99
-        # unchanged): if this step is red, suspect overlapping worker builds
-        # on the Mac first and re-run the lane alone before debugging.
-        run: >-
-          swift test --filter HerdrIntegrationTests --enable-code-coverage || {
-          echo 'HERDR-LANE-HINT: red lane? check for overlapping worker builds
-          (remote-build.sh) on the Mac and re-run this lane alone first —
-          see docs/agent/test-tiers.md "Worker builds on the Mac must not
-          overlap the lane".'; exit 1; }
-
-      - name: Upload herdr lane diagnostics
-        if: always() && steps.ci_scope.outputs.docs_only != 'true' && steps.herdr_lane.outputs.run == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: herdr-lane-diagnostics
-          path: ${{ runner.temp }}/herdr-lane-diagnostics
-          if-no-files-found: warn
-
       - name: Polishing helper unit tests (PolishHelper package)
         # Metal-free (HTTP layer, router, cache locator, watchdog); the Metal
         # path is the packaging step below. Kept on the Mac rather than moved
@@ -1039,36 +1028,6 @@ jobs:
           # cert and are expected to be ad-hoc, so the requirement is off there.
           LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY: "1"
         run: ./scripts/package_app.sh release
-
-      - name: Speech helper integration (real audio + live model)
-        # Runs packaged speechd through RealtimeAPIWebSocketClient with the
-        # tier-1 spoken fixture. Conditional because it loads the multi-GB
-        # Voxtral model. Local equivalent: remote-build.sh integration-speechd.
-        if: steps.ci_scope.outputs.docs_only != 'true' && steps.speechd_lane.outputs.run == 'true'
-        env:
-          SPEECHD_INTEGRATION_TEST_ENABLE: "1"
-          SPEECHD_INTEGRATION_TEST_PATH: dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd
-        # --enable-code-coverage matches the unit step's build flags (same
-        # rationale as the STT integration step above): without it this step rebuilds
-        # the whole app+test module without coverage (~17 s), and the next
-        # run's unit step rebuilds it back again.
-        run: swift test --filter SpeechHelperIntegrationTests --enable-code-coverage
-
-      - name: Polishing helper integration (live model + eval baseline)
-        # Spawns the helper built by the packaging step with the real pinned
-        # model, drives the production polish request path, and asserts the
-        # shared eval baseline + parent-pid tether. Conditional — this is the
-        # step that loads 4B weights and runs live inference; the decide step
-        # above (path filter + [run-llm-eval] marker) says whether this
-        # change can affect what the lane measures. Local equivalent:
-        # ./scripts/remote-build.sh integration-polishd
-        if: steps.ci_scope.outputs.docs_only != 'true' && steps.llm_lane.outputs.run == 'true'
-        env:
-          LOCALVOXTRAL_POLISHD_TEST_ENABLE: "1"
-          LOCALVOXTRAL_POLISHD_TEST_PATH: PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd
-        # --enable-code-coverage: same flag-matching rationale as the speechd
-        # step above.
-        run: swift test --filter PolishHelperIntegrationTests --enable-code-coverage
 
       - name: Zip app for artifact upload
         # upload-artifact mangles symlinks/exec bits in .app bundles; ditto-zip
@@ -1166,6 +1125,9 @@ jobs:
         #   zipped and uploaded before this pass overwrites dist/. The helper
         #   xcodebuild lanes are incremental no-ops; only the root app
         #   recompiles under the define.
+        # - Runs BEFORE the conditional live lanes, so no live precondition
+        #   can cost a dispatch the artifact it was dispatched for. See the
+        #   phase comment below.
         # - Same bundle id and signing identity as the clean build, so the
         #   designated requirement — and the owner's Accessibility (TCC)
         #   grant — is identical when switching between the two.
@@ -1261,6 +1223,86 @@ jobs:
             echo "ssh lv-ui 'launch --dogfood $GATE_ARG'"
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"
+
+      # ---- CONDITIONAL LIVE LANES --------------------------------------
+      # Artifact production is finished above; below this line are the lanes
+      # that hold a contract against something live and are opted into per
+      # run (weights on disk, a real herdr server + loopback sshd). They come
+      # last because a lane's precondition must never cost the run the
+      # artifacts it was dispatched to produce: the herdr lane used to sit
+      # before packaging, and its fixture refuses to start beside the herdr
+      # the owner runs all day, so `-f dogfood=true` could not reach the
+      # packaging steps on the owner's Mac at all (run 35084386041).
+      # New conditional live lanes go here, below the artifact steps.
+      #
+      # dist/localvoxtral.app is the INSTRUMENTED bundle here when the dogfood
+      # lane ran. That is fine for the speechd lane below: package_app.sh
+      # copies the same SpeechHelper xcodebuild Release product in both passes
+      # (the LOCALVOXTRAL_DOGFOOD define only reaches the root app binary and
+      # the Info.plist stamp — grep DOGFOOD in scripts/package_app.sh).
+      - name: Speech helper integration (real audio + live model)
+        # Runs packaged speechd through RealtimeAPIWebSocketClient with the
+        # tier-1 spoken fixture. Conditional because it loads the multi-GB
+        # Voxtral model. Local equivalent: remote-build.sh integration-speechd.
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.speechd_lane.outputs.run == 'true'
+        env:
+          SPEECHD_INTEGRATION_TEST_ENABLE: "1"
+          SPEECHD_INTEGRATION_TEST_PATH: dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd
+        # --enable-code-coverage matches the unit step's build flags (same
+        # rationale as the STT integration step above): without it this step rebuilds
+        # the whole app+test module without coverage (~17 s), and the next
+        # run's unit step rebuilds it back again.
+        run: swift test --filter SpeechHelperIntegrationTests --enable-code-coverage
+
+      - name: Polishing helper integration (live model + eval baseline)
+        # Spawns the helper built by the packaging step with the real pinned
+        # model, drives the production polish request path, and asserts the
+        # shared eval baseline + parent-pid tether. Conditional — this is the
+        # step that loads 4B weights and runs live inference; the decide step
+        # above (path filter + [run-llm-eval] marker) says whether this
+        # change can affect what the lane measures. Local equivalent:
+        # ./scripts/remote-build.sh integration-polishd
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.llm_lane.outputs.run == 'true'
+        env:
+          LOCALVOXTRAL_POLISHD_TEST_ENABLE: "1"
+          LOCALVOXTRAL_POLISHD_TEST_PATH: PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd
+        # --enable-code-coverage: same flag-matching rationale as the speechd
+        # step above.
+        run: swift test --filter PolishHelperIntegrationTests --enable-code-coverage
+
+      - name: Live herdr integration (real server + real ssh -L forward)
+        # Drives the remote-herdr join machinery against a live herdr server
+        # over a forward the app's own coordinator opens, and pins the
+        # EXTERNAL herdr assumptions the surface-authorization argument rests
+        # on (docs/agent/remote-herdr-panel-binding.md). Self-hosted only, and
+        # not because of cost: the fixture provisions a loopback sshd and
+        # takes over the account's herdr config, which a hosted fork-PR runner
+        # must never be asked to do. Local equivalent:
+        # ./scripts/remote-build.sh integration-herdr
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.herdr_lane.outputs.run == 'true'
+        env:
+          HERDR_INTEGRATION_TEST_ENABLE: "1"
+          HERDR_INTEGRATION_DIAGNOSTICS_DIR: ${{ runner.temp }}/herdr-lane-diagnostics
+        # --enable-code-coverage matches the unit step's build flags (same
+        # rationale as the STT integration step above).
+        # Load flake hint (measured 2026-09-07: one concurrent swift build
+        # fails ~1 run in 10 on a clear-visibility race, with socket p99
+        # unchanged): if this step is red, suspect overlapping worker builds
+        # on the Mac first and re-run the lane alone before debugging.
+        run: >-
+          swift test --filter HerdrIntegrationTests --enable-code-coverage || {
+          echo 'HERDR-LANE-HINT: red lane? check for overlapping worker builds
+          (remote-build.sh) on the Mac and re-run this lane alone first —
+          see docs/agent/test-tiers.md "Worker builds on the Mac must not
+          overlap the lane".'; exit 1; }
+
+      - name: Upload herdr lane diagnostics
+        if: always() && steps.ci_scope.outputs.docs_only != 'true' && steps.herdr_lane.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: herdr-lane-diagnostics
+          path: ${{ runner.temp }}/herdr-lane-diagnostics
+          if-no-files-found: warn
 
       - name: Process leak check (informational)
         # ~15% of runs spend ~105 s in the runner's post-job "Cleaning up

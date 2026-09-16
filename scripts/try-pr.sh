@@ -26,6 +26,14 @@ set -euo pipefail
 # the target's run doesn't carry one, this script offers to trigger a build
 # and shows the latest run that does have one.
 #
+# That dispatch passes herdr=false. The dispatch exists to produce an
+# artifact, and the live herdr lane — which a dispatch otherwise forces on —
+# cannot start beside a herdr the account is already running, which on this
+# Mac it usually is; the run would go red and this script's `gh run watch
+# --exit-status` would give up before downloading anything. The herdr
+# contract is held where it belongs: the path filter + [run-herdr-integration]
+# marker on PRs, and every push to main.
+#
 # Requires: gh (authenticated). Artifacts exist for CI runs made after the
 # artifact-upload step landed; use "gh run rerun <run-id>" on older PRs.
 
@@ -127,7 +135,7 @@ if (( DOGFOOD )) && ! run_has_artifact "$RUN_ID"; then
     echo >&2
     echo "stdin is not a TTY — rerun interactively, or trigger a build yourself:" >&2
     if [[ -n "$BRANCH" ]]; then
-      echo "  gh workflow run CI --ref $BRANCH -f dogfood=true" >&2
+      echo "  gh workflow run CI --ref $BRANCH -f dogfood=true -f herdr=false" >&2
     else
       echo "  (cross-repo fork PR: fork PRs run on GitHub-hosted runners and never build" >&2
       echo "   dogfood artifacts — push the branch to this repo instead)" >&2
@@ -152,7 +160,8 @@ if (( DOGFOOD )) && ! run_has_artifact "$RUN_ID"; then
       # comparing against the newest dispatch run that existed beforehand.
       PREV_DISPATCH="$(gh run list --workflow CI --event workflow_dispatch --branch "$BRANCH" \
         --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
-      gh workflow run CI --ref "$BRANCH" -f dogfood=true
+      # herdr=false: see the --dogfood note in the header.
+      gh workflow run CI --ref "$BRANCH" -f dogfood=true -f herdr=false
       echo "Dispatched. Waiting for the run to register..."
       NEW_RUN=""
       for _ in $(seq 1 24); do
