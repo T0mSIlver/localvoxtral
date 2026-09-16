@@ -72,7 +72,7 @@ Open **Settings** from the menu bar popover:
   SSH hosts; **opencode** and **herdr** hold their own rows
 - **Terminals** — one pane per terminal app (plus any you add), showing
   whether it is installed and what it supports: dictation everywhere, session
-  join and screen context only on Ghostty (1.4+), iTerm2, Terminal.app, and
+  join and screen context only on Ghostty (1.4+ or a tip build), iTerm2, Terminal.app, and
   cmux. iTerm2 and Terminal.app ask for the Automation (AppleScript)
   permission on the first session join. **Add app…** picks any application
   to treat as a terminal for dictation; added apps are removed from their

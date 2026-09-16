@@ -5,8 +5,9 @@ import XCTest
 /// The Terminals section's derivations (owner decision, 2026-09-07): the
 /// status-dot matrix per terminal, the capability verdicts the pane renders,
 /// the user-added list's guards, and the one-shot `terminal_apps.toml`
-/// migration. All LaunchServices and Info.plist reads are injected — the real
-/// ones are never exercised from tests.
+/// migration. All LaunchServices lookups are injected — the real one is never
+/// exercised from tests; the Info.plist and scripting-dictionary readers run
+/// for real only against fixture bundles in a temporary directory.
 @MainActor
 final class TerminalAppsModelTests: XCTestCase {
     private var defaults: UserDefaults!
@@ -52,6 +53,7 @@ final class TerminalAppsModelTests: XCTestCase {
             bundleShortVersion: { url in
                 installedVersions[url.deletingPathExtension().lastPathComponent]
             },
+            bundleDeclaresGhosttyFocusedTTY: { _ in false },
             isCmuxSocketSetUp: isCmuxSocketSetUp
         )
         model.refreshInstalledState()
@@ -355,6 +357,151 @@ final class TerminalAppsModelTests: XCTestCase {
         let ghostty = XCTUnwrapApp("ghostty")
         XCTAssertTrue(model.row(for: ghostty).installed)
         XCTAssertEqual(model.dot(for: ghostty), .green)
+    }
+
+    // MARK: - Ghostty tip builds
+
+    /// Field bug (2026-09-16): Ghostty tip builds stamp the short commit hash
+    /// into `CFBundleShortVersionString` (`8867c37c5`; `ghostty +version`
+    /// says `1.3.2-main-+8867c37c5`, channel tip), so the dotted floor read it
+    /// as 0.0 and Settings said "Ghostty 1.4 or newer needed." on a build
+    /// whose scripting dictionary declares exactly what the join sends. Runs
+    /// the model's DEFAULT Info.plist and dictionary readers against a
+    /// fixture bundle laid out like the tip `.app`.
+    func testGhosttyTipBuildWithTTYInItsScriptingDictionaryIsGreen() throws {
+        let bundleURL = try makeGhosttyFixtureBundle(
+            shortVersion: "8867c37c5", sdef: Self.ghosttyTipSdef)
+        let model = TerminalAppsSettingsModel(
+            settings: makeStore(),
+            applicationURLForBundleID: { bundleID in
+                bundleID == TerminalScreenAllowlist.ghosttyBundleID ? bundleURL : nil
+            }
+        )
+        model.refreshInstalledState()
+        let ghostty = XCTUnwrapApp("ghostty")
+        XCTAssertEqual(model.dot(for: ghostty), .green)
+        let verdicts = model.capabilityVerdicts(for: ghostty)
+        XCTAssertTrue(verdicts.join)
+        XCTAssertTrue(verdicts.screen)
+        XCTAssertNil(verdicts.joinReason)
+    }
+
+    /// A tip older than the `tty` property (ghostty-org/ghostty#11922) also
+    /// carries a hash version but no `tty` — the join would fail there, so
+    /// the row must stay yellow.
+    func testGhosttyTipBuildWithoutTTYInItsScriptingDictionaryStaysYellow() throws {
+        let bundleURL = try makeGhosttyFixtureBundle(
+            shortVersion: "0123abcde",
+            sdef: Self.ghosttyTipSdef.replacingOccurrences(
+                of: Self.ghosttyTTYPropertyLine, with: ""))
+        let model = TerminalAppsSettingsModel(
+            settings: makeStore(),
+            applicationURLForBundleID: { bundleID in
+                bundleID == TerminalScreenAllowlist.ghosttyBundleID ? bundleURL : nil
+            }
+        )
+        model.refreshInstalledState()
+        let ghostty = XCTUnwrapApp("ghostty")
+        XCTAssertEqual(model.dot(for: ghostty), .yellow)
+        XCTAssertEqual(
+            model.capabilityVerdicts(for: ghostty).joinReason, "Ghostty 1.4 or newer needed.")
+    }
+
+    func testGhosttyScriptingDictionaryProbeCases() {
+        func probe(_ sdef: String) -> Bool {
+            TerminalAppCatalog.ghosttyDictionaryDeclaresFocusedTTY(Data(sdef.utf8))
+        }
+        XCTAssertTrue(probe(Self.ghosttyTipSdef))
+        XCTAssertFalse(
+            probe(Self.ghosttyTipSdef.replacingOccurrences(of: Self.ghosttyTTYPropertyLine, with: "")),
+            "no tty on terminal: the join's property chain is missing")
+        XCTAssertFalse(
+            probe(Self.ghosttyTipSdef.replacingOccurrences(of: Self.ghosttyFocusedTerminalLine, with: "")),
+            "no focused terminal on tab: the join's property chain is missing")
+        XCTAssertFalse(
+            probe(Self.ghosttyTipSdef.replacingOccurrences(of: "name=\"terminal\"", with: "name=\"surface\"")),
+            "a tty property on some other class does not count")
+        XCTAssertFalse(probe(""))
+        XCTAssertFalse(probe("<dictionary><suite"), "malformed XML abstains")
+    }
+
+    /// The dictionary probe reads a file per bundle: Ghostty's row is the only
+    /// one that consults it, so no other installed terminal is probed.
+    func testDictionaryProbeRunsForGhosttyOnly() {
+        let probed = SendableStrings()
+        let installed = Set(TerminalAppCatalog.builtIn.flatMap(\.detectionBundleIDs))
+        let model = TerminalAppsSettingsModel(
+            settings: makeStore(),
+            applicationURLForBundleID: { bundleID in
+                installed.contains(bundleID)
+                    ? URL(fileURLWithPath: "/Applications/\(bundleID).app") : nil
+            },
+            bundleShortVersion: { _ in nil },
+            bundleDeclaresGhosttyFocusedTTY: { url in
+                probed.append(url.deletingPathExtension().lastPathComponent)
+                return true
+            }
+        )
+        model.refreshInstalledState()
+        XCTAssertEqual(probed.values, [TerminalScreenAllowlist.ghosttyBundleID])
+        XCTAssertEqual(model.dot(for: XCTUnwrapApp("ghostty")), .green)
+        XCTAssertEqual(
+            model.dot(for: XCTUnwrapApp("warp")), .yellow,
+            "a declared tty never lifts a dictation-only terminal")
+    }
+
+    /// The property lines the join's chain (`tty of focused terminal of
+    /// selected tab of front window`) needs, verbatim from the tip build's
+    /// `Ghostty.app/Contents/Resources/Ghostty.sdef` (8867c37c5).
+    private static let ghosttyFocusedTerminalLine =
+        #"<property name="focused terminal" code="GTfT" type="terminal" access="r" description="The currently focused terminal surface in this tab."><cocoa key="focusedTerminal"/></property>"#
+    private static let ghosttyTTYPropertyLine =
+        #"<property name="tty" code="Gtty" type="text" access="r" description="TTY device path for this terminal (e.g. /dev/ttys016)."/>"#
+
+    /// Trimmed from the tip build's dictionary; the DOCTYPE is kept because
+    /// the real file names an external DTD the parser must not need.
+    private static let ghosttyTipSdef = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
+        <dictionary title="Ghostty Scripting Dictionary">
+          <suite name="Ghostty Suite" code="Ghst" description="Ghostty scripting support.">
+            <class name="tab" code="Gtab" plural="tabs" description="A tab within a Ghostty window.">
+              <cocoa class="GhosttyScriptTab"/>
+              <property name="selected" code="GTsl" type="boolean" access="r" description="Whether this tab is selected in its window."/>
+              \(ghosttyFocusedTerminalLine)
+            </class>
+            <class name="terminal" code="Gtrm" plural="terminals" description="An individual terminal surface.">
+              <cocoa class="GhosttyScriptTerminal"/>
+              <property name="pid" code="Gpid" type="integer" access="r" description="PID of the foreground process in this terminal."/>
+              \(ghosttyTTYPropertyLine)
+            </class>
+          </suite>
+        </dictionary>
+        """
+
+    /// A minimal `.app` laid out like Ghostty's: Info.plist naming the
+    /// dictionary via `OSAScriptingDefinition`, the sdef in Resources.
+    private func makeGhosttyFixtureBundle(shortVersion: String, sdef: String) throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TerminalAppsModelTests-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let contents = root.appendingPathComponent("Ghostty.app/Contents")
+        let resources = contents.appendingPathComponent("Resources")
+        try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+        let info: [String: Any] = [
+            "CFBundleIdentifier": TerminalScreenAllowlist.ghosttyBundleID,
+            "CFBundleName": "Ghostty",
+            "CFBundlePackageType": "APPL",
+            "CFBundleShortVersionString": shortVersion,
+            "CFBundleVersion": "17505",
+            "NSAppleScriptEnabled": true,
+            "OSAScriptingDefinition": "Ghostty.sdef",
+        ]
+        let plist = try PropertyListSerialization.data(
+            fromPropertyList: info, format: .xml, options: 0)
+        try plist.write(to: contents.appendingPathComponent("Info.plist"))
+        try Data(sdef.utf8).write(to: resources.appendingPathComponent("Ghostty.sdef"))
+        return root.appendingPathComponent("Ghostty.app")
     }
 
     func testTerminalAppsListBuiltInsThenUserAppsInStoredOrder() {
@@ -694,5 +841,22 @@ private final class SendableCounter: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return value
+    }
+}
+
+private final class SendableStrings: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String] = []
+
+    func append(_ value: String) {
+        lock.lock()
+        storage.append(value)
+        lock.unlock()
+    }
+
+    var values: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
     }
 }
