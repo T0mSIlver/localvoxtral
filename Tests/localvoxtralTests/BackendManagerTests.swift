@@ -684,6 +684,223 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(manager.polishdStatus, .stopped)
     }
 
+    // MARK: - Model download pause / resume / cancel
+
+    /// Pause keeps the download's last reading (the row keeps its bar) and, like
+    /// every other ensure teardown, does not return until the cancelled ensure
+    /// has finished unwinding — two live downloaders would corrupt the same HF
+    /// blob (PR #99).
+    func testPauseKeepsLastProgressAndAwaitsTheCancelledEnsure() async throws {
+        let inFlight = ModelDownloadProgress(downloadedBytes: 40, totalBytes: 100)
+        let modelPreparer = FakeModelPreparer(
+            scriptedProgress: [BackendCatalog.speechd.id: [inFlight]],
+            suspendBackendIDs: [BackendCatalog.speechd.id]
+        )
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
+        let manager = makeManager(
+            modelPreparer: modelPreparer,
+            supervisorFactory: supervisorFactory
+        )
+        var speechdStatuses: [ManagedBackendStatus] = []
+        manager.debugStatusChangeSink = { spec, status in
+            guard spec.id == BackendCatalog.speechd.id else { return }
+            speechdStatuses.append(status)
+        }
+
+        let ensure = Task { @MainActor in
+            try await manager.ensureReady(dictation: true, polishing: false)
+        }
+        await modelPreparer.waitUntilPrepareStarted()
+        await waitUntilStatus(of: BackendCatalog.speechd, on: manager) {
+            $0 == .preparingModel(progress: inFlight)
+        }
+
+        await manager.pauseModelDownload(for: BackendCatalog.speechd)
+
+        // The preparer saw the cancellation, and the pause waited for it.
+        XCTAssertEqual(modelPreparer.terminatedBackendIDs, [BackendCatalog.speechd.id])
+        XCTAssertEqual(manager.speechdStatus, .pausedModelDownload(progress: inFlight))
+        // Paused, not stopped: nothing was launched and nothing flickered
+        // through `.stopped` on the way (the Settings row mirrors this stream).
+        XCTAssertTrue(supervisorFactory.createdConfigurations.isEmpty)
+        XCTAssertFalse(speechdStatuses.contains(.stopped))
+        XCTAssertEqual(speechdStatuses.last, .pausedModelDownload(progress: inFlight))
+        // Pause keeps the bytes: nothing is discarded.
+        XCTAssertTrue(modelPreparer.discardedRepoIDs.isEmpty)
+
+        do {
+            try await ensure.value
+            XCTFail("expected the paused ensure to cancel")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+    }
+
+    /// Resume is an ordinary ensure: it runs a fresh prepare for the same
+    /// backend and carries it through to ready.
+    func testResumeAfterPauseRunsANewEnsureThroughToReady() async throws {
+        let inFlight = ModelDownloadProgress(downloadedBytes: 40, totalBytes: 100)
+        let modelPreparer = FakeModelPreparer(
+            scriptedProgress: [BackendCatalog.polishd.id: [inFlight]],
+            suspendBackendIDs: [BackendCatalog.polishd.id]
+        )
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
+        let manager = makeManager(
+            modelPreparer: modelPreparer,
+            supervisorFactory: supervisorFactory
+        )
+
+        let ensure = Task { @MainActor in
+            try await manager.ensureReady(dictation: false, polishing: true)
+        }
+        await modelPreparer.waitUntilPrepareStarted()
+        await waitUntilStatus(of: BackendCatalog.polishd, on: manager) {
+            $0 == .preparingModel(progress: inFlight)
+        }
+        await manager.pauseModelDownload(for: BackendCatalog.polishd)
+        _ = try? await ensure.value
+        XCTAssertEqual(manager.polishdStatus, .pausedModelDownload(progress: inFlight))
+
+        // What the Resume button reaches, through the view model's warmup path.
+        try await manager.ensureReady(dictation: false, polishing: true)
+
+        XCTAssertEqual(manager.polishdStatus, .ready)
+        XCTAssertEqual(modelPreparer.prepareCalls.count, 2)
+        XCTAssertEqual(
+            supervisorFactory.supervisors[BackendCatalog.polishd.displayName]?.startCallCount,
+            1
+        )
+    }
+
+    /// A dictation that needs the paused engine resumes it on its own: the
+    /// paused status holds no lock on the ensure slot.
+    func testDictationEnsureResumesAPausedPolishingDownload() async throws {
+        let inFlight = ModelDownloadProgress(downloadedBytes: 1, totalBytes: 4)
+        let modelPreparer = FakeModelPreparer(
+            scriptedProgress: [BackendCatalog.polishd.id: [inFlight]],
+            suspendBackendIDs: [BackendCatalog.polishd.id]
+        )
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
+        supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
+        let manager = makeManager(
+            modelPreparer: modelPreparer,
+            supervisorFactory: supervisorFactory
+        )
+
+        let ensure = Task { @MainActor in
+            try await manager.ensureReady(dictation: false, polishing: true)
+        }
+        await modelPreparer.waitUntilPrepareStarted()
+        await waitUntilStatus(of: BackendCatalog.polishd, on: manager) {
+            $0 == .preparingModel(progress: inFlight)
+        }
+        await manager.pauseModelDownload(for: BackendCatalog.polishd)
+        _ = try? await ensure.value
+
+        // The dictation-time backstop, exactly as a session start calls it.
+        try await manager.ensureReady(dictation: true, polishing: true)
+
+        XCTAssertEqual(manager.speechdStatus, .ready)
+        XCTAssertEqual(manager.polishdStatus, .ready)
+    }
+
+    /// Cancel drops the in-flight file's bytes and leaves the backend stopped.
+    func testCancelStopsTheBackendAndDiscardsThePartialDownload() async throws {
+        let modelPreparer = FakeModelPreparer(
+            suspendBackendIDs: [BackendCatalog.polishd.id]
+        )
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
+        let manager = makeManager(
+            modelPreparer: modelPreparer,
+            supervisorFactory: supervisorFactory
+        )
+
+        let ensure = Task { @MainActor in
+            try await manager.ensureReady(dictation: false, polishing: true)
+        }
+        await modelPreparer.waitUntilPrepareStarted()
+
+        await manager.cancelModelDownload(for: BackendCatalog.polishd)
+
+        XCTAssertEqual(modelPreparer.terminatedBackendIDs, [BackendCatalog.polishd.id])
+        XCTAssertEqual(manager.polishdStatus, .stopped)
+        XCTAssertTrue(supervisorFactory.createdConfigurations.isEmpty)
+        XCTAssertEqual(
+            modelPreparer.discardedRepoIDs,
+            [SettingsStore.defaultLLMPolishingModel]
+        )
+        _ = try? await ensure.value
+    }
+
+    /// Cancel from the paused state has no ensure left to tear down, but must
+    /// still drop the retained bytes and land on `.stopped`.
+    func testCancelFromPausedDiscardsRetainedBytesAndReportsStopped() async throws {
+        let inFlight = ModelDownloadProgress(downloadedBytes: 40, totalBytes: 100)
+        let modelPreparer = FakeModelPreparer(
+            scriptedProgress: [BackendCatalog.polishd.id: [inFlight]],
+            suspendBackendIDs: [BackendCatalog.polishd.id]
+        )
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
+        let manager = makeManager(
+            modelPreparer: modelPreparer,
+            supervisorFactory: supervisorFactory
+        )
+
+        let ensure = Task { @MainActor in
+            try await manager.ensureReady(dictation: false, polishing: true)
+        }
+        await modelPreparer.waitUntilPrepareStarted()
+        await waitUntilStatus(of: BackendCatalog.polishd, on: manager) {
+            $0 == .preparingModel(progress: inFlight)
+        }
+        await manager.pauseModelDownload(for: BackendCatalog.polishd)
+        _ = try? await ensure.value
+
+        await manager.cancelModelDownload(for: BackendCatalog.polishd)
+
+        XCTAssertEqual(manager.polishdStatus, .stopped)
+        XCTAssertEqual(
+            modelPreparer.discardedRepoIDs,
+            [SettingsStore.defaultLLMPolishingModel]
+        )
+    }
+
+    /// Pause on an engine that is not downloading must not tear down a running
+    /// backend — the buttons are hidden then, but the API is reachable.
+    func testPauseIsANoOpWhenNoDownloadIsInFlight() async throws {
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
+        let manager = makeManager(supervisorFactory: supervisorFactory)
+        try await manager.ensureReady(dictation: false, polishing: true)
+
+        await manager.pauseModelDownload(for: BackendCatalog.polishd)
+
+        XCTAssertEqual(manager.polishdStatus, .ready)
+        XCTAssertEqual(
+            supervisorFactory.supervisors[BackendCatalog.polishd.displayName]?.stopCallCount,
+            0
+        )
+    }
+
+    /// Spins the main actor until the backend reaches the wanted status. The
+    /// preparer's scripted progress is delivered through a `@MainActor` hop, so
+    /// the condition is reached by yielding — no wall clock involved.
+    private func waitUntilStatus(
+        of spec: ManagedBackendSpec,
+        on manager: BackendManager,
+        matching predicate: (ManagedBackendStatus) -> Bool
+    ) async {
+        while !predicate(manager.status(for: spec)) {
+            await Task.yield()
+        }
+    }
+
     func testModelPreparationFailureMarksBackendFailedWithDetails() async {
         let marker = "HF_TRACE"
         let modelPreparer = FakeModelPreparer(
@@ -864,6 +1081,7 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
     private struct State {
         var prepareCalls: [ModelPreparationRequest] = []
         var terminatedBackendIDs: [String] = []
+        var discardedRepoIDs: [String] = []
         var alreadySuspendedBackendIDs: Set<String> = []
         var prepareStartedContinuation: CheckedContinuation<Void, Never>?
         var prepareResumeContinuation: CheckedContinuation<Void, Error>?
@@ -876,6 +1094,7 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
 
     var prepareCalls: [ModelPreparationRequest] { state.withLock { $0.prepareCalls } }
     var terminatedBackendIDs: [String] { state.withLock { $0.terminatedBackendIDs } }
+    var discardedRepoIDs: [String] { state.withLock { $0.discardedRepoIDs } }
 
     init(
         scriptedProgress: [String: [ModelDownloadProgress]] = [:],
@@ -940,6 +1159,10 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
         if let failure = failures[request.backendID] {
             throw failure
         }
+    }
+
+    func discardPartialDownloads(for request: ModelPreparationRequest) {
+        state.withLock { $0.discardedRepoIDs.append(request.repoID) }
     }
 
     func waitUntilPrepareStarted() async {

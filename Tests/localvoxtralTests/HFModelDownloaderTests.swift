@@ -293,6 +293,154 @@ final class HFModelDownloaderTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: cache.appendingPathComponent("outside.json").path))
     }
 
+    // MARK: - Pause (keep the bytes) vs cancel (drop them)
+
+    /// Pause cancels the transfer mid-file and the bytes it salvaged must come
+    /// back to the transport on the NEXT prepare of that same URL — otherwise
+    /// "pause" would silently mean "start the multi-GB file again".
+    func testPauseRetainsResumeDataAndTheNextPrepareHandsItBackForTheSameFile() async throws {
+        let cache = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let pin = "0123456789abcdef0123456789abcdef01234567"
+        let transport = makePausableTransport(pin: pin)
+        let downloader = HFModelDownloader(
+            cacheRoot: cache,
+            transport: transport,
+            progressByteGranularity: 1
+        )
+        let request = pausableRequest(pin: pin)
+
+        try await pause(downloader, request: request, transport: transport)
+
+        let fileURL = HFModelDownloader.fileURL(
+            repoID: "org/model",
+            revision: pin,
+            fileName: "model.safetensors"
+        )
+        XCTAssertEqual(
+            transport.retainedResumeData(for: fileURL),
+            FakeHFModelDownloadTransport.resumeBytes(for: "model.safetensors")
+        )
+        let snapshot = cache
+            .appendingPathComponent("models--org--model/snapshots/\(pin)", isDirectory: true)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: snapshot.appendingPathComponent("model.safetensors").path
+            ),
+            "an unfinished file must not land in the snapshot directory"
+        )
+
+        // Resume.
+        try await downloader.prepare(request) { _ in }
+
+        XCTAssertEqual(
+            transport.attempts,
+            [
+                FakeHFModelDownloadTransport.DownloadAttempt(
+                    fileName: "model.safetensors",
+                    resumeData: nil
+                ),
+                FakeHFModelDownloadTransport.DownloadAttempt(
+                    fileName: "model.safetensors",
+                    resumeData: FakeHFModelDownloadTransport.resumeBytes(for: "model.safetensors")
+                ),
+            ]
+        )
+        XCTAssertEqual(
+            try String(
+                contentsOf: snapshot.appendingPathComponent("model.safetensors"),
+                encoding: .utf8
+            ),
+            "weights-payload"
+        )
+        XCTAssertNil(
+            transport.retainedResumeData(for: fileURL),
+            "a file that landed whole leaves nothing to resume from"
+        )
+    }
+
+    /// Cancel is the other half of the contract: the retained bytes go, and the
+    /// next prepare starts that file from zero.
+    func testDiscardingPartialDownloadsMakesTheNextPrepareStartFromZero() async throws {
+        let cache = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let pin = "0123456789abcdef0123456789abcdef01234567"
+        let transport = makePausableTransport(pin: pin)
+        let downloader = HFModelDownloader(
+            cacheRoot: cache,
+            transport: transport,
+            progressByteGranularity: 1
+        )
+        let request = pausableRequest(pin: pin)
+
+        try await pause(downloader, request: request, transport: transport)
+        downloader.discardPartialDownloads(for: request)
+
+        // Swept by repo prefix, so every revision of that repo is covered.
+        XCTAssertEqual(
+            transport.discardedPrefixes,
+            ["https://huggingface.co/org/model/resolve/"]
+        )
+        XCTAssertNil(
+            transport.retainedResumeData(
+                for: HFModelDownloader.fileURL(
+                    repoID: "org/model",
+                    revision: pin,
+                    fileName: "model.safetensors"
+                )
+            )
+        )
+
+        try await downloader.prepare(request) { _ in }
+
+        XCTAssertEqual(
+            transport.attempts.map(\.resumeData),
+            [nil, nil],
+            "a cancelled download must not be silently continued"
+        )
+    }
+
+    private func makePausableTransport(pin: String) -> FakeHFModelDownloadTransport {
+        FakeHFModelDownloadTransport(
+            repositoryJSON: repositoryJSON(
+                sha: pin,
+                files: ["model.safetensors"],
+                sizes: ["model.safetensors": 15]
+            ),
+            payloads: ["model.safetensors": Data("weights-payload".utf8)],
+            pausableFiles: ["model.safetensors"]
+        )
+    }
+
+    private func pausableRequest(pin: String) -> ModelPreparationRequest {
+        ModelPreparationRequest(
+            backendID: "speechd",
+            displayName: "Dictation engine",
+            repoID: "org/model",
+            revision: pin,
+            includePatterns: ["model*.safetensors"]
+        )
+    }
+
+    /// Runs a prepare up to the middle of its file and cancels it, which is
+    /// what `BackendManager.pauseModelDownload` does to the ensure task.
+    private func pause(
+        _ downloader: HFModelDownloader,
+        request: ModelPreparationRequest,
+        transport: FakeHFModelDownloadTransport
+    ) async throws {
+        let paused = Task { try await downloader.prepare(request) { _ in } }
+        await transport.waitUntilDownloadStarted()
+        paused.cancel()
+        do {
+            try await paused.value
+            XCTFail("expected the paused prepare to cancel")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("HFModelDownloaderTests-\(UUID().uuidString)", isDirectory: true)
@@ -315,10 +463,22 @@ final class HFModelDownloaderTests: XCTestCase {
 }
 
 private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unchecked Sendable {
+    /// One `download` call, with the resume data (if any) the downloader handed
+    /// back for that file.
+    struct DownloadAttempt: Equatable {
+        let fileName: String
+        let resumeData: Data?
+    }
+
     private struct State {
         var repositoryInfoURLs: [URL] = []
         var contentLengthProbes: [String] = []
-        var downloadedFileNames: [String] = []
+        var attempts: [DownloadAttempt] = []
+        var resumeDataByURL: [String: Data] = [:]
+        var discardedPrefixes: [String] = []
+        var pendingPausableFiles: Set<String> = []
+        var downloadStartedContinuation: CheckedContinuation<Void, Never>?
+        var pauseContinuation: CheckedContinuation<Void, Error>?
     }
 
     private let repositoryJSON: Data
@@ -329,15 +489,30 @@ private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unc
     private let headlessFiles: Set<String>
     private let state = Mutex(State())
 
-    init(repositoryJSON: Data, payloads: [String: Data], headlessFiles: Set<String> = []) {
+    init(
+        repositoryJSON: Data,
+        payloads: [String: Data],
+        headlessFiles: Set<String> = [],
+        /// Files whose FIRST transfer suspends mid-file until the task is
+        /// cancelled and then leaves resume data behind, standing in for
+        /// `URLSessionDownloadTask.cancel(byProducingResumeData:)`.
+        pausableFiles: Set<String> = []
+    ) {
         self.repositoryJSON = repositoryJSON
         self.payloads = payloads
         self.headlessFiles = headlessFiles
+        state.withLock { $0.pendingPausableFiles = pausableFiles }
     }
 
     var repositoryInfoURLs: [URL] { state.withLock { $0.repositoryInfoURLs } }
     var contentLengthProbes: [String] { state.withLock { $0.contentLengthProbes } }
-    var downloadedFileNames: [String] { state.withLock { $0.downloadedFileNames } }
+    var attempts: [DownloadAttempt] { state.withLock { $0.attempts } }
+    var downloadedFileNames: [String] { state.withLock { $0.attempts.map(\.fileName) } }
+    var discardedPrefixes: [String] { state.withLock { $0.discardedPrefixes } }
+
+    static func resumeBytes(for fileName: String) -> Data {
+        Data("resume-\(fileName)".utf8)
+    }
 
     func repositoryInfo(from url: URL) async throws -> (data: Data, statusCode: Int) {
         state.withLock { $0.repositoryInfoURLs.append(url) }
@@ -351,22 +526,89 @@ private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unc
         return Int64(payloads[fileName]?.count ?? 0)
     }
 
+    func retainedResumeData(for url: URL) -> Data? {
+        state.withLock { $0.resumeDataByURL[url.absoluteString] }
+    }
+
+    func discardResumeData(withURLPrefix prefix: String) {
+        state.withLock { state in
+            state.discardedPrefixes.append(prefix)
+            for key in state.resumeDataByURL.keys where key.hasPrefix(prefix) {
+                state.resumeDataByURL[key] = nil
+            }
+        }
+    }
+
     func download(
         from url: URL,
+        resumeData: Data?,
         onBytes: @escaping @Sendable (Int64, Int64?) -> Void
     ) async throws -> (temporaryURL: URL, statusCode: Int) {
         let fileName = url.lastPathComponent
-        state.withLock { $0.downloadedFileNames.append(fileName) }
+        let started: CheckedContinuation<Void, Never>? = state.withLock {
+            $0.attempts.append(DownloadAttempt(fileName: fileName, resumeData: resumeData))
+            let continuation = $0.downloadStartedContinuation
+            $0.downloadStartedContinuation = nil
+            return continuation
+        }
+        started?.resume()
+
         let payload = payloads[fileName] ?? Data()
         // Report the file in two halves so incremental-progress tests can
         // observe an in-flight (non-boundary) update.
         if !payload.isEmpty {
             onBytes(Int64(payload.count / 2), Int64(payload.count))
+        }
+
+        let shouldPause = state.withLock { $0.pendingPausableFiles.remove(fileName) != nil }
+        if shouldPause {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    // Same orphan guard as FakeModelPreparer: the cancellation
+                    // handler can run before this continuation is parked.
+                    let orphaned: CheckedContinuation<Void, Error>? = state.withLock {
+                        if Task.isCancelled { return continuation }
+                        $0.pauseContinuation = continuation
+                        return nil
+                    }
+                    orphaned?.resume(throwing: CancellationError())
+                }
+            } onCancel: {
+                let continuation: CheckedContinuation<Void, Error>? = self.state.withLock {
+                    // What URLSession's cancel(byProducingResumeData:) leaves
+                    // behind, and what the real transport then retains.
+                    $0.resumeDataByURL[url.absoluteString] = Self.resumeBytes(for: fileName)
+                    let continuation = $0.pauseContinuation
+                    $0.pauseContinuation = nil
+                    return continuation
+                }
+                continuation?.resume(throwing: CancellationError())
+            }
+        }
+
+        if !payload.isEmpty {
             onBytes(Int64(payload.count), Int64(payload.count))
         }
+        // A whole file landed: nothing is left to resume from.
+        state.withLock { $0.resumeDataByURL[url.absoluteString] = nil }
         let temporary = FileManager.default.temporaryDirectory
             .appendingPathComponent("fake-hf-download-\(UUID().uuidString)")
         try payload.write(to: temporary)
         return (temporary, 200)
+    }
+
+    func waitUntilDownloadStarted() async {
+        await withCheckedContinuation { continuation in
+            let alreadyStarted: Bool = state.withLock {
+                if $0.attempts.isEmpty {
+                    $0.downloadStartedContinuation = continuation
+                    return false
+                }
+                return true
+            }
+            if alreadyStarted {
+                continuation.resume()
+            }
+        }
     }
 }

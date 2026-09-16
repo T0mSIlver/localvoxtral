@@ -1501,6 +1501,65 @@ final class DictationViewModel {
         startManagedBackendWarmup(dictation: false, polishing: true)
     }
 
+    // MARK: - Managed model download controls (Engines pane)
+
+    /// Pause the automatic model download, keeping the bytes already fetched.
+    /// Parked in the backend's shutdown slot so a Resume (or any other warmup
+    /// trigger) serializes behind it, exactly as a stop does.
+    func pauseManagedModelDownload(for spec: ManagedBackendSpec) {
+        Log.backends.info(
+            "model download pause requested from Settings for \(spec.displayName, privacy: .public)"
+        )
+        runManagedDownloadShutdown(for: spec) { backendManager in
+            await backendManager.pauseModelDownload(for: spec)
+        }
+    }
+
+    /// Cancel the automatic model download and drop the in-flight file's bytes.
+    /// Files already in the Hugging Face cache stay; the download restarts on
+    /// the next warmup trigger (app launch, an Engines setting change) or on
+    /// the next dictation that needs this engine.
+    func cancelManagedModelDownload(for spec: ManagedBackendSpec) {
+        Log.backends.info(
+            "model download cancel requested from Settings for \(spec.displayName, privacy: .public)"
+        )
+        runManagedDownloadShutdown(for: spec) { backendManager in
+            await backendManager.cancelModelDownload(for: spec)
+        }
+    }
+
+    /// Resume a paused download through the ordinary warmup path, so the
+    /// shutdown/warmup serialization that every other trigger relies on holds
+    /// here too.
+    func resumeManagedModelDownload(for spec: ManagedBackendSpec) {
+        let dictation = spec.id == BackendCatalog.speechd.id
+        Log.backends.info(
+            "model download resume requested from Settings for \(spec.displayName, privacy: .public)"
+        )
+        startManagedBackendWarmup(dictation: dictation, polishing: !dictation)
+    }
+
+    private func runManagedDownloadShutdown(
+        for spec: ManagedBackendSpec,
+        _ body: @escaping @MainActor (any ManagedBackendManaging) async -> Void
+    ) {
+        if spec.id == BackendCatalog.speechd.id {
+            dictationWarmupTask?.cancel()
+            dictationShutdownTask?.cancel()
+            dictationShutdownTask = Task { @MainActor [backendManager] in
+                guard !Task.isCancelled else { return }
+                await body(backendManager)
+            }
+        } else {
+            polishingWarmupTask?.cancel()
+            polishingShutdownTask?.cancel()
+            polishingShutdownTask = Task { @MainActor [backendManager] in
+                guard !Task.isCancelled else { return }
+                await body(backendManager)
+            }
+        }
+    }
+
     func startManagedBackendWarmup(dictation: Bool, polishing: Bool) {
         guard dictation || polishing else { return }
         guard settings.onboardingCompleted else {
