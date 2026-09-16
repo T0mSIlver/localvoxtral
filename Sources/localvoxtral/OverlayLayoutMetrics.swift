@@ -1,8 +1,9 @@
 import AppKit
+import SwiftUI
 
 /// Layout values shared between `DictationOverlayView` (SwiftUI content) and
 /// `DictationOverlayController` (AppKit panel sizing). The controller measures
-/// text with `NSString.boundingRect` to size the panel, so every font size and
+/// text with `OverlayTextMeasurer` to size the panel, so every font size and
 /// width here MUST match what the view renders — deriving both sides from this
 /// one struct is what keeps them in lockstep (a mismatch clips the last line).
 ///
@@ -74,29 +75,24 @@ struct OverlayLayoutMetrics: Equatable {
 
     /// Height of the body text as rendered at `textMeasurementWidth`, floored
     /// to one line and capped at `maxScrollableBodyHeight`.
+    @MainActor
     func bodyTextHeight(for text: String) -> CGFloat {
         min(unclampedBodyTextHeight(for: text), maxScrollableBodyHeight)
     }
 
     /// Uncapped variant — the view compares this against
     /// `maxScrollableBodyHeight` to decide whether scrolling is needed.
+    @MainActor
     func unclampedBodyTextHeight(for text: String) -> CGFloat {
         guard !text.isEmpty else { return bodyLineHeight }
-        let rect = (text as NSString).boundingRect(
-            with: CGSize(width: textMeasurementWidth, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: [.font: NSFont.systemFont(ofSize: bodyFontSize)]
-        )
-        return max(ceil(rect.height), bodyLineHeight)
+        return max(
+            OverlayTextMeasurer.height(of: text, fontSize: bodyFontSize, width: textMeasurementWidth),
+            bodyLineHeight)
     }
 
     /// Full panel content height: header + spacing + body + optional error +
     /// padding. Mirrors `DictationOverlayView.body` exactly.
-    ///
-    /// Measures text with `NSString.boundingRect` rather than the hosting
-    /// view's `fittingSize` / `sizeThatFits`, which both try to minimise the
-    /// overall size and can widen the view to avoid a line wrap, returning a
-    /// height that is one line too short.
+    @MainActor
     func contentHeight(text: String, errorMessage: String?) -> CGFloat {
         let displayText = text.trimmed.isEmpty ? "" : text
 
@@ -106,16 +102,37 @@ struct OverlayLayoutMetrics: Equatable {
             + bodyTextHeight(for: displayText)
 
         if let errorMessage, !errorMessage.trimmed.isEmpty {
-            let errorFont = NSFont.systemFont(ofSize: errorFontSize)
-            let errorRect = (errorMessage as NSString).boundingRect(
-                with: CGSize(width: textMeasurementWidth, height: .greatestFiniteMagnitude),
-                options: [.usesLineFragmentOrigin, .usesFontLeading],
-                attributes: [.font: errorFont]
-            )
-            total += Self.stackSpacing + ceil(errorRect.height)
+            total += Self.stackSpacing
+                + OverlayTextMeasurer.height(
+                    of: errorMessage, fontSize: errorFontSize, width: textMeasurementWidth)
         }
 
         return total
+    }
+}
+
+/// Measures wrapped overlay text with SwiftUI, the engine that draws it.
+///
+/// `NSString.boundingRect` disagrees with SwiftUI's line heights at many font
+/// sizes (3 lines of 16pt: 54pt measured, 57pt drawn), and the panel sized
+/// from it clipped the last line's descenders. The hosting view's own
+/// `fittingSize` / `sizeThatFits` is no substitute either: both minimise the
+/// overall size and can widen the view to avoid a wrap. A lone `Text` at a
+/// fixed width has no such freedom, so its height is what the row renders.
+@MainActor
+private enum OverlayTextMeasurer {
+    private static let host = NSHostingController(rootView: AnyView(EmptyView()))
+
+    static func height(of text: String, fontSize: CGFloat, width: CGFloat) -> CGFloat {
+        // Same font and wrapping modifiers as the body and error rows in
+        // `DictationOverlayView`.
+        host.rootView = AnyView(
+            Text(text)
+                .font(.system(size: fontSize))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: width, alignment: .topLeading)
+        )
+        return ceil(host.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height)
     }
 }
 
