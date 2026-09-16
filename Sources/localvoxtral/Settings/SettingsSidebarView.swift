@@ -164,6 +164,7 @@ struct SettingsSidebarView: View {
                 .padding(.horizontal, SettingsSidebarMetrics.horizontalInset)
             }
             .scrollIndicators(.hidden)
+            .settingsScrollEdgeEffectHidden()
             .frame(maxHeight: .infinity, alignment: .top)
 
             if let addAppMessage {

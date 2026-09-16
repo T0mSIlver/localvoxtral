@@ -1303,7 +1303,7 @@ private struct RemoteHostsSettingsPane: View {
 /// user-added app — removal. cmux adds its session-join setup.
 ///
 /// Group structure is constant per pane (owner rule, 2026-07-04): Status,
-/// then Capabilities, then (cmux only) Session join. A user app's Remove row
+/// then Capabilities, then (cmux only) Automation socket. A user app's Remove row
 /// is content of Status.
 private struct TerminalSettingsPane: View {
     let app: TerminalAppDescriptor
@@ -1361,7 +1361,7 @@ private struct TerminalSettingsPane: View {
     /// The cmux join goes through cmux's automation socket: the switch, the
     /// socket password it needs, and the two-step setup behind one link.
     private var cmuxSessionJoinGroup: some View {
-        SettingsGroup(title: "Session join", learnMoreURL: TerminalAppCatalog.cmuxDocsURL) {
+        SettingsGroup(title: "Automation socket", learnMoreURL: TerminalAppCatalog.cmuxDocsURL) {
             SettingsFieldRow(
                 title: "Join sessions in cmux",
                 help: "Reads the pane you dictate into through cmux's socket."
@@ -1713,7 +1713,7 @@ private struct ClaudeRemoteHostsRows: View {
                         Spacer(minLength: 8)
 
                         HStack(spacing: 8) {
-                            Button("Update host…") { model.requestPluginUpdate(hostID: host.id) }
+                            Button("Update…") { model.requestPluginUpdate(hostID: host.id) }
                                 .controlSize(.small)
                                 .disabled(model.isEnrollmentBusy)
                             Button("Rotate token") { Task { await model.rotate(hostID: host.id) } }
@@ -2175,6 +2175,7 @@ private struct SettingsPage<Content: View>: View {
             // repeating `.toggleStyle(.switch)`.
             .toggleStyle(.switch)
         }
+        .settingsScrollEdgeEffectHidden()
         .background(SettingsLayout.detailBackground)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .accessibilityElement(children: .contain)

@@ -59,6 +59,25 @@ private final class SettingsWindowChromeView: NSView {
     private static func applyChrome(to window: NSWindow) {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
+        window.titlebarSeparatorStyle = .none
         window.styleMask.insert(.fullSizeContentView)
+    }
+}
+
+extension View {
+    /// Turns off macOS 26's top scroll-edge effect on a Settings scroll view.
+    ///
+    /// On macOS 26 a scroll view next to the titlebar gets a "hard" edge
+    /// effect: an opaque bar across the titlebar with a divider under it,
+    /// drawn OVER the full-size content. It hid the sidebar's gray under a
+    /// white strip even with a transparent titlebar (PR #310 hand-check on
+    /// macOS 26.6). Earlier systems have no such effect.
+    @ViewBuilder
+    func settingsScrollEdgeEffectHidden() -> some View {
+        if #available(macOS 26.0, *) {
+            scrollEdgeEffectHidden(true, for: .top)
+        } else {
+            self
+        }
     }
 }

@@ -773,8 +773,8 @@ ssh builder "claude plugin install localvoxtral-remote@localvoxtral --config 'po
 
 Order matters: `plugin update` installs whatever the local marketplace clone
 currently offers, so refreshing the clone first is what makes it an update at
-all. In the app, each host in **Settings → Remote hosts** has an **Update
-host…** button. Its consent sentence names the local files and enrolled SSH
+all. In the app, each host in **Settings → Remote hosts** has an **Update…**
+button. Its consent sentence names the local files and enrolled SSH
 alias, and **Set Up** runs the same six-step flow as enrollment. The display name
 is never used as a substitute for the alias. A host enrolled before aliases
 were recorded must be re-enrolled before the app can update it.
