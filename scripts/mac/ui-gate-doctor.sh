@@ -346,7 +346,7 @@ if artifacts:
 else:
     fix("launchable builds",
         "no localvoxtral bundle under the artifact roots — `launch` has nothing to start",
-        "./scripts/try-pr.sh <pr> --dogfood --ui-gate    # or: gh workflow run CI --ref <branch> -f dogfood=true")
+        "./scripts/try-pr.sh <pr> --dogfood --ui-gate    # or: gh workflow run CI --ref <branch> -f dogfood=true -f herdr=false")
 
 # 8. the app under test
 app = state.get("app", {})

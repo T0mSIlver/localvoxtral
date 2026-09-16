@@ -1097,9 +1097,14 @@ account's home, which is where the artifact root lives — so a
 `workflow_dispatch` of `ci.yml` with `dogfood=true` builds *and* installs:
 
 ```bash
-gh workflow run CI --ref <branch> -f dogfood=true
+gh workflow run CI --ref <branch> -f dogfood=true -f herdr=false
 # the run summary then carries the exact:  ssh lv-ui 'launch --dogfood …'
 ```
+
+`herdr=false` because a dispatch otherwise forces the live herdr lane on, and
+its fixture refuses to start beside the herdr you are running — see
+`.github/workflows/README.md`. The install happens before the live lanes
+either way, so a red lane no longer costs you the install.
 
 That step is gated to `workflow_dispatch` **and** `dogfood=true` — narrower
 than the dogfood lane itself, whose `[dogfood-package]` marker fires on

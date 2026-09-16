@@ -59,6 +59,22 @@ which also arms the runtime capture default. On manual dispatch the
 conditional live-model lanes (polishd/speechd) skip — the dispatched ref's
 own push/PR run already decided them.
 
+`mac-lanes` is ordered in two phases: everything that produces an artifact
+(packaging, uploads, launch smoke, the dogfood pass and the UI-gate install)
+runs first, and the conditional live lanes (speechd/polishd/herdr) run after
+it. A live lane's precondition must not cost a run the artifact it was
+dispatched for — the herdr lane used to run before packaging, and since its
+fixture refuses to start beside a herdr the account is already running, a
+`-f dogfood=true` dispatch on the owner's Mac never reached the packaging
+steps at all (run 35084386041).
+
+The live herdr lane is the one lane a dispatch still forces on (it needs no
+weights, and dispatching it is how that external contract gets repeated).
+`-f herdr=false` opts a single dispatch out, which is what
+`scripts/try-pr.sh --dogfood` passes; pushes and PRs are unaffected and keep
+the `scripts/ci/herdr-lane-filter.sh` path filter plus the
+`[run-herdr-integration]` marker.
+
 The `hosted` dispatch input is a **no-op** now: it existed to force
 `build-test` onto a hosted runner, which is where it always runs. It is kept
 for one release so a scripted `-f hosted=true` does not fail on an unknown
