@@ -703,6 +703,10 @@ such session:
 * `claude remote-control` servers (systemd user services, lingering enabled)
 * t3 code and other harnesses that spawn Claude Code into a worktree
 * cron jobs, CI runners, anything headless
+* sessions you only ever look at through a herdr 0.9 federated view — the
+  link herdr holds is not a shell of yours, and it may have lost the forward
+  to an earlier session that has since ended (first session wins, see
+  [Sessions](../../docs/remote-claude-context.md#a-second-session-to-the-same-host))
 
 Those sessions publish hooks exactly like an interactive one — into a tunnel
 that is not there. The result is silent, as always: dictation just is not
