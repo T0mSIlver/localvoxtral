@@ -134,6 +134,13 @@ final class OnboardingViewModel {
     /// an engine nothing will use.
     private func applyMistralEngineChoice() {
         driver.cancel()
+        // A cancelled download is no download: clearing the flag re-offers
+        // "Begin download" if the user comes back and picks Local again, and
+        // it is `startDownloads()` that moves the engines back to managed.
+        // Without this, Local → Begin download → back → Mistral → back → Local
+        // → Finish reads "runs on this Mac" while both engines are still on
+        // Mistral (GLM review, 2026-09-16).
+        downloadsStarted = false
         viewModel.applyMistralQuickSetup(apiKey: mistralAPIKeyDraft)
     }
 

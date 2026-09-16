@@ -280,6 +280,14 @@ extension DictationViewModel {
         }
 
         let model = settings.effectiveModelName(for: provider)
+        // The bearer token is part of the same snapshot as endpoint and model:
+        // `trimmedAPIKey` resolves by the CURRENT dictation mode, and the
+        // screen-context capture below suspends (AppleScript, ssh) long enough
+        // for Settings to flip the mode. Read at connect time, an External URL
+        // session would carry the Mistral key to the user's own server, or a
+        // Mistral session the external key to api.mistral.ai (GLM review,
+        // 2026-09-16). One mode, one snapshot: client, endpoint, model, key.
+        let apiKey = settings.trimmedAPIKey
         // Pick THIS session's client before anything else touches one: from
         // here to the stop, every send, poll and disconnect goes to the latched
         // client, whatever Settings does in the meantime.
@@ -372,10 +380,16 @@ extension DictationViewModel {
             "beginDictationSession endpoint=\(endpoint.absoluteString) model=\(model) input=\(preferredInputID ?? "default")"
         )
 
+        #if DEBUG
+        // Lets a test mutate Settings at the one point a real session can be
+        // interrupted (after the capture awaits, before the socket opens).
+        await debugBeforeConnectHookForTesting?()
+        #endif
+
         do {
             try activeRealtimeClient.connect(configuration: .init(
                 endpoint: endpoint,
-                apiKey: settings.trimmedAPIKey,
+                apiKey: apiKey,
                 model: model
             ))
             scheduleConnectTimeout()

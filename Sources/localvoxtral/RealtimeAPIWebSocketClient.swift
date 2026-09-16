@@ -27,6 +27,7 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         var pendingModelName = ""
         #if DEBUG
         var skipsSocketCreationForTesting = false
+        var lastConnectConfigurationForTesting: RealtimeSessionConfiguration?
         #endif
     }
 
@@ -51,7 +52,11 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
             configuration.endpoint, errorDomain: "localvoxtral.realtime.websocket")
 
         #if DEBUG
-        if state.withLock({ $0.skipsSocketCreationForTesting }) {
+        let skipsSocket: Bool = state.withLock { s in
+            s.lastConnectConfigurationForTesting = configuration
+            return s.skipsSocketCreationForTesting
+        }
+        if skipsSocket {
             return
         }
         #endif
@@ -482,6 +487,13 @@ extension RealtimeAPIWebSocketClient {
     /// creating a process-retained URLSession or touching a live backend.
     func debugSkipSocketCreationForTesting() {
         state.withLock { $0.skipsSocketCreationForTesting = true }
+    }
+
+    /// The configuration the most recent `connect(configuration:)` was handed,
+    /// recorded before the socket-skip check so a socketless test still sees
+    /// exactly what the session would have dialled with.
+    func debugLastConnectConfigurationForTesting() -> RealtimeSessionConfiguration? {
+        state.withLock { $0.lastConnectConfigurationForTesting }
     }
 
     func debugPrimeConnectedStateForTesting(

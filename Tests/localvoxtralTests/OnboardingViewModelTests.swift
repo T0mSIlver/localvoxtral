@@ -223,6 +223,53 @@ final class OnboardingViewModelTests: XCTestCase {
         XCTAssertEqual(model.page, .finish)
     }
 
+    /// Local → Begin download → back → Mistral → Continue → back → Local →
+    /// Continue must land on a Downloads page that re-offers "Begin download"
+    /// and, once pressed, moves the engines back to managed. Before the fix the
+    /// stale `downloadsStarted` flag hid the button, `startDownloads()` was
+    /// unreachable, and Finish read "runs on this Mac" while both engines were
+    /// still on Mistral (GLM review, 2026-09-16).
+    func testEnginePage_flipFlopBackToLocalReoffersTheDownloadAndRestoresManagedEngines() {
+        let (model, settings, driver, _, _) = makeModel()
+        model.advance()  // permissions
+        model.advance()  // engine
+        model.advance()  // downloads (local)
+        model.startDownloads()
+        XCTAssertTrue(model.downloadsStarted)
+        XCTAssertEqual(driver.startCallCount, 1)
+
+        model.goBack()  // engine
+        model.engineChoice = .mistralAPI
+        model.mistralAPIKeyDraft = "mk-mistral"
+        model.advance()  // finish (Mistral path)
+        XCTAssertEqual(model.page, .finish)
+        XCTAssertEqual(settings.dictationBackendMode, .mistralAPI)
+        XCTAssertEqual(driver.cancelCallCount, 1)
+        XCTAssertFalse(
+            model.downloadsStarted,
+            "a cancelled download is no download — the flag must not survive the Mistral choice"
+        )
+
+        model.goBack()  // engine
+        model.engineChoice = .local
+        model.advance()  // downloads
+        XCTAssertEqual(model.page, .downloads)
+        XCTAssertFalse(model.downloadsStarted, "Begin download is offered again")
+
+        model.startDownloads()
+        XCTAssertEqual(driver.startCallCount, 2, "the local download runs again")
+        XCTAssertEqual(settings.dictationBackendMode, .managedLocal)
+        XCTAssertEqual(settings.polishingBackendMode, .managedLocal)
+
+        model.advance()  // finish
+        XCTAssertEqual(model.page, .finish)
+        XCTAssertEqual(model.engineSummary, "Dictation and polishing run on this Mac.")
+        XCTAssertEqual(
+            settings.dictationBackendMode, .managedLocal,
+            "the summary and the engines agree"
+        )
+    }
+
     func testEnginePage_localPathIsUnchanged() {
         let (model, settings, driver, _, _) = makeModel()
         model.advance()  // permissions

@@ -611,6 +611,11 @@ final class DictationViewModel {
     #if DEBUG
     @ObservationIgnored
     var debugPasteboardWriteOverride: ((String) -> Void)?
+    /// Test seam: awaited by `beginDictationSession` after its capture awaits
+    /// and immediately before the socket opens — the one window in which a
+    /// real session can observe Settings changing under it.
+    @ObservationIgnored
+    var debugBeforeConnectHookForTesting: (@MainActor () async -> Void)?
     #endif
     @ObservationIgnored
     var debugMicrophoneAuthorizationStatusOverride: MicrophoneAuthorizationStatus?
