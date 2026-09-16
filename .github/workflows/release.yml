@@ -456,6 +456,9 @@ jobs:
           # pointer install.sh's stable path follows, and the link in the
           # README — keeps pointing at the newest STABLE release.
           prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
+          # Declared, not inherited: GitHub never marks a prerelease as latest
+          # today, but the stable installer depends on it, so say so.
+          make_latest: ${{ steps.meta.outputs.prerelease == 'true' && 'false' || 'true' }}
           # body_path + generate_release_notes, per action-gh-release v2's
           # README: "If body is specified, the body will be pre-pended to the
           # automatically generated notes", and "When providing a body and
@@ -496,7 +499,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release list --limit 100 --json tagName --jq '.[].tagName' \
+          # 1000, not 100: the prune only sees what this list returns, so a
+          # window smaller than the release history would let nightlies
+          # older than the window outlive the keep-7 rule forever.
+          gh release list --limit 1000 --json tagName --jq '.[].tagName' \
             > "$RUNNER_TEMP/release-tags.txt"
           ./scripts/ci/prune-nightly-releases.sh --keep 7 "$RUNNER_TEMP/release-tags.txt" \
             > "$RUNNER_TEMP/nightlies-to-delete.txt"

@@ -47,7 +47,7 @@ case "$ARG" in
     if [[ "$ARG" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
       DISPATCH_ARGS=(-f channel=stable -f "version=$ARG")
     else
-      echo "Usage: $0 [rehearse] [patch|minor|major|X.Y.Z|X.Y.Z-rc.N|nightly [ref]]" >&2
+      echo "Usage: $0 [patch|minor|major|X.Y.Z|X.Y.Z-rc.N [ref]|nightly] | $0 rehearse [patch|minor|major|X.Y.Z|X.Y.Z-rc.N|nightly] [ref]" >&2
       exit 1
     fi
     ;;
@@ -66,7 +66,9 @@ else
 fi
 gh workflow run "Release App" --ref "$REF" "${DISPATCH_ARGS[@]}"
 sleep 5
-RUN_ID="$(gh run list --workflow "Release App" --limit 1 --json databaseId --jq '.[0].databaseId')"
+# Newest run on the dispatched ref, not the newest run of the workflow: the
+# 03:15 cron or another dispatch can create a run inside that 5 s window.
+RUN_ID="$(gh run list --workflow "Release App" --branch "$REF" --limit 1 --json databaseId --jq '.[0].databaseId')"
 echo "Watching run $RUN_ID (Ctrl+C detaches; the release continues remotely)"
 gh run watch "$RUN_ID" --exit-status
 if [[ "$PUBLISH" != "true" ]]; then
