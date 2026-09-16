@@ -58,7 +58,6 @@ struct SettingsTab: Hashable, Sendable {
         primarySidebarItems
             + integrationsSidebarItems
             + TerminalAppCatalog.builtIn.map(terminal)
-            + metaSidebarItems
     }
 
     var rawValue: String {
@@ -80,8 +79,10 @@ extension SettingsTab {
     ///
     /// Context sits with the app's own panes: it is a polishing feature that
     /// every harness feeds, not a harness. Its raw value predates the move.
+    /// About closes the section as an ordinary row that scrolls with the rest
+    /// (CodexBar's idiom), not a row pinned to the sidebar's bottom.
     static let primarySidebarItems: [SettingsTab] = [
-        .general, .dictation, .endpoints, .textProcessing, .integrationsContext,
+        .general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about,
     ]
 
     /// The Integrations section (owner decision, 2026-09-07): one row per
@@ -92,9 +93,6 @@ extension SettingsTab {
     static let integrationsSidebarItems: [SettingsTab] = [
         .integrationsClaude, .integrationsOpencode, .integrationsHerdr, .integrationsRemote,
     ]
-
-    /// Pinned to the bottom of the sidebar, under the spacer.
-    static let metaSidebarItems: [SettingsTab] = [.about]
 
     /// Convenience accessors for the static panes, so call sites keep the
     /// `SettingsTab.general` shape they had when this was an enum.

@@ -17,7 +17,6 @@ final class SettingsTabTests: XCTestCase {
         SettingsTab.primarySidebarItems
             + SettingsTab.integrationsSidebarItems
             + TerminalAppCatalog.builtIn.map(SettingsTab.terminal)
-            + SettingsTab.metaSidebarItems
     }
 
     func testSidebarArraysCoverEveryKnownPaneExactlyOnce() {
@@ -36,7 +35,6 @@ final class SettingsTabTests: XCTestCase {
             SettingsTab.primarySidebarItems,
             SettingsTab.integrationsSidebarItems,
             TerminalAppCatalog.builtIn.map(SettingsTab.terminal),
-            SettingsTab.metaSidebarItems,
         ]
         let seen = NSMutableSet()
         for section in sections {
@@ -406,7 +404,7 @@ final class SettingsTabTests: XCTestCase {
     func testSidebarOrderIsThePresentationContract() {
         XCTAssertEqual(
             SettingsTab.primarySidebarItems,
-            [.general, .dictation, .endpoints, .textProcessing, .integrationsContext]
+            [.general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about]
         )
         XCTAssertEqual(
             SettingsTab.integrationsSidebarItems,
@@ -415,7 +413,6 @@ final class SettingsTabTests: XCTestCase {
                 .integrationsRemote,
             ]
         )
-        XCTAssertEqual(SettingsTab.metaSidebarItems, [.about])
         // Join-capable terminals first, then the dictation-only list — the
         // owner-decided order, pinned as slugs so a catalog edit that reorders
         // rows is a deliberate act.
