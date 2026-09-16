@@ -149,13 +149,6 @@ struct SettingsView: View {
                 activeHostCount: viewModel.claudeIntegrationSettings?.hosts
                     .filter { !$0.isRevoked }.count ?? 0
             )
-        case .integrationsContext:
-            let anyConsent = settings.repoVocabularyEnabled
-                || settings.terminalScreenContextEnabled
-                || settings.claudeRepoContextEnabled
-                || settings.polishClipboardContextEnabled
-                || settings.polishContextTrustedEndpointEnabled
-            return IntegrationsSidebarStatus.contextDot(anyConsentEnabled: anyConsent)
         case .integrationsClaude:
             return IntegrationsSidebarStatus.claudeDot(
                 pluginStatus: viewModel.claudeIntegrationSettings?.localPluginStatus ?? .unknown
@@ -171,7 +164,11 @@ struct SettingsView: View {
         case .terminal:
             guard let app = tab.terminalApp else { return nil }
             return terminalAppsModel.dot(for: app)
-        case .general, .dictation, .endpoints, .textProcessing, .about:
+        // The app's own panes carry no dot: a dot means "detected / set up"
+        // for something outside the app (a harness, a terminal, a host).
+        // Context sits among them since PR #310, so its consents are shown
+        // by the pane's toggles, not by the row.
+        case .general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about:
             return nil
         }
     }

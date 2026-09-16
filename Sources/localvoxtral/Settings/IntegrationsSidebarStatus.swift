@@ -10,13 +10,6 @@ import Foundation
 /// - yellow: detected, a setup step pending;
 /// - grey: not installed / not detected.
 enum IntegrationsSidebarStatus {
-    /// The Context row: nothing to install — green when at least one consent
-    /// is on (the polisher may see something), grey when all are off. There is
-    /// deliberately no yellow: no pending setup step exists for a consent.
-    static func contextDot(anyConsentEnabled: Bool) -> SettingsStatusDot {
-        anyConsentEnabled ? .green : .grey
-    }
-
     /// The Claude Code row, from the local plugin status. `updateAvailable`
     /// is green, not yellow: the installed plugin joins fine and the update
     /// is optional. `.notInstalled` is yellow — the CLI answered the listing,
