@@ -505,19 +505,18 @@ assert_tab "dictation" "Dictation" "Trigger"
 assert_tab "textProcessing" "Text Processing" "Replacements"
 # The polish feature toggles live on Text Processing (moved from Engines).
 assert_tab "textProcessing" "Text Processing" "Polishing"
-# --- Integrations section: one pane per harness (2026-09-07 owner decision) ---
 # The consent-grade context sources live on their own pane (moved off Text
 # Processing). Asserted on the group title, which exists nowhere else.
 assert_tab "integrations.context" "Context" "Polish context"
-# Everything Claude-Code-related in one pane: plugin row, status line, the
-# cmux join toggle (binds $settings.cmuxSurfaceJoinEnabled — without this,
-# the row could be deleted or rebound with every lane green), remote hosts.
-assert_tab "integrations.claude" "Claude Code" "Plugin on this Mac"
+assert_tab "integrations.context" "Context" "Agent session"
+# --- Integrations section: one pane per harness (2026-09-07 owner decision) ---
+assert_tab "integrations.claude" "Claude Code" "Plugin"
 assert_tab "integrations.claude" "Claude Code" "Status line"
-assert_tab "integrations.claude" "Claude Code" "Join Claude Code sessions in cmux"
-assert_tab "integrations.claude" "Claude Code" "Claude Code over SSH"
-assert_tab "integrations.opencode" "opencode" "What it gets"
+assert_tab "integrations.opencode" "opencode" "Plugin"
 assert_tab "integrations.herdr" "herdr" "Status"
+assert_tab "integrations.herdr" "herdr" "Saved machines"
+assert_tab "integrations.remote" "Remote hosts" "Add host"
+assert_tab "integrations.remote" "Remote hosts" "Terminal setup"
 # --- Terminals section: one pane per terminal ---
 # The capability rows are machine-independent ("Dictation", "Session join",
 # "Screen context" render on every terminal pane whatever the dot says), so
@@ -529,7 +528,10 @@ assert_tab "terminals.ghostty" "Ghostty" "Session join"
 assert_tab "terminals.iterm2" "iTerm2" "Session join"
 assert_tab "terminals.apple-terminal" "Terminal.app" "Session join"
 assert_tab "terminals.apple-terminal" "Terminal.app" "Installed. Dictation, session join and screen context."
-assert_tab "terminals.cmux" "cmux" "Socket mode"
+# The cmux join toggle binds $settings.cmuxSurfaceJoinEnabled — without this,
+# the row could be deleted or rebound with every lane green.
+assert_tab "terminals.cmux" "cmux" "Join sessions in cmux"
+assert_tab "terminals.cmux" "cmux" "Socket password"
 assert_tab "terminals.warp" "Warp" "Session join"
 assert_tab "terminals.wezterm" "WezTerm" "Session join"
 assert_tab "terminals.kitty" "kitty" "Session join"

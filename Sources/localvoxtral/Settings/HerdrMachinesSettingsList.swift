@@ -1,29 +1,27 @@
 import SwiftUI
 
-/// The "Saved herdr machines" list inside the existing Remote hosts group:
-/// herdr's saved machines as enrollment sources, one row per machine.
+/// The herdr pane's Saved machines list: herdr's saved machines as
+/// enrollment sources, one row per machine.
 ///
-/// Content of that group only, never a group of its own — a pane's group
-/// structure is constant (owner rule, 2026-07-04). An absent catalog renders
-/// nothing at all; an unreadable one renders one short inline sentence; the
-/// rows carry the sidebar's dot idiom (PR #284) and an `Import…` button on
-/// exactly the rows the model marks importable.
+/// The group around it always exists — a pane's group structure is constant
+/// (owner rule, 2026-07-04) — so an absent catalog renders one short empty
+/// line rather than an empty card; an unreadable one renders one short inline
+/// sentence; the rows carry the sidebar's dot idiom (PR #284) and an
+/// `Import…` button on exactly the rows the model marks importable.
 struct HerdrMachinesSettingsList: View {
     let model: ClaudeIntegrationSettingsModel
 
     var body: some View {
         switch model.herdrMachines {
         case .absent:
-            // No catalog: this user never ran `herdr machine add`, and an
-            // empty-state row would be noise about a feature they do not use.
-            EmptyView()
+            Text("No saved machines.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("claude.remote.herdrMachines.empty")
         case .unreadable:
             SettingsInlineMessage("herdr's saved machines could not be read.", color: .orange)
         case .candidates(let candidates):
             VStack(alignment: .leading, spacing: 4) {
-                Text("Saved herdr machines")
-                    .font(.callout)
-                    .accessibilityIdentifier("claude.remote.herdrMachines.title")
                 ForEach(candidates) { candidate in
                     HerdrMachineImportRow(candidate: candidate, model: model)
                 }

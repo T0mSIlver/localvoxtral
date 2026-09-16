@@ -110,13 +110,15 @@ struct SettingsView: View {
                 addAppMessage: $addAppMessage
             )
 
-            // The sidebar's trailing hairline. One divider, drawn by the layout
-            // rather than by both columns, so it cannot double up.
-            Divider()
-
+            // No hairline between the columns: the sidebar's gray against the
+            // detail column's white is the separation.
             detailColumn
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Both columns run under the transparent titlebar, so the sidebar's
+        // fill reaches the window's top edge. `SettingsSidebarMetrics.topInset`
+        // clears the traffic lights.
+        .ignoresSafeArea(.container, edges: .top)
         .background {
             SettingsWindowChrome()
                 .frame(width: 0, height: 0)
@@ -135,12 +137,18 @@ struct SettingsView: View {
                 Task { await claude.refreshIntegrationsStatuses() }
             }
         }
+        .modifier(ClaudeIntegrationPresentations(model: viewModel.claudeIntegrationSettings))
     }
 
     /// The dot each sidebar row trails (owner decision, 2026-09-07). Nil for
     /// the main panes and About — they have no install state to report.
     private func sidebarDot(for tab: SettingsTab) -> SettingsStatusDot? {
         switch tab.kind {
+        case .integrationsRemote:
+            return IntegrationsSidebarStatus.remoteHostsDot(
+                activeHostCount: viewModel.claudeIntegrationSettings?.hosts
+                    .filter { !$0.isRevoked }.count ?? 0
+            )
         case .integrationsContext:
             let anyConsent = settings.repoVocabularyEnabled
                 || settings.terminalScreenContextEnabled
@@ -216,8 +224,6 @@ struct SettingsView: View {
         VStack(spacing: 0) {
             SettingsPaneHeader(tab: navigator.selectedTab)
 
-            Divider()
-
             switch navigator.selectedTab.kind {
             case .general:
                 GeneralSettingsPane(settings: settings, viewModel: viewModel)
@@ -246,16 +252,20 @@ struct SettingsView: View {
             case .integrationsContext:
                 IntegrationsContextSettingsPane(settings: settings, viewModel: viewModel)
             case .integrationsClaude:
-                ClaudeCodeSettingsPane(settings: settings, viewModel: viewModel)
+                ClaudeCodeSettingsPane(viewModel: viewModel)
             case .integrationsOpencode:
                 OpencodeSettingsPane(viewModel: viewModel)
             case .integrationsHerdr:
                 HerdrSettingsPane(viewModel: viewModel)
+            case .integrationsRemote:
+                RemoteHostsSettingsPane(viewModel: viewModel)
             case .terminal:
                 if let app = navigator.selectedTab.terminalApp {
                     TerminalSettingsPane(
                         app: app,
                         model: terminalAppsModel,
+                        settings: settings,
+                        claude: viewModel.claudeIntegrationSettings,
                         onRemove: removeUserTerminalApp
                     )
                 }
@@ -264,6 +274,7 @@ struct SettingsView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(SettingsLayout.detailBackground)
     }
 }
 
@@ -282,13 +293,6 @@ private struct GeneralSettingsPane: View {
             }
 
             SettingsGroup(title: "App") {
-                SettingsFieldRow(
-                    title: "Copy on stop"
-                ) {
-                    Toggle("", isOn: $settings.autoCopyEnabled)
-                        .labelsHidden()
-                }
-
                 SettingsFieldRow(
                     title: "Setup wizard"
                 ) {
@@ -329,7 +333,10 @@ private enum SettingsLayout {
     /// but a rigid width would crumple the label instead of the field if the
     /// card ever got narrower.
     static let textFieldWidth: CGFloat = 280
-    static let cornerRadius: CGFloat = 8
+    static let cornerRadius: CGFloat = 10
+    /// The detail column's ground: white in light mode, near-black in dark,
+    /// so the gray sidebar and the gray group cards read against it.
+    static let detailBackground = Color(nsColor: .textBackgroundColor)
 }
 
 private struct ConnectionSettingsPane: View {
@@ -779,7 +786,10 @@ private struct DictationSettingsPane: View {
                 }
 
                 if settings.modifierOnlyHotKeyEnabled {
-                    SettingsFieldRow(title: "Modifier key") {
+                    SettingsFieldRow(
+                        title: "Modifier key",
+                        help: "Tap for Overlay Buffer, hold for Live Auto-Paste."
+                    ) {
                         Picker("", selection: Binding(
                             get: { settings.modifierOnlyHotKeyModifier },
                             set: { newValue in
@@ -793,18 +803,6 @@ private struct DictationSettingsPane: View {
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
-                    }
-
-                    SettingsFieldRow(title: "Tap") {
-                        Text("Toggles Overlay Buffer dictation.")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    SettingsFieldRow(title: "Hold") {
-                        Text("Streams text live while held.")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
                     }
 
                     SettingsFieldRow(title: "Hold delay") {
@@ -913,6 +911,23 @@ private struct DictationSettingsPane: View {
                 }
             }
 
+            SettingsGroup(title: "Output") {
+                SettingsFieldRow(title: "Menu bar mode") {
+                    Picker("", selection: dictationOutputModeBinding) {
+                        ForEach(DictationOutputMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+
+                SettingsFieldRow(title: "Copy on stop") {
+                    Toggle("", isOn: $settings.autoCopyEnabled)
+                        .labelsHidden()
+                }
+            }
+
             SettingsGroup(title: "Overlay Buffer") {
                 SettingsFieldRow(
                     title: "Font size"
@@ -931,20 +946,6 @@ private struct DictationSettingsPane: View {
                             .foregroundStyle(.secondary)
                             .frame(width: 44, alignment: .trailing)
                     }
-                }
-            }
-
-            SettingsGroup(title: "Menu bar") {
-                SettingsFieldRow(
-                    title: "Output mode"
-                ) {
-                    Picker("", selection: dictationOutputModeBinding) {
-                        ForEach(DictationOutputMode.allCases) { mode in
-                            Text(mode.displayName).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
                 }
             }
         }
@@ -1008,10 +1009,7 @@ private struct TextProcessingSettingsPane: View {
                             .labelsHidden()
                     }
 
-                    SettingsFieldRow(
-                        title: "Agent prompt profile in terminals",
-                        help: "Clipboard safety checks stay on."
-                    ) {
+                    SettingsFieldRow(title: "Agent prompt profile in terminals") {
                         Toggle("", isOn: $settings.agentPolishProfileEnabled)
                             .labelsHidden()
                     }
@@ -1031,7 +1029,7 @@ private struct TextProcessingSettingsPane: View {
 
             SettingsGroup(title: "Configuration") {
                 SettingsFieldRow(title: "Config folder") {
-                    Button("Open config folder") {
+                    Button("Open") {
                         viewModel.openConfigFolder()
                     }
                 }
@@ -1055,14 +1053,17 @@ private struct TextProcessingSettingsPane: View {
 }
 
 /// The consent toggles — everything that lets something OTHER than your
-/// spoken words reach the polisher (owner decision, 2026-09-07: its own pane
-/// under the Integrations section).
+/// spoken words reach the polisher.
 ///
 /// Split out of Text Processing (2026-08-04): these are consent-grade toggles
 /// whose help text is the consent, and they were being read past as formatting
 /// options next to "Exact match". The group here is STATIC — a toggle
 /// switches a group's content, never the number or identity of the groups
 /// (owner rule, 2026-07-04).
+///
+/// The two agent rows gate every session join (Claude Code, opencode, herdr
+/// and cmux panes, remote hosts), which is why they are named for the agent
+/// session and live here rather than on one harness's pane.
 ///
 /// Copy rule (owner review, 2026-09-07): each toggle's help is ONE line
 /// stating what leaves the machine — the consequence, nothing else. The full
@@ -1101,46 +1102,41 @@ private struct IntegrationsContextSettingsPane: View {
                 }
 
                 Group {
-                    // Each help line names the SEND — the consequence of the
-                    // toggle — and nothing else. The full terms (supported
-                    // terminals, the remote-session clause, the locality
-                    // default and how "Non-local endpoints" relaxes it) are in
-                    // docs/coding-agents.md, one Learn more away.
                     SettingsFieldRow(
                         title: "Repo vocabulary",
-                        help: "Sends file names from the repo in your terminal to the polisher."
+                        help: "Sends file names from the repo in your terminal."
                     ) {
                         Toggle("", isOn: $settings.repoVocabularyEnabled)
                             .labelsHidden()
                     }
 
                     SettingsFieldRow(
-                        title: "Claude Code screen",
-                        help: "Sends the text on screen in your Claude Code terminal to the polisher."
-                    ) {
-                        Toggle("", isOn: $settings.terminalScreenContextEnabled)
-                            .labelsHidden()
-                    }
-
-                    SettingsFieldRow(
-                        title: "Claude Code project",
-                        help: "Sends your uncommitted changes, recent files, and last prompt to the polisher."
-                    ) {
-                        Toggle("", isOn: $settings.claudeRepoContextEnabled)
-                            .labelsHidden()
-                    }
-
-                    SettingsFieldRow(
                         title: "Clipboard",
-                        help: "Sends a capped excerpt of your clipboard to the polisher."
+                        help: "Sends a capped excerpt of your clipboard."
                     ) {
                         Toggle("", isOn: $settings.polishClipboardContextEnabled)
                             .labelsHidden()
                     }
 
                     SettingsFieldRow(
+                        title: "Agent screen",
+                        help: "Sends the text on screen in your coding agent's terminal."
+                    ) {
+                        Toggle("", isOn: $settings.terminalScreenContextEnabled)
+                            .labelsHidden()
+                    }
+
+                    SettingsFieldRow(
+                        title: "Agent session",
+                        help: "Sends your uncommitted changes, recent files, and last prompt."
+                    ) {
+                        Toggle("", isOn: $settings.claudeRepoContextEnabled)
+                            .labelsHidden()
+                    }
+
+                    SettingsFieldRow(
                         title: "Non-local endpoints",
-                        help: "Also sends the context enabled above to your non-local polishing endpoint."
+                        help: "Also sends enabled context to a non-local polishing endpoint."
                     ) {
                         Toggle("", isOn: $settings.polishContextTrustedEndpointEnabled)
                             .labelsHidden()
@@ -1153,115 +1149,65 @@ private struct IntegrationsContextSettingsPane: View {
     }
 }
 
-/// Everything Claude-Code-related in one place (owner decision, 2026-09-07):
-/// the plugin row, the status-line row, the cmux join toggle + password, and
-/// the Remote hosts group (enrolled hosts, Add host, shell setup).
+/// The Claude Code plugin on this Mac and its status line. The cmux join
+/// lives on the cmux pane, remote hosts on their own pane, and the context
+/// toggles on Context.
 private struct ClaudeCodeSettingsPane: View {
-    @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
 
-    /// Where each group's Learn more link lands. Repo pages, not relative
-    /// links: Settings is a shipped app, not a doc site.
-    private enum LearnMore {
-        static let claudeCode = URL(
-            string:
-                "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/claude-code/README.md#which-terminal-am-i-dictating-into"
-        )!
-        static let remoteHosts = URL(
-            string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/remote-claude-context.md"
-        )!
-    }
-
-    /// Read ONCE, when the pane is constructed — like every other `debug.`
-    /// default, this is a screenshot affordance, not a preference that may
-    /// change under a running window. Armed, it auto-presents a SAMPLE
-    /// enrollment sheet whose every mutating action the model refuses.
-    @State private var isEnrollmentSheetPreviewArmed =
-        ClaudeIntegrationSettingsModel.isEnrollmentSheetPreviewArmed()
+    private static let learnMoreURL = URL(
+        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/claude-code/README.md"
+    )!
 
     var body: some View {
         SettingsPage(tab: .integrationsClaude) {
-            SettingsGroup(title: "Claude Code", learnMoreURL: LearnMore.claudeCode) {
+            // The integration model is built once at launch and cleared only on
+            // terminate, so the `if let` is not a mode: in a running app the
+            // group always has its rows.
+            SettingsGroup(title: "Setup", learnMoreURL: Self.learnMoreURL) {
                 if let claude = viewModel.claudeIntegrationSettings {
                     ClaudePluginInstallRow(model: claude)
                     ClaudeStatuslineRow(model: claude)
                 }
-
-                // Not on the Context pane: this is a JOIN arm — it decides
-                // which session you are dictating into — and it works with no
-                // Overlay Buffer shortcut recorded. The two-step cmux setup
-                // (socket password mode, then this password) is in the group's
-                // Learn more page.
-                SettingsFieldRow(
-                    title: "Join Claude Code sessions in cmux",
-                    help: "Reads the cmux pane you dictate into, via cmux's automation socket."
-                ) {
-                    Toggle("", isOn: $settings.cmuxSurfaceJoinEnabled)
-                        .labelsHidden()
-                }
-
-                if let claude = viewModel.claudeIntegrationSettings {
-                    // Directly under the toggle whose prerequisite it is: the
-                    // README's two-step setup ends with "enter the same
-                    // password below".
-                    ClaudeCmuxPasswordSettingsRow(model: claude)
-                }
-            }
-
-            // The integration model is built once at launch and cleared only on
-            // terminate, so the `if let` is not a mode: in a running app both
-            // groups always have their rows.
-            SettingsGroup(title: "Remote hosts", learnMoreURL: LearnMore.remoteHosts) {
-                if let claude = viewModel.claudeIntegrationSettings {
-                    ClaudeRemoteHostsSettingsRow(model: claude)
-                    ClaudeHerdrLocalPanelSettingsRow(model: claude)
-                }
-            }
-        }
-        .onAppear {
-            if isEnrollmentSheetPreviewArmed,
-               let claude = viewModel.claudeIntegrationSettings {
-                claude.presentPreviewPlan()
             }
         }
     }
 }
 
-/// The opencode pane (owner decision, 2026-09-07): the install row plus one
-/// sentence on what an installed plugin gets.
 private struct OpencodeSettingsPane: View {
     let viewModel: DictationViewModel
 
+    private static let learnMoreURL = URL(
+        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/opencode/README.md"
+    )!
+
     var body: some View {
         SettingsPage(tab: .integrationsOpencode) {
-            SettingsGroup(title: "opencode") {
+            SettingsGroup(title: "Setup", learnMoreURL: Self.learnMoreURL) {
                 if let claude = viewModel.claudeIntegrationSettings {
                     OpencodePluginRow(model: claude)
-                }
-
-                SettingsFieldRow(
-                    title: "What it gets",
-                    help: "Dictation joins the focused opencode session and polishes with its prompt and touched files."
-                ) {
-                    EmptyView()
                 }
             }
         }
     }
 }
 
-/// The herdr pane (owner decision, 2026-09-07): status sentence, and the
-/// enrolled-host names when any enrolled host reports a herdr pane. herdr
-/// needs no setup — the row is status-only, and the dot is green whenever
-/// herdr is found.
+/// Everything herdr: whether it is found, the hosts reporting a herdr pane,
+/// and herdr's saved machines — importable as remote hosts — with the local
+/// panel row federated clients need. herdr needs no setup of its own, so the
+/// sidebar dot is green whenever herdr is found.
 private struct HerdrSettingsPane: View {
     let viewModel: DictationViewModel
 
+    private static let savedMachinesURL = URL(
+        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/remote-claude-context.md#federated-herdr-machines"
+    )!
+
     var body: some View {
         SettingsPage(tab: .integrationsHerdr) {
-            SettingsGroup(title: "herdr") {
+            SettingsGroup(title: "Status") {
                 SettingsFieldRow(
-                    title: "Status",
+                    title: "herdr",
                     status: herdrSentence,
                     statusAccessibilityIdentifier: "integrations.herdr.status"
                 ) {
@@ -1270,13 +1216,26 @@ private struct HerdrSettingsPane: View {
 
                 if !herdrPaneHostLabels.isEmpty {
                     SettingsFieldRow(
-                        title: "Hosts reporting a herdr pane",
-                        help: herdrPaneHostLabels.joined(separator: ", ")
+                        title: "Hosts with a herdr pane",
+                        status: herdrPaneHostLabels.joined(separator: ", ")
                     ) {
                         EmptyView()
                     }
                 }
             }
+
+            SettingsGroup(title: "Saved machines", learnMoreURL: Self.savedMachinesURL) {
+                if let claude {
+                    SettingsGroupRow {
+                        HerdrMachinesSettingsList(model: claude)
+                    }
+                    ClaudeHerdrLocalPanelSettingsRow(model: claude)
+                }
+            }
+        }
+        .onAppear {
+            // The saved-machine rows are derived with the host list.
+            claude?.refreshHosts()
         }
     }
 
@@ -1296,16 +1255,61 @@ private struct HerdrSettingsPane: View {
     }
 }
 
+/// Enrolled SSH hosts: the tunnels the Claude Code remote plugin and remote
+/// herdr joins both ride, so the pane belongs to neither harness.
+private struct RemoteHostsSettingsPane: View {
+    let viewModel: DictationViewModel
+
+    private static let learnMoreURL = URL(
+        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/remote-claude-context.md"
+    )!
+
+    /// Read ONCE, when the pane is constructed — like every other `debug.`
+    /// default, this is a screenshot affordance, not a preference that may
+    /// change under a running window. Armed, it auto-presents a SAMPLE
+    /// enrollment sheet whose every mutating action the model refuses.
+    @State private var isEnrollmentSheetPreviewArmed =
+        ClaudeIntegrationSettingsModel.isEnrollmentSheetPreviewArmed()
+
+    var body: some View {
+        SettingsPage(tab: .integrationsRemote) {
+            SettingsGroup(title: "Hosts", learnMoreURL: Self.learnMoreURL) {
+                if let claude = viewModel.claudeIntegrationSettings {
+                    ClaudeRemoteHostsRows(model: claude)
+                }
+            }
+
+            SettingsGroup(title: "Plain SSH") {
+                if let claude = viewModel.claudeIntegrationSettings {
+                    ClaudeShellSetupRow(model: claude)
+                }
+            }
+        }
+        .onAppear {
+            if let claude = viewModel.claudeIntegrationSettings {
+                claude.refreshHosts()
+                claude.refreshListenerStatus()
+                claude.refreshShellSetupStatus()
+                if isEnrollmentSheetPreviewArmed {
+                    claude.presentPreviewPlan()
+                }
+            }
+        }
+    }
+}
+
 /// One terminal's pane (owner decision, 2026-09-07): the status sentence that
-/// explains the row's dot, the capabilities as three short rows, the cmux
-/// socket-mode instruction, and — for a user-added app — removal.
+/// explains the row's dot, the capabilities as three short rows, and — for a
+/// user-added app — removal. cmux adds its session-join setup.
 ///
 /// Group structure is constant per pane (owner rule, 2026-07-04): Status,
-/// then Capabilities. cmux's socket row is present whenever its pane is; a
-/// user app's Remove row likewise.
+/// then Capabilities, then (cmux only) Automation socket. A user app's Remove row
+/// is content of Status.
 private struct TerminalSettingsPane: View {
     let app: TerminalAppDescriptor
     @Bindable var model: TerminalAppsSettingsModel
+    @Bindable var settings: SettingsStore
+    let claude: ClaudeIntegrationSettingsModel?
     /// Removal is owned by the pane's caller: it also has to move the
     /// selection off the pane that is about to disappear.
     let onRemove: (String) -> Void
@@ -1322,10 +1326,7 @@ private struct TerminalSettingsPane: View {
                 }
 
                 if app.isUserAdded {
-                    SettingsFieldRow(
-                        title: "Added app",
-                        help: "Treated as a terminal for dictation and the agent prompt profile."
-                    ) {
+                    SettingsFieldRow(title: "Added app") {
                         Button("Remove") {
                             onRemove(app.detectionBundleIDs.first ?? "")
                         }
@@ -1349,18 +1350,28 @@ private struct TerminalSettingsPane: View {
                     supported: verdicts.screen,
                     reason: verdicts.screenReason
                 )
+            }
 
-                // cmux's socket-mode instruction, one line with a docs link
-                // (owner decision): the two-step setup lives in the plugin
-                // README, not in the pane.
-                if app.slug == "cmux" {
-                    SettingsFieldRow(
-                        title: "Socket mode",
-                        help: TerminalAppCatalog.cmuxSocketReason
-                    ) {
-                        Link("How to set up", destination: TerminalAppCatalog.cmuxDocsURL)
-                    }
-                }
+            if app.slug == "cmux" {
+                cmuxSessionJoinGroup
+            }
+        }
+    }
+
+    /// The cmux join goes through cmux's automation socket: the switch, the
+    /// socket password it needs, and the two-step setup behind one link.
+    private var cmuxSessionJoinGroup: some View {
+        SettingsGroup(title: "Automation socket", learnMoreURL: TerminalAppCatalog.cmuxDocsURL) {
+            SettingsFieldRow(
+                title: "Join sessions in cmux",
+                help: "Reads the pane you dictate into through cmux's socket."
+            ) {
+                Toggle("", isOn: $settings.cmuxSurfaceJoinEnabled)
+                    .labelsHidden()
+            }
+
+            if let claude {
+                ClaudeCmuxPasswordSettingsRow(model: claude)
             }
         }
     }
@@ -1407,7 +1418,7 @@ private struct ClaudePluginInstallRow: View {
         // One line (owner review, 2026-09-07): "label + status" leading, the
         // small buttons in the row's trailing column.
         SettingsFieldRow(
-            title: "Plugin on this Mac",
+            title: "Plugin",
             status: model.pluginResult ?? model.localPluginSentence,
             statusAccessibilityIdentifier: "integrations.claude.plugin.status"
         ) {
@@ -1492,9 +1503,9 @@ private struct OpencodePluginRow: View {
     @State private var isShowingSetup = false
 
     var body: some View {
-        // One line like the Claude Code rows above.
+        // One line like the Claude Code plugin row.
         SettingsFieldRow(
-            title: "opencode",
+            title: "Plugin",
             status: model.opencodeResult ?? model.opencodeSentence,
             statusAccessibilityIdentifier: "integrations.opencode.status"
         ) {
@@ -1533,7 +1544,7 @@ private struct ClaudeCmuxPasswordSettingsRow: View {
 
     var body: some View {
         SettingsFieldRow(
-            title: "cmux socket password",
+            title: "Socket password",
             help: "Stored in your Keychain, sent only to cmux's local socket."
         ) {
             HStack(alignment: .center, spacing: 8) {
@@ -1560,63 +1571,14 @@ private struct ClaudeCmuxPasswordSettingsRow: View {
     }
 }
 
-/// Enrolled SSH hosts and their automated setup flow.
-private struct ClaudeRemoteHostsSettingsRow: View {
+/// The plain-ssh join's shell startup edit, with its consent sheet.
+private struct ClaudeShellSetupRow: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
     @State private var isShowingShellSetup = false
 
     var body: some View {
-        // Stacked: host rows and the enrollment form are full-width composites.
-        SettingsFieldRow(
-            title: "Claude Code over SSH",
-            layout: .stacked
-        ) {
-            VStack(alignment: .leading, spacing: 8) {
-                if !model.isRemoteAvailable {
-                    SettingsInlineMessage(
-                        "The enrolled-host list could not be read. See Console for details.",
-                        color: .orange
-                    )
-                } else {
-                    hostList
-                    // The only place a rejected connection is visible without
-                    // the unified log. It is what an hours-long stream of
-                    // rejections looked like from the app: nothing at all.
-                    if let hint = model.rejectionHint {
-                        SettingsInlineMessage(hint, color: .orange)
-                    }
-                    // Saved herdr machines as an enrollment source: content
-                    // of this group, never a group of its own.
-                    HerdrMachinesSettingsList(model: model)
-                    enrollmentForm
-                    listenerStatus
-                    shellSetup
-                }
-            }
-        }
-        .sheet(item: Binding(get: { model.presentedPlan }, set: { if $0 == nil { model.dismissPlan() } })) { plan in
-            ClaudeRemoteEnrollmentSheet(model: model, presentation: plan) { model.dismissPlan() }
-                .interactiveDismissDisabled(model.isEnrollmentBusy)
-        }
-        // The current API, not `alert(item:)` — that one is deprecated and the
-        // repo builds warning-free. The detail lives HERE and never in the pane
-        // (owner rule: no long text there).
-        .alert(
-            model.alert?.title ?? "",
-            isPresented: Binding(
-                get: { model.alert != nil },
-                set: { if !$0 { model.alert = nil } }
-            ),
-            presenting: model.alert
-        ) { _ in
-            Button("OK", role: .cancel) {}
-        } message: { alert in
-            Text(alert.detail)
-        }
-        .onAppear {
-            model.refreshHosts()
-            model.refreshListenerStatus()
-            model.refreshShellSetupStatus()
+        SettingsGroupRow {
+            shellSetup
         }
         .sheet(isPresented: $isShowingShellSetup) {
             ClaudeShellSetupSheet(model: model) { isShowingShellSetup = false }
@@ -1637,7 +1599,7 @@ private struct ClaudeRemoteHostsSettingsRow: View {
     private var shellSetup: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Terminal setup for plain SSH")
+                Text("Terminal setup")
                     .font(.callout)
                     .accessibilityIdentifier("claude.remote.shellSetup.title")
 
@@ -1670,6 +1632,44 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                 .controlSize(.small)
                 .disabled(!model.canApplyShellSetup)
                 .accessibilityIdentifier("claude.remote.shellSetup.setUp")
+        }
+    }
+}
+
+/// Enrolled SSH hosts, the enrollment form, and the listener they report to.
+private struct ClaudeRemoteHostsRows: View {
+    @Bindable var model: ClaudeIntegrationSettingsModel
+
+    var body: some View {
+        if !model.isRemoteAvailable {
+            SettingsGroupRow {
+                SettingsInlineMessage(
+                    "The enrolled-host list could not be read. See Console for details.",
+                    color: .orange
+                )
+            }
+        } else {
+            SettingsGroupRow {
+                VStack(alignment: .leading, spacing: 8) {
+                    hostList
+                    // The only place a rejected connection is visible without
+                    // the unified log. It is what an hours-long stream of
+                    // rejections looked like from the app: nothing at all.
+                    if let hint = model.rejectionHint {
+                        SettingsInlineMessage(hint, color: .orange)
+                    }
+                }
+            }
+
+            SettingsFieldRow(title: "Add host") {
+                enrollmentForm
+            }
+
+            SettingsGroupRow {
+                VStack(alignment: .leading, spacing: 4) {
+                    listenerStatus
+                }
+            }
         }
     }
 
@@ -1713,7 +1713,7 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                         Spacer(minLength: 8)
 
                         HStack(spacing: 8) {
-                            Button("Update host…") { model.requestPluginUpdate(hostID: host.id) }
+                            Button("Update…") { model.requestPluginUpdate(hostID: host.id) }
                                 .controlSize(.small)
                                 .disabled(model.isEnrollmentBusy)
                             Button("Rotate token") { Task { await model.rotate(hostID: host.id) } }
@@ -1878,6 +1878,49 @@ private struct ClaudeRemoteHostsSettingsRow: View {
         }
     }
 
+}
+
+/// The integration model's enrollment sheet and alert, attached once at the
+/// window root: enrollment starts from Remote hosts (Add host) AND from herdr
+/// (Import…), and plugin failures raise the alert from any integration pane.
+/// One attachment point means one presenter per state, never two panes
+/// fighting over the same sheet.
+private struct ClaudeIntegrationPresentations: ViewModifier {
+    let model: ClaudeIntegrationSettingsModel?
+
+    func body(content: Content) -> some View {
+        if let model {
+            content
+                .sheet(
+                    item: Binding(
+                        get: { model.presentedPlan },
+                        set: { if $0 == nil { model.dismissPlan() } }
+                    )
+                ) { plan in
+                    ClaudeRemoteEnrollmentSheet(model: model, presentation: plan) {
+                        model.dismissPlan()
+                    }
+                    .interactiveDismissDisabled(model.isEnrollmentBusy)
+                }
+                // The current API, not `alert(item:)` — that one is deprecated
+                // and the repo builds warning-free. The detail lives HERE and
+                // never in the pane (owner rule: no long text there).
+                .alert(
+                    model.alert?.title ?? "",
+                    isPresented: Binding(
+                        get: { model.alert != nil },
+                        set: { if !$0 { model.alert = nil } }
+                    ),
+                    presenting: model.alert
+                ) { _ in
+                    Button("OK", role: .cancel) {}
+                } message: { alert in
+                    Text(alert.detail)
+                }
+        } else {
+            content
+        }
+    }
 }
 
 /// One consented setup run, one line per step.
@@ -2132,7 +2175,8 @@ private struct SettingsPage<Content: View>: View {
             // repeating `.toggleStyle(.switch)`.
             .toggleStyle(.switch)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .settingsScrollEdgeEffectHidden()
+        .background(SettingsLayout.detailBackground)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(tab.paneAccessibilityIdentifier)
@@ -2183,14 +2227,9 @@ private struct SettingsGroup<Content: View>: View {
                     cornerRadius: SettingsLayout.cornerRadius,
                     style: .continuous
                 )
+                // No border: on the detail column's white, the fill alone
+                // outlines the card (CodexBar's grouped-row look).
                 .fill(.quinary)
-            }
-            .overlay {
-                RoundedRectangle(
-                    cornerRadius: SettingsLayout.cornerRadius,
-                    style: .continuous
-                )
-                .strokeBorder(.quaternary, lineWidth: 1)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -2198,7 +2237,8 @@ private struct SettingsGroup<Content: View>: View {
 }
 
 /// Insets + trailing divider shared by everything that is a row of a
-/// `SettingsGroup`. Rows own their insets so the dividers span the card.
+/// `SettingsGroup`. The divider is inset like the row's content, so it reads
+/// as a separator between rows rather than a rule across the card.
 private struct SettingsGroupRow<Content: View>: View {
     @ViewBuilder var content: Content
 
@@ -2210,6 +2250,7 @@ private struct SettingsGroupRow<Content: View>: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             Divider()
+                .padding(.horizontal, SettingsLayout.rowHorizontalPadding)
         }
     }
 }

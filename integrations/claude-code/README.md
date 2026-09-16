@@ -78,9 +78,8 @@ default:
    and choose a socket password. (The default `cmuxOnly` mode admits only
    processes cmux itself started, which localvoxtral is not. `allowAll` is
    developer-only and is not required.)
- 2. In localvoxtral, enable **Settings → Integrations → Claude Code → "Join
-    Claude Code sessions in cmux"** and enter the same password in **cmux
-   socket password**. It is stored in your Keychain and sent only to cmux's
+ 2. In localvoxtral, enable **Settings → Terminals → cmux → "Join sessions
+    in cmux"** and enter the same password in **Socket password**. It is stored in your Keychain and sent only to cmux's
    local socket; saving an empty field removes the stored password.
 
 If the socket refuses the app, the settings row says
@@ -111,7 +110,7 @@ out on the session's next hook.
 Supported browsers are **Google Chrome, Brave, and Safari**, and each one needs
 its OWN Automation grant the first time it is used (System Settings → Privacy &
 Security → Automation → localvoxtral). The grant is requested only while
-**Settings → Integrations → "Use Claude Code project files as polish context"** is on
+**Settings → Context → "Agent session"** is on
 — that is the only feature a browser join can serve. Firefox is not supported:
 it exposes no AppleScript surface for the focused tab's URL. A browser join
 never reads anything on your screen (a web page is not a terminal grid, and
@@ -129,8 +128,8 @@ There are two ways it can identify your window, tried in that order.
 
 ### 1. The tty echo (works through jump hosts and `ControlMaster`)
 
-**The app can do this for you.** Settings → Integrations → Remote hosts → *Remote
-Claude Code over SSH* → **Set Up…** next to "Terminal setup for plain SSH". It
+**The app can do this for you.** Settings → Remote hosts → Plain SSH →
+**Set Up…** next to "Terminal setup". It
 shows one consent sentence naming the shell file, links here for details, is
 idempotent (a second run replaces rather than duplicates), and has a **Remove**. The row
 also reports whether a remote session has actually arrived carrying the value,
@@ -291,8 +290,7 @@ nothing to migrate, and you can drop
 
 ## Install / update / uninstall
 
-The app way: **Settings → Integrations → Claude Code → "Claude Code plugin
-(this Mac)" → Install or Update**. That button registers the bundled marketplace
+The app way: **Settings → Claude Code → Plugin → Install or update**. That button registers the bundled marketplace
 and installs the plugin, then reports one short line. Nothing is installed until
 you press it — the app never touches your Claude Code setup at launch or on a
 timer.
@@ -360,8 +358,7 @@ claude plugin list
 One glance at Claude Code's bottom bar answers the question this plugin
 otherwise leaves silent: *is localvoxtral connected to this session?*
 
-The app way: **Settings → Integrations → Claude Code → Status line →
-Set Up…**. A one-sentence consent names `~/.claude/settings.json`; **Details**
+The app way: **Settings → Claude Code → Status line → Set Up…**. A one-sentence consent names `~/.claude/settings.json`; **Details**
 opens this section. The app writes one `statusLine` entry pointing at its bundled
 `localvoxtral-claude-hook --statusline`. Everything else in
 `~/.claude/settings.json` is preserved, although the JSON is rewritten with
@@ -539,8 +536,8 @@ exchange (any HTTP status, even a 401) clears the backoff for everything else.
 
 ## Set it up
 
-In **Settings → Integrations → Remote hosts → "Remote Claude Code over SSH"**,
-type a name and your SSH host alias and press **Enroll…**. The app issues a
+In **Settings → Remote hosts → Add host**, type a name and your SSH host alias
+and press **Enroll…**. The app issues a
 token, binds the listener immediately — there is no relaunch step — and opens a
 sheet whose **Set Up** does all of it in one consented flow, in order, each step
 self-verifying: the SSH config block on this Mac, the shell export block,
@@ -776,8 +773,8 @@ ssh builder "claude plugin install localvoxtral-remote@localvoxtral --config 'po
 
 Order matters: `plugin update` installs whatever the local marketplace clone
 currently offers, so refreshing the clone first is what makes it an update at
-all. In the app, each row in **Remote Claude Code over SSH** has an **Update
-host…** button. Its consent sentence names the local files and enrolled SSH
+all. In the app, each host in **Settings → Remote hosts** has an **Update…**
+button. Its consent sentence names the local files and enrolled SSH
 alias, and **Set Up** runs the same six-step flow as enrollment. The display name
 is never used as a substitute for the alias. A host enrolled before aliases
 were recorded must be re-enrolled before the app can update it.

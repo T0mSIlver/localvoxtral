@@ -18,6 +18,7 @@ extension SettingsTab {
         case .integrationsClaude: return "Claude Code"
         case .integrationsOpencode: return "opencode"
         case .integrationsHerdr: return "herdr"
+        case .integrationsRemote: return "Remote hosts"
         case .terminal: return terminalApp?.displayName ?? "Terminal"
         case .about: return "About"
         }
@@ -25,7 +26,8 @@ extension SettingsTab {
 
     /// The app's own panes keep a colored tile; each harness and terminal row
     /// shows that product's real mark in black and white (CodexBar's Providers
-    /// idiom). Context is a feature pane, not a harness, so it keeps a tile.
+    /// idiom). Context is a feature pane, not a harness, so it keeps a tile;
+    /// Remote hosts is no product, so it gets a plain symbol mark.
     var sidebarIcon: SettingsSidebarIcon {
         switch kind {
         case .general: return .tile(systemImage: "gearshape.fill", tint: Color(nsColor: .systemGray))
@@ -38,6 +40,7 @@ extension SettingsTab {
         case .integrationsClaude: return .brandMark(resourceName: "BrandIcon-claude")
         case .integrationsOpencode: return .brandMark(resourceName: "BrandIcon-opencode")
         case .integrationsHerdr: return .brandMark(resourceName: "BrandIcon-herdr")
+        case .integrationsRemote: return .symbolMark(systemName: "network")
         case .terminal: return terminalApp?.sidebarIcon ?? .symbolMark(systemName: "terminal")
         case .about: return .tile(systemImage: "info.circle.fill", tint: Color(nsColor: .systemGray))
         }
@@ -54,9 +57,12 @@ extension SettingsTab {
 
 enum SettingsSidebarMetrics {
     static let width: CGFloat = 208
-    /// Clears the traffic lights: the window uses a transparent, full-size
-    /// content view, so the first row would otherwise sit under them.
-    static let topInset: CGFloat = 28
+    /// Clears the traffic lights. Both columns ignore the top safe area so the
+    /// sidebar's fill reaches the window's top edge (CodexBar's look), which
+    /// puts y = 0 at the top of the titlebar: this inset is the titlebar's
+    /// 28pt plus the gap above the first row. The pane header uses the same
+    /// inset, so the pane title lines up with the first sidebar row.
+    static let topInset: CGFloat = 52
     static let rowHeight: CGFloat = 34
     static let rowCornerRadius: CGFloat = 8
     /// The leading icon slot, which a colored tile fills edge to edge.
@@ -101,8 +107,8 @@ struct SettingsSidebarView: View {
     /// Full Terminals section list (built-ins + user-added), from
     /// `TerminalAppsSettingsModel.terminalApps`.
     let terminalApps: [TerminalAppDescriptor]
-    /// The dot a row trails, or nil for rows without a status (the main panes,
-    /// About, Add app…).
+    /// The dot a row trails, or nil for rows without a status (the main panes
+    /// other than Context, Add app…).
     let statusDot: (SettingsTab) -> SettingsStatusDot?
     /// Opens the application picker and adds the chosen app (Terminals →
     /// Add app…). Owned here because the row lives in the sidebar.
@@ -115,8 +121,8 @@ struct SettingsSidebarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            // Terminals + Integrations can outgrow the window height, so the
-            // sections scroll and the meta rows stay pinned below.
+            // Every row scrolls, About included: it is an ordinary entry of the
+            // main section (CodexBar's idiom), not a footer pinned over the list.
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(SettingsTab.primarySidebarItems, id: \.self) { tab in
@@ -156,8 +162,10 @@ struct SettingsSidebarView: View {
                     SettingsSidebarAddAppRow(action: addTerminalApp)
                 }
                 .padding(.horizontal, SettingsSidebarMetrics.horizontalInset)
+                .padding(.bottom, 12)
             }
             .scrollIndicators(.hidden)
+            .settingsScrollEdgeEffectHidden()
             .frame(maxHeight: .infinity, alignment: .top)
 
             if let addAppMessage {
@@ -167,27 +175,10 @@ struct SettingsSidebarView: View {
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, SettingsSidebarMetrics.horizontalInset + 4)
+                    .padding(.bottom, 12)
             }
-
-            Spacer(minLength: 12)
-
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(SettingsTab.metaSidebarItems, id: \.self) { tab in
-                    SettingsSidebarRow(
-                        tab: tab,
-                        isSelected: selection == tab,
-                        dot: statusDot(tab)
-                    ) {
-                        selection = tab
-                    }
-                }
-
-                SettingsSidebarVersionFooter()
-            }
-            .padding(.horizontal, SettingsSidebarMetrics.horizontalInset)
         }
         .padding(.top, SettingsSidebarMetrics.topInset)
-        .padding(.bottom, 12)
         .frame(width: SettingsSidebarMetrics.width, alignment: .leading)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(SettingsSidebarBackground())
@@ -408,25 +399,6 @@ private struct SettingsSidebarIconTile: View {
             }
             .shadow(color: Color.black.opacity(0.15), radius: 1, y: 0.5)
             .accessibilityHidden(true)
-    }
-}
-
-private struct SettingsSidebarVersionFooter: View {
-    private var version: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "dev"
-    }
-
-    private var build: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "dev"
-    }
-
-    var body: some View {
-        Text("v\(version) (\(build))")
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 8)
-            .padding(.top, 6)
     }
 }
 

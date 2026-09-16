@@ -22,6 +22,7 @@ struct SettingsTab: Hashable, Sendable {
         case integrationsClaude = "integrations.claude"
         case integrationsOpencode = "integrations.opencode"
         case integrationsHerdr = "integrations.herdr"
+        case integrationsRemote = "integrations.remote"
         /// Raw value completed with the terminal row's slug — see `rawValue`.
         case terminal
         case about
@@ -57,7 +58,6 @@ struct SettingsTab: Hashable, Sendable {
         primarySidebarItems
             + integrationsSidebarItems
             + TerminalAppCatalog.builtIn.map(terminal)
-            + metaSidebarItems
     }
 
     var rawValue: String {
@@ -76,19 +76,23 @@ extension SettingsTab {
     /// Sidebar order, top section. Deliberately NOT the declaration order of
     /// the kind enum: raw values are frozen for the scripts, presentation
     /// order is not.
+    ///
+    /// Context sits with the app's own panes: it is a polishing feature that
+    /// every harness feeds, not a harness. Its raw value predates the move.
+    /// About closes the section as an ordinary row that scrolls with the rest
+    /// (CodexBar's idiom), not a row pinned to the sidebar's bottom.
     static let primarySidebarItems: [SettingsTab] = [
-        .general, .dictation, .endpoints, .textProcessing,
+        .general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about,
     ]
 
     /// The Integrations section (owner decision, 2026-09-07): one row per
     /// harness, each opening its own pane. The old single Integrations pane
-    /// is gone; its `integrations` raw value is retired.
+    /// is gone; its `integrations` raw value is retired. Remote hosts is its
+    /// own row because both the Claude Code remote plugin and remote herdr
+    /// joins ride its tunnels.
     static let integrationsSidebarItems: [SettingsTab] = [
-        .integrationsContext, .integrationsClaude, .integrationsOpencode, .integrationsHerdr,
+        .integrationsClaude, .integrationsOpencode, .integrationsHerdr, .integrationsRemote,
     ]
-
-    /// Pinned to the bottom of the sidebar, under the spacer.
-    static let metaSidebarItems: [SettingsTab] = [.about]
 
     /// Convenience accessors for the static panes, so call sites keep the
     /// `SettingsTab.general` shape they had when this was an enum.
@@ -100,5 +104,6 @@ extension SettingsTab {
     static let integrationsClaude = SettingsTab(.integrationsClaude)
     static let integrationsOpencode = SettingsTab(.integrationsOpencode)
     static let integrationsHerdr = SettingsTab(.integrationsHerdr)
+    static let integrationsRemote = SettingsTab(.integrationsRemote)
     static let about = SettingsTab(.about)
 }

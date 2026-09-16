@@ -47,7 +47,7 @@ prompts are editable (see the config folder below).
 Open **Settings** from the menu bar popover:
 
 - **General** — permission status for Microphone and Accessibility (with
-  grant buttons), copy-on-stop toggle, and Re-run setup
+  grant buttons), and Re-run setup
 - **Engines** — Dictation and Polishing each switch independently between
   `Managed local` (a model picker for polishing, plus a status light),
   `External URL` (server URL, model name, API key), and `Mistral API`
@@ -58,25 +58,26 @@ Open **Settings** from the menu bar popover:
   URL. Lower dictation step intervals show words sooner, while higher values
   use less compute.
 - **Dictation** — the trigger (single modifier key with tap/hold gestures, or
-  per-mode keyboard shortcuts) and the menu-bar output mode
+  per-mode keyboard shortcuts), the menu-bar mode, copy on stop, and the
+  overlay font size
 - **Text Processing** — exact-match replacements, plus the LLM Polishing
   switch, the agent prompt profile, and spoken clipboard paste
+- **Context** — what the polisher may see (repo vocabulary, clipboard, the
+  agent's screen and session); each toggle's help is one line naming what
+  leaves this Mac, and the full terms are in
+  [Terminals & coding agents](coding-agents.md#polish-context-what-each-toggle-sends)
 - **Integrations** — one pane per harness, each with a status dot: green
   means detected and set up, yellow means a setup step is pending, grey
-  means not installed. **Context** holds what the polisher may see (repo
-  vocabulary, terminal screen, Claude Code project files, clipboard); each
-  toggle's help is one line naming what leaves this Mac, and the full terms
-  are in
-  [Terminals & coding agents](coding-agents.md#polish-context-what-each-toggle-sends).
-  **Claude Code** collects the plugin, status line, cmux join, and remote
-  SSH hosts; **opencode** and **herdr** hold their own rows
+  means not installed. **Claude Code** and **opencode** install their
+  plugins; **herdr** shows detection and herdr's saved machines;
+  **Remote hosts** enrolls SSH hosts for remote sessions
 - **Terminals** — one pane per terminal app (plus any you add), showing
   whether it is installed and what it supports: dictation everywhere, session
   join and screen context only on Ghostty (1.4+ or a tip build), iTerm2, Terminal.app, and
   cmux. iTerm2 and Terminal.app ask for the Automation (AppleScript)
   permission on the first session join. **Add app…** picks any application
   to treat as a terminal for dictation; added apps are removed from their
-  own pane
+  own pane. cmux's pane also holds its session join and socket password
 - **About** — version, link to the repository, and Export Diagnostics
   (writes a redacted local report to the Desktop)
 
