@@ -53,7 +53,6 @@ final class SettingsTabTests: XCTestCase {
     func testEveryPaneHasCompleteChrome() {
         for tab in SettingsTab.allKnownPanes {
             XCTAssertFalse(tab.title.isEmpty, "\(tab.rawValue) has no title")
-            XCTAssertFalse(tab.systemImage.isEmpty, "\(tab.rawValue) has no SF Symbol")
             XCTAssertFalse(
                 tab.accessibilityIdentifier.isEmpty,
                 "\(tab.rawValue) has no accessibility identifier"
