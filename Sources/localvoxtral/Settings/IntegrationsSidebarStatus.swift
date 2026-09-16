@@ -47,4 +47,11 @@ enum IntegrationsSidebarStatus {
     static func herdrDot(isDetected: Bool) -> SettingsStatusDot {
         isDetected ? .green : .grey
     }
+
+    /// The Remote hosts row: green while at least one enrolled host is not
+    /// revoked, grey otherwise. No yellow: there is no detected-but-pending
+    /// state for a host that was never enrolled.
+    static func remoteHostsDot(activeHostCount: Int) -> SettingsStatusDot {
+        activeHostCount > 0 ? .green : .grey
+    }
 }

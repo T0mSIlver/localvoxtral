@@ -348,6 +348,50 @@ final class SettingsTabTests: XCTestCase {
         XCTAssertEqual(SettingsTab.integrationsOpencode.rawValue, "integrations.opencode")
         XCTAssertEqual(SettingsTab.integrationsHerdr.title, "herdr")
         XCTAssertEqual(SettingsTab.integrationsHerdr.rawValue, "integrations.herdr")
+        XCTAssertEqual(SettingsTab.integrationsRemote.title, "Remote hosts")
+        XCTAssertEqual(SettingsTab.integrationsRemote.rawValue, "integrations.remote")
+    }
+
+    /// Each pane holds its own subject (owner review, 2026-09-16): herdr rows
+    /// had drifted into Claude Code, the cmux join into Claude Code, and
+    /// harness names into the Context toggles, which gate every agent. Pinned
+    /// at the source, per pane body, so a row cannot quietly move back.
+    func testPanesHoldOnlyTheirOwnSubject() throws {
+        let source = try Self.settingsViewSource()
+
+        func paneBody(_ name: String) throws -> Substring {
+            let start = try XCTUnwrap(
+                source.range(of: "private struct \(name): View {"),
+                "\(name) is gone from SettingsView.swift — update this pin"
+            )
+            let end = source.range(
+                of: "\nprivate struct ", range: start.upperBound..<source.endIndex
+            )?.lowerBound ?? source.endIndex
+            return source[start.lowerBound..<end]
+        }
+
+        let claude = try paneBody("ClaudeCodeSettingsPane")
+        for foreign in ["Herdr", "herdr", "cmux", "Remote", "ClaudeRemote"] {
+            XCTAssertFalse(claude.contains(foreign), "Claude Code pane mentions \(foreign)")
+        }
+
+        let context = try paneBody("IntegrationsContextSettingsPane")
+        XCTAssertFalse(
+            context.contains("title: \"Claude Code"),
+            "Context toggles gate every agent session; no row is titled for one harness"
+        )
+
+        let herdr = try paneBody("HerdrSettingsPane")
+        XCTAssertTrue(herdr.contains("HerdrMachinesSettingsList("))
+        XCTAssertTrue(herdr.contains("ClaudeHerdrLocalPanelSettingsRow("))
+
+        let remote = try paneBody("RemoteHostsSettingsPane")
+        XCTAssertTrue(remote.contains("ClaudeRemoteHostsRows("))
+        XCTAssertFalse(remote.contains("Herdr"), "herdr rows belong on the herdr pane")
+
+        let terminal = try paneBody("TerminalSettingsPane")
+        XCTAssertTrue(terminal.contains("$settings.cmuxSurfaceJoinEnabled"))
+        XCTAssertTrue(terminal.contains("ClaudeCmuxPasswordSettingsRow("))
     }
 
     func testEndpointsTabKeepsRawValueWhileDisplayingEngines() {
@@ -362,13 +406,13 @@ final class SettingsTabTests: XCTestCase {
     func testSidebarOrderIsThePresentationContract() {
         XCTAssertEqual(
             SettingsTab.primarySidebarItems,
-            [.general, .dictation, .endpoints, .textProcessing]
+            [.general, .dictation, .endpoints, .textProcessing, .integrationsContext]
         )
         XCTAssertEqual(
             SettingsTab.integrationsSidebarItems,
             [
-                .integrationsContext, .integrationsClaude, .integrationsOpencode,
-                .integrationsHerdr,
+                .integrationsClaude, .integrationsOpencode, .integrationsHerdr,
+                .integrationsRemote,
             ]
         )
         XCTAssertEqual(SettingsTab.metaSidebarItems, [.about])
@@ -392,7 +436,7 @@ final class SettingsTabTests: XCTestCase {
             [
                 "general", "endpoints", "dictation", "textProcessing", "about",
                 "integrations.context", "integrations.claude", "integrations.opencode",
-                "integrations.herdr",
+                "integrations.herdr", "integrations.remote",
                 "terminals.ghostty", "terminals.iterm2", "terminals.apple-terminal",
                 "terminals.cmux", "terminals.warp", "terminals.wezterm", "terminals.kitty",
                 "terminals.alacritty", "terminals.hyper", "terminals.tabby", "terminals.rio",

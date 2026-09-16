@@ -18,6 +18,7 @@ extension SettingsTab {
         case .integrationsClaude: return "Claude Code"
         case .integrationsOpencode: return "opencode"
         case .integrationsHerdr: return "herdr"
+        case .integrationsRemote: return "Remote hosts"
         case .terminal: return terminalApp?.displayName ?? "Terminal"
         case .about: return "About"
         }
@@ -25,7 +26,8 @@ extension SettingsTab {
 
     /// The app's own panes keep a colored tile; each harness and terminal row
     /// shows that product's real mark in black and white (CodexBar's Providers
-    /// idiom). Context is a feature pane, not a harness, so it keeps a tile.
+    /// idiom). Context is a feature pane, not a harness, so it keeps a tile;
+    /// Remote hosts is no product, so it gets a plain symbol mark.
     var sidebarIcon: SettingsSidebarIcon {
         switch kind {
         case .general: return .tile(systemImage: "gearshape.fill", tint: Color(nsColor: .systemGray))
@@ -38,6 +40,7 @@ extension SettingsTab {
         case .integrationsClaude: return .brandMark(resourceName: "BrandIcon-claude")
         case .integrationsOpencode: return .brandMark(resourceName: "BrandIcon-opencode")
         case .integrationsHerdr: return .brandMark(resourceName: "BrandIcon-herdr")
+        case .integrationsRemote: return .symbolMark(systemName: "network")
         case .terminal: return terminalApp?.sidebarIcon ?? .symbolMark(systemName: "terminal")
         case .about: return .tile(systemImage: "info.circle.fill", tint: Color(nsColor: .systemGray))
         }
@@ -54,9 +57,12 @@ extension SettingsTab {
 
 enum SettingsSidebarMetrics {
     static let width: CGFloat = 208
-    /// Clears the traffic lights: the window uses a transparent, full-size
-    /// content view, so the first row would otherwise sit under them.
-    static let topInset: CGFloat = 28
+    /// Clears the traffic lights. Both columns ignore the top safe area so the
+    /// sidebar's fill reaches the window's top edge (CodexBar's look), which
+    /// puts y = 0 at the top of the titlebar: this inset is the titlebar's
+    /// 28pt plus the gap above the first row. The pane header uses the same
+    /// inset, so the pane title lines up with the first sidebar row.
+    static let topInset: CGFloat = 52
     static let rowHeight: CGFloat = 34
     static let rowCornerRadius: CGFloat = 8
     /// The leading icon slot, which a colored tile fills edge to edge.

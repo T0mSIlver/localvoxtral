@@ -50,11 +50,11 @@ and the raw transcript stays one click away in the menu bar popover.
 By default, clipboard, terminal screen, and project context goes only to a
 polisher running on this Mac. To send enabled context sources to a configured
 non-local polishing endpoint, turn on **Non-local endpoints** in **Settings →
-Integrations → Context**. Use it only with an endpoint you trust.
+Context**. Use it only with an endpoint you trust.
 
 ## Polish context: what each toggle sends
 
-Each **Settings → Integrations → Context** row states its consequence
+Each **Settings → Context** row states its consequence
 in one line; this section is the full text behind those lines.
 
 The first four sources share one default: they run only while the polisher
@@ -63,25 +63,25 @@ toggle that relaxes that.
 
 - **Repo vocabulary** — reads file names from the git repo in your terminal
   (one sandboxed `git ls-files`) so near-miss spellings resolve to real names.
-- **Claude Code screen** — reads file and identifier names from your Claude
-  Code terminal to fix spellings. When that terminal runs a Claude Code
-  session, part of the text on screen also goes to the polisher, verbatim.
-  Ghostty, iTerm2, Terminal.app, and cmux only; in cmux this needs the cmux
-  join as well (see the next section).
-- **Claude Code project** — sends your uncommitted changes, the files Claude
-  Code recently touched, and the last request you sent that session. For a
-  session on a remote host, only the session request and the short excerpts
-  its hooks report go; no files are read from that host. Needs a Claude Code
-  session in a supported terminal, or a Remote Control session in the focused
-  browser tab.
 - **Clipboard** — sends an excerpt of your clipboard text to the polisher,
   sanitized and length-capped, used only as a spelling reference.
+- **Agent screen** — reads file and identifier names from your coding
+  agent's terminal to fix spellings. When that terminal runs a joined Claude
+  Code or opencode session, part of the text on screen also goes to the
+  polisher, verbatim. Ghostty, iTerm2, Terminal.app, cmux, and herdr panes
+  only; in cmux this needs the cmux join as well (see the next section).
+- **Agent session** — sends your uncommitted changes, the files the agent
+  recently touched, and the last request you sent that session. For a
+  session on a remote host, only the session request and the short excerpts
+  its hooks report go; no files are read from that host. Needs a joined
+  Claude Code or opencode session in a supported terminal, or a Claude Code
+  Remote Control session in the focused browser tab.
 - **Non-local endpoints** — when on, the context enabled above also goes to
   the polishing endpoint you configured. Enable it only for an endpoint you
   trust, such as a server on your own network.
 
-The **Join Claude Code sessions in cmux** toggle (in the Claude Code group)
-and its **cmux socket password** row are covered in the
+The **Join sessions in cmux** toggle and its **Socket password** row (both on
+**Settings → Terminals → cmux**) are covered in the
 [plugin README](../integrations/claude-code/README.md#which-terminal-am-i-dictating-into):
 the join uses cmux's automation socket to tell which session you are dictating
 into and reads that surface as context, for local surfaces and for sessions
@@ -118,8 +118,8 @@ while the neighboring pane stays out of the prompt:
 
 https://github.com/user-attachments/assets/15e71c26-3d8b-490f-90d0-f5c507daf5eb
 
-Install is one click: **Settings → Integrations → Claude Code → "Plugin on
-this Mac" → Install or update**. The app registers its bundled plugin
+Install is one click: **Settings → Claude Code → Plugin → Install or
+update**. The app registers its bundled plugin
 marketplace through Claude Code's own CLI. The same pane offers the opt-in
 status-line indicator (it writes exactly the `statusLine` key in
 `~/.claude/settings.json` after a one-sentence consent, never over your own script).
@@ -166,5 +166,5 @@ fields and the threat model.
 > use asks for one Automation permission per terminal or browser.
 
 An [opencode plugin](../integrations/opencode/README.md) exists too, installed
-from **Settings → Integrations → opencode** (copy plus the `tui.json`
+from **Settings → opencode** (copy plus the `tui.json`
 entry, both reversible from the same row).

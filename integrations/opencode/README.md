@@ -12,7 +12,7 @@ telemetry, and when the app is not running every write silently does nothing.
 
 ## Install
 
-In localvoxtral: **Settings → Integrations → Other agents → opencode →
+In localvoxtral: **Settings → opencode → Plugin →
 Set Up…**. A one-sentence consent names both files, and **Details** opens this
 command reference. The app copies its bundled `localvoxtral.js` into opencode's
 global plugin directory and lists it in `~/.config/opencode/tui.json` —

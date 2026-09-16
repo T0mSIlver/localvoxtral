@@ -93,7 +93,7 @@ enum TerminalAppCatalog {
     static let ghosttyVersionReason = "Ghostty 1.4 or newer needed."
 
     static let cmuxSocketReason =
-        "Set cmux's socket to password mode, then save the same password in Claude Code."
+        "Set cmux's socket to password mode, then save the same password below."
 
     /// cmux's two-step setup doc, linked from the cmux pane.
     static let cmuxDocsURL = URL(

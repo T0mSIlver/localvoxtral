@@ -65,4 +65,10 @@ final class IntegrationsSidebarStatusTests: XCTestCase {
         // pane yet" is NOT yellow — herdr needs no setup. The derivation has
         // no yellow output at all, which is the pin.
     }
+
+    func testRemoteHostsDotIsGreenOnlyWithAnActiveHost() {
+        XCTAssertEqual(IntegrationsSidebarStatus.remoteHostsDot(activeHostCount: 1), .green)
+        XCTAssertEqual(IntegrationsSidebarStatus.remoteHostsDot(activeHostCount: 3), .green)
+        XCTAssertEqual(IntegrationsSidebarStatus.remoteHostsDot(activeHostCount: 0), .grey)
+    }
 }

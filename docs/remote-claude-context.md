@@ -34,9 +34,8 @@ What it can never do:
 
 Two different switches, worth keeping apart:
 
-- **The toggle** (**Use Claude Code project files as polish context**, Settings
-  › Integrations) gates what a dictation ATTACHES. With it off, nothing a host sent
-  reaches the polisher. It does not close the port: while any enrolled host is
+- **The toggle** (**Agent session**, Settings › Context) gates what a dictation
+  ATTACHES. With it off, nothing a host sent reaches the polisher. It does not close the port: while any enrolled host is
   unrevoked, the listener keeps accepting and caching valid hook records.
 - **Revocation** is what stops a host. Its requests are then rejected rather
   than not received — if you have other enrolled hosts, one of them is still
@@ -44,17 +43,16 @@ Two different switches, worth keeping apart:
   entirely.
 
 Polish context also stays on this Mac by default: everything above is sent only
-to a polisher running here, unless you turn on **Send polish context to
-non-local endpoints**, which extends it to the polishing endpoint you
-configured.
+to a polisher running here, unless you turn on **Non-local endpoints**, which extends it to the polishing
+endpoint you configured.
 
 ---
 
 ## How enrollment works
 
 If you use herdr's saved machines (herdr 0.9's `herdr machine add`), you do not
-have to type a destination at all: Settings › Integrations › Claude Code › Remote hosts lists
-them under **Saved herdr machines**, one row per machine with its saved ssh
+have to type a destination at all: Settings › herdr lists them under **Saved
+machines**, one row per machine with its saved ssh
 target, and **Import…** fills the enrollment form with the machine's name and
 target. A machine saved as `user@host` or an `ssh://` destination needs a
 `Host` alias in your `~/.ssh/config` first — add one, then import it.
@@ -234,8 +232,8 @@ the app's own listener — and only the remote end varies.
 
 `SendEnv LC_LVX_TTY` carries this terminal's tty into the remote session, so a
 plain `ssh` Claude Code session can be joined to the window you are actually
-dictating into. Set `LC_LVX_TTY` from your shell first — Settings › Integrations ›
-Remote hosts › "Terminal setup for plain SSH" writes the one line for you, or
+dictating into. Set `LC_LVX_TTY` from your shell first — Settings ›
+Remote hosts › Plain SSH › "Terminal setup" writes the one line for you, or
 see the integration README — and with it unset this sends nothing and costs
 nothing. `LC_` is the point: `sshd`'s stock `AcceptEnv LANG LC_*` already lets
 it through, and the environment travels per session channel, so it survives
@@ -400,7 +398,7 @@ stdin, never in a process argument on this Mac; on the host it is in that one
 
 ### Federated herdr machines
 
-If your local herdr 0.9 client is showing a machine from another host, localvoxtral can join the Claude Code session on that machine without needing an ssh process in the terminal: it reads which machine herdr selected, reaches that machine's herdr over the app-managed tunnel, and checks a short-lived panel marker on your screen. If the marker does not appear, use Settings › Integrations › Remote hosts › **Federated herdr panel row** to add the indicator row to this Mac's herdr config, then reload config in herdr; localvoxtral cannot reload herdr for you.
+If your local herdr 0.9 client is showing a machine from another host, localvoxtral can join the Claude Code session on that machine without needing an ssh process in the terminal: it reads which machine herdr selected, reaches that machine's herdr over the app-managed tunnel, and checks a short-lived panel marker on your screen. If the marker does not appear, use Settings › herdr › Saved machines › **Panel row** to add the indicator row to this Mac's herdr config, then reload config in herdr; localvoxtral cannot reload herdr for you.
 
 ## tmux, screen, and window titles
 
@@ -460,7 +458,7 @@ does not by itself prove that the something was localvoxtral: if our own bind
 failed, whatever holds the listener port (8473) here receives the forwarded
 request instead,
 and its rejection looks identical from the host. Check the listener line in
-Settings › Integrations › Remote hosts as well — the in-app check does exactly this,
+Settings › Remote hosts as well — the in-app check does exactly this,
 which is why it can tell you which of the two you are looking at.
 
 `000` — or a curl connection error — means nothing answered: usually just that
@@ -514,7 +512,7 @@ On this Mac:
 
 1. Remove the `# BEGIN localvoxtral claude context (<host-id>)` … `# END …`
    block from `~/.ssh/config`.
-2. In Settings › Integrations › Remote hosts, **Revoke** (or **Remove**) the host.
+2. In Settings › Remote hosts, **Revoke** (or **Remove**) the host.
 
 Step 2 is the one that matters. Revocation is what actually stops the host: the
 token dies on this Mac, not on the remote. With no active hosts left, the

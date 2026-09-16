@@ -10,11 +10,11 @@ struct SettingsPaneHeader: View {
     var body: some View {
         Text(tab.title)
             .font(.system(size: 20, weight: .semibold))
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: SettingsSidebarMetrics.rowHeight, alignment: .leading)
             .padding(.horizontal, 18)
-            // Matches the sidebar's inset: the window draws its content full-size
-            // under a transparent titlebar, so the header needs the same clearance.
+            // The sidebar's inset and row height: the title sits level with
+            // the first sidebar row. No divider below it — the white column
+            // and the unbordered cards carry the separation.
             .padding(.top, SettingsSidebarMetrics.topInset)
-            .padding(.bottom, 6)
     }
 }
