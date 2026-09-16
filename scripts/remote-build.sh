@@ -206,6 +206,20 @@ ensure_remote_server() {
 # because a host that died mid-run must not wedge the exit path — the next
 # real sync deletes the marker anyway.
 TREE_SYNCED=0
+
+# The Mistral lanes write MISTRAL_API_KEY into a JSON marker with printf and
+# no escaping. A key is a plain token, so anything else (a pasted quote, a
+# backslash, trailing junk) would produce malformed JSON that the marker
+# reader rejects — and the suite would then SELF-SKIP after a full remote
+# build, with a skip message that never mentions the key. Fail here, first,
+# with the reason (GLM review, 2026-09-16).
+require_mistral_api_key_format() {
+  if [[ ! "${MISTRAL_API_KEY:-}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "MISTRAL_API_KEY must be a plain token ([A-Za-z0-9._-]); check for stray quotes or whitespace" >&2
+    exit 1
+  fi
+}
+
 cleanup_transient_marker() {
   local marker="$1"
   rm -f "$marker"
@@ -303,6 +317,7 @@ case "$CMD" in
       echo "  export MISTRAL_API_KEY=... && ./scripts/remote-build.sh integration-mistral" >&2
       exit 1
     fi
+    require_mistral_api_key_format
     MISTRAL_MARKER="$ROOT_DIR/.mistral-integration-enable.json"
     # Trap registered before the marker exists, so no kill window can strand a
     # key-bearing file (locally or in the remote work dir).
@@ -496,6 +511,9 @@ case "$CMD" in
       echo "  export MISTRAL_API_KEY=... && ./scripts/remote-build.sh eval-e2e --provider mistral" >&2
       exit 1
     fi
+    if [[ "$E2E_PROVIDER" == "mistral" ]]; then
+      require_mistral_api_key_format
+    fi
     if [[ -n "$E2E_RECORDING_DIR" ]]; then
       # Keep the marker JSON trivially safe and make operator mistakes fail
       # before waking/model-loading the Mac. Human mode is strict: the Swift
@@ -578,6 +596,7 @@ case "$CMD" in
         echo "  e.g. MISTRAL_API_KEY=... $0 eval-llm https://api.mistral.ai mistral/mistral-medium-3-5" >&2
         exit 1
       fi
+      require_mistral_api_key_format
       # 0600 before a single byte of the key is written — the same standard as
       # the integration-mistral marker (the redirect below keeps the mode).
       (umask 077; : >"$EVAL_MARKER")
