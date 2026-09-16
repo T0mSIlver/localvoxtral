@@ -65,7 +65,8 @@ struct TerminalCapabilities: Equatable, Hashable, Sendable {
     /// DYNAMIC gates the catalog cannot know: cmux's socket setup, Ghostty's
     /// installed version. Evaluated by `TerminalAppsSettingsModel`.
     enum DynamicGate: Equatable, Sendable {
-        /// Ghostty's TTY join and AX grid read need ≥ 1.4.
+        /// Ghostty's TTY join and AX grid read need ≥ 1.4 — or a tip build
+        /// whose scripting dictionary already declares the join's chain.
         case ghosttyVersion(installed: String?)
         /// cmux joins only with the surface-join toggle on and a socket
         /// password stored (`CmuxSocketPasswordStore`).
@@ -217,6 +218,83 @@ enum TerminalAppCatalog {
         if major != ghosttyJoinFloor.major { return major > ghosttyJoinFloor.major }
         return minor >= ghosttyJoinFloor.minor
     }
+
+    /// Whether an installed Ghostty can serve the join: a release at the
+    /// floor, or any build whose scripting dictionary declares the property
+    /// chain `AppleScriptTerminalTTYReader` sends. The dictionary arm exists
+    /// for tip builds, which stamp the commit hash into
+    /// `CFBundleShortVersionString` (field: `8867c37c5`, internally
+    /// `1.3.2-main`), so no version string says whether
+    /// ghostty-org/ghostty#11922 is in.
+    static func ghosttyJoinReady(version: String?, dictionaryDeclaresFocusedTTY: Bool) -> Bool {
+        meetsGhosttyFloor(version) || dictionaryDeclaresFocusedTTY
+    }
+
+    /// Whether a Ghostty scripting dictionary (`.sdef` XML) declares both
+    /// links of the join's chain: `focused terminal` on `tab` and `tty` on
+    /// `terminal`. Malformed or empty input answers false. External entities
+    /// (the sdef DOCTYPE names a system DTD) are never resolved.
+    static func ghosttyDictionaryDeclaresFocusedTTY(_ sdef: Data) -> Bool {
+        let parser = XMLParser(data: sdef)
+        parser.shouldResolveExternalEntities = false
+        let collector = ScriptingDictionaryPropertyCollector()
+        parser.delegate = collector
+        guard parser.parse() else { return false }
+        return collector.properties.contains(.init(className: "tab", property: "focused terminal"))
+            && collector.properties.contains(.init(className: "terminal", property: "tty"))
+    }
+
+    /// Reads the scripting dictionary an app bundle names in
+    /// `OSAScriptingDefinition` and answers `ghosttyDictionaryDeclaresFocusedTTY`.
+    /// A bundle without one (not scriptable) answers false.
+    static func ghosttyBundleDeclaresFocusedTTY(_ bundleURL: URL) -> Bool {
+        guard
+            let bundle = Bundle(url: bundleURL),
+            let sdefName = bundle.object(forInfoDictionaryKey: "OSAScriptingDefinition") as? String,
+            let resources = bundle.resourceURL,
+            let data = try? Data(contentsOf: resources.appendingPathComponent(sdefName))
+        else { return false }
+        return ghosttyDictionaryDeclaresFocusedTTY(data)
+    }
+}
+
+/// `(class, property)` name pairs from an sdef, for the Ghostty capability
+/// probe. Lives only for one synchronous `XMLParser.parse()`.
+private final class ScriptingDictionaryPropertyCollector: NSObject, XMLParserDelegate {
+    struct ClassProperty: Hashable {
+        let className: String
+        let property: String
+    }
+
+    private(set) var properties: Set<ClassProperty> = []
+    private var classStack: [String] = []
+
+    func parser(
+        _ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?,
+        qualifiedName: String?, attributes: [String: String] = [:]
+    ) {
+        switch elementName {
+        case "class":
+            classStack.append(attributes["name"] ?? "")
+        case "class-extension":
+            classStack.append(attributes["extends"] ?? "")
+        case "property":
+            if let className = classStack.last, let name = attributes["name"] {
+                properties.insert(ClassProperty(className: className, property: name))
+            }
+        default:
+            break
+        }
+    }
+
+    func parser(
+        _ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?,
+        qualifiedName: String?
+    ) {
+        if elementName == "class" || elementName == "class-extension" {
+            _ = classStack.popLast()
+        }
+    }
 }
 
 /// A user-added terminal app, persisted by `SettingsStore`.
@@ -250,6 +328,9 @@ final class TerminalAppsSettingsModel {
         /// `CFBundleShortVersionString` of the first bundle that matched, when
         /// known. Only Ghostty's floor consults it today.
         let version: String?
+        /// Whether the matched bundle's scripting dictionary declares the
+        /// Ghostty join's property chain. Probed for Ghostty only.
+        var dictionaryDeclaresFocusedTTY: Bool = false
 
         var id: String { app.slug }
     }
@@ -259,8 +340,11 @@ final class TerminalAppsSettingsModel {
     private let applicationURLForBundleID: @Sendable (String) -> URL?
     /// Reads `CFBundleShortVersionString` from an app bundle URL, or nil.
     private let bundleShortVersion: @Sendable (URL) -> String?
+    /// Ghostty's scripting-dictionary probe on an app bundle URL.
+    private let bundleDeclaresGhosttyFocusedTTY: @Sendable (URL) -> Bool
     private var installedCache: [String: Bool] = [:]
     private var versionCache: [String: String?] = [:]
+    private var focusedTTYDictionaryCache: [String: Bool] = [:]
 
     /// Whether cmux's app-side socket setup is complete (toggle on + password
     /// stored). Passed in rather than read here: both facts already have
@@ -283,11 +367,15 @@ final class TerminalAppsSettingsModel {
             else { return nil }
             return version
         },
+        bundleDeclaresGhosttyFocusedTTY: @escaping @Sendable (URL) -> Bool = {
+            TerminalAppCatalog.ghosttyBundleDeclaresFocusedTTY($0)
+        },
         isCmuxSocketSetUp: @escaping () -> Bool = { false }
     ) {
         self.settings = settings
         self.applicationURLForBundleID = applicationURLForBundleID
         self.bundleShortVersion = bundleShortVersion
+        self.bundleDeclaresGhosttyFocusedTTY = bundleDeclaresGhosttyFocusedTTY
         self.isCmuxSocketSetUp = isCmuxSocketSetUp
     }
 
@@ -302,10 +390,14 @@ final class TerminalAppsSettingsModel {
     func refreshInstalledState() {
         var newInstalled: [String: Bool] = [:]
         var newVersions: [String: String?] = [:]
+        var newFocusedTTYDictionaries: [String: Bool] = [:]
         for bundleID in Self.allDetectionBundleIDs(apps: terminalApps) {
             if let url = applicationURLForBundleID(bundleID) {
                 newInstalled[bundleID] = true
                 newVersions[bundleID] = bundleShortVersion(url)
+                if bundleID == TerminalScreenAllowlist.ghosttyBundleID {
+                    newFocusedTTYDictionaries[bundleID] = bundleDeclaresGhosttyFocusedTTY(url)
+                }
             } else {
                 newInstalled[bundleID] = false
                 newVersions[bundleID] = nil
@@ -313,6 +405,7 @@ final class TerminalAppsSettingsModel {
         }
         installedCache = newInstalled
         versionCache = newVersions
+        focusedTTYDictionaryCache = newFocusedTTYDictionaries
         // Sidebar app icons follow the same schedule as the dots.
         SettingsBrandMarks.forgetAppIcons()
     }
@@ -330,7 +423,9 @@ final class TerminalAppsSettingsModel {
         return Row(
             app: app,
             installed: matched != nil,
-            version: matched.flatMap { versionCache[$0] ?? nil }
+            version: matched.flatMap { versionCache[$0] ?? nil },
+            dictionaryDeclaresFocusedTTY: matched.map { focusedTTYDictionaryCache[$0] == true }
+                ?? false
         )
     }
 
@@ -353,7 +448,10 @@ final class TerminalAppsSettingsModel {
         guard row.installed else { return .grey }
         switch row.app.slug {
         case "ghostty":
-            return TerminalAppCatalog.meetsGhosttyFloor(row.version) ? .green : .yellow
+            return TerminalAppCatalog.ghosttyJoinReady(
+                version: row.version,
+                dictionaryDeclaresFocusedTTY: row.dictionaryDeclaresFocusedTTY
+            ) ? .green : .yellow
         case "cmux":
             return isCmuxSocketSetUp ? .green : .yellow
         case "iterm2", "apple-terminal":
@@ -389,7 +487,10 @@ final class TerminalAppsSettingsModel {
         let app = row.app
         switch app.slug {
         case "ghostty":
-            if TerminalAppCatalog.meetsGhosttyFloor(row.version) {
+            if TerminalAppCatalog.ghosttyJoinReady(
+                version: row.version,
+                dictionaryDeclaresFocusedTTY: row.dictionaryDeclaresFocusedTTY
+            ) {
                 return CapabilityVerdicts(
                     join: true, joinReason: nil, joinValueText: "Yes",
                     screen: true, screenReason: nil

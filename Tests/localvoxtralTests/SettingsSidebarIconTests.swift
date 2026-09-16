@@ -136,7 +136,9 @@ final class SettingsSidebarIconTests: XCTestCase {
         let suiteName = "localvoxtral.SettingsSidebarIconTests.\(UUID().uuidString)"
         defer { UserDefaults().removePersistentDomain(forName: suiteName) }
         let model = TerminalAppsSettingsModel(
-            settings: SettingsStore(defaults: UserDefaults(suiteName: suiteName)!, environment: [:]),
+            settings: SettingsStore(
+                defaults: UserDefaults(suiteName: suiteName)!, environment: [:],
+                secretStore: InMemorySecretStore()),
             applicationURLForBundleID: { _ in nil }
         )
         model.refreshInstalledState()
