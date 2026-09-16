@@ -400,6 +400,61 @@ final class HFModelDownloaderTests: XCTestCase {
         )
     }
 
+    /// A cancelled transfer must reach `BackendManager` as a `CancellationError`.
+    /// URLSession reports it as `URLError(.cancelled)`, and everything above
+    /// this seam distinguishes "the user paused" from "the download failed" by
+    /// catching `CancellationError` — get this wrong and Pause renders as a
+    /// failure, then as Stopped, with no Resume button.
+    func testCancellingMidTransferThrowsCancellationNotATransportFailure() async throws {
+        let cache = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let pin = "0123456789abcdef0123456789abcdef01234567"
+        let transport = makePausableTransport(pin: pin)
+        let downloader = HFModelDownloader(
+            cacheRoot: cache,
+            transport: transport,
+            progressByteGranularity: 1
+        )
+        let request = pausableRequest(pin: pin)
+
+        let paused = Task { try await downloader.prepare(request) { _ in } }
+        await transport.waitUntilDownloadStarted()
+        paused.cancel()
+
+        do {
+            try await paused.value
+            XCTFail("expected the cancelled prepare to throw")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+    }
+
+    /// The mapping above must stay narrow: a transport error that is NOT a
+    /// cancellation still has to surface as a failure the UI can report.
+    func testNonCancellationTransportErrorStillSurfacesAsAModelDownloadFailure() async throws {
+        let cache = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let pin = "0123456789abcdef0123456789abcdef01234567"
+        let transport = FakeHFModelDownloadTransport(
+            repositoryJSON: repositoryJSON(sha: pin, files: ["model.safetensors"]),
+            payloads: [:],
+            downloadFailure: URLError(.timedOut)
+        )
+        let downloader = HFModelDownloader(cacheRoot: cache, transport: transport)
+
+        do {
+            try await downloader.prepare(pausableRequest(pin: pin)) { _ in }
+            XCTFail("expected the failing prepare to throw")
+        } catch let error as ModelDownloadError {
+            guard case .transport = error else {
+                return XCTFail("unexpected ModelDownloadError: \(error)")
+            }
+        } catch {
+            XCTFail("expected ModelDownloadError.transport, got \(error)")
+        }
+    }
+
     private func makePausableTransport(pin: String) -> FakeHFModelDownloadTransport {
         FakeHFModelDownloadTransport(
             repositoryJSON: repositoryJSON(
@@ -487,6 +542,9 @@ private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unc
     /// behind HF `resolve/` redirects); their size is only learned from the
     /// transfer itself via `onBytes`.
     private let headlessFiles: Set<String>
+    /// Thrown instead of completing a transfer, for the non-cancellation
+    /// failure path.
+    private let downloadFailure: Error?
     private let state = Mutex(State())
 
     init(
@@ -496,11 +554,13 @@ private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unc
         /// Files whose FIRST transfer suspends mid-file until the task is
         /// cancelled and then leaves resume data behind, standing in for
         /// `URLSessionDownloadTask.cancel(byProducingResumeData:)`.
-        pausableFiles: Set<String> = []
+        pausableFiles: Set<String> = [],
+        downloadFailure: Error? = nil
     ) {
         self.repositoryJSON = repositoryJSON
         self.payloads = payloads
         self.headlessFiles = headlessFiles
+        self.downloadFailure = downloadFailure
         state.withLock { $0.pendingPausableFiles = pausableFiles }
     }
 
@@ -512,6 +572,28 @@ private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unc
 
     static func resumeBytes(for fileName: String) -> Data {
         Data("resume-\(fileName)".utf8)
+    }
+
+    /// The domain the REAL transport reports. URLSession completes a cancelled
+    /// download task with `URLError(.cancelled)` (NSURLErrorDomain -999), never
+    /// with `CancellationError`, and everything above `prepare` tells "the user
+    /// paused" from "the download failed" by catching `CancellationError`.
+    static let cancellationError = URLError(.cancelled)
+
+    private func retainResumeData(for url: URL, fileName: String) {
+        state.withLock { $0.resumeDataByURL[url.absoluteString] = Self.resumeBytes(for: fileName) }
+    }
+
+    private func cancelTransfer(url: URL, fileName: String) {
+        let continuation: CheckedContinuation<Void, Error>? = state.withLock {
+            // What URLSession's cancel(byProducingResumeData:) leaves behind,
+            // and what the real transport then retains.
+            $0.resumeDataByURL[url.absoluteString] = Self.resumeBytes(for: fileName)
+            let parked = $0.pauseContinuation
+            $0.pauseContinuation = nil
+            return parked
+        }
+        continuation?.resume(throwing: Self.cancellationError)
     }
 
     func repositoryInfo(from url: URL) async throws -> (data: Data, statusCode: Int) {
@@ -553,6 +635,8 @@ private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unc
         }
         started?.resume()
 
+        if let downloadFailure { throw downloadFailure }
+
         let payload = payloads[fileName] ?? Data()
         // Report the file in two halves so incremental-progress tests can
         // observe an in-flight (non-boundary) update.
@@ -565,24 +649,23 @@ private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unc
             try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { continuation in
                     // Same orphan guard as FakeModelPreparer: the cancellation
-                    // handler can run before this continuation is parked.
+                    // handler can run before this continuation is parked. Both
+                    // exits go through `cancelTransfer` so the error domain
+                    // does not depend on which side of that race wins — it
+                    // used to, and one path throwing CancellationError hid the
+                    // defect the other path exposed.
                     let orphaned: CheckedContinuation<Void, Error>? = state.withLock {
                         if Task.isCancelled { return continuation }
                         $0.pauseContinuation = continuation
                         return nil
                     }
-                    orphaned?.resume(throwing: CancellationError())
+                    if let orphaned {
+                        retainResumeData(for: url, fileName: fileName)
+                        orphaned.resume(throwing: Self.cancellationError)
+                    }
                 }
             } onCancel: {
-                let continuation: CheckedContinuation<Void, Error>? = self.state.withLock {
-                    // What URLSession's cancel(byProducingResumeData:) leaves
-                    // behind, and what the real transport then retains.
-                    $0.resumeDataByURL[url.absoluteString] = Self.resumeBytes(for: fileName)
-                    let continuation = $0.pauseContinuation
-                    $0.pauseContinuation = nil
-                    return continuation
-                }
-                continuation?.resume(throwing: CancellationError())
+                self.cancelTransfer(url: url, fileName: fileName)
             }
         }
 

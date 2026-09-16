@@ -493,7 +493,7 @@ struct HFModelDownloader: ModelPreparing {
                     options: .atomic
                 )
             }
-        } catch is CancellationError {
+        } catch let error where Self.isCancellation(error) {
             throw CancellationError()
         } catch let error as ModelDownloadError {
             throw error
@@ -503,6 +503,27 @@ struct HFModelDownloader: ModelPreparing {
                 detail: error.localizedDescription
             )
         }
+    }
+
+    /// Whether an error from the transport means "this task was cancelled"
+    /// rather than "the download failed".
+    ///
+    /// URLSession does not report a cancelled download task as a
+    /// `CancellationError`: it completes the task with `URLError(.cancelled)`
+    /// (NSURLErrorDomain -999), and without this every Pause reached
+    /// `BackendManager` as a transport failure — the Engines row flashed
+    /// "Failed." and settled on "Stopped" with no Resume button, while the
+    /// retained bytes made the next trigger silently resume and hid it.
+    ///
+    /// Deliberately narrow: only a cancellation code, and only while this task
+    /// really is cancelled, so a timeout or a dropped connection still surfaces
+    /// as a failure the UI can report.
+    private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        guard Task.isCancelled else { return false }
+        return (error as? URLError)?.code == .cancelled
+            || (error as NSError).domain == NSURLErrorDomain
+            && (error as NSError).code == NSURLErrorCancelled
     }
 
     func discardPartialDownloads(for request: ModelPreparationRequest) {

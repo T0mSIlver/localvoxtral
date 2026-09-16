@@ -888,17 +888,51 @@ final class BackendManagerTests: XCTestCase {
         )
     }
 
+    /// A transport failure that is NOT a cancellation must still land on
+    /// `.failed` — the pause mapping in `HFModelDownloader` has to stay narrow
+    /// enough that a dead network is still reported as a failure.
+    func testNonCancellationPrepareFailureStillMarksTheBackendFailed() async {
+        let modelPreparer = FakeModelPreparer(
+            failures: [BackendCatalog.polishd.id: URLError(.timedOut)]
+        )
+        let manager = makeManager(
+            modelPreparer: modelPreparer,
+            supervisorFactory: FakeSupervisorFactory()
+        )
+
+        do {
+            try await manager.ensureReady(dictation: false, polishing: true)
+            XCTFail("expected ensureReady to throw")
+        } catch is CancellationError {
+            XCTFail("a timeout must not be reported as a cancellation")
+        } catch {}
+
+        guard case .failed = manager.polishdStatus else {
+            return XCTFail("expected .failed, got \(manager.polishdStatus)")
+        }
+        XCTAssertTrue(modelPreparer.discardedRepoIDs.isEmpty)
+    }
+
     /// Spins the main actor until the backend reaches the wanted status. The
     /// preparer's scripted progress is delivered through a `@MainActor` hop, so
-    /// the condition is reached by yielding — no wall clock involved.
+    /// the condition is reached by yielding — no wall clock involved. Bounded so
+    /// a regression fails the test instead of hanging the runner.
     private func waitUntilStatus(
         of spec: ManagedBackendSpec,
         on manager: BackendManager,
-        matching predicate: (ManagedBackendStatus) -> Bool
+        matching predicate: (ManagedBackendStatus) -> Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
     ) async {
-        while !predicate(manager.status(for: spec)) {
+        for _ in 0..<10_000 {
+            if predicate(manager.status(for: spec)) { return }
             await Task.yield()
         }
+        XCTFail(
+            "\(spec.displayName) never reached the expected status (last: \(manager.status(for: spec)))",
+            file: file,
+            line: line
+        )
     }
 
     func testModelPreparationFailureMarksBackendFailedWithDetails() async {
