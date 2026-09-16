@@ -118,7 +118,13 @@ struct localvoxtralApp: App {
             // resizes the window under the pointer.
             .frame(width: 780)
             .frame(minHeight: 480, idealHeight: 560, maxHeight: .infinity)
+            // Declared to SwiftUI rather than only set on the NSWindow: on
+            // macOS 26 SwiftUI re-asserts its own titlebar and paints an opaque
+            // strip over the sidebar (PR #310 hand-check), which AppKit flags
+            // alone did not survive.
+            .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         }
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 780, height: 560)
         .restorationBehavior(.disabled)
     }
