@@ -90,17 +90,65 @@ ported — so the two cannot drift.
 
 ## `release.yml`
 
-One-command, gate-then-tag releases on the self-hosted runner:
+One-command, gate-then-tag releases on the self-hosted runner, in two
+channels that share every gate:
 
 ```bash
-./scripts/release.sh            # patch bump
+./scripts/release.sh            # patch bump, stable channel
 ./scripts/release.sh minor      # or major, or an explicit X.Y.Z
+./scripts/release.sh nightly    # a nightly prerelease of main, on demand
+./scripts/release.sh rehearse [target] [ref]   # all gates, no tag, no release
 ```
 
 Pipeline: compute next version from the latest `v*` tag → release build →
 unit tests → live integration tests (speechd STT service) → package app bundle → launch
 smoke test → zip + dmg → **create tag** → publish GitHub release with
 auto-generated notes and both artifacts.
+
+**Stable** is deliberate: dispatched by hand from `main` (or from a branch as
+an `X.Y.Z-rc.N` prerelease), and it is what GitHub's `/releases/latest`
+points at, which is what `install.sh` follows by default.
+
+**Nightly** runs from the cron at 03:15 UTC (clear of eval-e2e at 04:45 and
+the ui-smoke ladder at 18:00 to 21:00 on the same single runner), or on
+demand with `release.sh nightly`. A schedule event is always the nightly
+channel, and a real nightly publishes from `main` only. Its version is the
+latest stable tag with the patch bumped and a `-nightly.YYYYMMDD` suffix,
+with `.2`, `.3` and so on for a second build the same day
+(`scripts/ci/nightly-version.sh`, tested by `test-nightly-version.sh`).
+Nightlies publish with `prerelease: true`, so `/releases/latest` keeps
+pointing at the newest stable release, and the stable bump base excludes
+every `v*-*` tag so a nightly can never become the base for the next stable
+version. Users opt in with `LOCALVOXTRAL_CHANNEL=nightly` (see
+[docs/install.md](../../docs/install.md)).
+
+Two things the nightly does that stable does not:
+
+- **Skip when nothing is new.** A scheduled run stops green, with a
+  step-summary line, when `main` is already released as the newest nightly or
+  the newest stable tag. It also stops green when the Mac is on battery power
+  (`scripts/ci/ac-power-guard.sh`, the guard eval-e2e and ui-smoke share). A
+  dispatch always builds.
+- **Prune.** After publishing, nightly releases beyond the newest 7 are
+  deleted with their tags. The selection is
+  `scripts/ci/prune-nightly-releases.sh`: it takes tags on stdin, prints only
+  tags matching the nightly shape exactly, and touches no network, so
+  `test-prune-nightly-releases.sh` can hold it to the cases that matter (a
+  stable or rc tag is invisible to it). The workflow re-checks the shape
+  before each delete.
+
+**Rehearsal** (`publish=false`, or `release.sh rehearse`) runs every gate and
+the packaging, then uploads the zip, dmg and checksums as the
+`localvoxtral-release-rehearsal` artifact with 7-day retention. No tag, no
+release, and the step summary says so. Rehearsal is allowed from any ref on
+either channel, which is how a change to this workflow is proved before it
+merges.
+
+The unit-test gate mirrors `ci.yml`'s tier-0 unit step skip for skip, under
+the same supervisor. Two of those skips are load-bearing:
+`HerdrIntegrationTests` starts a live herdr server and carries no `XCTSkip`
+by design, and `AgentDictationE2EEvalTests` is the nightly eval lane. A
+release gate must not start either by accident.
 
 Release notes: GitHub's generated PR list is always included, and a release
 may additionally ship a **hand-written summary** committed ahead of time at
@@ -110,7 +158,10 @@ the release body and the generated changelog is appended below it;
 `scripts/ci/resolve-release-notes.sh` decides, and its self-test runs in CI's
 shell-test step. The file is optional — with none, the release publishes with
 generated notes exactly as before — but a file that exists and is empty is a
-hard failure rather than a release with a blank human section.
+hard failure rather than a release with a blank human section. A nightly body
+also opens with a fixed header saying which commit it is, how to install it,
+and that it is not a stable release; a hand-written nightly file lands under
+that header.
 
 The tag is created only after every gate passes, so a failed release leaves
 no orphan tag. Releases are ad-hoc signed on purpose (a local signing cert

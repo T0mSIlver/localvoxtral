@@ -9,7 +9,12 @@
 #   reason=<one line, safe for a step summary>
 #
 # Convention: `docs/release-notes/<tag>.md`, e.g. docs/release-notes/v0.9.0.md.
-# The tag is exactly what release.yml computes (`v` + X.Y.Z, or X.Y.Z-rc.N).
+# The tag is exactly what release.yml computes (`v` + X.Y.Z, X.Y.Z-rc.N, or
+# a nightly's X.Y.Z-nightly.YYYYMMDD[.N]). Nightlies normally have no such
+# file — they are built from main every night and publish with the generated
+# notes alone — but the grammar accepts them so a hand-written note for one
+# is possible and, more importantly, so a nightly tag is never a hard failure
+# in the middle of a release.
 #
 # Optional on purpose. A release with no such file still publishes with
 # GitHub's generated notes, exactly as every release before this one did —
@@ -34,8 +39,8 @@ ROOT_DIR="${2:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 # in a filesystem path, so validate its shape rather than trusting it: only the
 # grammar release.yml can produce is accepted, which also rules out `..` and
 # any separator.
-if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
-  echo "refusing to resolve notes for a tag that is not vX.Y.Z[-rc.N]: $TAG" >&2
+if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+|-nightly\.[0-9]{8}(\.[0-9]+)?)?$ ]]; then
+  echo "refusing to resolve notes for a tag that is not vX.Y.Z[-rc.N|-nightly.YYYYMMDD[.N]]: $TAG" >&2
   exit 2
 fi
 

@@ -205,6 +205,8 @@ jobs:
           ./scripts/ci/test-workflow-step-names.sh
           ./scripts/ci/test-agents-guide-budget.sh
           ./scripts/ci/test-resolve-release-notes.sh
+          ./scripts/ci/test-nightly-version.sh
+          ./scripts/ci/test-prune-nightly-releases.sh
 
       - name: Record hosted toolchain
         id: hosted_toolchain

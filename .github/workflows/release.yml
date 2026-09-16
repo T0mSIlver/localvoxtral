@@ -4,12 +4,30 @@ name: Release App
 # the pipeline gates, tags, packages, and publishes. The tag is created ONLY
 # after every gate passes — a failed release leaves no orphan tag behind.
 # Trigger from anywhere: ./scripts/release.sh minor   (wraps gh workflow run)
+#
+# TWO CHANNELS, ONE PIPELINE. Stable is deliberate and hand-dispatched;
+# nightly ships main every night as a prerelease. They share every gate on
+# purpose — a second pipeline would drift, and a nightly that skipped gates
+# would not be the build the owner dogfoods. The only differences are the
+# version shape, `prerelease: true` (so GitHub's /releases/latest, which
+# install.sh's stable path follows, never points at a nightly), the fixed
+# nightly body, and the pruning step.
+#
+# Rehearsal: `publish=false` runs the whole pipeline and uploads the
+# artifacts, but creates no tag and no release. That is how a change to THIS
+# file is proved before it merges.
 
 on:
   workflow_dispatch:
     inputs:
+      channel:
+        description: "stable (hand-cut, follows /releases/latest) or nightly (main, prerelease)"
+        required: false
+        default: "stable"
+        type: choice
+        options: [stable, nightly]
       bump:
-        description: "Version bump from the latest v* tag"
+        description: "Version bump from the latest v* tag (stable channel only)"
         required: false
         default: "patch"
         type: choice
@@ -18,6 +36,16 @@ on:
         description: "Explicit version (X.Y.Z, or X.Y.Z-rc.N for a prerelease) — overrides bump"
         required: false
         type: string
+      publish:
+        description: "Publish for real. false = rehearsal: all gates run, no tag, no release, artifacts uploaded"
+        required: false
+        default: true
+        type: boolean
+  schedule:
+    # 03:15 UTC nightly. Deliberately clear of the other self-hosted lanes on
+    # the single runner: eval-e2e at 04:45 UTC and ui-smoke's evening ladder
+    # (18:00–21:00 UTC). A schedule event is always the nightly channel.
+    - cron: "15 3 * * *"
 
 permissions:
   contents: write
@@ -32,62 +60,225 @@ jobs:
     # integration gate). Releases stay ad-hoc signed: the runner's localvoxtral-dev cert
     # is meaningless on users' machines, so we don't set the identity here.
     runs-on: [self-hosted, macOS, ARM64]
-    timeout-minutes: 30
+    # 45, not the old 30: this checkout is clean, so every run rebuilds from
+    # cold, and observed releases ran 7-20 min. The unit gate has its own
+    # 900 s supervisor, so a hang is caught long before this bound.
+    timeout-minutes: 45
     steps:
       # Stable releases dispatch on main; X.Y.Z-rc.N prereleases may dispatch
       # on any branch (the Compute version step enforces this pairing), so a
       # release candidate can be installed via install.sh and hand-tested
-      # end-to-end before the branch merges.
+      # end-to-end before the branch merges. Nightlies publish from main only.
+      # Rehearsals (publish=false) run from any ref on either channel.
       - name: Checkout release ref
         uses: actions/checkout@v4
         with:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
 
-      - name: Compute version
-        id: meta
+      - name: Plan this run
+        # Everything that decides WHETHER this run proceeds, in one place, so
+        # every step below carries a single `if:`. Three separate reasons a
+        # run stops here, all of them green (a skipped nightly is not a
+        # failure):
+        #   * the scheduled nightly on battery power (ac-power-guard.sh, the
+        #     same guard eval-e2e.yml and ui-smoke.yml use — owner rule
+        #     2026-07-24: scheduled lanes never drain the MacBook). Manual
+        #     dispatches are explicit intent and never consult it;
+        #   * a scheduled nightly with nothing new to ship (HEAD is already
+        #     the newest nightly's or the newest stable's commit);
+        #   * nothing else: a dispatch always builds.
+        id: plan
+        env:
+          CHANNEL_INPUT: ${{ inputs.channel }}
+          PUBLISH_INPUT: ${{ inputs.publish }}
         run: |
           set -euo pipefail
-          EXPLICIT="${{ inputs.version }}"
-          if [[ -n "$EXPLICIT" ]]; then
+
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            CHANNEL="nightly"
+            PUBLISH="true"
+          else
+            CHANNEL="${CHANNEL_INPUT:-stable}"
+            PUBLISH="${PUBLISH_INPUT:-true}"
+          fi
+          case "$CHANNEL" in
+            stable|nightly) ;;
+            *) echo "Unknown channel: $CHANNEL"; exit 1 ;;
+          esac
+          case "$PUBLISH" in
+            true|false) ;;
+            *) echo "Unknown publish value: $PUBLISH"; exit 1 ;;
+          esac
+
+          if [[ "$PUBLISH" == "true" && "$CHANNEL" == "nightly" \
+                && "${{ github.ref_name }}" != "main" ]]; then
+            echo "Nightly releases publish from main only. To exercise this pipeline from '${{ github.ref_name }}', dispatch with publish=false (rehearsal)."
+            exit 1
+          fi
+
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+
+          PROCEED=true
+          REASON="dispatched by hand"
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            DECISION="$(./scripts/ci/ac-power-guard.sh)"
+            REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
+            if [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" != "true" ]]; then
+              PROCEED=false
+            fi
+
+            if [[ "$PROCEED" == "true" ]]; then
+              # Nothing new to ship: the newest nightly (or the newest stable
+              # release) is already this exact commit. Rebuilding it would
+              # burn half an hour of the owner's Mac to publish a duplicate.
+              HEAD_SHA="$(git rev-parse HEAD)"
+              NEWEST_NIGHTLY="$(git tag --list 'v*-nightly.*' --sort=-creatordate | head -n 1)"
+              NEWEST_STABLE="$(git tag --list 'v[0-9]*' --sort=-creatordate \
+                | grep -vE -- '-' | head -n 1)"
+              for TAG in "$NEWEST_NIGHTLY" "$NEWEST_STABLE"; do
+                [[ -n "$TAG" ]] || continue
+                TAG_SHA="$(git rev-list -n 1 "$TAG" 2>/dev/null || true)"
+                if [[ -n "$TAG_SHA" && "$TAG_SHA" == "$HEAD_SHA" ]]; then
+                  PROCEED=false
+                  REASON="main is already released as $TAG ($(git rev-parse --short HEAD)) — nothing new to ship"
+                  break
+                fi
+              done
+            fi
+          fi
+          echo "proceed=$PROCEED" >> "$GITHUB_OUTPUT"
+
+          {
+            if [[ "$PROCEED" != "true" ]]; then
+              echo "## Nightly skipped"
+              echo ""
+              echo "$REASON"
+            elif [[ "$PUBLISH" != "true" ]]; then
+              echo "## REHEARSAL — no tag, no release"
+              echo ""
+              echo "Channel \`$CHANNEL\` from \`${{ github.ref_name }}\` @ \`$(git rev-parse --short HEAD)\`."
+              echo "Every gate and the packaging run; the artifacts are uploaded as"
+              echo "\`localvoxtral-release-rehearsal\` and nothing is tagged or published."
+            else
+              echo "## Release ($CHANNEL channel)"
+              echo ""
+              echo "From \`${{ github.ref_name }}\` @ \`$(git rev-parse --short HEAD)\` — $REASON."
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Compute version
+        # The `!= 'false'` comparison (not `== 'true'`) fails OPEN, the same
+        # way eval-e2e.yml and ui-smoke.yml gate on their guards: a plan step
+        # that somehow produced no output must not silently skip every
+        # release forever. Same condition on every step below.
+        if: steps.plan.outputs.proceed != 'false'
+        id: meta
+        env:
+          # env indirection rather than inline ${{ }}: `version` is a
+          # free-text dispatch input and lands in a shell script.
+          EXPLICIT: ${{ inputs.version }}
+          BUMP: ${{ inputs.bump }}
+          CHANNEL: ${{ steps.plan.outputs.channel }}
+          PUBLISH: ${{ steps.plan.outputs.publish }}
+        run: |
+          set -euo pipefail
+          if [[ "$CHANNEL" == "nightly" ]]; then
+            if [[ -n "$EXPLICIT" ]]; then
+              echo "channel=nightly computes its own version; drop the version input (or dispatch channel=stable)."; exit 1
+            fi
+            # Every tag that exists anywhere, so the same-day .N search cannot
+            # pick a name the remote already holds.
+            TAGS_FILE="$RUNNER_TEMP/existing-tags.txt"
+            {
+              git tag --list
+              git ls-remote --tags origin | sed -n 's#.*refs/tags/##p' | sed 's/\^{}$//'
+            } | sort -u > "$TAGS_FILE"
+            DECISION="$(./scripts/ci/nightly-version.sh "$(date -u +%Y%m%d)" "$TAGS_FILE")"
+            VERSION="$(sed -n 's/^version=//p' <<<"$DECISION")"
+            PRERELEASE=true
+            echo "Nightly derived from $(sed -n 's/^base=//p' <<<"$DECISION")"
+          elif [[ -n "$EXPLICIT" ]]; then
             if [[ ! "$EXPLICIT" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
               echo "Invalid explicit version: $EXPLICIT (expected X.Y.Z or X.Y.Z-rc.N)"; exit 1
             fi
             VERSION="$EXPLICIT"
+            if [[ "$VERSION" == *-rc.* ]]; then PRERELEASE=true; else PRERELEASE=false; fi
           else
             # --exclude keeps rc tags out of the bump base, or a stale rc
-            # would poison the arithmetic below.
+            # would poison the arithmetic below. It excludes every `v*-*` tag,
+            # which is also what keeps nightlies out of the stable bump:
+            # v0.8.5-nightly.20260916 must never become the base for v0.8.6.
+            # scripts/ci/nightly-version.sh asserts the same property from the
+            # nightly side (test-nightly-version.sh).
             LATEST="$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude 'v*-*' 2>/dev/null || echo v0.0.0)"
             BASE="${LATEST#v}"
             IFS=. read -r MA MI PA <<< "$BASE"
-            case "${{ inputs.bump }}" in
+            case "$BUMP" in
               major) VERSION="$((MA+1)).0.0" ;;
               minor) VERSION="$MA.$((MI+1)).0" ;;
               patch) VERSION="$MA.$MI.$((PA+1))" ;;
               *) echo "Unknown bump"; exit 1 ;;
             esac
+            PRERELEASE=false
           fi
-          if [[ "$VERSION" == *-rc.* ]]; then PRERELEASE=true; else PRERELEASE=false; fi
-          if [[ "${{ github.ref_name }}" != "main" && "$PRERELEASE" != "true" ]]; then
+
+          if [[ "$PUBLISH" == "true" && "${{ github.ref_name }}" != "main" && "$PRERELEASE" != "true" ]]; then
             echo "Stable releases dispatch on main only. To cut a prerelease from '${{ github.ref_name }}', pass an explicit X.Y.Z-rc.N version."; exit 1
           fi
           TAG="v$VERSION"
-          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null \
-             || git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+          # A rehearsal creates no tag, so an existing one is not a conflict —
+          # rehearsing the next stable version twice must stay possible.
+          if [[ "$PUBLISH" == "true" ]] \
+             && { git rev-parse -q --verify "refs/tags/$TAG" >/dev/null \
+                  || git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; }; then
             echo "Tag already exists: $TAG"; exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
-          echo "Releasing $TAG (prerelease=$PRERELEASE) from ${{ github.ref_name }} @ $(git rev-parse --short HEAD)"
+          echo "Releasing $TAG (channel=$CHANNEL, prerelease=$PRERELEASE, publish=$PUBLISH) from ${{ github.ref_name }} @ $(git rev-parse --short HEAD)"
 
       - name: Gate — build
+        if: steps.plan.outputs.proceed != 'false'
         run: swift build -c release
 
       - name: Gate — unit tests
+        if: steps.plan.outputs.proceed != 'false'
+        # Mirrors ci.yml's tier-0 unit step, skip for skip. Two of those skips
+        # are not optional here: HerdrIntegrationTests starts a LIVE herdr
+        # server (it carries no XCTSkip by design — AGENTS.md), and
+        # AgentDictationE2EEvalTests is the many-minute nightly eval lane. A
+        # release gate must never start either by accident.
+        #
+        # Supervised the same way ci.yml supervises it: on a HANG the
+        # supervisor samples the wedged xctest before killing it, which is the
+        # only forensics a release-time hang would otherwise leave. 900 s is
+        # ci.yml's bound on a slower hosted VM, so it is generous here.
+        # NSUnbufferedIO keeps xctest's piped stdout from block-buffering the
+        # log away from the test that hung.
+        #
+        # No --enable-code-coverage: nothing here consumes a profile, and this
+        # workspace is checked out clean, so there is no warm .build whose
+        # flags a mismatch would churn (see .github/workflows/README.md).
         run: |
-          swift test \
-            --skip RealtimeAPIVLLMIntegrationTests
+          NSUnbufferedIO=YES ./scripts/ci/run-supervised-command.sh \
+            900 "$RUNNER_TEMP/localvoxtral-release-unit-tests.log" -- \
+            swift test \
+            --skip RealtimeAPIVLLMIntegrationTests \
+            --skip SpeechHelperIntegrationTests \
+            --skip AgentDictationE2EEvalTests \
+            --skip HerdrIntegrationTests
+
+      - name: Upload complete unit-test log
+        if: always() && steps.plan.outputs.proceed != 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-unit-test-log
+          path: ${{ runner.temp }}/localvoxtral-release-unit-tests.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Warm on-demand speechd server
         # The STT test service is launch-on-demand (scripts/mac/lv-test-servers.sh);
@@ -97,6 +288,7 @@ jobs:
         # swapped-in speechd plist. Best-effort during rollout (a warm timeout
         # must not mask the gate) — the integration gate itself fails loudly if
         # the STT service is really down.
+        if: steps.plan.outputs.proceed != 'false'
         continue-on-error: true
         run: |
           if [ -d /Users/Shared/localvoxtral/run ]; then
@@ -107,6 +299,7 @@ jobs:
           fi
 
       - name: Gate — live integration (STT service)
+        if: steps.plan.outputs.proceed != 'false'
         env:
           VLLM_REALTIME_TEST_ENABLE: "1"
           VLLM_REALTIME_TEST_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead
@@ -118,9 +311,11 @@ jobs:
         # them; Developer ID + notarization is the roadmapped real fix), so we
         # deliberately do NOT set or require the identity here. The TCC-grant
         # stability this patch protects is a try-pr / same-repo-CI concern only.
+        if: steps.plan.outputs.proceed != 'false'
         run: ./scripts/package_app.sh release "${{ steps.meta.outputs.version }}" "${{ github.run_number }}"
 
       - name: Gate — packaged app launch smoke test
+        if: steps.plan.outputs.proceed != 'false'
         env:
           # Same rationale as ci.yml's launch smoke: keep the real app's
           # startup TCC prompts off the runner's GUI session (node's
@@ -141,6 +336,7 @@ jobs:
           PY
 
       - name: Create release artifacts (zip + dmg)
+        if: steps.plan.outputs.proceed != 'false'
         run: |
           set -euo pipefail
           TAG="${{ steps.meta.outputs.tag }}"
@@ -168,7 +364,33 @@ jobs:
             shasum -a 256 "localvoxtral-$TAG.dmg" > "localvoxtral-$TAG.dmg.sha256"
           )
 
+      - name: Upload rehearsal artifacts (no tag, no release)
+        # The rehearsal's whole output. Named so it can never be mistaken for
+        # a release: it lives on the run, not on a tag, and expires in a week.
+        if: steps.plan.outputs.proceed != 'false' && steps.plan.outputs.publish == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: localvoxtral-release-rehearsal
+          path: |
+            dist/localvoxtral-${{ steps.meta.outputs.tag }}.zip
+            dist/localvoxtral-${{ steps.meta.outputs.tag }}.zip.sha256
+            dist/localvoxtral-${{ steps.meta.outputs.tag }}.dmg
+            dist/localvoxtral-${{ steps.meta.outputs.tag }}.dmg.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Summarize the rehearsal
+        if: steps.plan.outputs.proceed != 'false' && steps.plan.outputs.publish == 'false'
+        run: |
+          {
+            echo ""
+            echo "REHEARSAL COMPLETE. No tag was created and no release was published."
+            echo "The build that WOULD have shipped is the \`localvoxtral-release-rehearsal\` artifact on this run,"
+            echo "named \`${{ steps.meta.outputs.tag }}\` (channel ${{ steps.plan.outputs.channel }})."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Tag (all gates green)
+        if: steps.plan.outputs.proceed != 'false' && steps.plan.outputs.publish == 'true'
         run: |
           TAG="${{ steps.meta.outputs.tag }}"
           git config user.name "github-actions[bot]"
@@ -176,26 +398,67 @@ jobs:
           git tag -a "$TAG" -m "localvoxtral $TAG"
           git push origin "$TAG"
 
-      - name: Resolve hand-written release notes (optional)
+      - name: Resolve release notes
         # A release can ship a human summary written ahead of time at
         # docs/release-notes/<tag>.md. Optional: with no such file the release
         # publishes with GitHub's generated notes exactly as before, so a
         # forgotten file makes a duller release, never a failed one. The one
         # hard failure is a file that exists and says nothing — see the script.
+        #
+        # A nightly additionally gets a fixed header saying what it is and how
+        # to install it, because a prerelease of main needs that context far
+        # more than a stable release does. A hand-written nightly file (rare)
+        # lands under that header.
+        if: steps.plan.outputs.proceed != 'false' && steps.plan.outputs.publish == 'true'
         id: notes
+        env:
+          CHANNEL: ${{ steps.plan.outputs.channel }}
+          TAG: ${{ steps.meta.outputs.tag }}
         run: |
           set -euo pipefail
-          DECISION="$(./scripts/ci/resolve-release-notes.sh "${{ steps.meta.outputs.tag }}")"
-          echo "$DECISION" >> "$GITHUB_OUTPUT"
-          echo "Release notes: $(sed -n 's/^reason=//p' <<<"$DECISION")" \
-            | tee -a "$GITHUB_STEP_SUMMARY"
+          DECISION="$(./scripts/ci/resolve-release-notes.sh "$TAG")"
+          RESOLVED="$(sed -n 's/^path=//p' <<<"$DECISION")"
+          REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
+
+          BODY_PATH="$RESOLVED"
+          if [[ "$CHANNEL" == "nightly" ]]; then
+            BODY_PATH="$RUNNER_TEMP/release-body.md"
+            {
+              echo "Nightly build of \`main\` at \`$(git rev-parse --short HEAD)\`, built and gated by the same pipeline as a stable release."
+              echo ""
+              echo "This is **not a stable release**. It ships whatever was on \`main\` when it was built."
+              echo ""
+              echo "Install it:"
+              echo ""
+              echo '```bash'
+              echo "curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | LOCALVOXTRAL_CHANNEL=nightly bash"
+              echo '```'
+              echo ""
+              echo "Re-run that line to update. To go back to stable, run the installer without \`LOCALVOXTRAL_CHANNEL\`."
+              echo ""
+              if [[ -n "$RESOLVED" ]]; then
+                cat "$RESOLVED"
+                echo ""
+              fi
+            } > "$BODY_PATH"
+          fi
+
+          echo "path=$BODY_PATH" >> "$GITHUB_OUTPUT"
+          echo "Release notes: $REASON" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Publish GitHub release
+        if: steps.plan.outputs.proceed != 'false' && steps.plan.outputs.publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: localvoxtral ${{ steps.meta.outputs.tag }}
+          # Nightlies are prereleases so GitHub's /releases/latest — the
+          # pointer install.sh's stable path follows, and the link in the
+          # README — keeps pointing at the newest STABLE release.
           prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
+          # Declared, not inherited: GitHub never marks a prerelease as latest
+          # today, but the stable installer depends on it, so say so.
+          make_latest: ${{ steps.meta.outputs.prerelease == 'true' && 'false' || 'true' }}
           # body_path + generate_release_notes, per action-gh-release v2's
           # README: "If body is specified, the body will be pre-pended to the
           # automatically generated notes", and "When providing a body and
@@ -219,3 +482,43 @@ jobs:
             dist/localvoxtral-${{ steps.meta.outputs.tag }}.dSYM.zip
             dist/localvoxtral-polishd-${{ steps.meta.outputs.tag }}.dSYM.zip
             dist/localvoxtral-speechd-${{ steps.meta.outputs.tag }}.dSYM.zip
+
+      - name: Prune old nightly releases
+        # Nightly ships every night; without this the releases page becomes a
+        # log. Keep the newest 7 and delete the rest, releases and tags both.
+        #
+        # The selection lives in scripts/ci/prune-nightly-releases.sh, which
+        # takes tags on stdin, prints only tags matching the nightly shape
+        # exactly, and touches no network — so it is tested
+        # (test-prune-nightly-releases.sh, in ci.yml's shell-test step)
+        # against the cases that matter here: a stable or rc tag must be
+        # invisible to it. The shape is re-checked in the loop below, because
+        # the next command is a delete.
+        if: steps.plan.outputs.proceed != 'false' && steps.plan.outputs.publish == 'true' && steps.plan.outputs.channel == 'nightly'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # 1000, not 100: the prune only sees what this list returns, so a
+          # window smaller than the release history would let nightlies
+          # older than the window outlive the keep-7 rule forever.
+          gh release list --limit 1000 --json tagName --jq '.[].tagName' \
+            > "$RUNNER_TEMP/release-tags.txt"
+          ./scripts/ci/prune-nightly-releases.sh --keep 7 "$RUNNER_TEMP/release-tags.txt" \
+            > "$RUNNER_TEMP/nightlies-to-delete.txt"
+          if [[ ! -s "$RUNNER_TEMP/nightlies-to-delete.txt" ]]; then
+            echo "Nightly pruning: nothing to delete (7 or fewer nightly releases)" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          while IFS= read -r TAG; do
+            [[ -n "$TAG" ]] || continue
+            if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}(\.[0-9]+)?$ ]]; then
+              echo "refusing to delete a tag that is not a nightly: $TAG"; exit 1
+            fi
+            echo "Deleting old nightly release and tag: $TAG"
+            gh release delete "$TAG" --cleanup-tag --yes
+          done < "$RUNNER_TEMP/nightlies-to-delete.txt"
+          {
+            echo "Nightly pruning: deleted $(wc -l < "$RUNNER_TEMP/nightlies-to-delete.txt" | tr -d ' ') old nightly release(s), newest 7 kept"
+          } >> "$GITHUB_STEP_SUMMARY"
