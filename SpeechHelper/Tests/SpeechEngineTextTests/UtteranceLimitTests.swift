@@ -41,14 +41,18 @@ final class UtteranceLimitTests: XCTestCase {
 
     func testReachedMessageIsOneShortSentencePerLimit() {
         XCTAssertEqual(
-            UtteranceLimit(seconds: 1_200).reachedMessage,
-            "Dictation reached the 20-minute limit. Stop and start again to continue."
+            UtteranceLimit(seconds: 600).reachedMessage,
+            "Dictation reached its 10-minute limit; start again to continue."
         )
         XCTAssertEqual(
             UtteranceLimit(seconds: 90).reachedMessage,
-            "Dictation reached the 90-second limit. Stop and start again to continue."
+            "Dictation reached its 90-second limit; start again to continue."
         )
-        XCTAssertFalse(UtteranceLimit().reachedMessage.contains("\n"))
+        // The popover shows one short sentence (AGENTS.md).
+        for message in [UtteranceLimit().reachedMessage, UtteranceLimit.endOfStreamMessage] {
+            XCTAssertFalse(message.contains("\n"))
+            XCTAssertEqual(message.filter { $0 == "." }.count, 1, message)
+        }
     }
 
     func testClassifyDistinguishesCapFromEndOfStream() {
@@ -60,15 +64,36 @@ final class UtteranceLimitTests: XCTestCase {
             UtteranceStop.classify(isFinished: true, decodedTokenCount: 101, maxDecodedTokens: 100),
             .lengthLimit
         )
-        // An EOS stop strips its EOS token, so the count never exceeds the cap.
+        // EOS sampled exactly as the count crosses the cap: both conditions fire and the
+        // EOS pop leaves count == max. Report the limit, the actionable reason.
         XCTAssertEqual(
             UtteranceStop.classify(isFinished: true, decodedTokenCount: 100, maxDecodedTokens: 100),
+            .lengthLimit
+        )
+        // A plain EOS stop below the cap pops its EOS: count <= max - 1.
+        XCTAssertEqual(
+            UtteranceStop.classify(isFinished: true, decodedTokenCount: 99, maxDecodedTokens: 100),
             .endOfStream
         )
         XCTAssertEqual(
             UtteranceStop.classify(isFinished: true, decodedTokenCount: 12, maxDecodedTokens: 100),
             .endOfStream
         )
+    }
+
+    func testReporterReadsTheTokenCountOnlyWhenAReportIsDue() {
+        var reporter = UtteranceStopReporter()
+        var reads = 0
+        func count() -> Int { reads += 1; return 101 }
+
+        XCTAssertNil(reporter.check(isFinished: false, decodedTokenCount: count(), maxDecodedTokens: 100))
+        XCTAssertEqual(reads, 0, "a live session must not copy the token array")
+        XCTAssertEqual(
+            reporter.check(isFinished: true, decodedTokenCount: count(), maxDecodedTokens: 100),
+            .lengthLimit
+        )
+        XCTAssertNil(reporter.check(isFinished: true, decodedTokenCount: count(), maxDecodedTokens: 100))
+        XCTAssertEqual(reads, 1, "steps after a reported stop must not copy the token array")
     }
 
     func testReporterReportsAStopOncePerSession() {

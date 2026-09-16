@@ -167,6 +167,10 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
 
     // MARK: - JSON Event Handling
 
+    /// `code` the bundled speech helper puts on the `error` frame it sends when its engine
+    /// stops transcribing before the final commit (`RealtimeServerMessage.transcriptionStopped`).
+    static let transcriptionStoppedCode = "transcription_stopped"
+
     override func handle(json: [String: Any]) {
         let type = json["type"] as? String ?? ""
         if !type.isEmpty {
@@ -243,7 +247,11 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
             let message =
                 findString(in: json, matching: ["message", "error", "detail"])
                 ?? "Unknown realtime error."
-            emit(.error(message))
+            if json["code"] as? String == Self.transcriptionStoppedCode {
+                emit(.transcriptionStopped(message))
+            } else {
+                emit(.error(message))
+            }
         default:
             break
         }

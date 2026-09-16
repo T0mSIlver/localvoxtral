@@ -314,8 +314,7 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         _ connection: NWConnection,
         _ ctx: Connection
     ) {
-        // `tokens` copies the whole token array; only pay for it once the session stopped.
-        guard session.isFinished, let stop = ctx.stopReporter.check(
+        guard let stop = ctx.stopReporter.check(
             isFinished: session.isFinished,
             decodedTokenCount: session.tokens.count,
             maxDecodedTokens: maxDecodedTokens
@@ -324,12 +323,14 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         case .lengthLimit:
             FileHandle.standardError.write(Data(
                 "speechd: utterance reached the \(utteranceLimit.seconds)s limit (\(maxDecodedTokens) tokens); later audio is not transcribed\n".utf8))
-            sendServer(connection, .error(message: utteranceLimit.reachedMessage))
+            sendServer(connection, .transcriptionStopped(message: utteranceLimit.reachedMessage))
         case .endOfStream:
             FileHandle.standardError.write(Data(
                 "speechd: model ended the stream after \(session.tokens.count) tokens; later audio is not transcribed\n".utf8))
-            sendServer(connection, .error(
-                message: "Transcription stopped early. Stop and start again to continue."))
+            sendServer(
+                connection,
+                .transcriptionStopped(message: UtteranceLimit.endOfStreamMessage)
+            )
         }
     }
 

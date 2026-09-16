@@ -22,7 +22,9 @@ public struct UtteranceLimit: Equatable, Sendable {
     /// Tokens decoded past the real audio when `finish()` seals the stream: the engine
     /// appends `(delay tokens + 1) + 10` tokens of zero padding, and the delay tops out at
     /// 2,400 ms (30 tokens at 80 ms). Headroom so a session ending right at the limit still
-    /// transcribes its last words.
+    /// transcribes its last words. The cost: a session that runs past the limit is cut
+    /// about 5 seconds (64 tokens at 80 ms) after it, plus the transcription delay. That is
+    /// noise at the default, but dominates a test-sized limit of a few seconds.
     public static let finishPaddingTokens = 64
 
     public let seconds: Int
@@ -38,12 +40,15 @@ public struct UtteranceLimit: Equatable, Sendable {
         return Int(audioTokens) + Self.finishPaddingTokens
     }
 
-    /// One short sentence for the app's status line (the popover shows one line only).
+    /// One short sentence for the app's status line (the popover shows one sentence only).
     public var reachedMessage: String {
         let minutes = seconds / 60
         let length = seconds % 60 == 0 && minutes > 0 ? "\(minutes)-minute" : "\(seconds)-second"
-        return "Dictation reached the \(length) limit. Stop and start again to continue."
+        return "Dictation reached its \(length) limit; start again to continue."
     }
+
+    /// One short sentence for a model end-of-stream before the client finished.
+    public static let endOfStreamMessage = "Transcription stopped early; start again to continue."
 }
 
 /// Why an engine session stopped producing text before the client asked it to finish.
@@ -54,16 +59,20 @@ public enum UtteranceStop: Equatable, Sendable {
     case endOfStream
 
     /// Classify a session after a streaming step. Returns nil while the session is still
-    /// decoding. The engine appends the token that crosses the cap before stopping, so a
-    /// capped session holds more than `maxDecodedTokens` tokens; an end-of-stream stop
-    /// strips its EOS token and holds at most that many.
+    /// decoding.
+    ///
+    /// The engine appends each sampled token, stops when the token is EOS or the count
+    /// exceeds the cap, and then pops a trailing EOS. So a plain cap stop holds
+    /// `max + 1` tokens; an EOS sampled exactly as the count crosses the cap fires both
+    /// conditions and holds `max`; an EOS stop below the cap holds at most `max - 1`.
+    /// The simultaneous case reports the limit, the actionable reason.
     public static func classify(
         isFinished: Bool,
         decodedTokenCount: Int,
         maxDecodedTokens: Int
     ) -> UtteranceStop? {
         guard isFinished else { return nil }
-        return decodedTokenCount > maxDecodedTokens ? .lengthLimit : .endOfStream
+        return decodedTokenCount >= maxDecodedTokens ? .lengthLimit : .endOfStream
     }
 }
 
@@ -74,16 +83,18 @@ public struct UtteranceStopReporter: Equatable, Sendable {
 
     public init() {}
 
-    /// Returns the stop to report, or nil when there is nothing new to report.
+    /// Returns the stop to report, or nil when there is nothing new to report. The token
+    /// count is only read when a report is due: the engine hands out a copy of its whole
+    /// token array, and every step after a stop would otherwise pay for it.
     public mutating func check(
         isFinished: Bool,
-        decodedTokenCount: Int,
+        decodedTokenCount: @autoclosure () -> Int,
         maxDecodedTokens: Int
     ) -> UtteranceStop? {
-        guard !reported,
+        guard !reported, isFinished,
               let stop = UtteranceStop.classify(
                 isFinished: isFinished,
-                decodedTokenCount: decodedTokenCount,
+                decodedTokenCount: decodedTokenCount(),
                 maxDecodedTokens: maxDecodedTokens
               )
         else { return nil }

@@ -154,6 +154,43 @@ final class WebSocketClientLifecycleTests: XCTestCase {
         }
     }
 
+    // MARK: - Transcription Stopped
+
+    /// #314: the bundled helper reports an engine that stopped transcribing mid-dictation
+    /// as an `error` frame with code `transcription_stopped`. The client must surface it as
+    /// its own event, keep the connection, and leave every other error frame alone.
+    func testRealtimeTranscriptionStoppedErrorCodeEmitsItsOwnEvent() {
+        let client = RealtimeAPIWebSocketClient()
+        let collector = EventCollector()
+        client.setEventHandler { collector.append($0) }
+
+        let (session, task) = makeWebSocketTask()
+        defer {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+
+        client.debugPrimeConnectedStateForTesting(task: task)
+        client.handle(json: [
+            "type": "error",
+            "code": "transcription_stopped",
+            "message": "Dictation reached its 10-minute limit; start again to continue.",
+        ])
+        client.handle(json: ["type": "error", "message": "Invalid PCM16 payload"])
+
+        let events = collector.snapshot()
+        XCTAssertEqual(events.count, 2)
+        guard case .transcriptionStopped(let stopMessage) = events[0] else {
+            XCTFail("Expected .transcriptionStopped, got \(events[0])"); return
+        }
+        XCTAssertEqual(stopMessage, "Dictation reached its 10-minute limit; start again to continue.")
+        guard case .error(let errorMessage) = events[1] else {
+            XCTFail("Expected .error for a frame without the code, got \(events[1])"); return
+        }
+        XCTAssertEqual(errorMessage, "Invalid PCM16 payload")
+        XCTAssertTrue(client.debugStateSnapshot().isConnected, "a stop must not drop the socket")
+    }
+
     // MARK: - Transcription Finalization
 
     func testRealtimeDoneEmitsTranscriptionFinalizedAfterFinalCommit() {

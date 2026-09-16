@@ -171,6 +171,36 @@ final class DictationViewModelDeltaLoggingTests: XCTestCase {
         XCTAssertEqual(captured[1].kind, .error)
         XCTAssertEqual(captured[1].payload, "rate limited")
     }
+
+    // MARK: - Transcription stopped (#314)
+
+    /// Before #314 a helper that stopped transcribing mid-dictation arrived as a generic
+    /// error: the popover read "Realtime error." and "See Console for details.", hiding the
+    /// one actionable sentence. That sentence is now the status line itself, and nothing
+    /// sets `lastError`, so the popover shows no Console hint under it.
+    func testTranscriptionStoppedMidDictationBecomesTheStatusLine() {
+        let viewModel = makeViewModel(enableDeltaLogging: true)
+        viewModel.isDictating = true
+        viewModel.statusText = "Transcribing..."
+        let message = "Dictation reached its 10-minute limit; start again to continue."
+
+        viewModel.handle(event: .transcriptionStopped(message))
+
+        XCTAssertEqual(viewModel.statusText, message)
+        XCTAssertNil(viewModel.lastError)
+        XCTAssertEqual(captured.map(\.kind), [.error])
+        XCTAssertEqual(captured.map(\.payload), [message])
+    }
+
+    func testTranscriptionStoppedOutsideADictationLeavesTheStatusAlone() {
+        let viewModel = makeViewModel(enableDeltaLogging: false)
+        viewModel.statusText = "Ready"
+
+        viewModel.handle(event: .transcriptionStopped("Transcription stopped early; start again to continue."))
+
+        XCTAssertEqual(viewModel.statusText, "Ready")
+        XCTAssertNil(viewModel.lastError)
+    }
 }
 
 @MainActor

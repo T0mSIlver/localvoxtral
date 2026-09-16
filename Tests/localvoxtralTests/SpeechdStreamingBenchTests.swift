@@ -17,6 +17,7 @@ final class SpeechdStreamingBenchTests: XCTestCase {
         let cadenceMilliseconds: Int
         let wavPath: String?
         let cacheLimitMB: Int?
+        let maxUtteranceSeconds: Int?
     }
 
     private var repoRoot: URL {
@@ -61,6 +62,9 @@ final class SpeechdStreamingBenchTests: XCTestCase {
         }
         if let cacheLimitMB = config.cacheLimitMB {
             arguments.append(contentsOf: ["--cache-limit-mb", "\(cacheLimitMB)"])
+        }
+        if let maxUtteranceSeconds = config.maxUtteranceSeconds {
+            arguments.append(contentsOf: ["--max-utterance-seconds", "\(maxUtteranceSeconds)"])
         }
 
         let process = Process()
