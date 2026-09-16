@@ -29,7 +29,8 @@ own `authorized_keys` file, so nothing is added to any account's real SSH
 trust.
 
 ```bash
-brew install herdr        # or https://herdr.dev; HERDR_BIN overrides the lookup
+# the install script from https://herdr.dev (lands in ~/.local/bin, which the
+# lane probes) or brew install herdr; HERDR_BIN overrides the lookup
 herdr --version           # 0.8.2 is what the lane's assumptions were measured against
 ```
 
