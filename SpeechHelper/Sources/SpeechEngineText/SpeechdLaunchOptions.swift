@@ -11,6 +11,8 @@ public struct SpeechdLaunchOptions: Equatable {
     public var transcriptionDelayMs: Int?
     public var cacheLimitMB = 4096
     public var stepMilliseconds = 100
+    /// Maximum length of one utterance (one engine stream session); see `UtteranceLimit`.
+    public var utteranceLimit = UtteranceLimit()
     public var benchmark: SpeechdBenchmarkOptions?
 
     public init() {}
@@ -98,6 +100,13 @@ public enum SpeechdOptionParser {
                     throw SpeechdOptionError.invalidValue(flag)
                 }
                 options.stepMilliseconds = milliseconds
+            case "--max-utterance-seconds":
+                guard let seconds = Int(try value(flag)), seconds > 0,
+                      !16_000.multipliedReportingOverflow(by: seconds).overflow
+                else {
+                    throw SpeechdOptionError.invalidValue(flag)
+                }
+                options.utteranceLimit = UtteranceLimit(seconds: seconds)
             case "--bench":
                 benchmarkEnabled = true
             case "--seconds":

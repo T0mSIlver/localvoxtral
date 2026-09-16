@@ -119,6 +119,10 @@ enum LLMPolishingError: Error, LocalizedError, Sendable {
     case requestFailed(statusCode: Int, body: String)
     case invalidResponse
     case networkError(String)
+    /// The endpoint accepted the connection but did not answer within the request
+    /// timeout. Distinct from `networkError` so a slow polish (a long transcript, a cold
+    /// prefix cache) never reads as "unable to connect" (#314).
+    case timedOut(afterSeconds: TimeInterval)
 
     var errorDescription: String? {
         switch self {
@@ -130,6 +134,8 @@ enum LLMPolishingError: Error, LocalizedError, Sendable {
             return "LLM returned an invalid or empty response."
         case .networkError(let message):
             return "LLM network error: \(message)"
+        case .timedOut(let seconds):
+            return "LLM request timed out after \(Int(seconds.rounded())) s."
         }
     }
 }
@@ -141,6 +147,18 @@ struct LLMPolishingService: LLMPolishingServicing {
     /// and the previous 15 s timeout abandoned it (field, 2026-07-11). Polish
     /// is async behind the overlay: a slow polish beats a discarded one.
     static let requestTimeoutInterval: TimeInterval = 40
+
+    /// Classify a URLSession transport failure. A timeout keeps its own case; every other
+    /// failure stays a network error carrying the system's description.
+    static func polishingError(
+        forTransportError error: Error,
+        timeoutSeconds: TimeInterval
+    ) -> LLMPolishingError {
+        if let urlError = error as? URLError, urlError.code == .timedOut {
+            return .timedOut(afterSeconds: timeoutSeconds)
+        }
+        return .networkError(error.localizedDescription)
+    }
 
     func polish(
         request: LLMPolishingRequest,
@@ -163,7 +181,10 @@ struct LLMPolishingService: LLMPolishingServicing {
         do {
             (data, response) = try await URLSession.shared.data(for: urlRequest)
         } catch {
-            throw LLMPolishingError.networkError(error.localizedDescription)
+            throw Self.polishingError(
+                forTransportError: error,
+                timeoutSeconds: urlRequest.timeoutInterval
+            )
         }
 
         guard let httpResponse = response as? HTTPURLResponse else {

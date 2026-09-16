@@ -421,6 +421,91 @@ final class SpeechHelperIntegrationTests: XCTestCase {
         process.terminate()
     }
 
+    /// #314: the engine stops decoding once an utterance reaches its token cap and returns
+    /// nothing from every later step. Before the fix the helper never noticed, so a long
+    /// dictation simply stopped producing text with no error anywhere. A short limit here
+    /// stands in for the real one: the stop must arrive as exactly one realtime error event
+    /// naming the limit, and as one line in the helper's log.
+    func testUtteranceLimitStopIsReportedOnceInsteadOfSilently() async throws {
+        let (binary, model) = try helperConfiguration()
+        try await ensureModelCached(model)
+        let limitSeconds = 3
+        let (process, stderrLog) = try await launchHelper(
+            binary: binary,
+            model: model,
+            extraArguments: ["--max-utterance-seconds", "\(limitSeconds)"]
+        )
+
+        // About 12 s of speech: several times the limit, so many steps follow the stop.
+        let phrase = [
+            "this is a longer synthetic audio passage for integration testing.",
+            "we are verifying that the realtime server reports when an utterance reaches its limit.",
+            "the websocket client sends pcm sixteen audio at sixteen kilohertz in sequential chunks.",
+        ].joined(separator: " ")
+        let pcm16 = try makeSpokenPCM16Data(phrase: phrase)
+        let spokenSeconds = Double(pcm16.count) / 32_000
+        XCTAssertGreaterThan(spokenSeconds, Double(limitSeconds) * 2)
+        let chunks = IntegrationTestSupport.splitPCM16IntoChunks(pcm16, chunkSizeBytes: 3_200)
+
+        let client = RealtimeAPIWebSocketClient()
+        let transcript = TranscriptCapture()
+        let errors = TranscriptCapture()
+        let connected = expectation(description: "connected")
+        let finalTranscript = expectation(description: "final transcript")
+        finalTranscript.assertForOverFulfill = false
+        let disconnected = expectation(description: "disconnected")
+
+        client.setEventHandler { event in
+            switch event {
+            case .connected:
+                connected.fulfill()
+                for chunk in chunks {
+                    client.sendAudioChunk(chunk)
+                }
+                client.sendCommit(final: true)
+            case .partialTranscript(let delta):
+                transcript.append(delta: delta)
+            case .finalTranscript(let text):
+                transcript.append(doneText: text)
+                finalTranscript.fulfill()
+            case .error(let message):
+                errors.append(delta: message)
+            case .disconnected:
+                disconnected.fulfill()
+            case .status, .transcriptionFinalized:
+                break
+            }
+        }
+
+        try client.connect(configuration: RealtimeSessionConfiguration(
+            endpoint: URL(string: "ws://127.0.0.1:\(Self.testPort)/v1/realtime")!,
+            apiKey: "",
+            model: model
+        ))
+        await fulfillment(of: [connected, finalTranscript], timeout: 180)
+        client.disconnect()
+        await fulfillment(of: [disconnected], timeout: 5)
+
+        XCTAssertEqual(
+            errors.snapshot().deltas,
+            ["Dictation reached the \(limitSeconds)-second limit. Stop and start again to continue."],
+            "the limit stop must reach the client exactly once"
+        )
+        let logTail = stderrLog.tail(50)
+        XCTAssertTrue(
+            logTail.contains("utterance reached the \(limitSeconds)s limit"),
+            "the limit stop must be logged by the helper: \(logTail)"
+        )
+        // The transcript still ends cleanly with what was decoded before the stop.
+        let doneText = try XCTUnwrap(transcript.snapshot().doneTexts.only)
+        print(
+            "speechd limit test: \(String(format: "%.1f", spokenSeconds))s spoken, "
+                + "transcript: \(doneText)"
+        )
+        XCTAssertTrue(process.isRunning)
+        process.terminate()
+    }
+
     func testHelperExitsWhenParentPIDDies() async throws {
         let (binary, model) = try helperConfiguration()
         try await ensureModelCached(model)

@@ -33,7 +33,9 @@ supervises two inference engines for you — no terminal required:
   conversion of the mlx-community 4-bit snapshot that also quantizes the
   tied output head — cutting the decode loop's largest projection from
   ~30 ms to ~3 ms per token and saving ~530 MB of memory, at level
-  transcription quality.
+  transcription quality. One dictation can run for up to 10 minutes: past
+  that, decoding falls behind live speech on a MacBook Pro, so the helper
+  stops and says so in the menu bar instead of lagging.
 - **Polishing — `localvoxtral-polishd`**, a bundled Swift helper built on
   Apple's [MLX Swift](https://github.com/ml-explore/mlx-swift-lm), runs
   [Qwen3.5-4B-OptiQ in 4-bit](https://huggingface.co/mlx-community/Qwen3.5-4B-OptiQ-4bit)

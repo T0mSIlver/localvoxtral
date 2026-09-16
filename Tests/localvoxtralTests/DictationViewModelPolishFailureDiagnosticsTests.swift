@@ -57,6 +57,69 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
         )
     }
 
+    /// #314: a transport timeout means the endpoint was reachable and slow (a long
+    /// transcript, a cold prefix cache). It keeps its own case; everything else stays a
+    /// network error.
+    func testTransportTimeoutIsClassifiedAsTimeoutNotNetworkError() {
+        guard case .timedOut(let seconds) = LLMPolishingService.polishingError(
+            forTransportError: URLError(.timedOut),
+            timeoutSeconds: 40
+        ) else {
+            return XCTFail("a URLError timeout must classify as .timedOut")
+        }
+        XCTAssertEqual(seconds, 40)
+
+        guard case .networkError = LLMPolishingService.polishingError(
+            forTransportError: URLError(.cannotConnectToHost),
+            timeoutSeconds: 40
+        ) else {
+            return XCTFail("a refused connection must stay a network error")
+        }
+    }
+
+    /// #314: before the fix a slow polish surfaced as "Unable to connect to the configured
+    /// LLM polishing endpoint", sending field debugging after a network that was fine.
+    /// The failure must say it was slow, in one line, and still name the endpoint.
+    func testTimedOutPolishReportsSlownessNotAConnectionFailure() async throws {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.polishingBackendMode = .managedLocal
+
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = MockAppConfigStore()
+        viewModel.llmPolishingService = TransportTimeoutPolishingService()
+        // Same modal-alert guard as the sibling tests (AGENTS.md).
+        viewModel.isShowingConnectionFailureAlert = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "polish this long answer"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+        await waitUntilStoppedSessionCompletes(viewModel)
+
+        XCTAssertEqual(viewModel.statusText, "LLM polishing failed.")
+        let lastError = try XCTUnwrap(viewModel.lastError, "a timeout must not fail silently")
+        XCTAssertTrue(
+            lastError.contains("took longer than 40 seconds"),
+            "must say the polish was slow: \(lastError)"
+        )
+        XCTAssertFalse(
+            lastError.localizedCaseInsensitiveContains("unable to connect"),
+            "a slow endpoint must not read as unreachable: \(lastError)"
+        )
+        XCTAssertTrue(
+            lastError.contains("127.0.0.1:8472"),
+            "must name the endpoint the request went to: \(lastError)"
+        )
+        XCTAssertFalse(lastError.contains("\n"), "the failure summary is one line: \(lastError)")
+    }
+
     /// The details formatter itself: the given endpoint URL (sanitized) is
     /// named both with and without underlying error details.
     func testConnectionTechnicalDetailsNameTheGivenEndpoint() {
@@ -281,6 +344,20 @@ private actor TimeoutFailingPolishingService: LLMPolishingServicing {
         configuration _: LLMPolishingConfiguration
     ) async throws -> LLMPolishingResult {
         throw LLMPolishingError.networkError("The request timed out.")
+    }
+}
+
+/// Fails the way the real service does when URLSession gives up on a slow endpoint:
+/// through the service's own transport-error classification, so the test covers it.
+private actor TransportTimeoutPolishingService: LLMPolishingServicing {
+    func polish(
+        request _: LLMPolishingRequest,
+        configuration _: LLMPolishingConfiguration
+    ) async throws -> LLMPolishingResult {
+        throw LLMPolishingService.polishingError(
+            forTransportError: URLError(.timedOut),
+            timeoutSeconds: LLMPolishingService.requestTimeoutInterval
+        )
     }
 }
 

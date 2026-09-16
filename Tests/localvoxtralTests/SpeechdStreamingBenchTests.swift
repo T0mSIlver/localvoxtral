@@ -97,9 +97,14 @@ final class SpeechdStreamingBenchTests: XCTestCase {
             0,
             "speechd bench failed with status \(process.terminationStatus)"
         )
-        let benchLines = lines.filter { $0.hasPrefix("BENCH ") }
-        let expectedMarks = [5, 15, 30, 60].filter { $0 <= config.seconds }
+        let benchLines = lines.filter { $0.hasPrefix("BENCH mark=") }
+        let expectedMarks = ([5, 15, 30, 60] + Array(stride(from: 120, through: config.seconds, by: 60)))
+            .filter { $0 <= config.seconds }
         XCTAssertEqual(benchLines.count, expectedMarks.count, lines.joined(separator: "\n"))
+        XCTAssertTrue(
+            lines.contains { $0.hasPrefix("BENCH done ") },
+            "missing BENCH done summary"
+        )
         for mark in expectedMarks {
             XCTAssertTrue(
                 benchLines.contains { $0.contains("mark=\(mark)s ") },

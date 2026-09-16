@@ -1418,6 +1418,19 @@ extension DictationViewModel {
                                         endpointURL: config.endpointURL
                                     )
                                 )
+                            case .some(.timedOut(let seconds)):
+                                // The endpoint was reachable and simply slow — a long
+                                // transcript or a cold prefix cache. "Unable to connect"
+                                // would send debugging after a network that was fine (#314).
+                                let summary = Self.llmPolishingTimeoutMessage(seconds: seconds)
+                                llmConnectionFailure = (
+                                    "LLM Polishing Timed Out",
+                                    summary,
+                                    self.llmPolishingConnectionTechnicalDetails(
+                                        summary,
+                                        endpointURL: config.endpointURL
+                                    )
+                                )
                             case .some(.emptyInput), .some(.invalidResponse), .none:
                                 break
                             }
@@ -2497,6 +2510,12 @@ extension DictationViewModel {
     /// The RAW body never appears here — this text reaches the alert and (via
     /// the technical details) `lastError`, which Settings renders as the
     /// one-line failure summary. The body goes to the log.
+    /// One line for a polish request that outlived its timeout. The overlay commits the
+    /// unpolished transcript on any polish failure, so nothing dictated is lost.
+    nonisolated static func llmPolishingTimeoutMessage(seconds: TimeInterval) -> String {
+        "Polishing took longer than \(Int(seconds.rounded())) seconds, so the transcript was not polished."
+    }
+
     nonisolated static func llmPolishingRejectionMessage(statusCode: Int, body: String) -> String {
         let reason: String
         switch statusCode {
