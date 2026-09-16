@@ -8,6 +8,23 @@ import XCTest
 /// No networking and no wall clock — every frame is read back from the
 /// client's debug recorder and every inbound event is injected as JSON.
 final class MistralRealtimeClientTests: XCTestCase {
+    private final class LockedInts: @unchecked Sendable {
+        private var values: [Int] = []
+        private let lock = NSLock()
+
+        func append(_ value: Int) {
+            lock.lock()
+            values.append(value)
+            lock.unlock()
+        }
+
+        func snapshot() -> [Int] {
+            lock.lock()
+            defer { lock.unlock() }
+            return values
+        }
+    }
+
     private final class EventCollector: @unchecked Sendable {
         private var events: [RealtimeEvent] = []
         private let lock = NSLock()
@@ -168,6 +185,28 @@ final class MistralRealtimeClientTests: XCTestCase {
         return (client, session, task)
     }
 
+    /// The DEBUG frame recorder is a bounded ring: a DEBUG app build streams a
+    /// ~4 KB audio frame every 100 ms, and an unbounded buffer nobody but the
+    /// unit suite reads would grow by ~150 MB per hour of dictation.
+    func testDebugFrameRecorderKeepsOnlyTheMostRecentFrames() {
+        let (client, session, task) = makeFrameRecordingClient()
+        defer {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+        let limit = MistralRealtimeWebSocketClient.debugRecordedFrameLimit
+
+        for index in 0..<(limit + 40) {
+            client.sendAudioChunk(Data([UInt8(index & 0xFF), 0x00]))
+        }
+
+        let frames = client.debugRecordedFrames()
+        XCTAssertEqual(frames.count, limit)
+        // The ring drops the OLDEST frames: the last chunk sent is the last frame kept.
+        let lastChunk = Data([UInt8((limit + 39) & 0xFF), 0x00]).base64EncodedString()
+        XCTAssertEqual(frames.last, #"{"audio":"\#(lastChunk)","type":"input_audio.append"}"#)
+    }
+
     func testAudioChunkIsSentAsInputAudioAppendWithBase64Payload() {
         let (client, session, task) = makeFrameRecordingClient()
         defer {
@@ -245,7 +284,17 @@ final class MistralRealtimeClientTests: XCTestCase {
             session.invalidateAndCancel()
         }
         let collector = EventCollector()
-        client.setEventHandler { collector.append($0) }
+        // How many frames had been encoded for the wire at the moment the
+        // "Session ready." status reached the consumer: the live lane starts
+        // streaming synchronously inside that callback, so its audio must land
+        // BEHIND session.update and the replayed queue, never ahead of them.
+        let framesEncodedAtStatus = LockedInts()
+        client.setEventHandler { event in
+            if case .status = event {
+                framesEncodedAtStatus.append(client.debugRecordedFrames().count)
+            }
+            collector.append(event)
+        }
 
         client.sendAudioChunk(Data([0xFF]))
         XCTAssertEqual(
@@ -255,6 +304,11 @@ final class MistralRealtimeClientTests: XCTestCase {
         )
 
         client.handle(json: ["type": "session.created", "session": ["model": "m"]])
+
+        XCTAssertEqual(
+            framesEncodedAtStatus.snapshot(), [2],
+            "session.update and the queued audio are on the wire before the status is emitted"
+        )
 
         XCTAssertEqual(
             client.debugRecordedFrames(),

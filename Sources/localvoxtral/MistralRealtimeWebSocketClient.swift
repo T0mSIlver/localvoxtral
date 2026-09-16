@@ -29,6 +29,12 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
 
     static let errorDomain = "localvoxtral.realtime.mistral"
 
+    #if DEBUG
+    /// Frames kept by the DEBUG recorder; the unit suite never needs more than
+    /// the last handful.
+    static let debugRecordedFrameLimit = 64
+    #endif
+
     /// Tracks stop-finalization commit coordination so we only emit
     /// `.transcriptionFinalized` once the final commit's `transcription.done`
     /// arrives.
@@ -284,8 +290,6 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
     }
 
     private func handleSessionCreated() {
-        emit(.status("Session ready."))
-
         let queuedMessages: [String]? = state.withLock { s in
             guard s.base.socketState == .connected else { return nil }
             guard !s.hasReceivedSessionCreated else { return nil }
@@ -294,13 +298,20 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
             s.pendingMessages.removeAll(keepingCapacity: true)
             return queued
         }
-        guard let queuedMessages else { return }
 
-        logger.notice("mistral realtime session ready")
-        send(event: sessionUpdatePayload())
-        for message in queuedMessages {
-            sendText(message)
+        if let queuedMessages {
+            logger.notice("mistral realtime session ready")
+            send(event: sessionUpdatePayload())
+            for message in queuedMessages {
+                sendText(message)
+            }
         }
+
+        // Status goes out AFTER session.update and the replayed queue, so a
+        // consumer that starts streaming on "Session ready." (the live lane
+        // does, synchronously) puts its audio behind the audio-format
+        // declaration on the wire, not ahead of it.
+        emit(.status("Session ready."))
     }
 
     private func handleTranscriptionDone(json: [String: Any]) {
@@ -412,7 +423,17 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
             }
 
             #if DEBUG
-            state.withLock { $0.recordedFrames.append(text) }
+            state.withLock { s in
+                // A bounded ring, not a transcript: audio frames arrive every
+                // 100 ms at ~4 KB each, and a DEBUG build (Xcode, the dogfood
+                // tree) would otherwise grow by ~150 MB per hour of dictation
+                // for a buffer only the unit suite reads (GLM review, 2026-09-16).
+                s.recordedFrames.append(text)
+                if s.recordedFrames.count > Self.debugRecordedFrameLimit {
+                    s.recordedFrames.removeFirst(
+                        s.recordedFrames.count - Self.debugRecordedFrameLimit)
+                }
+            }
             #endif
 
             if let type = event["type"] as? String {
