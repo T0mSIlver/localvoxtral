@@ -197,8 +197,15 @@ fi
 # Heredoc through a redirected `cat`, NOT printf/echo: POSIX does not require
 # printf to be a shell builtin, and an external printf would put the token
 # straight into the argv this file exists to keep it out of.
+#
+# The plugin version line is a CONSTANT — the one place this file knows its
+# own version — so a hook never reads or parses a file to report it. It tells
+# the Mac which plugin generation is dialing, which is how the app can say a
+# host's plugin is outdated before anything breaks (field finding 2026-09-17);
+# the app validates the shape and trusts nothing else about it.
 cat 2>/dev/null >"$WORK/header" <<EOF || fail_open
 Authorization: Bearer $TOKEN
+X-Lvx-Plugin-Version: 1.10.0
 EOF
 
 # --- Allowlisted environment enrichment --------------------------------------

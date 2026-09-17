@@ -196,7 +196,7 @@ private struct SetupFlowScript: Sendable {
         exitCode: 0, message: "LVX_HERDR_ABSENT"
     )
     var tunnelMessage = "LVX_HTTP:401"
-    var pluginListMessage = "localvoxtral-remote 1.9.0\n"
+    var pluginListMessage = "localvoxtral-remote 1.10.0\n"
 }
 
 /// A `claude plugin list --json` capture as a login shell delivers it: a
@@ -2098,6 +2098,141 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         registry.noteActivity(hostID: try XCTUnwrap(model.hosts.first?.id))
         model.refreshHosts()
         XCTAssertEqual(model.hosts.first?.statusText, "Last context: 10 min ago")
+    }
+
+    // MARK: Plugin update indicator
+
+    /// The four cases, exactly (field finding 2026-09-17: nothing in Settings
+    /// said a host's plugin was old until the user happened to run an update).
+    func testPluginNeedsUpdateCoversTheFourReportCases() {
+        let expected = ClaudeRemoteEnrollmentService.remotePluginVersion
+        // Never heard from the host: no evidence, no hint.
+        XCTAssertFalse(ClaudeIntegrationSettingsModel.pluginNeedsUpdate(
+            reported: nil, expected: expected
+        ))
+        // An authenticated hook with no valid version header is the ≤ 1.9.0
+        // generation — outdated by definition.
+        XCTAssertTrue(ClaudeIntegrationSettingsModel.pluginNeedsUpdate(
+            reported: .headerAbsent, expected: expected
+        ))
+        // Older report → update; equal or NEWER → not this host's problem.
+        XCTAssertTrue(ClaudeIntegrationSettingsModel.pluginNeedsUpdate(
+            reported: .version("1.9.0"), expected: expected
+        ))
+        XCTAssertFalse(ClaudeIntegrationSettingsModel.pluginNeedsUpdate(
+            reported: .version(expected), expected: expected
+        ))
+        XCTAssertFalse(ClaudeIntegrationSettingsModel.pluginNeedsUpdate(
+            reported: .version("99.0.0"), expected: expected
+        ))
+    }
+
+    func testVersionComparisonIsNumericPerComponent() {
+        let older = { (version: String) in
+            ClaudeIntegrationSettingsModel.isVersion(version, olderThan: "1.10.0")
+        }
+        // 9 < 10 numerically, not "9" < "10" as text.
+        XCTAssertTrue(older("1.9.0"))
+        XCTAssertTrue(older("1.9.9"))
+        XCTAssertTrue(older("1.9.99"))
+        XCTAssertFalse(older("1.10.0"))
+        XCTAssertFalse(older("1.10.1"))
+        XCTAssertFalse(older("2.0.0"))
+        XCTAssertFalse(older("1.11.0"))
+        // Anything unparseable answers "not outdated" — the conservative
+        // reading, because a false update hint costs trust. (A malformed
+        // report cannot reach this comparison anyway: the listener records
+        // only strict-shape values.)
+        XCTAssertFalse(older("1.10.0-beta"))
+        XCTAssertFalse(older("nonsense"))
+        XCTAssertFalse(older("1.10"))
+        XCTAssertFalse(older(""))
+    }
+
+    func testRefreshDerivesPluginNeedsUpdateFromTheRegistrysReports() async throws {
+        let registry = try makeRegistry()
+        let model = makeModel(registry: registry, listener: StubListener(hosts: registry))
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let hostID = try XCTUnwrap(model.hosts.first?.id)
+        XCTAssertFalse(model.hosts[0].pluginNeedsUpdate, "never heard means no hint")
+
+        registry.notePluginVersion(hostID: hostID, .headerAbsent)
+        model.refreshHosts()
+        XCTAssertTrue(model.hosts[0].pluginNeedsUpdate)
+
+        registry.notePluginVersion(hostID: hostID, .version("1.9.0"))
+        model.refreshHosts()
+        XCTAssertTrue(model.hosts[0].pluginNeedsUpdate)
+
+        registry.notePluginVersion(hostID: hostID, .version("99.0.0"))
+        model.refreshHosts()
+        XCTAssertFalse(model.hosts[0].pluginNeedsUpdate, "a newer host is not outdated")
+    }
+
+    /// A revoked host cannot authenticate and cannot update; its row must keep
+    /// saying "Revoked" rather than hijack the status position.
+    func testARevokedHostNeverShowsThePluginUpdateHint() async throws {
+        let registry = try makeRegistry()
+        let model = makeModel(registry: registry, listener: StubListener(hosts: registry))
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let hostID = try XCTUnwrap(model.hosts.first?.id)
+
+        registry.notePluginVersion(hostID: hostID, .headerAbsent)
+        await model.revoke(hostID: hostID)
+        model.refreshHosts()
+        XCTAssertFalse(model.hosts[0].pluginNeedsUpdate)
+        XCTAssertEqual(model.hosts[0].statusText, "Revoked")
+    }
+
+    /// The run's read-back already PROVED the installed version, so the
+    /// indicator clears on the run — not at the host's next hook, which may be
+    /// hours away while the user is staring at the row.
+    @MainActor
+    func testASuccessfulUpdateRunClearsTheIndicatorWithoutWaitingForAHook() async throws {
+        let registry = try makeRegistry()
+        let sshFS = StubSSHConfigFileSystem()
+        let recorder = SetupFlowRecorder()
+        var script = SetupFlowScript()
+        script.pluginVersionBefore = "1.9.0"
+        let service = ClaudeRemoteEnrollmentService(
+            runner: setupFlowRunner(script: script, recorder: recorder),
+            sshConfigFileSystem: sshFS
+        )
+        let listener = StubListener(hosts: registry)
+        listener.isListening = true
+        let model = setupFlowModel(registry: registry, listener: listener, service: service)
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let hostID = try XCTUnwrap(model.hosts.first?.id)
+        let presentation = try XCTUnwrap(model.presentedPlan)
+        sshFS.configText = ClaudeRemoteEnrollmentService.applySSHConfigSnippet(
+            to: "", snippet: presentation.plan.sshConfigSnippet, hostID: hostID
+        )
+        model.dismissPlan()
+
+        // The field state: hooks reported an outdated plugin.
+        registry.notePluginVersion(hostID: hostID, .version("1.9.0"))
+        model.refreshHosts()
+        XCTAssertTrue(model.hosts[0].pluginNeedsUpdate)
+
+        model.requestPluginUpdate(hostID: hostID)
+        model.requestHostUpdateRun()
+        await model.confirmEnrollmentAction()
+
+        XCTAssertEqual(model.hosts.first?.setupStatusText, "Setup complete.")
+        XCTAssertFalse(
+            model.hosts[0].pluginNeedsUpdate,
+            "the verified read-back must clear the indicator on the run itself"
+        )
+        XCTAssertEqual(
+            registry.host(id: hostID)?.reportedPluginVersion,
+            .version(ClaudeRemoteEnrollmentService.remotePluginVersion)
+        )
     }
 
     /// Tonight's failure, made visible: the app knew connections were being
