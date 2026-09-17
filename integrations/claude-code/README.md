@@ -512,8 +512,10 @@ An `X-Lvx-Session` response header says `joined` or `unknown`; `post.sh` stores
 that verdict for the session's status line. The shim still prints only the
 fixed body. Each post also sends an `X-Lvx-Plugin-Version` header — the
 plugin's own version, as a constant baked into `post.sh`. The app validates it
-to a strict numeric shape, records it for that host only after the request has
-authenticated, and uses it for exactly one thing: showing the fixed "Plugin
+to a strict numeric shape, records it for that host only once the request is
+fully accepted (the same points the "last seen" time is noted — a request the
+revocation re-check refuses records nothing), and uses it for exactly one
+thing: showing the fixed "Plugin
 update available" line (and a prominent **Update Plugin…** button) in Settings
 when the host's plugin is older than the app's. The record keeps the highest
 version any of the host's hooks reported this app session — Claude Code

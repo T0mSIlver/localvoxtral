@@ -597,6 +597,12 @@ public final class ClaudeRemoteHostRegistry: Sendable {
 
     /// Record what an authenticated hook reported about its plugin version.
     ///
+    /// The listener calls this only for finally-ACCEPTED requests — the same
+    /// points `noteActivity` is — never for one the revocation re-check
+    /// refused, so an in-flight request cannot mutate a host whose
+    /// credential was withdrawn mid-request (and rotation would preserve the
+    /// field into the reinstated host).
+    ///
     /// Same best-effort discipline and the same lock order as
     /// `noteActivity(hostID:)`: in-memory under `persistLock` → `state`, so a
     /// concurrent transaction's candidate installation cannot clobber the

@@ -1224,7 +1224,10 @@ there is not.
   The shim's request-side `X-Lvx-Plugin-Version` header (its own version, a
   constant in `post.sh`) is the same shape of rule: validated to a strict
   numeric shape on arrival (`ClaudeRemotePluginVersionCodec`), recorded on the
-  host only AFTER the request authenticated, never logged, and used only to
+  host only where the request is finally ACCEPTED — the same points
+  `lastSeenAt` is noted, never on first authentication alone, so a request
+  the revocation re-check refuses cannot mutate a report that rotation would
+  then preserve — never logged, and used only to
   select the fixed "Plugin update available" string in Settings. The
   recorded value is the HIGHEST any of that host's hooks reported this app
   session and is never lowered, because Claude Code applies a plugin update
