@@ -510,7 +510,13 @@ always authenticate as an empty `Bearer` and be refused.)
 The app answers every hook with the same fixed body, `{"suppressOutput":true}`.
 An `X-Lvx-Session` response header says `joined` or `unknown`; `post.sh` stores
 that verdict for the session's status line. The shim still prints only the
-fixed body. Nothing else opens a port, and nothing is reachable from your LAN.
+fixed body. Each post also sends an `X-Lvx-Plugin-Version` header — the
+plugin's own version, as a constant baked into `post.sh`. The app validates it
+to a strict numeric shape, records it for that host only after the request has
+authenticated, and uses it for exactly one thing: showing the fixed "Plugin
+update available" line (and a prominent **Update Plugin…** button) in Settings
+when the host's plugin is older than the app's. Nothing else opens a port, and
+nothing is reachable from your LAN.
 
 ## When the app is not running on your Mac
 
@@ -540,12 +546,12 @@ sheet whose **Set Up** does all of it in one consented flow, in order, each step
 self-verifying: the SSH config block on this Mac, the shell export block,
 the plugin install-or-update on the host, the `LC_LVX_TTY` crossing check, the
 herdr agents-panel row when herdr is installed, and the final Check Setup. It
-stops at the first failure with the exact remedy. **Update host…** in an
+stops at the first failure with the exact remedy. **Update Plugin…** in an
 enrolled host's row runs the same flow. The sheet shows no token, command, or
 file contents. Its **Details** link opens the complete command reference in
 [docs/remote-claude-context.md](../../docs/remote-claude-context.md#how-enrollment-works).
 The list in that row shows each enrolled host, when it was last seen,
-and gives you **Update host…**, **Rotate Token**, **Revoke** and **Remove**.
+and gives you **Update Plugin…**, **Rotate Token**, **Revoke** and **Remove**.
 
 The consent sentence names every local file and the SSH alias the flow may
 touch. Nothing runs or is written before **Set Up**. The app runs remote work
@@ -769,8 +775,8 @@ ssh builder "claude plugin install localvoxtral-remote@localvoxtral --config 'po
 
 Order matters: `plugin update` installs whatever the local marketplace clone
 currently offers, so refreshing the clone first is what makes it an update at
-all. In the app, each host in **Settings → Remote hosts** has an **Update…**
-button. Its consent sentence names the local files and enrolled SSH
+all. In the app, each host in **Settings → Remote hosts** has an **Update
+Plugin…** button. Its consent sentence names the local files and enrolled SSH
 alias, and **Set Up** runs the same six-step flow as enrollment. The display name
 is never used as a substitute for the alias. A host enrolled before aliases
 were recorded must be re-enrolled before the app can update it.

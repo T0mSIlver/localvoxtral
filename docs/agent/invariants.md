@@ -1221,6 +1221,11 @@ there is not.
   that could put a byte on a terminal, so there is no variable part left for a
   squatter to aim at. The fixed `X-Lvx-Session: joined|unknown` response header
   only selects a private per-session status stamp and never reaches stdout.
+  The shim's request-side `X-Lvx-Plugin-Version` header (its own version, a
+  constant in `post.sh`) is the same shape of rule: validated to a strict
+  numeric shape on arrival (`ClaudeRemotePluginVersionCodec`), recorded on the
+  host only AFTER the request authenticated, never logged, and used only to
+  select the fixed "Plugin update available" string in Settings.
   Note also what is NOT defensible: a
   malicious process running as the user on the REMOTE host can still read
   `~/.claude/` and therefore the plugin's token no matter what we do. Say so
