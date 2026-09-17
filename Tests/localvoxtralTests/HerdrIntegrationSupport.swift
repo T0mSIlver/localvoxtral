@@ -414,6 +414,11 @@ final class HerdrLiveFixture {
         let otherPortAlias: String
         let herdrBinary: String
         let socketPath: String
+        /// The run's own XDG_CONFIG_HOME / XDG_STATE_HOME: every fixture herdr
+        /// process uses these instead of the account's, so the lane runs
+        /// beside a herdr the account is already running.
+        let configHome: String
+        let stateHome: String
         let paneID: String
         let primarySurfaceLog: String
         let provisionedSSH: Bool
@@ -495,11 +500,17 @@ final class HerdrLiveFixture {
         guard !isTornDown else { return }
         isTornDown = true
         captureDiagnostics()
-        _ = try? HerdrLaneProcess.run(
+        let result = try? HerdrLaneProcess.run(
             executable: URL(fileURLWithPath: "/bin/bash"),
             arguments: [scriptURL.path, "down", info.workdir],
             currentDirectory: repoRoot
         )
+        // The account's own herdr after the run, next to the `before` line in
+        // environment.txt: the evidence the lane left it alone.
+        for line in (result?.standardError ?? "").split(separator: "\n")
+        where line.contains("herdr.account.after") {
+            print(line)
+        }
     }
 
     /// Start an additional real herdr client on its own pty.
@@ -604,6 +615,8 @@ final class HerdrLiveFixture {
     func herdrCLI(_ arguments: [String]) throws -> String {
         var environment = ProcessInfo.processInfo.environment
         environment["HERDR_SOCKET_PATH"] = info.socketPath
+        environment["XDG_CONFIG_HOME"] = info.configHome
+        environment["XDG_STATE_HOME"] = info.stateHome
         let result = try HerdrLaneProcess.run(
             executable: URL(fileURLWithPath: info.herdrBinary),
             arguments: arguments,
@@ -628,12 +641,16 @@ final class HerdrLiveFixture {
         return (pane["tokens"] as? [String: String]) ?? [:]
     }
 
+    /// The fixture server's config file, under the run's own config home —
+    /// never the account's `~/.config/herdr/config.toml`. Over the fixture
+    /// alias the enrollment patch resolves this same file, because the
+    /// loopback sshd forces `XDG_CONFIG_HOME` onto that key.
     var herdrConfigPath: String {
-        NSHomeDirectory() + "/.config/herdr/config.toml"
+        info.configHome + "/herdr/config.toml"
     }
 
     /// Ask the live server to re-read the config file. Used to put the fixture
-    /// back the way it was after a test rewrote the account's config.
+    /// back the way it was after a test rewrote its config.
     func reloadConfig() throws {
         _ = try HerdrLaneProcess.run(
             executable: URL(fileURLWithPath: "/bin/bash"),

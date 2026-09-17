@@ -703,8 +703,9 @@ jobs:
 
       - name: Decide herdr integration lane (path filter + [run-herdr-integration] marker)
         # The lane starts a real herdr server, a real loopback sshd, and real
-        # herdr clients on ptys, and it takes over this account's herdr config
-        # and an ~/.ssh/config block for the duration of the run. Conditional
+        # herdr clients on ptys (on their own socket and config/state homes,
+        # beside any herdr this account runs), and it borrows ~/.ssh/config
+        # blocks for the duration of the run. Conditional
         # for the same reason the model lanes are: it must run when the diff
         # can change what we say to herdr or believe it said, and stay out of
         # the way otherwise. Path list: scripts/ci/herdr-lane-filter.sh.
@@ -727,10 +728,8 @@ jobs:
             #
             # `herdr=false` opts a single dispatch out. The dispatch that
             # exists to produce an ARTIFACT (scripts/try-pr.sh --dogfood)
-            # passes it, because this lane carries a precondition that
-            # dispatch never asked for: the fixture refuses to start beside a
-            # herdr the account is already running (scripts/herdr-integration-fixture.sh),
-            # and the owner runs one all day. Pushes and PRs are untouched by
+            # passes it, because that dispatch never asked for this lane's
+            # time or its failure modes. Pushes and PRs are untouched by
             # this input — they keep the path filter + [run-herdr-integration]
             # marker, which is what holds the contract.
             if [[ "$DISPATCH_HERDR" == "false" ]]; then
@@ -1230,8 +1229,8 @@ jobs:
       # run (weights on disk, a real herdr server + loopback sshd). They come
       # last because a lane's precondition must never cost the run the
       # artifacts it was dispatched to produce: the herdr lane used to sit
-      # before packaging, and its fixture refuses to start beside the herdr
-      # the owner runs all day, so `-f dogfood=true` could not reach the
+      # before packaging, and while its fixture refused to start beside the
+      # herdr the owner runs all day (before #323), `-f dogfood=true` could not reach the
       # packaging steps on the owner's Mac at all (run 35084386041).
       # New conditional live lanes go here, below the artifact steps.
       #
@@ -1276,7 +1275,7 @@ jobs:
         # EXTERNAL herdr assumptions the surface-authorization argument rests
         # on (docs/agent/remote-herdr-panel-binding.md). Self-hosted only, and
         # not because of cost: the fixture provisions a loopback sshd and
-        # takes over the account's herdr config, which a hosted fork-PR runner
+        # appends blocks to the account's ~/.ssh/config, which a hosted fork-PR runner
         # must never be asked to do. Local equivalent:
         # ./scripts/remote-build.sh integration-herdr
         if: steps.ci_scope.outputs.docs_only != 'true' && steps.herdr_lane.outputs.run == 'true'

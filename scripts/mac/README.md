@@ -36,16 +36,18 @@ herdr --version           # 0.8.2 is what the lane's assumptions were measured a
 
 Its absence fails the lane loudly with the install step rather than skipping.
 
-What the lane borrows while it runs, and gives back on teardown: the running
-account's `~/.config/herdr/config.toml` and `session.json`, plus two delimited
-blocks in its `~/.ssh/config`. It refuses to start at all if that account
-already has a herdr server running, so it can never trample a live session —
-if the owner is using herdr on the runner account, the lane fails instead of
-taking over.
+The lane runs beside your own herdr. Its server, clients and CLI calls use
+their own socket and their own `XDG_CONFIG_HOME` / `XDG_STATE_HOME` under the
+run's temp dir, so your `~/.config/herdr/config.toml`, `session.json`, machine
+catalog and running panes are never touched.
+
+What the lane borrows while it runs, and gives back on teardown: three
+delimited blocks in the running account's `~/.ssh/config`. It refuses to start
+if your ssh config already defines one of its aliases (`lvx-herdr-fixture*`).
 
 ### If a run is killed before it gives them back
 
-Nothing runs on SIGKILL, so the pristine originals do not live in the run's
+Nothing runs on SIGKILL, so the pristine original does not live in the run's
 temp dir — they live at a stable path, `~/.localvoxtral-herdr-fixture-hold/`,
 with a manifest naming the run that took them. The next `up` restores a dead
 run's hold before doing anything else and refuses while a live run owns it, so
@@ -1103,9 +1105,9 @@ gh workflow run CI --ref <branch> -f dogfood=true -f herdr=false
 ```
 
 `herdr=false` because a dispatch otherwise forces the live herdr lane on, and
-its fixture refuses to start beside the herdr you are running — see
+an install dispatch has no reason to wait on it — see
 `.github/workflows/README.md`. The install happens before the live lanes
-either way, so a red lane no longer costs you the install.
+either way, so a red lane never costs you the install.
 
 That step is gated to `workflow_dispatch` **and** `dogfood=true` — narrower
 than the dogfood lane itself, whose `[dogfood-package]` marker fires on

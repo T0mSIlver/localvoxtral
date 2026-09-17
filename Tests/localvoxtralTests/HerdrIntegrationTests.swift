@@ -14,7 +14,8 @@ import XCTest
 /// `ClaudeRemoteHerdrForwardService` spawning a real supervised `ssh -N`,
 /// `SSHDestinationCanonicalizer.live()` running real `ssh -G`,
 /// `ClaudeRemoteEnrollmentService.configureRemoteHerdrPanel` patching a real
-/// `~/.config/herdr/config.toml` over a real ssh session, and
+/// herdr `config.toml` over a real ssh session (the fixture server's own, never
+/// the account's), and
 /// `HerdrPanelBindingProbe` / `HerdrPanelMicIndicator` driving all of it.
 ///
 /// The ONE fixture is the focused surface: instead of an accessibility read of
@@ -546,11 +547,23 @@ final class HerdrIntegrationTests: XCTestCase {
     // MARK: - Enrollment-time config patch
 
     /// The remote config patch, run for real over ssh against a real
-    /// `~/.config/herdr/config.toml`: it appends its block exactly once, it
+    /// herdr `config.toml` (the fixture server's own): it appends its block exactly once, it
     /// reloads the live server, and it refuses to touch a config that already
     /// carries an agents table — including the trailing-comment header shape
     /// its grep has to recognise.
     func testRemoteHerdrPanelConfigPatchAppendsOnceAndRefusesCustomizedTables() async throws {
+        // Over a caller-supplied destination the patch edits THAT host's real
+        // config, which this Mac cannot read back or restore — and when the
+        // destination is this very account, that is the config of a herdr a
+        // human may be running. Fail before any ssh write instead.
+        guard fixture.info.provisionedSSH else {
+            XCTFail(
+                "the config patch test needs the hermetic loopback sshd (its key forces the "
+                    + "fixture's own XDG_CONFIG_HOME); a destination run cannot read back or "
+                    + "restore the second host's config"
+            )
+            return
+        }
         let configPath = fixture.herdrConfigPath
         let original = try String(contentsOfFile: configPath, encoding: .utf8)
         defer {

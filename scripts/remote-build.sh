@@ -32,7 +32,8 @@ set -euo pipefail
 #                  the remote-herdr join machinery against a LIVE herdr server
 #                  over a REAL ssh -L forward: real HerdrSocketClient, real
 #                  forward coordinator, real ssh -G canonicalization, real
-#                  ~/.config/herdr/config.toml patch. With no argument the
+#                  herdr config.toml patch (on the fixture's own config home,
+#                  beside any herdr the account runs). With no argument the
 #                  fixture provisions its own loopback sshd (hermetic); pass an
 #                  ssh destination for a true two-host run. Needs `herdr`
 #                  installed on the build host.
