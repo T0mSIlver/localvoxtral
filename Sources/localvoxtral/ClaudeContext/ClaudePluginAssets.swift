@@ -96,21 +96,28 @@ public enum ClaudePluginAssets {
             .deletingLastPathComponent() // repo root
     }
 
-    /// This app's marketplace version (`metadata.version`), for the
-    /// Integrations pane's "Update available" comparison. Nil when the
-    /// manifest cannot be read — the row then reports installed-or-not
-    /// without a version comparison, never a guessed one.
-    public static func marketplaceVersion(marketplaceURL: URL? = ClaudePluginAssets.marketplaceURL()) -> String? {
+    /// The bundled local plugin's version (its own `plugin.json` `version`),
+    /// for the Integrations pane's "Update available" comparison. This is the
+    /// value `claude plugin list --json` names for an install — the
+    /// marketplace's `metadata.version` is a separate number and never
+    /// matches it. Nil when the manifest cannot be read — the row then
+    /// reports installed-or-not without a version comparison, never a
+    /// guessed one.
+    public static func localPluginVersion(
+        marketplaceURL: URL? = ClaudePluginAssets.marketplaceURL(),
+        pluginName: String = ClaudePluginAssets.pluginName
+    ) -> String? {
         guard let marketplaceURL else { return nil }
         let manifest = marketplaceURL
+            .appendingPathComponent("plugins")
+            .appendingPathComponent(pluginName)
             .appendingPathComponent(".claude-plugin")
-            .appendingPathComponent("marketplace.json")
+            .appendingPathComponent("plugin.json")
         guard
             let data = try? Data(contentsOf: manifest),
             let json = try? JSONSerialization.jsonObject(with: data),
             let manifestDict = json as? [String: Any],
-            let metadata = manifestDict["metadata"] as? [String: Any],
-            let version = metadata["version"] as? String,
+            let version = manifestDict["version"] as? String,
             !version.isEmpty
         else { return nil }
         return version

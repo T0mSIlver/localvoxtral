@@ -746,7 +746,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try? ClaudePluginInstallService.live().pluginListOutput()
                 }.value
             },
-            bundledPluginVersion: ClaudePluginAssets.marketplaceVersion(),
+            bundledPluginVersion: ClaudePluginAssets.localPluginVersion(),
             statuslineService: {
                 ClaudeStatuslineInstallService(
                     fileSystem: LiveClaudeStatuslineFileSystem()
