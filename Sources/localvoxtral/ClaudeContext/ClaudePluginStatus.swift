@@ -6,10 +6,12 @@ import Foundation
 /// internals: the install lives in Claude Code's own config, and the CLI's
 /// machine-readable listing is the supported way to ask about it. The human
 /// listing is never parsed: its shape changed once (the version moved to its
-/// own `Version:` line) and silently took the version out of this row. The bundled version comes from this repo's
-/// own marketplace manifest (`metadata.version`), so "update available" means
-/// "this app ships a newer marketplace than the listing names" — nothing
-/// about what Claude Code would do with it.
+/// own `Version:` line) and silently took the version out of this row. The
+/// bundled version comes from the bundled plugin's own `plugin.json` — the
+/// number the listing names — so "update available" means "this app ships a
+/// newer plugin than the listing names", nothing about what Claude Code would
+/// do with it. (The marketplace's `metadata.version` is a different number;
+/// comparing against it made every install read as outdated.)
 public enum ClaudePluginStatus: Sendable, Equatable {
     /// The CLI is missing or the listing failed. The row still offers its
     /// buttons — pressing one reports the real error — but claims nothing.
@@ -38,7 +40,7 @@ public enum ClaudePluginStatus: Sendable, Equatable {
     ///     `.notInstalled`: absence of evidence is not evidence of absence,
     ///     and claiming "not installed" would invite an install over a setup
     ///     we simply failed to read.
-    ///   - bundledVersion: this app's marketplace `metadata.version`, or nil
+    ///   - bundledVersion: the bundled plugin's `plugin.json` version, or nil
     ///     when the bundled manifest could not be read. Without it there is
     ///     nothing to compare against, so a found plugin is just installed.
     public static func derive(

@@ -104,27 +104,51 @@ final class ClaudePluginAssetsTests: XCTestCase {
         XCTAssertEqual(ClaudePluginAssets.marketplaceName, "localvoxtral")
     }
 
-    func testMarketplaceVersionReadsTheManifest() throws {
+    func testLocalPluginVersionReadsThePluginManifest() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("mktver-\(UUID().uuidString)")
+            .appendingPathComponent("plugver-\(UUID().uuidString)")
+        let pluginDir = root.appendingPathComponent("plugins/localvoxtral/.claude-plugin")
+        try FileManager.default.createDirectory(at: pluginDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        XCTAssertNil(ClaudePluginAssets.localPluginVersion(marketplaceURL: root))
+        // The marketplace's metadata.version is a different number and must
+        // not be picked up.
         try FileManager.default.createDirectory(
             at: root.appendingPathComponent(".claude-plugin"), withIntermediateDirectories: true
         )
-        defer { try? FileManager.default.removeItem(at: root) }
-
-        XCTAssertNil(ClaudePluginAssets.marketplaceVersion(marketplaceURL: root))
         try Data("{\"metadata\":{\"version\":\"1.4.0\"}}".utf8).write(
             to: root.appendingPathComponent(".claude-plugin/marketplace.json")
         )
-        XCTAssertEqual(ClaudePluginAssets.marketplaceVersion(marketplaceURL: root), "1.4.0")
+        XCTAssertNil(ClaudePluginAssets.localPluginVersion(marketplaceURL: root))
+        try Data("{\"version\":\"1.0.0\"}".utf8).write(
+            to: pluginDir.appendingPathComponent("plugin.json")
+        )
+        XCTAssertEqual(ClaudePluginAssets.localPluginVersion(marketplaceURL: root), "1.0.0")
     }
 
-    func testMarketplaceVersionOfTheBundledManifestIsPinned() throws {
-        // The Integrations pane compares this against `claude plugin list`.
-        // If the manifest version moves, the comparison moves with it — the
-        // pin here names the current value so the move is deliberate.
+    func testTheBundledLocalPluginFreshlyInstalledIsNotAnUpdate() throws {
+        // `claude plugin list --json` names the version from the plugin's own
+        // plugin.json, not the marketplace's metadata.version. A fresh install
+        // of the bundled plugin must read as installed.
         let url = try XCTUnwrap(ClaudePluginAssets.developmentMarketplaceURL())
-        XCTAssertEqual(ClaudePluginAssets.marketplaceVersion(marketplaceURL: url), "1.4.0")
+        let manifest = url.appendingPathComponent(
+            "plugins/\(ClaudePluginAssets.pluginName)/.claude-plugin/plugin.json"
+        )
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any]
+        )
+        let listed = try XCTUnwrap(json["version"] as? String)
+        let listing = """
+        [{"id":"localvoxtral@localvoxtral","version":"\(listed)","scope":"user","enabled":true}]
+        """
+
+        let status = ClaudePluginStatus.derive(
+            listOutput: listing,
+            bundledVersion: ClaudePluginAssets.localPluginVersion(marketplaceURL: url)
+        )
+
+        XCTAssertEqual(status, .installed(version: listed))
     }
 
     func testOpencodePluginResolvesPackagedBeforeCheckout() throws {

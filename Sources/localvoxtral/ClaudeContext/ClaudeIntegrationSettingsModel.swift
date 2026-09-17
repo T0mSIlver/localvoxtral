@@ -557,8 +557,8 @@ public final class ClaudeIntegrationSettingsModel {
     /// unavailable. Async because the listing shells out; injected so tests
     /// drive the status derivation from fixtures.
     private let fetchPluginListOutput: @Sendable () async -> String?
-    /// This app's marketplace version, for the update comparison. Nil when
-    /// the bundled manifest could not be read.
+    /// The bundled local plugin's `plugin.json` version, for the update
+    /// comparison. Nil when the bundled manifest could not be read.
     private let bundledPluginVersion: String?
     /// Reads and writes the `statusLine` key. Nil disables the row's actions.
     private let statuslineService: @Sendable () -> ClaudeStatuslineInstallService?
