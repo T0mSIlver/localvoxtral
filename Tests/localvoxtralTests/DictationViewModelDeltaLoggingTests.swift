@@ -182,7 +182,7 @@ final class DictationViewModelDeltaLoggingTests: XCTestCase {
         let viewModel = makeViewModel(enableDeltaLogging: true)
         viewModel.isDictating = true
         viewModel.statusText = "Transcribing..."
-        let message = "Dictation reached its 10-minute limit; start again to continue."
+        let message = "10-minute limit reached; start again."
 
         viewModel.handle(event: .transcriptionStopped(message))
 
@@ -196,7 +196,7 @@ final class DictationViewModelDeltaLoggingTests: XCTestCase {
         let viewModel = makeViewModel(enableDeltaLogging: false)
         viewModel.statusText = "Ready"
 
-        viewModel.handle(event: .transcriptionStopped("Transcription stopped early; start again to continue."))
+        viewModel.handle(event: .transcriptionStopped("Dictation stopped early; start again."))
 
         XCTAssertEqual(viewModel.statusText, "Ready")
         XCTAssertNil(viewModel.lastError)

@@ -501,7 +501,7 @@ final class SpeechHelperIntegrationTests: XCTestCase {
 
         XCTAssertEqual(
             stops.snapshot().deltas,
-            ["Dictation reached its \(limitSeconds)-second limit; start again to continue."],
+            ["\(limitSeconds)-second limit reached; start again."],
             "the limit stop must reach the client exactly once, as a transcription stop"
         )
         XCTAssertEqual(errors.snapshot().deltas, [], "no generic realtime error")

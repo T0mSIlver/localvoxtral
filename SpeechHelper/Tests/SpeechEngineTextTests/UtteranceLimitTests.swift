@@ -42,16 +42,27 @@ final class UtteranceLimitTests: XCTestCase {
     func testReachedMessageIsOneShortSentencePerLimit() {
         XCTAssertEqual(
             UtteranceLimit(seconds: 600).reachedMessage,
-            "Dictation reached its 10-minute limit; start again to continue."
+            "10-minute limit reached; start again."
         )
         XCTAssertEqual(
             UtteranceLimit(seconds: 90).reachedMessage,
-            "Dictation reached its 90-second limit; start again to continue."
+            "90-second limit reached; start again."
         )
-        // The popover shows one short sentence (AGENTS.md).
-        for message in [UtteranceLimit().reachedMessage, UtteranceLimit.endOfStreamMessage] {
+        // The popover shows one short sentence (AGENTS.md), and one that fits the status
+        // row's single line: it wraps, so a long sentence grows the whole menu
+        // (owner review, 2026-09-17). The widest limit this can phrase is checked too.
+        let messages = [
+            UtteranceLimit().reachedMessage,
+            UtteranceLimit(seconds: 59).reachedMessage,
+            UtteranceLimit.endOfStreamMessage,
+        ]
+        for message in messages {
             XCTAssertFalse(message.contains("\n"))
             XCTAssertEqual(message.filter { $0 == "." }.count, 1, message)
+            XCTAssertLessThanOrEqual(
+                message.count, UtteranceLimit.maxMessageCharacters,
+                "too long for the popover's status line: \(message)"
+            )
         }
     }
 

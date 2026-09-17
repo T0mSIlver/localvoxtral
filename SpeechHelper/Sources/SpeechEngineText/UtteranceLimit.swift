@@ -40,15 +40,20 @@ public struct UtteranceLimit: Equatable, Sendable {
         return Int(audioTokens) + Self.finishPaddingTokens
     }
 
+    /// Longest status message this type may produce. The popover's status row wraps
+    /// (`lineLimit(nil)`) inside a 280 pt column, so a longer sentence takes a second line
+    /// and grows the whole menu; every other status the app sets is one line.
+    public static let maxMessageCharacters = 44
+
     /// One short sentence for the app's status line (the popover shows one sentence only).
     public var reachedMessage: String {
         let minutes = seconds / 60
         let length = seconds % 60 == 0 && minutes > 0 ? "\(minutes)-minute" : "\(seconds)-second"
-        return "Dictation reached its \(length) limit; start again to continue."
+        return "\(length) limit reached; start again."
     }
 
     /// One short sentence for a model end-of-stream before the client finished.
-    public static let endOfStreamMessage = "Transcription stopped early; start again to continue."
+    public static let endOfStreamMessage = "Dictation stopped early; start again."
 }
 
 /// Why an engine session stopped producing text before the client asked it to finish.

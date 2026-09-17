@@ -174,7 +174,7 @@ final class WebSocketClientLifecycleTests: XCTestCase {
         client.handle(json: [
             "type": "error",
             "code": "transcription_stopped",
-            "message": "Dictation reached its 10-minute limit; start again to continue.",
+            "message": "10-minute limit reached; start again.",
         ])
         client.handle(json: ["type": "error", "message": "Invalid PCM16 payload"])
 
@@ -183,7 +183,7 @@ final class WebSocketClientLifecycleTests: XCTestCase {
         guard case .transcriptionStopped(let stopMessage) = events[0] else {
             XCTFail("Expected .transcriptionStopped, got \(events[0])"); return
         }
-        XCTAssertEqual(stopMessage, "Dictation reached its 10-minute limit; start again to continue.")
+        XCTAssertEqual(stopMessage, "10-minute limit reached; start again.")
         guard case .error(let errorMessage) = events[1] else {
             XCTFail("Expected .error for a frame without the code, got \(events[1])"); return
         }

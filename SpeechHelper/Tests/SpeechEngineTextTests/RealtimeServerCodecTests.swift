@@ -140,14 +140,14 @@ final class RealtimeServerCodecTests: XCTestCase {
 
     func testTranscriptionStoppedIsAnErrorFrameWithACode() {
         let json = RealtimeServerMessage.transcriptionStopped(
-            message: "Dictation reached its 10-minute limit; start again to continue."
+            message: "10-minute limit reached; start again."
         ).json()
         let parsed = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: String]
         XCTAssertEqual(parsed?["type"], "error")
         XCTAssertEqual(parsed?["code"], "transcription_stopped")
         XCTAssertEqual(
             parsed?["message"],
-            "Dictation reached its 10-minute limit; start again to continue."
+            "10-minute limit reached; start again."
         )
     }
 
