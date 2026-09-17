@@ -318,9 +318,11 @@ final class SettingsTabTests: XCTestCase {
             labelModifiers.contains(".truncationMode(.middle)"),
             "a long host label should truncate from the middle (head and tail stay readable)"
         )
+        // The row's one status position: the "Last context" age, or — while
+        // the host's plugin is outdated — the fixed update sentence.
         let status = try XCTUnwrap(
-            source.range(of: "Text(host.statusText)"),
-            "the host-row status (Text(host.statusText)) moved — update this test's anchor"
+            source.range(of: ": host.statusText"),
+            "the host-row status Text no longer ends in `: host.statusText` — update this test's anchor"
         )
         let statusModifiers = source[status.upperBound...].prefix(300)
         XCTAssertTrue(
@@ -330,6 +332,18 @@ final class SettingsTabTests: XCTestCase {
         XCTAssertTrue(
             statusModifiers.contains(".layoutPriority(1)"),
             "the status outranks the label when width runs out"
+        )
+        // The rename's whole point (owner misread "Update…" as a truncated
+        // "Update Plugin…"): the longer label must be FIXED-SIZE so the row
+        // squeezes the label instead of ever truncating the button.
+        let updateButton = try XCTUnwrap(
+            source.range(of: "Button(\"Update Plugin…\") { model.requestPluginUpdate"),
+            "the host-row update button moved or was renamed — update this test's anchor"
+        )
+        let buttonModifiers = source[updateButton.upperBound...].prefix(300)
+        XCTAssertTrue(
+            buttonModifiers.contains(".fixedSize()"),
+            "\"Update Plugin…\" must not truncate; the host label absorbs the squeeze"
         )
     }
 
