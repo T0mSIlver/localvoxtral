@@ -244,11 +244,13 @@ public final class ClaudeIntegrationSettingsModel {
         public var canHoldForward: Bool = false
         /// Last setup outcome for this host during the current app session.
         public var setupStatusText: String?
-        /// Whether authenticated hooks have reported a plugin version OLDER
-        /// than the one this build installs (or no version header at all,
-        /// which means ≤ 1.9.0). False when nothing has been heard: an update
-        /// hint with no evidence is noise, and a host that has never dialed
-        /// has no plugin fact to state.
+        /// Whether the highest plugin version this host's authenticated hooks
+        /// have reported this app session is OLDER than the one this build
+        /// installs (or no version header at all, which means ≤ 1.9.0).
+        /// False when nothing has been heard: an update hint with no evidence
+        /// is noise, and a host that has never dialed has no plugin fact to
+        /// state. The record is monotone, so an old session's headerless hook
+        /// cannot re-flag a host whose update a read-back already proved.
         public var pluginNeedsUpdate: Bool = false
     }
 
@@ -266,6 +268,10 @@ public final class ClaudeIntegrationSettingsModel {
     /// * reported older than expected → true;
     /// * reported equal or NEWER → false. A newer report means this app is
     ///   behind the host, which is not the host's problem to fix.
+    ///
+    /// The numeric comparison is `ClaudeRemotePluginVersionCodec`'s — the
+    /// same single implementation the registry's monotone record uses, so
+    /// "what the registry kept" and "what the row says" can never disagree.
     static func pluginNeedsUpdate(
         reported: ClaudeRemotePluginVersionReport?,
         expected: String
@@ -273,37 +279,9 @@ public final class ClaudeIntegrationSettingsModel {
         switch reported {
         case nil: return false
         case .headerAbsent: return true
-        case .version(let version): return isVersion(version, olderThan: expected)
+        case .version(let version):
+            return ClaudeRemotePluginVersionCodec.isVersion(version, olderThan: expected)
         }
-    }
-
-    /// Numeric comparison, component by component: 1.9.0 vs 1.10.0 must
-    /// compare 9 < 10, not `"9" < "10"` as text. Anything that is not exactly
-    /// three numeric components answers false (not outdated): the expected
-    /// side is pinned to the manifest by a tier-0 test and the reported side
-    /// is strict-shape-validated before it is ever recorded, so an unparseable
-    /// pair is a build bug — and the conservative reading of one is "do not
-    /// tell the user to update".
-    static func isVersion(_ version: String, olderThan expected: String) -> Bool {
-        func components(_ value: String) -> [Int]? {
-            let parts = value.split(separator: ".", omittingEmptySubsequences: false)
-            guard parts.count == 3 else { return nil }
-            var numbers: [Int] = []
-            for part in parts {
-                guard let number = Int(part), number >= 0 else { return nil }
-                numbers.append(number)
-            }
-            return numbers
-        }
-        guard let reported = components(version), let current = components(expected) else {
-            return false
-        }
-        for (reportedComponent, currentComponent) in zip(reported, current) {
-            if reportedComponent != currentComponent {
-                return reportedComponent < currentComponent
-            }
-        }
-        return false
     }
 
     /// "Last context: 2 min ago", from a clock the caller supplies.

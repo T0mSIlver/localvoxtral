@@ -515,7 +515,11 @@ plugin's own version, as a constant baked into `post.sh`. The app validates it
 to a strict numeric shape, records it for that host only after the request has
 authenticated, and uses it for exactly one thing: showing the fixed "Plugin
 update available" line (and a prominent **Update Plugin…** button) in Settings
-when the host's plugin is older than the app's. Nothing else opens a port, and
+when the host's plugin is older than the app's. The record keeps the highest
+version any of the host's hooks reported this app session — Claude Code
+applies a plugin update only on session restart, so sessions that were already
+running keep using the old plugin's shim and send no header; their hooks must
+not un-flag an update that has already landed. Nothing else opens a port, and
 nothing is reachable from your LAN.
 
 ## When the app is not running on your Mac

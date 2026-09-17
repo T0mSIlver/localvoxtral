@@ -42,10 +42,11 @@ public struct ClaudeRemoteHost: Sendable, Equatable, Identifiable {
     /// id.
     public var persistentForwardEnabled: Bool = false
     /// What authenticated hooks have reported about this host's
-    /// `localvoxtral-remote` plugin version during this app session. Nil until
-    /// the first authenticated hook arrives — which is a different fact from
-    /// `.headerAbsent`, an authenticated hook whose plugin predates the
-    /// version header. Not a secret and never trusted: it only selects a
+    /// `localvoxtral-remote` plugin version during this app session — the
+    /// HIGHEST report seen, never lowered (see `notePluginVersion(hostID:_:)`).
+    /// Nil until the first authenticated hook arrives — which is a different
+    /// fact from `.headerAbsent`, an authenticated hook whose plugin predates
+    /// the version header. Not a secret and never trusted: it only selects a
     /// fixed Settings string. Not persisted; see
     /// `notePluginVersion(hostID:_:)`.
     public var reportedPluginVersion: ClaudeRemotePluginVersionReport?
@@ -353,8 +354,8 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         /// was silent on the subject. Optional for the same
         /// forward/backward-compatibility reason as the alias above.
         var persistentForwardEnabled: Bool? = nil
-        /// TRANSIENT: what authenticated hooks reported about this host's
-        /// plugin version during this app session. Deliberately outside
+        /// TRANSIENT: the highest plugin version this host's authenticated
+        /// hooks have reported during this app session. Deliberately outside
         /// `CodingKeys` — it is refreshed by every hook and self-heals within
         /// one event, so persisting it would add a file field (and a
         /// stale-after-relaunch decision) for nothing. A relaunch reads
@@ -603,10 +604,25 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     /// different facts about the same request and each must survive the other.
     /// Never written to disk per request (the field is transient by design);
     /// recording on an unknown host is a no-op, like `noteActivity`.
+    ///
+    /// MONOTONE by construction: the recorded value is the HIGHEST report
+    /// this app session (`nil` < `.headerAbsent` < `.version` in numeric
+    /// order) and only a strictly higher report replaces it. Claude Code
+    /// applies a plugin update only on session restart, so after "Update
+    /// Plugin…" succeeds a host's already-running sessions keep executing the
+    /// OLD plugin's shim — their hooks arrive header-less, and a
+    /// last-writer-wins record would let them flip a verified host back to
+    /// "Plugin update available" (the 2026-09-17 follow-up defect). The
+    /// accepted cost: a genuine plugin DOWNGRADE on the host stays unread
+    /// until this app relaunches — a rare act that the update flow itself
+    /// never performs.
     public func notePluginVersion(hostID: String, _ report: ClaudeRemotePluginVersionReport) {
         persistLock.withLock { _ in
             state.withLock { hosts in
                 guard let index = hosts.firstIndex(where: { $0.id == hostID }) else { return }
+                // Replace only when strictly higher; `nil` recorded means
+                // "never heard", which any report outranks.
+                guard hosts[index].pluginVersionReport.map({ report > $0 }) ?? true else { return }
                 hosts[index].pluginVersionReport = report
             }
         }

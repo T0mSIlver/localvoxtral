@@ -63,4 +63,53 @@ final class ClaudeRemotePluginVersionTests: XCTestCase {
         // Keyed exactly as the HTTP parser keys headers; no case games.
         XCTAssertEqual(report(["X-Lvx-Plugin-Version": "1.10.0"]), .headerAbsent)
     }
+
+    // MARK: - Ordering
+    //
+    // One comparison, two consumers: the registry's monotone per-host record
+    // and the Settings model's outdated verdict. If they ever disagreed about
+    // which of two versions is older, the row could contradict the record
+    // underneath it.
+
+    func testVersionComparisonIsNumericPerComponent() {
+        let older = { (version: String) in
+            ClaudeRemotePluginVersionCodec.isVersion(version, olderThan: "1.10.0")
+        }
+        // 9 < 10 numerically, not "9" < "10" as text.
+        XCTAssertTrue(older("1.9.0"))
+        XCTAssertTrue(older("1.9.9"))
+        XCTAssertTrue(older("1.9.99"))
+        XCTAssertFalse(older("1.10.0"))
+        XCTAssertFalse(older("1.10.1"))
+        XCTAssertFalse(older("2.0.0"))
+        XCTAssertFalse(older("1.11.0"))
+        // Anything unparseable answers "not older" — the conservative reading,
+        // because a false update hint costs trust. (A malformed report cannot
+        // reach this comparison anyway: the codec records only strict-shape
+        // values.)
+        XCTAssertFalse(older("1.10.0-beta"))
+        XCTAssertFalse(older("nonsense"))
+        XCTAssertFalse(older("1.10"))
+        XCTAssertFalse(older(""))
+    }
+
+    /// The order the never-lower rule is written against: `.headerAbsent` is
+    /// the floor, versions order numerically, and only a STRICTLY higher
+    /// report may replace a recorded one. What makes it load-bearing: after
+    /// "Update Plugin…" a host's already-running sessions still execute the
+    /// old plugin's shim, so header-less hooks from the OLD generation keep
+    /// arriving after the new version is on disk.
+    func testReportsOrderWithHeaderAbsentBelowEveryVersion() {
+        XCTAssertTrue(ClaudeRemotePluginVersionReport.headerAbsent < .version("1.9.0"))
+        XCTAssertFalse(ClaudeRemotePluginVersionReport.version("1.9.0") < .headerAbsent)
+        XCTAssertFalse(ClaudeRemotePluginVersionReport.headerAbsent < .headerAbsent)
+
+        XCTAssertTrue(ClaudeRemotePluginVersionReport.version("1.9.0") < .version("1.10.0"))
+        XCTAssertFalse(ClaudeRemotePluginVersionReport.version("1.10.0") < .version("1.9.0"))
+        XCTAssertFalse(ClaudeRemotePluginVersionReport.version("1.10.0") < .version("1.10.0"))
+
+        // Strictly higher is what replaces; equal is not.
+        XCTAssertTrue(ClaudeRemotePluginVersionReport.version("1.9.0") > .headerAbsent)
+        XCTAssertTrue(ClaudeRemotePluginVersionReport.version("2.0.0") > .version("1.99.99"))
+    }
 }

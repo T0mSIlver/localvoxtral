@@ -462,10 +462,70 @@ final class ClaudeRemoteHostRegistryTests: XCTestCase {
         )
 
         // headerAbsent is a recorded fact about a hook that DID authenticate —
-        // distinct from nil, "no authenticated hook this session".
+        // distinct from nil, "no authenticated hook this session" — but it can
+        // never LOWER what a version-carrying hook already established
+        // (see testNotePluginVersionNeverLowersTheRecordedReport).
         registry.notePluginVersion(hostID: enrollment.host.id, .headerAbsent)
-        XCTAssertEqual(registry.host(id: enrollment.host.id)?.reportedPluginVersion, .headerAbsent)
+        XCTAssertEqual(
+            registry.host(id: enrollment.host.id)?.reportedPluginVersion, .version("1.10.0"),
+            "a headerless hook from an old session must not un-record a version"
+        )
         XCTAssertEqual(registry.host(id: enrollment.host.id)?.lastSeenAt, clock.now())
+    }
+
+    /// The defect this pins (follow-up to the 2026-09-17 indicator): Claude
+    /// Code applies a plugin update only on session restart, so a host's
+    /// already-running sessions keep executing the OLD plugin's post.sh after
+    /// "Update Plugin…" succeeds — and their next hook sends no version header.
+    /// A last-writer-wins record let that headerless hook flip a verified
+    /// host back to "Plugin update available", with an update button whose
+    /// run was a guaranteed no-op. The record must therefore be monotone: the
+    /// highest report this app session wins, and only a strictly higher one
+    /// replaces it.
+    func testNotePluginVersionNeverLowersTheRecordedReport() throws {
+        let registry = try makeRegistry()
+        let enrollment = try registry.enroll(label: "buildhost")
+        let hostID = enrollment.host.id
+
+        // From nil, headerAbsent is the floor and is recorded.
+        registry.notePluginVersion(hostID: hostID, .headerAbsent)
+        XCTAssertEqual(registry.host(id: hostID)?.reportedPluginVersion, .headerAbsent)
+
+        // A real version is strictly higher and replaces it.
+        registry.notePluginVersion(hostID: hostID, .version("1.10.0"))
+        XCTAssertEqual(registry.host(id: hostID)?.reportedPluginVersion, .version("1.10.0"))
+
+        // The old sessions' headerless hooks arrive AFTER the update: ignored.
+        registry.notePluginVersion(hostID: hostID, .headerAbsent)
+        XCTAssertEqual(
+            registry.host(id: hostID)?.reportedPluginVersion, .version("1.10.0"),
+            "headerAbsent after a version must never lower the record"
+        )
+
+        // An older version's hooks are equally ignored (a stale install, or a
+        // session on a second plugin cache dir one step behind).
+        registry.notePluginVersion(hostID: hostID, .version("1.9.0"))
+        XCTAssertEqual(
+            registry.host(id: hostID)?.reportedPluginVersion, .version("1.10.0"),
+            "an older report must never lower the record"
+        )
+
+        // An equal report is not strictly higher: no change (and no-op writes
+        // cost nothing, but the assertion pins the retention itself).
+        registry.notePluginVersion(hostID: hostID, .version("1.10.0"))
+        XCTAssertEqual(registry.host(id: hostID)?.reportedPluginVersion, .version("1.10.0"))
+
+        // A strictly newer report is the one thing that still replaces.
+        registry.notePluginVersion(hostID: hostID, .version("1.11.0"))
+        XCTAssertEqual(
+            registry.host(id: hostID)?.reportedPluginVersion, .version("1.11.0"),
+            "a strictly higher report replaces the record"
+        )
+
+        // And the floor holds against everything above it afterwards.
+        registry.notePluginVersion(hostID: hostID, .headerAbsent)
+        registry.notePluginVersion(hostID: hostID, .version("1.10.0"))
+        XCTAssertEqual(registry.host(id: hostID)?.reportedPluginVersion, .version("1.11.0"))
     }
 
     func testNotePluginVersionIsTransientAndWritesNothing() throws {

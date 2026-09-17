@@ -1,3 +1,4 @@
+import ClaudeContextWire
 import Foundation
 import Synchronization
 import XCTest
@@ -2128,25 +2129,12 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     }
 
     func testVersionComparisonIsNumericPerComponent() {
-        let older = { (version: String) in
-            ClaudeIntegrationSettingsModel.isVersion(version, olderThan: "1.10.0")
-        }
-        // 9 < 10 numerically, not "9" < "10" as text.
-        XCTAssertTrue(older("1.9.0"))
-        XCTAssertTrue(older("1.9.9"))
-        XCTAssertTrue(older("1.9.99"))
-        XCTAssertFalse(older("1.10.0"))
-        XCTAssertFalse(older("1.10.1"))
-        XCTAssertFalse(older("2.0.0"))
-        XCTAssertFalse(older("1.11.0"))
-        // Anything unparseable answers "not outdated" — the conservative
-        // reading, because a false update hint costs trust. (A malformed
-        // report cannot reach this comparison anyway: the listener records
-        // only strict-shape values.)
-        XCTAssertFalse(older("1.10.0-beta"))
-        XCTAssertFalse(older("nonsense"))
-        XCTAssertFalse(older("1.10"))
-        XCTAssertFalse(older(""))
+        // The comparison itself lives in ClaudeRemotePluginVersionTests now
+        // (one implementation, shared with the registry's monotone record);
+        // the four-case verdict below is this model's own logic and stays.
+        let expected = ClaudeRemoteEnrollmentService.remotePluginVersion
+        XCTAssertTrue(ClaudeRemotePluginVersionCodec.isVersion("1.9.0", olderThan: expected))
+        XCTAssertFalse(ClaudeRemotePluginVersionCodec.isVersion(expected, olderThan: expected))
     }
 
     func testRefreshDerivesPluginNeedsUpdateFromTheRegistrysReports() async throws {
@@ -2232,6 +2220,58 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertEqual(
             registry.host(id: hostID)?.reportedPluginVersion,
             .version(ClaudeRemoteEnrollmentService.remotePluginVersion)
+        )
+    }
+
+    /// The follow-up defect (2026-09-17): Claude Code applies a plugin update
+    /// only on session restart, so a host's ALREADY-RUNNING sessions keep
+    /// executing the old plugin's post.sh after "Update Plugin…" succeeds.
+    /// Their next hook carries no version header — and a last-writer-wins
+    /// record flipped the row back to "Plugin update available" over an
+    /// install the read-back had just proven current, with an update button
+    /// whose run was a no-op. The headerless hook must cost nothing.
+    @MainActor
+    func testAHeaderlessHookAfterASuccessfulUpdateRunDoesNotFlagThePluginAgain() async throws {
+        let registry = try makeRegistry()
+        let sshFS = StubSSHConfigFileSystem()
+        let recorder = SetupFlowRecorder()
+        var script = SetupFlowScript()
+        script.pluginVersionBefore = "1.9.0"
+        let service = ClaudeRemoteEnrollmentService(
+            runner: setupFlowRunner(script: script, recorder: recorder),
+            sshConfigFileSystem: sshFS
+        )
+        let listener = StubListener(hosts: registry)
+        listener.isListening = true
+        let model = setupFlowModel(registry: registry, listener: listener, service: service)
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let hostID = try XCTUnwrap(model.hosts.first?.id)
+        let presentation = try XCTUnwrap(model.presentedPlan)
+        sshFS.configText = ClaudeRemoteEnrollmentService.applySSHConfigSnippet(
+            to: "", snippet: presentation.plan.sshConfigSnippet, hostID: hostID
+        )
+        model.dismissPlan()
+
+        // The field state before anything: only old-plugin hooks have spoken.
+        registry.notePluginVersion(hostID: hostID, .headerAbsent)
+        model.refreshHosts()
+        XCTAssertTrue(model.hosts[0].pluginNeedsUpdate)
+
+        model.requestPluginUpdate(hostID: hostID)
+        model.requestHostUpdateRun()
+        await model.confirmEnrollmentAction()
+        XCTAssertEqual(model.hosts.first?.setupStatusText, "Setup complete.")
+        XCTAssertFalse(model.hosts[0].pluginNeedsUpdate)
+
+        // A pre-update session's next hook arrives header-less (this is the
+        // exact call the listener would make). The row must stay clear.
+        registry.notePluginVersion(hostID: hostID, .headerAbsent)
+        model.refreshHosts()
+        XCTAssertFalse(
+            model.hosts[0].pluginNeedsUpdate,
+            "an old session's headerless hook must not re-flag a verified update"
         )
     }
 

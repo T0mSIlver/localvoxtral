@@ -12,13 +12,41 @@ import Foundation
 /// Like every `X-Lvx-Env-*` value this is an untrusted label another machine
 /// wrote. It is never merged into session or process identity, never logged,
 /// and never rendered: it only selects fixed UI strings in Settings.
-public enum ClaudeRemotePluginVersionReport: Sendable, Equatable {
+///
+/// The type is `Comparable`, and the order is load-bearing: Claude Code
+/// applies a plugin update only on session restart, so after "Update Plugin…"
+/// succeeds a host's ALREADY-RUNNING sessions keep executing the OLD plugin's
+/// shim — and their hooks keep arriving header-less. A record that could be
+/// lowered would let those stale hooks flip a verified host back to
+/// "Plugin update available" (the 2026-09-17 follow-up defect), so consumers
+/// keep the HIGHEST report seen this app session:
+/// `.headerAbsent` < `.version(a)` < `.version(b)` when a is numerically
+/// older than b.
+public enum ClaudeRemotePluginVersionReport: Sendable, Equatable, Comparable {
     /// The request authenticated but carried no version header that passed
     /// validation. A plugin generation from before the header existed
     /// (≤ 1.9.0) sends exactly this, so it reads as outdated — which it is.
+    /// It is the FLOOR of the order: real versions outrank it, because a
+    /// version-carrying hook proves more than a silent one.
     case headerAbsent
     /// The request carried this exact, strict-shape version.
     case version(String)
+
+    public static func < (
+        lhs: ClaudeRemotePluginVersionReport,
+        rhs: ClaudeRemotePluginVersionReport
+    ) -> Bool {
+        switch (lhs, rhs) {
+        case (.headerAbsent, .headerAbsent):
+            return false
+        case (.headerAbsent, .version):
+            return true
+        case (.version, .headerAbsent):
+            return false
+        case (.version(let older), .version(let newer)):
+            return ClaudeRemotePluginVersionCodec.isVersion(older, olderThan: newer)
+        }
+    }
 }
 
 /// Reads and validates the shim's `X-Lvx-Plugin-Version` request header.
@@ -68,5 +96,39 @@ public enum ClaudeRemotePluginVersionCodec {
               isAcceptableVersion(value)
         else { return .headerAbsent }
         return .version(value)
+    }
+
+    /// Numeric comparison, component by component: 1.9.0 vs 1.10.0 must
+    /// compare 9 < 10, not `"9" < "10"` as text. Anything that is not exactly
+    /// three non-negative numeric components answers false (not older): the
+    /// expected side is pinned to the manifest by a tier-0 test and the
+    /// reported side is strict-shape-validated before it is ever recorded, so
+    /// an unparseable pair is a build bug — and the conservative reading of
+    /// one is "do not tell the user to update".
+    ///
+    /// The ONE implementation of this comparison, shared by the host
+    /// registry's monotone record (`Comparable` above) and the Settings
+    /// model's outdated verdict, so the two can never disagree about whether
+    /// one version is older than another.
+    public static func isVersion(_ version: String, olderThan expected: String) -> Bool {
+        func components(_ value: String) -> [Int]? {
+            let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+            guard parts.count == 3 else { return nil }
+            var numbers: [Int] = []
+            for part in parts {
+                guard let number = Int(part), number >= 0 else { return nil }
+                numbers.append(number)
+            }
+            return numbers
+        }
+        guard let reported = components(version), let current = components(expected) else {
+            return false
+        }
+        for (reportedComponent, currentComponent) in zip(reported, current) {
+            if reportedComponent != currentComponent {
+                return reportedComponent < currentComponent
+            }
+        }
+        return false
     }
 }

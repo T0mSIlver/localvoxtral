@@ -496,8 +496,11 @@ public final class ClaudeRemoteContextListener: Sendable {
         // may touch nothing. The codec validates a strict numeric shape and
         // collapses everything else onto `.headerAbsent` — the pre-1.10.0
         // plugin generation that sends no header at all, which is exactly the
-        // outdated case Settings surfaces. The value is never logged and
-        // never reaches a response body; it only selects a fixed UI string.
+        // outdated case Settings surfaces. The registry keeps the HIGHEST
+        // report this app session, so the header-less hooks that keep coming
+        // from sessions still running a pre-update shim cannot un-do a
+        // verified update. The value is never logged and never reaches a
+        // response body; it only selects a fixed UI string.
         hosts.notePluginVersion(
             hostID: host.id,
             ClaudeRemotePluginVersionCodec.report(in: request.headers)
