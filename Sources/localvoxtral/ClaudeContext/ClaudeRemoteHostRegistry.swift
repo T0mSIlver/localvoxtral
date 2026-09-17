@@ -1,3 +1,4 @@
+import ClaudeContextWire
 import CryptoKit
 import Foundation
 import Synchronization
@@ -40,6 +41,14 @@ public struct ClaudeRemoteHost: Sendable, Equatable, Identifiable {
     /// switch alive and, worse, could hand it to a future host that reused the
     /// id.
     public var persistentForwardEnabled: Bool = false
+    /// What authenticated hooks have reported about this host's
+    /// `localvoxtral-remote` plugin version during this app session. Nil until
+    /// the first authenticated hook arrives — which is a different fact from
+    /// `.headerAbsent`, an authenticated hook whose plugin predates the
+    /// version header. Not a secret and never trusted: it only selects a
+    /// fixed Settings string. Not persisted; see
+    /// `notePluginVersion(hostID:_:)`.
+    public var reportedPluginVersion: ClaudeRemotePluginVersionReport?
 
     public var isRevoked: Bool { revokedAt != nil }
 }
@@ -344,6 +353,30 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         /// was silent on the subject. Optional for the same
         /// forward/backward-compatibility reason as the alias above.
         var persistentForwardEnabled: Bool? = nil
+        /// TRANSIENT: what authenticated hooks reported about this host's
+        /// plugin version during this app session. Deliberately outside
+        /// `CodingKeys` — it is refreshed by every hook and self-heals within
+        /// one event, so persisting it would add a file field (and a
+        /// stale-after-relaunch decision) for nothing. A relaunch reads
+        /// "never heard" until the next hook, the same trade `lastSeenAt`
+        /// already makes.
+        var pluginVersionReport: ClaudeRemotePluginVersionReport? = nil
+
+        /// Exactly the persisted shape. `pluginVersionReport` stays out: an
+        /// older build reading this file must not see an unknown key, and this
+        /// build must never write state it cannot vouch for across a relaunch.
+        enum CodingKeys: String, CodingKey {
+            case id
+            case label
+            case createdAt
+            case lastSeenAt
+            case revokedAt
+            case tokenSalt
+            case tokenHash
+            case hashVersion
+            case sshHostAlias
+            case persistentForwardEnabled
+        }
 
         var publicView: ClaudeRemoteHost {
             ClaudeRemoteHost(
@@ -353,7 +386,8 @@ public final class ClaudeRemoteHostRegistry: Sendable {
                 createdAt: createdAt,
                 lastSeenAt: lastSeenAt,
                 revokedAt: revokedAt,
-                persistentForwardEnabled: persistentForwardEnabled ?? false
+                persistentForwardEnabled: persistentForwardEnabled ?? false,
+                reportedPluginVersion: pluginVersionReport
             )
         }
     }
@@ -556,6 +590,24 @@ public final class ClaudeRemoteHostRegistry: Sendable {
             state.withLock { hosts in
                 guard let index = hosts.firstIndex(where: { $0.id == hostID }) else { return }
                 hosts[index].lastSeenAt = timestamp
+            }
+        }
+    }
+
+    /// Record what an authenticated hook reported about its plugin version.
+    ///
+    /// Same best-effort discipline and the same lock order as
+    /// `noteActivity(hostID:)`: in-memory under `persistLock` → `state`, so a
+    /// concurrent transaction's candidate installation cannot clobber the
+    /// report, and the report cannot clobber `lastSeenAt` — the two note
+    /// different facts about the same request and each must survive the other.
+    /// Never written to disk per request (the field is transient by design);
+    /// recording on an unknown host is a no-op, like `noteActivity`.
+    public func notePluginVersion(hostID: String, _ report: ClaudeRemotePluginVersionReport) {
+        persistLock.withLock { _ in
+            state.withLock { hosts in
+                guard let index = hosts.firstIndex(where: { $0.id == hostID }) else { return }
+                hosts[index].pluginVersionReport = report
             }
         }
     }

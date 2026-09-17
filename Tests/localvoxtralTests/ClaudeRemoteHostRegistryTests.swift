@@ -269,11 +269,14 @@ final class ClaudeRemoteHostRegistryTests: XCTestCase {
         // `persistentForwardEnabled` joined it for the same reason: it is a
         // per-host preference (does the app hold this host's ssh forward), not
         // credential material, and the pane has to be able to render it.
+        // `reportedPluginVersion` too: a strict-shape version label the host's
+        // own authenticated hooks sent (never a token), and the pane needs it
+        // to say the plugin is outdated.
         XCTAssertEqual(
             Set(properties),
             [
                 "id", "label", "sshHostAlias", "createdAt", "lastSeenAt", "revokedAt",
-                "persistentForwardEnabled",
+                "persistentForwardEnabled", "reportedPluginVersion",
             ]
         )
         let described = String(describing: enrollment.host)
@@ -430,6 +433,68 @@ final class ClaudeRemoteHostRegistryTests: XCTestCase {
         advance(10)
         registry.noteActivity(hostID: enrollment.host.id)
         XCTAssertEqual(io.written(at: fileURL), before)
+    }
+
+    // MARK: Plugin version reports
+
+    func testNotePluginVersionRecordsWithoutClobberingLastSeenAndViceVersa() throws {
+        // The two notes describe the same request but different facts, and
+        // each must survive the other: the lock order in `notePluginVersion`
+        // is the one `noteActivity` uses, so neither can lose the other's
+        // update to a transaction's candidate installation.
+        let registry = try makeRegistry()
+        let enrollment = try registry.enroll(label: "buildhost")
+        XCTAssertNil(registry.host(id: enrollment.host.id)?.reportedPluginVersion)
+
+        advance(300)
+        registry.notePluginVersion(hostID: enrollment.host.id, .version("1.10.0"))
+        XCTAssertEqual(registry.host(id: enrollment.host.id)?.reportedPluginVersion, .version("1.10.0"))
+        XCTAssertNil(
+            registry.host(id: enrollment.host.id)?.lastSeenAt,
+            "a version report is not activity"
+        )
+
+        registry.noteActivity(hostID: enrollment.host.id)
+        XCTAssertEqual(registry.host(id: enrollment.host.id)?.lastSeenAt, clock.now())
+        XCTAssertEqual(
+            registry.host(id: enrollment.host.id)?.reportedPluginVersion, .version("1.10.0"),
+            "noting activity must not forget the version"
+        )
+
+        // headerAbsent is a recorded fact about a hook that DID authenticate —
+        // distinct from nil, "no authenticated hook this session".
+        registry.notePluginVersion(hostID: enrollment.host.id, .headerAbsent)
+        XCTAssertEqual(registry.host(id: enrollment.host.id)?.reportedPluginVersion, .headerAbsent)
+        XCTAssertEqual(registry.host(id: enrollment.host.id)?.lastSeenAt, clock.now())
+    }
+
+    func testNotePluginVersionIsTransientAndWritesNothing() throws {
+        // Same best-effort discipline as noteActivity, one step further: the
+        // field is not persisted AT ALL, so a relaunch reads "never heard"
+        // until the host's next hook — the reading the pane already makes of
+        // lastSeenAt.
+        let registry = try makeRegistry()
+        let enrollment = try registry.enroll(label: "buildhost")
+        let before = io.written(at: fileURL)
+        registry.notePluginVersion(hostID: enrollment.host.id, .version("1.10.0"))
+        XCTAssertEqual(io.written(at: fileURL), before)
+        let persisted = String(decoding: try XCTUnwrap(before), as: UTF8.self)
+        XCTAssertFalse(
+            persisted.contains("pluginVersion"),
+            "the transient report must not leak into the store file"
+        )
+
+        let relaunched = try makeRegistry()
+        XCTAssertNil(
+            relaunched.host(id: enrollment.host.id)?.reportedPluginVersion,
+            "the persisted file never carried the report"
+        )
+    }
+
+    func testNotePluginVersionOnAnUnknownHostIsANoOp() throws {
+        let registry = try makeRegistry()
+        registry.notePluginVersion(hostID: "hnope", .version("1.10.0"))
+        XCTAssertNil(registry.host(id: "hnope"))
     }
 
     // MARK: Persistent forward opt-in

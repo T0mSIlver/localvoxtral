@@ -490,6 +490,19 @@ public final class ClaudeRemoteContextListener: Sendable {
         debugPostAuthenticationHook.withLock { $0 }?()
         #endif
 
+        // The hook's own plugin version, recorded per host beside
+        // `lastSeenAt` and with the same best-effort discipline. ONLY after
+        // authentication: an unauthenticated peer's header proves nothing and
+        // may touch nothing. The codec validates a strict numeric shape and
+        // collapses everything else onto `.headerAbsent` — the pre-1.10.0
+        // plugin generation that sends no header at all, which is exactly the
+        // outdated case Settings surfaces. The value is never logged and
+        // never reaches a response body; it only selects a fixed UI string.
+        hosts.notePluginVersion(
+            hostID: host.id,
+            ClaudeRemotePluginVersionCodec.report(in: request.headers)
+        )
+
         guard ClaudeRemoteHTTPCodec.eventName(inPath: request.path) != nil else {
             respond(fd: fd, status: 404)
             return

@@ -377,6 +377,76 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         XCTAssertTrue(sessions.liveLocalHerdrSocketPaths().isEmpty)
     }
 
+    // MARK: - Plugin version advertisement (field finding 2026-09-17)
+
+    /// The listener records the hook's self-reported plugin version on the
+    /// host that authenticated — that is the whole mechanism behind the
+    /// "Plugin update available" row, and it must work before anything breaks.
+    func testAnAuthenticatedHookRecordsItsReportedPluginVersion() throws {
+        try startListener()
+        let response = try XCTUnwrap(
+            try send(hookRequest(token: token, extraHeaders: [
+                "X-Lvx-Plugin-Version: 1.10.0",
+            ]))
+        )
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(
+            hosts.host(id: hostID)?.reportedPluginVersion, .version("1.10.0")
+        )
+    }
+
+    /// Absent and malformed are the SAME recorded fact — an authenticated hook
+    /// whose plugin cannot state its version, i.e. the pre-1.10.0 generation —
+    /// and both are distinct from never having heard from the host at all.
+    func testAnAuthenticatedHookWithoutAValidVersionHeaderIsRecordedAsAbsent() throws {
+        try startListener()
+        _ = try send(hookRequest(token: token))
+        XCTAssertEqual(hosts.host(id: hostID)?.reportedPluginVersion, .headerAbsent)
+
+        for malformed in ["1.10", "v1.10.0", "1.10.0.0", "12345.0.0", "1.1o.0"] {
+            _ = try send(hookRequest(token: token, extraHeaders: [
+                "X-Lvx-Plugin-Version: \(malformed)",
+            ]))
+            XCTAssertEqual(
+                hosts.host(id: hostID)?.reportedPluginVersion, .headerAbsent,
+                "'\(malformed)' must read as absent, never as a fact"
+            )
+        }
+    }
+
+    /// The record is strictly post-authentication: a stranger on the forwarded
+    /// port can send any version string it likes and may not touch the host's
+    /// state — same rule as ingest, one decision earlier.
+    func testAnUnauthenticatedRequestRecordsNoPluginVersion() throws {
+        try startListener()
+        let response = try XCTUnwrap(
+            try send(hookRequest(
+                token: "stranger-token-000000",
+                extraHeaders: ["X-Lvx-Plugin-Version: 9.9.9"]
+            ))
+        )
+        XCTAssertEqual(response.status, 401)
+        XCTAssertNil(
+            hosts.host(id: hostID)?.reportedPluginVersion,
+            "an unauthenticated peer's header proves nothing and records nothing"
+        )
+    }
+
+    /// Version knowledge is per HOST, namespaced by the token that
+    /// authenticated: two enrolled hosts each carry their own report.
+    func testVersionReportsAreRecordedPerHost() throws {
+        let second = try hosts.enroll(label: "otherhost")
+        try startListener()
+
+        _ = try send(hookRequest(token: token, extraHeaders: [
+            "X-Lvx-Plugin-Version: 1.9.0",
+        ]))
+        _ = try send(hookRequest(token: second.token))
+
+        XCTAssertEqual(hosts.host(id: hostID)?.reportedPluginVersion, .version("1.9.0"))
+        XCTAssertEqual(hosts.host(id: second.host.id)?.reportedPluginVersion, .headerAbsent)
+    }
+
     func testAProcessBlockInARemoteBodyIsIgnoredEvenWhenTheHeadersAreHonest() throws {
         // The other half of the same invariant, from the body side: a remote
         // payload can WRITE a `process` object, and the parser's allowlist has
