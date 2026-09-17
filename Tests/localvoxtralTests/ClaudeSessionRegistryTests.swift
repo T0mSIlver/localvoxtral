@@ -74,7 +74,7 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         clock: TestClock? = nil,
         liveness: TestLiveness? = nil
     ) -> ClaudeSessionRegistry {
-        ClaudeSessionRegistry(
+        return ClaudeSessionRegistry(
             limits: limits,
             now: (clock ?? TestClock(epoch)).now,
             isProcessAlive: (liveness ?? TestLiveness()).probe
@@ -742,5 +742,208 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         XCTAssertEqual(registry.evictRemoteSessions(notIn: ["ssh:hkeep"]), 1)
         XCTAssertEqual(registry.evictRemoteSessions(notIn: ["ssh:hkeep"]), 0, "nothing left to evict")
         XCTAssertNotNil(registry.snapshot(sessionID: "remote:hkeep:s1"))
+    }
+}
+
+private final class MemoryClaudeSessionStore: ClaudeSessionStore, @unchecked Sendable {
+    private let bytes = Mutex<Data?>(nil)
+    private let clearCount = Mutex(0)
+
+    init(_ data: Data? = nil) {
+        bytes.withLock { $0 = data }
+    }
+
+    func load() throws -> Data? { bytes.withLock { $0 } }
+    func save(_ data: Data) throws { bytes.withLock { $0 = data } }
+    func clear() throws {
+        bytes.withLock { $0 = nil }
+        clearCount.withLock { $0 += 1 }
+    }
+
+    var data: Data? { bytes.withLock { $0 } }
+    var clears: Int { clearCount.withLock { $0 } }
+}
+
+final class ClaudeSessionPersistenceTests: XCTestCase {
+    private let epoch = Date(timeIntervalSince1970: 2_000_000)
+    private let hostID = "h12345678"
+    private var channel: String { ClaudeRemoteSessionScope.channel(hostID: hostID) }
+    private var remoteOrigin: ClaudeTransportOrigin { .remote(channel: channel) }
+
+    private func registry(
+        store: MemoryClaudeSessionStore,
+        now: Date? = nil,
+        alive: @escaping @Sendable (Int32) -> Bool = { _ in true },
+        boot: String? = "boot-a",
+        activeChannels: Set<String>? = nil,
+        limits: ClaudeRegistryLimits = .default
+    ) -> ClaudeSessionRegistry {
+        let timestamp = now ?? epoch
+        return ClaudeSessionRegistry(
+            limits: limits,
+            store: store,
+            allowedRemoteChannels: activeChannels ?? [channel],
+            now: { timestamp },
+            isProcessAlive: alive,
+            bootIdentity: { boot },
+            localPeerUID: { 501 }
+        )
+    }
+
+    private func localRecord(
+        _ event: ClaudeHookEvent,
+        prompt: String? = nil,
+        claudePID: Int32 = 42
+    ) -> ClaudeHookRecord {
+        ClaudeHookRecord(
+            event: event,
+            sessionID: "local-session",
+            timestamp: epoch.timeIntervalSince1970,
+            rawCwd: "/work/local",
+            prompt: prompt,
+            process: ClaudeHookProcessInfo(
+                hookPID: 7,
+                claudePID: claudePID,
+                tty: "/dev/ttys007"
+            )
+        )
+    }
+
+    private func remoteRecord(_ event: ClaudeHookEvent) -> ClaudeHookRecord {
+        ClaudeHookRecord(
+            event: event,
+            sessionID: ClaudeRemoteSessionScope.scopedSessionID(
+                hostID: hostID,
+                sessionID: "remote-session"
+            ),
+            timestamp: epoch.timeIntervalSince1970,
+            rawCwd: "/srv/secret-project"
+        )
+    }
+
+    func testLocalAndRemoteSessionsSurviveRestartWithoutPersistingContent() throws {
+        let store = MemoryClaudeSessionStore()
+        let first = registry(store: store)
+        first.ingest(
+            localRecord(.userPromptSubmit, prompt: "private prompt must stay in memory"),
+            origin: .localAuthenticated(peerUID: 501)
+        )
+        first.ingest(
+            remoteRecord(.postToolUse),
+            origin: remoteOrigin,
+            snippets: [
+                ClaudeContentSnippet(
+                    label: "Edit new_string",
+                    kind: .toolInput,
+                    text: "private snippet must stay in memory"
+                )
+            ],
+            environment: ClaudeRemoteSessionEnvironment(
+                herdrPaneID: "pane-7",
+                herdrSocketPath: "/run/user/501/herdr.sock"
+            )
+        )
+        first.flushPersistence()
+
+        let persisted = try XCTUnwrap(store.data)
+        let text = String(decoding: persisted, as: UTF8.self)
+        XCTAssertFalse(text.contains("private prompt"))
+        XCTAssertFalse(text.contains("private snippet"))
+        XCTAssertFalse(text.contains("Edit new_string"))
+
+        let restored = registry(store: store)
+        guard case .resolved(let local) = restored.resolve(tty: "/dev/ttys007") else {
+            return XCTFail("restored local session must resolve by tty")
+        }
+        XCTAssertEqual(local.sessionID, "local-session")
+        XCTAssertNil(local.latestPriorUserPrompt)
+        XCTAssertTrue(local.recentFiles.isEmpty)
+        XCTAssertTrue(local.recentSnippets.isEmpty)
+
+        let remote = restored.liveRemoteHerdrSessions(hostID: hostID)
+        XCTAssertEqual(remote.count, 1)
+        XCTAssertEqual(remote[0].remoteSessionEnvironment?.herdrPaneID, "pane-7")
+        XCTAssertEqual(
+            remote[0].remoteSessionEnvironment?.herdrSocketPath,
+            "/run/user/501/herdr.sock"
+        )
+        let paneMatches = restored.liveRemoteHerdrSessions(hostID: hostID).filter {
+            $0.remoteSessionEnvironment?.herdrPaneID == "pane-7"
+        }
+        XCTAssertEqual(paneMatches.map(\.sessionID), [remote[0].sessionID])
+    }
+
+    func testRestoreDropsStaleDeadRebootedAndRevokedSessions() {
+        let staleStore = MemoryClaudeSessionStore()
+        let staleFirst = registry(
+            store: staleStore,
+            limits: ClaudeRegistryLimits(maxSessions: 32, sessionTTL: 10)
+        )
+        staleFirst.ingest(localRecord(.sessionStart), origin: .localAuthenticated(peerUID: 501))
+        staleFirst.flushPersistence()
+        let stale = registry(
+            store: staleStore,
+            now: epoch.addingTimeInterval(11),
+            limits: ClaudeRegistryLimits(maxSessions: 32, sessionTTL: 10)
+        )
+        XCTAssertTrue(stale.liveSessions().isEmpty)
+
+        let deadStore = MemoryClaudeSessionStore()
+        let deadFirst = registry(store: deadStore)
+        deadFirst.ingest(localRecord(.sessionStart), origin: .localAuthenticated(peerUID: 501))
+        deadFirst.flushPersistence()
+        XCTAssertTrue(registry(store: deadStore, alive: { $0 != 42 }).liveSessions().isEmpty)
+
+        let rebootStore = MemoryClaudeSessionStore()
+        let rebootFirst = registry(store: rebootStore, boot: "boot-a")
+        rebootFirst.ingest(localRecord(.sessionStart), origin: .localAuthenticated(peerUID: 501))
+        rebootFirst.flushPersistence()
+        XCTAssertTrue(registry(store: rebootStore, boot: "boot-b").liveSessions().isEmpty)
+
+        let revokedStore = MemoryClaudeSessionStore()
+        let revokedFirst = registry(store: revokedStore)
+        revokedFirst.ingest(remoteRecord(.sessionStart), origin: remoteOrigin)
+        revokedFirst.flushPersistence()
+        XCTAssertTrue(
+            registry(store: revokedStore, activeChannels: []).liveRemoteSessions(hostID: hostID).isEmpty
+        )
+    }
+
+    func testCorruptStoreRestoresNothingAndNextMutationReplacesIt() throws {
+        let store = MemoryClaudeSessionStore(Data("not json".utf8))
+        let corruptRegistry = registry(store: store)
+        XCTAssertTrue(corruptRegistry.liveSessions().isEmpty)
+        corruptRegistry.ingest(localRecord(.sessionStart), origin: .localAuthenticated(peerUID: 501))
+        corruptRegistry.flushPersistence()
+        XCTAssertNoThrow(try JSONSerialization.jsonObject(with: XCTUnwrap(store.data)))
+
+        let unknownVersion = MemoryClaudeSessionStore(Data(#"{"v":99,"sessions":[]}"#.utf8))
+        let versionRegistry = registry(store: unknownVersion)
+        XCTAssertTrue(versionRegistry.liveSessions().isEmpty)
+        versionRegistry.ingest(
+            localRecord(.sessionStart),
+            origin: .localAuthenticated(peerUID: 501)
+        )
+        versionRegistry.flushPersistence()
+        XCTAssertNoThrow(try JSONSerialization.jsonObject(with: XCTUnwrap(unknownVersion.data)))
+    }
+
+    func testRemoveAllAndSessionEndAreDurable() {
+        let removeStore = MemoryClaudeSessionStore()
+        let removeFirst = registry(store: removeStore)
+        removeFirst.ingest(localRecord(.sessionStart), origin: .localAuthenticated(peerUID: 501))
+        removeFirst.flushPersistence()
+        removeFirst.removeAll()
+        removeFirst.flushPersistence()
+        XCTAssertGreaterThan(removeStore.clears, 0)
+        XCTAssertTrue(registry(store: removeStore).liveSessions().isEmpty)
+
+        let endStore = MemoryClaudeSessionStore()
+        let endFirst = registry(store: endStore)
+        endFirst.ingest(localRecord(.sessionStart), origin: .localAuthenticated(peerUID: 501))
+        endFirst.flushPersistence()
+        endFirst.ingest(localRecord(.sessionEnd), origin: .localAuthenticated(peerUID: 501))
+        endFirst.flushPersistence()
+        XCTAssertTrue(registry(store: endStore).liveSessions().isEmpty)
     }
 }

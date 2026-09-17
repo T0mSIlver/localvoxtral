@@ -30,7 +30,7 @@
 # publish the credential to every local user. The header therefore reaches
 # curl through a private tempfile (`--header @file`, curl >= 7.55; an older
 # curl treats the argument literally, sends no credential, gets a 401, and
-# fails open). The event JSON body rides stdin (`--data-binary @-`).
+# fails open). The event JSON body uses a second private file.
 set -u
 
 EVENT="${1:-Unknown}"
@@ -48,16 +48,14 @@ fail_open() {
 umask 077
 
 # --- Private per-user state dir --------------------------------------------
-# Holds two single-line stamps, both best-effort and both harmless to lose:
+# Holds host and per-session stamps, all best-effort and harmless to lose:
 #   hook-backoff  — epoch of the last transport failure (see backoff below)
 #   hook-status   — outcome of the last completed dial, for the OPT-IN status
 #                   line (statusline.sh in this directory). One line,
 #                   `<state> <epoch>`, state from a fixed grammar:
 #                   ok | down | unconfigured | http-<3 digits>.
-# The status stamp is HOST-level, not per-session, by design: reading a
-# session id would mean parsing (and buffering) the event body this shim
-# deliberately passes through byte-for-byte — and tunnel, token, and port are
-# per-host facts anyway, so one session's outcome answers for all of them.
+#   sessions/<id> — whether the Mac joined that session, `<joined|unknown>
+#                   <epoch>`.
 if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
   STAMP_DIR="$XDG_RUNTIME_DIR/localvoxtral"
 elif [ -n "${HOME:-}" ]; then
@@ -84,6 +82,49 @@ write_status() {
     mkdir -p "$STAMP_DIR" && chmod 700 "$STAMP_DIR" \
       && echo "$1 $NOW" >"$STATUS_STAMP.$$" && mv -f "$STATUS_STAMP.$$" "$STATUS_STAMP"
   } 2>/dev/null || { rm -f "$STATUS_STAMP.$$"; } 2>/dev/null || :
+}
+
+# Private request workspace (0700/0600 under the umask above), removed on
+# every ordinary or trapped exit.
+WORK="$(mktemp -d 2>/dev/null)" || fail_open
+trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "$WORK"; exit 0' HUP INT TERM
+
+# Buffer stdin once so the same bytes go to curl and the status stamp can be
+# keyed to Claude Code's session. A malformed or hostile id disables only the
+# per-session indicator.
+cat >"$WORK/event" 2>/dev/null || fail_open
+SESSION_ID="$(LC_ALL=C awk '
+  match($0, /"session_id"[[:space:]]*:[[:space:]]*"[^"]*"/) {
+    value = substr($0, RSTART, RLENGTH)
+    sub(/^"session_id"[[:space:]]*:[[:space:]]*"/, "", value)
+    sub(/"$/, "", value)
+    print value
+    exit
+  }
+' "$WORK/event" 2>/dev/null)" || SESSION_ID=""
+case "$SESSION_ID" in
+"" | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-]*) SESSION_ID="" ;;
+*) [ "${#SESSION_ID}" -le 64 ] || SESSION_ID="" ;;
+esac
+
+SESSION_STAMP_DIR="$STAMP_DIR/sessions"
+if [ "$EVENT" = "SessionEnd" ] && [ -n "$STAMP_DIR" ] && [ -n "$SESSION_ID" ]; then
+  rm -f "$SESSION_STAMP_DIR/$SESSION_ID" 2>/dev/null || :
+fi
+if [ "$EVENT" = "SessionStart" ] && [ -n "$STAMP_DIR" ] \
+  && [ -d "$SESSION_STAMP_DIR" ]; then
+  find "$SESSION_STAMP_DIR" -type f -mtime +0 -exec rm -f {} \; 2>/dev/null || :
+fi
+
+write_session_status() {
+  [ -n "$STAMP_DIR" ] && [ -n "$NOW" ] && [ -n "$SESSION_ID" ] \
+    && [ "$EVENT" != "SessionEnd" ] || return 0
+  {
+    mkdir -p "$SESSION_STAMP_DIR" && chmod 700 "$STAMP_DIR" "$SESSION_STAMP_DIR" \
+      && echo "$1 $NOW" >"$SESSION_STAMP_DIR/$SESSION_ID.$$" \
+      && mv -f "$SESSION_STAMP_DIR/$SESSION_ID.$$" "$SESSION_STAMP_DIR/$SESSION_ID"
+  } 2>/dev/null || { rm -f "$SESSION_STAMP_DIR/$SESSION_ID.$$"; } 2>/dev/null || :
 }
 
 TOKEN="${CLAUDE_PLUGIN_OPTION_TOKEN:-}"
@@ -152,14 +193,6 @@ if [ -n "$STAMP_DIR" ] && [ -n "$NOW" ] && [ "$EVENT" != "UserPromptSubmit" ] \
     ;;
   esac
 fi
-
-# Header tempfile dir (0700/0600 under the umask set above); removed on every
-# exit. Known, accepted leak: a SIGKILL (Claude Code escalating past the hook
-# timeout) skips the traps and strands one 0700 dir — private to the user,
-# bounded by how often hooks get killed.
-WORK="$(mktemp -d 2>/dev/null)" || fail_open
-trap 'rm -rf "$WORK"' EXIT
-trap 'rm -rf "$WORK"; exit 0' HUP INT TERM
 
 # Heredoc through a redirected `cat`, NOT printf/echo: POSIX does not require
 # printf to be a shell builtin, and an external printf would put the token
@@ -280,10 +313,11 @@ EOF
 # (recognized since curl 7.10.8) belts the body the stdout gate below already
 # rejects; when it trips, curl fails and STATUS goes empty.
 STATUS="$(curl --silent --output "$WORK/body" --write-out '%{http_code}' \
+  --dump-header "$WORK/response-headers" \
   --max-time 1 --max-filesize 1024 --request POST \
   --header 'Content-Type: application/json' \
   --header @"$WORK/header" \
-  --data-binary @- \
+  --data-binary @"$WORK/event" \
   "http://127.0.0.1:$PORT/v1/hook/$EVENT" 2>/dev/null)" || STATUS=""
 
 # Arm the backoff on a transport-level failure (curl died: refused, reset,
@@ -308,7 +342,15 @@ if [ -n "$STAMP_DIR" ] && [ -n "$NOW" ]; then
     # embedded only after the exact-3-digits match — curl wrote it, but
     # nothing that fails the grammar may reach a file another script reads.
     case "$STATUS" in
-    200) write_status ok ;;
+    200)
+      write_status ok
+      SESSION_VERDICT="$(LC_ALL=C sed -n \
+        's/\r$//; /^[Xx]-[Ll][Vv][Xx]-[Ss][Ee][Ss][Ss][Ii][Oo][Nn]: joined$/s/.*: //p; /^[Xx]-[Ll][Vv][Xx]-[Ss][Ee][Ss][Ss][Ii][Oo][Nn]: unknown$/s/.*: //p' \
+        "$WORK/response-headers" 2>/dev/null)" || SESSION_VERDICT=""
+      case "$SESSION_VERDICT" in
+      joined | unknown) write_session_status "$SESSION_VERDICT" ;;
+      esac
+      ;;
     [0-9][0-9][0-9]) write_status "http-$STATUS" ;;
     esac
   fi
@@ -325,7 +367,7 @@ fi
 # (ClaudeRemoteHTTPCodec.hookResponseBody — a CONSTANT: suppressOutput and
 # nothing else) or absolutely nothing. There is no variable part left to allow:
 # the listener answers an accepted record and a discarded one with the same
-# bytes, so no response of any shape can carry a terminal escape sequence, and
+# BODY bytes, so no response of any shape can carry a terminal escape sequence, and
 # anything a squatter returns that is not the constant is dropped here.
 # The `{ …; } 2>/dev/null` grouping matters: `wc <file 2>/dev/null` lets the
 # SHELL's own "cannot open" reach stderr, because the input redirection fails

@@ -196,7 +196,7 @@ private struct SetupFlowScript: Sendable {
         exitCode: 0, message: "LVX_HERDR_ABSENT"
     )
     var tunnelMessage = "LVX_HTTP:401"
-    var pluginListMessage = "localvoxtral-remote 1.8.0\n"
+    var pluginListMessage = "localvoxtral-remote 1.9.0\n"
 }
 
 /// A `claude plugin list --json` capture as a login shell delivers it: a

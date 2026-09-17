@@ -152,7 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// hotkey.
     /// A broker that only listened during a dictation session would miss the very
     /// records it exists to collect.
-    private let claudeSessionRegistry = ClaudeSessionRegistry()
+    private let claudeSessionRegistry: ClaudeSessionRegistry
     private var claudeContextBroker: ClaudeContextBroker?
     private var terminalConsentPrewarmObserver:
         TerminalAutomationConsentPrewarmSettingsObserver?
@@ -161,9 +161,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// use a browser tab join.
     private var browserConsentPrewarmObserver:
         TerminalAutomationConsentPrewarmSettingsObserver?
-    /// Remote (SSH) Claude Code sessions. Both the host registry and the
-    /// listener are lazy and optional: a user who has never enrolled a host has
-    /// no file to read and no port bound.
+    /// Remote (SSH) Claude Code sessions. The host registry loads before the
+    /// session cache so restore can reject revoked hosts. The listener remains
+    /// optional, and a user with no active host has no port bound.
     private var claudeRemoteHosts: ClaudeRemoteHostRegistry?
     /// Owns the listener and the bind/unbind decision. Settings reconciles
     /// through it on every enroll/revoke, so the port follows enrollment without
@@ -209,6 +209,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     override init() {
         let settings = SettingsStore()
+        let remoteHosts: ClaudeRemoteHostRegistry?
+        do {
+            remoteHosts = try ClaudeRemoteHostRegistry()
+        } catch {
+            Log.claudeContext.error(
+                "Claude remote host registry unreadable: \(String(describing: error), privacy: .public)"
+            )
+            remoteHosts = nil
+        }
+        let activeRemoteChannels = Set(
+            (remoteHosts?.hosts() ?? [])
+                .filter { !$0.isRevoked }
+                .map { ClaudeRemoteSessionScope.channel(hostID: $0.id) }
+        )
+        claudeSessionRegistry = ClaudeSessionRegistry(
+            store: ClaudeSessionFileStore(),
+            allowedRemoteChannels: activeRemoteChannels
+        )
+        claudeRemoteHosts = remoteHosts
         // The one-time-per-launch terminal_apps.toml import (owner decision,
         // 2026-09-07): the file is read HERE and never written — Settings →
         // Terminals owns the list from then on. Runs before anything that
@@ -301,6 +320,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // resolving joins against sessions nothing is feeding any more.
         viewModel.claudeSessionJoinResolver = nil
         viewModel.claudeSessionJoin = nil
+        claudeSessionRegistry.flushPersistence()
         // Drop any dictation leases after the app-owned service has stopped all
         // persistent `ssh -L` children. During polish the join has already been
         // consumed, so the explicit service owner is what makes quit complete.
@@ -605,30 +625,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// actually enrolled a host.
     ///
     /// "No enrollment ⇒ no open port" is the point: everyone else's Mac gets
-    /// exactly what it had before, with nothing listening on 8473. That is also
-    /// why the host registry is constructed here rather than as a stored
-    /// property — reading (and failing to read) a file nobody has is not
-    /// something to do at init.
+    /// exactly what it had before, with nothing listening on 8473. The host
+    /// registry was loaded during app initialization so session restore could
+    /// filter remote entries before the broker starts.
     ///
     /// Failure is non-fatal and loud, matching the local broker. The coordinator
     /// — not this method — owns the bind/unbind decision from here on, so
     /// enrolling the first host in Settings binds the port immediately and
     /// revoking the last one closes it. There is no relaunch step.
     private func startClaudeRemoteListener() {
-        let registry: ClaudeRemoteHostRegistry?
-        do {
-            registry = try ClaudeRemoteHostRegistry()
-        } catch {
-            // The list exists but is unreadable — a state the user must be able
-            // to SEE, not just one we log. The Settings row says the list could
-            // not be read rather than offering an Enroll button that would
-            // silently fail.
-            Log.claudeContext.error(
-                "Claude remote host registry unreadable: \(String(describing: error), privacy: .public)"
-            )
-            registry = nil
-        }
-        claudeRemoteHosts = registry
+        let registry = claudeRemoteHosts
 
         let coordinator = registry.map { hosts in
             ClaudeRemoteListenerCoordinator(

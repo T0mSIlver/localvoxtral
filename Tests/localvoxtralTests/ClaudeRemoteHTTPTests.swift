@@ -345,11 +345,14 @@ final class ClaudeRemoteHTTPTests: XCTestCase {
 
     func testResponseIsWellFormedAndAlwaysCloses() throws {
         let body = ClaudeRemoteHTTPCodec.hookResponseBody
-        let data = ClaudeRemoteHTTPCodec.response(status: 200, body: body)
+        let data = ClaudeRemoteHTTPCodec.response(
+            status: 200, body: body, sessionStatus: .joined
+        )
         let text = String(decoding: data, as: UTF8.self)
         XCTAssertTrue(text.hasPrefix("HTTP/1.1 200 OK\r\n"))
         XCTAssertTrue(text.contains("Content-Length: \(body.count)\r\n"))
         XCTAssertTrue(text.contains("Content-Type: application/json\r\n"))
+        XCTAssertTrue(text.contains("X-Lvx-Session: joined\r\n"))
         // One request per connection: no keep-alive to reason about, and no
         // second request to re-authenticate.
         XCTAssertTrue(text.contains("Connection: close\r\n"))
@@ -357,10 +360,14 @@ final class ClaudeRemoteHTTPTests: XCTestCase {
     }
 
     func testUnauthorizedResponseIsBodilessAndChallenges() {
-        let text = String(decoding: ClaudeRemoteHTTPCodec.response(status: 401), as: UTF8.self)
+        let text = String(
+            decoding: ClaudeRemoteHTTPCodec.response(status: 401, sessionStatus: .joined),
+            as: UTF8.self
+        )
         XCTAssertTrue(text.hasPrefix("HTTP/1.1 401 Unauthorized\r\n"))
         XCTAssertTrue(text.contains("WWW-Authenticate: Bearer\r\n"))
         XCTAssertTrue(text.contains("Content-Length: 0\r\n"))
+        XCTAssertFalse(text.contains("X-Lvx-Session:"))
         XCTAssertTrue(text.hasSuffix("\r\n\r\n"), "a rejection must say nothing at all")
     }
 

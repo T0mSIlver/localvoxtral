@@ -372,17 +372,16 @@ If you prefer to wire it by hand, this is the same entry the button writes.
 Claude Code has no plugin-owned status line, so it lives in your own
 settings either way. The publisher binary has a `--statusline` mode that reads the
 status-line payload Claude Code pipes in, asks the app's socket whether THIS
-session (by `session_id`) is live in its registry, and prints exactly one of
-three fixed lines:
+session (by `session_id`) is live in its registry, and prints one fixed line:
 
 | Line | Meaning |
 |---|---|
 | `lvx ●` (green) | the app received this session's hooks |
-| `lvx ●` (red) | the app is listening but rejected or does not recognize this plugin session |
-| `lvx ●` (grey) | nothing is listening on the local socket |
+| `lvx ◐` (yellow) | the app is listening but does not recognize this session |
+| `lvx ○` (grey) | nothing is listening on the local socket |
+| `lvx ✕` (red) | remote only: the Mac rejected the host token |
 
-With `NO_COLOR` set or `TERM=dumb`, these render as `lvx ok`, `lvx err`, and
-`lvx off`.
+With `NO_COLOR` set or `TERM=dumb`, the same glyphs render without color.
 
 In `~/.claude/settings.json`:
 
@@ -407,7 +406,7 @@ printf '%s' "$input" | /Applications/localvoxtral.app/Contents/MacOS/localvoxtra
 ```
 
 The query is read-only by construction: asking never creates a session and
-never refreshes one. The three strings above are
+never refreshes one. The strings above are
 compile-time constants — nothing read off the socket is ever echoed into
 your terminal — and a payload without a usable `session_id` prints nothing
 rather than guessing.
@@ -487,11 +486,10 @@ remote host                            your Mac
         ◄──────────── {"suppressOutput":true} ───────────────────┘
 ```
 
-The remote plugin subscribes to `UserPromptSubmit`, `Stop`, `CwdChanged`,
-`PostToolUse` and `SessionEnd` — **not** `SessionStart`, which is why a remote
-session first becomes visible to the app on the prompt you submit, rather than
-when you start Claude Code. Everything else about the events matches the local
-table above.
+The remote plugin subscribes to `SessionStart`, `UserPromptSubmit`, `Stop`,
+`CwdChanged`, `PostToolUse` and `SessionEnd`, so a new remote session becomes
+visible to the app before its first prompt. Everything else about the events
+matches the local table above.
 
 Each hook runs the plugin's bundled POSIX-sh shim (`hooks/post.sh`), which
 curls the hook's event JSON to `http://127.0.0.1:<your Mac's port>/v1/hook/<Event>`
@@ -509,11 +507,10 @@ the app does not answer within a second. (Declarative `http` hooks cannot do
 this: Claude Code expands their header `${VAR}`s from the process environment
 only and never injects plugin userConfig options there, so an http hook would
 always authenticate as an empty `Bearer` and be refused.)
-The app answers every hook with the same fixed body, `{"suppressOutput":true}`
-— a constant, not a function of anything the request said, and carrying no
-field that could put a byte on your terminal. The shim refuses to print
-anything else. Nothing else opens a port, and nothing is reachable from your
-LAN.
+The app answers every hook with the same fixed body, `{"suppressOutput":true}`.
+An `X-Lvx-Session` response header says `joined` or `unknown`; `post.sh` stores
+that verdict for the session's status line. The shim still prints only the
+fixed body. Nothing else opens a port, and nothing is reachable from your LAN.
 
 ## When the app is not running on your Mac
 
@@ -652,19 +649,18 @@ out by dictating into nothing.
 It never dials the tunnel — a status line re-runs constantly, and every dial
 against a live forward with no app behind it prints ssh's
 `connect_to …: failed.` onto your terminal (the exact storm the shim's
-backoff exists to end). Instead, `post.sh` records the outcome of each hook
-delivery in a private one-line stamp, and a tiny renderer script turns that
-into one fixed line. The indicator is exactly as fresh as this host's hook
-traffic, which is also what re-runs the status line:
+backoff exists to end). Instead, `post.sh` records private host and per-session
+stamps. The renderer checks for both a recent connection and this session's
+join:
 
-| Line | The last hook dial saw |
+| Line | Meaning |
 |---|---|
-| `lvx ●` (green) | a 200 from the app, through the tunnel, within the last 15 minutes |
-| `lvx ●` (grey) | no recent hooks, no listener, a down tunnel, or no hook since boot |
-| `lvx ●` (red) | the token is missing or rejected, or another HTTP error indicates an outdated plugin |
+| `lvx ●` (green) | the Mac holds this session |
+| `lvx ◐` (yellow) | the Mac answers but does not hold this session |
+| `lvx ○` (grey) | no recent answer, listener, or tunnel |
+| `lvx ✕` (red) | the token is missing or rejected, or another HTTP error occurred |
 
-With `NO_COLOR` set or `TERM=dumb`, these render as `lvx ok`, `lvx off`, and
-`lvx err`.
+With `NO_COLOR` set or `TERM=dumb`, the same glyphs render without color.
 
 Set it up on the **remote host** (the plugin ships the renderer; Claude Code's
 versioned plugin cache is no place for a settings path, so copy it somewhere
@@ -686,13 +682,9 @@ and in the host's `~/.claude/settings.json`:
 }
 ```
 
-The copy does not go stale in any way that matters: the renderer is
-deliberately dumb (read stamp, print fixed string) and the smart half lives
-in `post.sh`, which updates with the plugin. Like everything else on this
-path, the renderer's stdout fails closed: the stamp's first token only ever
-selects one of the strings above — no byte of the stamp file is ever
-echoed into your status line. If you already run a status line on that host,
-call the script from it and append its one line.
+The renderer prints only one of the fixed strings above. No byte from the
+payload or either stamp is echoed. If you already run a status line on that
+host, call the script from it and append its one line.
 
 ## Sessions nobody is sitting in front of
 

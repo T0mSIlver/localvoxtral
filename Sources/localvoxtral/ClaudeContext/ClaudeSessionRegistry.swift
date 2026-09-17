@@ -110,6 +110,9 @@ public final class ClaudeSessionRegistry: Sendable {
     private let limits: ClaudeRegistryLimits
     private let now: @Sendable () -> Date
     private let isProcessAlive: @Sendable (Int32) -> Bool
+    private let bootIdentity: @Sendable () -> String?
+    private let localPeerUID: @Sendable () -> UInt32
+    private let persistenceWriter: ClaudeSessionStoreWriter?
 
     /// - Parameters:
     ///   - now: injected clock. Nothing here reads the wall clock directly, so
@@ -118,12 +121,28 @@ public final class ClaudeSessionRegistry: Sendable {
     ///   - isProcessAlive: liveness probe for a session's hook pid.
     public init(
         limits: ClaudeRegistryLimits = .default,
+        store: (any ClaudeSessionStore)? = nil,
+        allowedRemoteChannels: Set<String> = [],
         now: @escaping @Sendable () -> Date = { Date() },
-        isProcessAlive: @escaping @Sendable (Int32) -> Bool = ClaudeSessionRegistry.defaultLivenessProbe
+        isProcessAlive: @escaping @Sendable (Int32) -> Bool = ClaudeSessionRegistry.defaultLivenessProbe,
+        bootIdentity: @escaping @Sendable () -> String? = ClaudeSessionRegistry.defaultBootIdentity,
+        localPeerUID: @escaping @Sendable () -> UInt32 = ClaudeSessionRegistry.defaultLocalPeerUID
     ) {
         self.limits = limits
         self.now = now
         self.isProcessAlive = isProcessAlive
+        self.bootIdentity = bootIdentity
+        self.localPeerUID = localPeerUID
+        persistenceWriter = store.map(ClaudeSessionStoreWriter.init)
+
+        guard let store else { return }
+        restore(
+            from: store,
+            allowedRemoteChannels: allowedRemoteChannels,
+            currentBootIdentity: bootIdentity(),
+            currentPeerUID: localPeerUID(),
+            timestamp: now()
+        )
     }
 
     /// Fold an authenticated record into the registry.
@@ -177,6 +196,10 @@ public final class ClaudeSessionRegistry: Sendable {
             agent: record.agent, sessionID: record.sessionID
         )
         return state.withLock { state -> ClaudeSessionSnapshot? in
+            let before = state.sessions
+            defer {
+                if state.sessions != before { schedulePersistenceLocked(state) }
+            }
             pruneLocked(&state, now: timestamp)
 
             // Focus records are pane state, not session state, and they are an
@@ -647,7 +670,11 @@ public final class ClaudeSessionRegistry: Sendable {
     }
 
     public func evict(sessionID: String) {
-        state.withLock { removeLocked(&$0, sessionID: sessionID) }
+        state.withLock { state in
+            guard state.sessions[sessionID] != nil else { return }
+            removeLocked(&state, sessionID: sessionID)
+            schedulePersistenceLocked(state)
+        }
     }
 
     /// Forget every SSH-remote session whose transport channel is not in `channels`.
@@ -683,6 +710,7 @@ public final class ClaudeSessionRegistry: Sendable {
             for sessionID in doomed {
                 removeLocked(&state, sessionID: sessionID)
             }
+            if !doomed.isEmpty { schedulePersistenceLocked(state) }
             return doomed.count
         }
     }
@@ -691,7 +719,12 @@ public final class ClaudeSessionRegistry: Sendable {
         state.withLock { state in
             state.sessions.removeAll()
             state.focusByTTY.removeAll()
+            persistenceWriter?.submit(.clear)
         }
+    }
+
+    public func flushPersistence() {
+        persistenceWriter?.flush()
     }
 
     // MARK: - Locked helpers
@@ -822,6 +855,246 @@ public final class ClaudeSessionRegistry: Sendable {
         }
     }
 
+    private func schedulePersistenceLocked(_ state: State) {
+        guard let persistenceWriter else { return }
+        guard !state.sessions.isEmpty else {
+            persistenceWriter.submit(.clear)
+            return
+        }
+        let file = StoredClaudeSessions(
+            version: StoredClaudeSessions.currentVersion,
+            bootIdentity: bootIdentity(),
+            sessions: state.sessions.values
+                .sorted { $0.sessionID < $1.sessionID }
+                .map(Self.storedSession)
+        )
+        do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .millisecondsSince1970
+            persistenceWriter.submit(.save(try encoder.encode(file)))
+        } catch {
+            Log.claudeContext.error("Claude session store encode failed")
+        }
+    }
+
+    private func restore(
+        from store: any ClaudeSessionStore,
+        allowedRemoteChannels: Set<String>,
+        currentBootIdentity: String?,
+        currentPeerUID: UInt32,
+        timestamp: Date
+    ) {
+        let data: Data
+        do {
+            guard let loaded = try store.load() else { return }
+            data = loaded
+        } catch {
+            Log.claudeContext.error("Claude session store load failed; restored 0 sessions")
+            return
+        }
+
+        let file: StoredClaudeSessions
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .millisecondsSince1970
+            file = try decoder.decode(StoredClaudeSessions.self, from: data)
+        } catch {
+            Log.claudeContext.error("Claude session store is corrupt; restored 0 sessions")
+            return
+        }
+        guard file.version == StoredClaudeSessions.currentVersion else {
+            Log.claudeContext.error("Claude session store version is unsupported; restored 0 sessions")
+            return
+        }
+
+        var restored: [String: ClaudeSessionSnapshot] = [:]
+        var dropped: [String: Int] = [:]
+        func drop(_ reason: String) { dropped[reason, default: 0] += 1 }
+
+        for stored in file.sessions {
+            guard let snapshot = Self.restoredSnapshot(from: stored) else {
+                drop("invalid schema")
+                continue
+            }
+            guard Self.hasValidNamespace(snapshot) else {
+                drop("invalid namespace")
+                continue
+            }
+            guard snapshot.activity != .ended,
+                  snapshot.firstSeen <= snapshot.lastActivity,
+                  snapshot.lastActivity <= timestamp
+            else {
+                drop("invalid lifecycle")
+                continue
+            }
+            switch snapshot.origin {
+            case .localAuthenticated(let peerUID):
+                guard peerUID == currentPeerUID else {
+                    drop("local uid mismatch")
+                    continue
+                }
+                guard file.bootIdentity != nil, file.bootIdentity == currentBootIdentity else {
+                    drop("boot mismatch")
+                    continue
+                }
+            case .remote(let channel):
+                guard channel.hasPrefix(ClaudeRemoteSessionScope.channel(hostID: "")),
+                      allowedRemoteChannels.contains(channel)
+                else {
+                    drop("inactive remote host")
+                    continue
+                }
+            }
+            guard isFresh(snapshot, now: timestamp) else {
+                if snapshot.origin.isLocalAuthenticated,
+                   snapshot.process?.claudePID != nil,
+                   timestamp.timeIntervalSince(snapshot.lastActivity) <= limits.sessionTTL {
+                    drop("dead local process")
+                } else {
+                    drop("stale")
+                }
+                continue
+            }
+            guard restored[snapshot.sessionID] == nil else {
+                drop("duplicate id")
+                continue
+            }
+            restored[snapshot.sessionID] = snapshot
+        }
+
+        let beforeCap = restored.count
+        state.withLock { state in
+            state.sessions = restored
+            enforceCapLocked(&state)
+            restored = state.sessions
+        }
+        if beforeCap > restored.count { dropped["session cap", default: 0] += beforeCap - restored.count }
+
+        let restoredCount = restored.count
+        if !dropped.isEmpty {
+            let reasons = dropped.keys.sorted().map { "\($0)=\(dropped[$0]!)" }.joined(separator: ", ")
+            Log.claudeContext.info(
+                "Claude session store restored \(restoredCount, privacy: .public) session(s); dropped \(file.sessions.count - restoredCount, privacy: .public) (\(reasons, privacy: .public))"
+            )
+        } else if restoredCount > 0 {
+            Log.claudeContext.info(
+                "Claude session store restored \(restoredCount, privacy: .public) session(s); dropped 0"
+            )
+        }
+        if !dropped.isEmpty {
+            state.withLock { schedulePersistenceLocked($0) }
+        }
+    }
+
+    private static func storedSession(_ snapshot: ClaudeSessionSnapshot) -> StoredClaudeSessions.Session {
+        let origin: StoredClaudeSessions.Origin
+        switch snapshot.origin {
+        case .localAuthenticated(let peerUID):
+            origin = .init(kind: "local", peerUID: peerUID, channel: nil)
+        case .remote(let channel):
+            origin = .init(kind: "remote", peerUID: nil, channel: channel)
+        }
+        let workspace: String?
+        switch snapshot.workspace {
+        case .local(let path): workspace = path.path
+        case .remoteOpaque(let label): workspace = label
+        case nil: workspace = nil
+        }
+        return .init(
+            sessionID: snapshot.sessionID,
+            origin: origin,
+            agent: snapshot.agent,
+            workspace: workspace,
+            activity: snapshot.activity.rawValue,
+            process: snapshot.origin.isLocalAuthenticated ? snapshot.process : nil,
+            remoteEnvironment: snapshot.remoteSessionEnvironment.map(StoredClaudeSessions.RemoteEnvironment.init),
+            firstSeen: snapshot.firstSeen,
+            lastActivity: snapshot.lastActivity
+        )
+    }
+
+    private static func restoredSnapshot(
+        from stored: StoredClaudeSessions.Session
+    ) -> ClaudeSessionSnapshot? {
+        let origin: ClaudeTransportOrigin
+        switch stored.origin.kind {
+        case "local":
+            guard let peerUID = stored.origin.peerUID,
+                  stored.origin.channel == nil,
+                  stored.remoteEnvironment == nil
+            else { return nil }
+            origin = .localAuthenticated(peerUID: peerUID)
+        case "remote":
+            guard stored.origin.peerUID == nil,
+                  stored.process == nil,
+                  let channel = stored.origin.channel
+            else { return nil }
+            origin = .remote(channel: channel)
+        default:
+            return nil
+        }
+        guard let activity = ClaudeSessionActivity(rawValue: stored.activity) else { return nil }
+        if let process = stored.process,
+           process.hookPID <= 0 || process.claudePID <= 0 {
+            return nil
+        }
+        if let environment = stored.remoteEnvironment?.value {
+            let values = ClaudeRemoteEnvironmentField.allCases.compactMap { environment[$0] }
+            let limits = ClaudeRemoteEnvironmentLimits.default
+            guard values.count <= limits.maxFieldCount,
+                  values.reduce(0, { $0 + $1.utf8.count }) <= limits.maxTotalBytes,
+                  values.allSatisfy({ ClaudeRemoteEnvironmentCodec.isAcceptableValue($0) })
+            else { return nil }
+        }
+        var snapshot = ClaudeSessionSnapshot(
+            sessionID: stored.sessionID,
+            origin: origin,
+            agent: stored.agent,
+            firstSeen: stored.firstSeen
+        )
+        if let workspace = stored.workspace {
+            switch origin {
+            case .localAuthenticated:
+                snapshot.workspace = ClaudeWorkspaceReference.make(rawCwd: workspace, origin: origin)
+                guard snapshot.workspace != nil else { return nil }
+            case .remote:
+                snapshot.workspace = ClaudeWorkspaceReference.make(rawCwd: workspace, origin: origin)
+                guard snapshot.workspace?.displayName == workspace else { return nil }
+            }
+        }
+        snapshot.activity = activity
+        snapshot.process = origin.isLocalAuthenticated ? stored.process : nil
+        snapshot.remoteEnvironment = origin.isLocalAuthenticated ? nil : stored.remoteEnvironment?.value
+        snapshot.firstSeen = stored.firstSeen
+        snapshot.lastActivity = stored.lastActivity
+        return snapshot
+    }
+
+    private static func hasValidNamespace(_ snapshot: ClaudeSessionSnapshot) -> Bool {
+        var transportID = snapshot.sessionID
+        switch snapshot.agent {
+        case .claude:
+            guard !transportID.hasPrefix(ClaudeAgentSessionScope.opencodePrefix) else { return false }
+        case .opencode:
+            guard transportID.hasPrefix(ClaudeAgentSessionScope.opencodePrefix) else { return false }
+            transportID.removeFirst(ClaudeAgentSessionScope.opencodePrefix.count)
+            guard !transportID.isEmpty else { return false }
+        }
+
+        switch snapshot.origin {
+        case .localAuthenticated:
+            return !transportID.hasPrefix(ClaudeRemoteSessionScope.prefix)
+        case .remote(let channel):
+            let channelPrefix = ClaudeRemoteSessionScope.channel(hostID: "")
+            guard channel.hasPrefix(channelPrefix) else { return false }
+            let hostID = String(channel.dropFirst(channelPrefix.count))
+            let sessionPrefix = ClaudeRemoteSessionScope.prefix + hostID + ":"
+            return !hostID.isEmpty
+                && transportID.hasPrefix(sessionPrefix)
+                && transportID.count > sessionPrefix.count
+        }
+    }
+
     /// Stable tie-breaking keeps eviction reproducible when a burst lands in
     /// one clock tick (common in tests and possible for batched hook records).
     private static func evictionPrecedes(
@@ -842,5 +1115,24 @@ public final class ClaudeSessionRegistry: Sendable {
         guard pid > 0 else { return false }
         if kill(pid, 0) == 0 { return true }
         return errno == EPERM
+    }
+
+    public static let defaultBootIdentity: @Sendable () -> String? = {
+        #if canImport(Darwin)
+        var bootTime = timeval()
+        var size = MemoryLayout<timeval>.size
+        guard sysctlbyname("kern.boottime", &bootTime, &size, nil, 0) == 0 else { return nil }
+        return "\(bootTime.tv_sec).\(bootTime.tv_usec)"
+        #else
+        return nil
+        #endif
+    }
+
+    public static let defaultLocalPeerUID: @Sendable () -> UInt32 = {
+        #if canImport(Darwin)
+        UInt32(geteuid())
+        #else
+        0
+        #endif
     }
 }

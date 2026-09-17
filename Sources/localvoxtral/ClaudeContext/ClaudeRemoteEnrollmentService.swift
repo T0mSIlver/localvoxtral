@@ -305,7 +305,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
 
     /// Kept next to the installer that verifies it. A manifest contract test
     /// pins this value to the remote plugin's plugin.json.
-    public static let remotePluginVersion = "1.8.0"
+    public static let remotePluginVersion = "1.9.0"
 
     /// The plugin's sensitive userConfig key. Claude Code exposes it to the
     /// plugin's COMMAND-hook shim as `CLAUDE_PLUGIN_OPTION_TOKEN`; the shim

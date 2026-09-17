@@ -513,22 +513,24 @@ public final class ClaudeRemoteContextListener: Sendable {
         // revocation race is about — re-authenticates under the lock.
         guard let prepared = prepareIngest(body: body, request: request, host: host) else {
             // Unparseable payloads never touch the session registry, so
-            // revocation has nothing to protect; the same 200 the pre-race-fix
-            // path returned. The body is a constant, so an accepted and a
-            // discarded record are byte-identical on the wire — nothing a
-            // remote host publishes can vary what its shim is allowed to
-            // print.
+            // revocation has nothing to protect. The body stays identical to
+            // an ingested record; only this fixed status header differs.
             hosts.noteActivity(hostID: host.id)
-            respond(fd: fd, status: 200, body: ClaudeRemoteHTTPCodec.hookResponseBody)
+            respond(
+                fd: fd,
+                status: 200,
+                body: ClaudeRemoteHTTPCodec.hookResponseBody,
+                sessionStatus: .unknown
+            )
             return
         }
-        guard hosts.withAuthenticatedHost(
+        guard let commitIngestStatus = hosts.withAuthenticatedHost(
             token: token,
             expectedHostID: host.id,
             { _ in
                 commitIngest(prepared)
             }
-        ) != nil else {
+        ) else {
             Log.claudeContext.error(
                 "Rejected remote connection: host was revoked before ingest"
             )
@@ -539,7 +541,12 @@ public final class ClaudeRemoteContextListener: Sendable {
         if let socketPath = prepared.environment?.herdrSocketPath {
             onRemoteHerdrActivity(host.id, socketPath)
         }
-        respond(fd: fd, status: 200, body: ClaudeRemoteHTTPCodec.hookResponseBody)
+        respond(
+            fd: fd,
+            status: 200,
+            body: ClaudeRemoteHTTPCodec.hookResponseBody,
+            sessionStatus: commitIngestStatus
+        )
     }
 
     private struct PreparedIngest {
@@ -619,13 +626,13 @@ public final class ClaudeRemoteContextListener: Sendable {
     /// (`withAuthenticatedHost`) so revocation cannot commit between the
     /// re-check and this write.
     ///
-    /// Returns nothing: the response body is a constant, so there is no
-    /// per-session value for a caller to carry back down the SSH PTY.
-    private func commitIngest(_ prepared: PreparedIngest) {
+    /// The fixed response header reports whether this record left the session
+    /// present without changing the constant response body.
+    private func commitIngest(_ prepared: PreparedIngest) -> ClaudeRemoteSessionStatus {
         let origin = ClaudeTransportOrigin.remote(
             channel: ClaudeRemoteSessionScope.channel(hostID: prepared.hostID)
         )
-        registry.ingest(
+        let snapshot = registry.ingest(
             prepared.record,
             origin: origin,
             snippets: prepared.snippets,
@@ -636,6 +643,7 @@ public final class ClaudeRemoteContextListener: Sendable {
         Log.claudeContext.debug(
             "Ingested remote \(prepared.record.event.rawValue, privacy: .public) from \(prepared.hostID, privacy: .public)"
         )
+        return snapshot != nil && prepared.record.event != .sessionEnd ? .joined : .unknown
     }
 
     private func status(for error: any Error) -> Int {
@@ -649,8 +657,17 @@ public final class ClaudeRemoteContextListener: Sendable {
         }
     }
 
-    private func respond(fd: Int32, status: Int, body: Data? = nil) {
-        let data = ClaudeRemoteHTTPCodec.response(status: status, body: body)
+    private func respond(
+        fd: Int32,
+        status: Int,
+        body: Data? = nil,
+        sessionStatus: ClaudeRemoteSessionStatus? = nil
+    ) {
+        let data = ClaudeRemoteHTTPCodec.response(
+            status: status,
+            body: body,
+            sessionStatus: sessionStatus
+        )
         _ = data.withUnsafeBytes { raw -> Int in
             guard let base = raw.baseAddress else { return 0 }
             var offset = 0

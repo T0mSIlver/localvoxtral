@@ -54,6 +54,20 @@ there is not.
     filesystem" is a compile error — do not add one. Its only derivations
     (`ancestor`, `descendant`) preserve that, and `ClaudeRepoCollecting` takes
     it rather than a `String` for exactly this reason.
+  - **The session registry persists join metadata, never captured content.**
+    Its versioned Application Support file contains the session id, origin,
+    agent, workspace reference, activity, local process metadata, remote
+    environment labels, first-seen time, and last-activity time. It never
+    contains a prior prompt, prompt timestamp, recent file, tool snippet, or
+    focus declaration. The file belongs to the same user but carries no hook
+    token or transport proof, so restore treats every row as untrusted input.
+    It re-checks agent and remote-host namespacing, TTL, local pid liveness,
+    the current boot identity for local pids, active non-revoked host
+    enrollment for SSH origins, and the session caps. These checks prevent a
+    same-user file edit, pid reuse after reboot, or revoked host from restoring
+    a join candidate. Atomic 0600 writes live in a 0700 directory. Mutations
+    submit snapshots to one serial latest-value writer, and explicit clearing
+    removes the file.
   - The join is resolved ONCE per dictation, at start
     (`ClaudeSessionJoinResolver`), and every consumer — raw screen attachment,
     the session block, repo collection — shares that one answer. Three
@@ -1205,7 +1219,9 @@ there is not.
   200 body that is not exactly the listener's one control JSON body — which
   since 2026-09-05 is a CONSTANT (`{"suppressOutput":true}`) carrying no field
   that could put a byte on a terminal, so there is no variable part left for a
-  squatter to aim at. Note also what is NOT defensible: a
+  squatter to aim at. The fixed `X-Lvx-Session: joined|unknown` response header
+  only selects a private per-session status stamp and never reaches stdout.
+  Note also what is NOT defensible: a
   malicious process running as the user on the REMOTE host can still read
   `~/.claude/` and therefore the plugin's token no matter what we do. Say so
   rather than implying the token bounds it.

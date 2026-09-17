@@ -2757,7 +2757,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     func testPluginSetupDecodesTheListingAndReportsAnAlreadyCurrentPlugin() throws {
         let calls = PluginSetupCalls()
         let service = ClaudeRemoteEnrollmentService(
-            runner: pluginSetupRunner(before: "1.8.0", after: "1.8.0", calls: calls)
+            runner: pluginSetupRunner(before: "1.9.0", after: "1.9.0", calls: calls)
         )
 
         XCTAssertEqual(
@@ -2781,7 +2781,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     func testPluginSetupUpdatesAStalePluginAndReadsTheNewVersionBack() throws {
         let calls = PluginSetupCalls()
         let service = ClaudeRemoteEnrollmentService(
-            runner: pluginSetupRunner(before: "1.4.0", after: "1.8.0", calls: calls)
+            runner: pluginSetupRunner(before: "1.4.0", after: "1.9.0", calls: calls)
         )
         XCTAssertEqual(
             try service.setupRemotePlugin(sshHostAlias: "builder", token: nil, remoteForwardPort: 28_511),
@@ -2795,7 +2795,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     func testPluginSetupInstallsAnAbsentPluginWhenItHasAToken() throws {
         let calls = PluginSetupCalls()
         let service = ClaudeRemoteEnrollmentService(
-            runner: pluginSetupRunner(before: nil, after: "1.8.0", calls: calls)
+            runner: pluginSetupRunner(before: nil, after: "1.9.0", calls: calls)
         )
         XCTAssertEqual(
             try service.setupRemotePlugin(sshHostAlias: "builder", token: "t0k", remoteForwardPort: 28_511),
@@ -2819,7 +2819,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         ) { error in
             guard case ClaudeRemoteEnrollmentService.ServiceError.commandFailed(_, _, 43, let message) = error
             else { return XCTFail("expected the read-back diagnosis, got \(error)") }
-            XCTAssertEqual(message, "The plugin reports version 1.6.0 after setup, not 1.8.0.")
+            XCTAssertEqual(message, "The plugin reports version 1.6.0 after setup, not 1.9.0.")
         }
     }
 
@@ -2827,13 +2827,13 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         let reference = ClaudeRemoteEnrollmentService.remotePluginReference
         let twoScopes = ClaudeRemoteEnrollmentService.pluginListFrameBegin + "\n"
             + "[{\"id\":\"\(reference)\",\"version\":\"1.2.0\",\"scope\":\"project\"},"
-            + "{\"id\":\"\(reference)\",\"version\":\"1.8.0\",\"scope\":\"user\"}]\n"
+            + "{\"id\":\"\(reference)\",\"version\":\"1.9.0\",\"scope\":\"user\"}]\n"
             + ClaudeRemoteEnrollmentService.pluginListFrameEnd
         XCTAssertEqual(
             try ClaudeRemoteEnrollmentService.installedRemotePluginVersion(
                 inFramedOutput: twoScopes, reference: reference
             ),
-            "1.8.0"
+            "1.9.0"
         )
         XCTAssertNil(
             try ClaudeRemoteEnrollmentService.installedRemotePluginVersion(
