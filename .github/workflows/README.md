@@ -37,6 +37,15 @@ lanes affordable.
 The two jobs run in parallel and share no artifact; each computes the
 docs-only fast-path decision itself rather than serialising behind a `needs:`.
 
+**Any step that launches the app on the self-hosted Mac must set
+`LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN: "1"`** (the launch smoke's
+`LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS` already implies it). The app
+carries no Team ID, so macOS keys each Keychain item to the code-signing hash of
+the build that wrote it and a build CI just made never matches: the read raises
+a modal Keychain dialog on the owner's desktop, once per run. Launching through
+`open` needs `scripts/lib/launch-app.sh`'s `lv_open` — LaunchServices does not
+pass the step's environment to the app.
+
 Both lanes build with whatever Xcode toolchain is already on the machine —
 no `Setup Swift` step. Fork PRs previously pinned a separate swift.org
 toolchain (`swift-actions/setup-swift@v2`, `swift-version: "6.2"`), but its

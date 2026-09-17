@@ -132,6 +132,12 @@ struct SettingsView: View {
         // Integrations statuses are async work, which is why they refresh
         // here rather than at construction.
         .onAppear {
+            // The API-key fields below show what is stored, so opening
+            // Settings is the moment the app reads every key — the engine
+            // panes are the only place all three are displayed at once, and
+            // a read the user did not ask for can cost them a keychain
+            // prompt (`SettingsStore.ensureSecretsLoaded`).
+            settings.ensureAllSecretsLoaded()
             terminalAppsModel.refreshInstalledState()
             if let claude = viewModel.claudeIntegrationSettings {
                 Task { await claude.refreshIntegrationsStatuses() }

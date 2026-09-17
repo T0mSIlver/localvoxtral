@@ -911,7 +911,7 @@ final class DictationViewModel {
     nonisolated static func startupPermissionPromptsSuppressed(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-        environment["LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS"] == "1"
+        StartupPermissionSuppression.isActive(environment: environment)
     }
 
     private func requestStartupPermissionsIfNeeded() {

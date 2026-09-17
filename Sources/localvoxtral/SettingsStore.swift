@@ -209,7 +209,7 @@ final class SettingsStore {
         static let realtimeAPIEndpointURL = "settings.realtime_api_endpoint_url"
         /// LEGACY. The three API keys now live in the login Keychain
         /// (`SecretKey` / `KeychainSecretStore`); these defaults keys exist
-        /// only so `loadSecrets` can find and remove a value
+        /// only so `migrateLegacySecrets` can find and remove a value
         /// written by a build that predates the move. Nothing else may read
         /// or write them.
         static let apiKey = "settings.api_key"
@@ -296,6 +296,19 @@ final class SettingsStore {
     /// reach the real login keychain (`KeychainSecretStore.init` traps under
     /// XCTest as a backstop).
     private let secretStore: any SecretStoring
+    /// Kept past init for the deferred secret reads: an env-provided key has to
+    /// resolve the same way later as it does at launch.
+    @ObservationIgnored
+    private let environment: [String: String]
+    /// The secrets already read out of the store, whatever the read returned.
+    /// A key not in here has never been fetched — see `ensureSecretsLoaded`.
+    @ObservationIgnored
+    private var loadedSecretKeys: Set<SecretKey> = []
+    /// True only while a fetched value is being assigned to its property, so
+    /// the `didSet` write-through does not push it straight back into the
+    /// store (a write prompts exactly like a read).
+    @ObservationIgnored
+    private var isApplyingStoredSecret = false
 
     /// One short sentence when the secret store refused an operation, else nil.
     /// Rendered in the Engines pane so a locked or broken keychain reads as
@@ -322,11 +335,19 @@ final class SettingsStore {
     }
 
     var dictationBackendMode: BackendMode {
-        didSet { defaults.set(dictationBackendMode.rawValue, forKey: Keys.dictationBackendMode) }
+        didSet {
+            defaults.set(dictationBackendMode.rawValue, forKey: Keys.dictationBackendMode)
+            // The newly selected engine may need a key this process has never
+            // read (`ensureSecretsLoaded`).
+            ensureSecretsForSelectedEnginesLoaded()
+        }
     }
 
     var polishingBackendMode: BackendMode {
-        didSet { defaults.set(polishingBackendMode.rawValue, forKey: Keys.polishingBackendMode) }
+        didSet {
+            defaults.set(polishingBackendMode.rawValue, forKey: Keys.polishingBackendMode)
+            ensureSecretsForSelectedEnginesLoaded()
+        }
     }
 
     /// Metal buffer-pool cache limit for the managed dictation helper. Changing
@@ -423,7 +444,10 @@ final class SettingsStore {
     }
 
     var llmPolishingEnabled: Bool {
-        didSet { defaults.set(llmPolishingEnabled, forKey: Keys.llmPolishingEnabled) }
+        didSet {
+            defaults.set(llmPolishingEnabled, forKey: Keys.llmPolishingEnabled)
+            ensureSecretsForSelectedEnginesLoaded()
+        }
     }
 
     var llmPolishingEndpointURL: String {
@@ -793,10 +817,15 @@ final class SettingsStore {
     init(
         defaults: UserDefaults = .standard,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        secretStore: any SecretStoring = KeychainSecretStore()
+        secretStore: (any SecretStoring)? = nil
     ) {
+        // Resolved from the INJECTED environment, not `ProcessInfo` — a test
+        // that passes a suppressing environment must get the process-local
+        // store, not the real keychain.
+        let secretStore = secretStore ?? DefaultSecretStore.make(environment: environment)
         self.defaults = defaults
         self.secretStore = secretStore
+        self.environment = environment
 
         // Resolve onboarding completion BEFORE any migration below persists the
         // per-backend mode keys — the freshness heuristic reads whether those
@@ -866,8 +895,16 @@ final class SettingsStore {
 
         // One sweep out of UserDefaults, then the keychain is the only source
         // of truth. Done here rather than lazily so a plist copy of a secret
-        // stops existing at the first launch that can remove it.
-        let secrets = Self.loadSecrets(defaults: defaults, secretStore: secretStore)
+        // stops existing at the first launch that can remove it. Reading the
+        // keys back is NOT done here — see `ensureSecretsLoaded`.
+        // ... but NOT on a run whose secret store dies with the process: the
+        // sweep removes the plist copy once the write "succeeds", and an
+        // in-memory write always succeeds. A CI launch would take the user's
+        // only copy of a not-yet-migrated key with it.
+        let secrets =
+            StartupPermissionSuppression.loginKeychainIsDisabled(environment: environment)
+            ? ResolvedSecrets()
+            : Self.migrateLegacySecrets(defaults: defaults, secretStore: secretStore)
         secretStoreFailureSummary = secrets.failureSummary
 
         apiKey = Self.resolveSecret(
@@ -1069,6 +1106,11 @@ final class SettingsStore {
                 forKey: Keys.overlayBufferShortcutModifiers)
             defaults.set(overlayBufferShortcutEnabled, forKey: Keys.overlayBufferShortcutEnabled)
         }
+
+        // The sweep above already holds these values; reading them back would
+        // be a second keychain operation for nothing.
+        loadedSecretKeys = Set(secrets.values.keys)
+        ensureSecretsForSelectedEnginesLoaded()
     }
 
     // MARK: - Init Helpers
@@ -1109,15 +1151,20 @@ final class SettingsStore {
         }
     }
 
-    /// What init resolved out of the secret store, plus the sentence the UI
-    /// must show when something refused.
+    /// What the migration sweep learned, plus the sentence the UI must show
+    /// when something refused.
     private struct ResolvedSecrets {
         var values: [SecretKey: String] = [:]
         var failureSummary: String?
     }
 
-    /// Migrates any plist-era keys into the secret store (once), then reads all
-    /// three back out of it.
+    /// Migrates any plist-era keys into the secret store, once per install.
+    ///
+    /// Returns only what the sweep itself learned — a value it migrated, or one
+    /// it could not migrate and left in the plist. Every other key is read
+    /// later and on demand (`ensureSecretsLoaded`): each read of a stored item
+    /// can cost the user a modal keychain prompt, so launch must not pay for
+    /// engines the user has not selected.
     ///
     /// Two rules make the sweep safe to run on a half-migrated install:
     /// - a plist value is only written when the store has nothing, so a stale
@@ -1125,7 +1172,7 @@ final class SettingsStore {
     /// - a failed write leaves the plist value alone and keeps using it for
     ///   this process, because losing a user's API key is worse than leaving a
     ///   copy of it where it already was.
-    private static func loadSecrets(
+    private static func migrateLegacySecrets(
         defaults: UserDefaults,
         secretStore: any SecretStoring
     ) -> ResolvedSecrets {
@@ -1150,6 +1197,11 @@ final class SettingsStore {
                     let existing = try secretStore.secret(for: key) ?? ""
                     if existing.isEmpty {
                         try secretStore.setSecret(legacy, for: key)
+                        resolved.values[key] = legacy
+                    } else {
+                        // A newer key is already stored; the plist copy is
+                        // stale, and the store still wins.
+                        resolved.values[key] = existing
                     }
                     defaults.removeObject(forKey: defaultsKey)
                     Log.secrets.notice(
@@ -1169,23 +1221,105 @@ final class SettingsStore {
             }
         }
 
-        for key in SecretKey.allCases {
-            if let stranded = strandedInDefaults[key] {
-                resolved.values[key] = stranded
-                continue
-            }
-            do {
-                resolved.values[key] = try secretStore.secret(for: key) ?? ""
-            } catch {
-                resolved.values[key] = ""
-                resolved.failureSummary = Self.secretStoreReadFailureSummary
-                Log.secrets.error(
-                    "Reading \(key.rawValue, privacy: .public) from the keychain failed; it reads as unset for this launch: \(String(describing: error), privacy: .public)"
-                )
-            }
+        // A key the store refused stays on the plist copy for this launch, and
+        // that copy is the value this process runs with.
+        for (key, stranded) in strandedInDefaults {
+            resolved.values[key] = stranded
         }
 
         return resolved
+    }
+
+    /// Reads `keys` out of the secret store, at most once each per process, and
+    /// publishes what it finds on the matching property.
+    ///
+    /// Why this is not done at launch for all three: the app has no Team ID, so
+    /// macOS partitions its keychain items by the build's code-signing hash and
+    /// the first read from a newly installed build raises a modal prompt. A
+    /// user who dictates locally should never see one, so a key is fetched only
+    /// when something can actually use it — the engines selected at launch, an
+    /// engine switched on later, and the Settings window when it opens to show
+    /// the field.
+    ///
+    /// A key whose store read fails or comes back empty keeps whatever the
+    /// environment resolved at init; the store is authoritative only when it
+    /// answers with a value.
+    func ensureSecretsLoaded(_ keys: Set<SecretKey>) {
+        for key in SecretKey.allCases where keys.contains(key) {
+            loadSecretIfNeeded(key)
+        }
+    }
+
+    /// Every key, for the places that display or report all three: the Settings
+    /// window and the diagnostics export.
+    func ensureAllSecretsLoaded() {
+        ensureSecretsLoaded(Set(SecretKey.allCases))
+    }
+
+    /// The secrets the current configuration can actually use. Managed local
+    /// engines authenticate with nothing, so the common setup needs no key at
+    /// all.
+    static func secretsInUse(
+        dictationMode: BackendMode,
+        polishingMode: BackendMode,
+        polishingEnabled: Bool
+    ) -> Set<SecretKey> {
+        var keys: Set<SecretKey> = []
+        switch dictationMode {
+        case .managedLocal: break
+        case .externalURL: keys.insert(.realtimeAPIKey)
+        case .mistralAPI: keys.insert(.mistralAPIKey)
+        }
+        guard polishingEnabled else { return keys }
+        switch polishingMode {
+        case .managedLocal: break
+        case .externalURL: keys.insert(.llmPolishingAPIKey)
+        case .mistralAPI: keys.insert(.mistralAPIKey)
+        }
+        return keys
+    }
+
+    /// Loads whatever the engines currently selected need. Called at the end of
+    /// init and whenever one of those selections changes.
+    func ensureSecretsForSelectedEnginesLoaded() {
+        ensureSecretsLoaded(
+            Self.secretsInUse(
+                dictationMode: dictationBackendMode,
+                polishingMode: polishingBackendMode,
+                polishingEnabled: llmPolishingEnabled
+            )
+        )
+    }
+
+    private func loadSecretIfNeeded(_ key: SecretKey) {
+        guard !loadedSecretKeys.contains(key) else { return }
+        // Inserted before the read, not after: a read that throws must not be
+        // retried on every mode change and every Settings open — one prompt is
+        // the budget.
+        loadedSecretKeys.insert(key)
+
+        let stored: String
+        do {
+            stored = try secretStore.secret(for: key) ?? ""
+        } catch {
+            secretStoreFailureSummary = Self.secretStoreReadFailureSummary
+            Log.secrets.error(
+                "Reading \(key.rawValue, privacy: .public) from the keychain failed; it reads as unset for this launch: \(String(describing: error), privacy: .public)"
+            )
+            return
+        }
+        guard !stored.isEmpty else { return }
+
+        // The write-through in these properties' `didSet` would store the value
+        // that just came out of the store — another keychain operation, and
+        // another chance to prompt.
+        isApplyingStoredSecret = true
+        defer { isApplyingStoredSecret = false }
+        switch key {
+        case .realtimeAPIKey: apiKey = stored
+        case .llmPolishingAPIKey: llmPolishingAPIKey = stored
+        case .mistralAPIKey: mistralAPIKey = stored
+        }
     }
 
     /// The precedence `loadString` gave these keys, with the secret store
@@ -1207,6 +1341,14 @@ final class SettingsStore {
     /// key routinely carries a trailing newline the wire never wants; empty
     /// deletes the item rather than storing a blank.
     private func persistSecret(_ value: String, for key: SecretKey) {
+        // A value the store just handed us is not a change to write back.
+        guard !isApplyingStoredSecret else { return }
+        // Marked loaded either way. On success the store holds exactly this
+        // value, so there is nothing to fetch. On failure the value is still
+        // the one this process runs with ("works this session but is not
+        // saved"), and a later fetch would overwrite what the user just typed
+        // with the stale stored key.
+        loadedSecretKeys.insert(key)
         do {
             try secretStore.setSecret(value.trimmed, for: key)
         } catch {

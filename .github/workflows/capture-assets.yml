@@ -35,6 +35,12 @@ jobs:
       - name: Capture README screenshots
         id: capture
         if: steps.guard.outputs.present == 'true'
+        env:
+          # Launches the real bundle on the owner's Mac: a fresh build's first
+          # keychain read is an ACL partition mismatch (no Team ID), and macOS
+          # answers that with a modal prompt on his desktop. The lane needs no
+          # API key.
+          LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN: "1"
         run: |
           bash scripts/capture-readme-assets.sh dist/localvoxtral.app
           echo "ran=true" >> "$GITHUB_OUTPUT"

@@ -69,6 +69,12 @@ enum DiagnosticsExporter {
         bundle: Bundle = .main,
         processInfo: ProcessInfo = .processInfo
     ) -> DiagnosticsSnapshot {
+        // The snapshot reports whether each key is set, so it has to have read
+        // them. Export is user-initiated, which is the only moment a keychain
+        // prompt for a key the user's engines do not use is fair
+        // (`SettingsStore.ensureSecretsLoaded`).
+        settings.ensureAllSecretsLoaded()
+
         let info = bundle.infoDictionary
         let appVersion = (info?["CFBundleShortVersionString"] as? String) ?? "unknown"
         let appBuild = (info?["CFBundleVersion"] as? String) ?? "unknown"

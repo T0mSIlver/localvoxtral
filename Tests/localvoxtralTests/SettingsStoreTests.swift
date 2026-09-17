@@ -998,6 +998,9 @@ final class SettingsStoreTests: XCTestCase {
         )
 
         let reloaded = makeStore()
+        // A relaunch fetches the key when something needs it — here, the
+        // Settings window showing the field (LazySecretLoadingTests).
+        reloaded.ensureAllSecretsLoaded()
         XCTAssertEqual(reloaded.mistralAPIKey, "mk-secret")
         XCTAssertEqual(reloaded.trimmedMistralAPIKey, "mk-secret")
         XCTAssertEqual(

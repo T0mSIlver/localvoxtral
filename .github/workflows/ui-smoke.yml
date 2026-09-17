@@ -90,6 +90,12 @@ jobs:
 
       - name: Run AX UI smoke
         if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
+        env:
+          # Launches the real bundle on the owner's Mac: a fresh build's first
+          # keychain read is an ACL partition mismatch (no Team ID), and macOS
+          # answers that with a modal prompt on his desktop. The lane needs no
+          # API key.
+          LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN: "1"
         run: |
           mkdir -p logs
           set -o pipefail

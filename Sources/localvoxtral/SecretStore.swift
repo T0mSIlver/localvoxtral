@@ -80,3 +80,28 @@ final class InMemorySecretStore: SecretStoring, @unchecked Sendable {
         storage.withLock { $0 }
     }
 }
+
+/// The store this process runs with.
+///
+/// Normally the login keychain. A CI lane that launches the real app on the
+/// owner's Mac gets a process-local store instead: reading a keychain item from
+/// a freshly built binary pops a modal prompt on that Mac (see
+/// `StartupPermissionSuppression`), and a smoke launch has no business holding
+/// the owner's API keys anyway. Keys handed to such a run through the
+/// environment (`OPENAI_API_KEY` and friends) still apply — `SettingsStore`
+/// resolves those after the store, not through it.
+enum DefaultSecretStore {
+    static func make(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> any SecretStoring {
+        guard StartupPermissionSuppression.loginKeychainIsDisabled(environment: environment) else {
+            return KeychainSecretStore()
+        }
+        // .notice so the line survives in the unified log archive: it is the
+        // after-the-fact proof that a CI launch never touched the keychain.
+        Log.secrets.notice(
+            "login keychain not used: this run sets \(StartupPermissionSuppression.environmentKey, privacy: .public) or \(StartupPermissionSuppression.keychainEnvironmentKey, privacy: .public)"
+        )
+        return InMemorySecretStore()
+    }
+}
