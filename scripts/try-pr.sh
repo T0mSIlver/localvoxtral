@@ -28,9 +28,8 @@ set -euo pipefail
 #
 # That dispatch passes herdr=false. The dispatch exists to produce an
 # artifact, and the live herdr lane — which a dispatch otherwise forces on —
-# cannot start beside a herdr the account is already running, which on this
-# Mac it usually is; the run would go red and this script's `gh run watch
-# --exit-status` would give up before downloading anything. The herdr
+# only adds time and one more way for `gh run watch --exit-status` to give up
+# before downloading anything. The herdr
 # contract is held where it belongs: the path filter + [run-herdr-integration]
 # marker on PRs, and every push to main.
 #

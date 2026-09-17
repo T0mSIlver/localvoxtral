@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Regression test for the herdr fixture's crash recovery.
 #
-# The fixture borrows three of the account's real files (herdr `config.toml`,
-# `session.json`, and delimited blocks in `~/.ssh/config`). `down` gives them
-# back — but a run can be SIGKILLed, and nothing runs on SIGKILL. The pristine
-# copies therefore live at a stable path, and the next `up` must restore them
-# rather than back up the ALREADY-MODIFIED files over them, which is the step
-# that would destroy the originals permanently.
+# The fixture borrows one of the account's real files (delimited blocks in
+# `~/.ssh/config`); its herdr runs on its own config and state homes, so the
+# account's herdr `config.toml` and `session.json` must come out of every
+# path below byte-identical. `down` gives the ssh config back — but a run can
+# be SIGKILLed, and nothing runs on SIGKILL. The pristine copy therefore lives
+# at a stable path, and the next `up` must restore it rather than back up the
+# ALREADY-MODIFIED file over it, which is the step that would destroy the
+# original permanently. A hold taken by a fixture from before #323 still
+# carries herdr copies, and recovering one must put those back too.
 #
 # This drives that logic directly against a fake HOME, so it runs anywhere —
 # no herdr, no ssh, no live server. Same sourced-mode pattern as
@@ -63,8 +66,6 @@ simulate_up_then_kill() {
   local dir="$1"
   mkdir -p "$dir"
   hold_account_files "$dir"
-  printf 'onboarding = false\n[ui.sidebar.agents]\n' > "$HERDR_CONFIG_FILE"
-  rm -f "$HERDR_SESSION_FILE"
   {
     printf '%s\n' "$SSH_CONFIG_BEGIN"
     printf 'Host lvx-herdr-fixture\n  HostName 127.0.0.1\n  Port 24601\n'
@@ -84,11 +85,11 @@ simulate_up_then_kill() {
 
 assert_account_is_pristine() {
   local what="$1"
-  cmp -s "$GOLDEN/config.toml" "$HERDR_CONFIG_FILE" \
-    || fail "$what: herdr config was not restored byte for byte:
-$(cat "$HERDR_CONFIG_FILE" 2>&1)"
-  cmp -s "$GOLDEN/session.json" "$HERDR_SESSION_FILE" \
-    || fail "$what: herdr session was not restored byte for byte"
+  cmp -s "$GOLDEN/config.toml" "$HOME/.config/herdr/config.toml" \
+    || fail "$what: herdr config is not byte for byte the human's:
+$(cat "$HOME/.config/herdr/config.toml" 2>&1)"
+  cmp -s "$GOLDEN/session.json" "$HOME/.config/herdr/session.json" \
+    || fail "$what: herdr session is not byte for byte the human's"
   cmp -s "$GOLDEN/ssh_config" "$SSH_CONFIG_FILE" \
     || fail "$what: ssh config was not restored byte for byte:
 $(cat "$SSH_CONFIG_FILE" 2>&1)"
@@ -99,9 +100,12 @@ $(cat "$SSH_CONFIG_FILE" 2>&1)"
 
 setup_home
 simulate_up_then_kill "$TMP_DIR/lvx-herdr-fixture-run1"
-cmp -s "$GOLDEN/config.toml" "$HERDR_CONFIG_FILE" \
-  && fail "the simulated run did not actually modify the config"
+cmp -s "$GOLDEN/ssh_config" "$SSH_CONFIG_FILE" \
+  && fail "the simulated run did not actually modify the ssh config"
 hold_is_present || fail "the simulated run left no hold"
+for held in "$HOLD_DIR"/herdr-*; do
+  [[ -e "$held" ]] && fail "the hold took a copy of the account's herdr files: $held"
+done
 
 reclaim_or_refuse_stale_hold 2>/dev/null
 assert_account_is_pristine "after reclaiming a killed run"
@@ -126,8 +130,8 @@ reclaim_or_refuse_stale_hold 2>/dev/null
 simulate_up_then_kill "$TMP_DIR/lvx-herdr-fixture-runB"
 # The step that would destroy the originals: run B's backup must be the
 # HUMAN'S file, not run A's modified one.
-cmp -s "$GOLDEN/config.toml" "$HOLD_DIR/herdr-config.pristine" \
-  || fail "the second interrupted run backed up the first run's modified config"
+cmp -s "$GOLDEN/ssh_config" "$HOLD_DIR/ssh-config.pristine" \
+  || fail "the second interrupted run backed up the first run's modified ssh config"
 reclaim_or_refuse_stale_hold 2>/dev/null
 assert_account_is_pristine "after two consecutive interrupted runs"
 pass "the pristine originals survive two consecutive interrupted runs"
@@ -140,7 +144,7 @@ simulate_up_then_kill "$TMP_DIR/lvx-herdr-fixture-runC"
 if ( hold_account_files "$TMP_DIR/lvx-herdr-fixture-runD" ) 2>/dev/null; then
   fail "hold_account_files overwrote an existing hold"
 fi
-cmp -s "$GOLDEN/config.toml" "$HOLD_DIR/herdr-config.pristine" \
+cmp -s "$GOLDEN/ssh_config" "$HOLD_DIR/ssh-config.pristine" \
   || fail "the pristine copy was replaced by the modified file"
 pass "a second hold is refused rather than overwriting the pristine copies"
 
@@ -182,14 +186,77 @@ mkdir -p "$HOME"
 LOCALVOXTRAL_HERDR_FIXTURE_SOURCE_ONLY=1 source "$FIXTURE"
 mkdir -p "$TMP_DIR/lvx-herdr-fixture-empty"
 hold_account_files "$TMP_DIR/lvx-herdr-fixture-empty" 2>/dev/null
-printf 'onboarding = false\n' > "$HERDR_CONFIG_FILE"
 printf '%s\nHost x\n%s\n' "$SSH_CONFIG_BEGIN" "$SSH_CONFIG_END" >> "$SSH_CONFIG_FILE"
 release_account_files 2>/dev/null
-[[ ! -e "$HERDR_CONFIG_FILE" ]] \
-  || fail "a config that did not exist before must not exist after"
+[[ ! -e "$HOME/.config/herdr" ]] \
+  || fail "releasing a current hold created herdr files the account never had"
 [[ ! -e "$SSH_CONFIG_FILE" ]] \
   || fail "an ssh config the fixture created must be removed again, not left empty"
 pass "files the account never had are removed, not left behind"
+
+# --- 6b. A hold taken before #323 still gives the herdr files back ---------
+# That fixture replaced config.toml and removed session.json, and a runner
+# killed mid-run under it leaves a hold with herdr copies in it. Recovering it
+# with the current script must restore both, including a file that was absent.
+
+setup_home
+mkdir -p "$TMP_DIR/lvx-herdr-fixture-legacy"
+hold_account_files "$TMP_DIR/lvx-herdr-fixture-legacy" 2>/dev/null
+cp "$GOLDEN/config.toml" "$HOLD_DIR/herdr-config.pristine"
+cp "$GOLDEN/session.json" "$HOLD_DIR/herdr-session.pristine"
+printf 'onboarding = false\n[ui.sidebar.agents]\n' > "$HOME/.config/herdr/config.toml"
+rm -f "$HOME/.config/herdr/session.json"
+sed -e 's/^pid=.*/pid=999999/' "$HOLD_MANIFEST" > "$HOLD_MANIFEST.tmp"
+mv "$HOLD_MANIFEST.tmp" "$HOLD_MANIFEST"
+command_recover 2>/dev/null
+assert_account_is_pristine "after recovering a pre-#323 hold"
+
+setup_home
+mkdir -p "$TMP_DIR/lvx-herdr-fixture-legacy-absent"
+rm -f "$HOME/.config/herdr/session.json"
+hold_account_files "$TMP_DIR/lvx-herdr-fixture-legacy-absent" 2>/dev/null
+: > "$HOLD_DIR/herdr-session.absent"
+printf '{"workspaces":["the fixture layout"]}' > "$HOME/.config/herdr/session.json"
+sed -e 's/^pid=.*/pid=999999/' "$HOLD_MANIFEST" > "$HOLD_MANIFEST.tmp"
+mv "$HOLD_MANIFEST.tmp" "$HOLD_MANIFEST"
+command_recover 2>/dev/null
+[[ ! -e "$HOME/.config/herdr/session.json" ]] \
+  || fail "a pre-#323 hold recorded session.json as absent, but recover left one behind"
+pass "a pre-#323 hold still restores the herdr config and session"
+
+# --- 6c. Every herdr the fixture starts uses the run's own homes -----------
+# The account's own herdr server keeps running beside the lane (#323). A
+# stub herdr records the socket and XDG homes each fixture call hands it.
+
+setup_home
+STUB_ENV_DIR="$TMP_DIR/stubenv"
+mkdir -p "$STUB_ENV_DIR"
+cat > "$STUB_ENV_DIR/herdr" <<EOF
+#!/bin/sh
+printf 'socket=%s config=%s state=%s argv=%s\n' "\$HERDR_SOCKET_PATH" "\$XDG_CONFIG_HOME" "\$XDG_STATE_HOME" "\$*" >> "$TMP_DIR/stub-env.log"
+EOF
+chmod +x "$STUB_ENV_DIR/herdr"
+: > "$TMP_DIR/stub-env.log"
+RUN_DIR="$TMP_DIR/lvx-herdr-fixture-homes"
+mkdir -p "$RUN_DIR"
+printf '%s\n' "$STUB_ENV_DIR/herdr" > "$RUN_DIR/herdr.bin"
+(
+  export XDG_CONFIG_HOME="$HOME/.config" XDG_STATE_HOME="$HOME/.local/state"
+  load_context "$RUN_DIR"
+  herdr_cli server reload-config
+  stop_workdir_processes "$RUN_DIR"
+) 2>/dev/null
+want="socket=$RUN_DIR/herdr.sock config=$RUN_DIR/config-home state=$RUN_DIR/state-home argv=server reload-config"
+grep -qxF "$want" "$TMP_DIR/stub-env.log" \
+  || fail "herdr_cli did not run on the fixture's own socket and homes:
+$(cat "$TMP_DIR/stub-env.log")"
+grep -q "config=$HOME/.config " "$TMP_DIR/stub-env.log" \
+  && fail "a fixture herdr call inherited the account's config home:
+$(cat "$TMP_DIR/stub-env.log")"
+[[ "$(fixture_config_file "$RUN_DIR")" == "$RUN_DIR/config-home/herdr/config.toml" ]] \
+  || fail "the fixture server's config file is not under the run's config home"
+assert_account_is_pristine "after fixture herdr calls"
+pass "fixture herdr calls run on the workdir's socket and config/state homes"
 
 # --- 7. A SIGKILL between `machine add` and federation.json still stops the
 # daemon-started remote server ---------------------------------------------

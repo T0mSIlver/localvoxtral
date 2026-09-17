@@ -8,7 +8,7 @@
 | 1 | `RealtimeAPIVLLMIntegrationTests` vs the live local speechd STT test service: real inference through the production websocket client, word-accuracy asserted | every non-fast-path PR/push on the self-hosted runner; locally via `remote-build.sh integration` | ~20 s |
 | 1 | `PolishHelperIntegrationTests`: the packaged polishing helper vs the real pinned model — production request path, shared eval baseline, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches LLM-relevant paths or the PR opts in with `[run-llm-eval]` — see "When must the LLM lanes run?"; locally via `remote-build.sh integration-polishd` | minutes (4B weights + live inference) |
 | 1 | `SpeechHelperIntegrationTests`: packaged speechd vs real spoken audio/model through the production realtime client — word accuracy, append-only delta/done parity, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches speechd-relevant paths or the PR opts in with `[run-speechd-integration]`; locally via `remote-build.sh integration-speechd` | minutes (4B weights + live inference) |
-| 1 | `HerdrIntegrationTests`: the remote-herdr join machinery vs a LIVE `herdr` server over a REAL `ssh -L` forward — real socket client, real forward coordinator, real `ssh -G` canonicalization, real `~/.config/herdr/config.toml` patch; the only fixture is the focused surface (a real herdr client on a pty) | conditional in CI (self-hosted): only when the diff touches herdr-relevant paths or the PR opts in with `[run-herdr-integration]`; locally via `remote-build.sh integration-herdr [ssh-destination]` | ~1 min (no model weights) |
+| 1 | `HerdrIntegrationTests`: the remote-herdr join machinery vs a LIVE `herdr` server over a REAL `ssh -L` forward — real socket client, real forward coordinator, real `ssh -G` canonicalization, real herdr `config.toml` patch (the fixture server's own, beside any herdr the account runs); the only fixture is the focused surface (a real herdr client on a pty) | conditional in CI (self-hosted): only when the diff touches herdr-relevant paths or the PR opts in with `[run-herdr-integration]`; locally via `remote-build.sh integration-herdr [ssh-destination]` | ~1 min (no model weights) |
 | 1 | `MistralRealtimeIntegrationTests`: the realtime client vs the LIVE hosted Mistral transcription API — handshake, synthetic spoken audio through the production frames, word accuracy, delta/done parity, and the 401 rejection path | NEVER in CI (the runner holds no Mistral key and the lane bills per minute of audio); by hand from the dev box via `MISTRAL_API_KEY=... ./scripts/remote-build.sh integration-mistral` | ~1 min + a few cents |
 | 2 | `ui-smoke.yml` AX smoke drill (status item, settings tabs, lazy managed-backend launch invariant); dictation-with-audio remains future work | evening lock-aware slots (18:00/19:30/21:00 UTC; `ui-smoke-guard.sh` skips green when the Mac is on battery, the screen is locked, or a slot's drill already ran and passed that day — the drill needs an unlocked GUI session) + manual on the self-hosted GUI runner | — |
 | 2 | `AgentDictationE2EEvalTests` (`eval-e2e.yml`): wide agent-dictation eval — human WAVs or TTS(`say`) → live speechd ASR → bundled polishd through the production stop-commit path, scored against `EvalCorpus/agent-dictation/` (7 migrated required cases asserted; the rest XFAIL; WER informational; raw-model pre-safety diagnostic column) | nightly (skips green when the Mac is on battery — `ac-power-guard.sh`, owner rule 2026-07-24: scheduled lanes never run unplugged; manual dispatch always runs) + manual, NEVER per-PR (owner decision 2026-07-11); locally via `remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]` (run `package` first) | many minutes (live ASR/4B polish over ~160 cases; TTS WAVs cached on the host) |
@@ -193,7 +193,7 @@ What is real in the lane: `HerdrSocketClient` on a forwarded unix socket,
 `ClaudeRemoteHerdrForwardService` spawning a real supervised `ssh -N -L`,
 `SSHDestinationCanonicalizer.live()` running real `ssh -G`,
 `ClaudeRemoteEnrollmentService.configureRemoteHerdrPanel` patching a real
-`~/.config/herdr/config.toml` over a real ssh session, and
+the fixture server's own herdr `config.toml` over a real ssh session, and
 `HerdrPanelBindingProbe` / `HerdrPanelMicIndicator` on top of all of it. The
 ONE fixture is the focused surface: a real herdr client on a pty, read from
 its typescript instead of through accessibility.
@@ -224,9 +224,21 @@ Fixture and host requirements (`scripts/herdr-integration-fixture.sh`):
   host key, user key and `authorized_keys` file — the account's are never
   touched), so the lane is hermetic and needs no second machine. Pass an ssh
   destination to run the identical lane against a real second host.
-- For the duration of a run the fixture OWNS the account's
-  `~/.config/herdr/config.toml` and `session.json` and appends three delimited
-  blocks to `~/.ssh/config`. It touches the REAL ssh config on purpose: the
+- It runs BESIDE a herdr the account is already running (the owner's runner
+  account runs one all day). Every fixture herdr process — server, CLI calls,
+  surfaces, and the remote half behind the loopback sshd's forced
+  `authorized_keys` environment — gets its own socket and
+  `XDG_CONFIG_HOME` / `XDG_STATE_HOME` under the run's workdir, which is where
+  herdr resolves `config.toml`, `session.json`, plugins and client state from.
+  The account's herdr files and server are never read, written or addressed,
+  and the enrollment config patch over the fixture alias edits the fixture
+  server's config. Over a caller-supplied destination that patch would edit
+  the second host's real config, so that one test fails up front in
+  destination mode.
+- For the duration of a run the fixture appends three delimited blocks to the
+  account's `~/.ssh/config`, and refuses to start if the account already
+  defines one of its aliases (ssh keeps the first value, so the lane would
+  dial the account's host). It touches the REAL ssh config on purpose: the
   code under test never passes `-F`, so an alias that lived only in a
   fixture-local file would exercise an invocation shape the app never
   produces. The ssh config is restored by REMOVING those blocks, not by
@@ -236,7 +248,7 @@ Fixture and host requirements (`scripts/herdr-integration-fixture.sh`):
   run with `XDG_STATE_HOME` pointed at the run's scratch `client-state-home`
   and the hermetic remote server listens on the run's short `remote.sock`,
   never on the account's catalog or sockets.
-- Because nothing runs on SIGKILL, the pristine originals live at a stable
+- Because nothing runs on SIGKILL, the pristine ssh config lives at a stable
   path (`~/.localvoxtral-herdr-fixture-hold/`) with a manifest naming the run
   that took them — never in the run's own temp dir, which a killed run would
   strand. `up` restores a dead run's hold before touching anything and
@@ -244,9 +256,8 @@ Fixture and host requirements (`scripts/herdr-integration-fixture.sh`):
   file over a pristine copy, which is the step that would destroy the
   originals. `status` and `recover` do it by hand
   (`scripts/mac/README.md`), and `scripts/ci/test-herdr-fixture-recovery.sh`
-  holds that behavior per-push without needing herdr at all.
-- It refuses to start when a herdr server is already running for that account,
-  rather than trampling a human's session.
+  holds that behavior per-push without needing herdr at all (including
+  restoring the herdr copies a pre-#323 fixture's hold still carries).
 - The suite has no `XCTSkip`. Every other lane skips it by name
   (`--skip HerdrIntegrationTests` in `remote-build.sh test` and in CI's unit
   step), and running it without its marker fails with the enablement
@@ -258,9 +269,7 @@ the LLM lanes. A manual `ci.yml` dispatch also runs it by default, which is the
 supported way to repeat this live external contract without manufacturing
 commits; `-f herdr=false` opts one dispatch out. That is what
 `scripts/try-pr.sh --dogfood` passes: that dispatch exists to produce an
-artifact, and the fixture refuses to start beside the herdr the owner runs
-all day, so forcing the lane on made the one-command dogfood install
-unusable on the owner's Mac. The
+artifact, not to repeat the herdr contract. The
 rule behind the list: anything that changes what the app
 SAYS to herdr, what it BELIEVES herdr answered, how the forward reaching
 herdr is opened or leased, which host that forward reaches, or the recorded

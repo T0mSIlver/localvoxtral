@@ -35,11 +35,22 @@
 # session. A `workspace create` + `report-agent` residue may briefly remain
 # if the close fails; the server itself is never stopped.
 #
+# ## Runs beside the account's own herdr
+#
+# The account running the lane may be running herdr itself (the owner's build
+# Mac runs one all day). Every herdr process the fixture starts — its server,
+# its CLI calls, its surfaces, and the remote half reached over the loopback
+# sshd — runs with its own socket under the workdir and with XDG_CONFIG_HOME /
+# XDG_STATE_HOME pointed at scratch dirs under the workdir. herdr resolves
+# config.toml, session.json, plugins and client state from those two variables
+# alone (`config::config_dir` / `config::state_dir`), so the account's
+# ~/.config/herdr and ~/.local/state/herdr are never read or written, and the
+# account's own server is never addressed.
+#
 # ## Files this borrows from the account, and how they come back
 #
-# For the duration of a run the fixture replaces the account's herdr
-# `config.toml`, removes its `session.json`, and appends three delimited blocks
-# to its `~/.ssh/config` (the connection block, the canonicalization-test
+# For the duration of a run the fixture appends three delimited blocks to the
+# account's `~/.ssh/config` (the connection block, the canonicalization-test
 # block, and — hermetic mode only — the federation block). It has to touch the REAL ssh config because the code
 # under test never passes `-F`: the app's forward argv and
 # `SSHDestinationCanonicalizer.live()` both run `ssh` / `ssh -G` against the
@@ -102,18 +113,51 @@ READY_TIMEOUT_SECONDS=30
 
 # Account-level paths, resolved once at load. A sourcing test sets HOME before
 # sourcing this file (see scripts/ci/test-herdr-fixture-recovery.sh).
-HERDR_CONFIG_FILE="$HOME/.config/herdr/config.toml"
-HERDR_SESSION_FILE="$HOME/.config/herdr/session.json"
+#
+# The two herdr paths are only ever RESTORED, never taken: a hold written by a
+# fixture from before it ran beside a live herdr (#323) still carries pristine
+# copies of them, and recovering that hold must put them back.
+LEGACY_HERDR_CONFIG_FILE="$HOME/.config/herdr/config.toml"
+LEGACY_HERDR_SESSION_FILE="$HOME/.config/herdr/session.json"
 SSH_CONFIG_FILE="$HOME/.ssh/config"
 HOLD_DIR="$HOME/.localvoxtral-herdr-fixture-hold"
 HOLD_MANIFEST="$HOLD_DIR/manifest"
 
 log() { printf '[herdr-fixture] %s\n' "$*" >&2; }
 
+# The run's own herdr homes: XDG_CONFIG_HOME / XDG_STATE_HOME for every local
+# herdr process the fixture starts, and forced onto the remote half through
+# the loopback sshd's authorized_keys.
+fixture_config_home() { printf '%s/config-home' "$1"; }
+fixture_state_home() { printf '%s/state-home' "$1"; }
+fixture_config_file() { printf '%s/herdr/config.toml' "$(fixture_config_home "$1")"; }
+
+# Point every herdr this shell starts at the run's own homes.
+export_fixture_homes() {
+  local dir="$1"
+  XDG_CONFIG_HOME="$(fixture_config_home "$dir")"
+  XDG_STATE_HOME="$(fixture_state_home "$dir")"
+  export XDG_CONFIG_HOME XDG_STATE_HOME
+}
+
 environment_value() {
   local name="$1" value
   value="$(printenv "$name" 2>/dev/null || true)"
   [[ -n "$value" ]] && printf '%s' "$value" || printf '<unset>'
+}
+
+# Read-only evidence that a run leaves the account's own herdr alone: its
+# config and session hashes and the pid serving its default socket, logged at
+# `up` and again at `down`. The session hash can still move between the two
+# if a human is using that herdr during the run; the pid must not.
+account_herdr_fingerprint() {
+  local file hash pid
+  for file in "$LEGACY_HERDR_CONFIG_FILE" "$LEGACY_HERDR_SESSION_FILE"; do
+    hash="$(shasum -a 256 "$file" 2>/dev/null | awk '{ print $1 }' || true)"
+    printf '%s.sha256=%s ' "$(basename "$file")" "${hash:-absent}"
+  done
+  pid="$(lsof -t "$HOME/.config/herdr/herdr.sock" 2>/dev/null | head -1 || true)"
+  printf 'server.pid=%s\n' "${pid:-none}"
 }
 
 tty_state() {
@@ -122,21 +166,21 @@ tty_state() {
 }
 
 record_start_diagnostics() {
-  local dir="$1" inherited_socket="$2" account_status="$3" version config_state session_state
+  local dir="$1" inherited_socket="$2" account_status="$3" inherited_config_home="$4" version
   version="$("$HERDR_BINARY" --version 2>&1 | head -1)"
-  [[ -e "$HERDR_CONFIG_FILE" ]] && config_state=present || config_state=absent
-  [[ -e "$HERDR_SESSION_FILE" ]] && session_state=present || session_state=absent
   {
     printf 'account=%s uid=%s home=%s\n' "$(id -un)" "$(id -u)" "$HOME"
     printf 'herdr.binary=%s\n' "$HERDR_BINARY"
     printf 'herdr.version=%s\n' "$version"
     printf 'herdr.status.before=%s\n' "${account_status:-<empty>}"
+    printf 'herdr.account.before %s' "$(account_herdr_fingerprint)"
+    printf '\n'
     printf 'herdr.socket.inherited=%s\n' "${inherited_socket:-<unset>}"
     printf 'herdr.socket.fixture=%s\n' "$HERDR_SOCKET_PATH"
-    printf 'herdr.config=%s state=%s\n' "$HERDR_CONFIG_FILE" "$config_state"
-    printf 'herdr.session=%s state=%s\n' "$HERDR_SESSION_FILE" "$session_state"
+    printf 'herdr.config.fixture=%s\n' "$(fixture_config_file "$dir")"
+    printf 'herdr.state_home.fixture=%s\n' "$(fixture_state_home "$dir")"
     printf 'env.PATH=%s\n' "$PATH"
-    printf 'env.XDG_CONFIG_HOME=%s\n' "$(environment_value XDG_CONFIG_HOME)"
+    printf 'env.XDG_CONFIG_HOME.inherited=%s\n' "${inherited_config_home:-<unset>}"
     printf 'env.XDG_RUNTIME_DIR=%s\n' "$(environment_value XDG_RUNTIME_DIR)"
     printf 'env.TERM=%s env.COLUMNS=%s env.LINES=%s\n' \
       "$(environment_value TERM)" "$(environment_value COLUMNS)" "$(environment_value LINES)"
@@ -225,17 +269,6 @@ hold_account_files() {
   chmod 700 "$HOLD_DIR"
   rm -f "$HOLD_DIR"/*.pristine "$HOLD_DIR"/*.absent "$HOLD_DIR"/*.created 2>/dev/null || true
 
-  mkdir -p "$(dirname "$HERDR_CONFIG_FILE")"
-  if [[ -f "$HERDR_CONFIG_FILE" ]]; then
-    cp "$HERDR_CONFIG_FILE" "$HOLD_DIR/herdr-config.pristine"
-  else
-    : > "$HOLD_DIR/herdr-config.absent"
-  fi
-  if [[ -f "$HERDR_SESSION_FILE" ]]; then
-    cp "$HERDR_SESSION_FILE" "$HOLD_DIR/herdr-session.pristine"
-  else
-    : > "$HOLD_DIR/herdr-session.absent"
-  fi
   mkdir -p "$(dirname "$SSH_CONFIG_FILE")"
   chmod 700 "$(dirname "$SSH_CONFIG_FILE")"
   if [[ -f "$SSH_CONFIG_FILE" ]]; then
@@ -257,7 +290,7 @@ hold_account_files() {
     printf 'home=%s\n' "$HOME"
   } > "$HOLD_DIR/manifest.tmp"
   mv "$HOLD_DIR/manifest.tmp" "$HOLD_MANIFEST"
-  log "holding this account's herdr config, session and ssh config (backups in $HOLD_DIR)"
+  log "holding this account's ssh config (backup in $HOLD_DIR)"
 }
 
 # Drop our delimited blocks from the ssh config in place. Idempotent, and it
@@ -283,22 +316,25 @@ strip_ssh_config_blocks() {
 }
 
 # Put the account back and drop the hold. Safe to call when nothing is held.
+# The herdr branches fire only for a hold a pre-#323 fixture took; a current
+# hold carries no herdr files, so the account's herdr is left as it is.
 release_account_files() {
   hold_is_present || return 0
-  mkdir -p "$(dirname "$HERDR_CONFIG_FILE")"
   if [[ -f "$HOLD_DIR/herdr-config.pristine" ]]; then
-    cp "$HOLD_DIR/herdr-config.pristine" "$HERDR_CONFIG_FILE"
+    mkdir -p "$(dirname "$LEGACY_HERDR_CONFIG_FILE")"
+    cp "$HOLD_DIR/herdr-config.pristine" "$LEGACY_HERDR_CONFIG_FILE"
   elif [[ -f "$HOLD_DIR/herdr-config.absent" ]]; then
-    rm -f "$HERDR_CONFIG_FILE"
+    rm -f "$LEGACY_HERDR_CONFIG_FILE"
   fi
   if [[ -f "$HOLD_DIR/herdr-session.pristine" ]]; then
-    cp "$HOLD_DIR/herdr-session.pristine" "$HERDR_SESSION_FILE"
+    mkdir -p "$(dirname "$LEGACY_HERDR_SESSION_FILE")"
+    cp "$HOLD_DIR/herdr-session.pristine" "$LEGACY_HERDR_SESSION_FILE"
   elif [[ -f "$HOLD_DIR/herdr-session.absent" ]]; then
-    rm -f "$HERDR_SESSION_FILE"
+    rm -f "$LEGACY_HERDR_SESSION_FILE"
   fi
   strip_ssh_config_blocks
   rm -rf "$HOLD_DIR"
-  log "restored this account's herdr config, session and ssh config"
+  log "restored this account's ssh config"
 }
 
 # `down <dir>` must not release a hold that belongs to a DIFFERENT run.
@@ -423,7 +459,11 @@ free_port() {
 
 herdr_cli() {
   scrub_herdr_env
-  HERDR_SOCKET_PATH="$HERDR_SOCKET_PATH" "$HERDR_BINARY" "$@"
+  local dir="${HERDR_SOCKET_PATH%/herdr.sock}"
+  HERDR_SOCKET_PATH="$HERDR_SOCKET_PATH" \
+    XDG_CONFIG_HOME="$(fixture_config_home "$dir")" \
+    XDG_STATE_HOME="$(fixture_state_home "$dir")" \
+    "$HERDR_BINARY" "$@"
 }
 
 # Drop the herdr session variables a runner may itself live under. A lane that
@@ -495,17 +535,24 @@ provision_loopback_sshd() {
   # macOS's 104-byte sun_path under the lane's workdir layout (measured
   # 2026-09-13). With no --session flag the forced socket IS honored, so the
   # "remote machine" is still a genuinely separate server (own socket, own
-  # panes, own row-less config file) at a path with room to spare. The
-  # enrollment/forward key keeps its own entry so those verbs still reach the
-  # account's real config.
+  # panes, own row-less config file) at a path with room to spare.
+  #
+  # The enrollment/forward key forces the LOCAL fixture server's socket and
+  # the run's own config and state homes: the enrollment patch resolves its
+  # target as ${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml, so over
+  # this key it edits the fixture server's config — the one its
+  # `server reload-config` reloads — and never the account's.
   {
     printf 'environment="PATH=%s:/usr/bin:/bin:/usr/sbin:/sbin",' \
       "$(dirname "$HERDR_BINARY")"
+    printf 'environment="XDG_CONFIG_HOME=%s",' "$(fixture_config_home "$dir")"
+    printf 'environment="XDG_STATE_HOME=%s",' "$(fixture_state_home "$dir")"
     printf 'environment="HERDR_SOCKET_PATH=%s" ' "$HERDR_SOCKET_PATH"
     cat "$dir/id.pub"
     printf 'environment="PATH=%s:/usr/bin:/bin:/usr/sbin:/sbin",' \
       "$(dirname "$HERDR_BINARY")"
     printf 'environment="XDG_CONFIG_HOME=%s",' "$dir/remote-config-home"
+    printf 'environment="XDG_STATE_HOME=%s",' "$dir/remote-state-home"
     printf 'environment="HERDR_SOCKET_PATH=%s" ' "$dir/$FEDERATION_REMOTE_SOCKET_NAME"
     cat "$dir/id-fed.pub"
   } > "$dir/authorized_keys"
@@ -589,6 +636,20 @@ EOF
 #   <alias>-otherport  same hostname, a different port — must NOT match.
 # Written for BOTH modes so the test asserts the same thing whether the lane
 # runs hermetically or against a real second host.
+refuse_account_defined_aliases() {
+  local name resolved
+  for name in "$@"; do
+    # An alias nothing defines resolves to itself; ssh prints it lowercased.
+    resolved="$(ssh -G -- "$name" 2>/dev/null | awk '$1 == "hostname" { print $2; exit }' || true)"
+    if [[ -n "$resolved" && "$resolved" != "$(tr '[:upper:]' '[:lower:]' <<<"$name")" ]]; then
+      die "the account's ssh config already defines Host $name (HostName $resolved).
+  The fixture appends its own block for that alias, and ssh keeps the first
+  value it reads, so the lane would dial the account's host instead. Rename or
+  remove that Host entry, then re-run the lane."
+    fi
+  done
+}
+
 write_canonicalization_aliases() {
   local alias_used="$1" hostname port other_port
   hostname="$(ssh -G -- "$alias_used" 2>/dev/null | awk '$1 == "hostname" { print $2; exit }')"
@@ -636,13 +697,14 @@ start_surface() {
   #
   # A 0.9 client keeps its machine catalog under $XDG_STATE_HOME/herdr/client
   # and would otherwise read and write the ACCOUNT's real catalog. Point it at
-  # the run's scratch dir — but only when `up` created one (i.e. this herdr
-  # knows `machine`): on an older herdr the dir is absent and the surface
-  # behaves exactly as before.
+  # the run's scratch client dir when `up` created one (i.e. this herdr knows
+  # `machine`); on an older herdr the run's own state home stands in.
   #
   # Scrubbed (see scrub_herdr_env): a runner living inside a herdr pane would
   # otherwise hand its own pane id to every client it starts.
-  local -a surface_env=(TERM=xterm-256color "HERDR_SOCKET_PATH=$HERDR_SOCKET_PATH")
+  local -a surface_env=(TERM=xterm-256color "HERDR_SOCKET_PATH=$HERDR_SOCKET_PATH"
+    "XDG_CONFIG_HOME=$(fixture_config_home "$dir")"
+    "XDG_STATE_HOME=$(fixture_state_home "$dir")")
   if [[ -d "$dir/client-state-home" ]]; then
     surface_env+=("XDG_STATE_HOME=$dir/client-state-home")
   fi
@@ -722,34 +784,26 @@ command_up() {
   local inherited_socket="${HERDR_SOCKET_PATH:-}" account_status
   HERDR_BINARY="$(resolve_herdr)"
   log "herdr binary: $HERDR_BINARY ($("$HERDR_BINARY" --version 2>&1 | head -1))"
+  # Diagnostic only. The account's own herdr server (if any) is never
+  # addressed: everything below runs on the workdir's socket and homes.
   account_status="$("$HERDR_BINARY" status server 2>&1 | tr '\n' ' ' || true)"
-
-  # The fixture owns this account's herdr config, its session state and a
-  # block in its ssh config for the duration of the lane. If the account
-  # already has a herdr running, those files belong to a human right now —
-  # refuse rather than trample them.
-  if grep -q '^status: running' <<<"$account_status"; then
-    die "a herdr server is already running for $(id -un).
-  This lane takes over the account's herdr config and session state for the
-  duration of the run, so it refuses to start beside a live one. Quit herdr
-  (or run the lane as a different account) and try again."
-  fi
 
   # Before anything is created or modified: hand back whatever an interrupted
   # run left held, or refuse if a live run owns it.
   reclaim_or_refuse_stale_hold
 
+  local inherited_config_home="${XDG_CONFIG_HOME:-}"
   mkdir -p "$dir"
   chmod 700 "$dir"
   UP_IN_PROGRESS_DIR="$dir"
   HERDR_SOCKET_PATH="$dir/herdr.sock"
   export HERDR_SOCKET_PATH
+  export_fixture_homes "$dir"
+  mkdir -p "$(dirname "$(fixture_config_file "$dir")")" "$(fixture_state_home "$dir")"
   # Recorded first, so teardown can still reach the binary if `up` dies partway.
   printf '%s\n' "$HERDR_BINARY" > "$dir/herdr.bin"
 
-  record_start_diagnostics "$dir" "$inherited_socket" "$account_status"
-
-  hold_account_files "$dir"
+  record_start_diagnostics "$dir" "$inherited_socket" "$account_status" "$inherited_config_home"
 
   # The forward under test builds its argv from the ALIAS alone and never
   # passes -F, so the fixture's connection details have to live where ssh
@@ -760,6 +814,14 @@ command_up() {
     && grep -qF "$SSH_CONFIG_BEGIN" "$SSH_CONFIG_FILE"; then
     die "a fixture block is still in $SSH_CONFIG_FILE. Run: $(recovery_hint)"
   fi
+  # The blocks are appended, and ssh takes the FIRST value it finds, so an
+  # alias the account already defines would keep the account's settings and
+  # the lane would dial the wrong host. Refuse instead of shadowing it.
+  local -a fixture_aliases=("${destination:-$FIXTURE_ALIAS}-altuser" "${destination:-$FIXTURE_ALIAS}-otherport")
+  [[ -n "$destination" ]] || fixture_aliases+=("$FIXTURE_ALIAS" "$FIXTURE_ALIAS$FEDERATION_ALIAS_SUFFIX")
+  refuse_account_defined_aliases "${fixture_aliases[@]}"
+
+  hold_account_files "$dir"
 
   local alias_used="$destination" provisioned_ssh=0
   if [[ -z "$destination" ]]; then
@@ -785,15 +847,13 @@ command_up() {
     log "herdr has no machine subcommand; federation tests will refuse (need 0.9.0+)"
   fi
 
-  # herdr persists its workspace/pane layout and restores it on the next
-  # start. A leftover session makes pane ids (and how many panes exist) depend
-  # on what ran before, which is exactly what a lane must not do.
-  rm -f "$HERDR_SESSION_FILE"
-  # `onboarding = false` matters: herdr's first-run setup screen has no
-  # workspace and therefore no pane, so `pane.current` answers pane_not_found
-  # forever and the fixture would never become ready. The update checks are
-  # off so the lane makes no network requests.
-  cat > "$HERDR_CONFIG_FILE" <<'EOF'
+  # The config home is new for this run, so there is no session.json for
+  # herdr to restore a previous layout from: pane ids never depend on what ran
+  # before. `onboarding = false` matters: herdr's first-run setup screen has
+  # no workspace and therefore no pane, so `pane.current` answers
+  # pane_not_found forever and the fixture would never become ready. The
+  # update checks are off so the lane makes no network requests.
+  cat > "$(fixture_config_file "$dir")" <<'EOF'
 onboarding = false
 
 [update]
@@ -854,9 +914,10 @@ EOF
   log "pane $pane_id marked agent-bearing (session $agent_session_id)"
   record_pane_snapshot "$dir" "primary-ready" "$pane_id"
 
-  printf '{"agentSessionID":"%s","alias":"%s","altUserAlias":"%s-altuser","otherPortAlias":"%s-otherport","herdrBinary":"%s","socketPath":"%s","paneID":"%s","primarySurfaceLog":"%s","provisionedSSH":%s,"workdir":"%s"}\n' \
+  printf '{"agentSessionID":"%s","alias":"%s","altUserAlias":"%s-altuser","otherPortAlias":"%s-otherport","herdrBinary":"%s","socketPath":"%s","configHome":"%s","stateHome":"%s","paneID":"%s","primarySurfaceLog":"%s","provisionedSSH":%s,"workdir":"%s"}\n' \
     "$agent_session_id" "$alias_used" "$alias_used" "$alias_used" \
-    "$HERDR_BINARY" "$HERDR_SOCKET_PATH" "$pane_id" \
+    "$HERDR_BINARY" "$HERDR_SOCKET_PATH" \
+    "$(fixture_config_home "$dir")" "$(fixture_state_home "$dir")" "$pane_id" \
     "$dir/surface-primary.log" \
     "$([[ $provisioned_ssh == 1 ]] && echo true || echo false)" \
     "$dir" \
@@ -874,6 +935,7 @@ load_context() {
   [[ -x "$HERDR_BINARY" ]] || die "fixture workdir has no usable herdr binary record: $dir"
   HERDR_SOCKET_PATH="$dir/herdr.sock"
   export HERDR_SOCKET_PATH
+  export_fixture_homes "$dir"
 }
 
 command_surface() {
@@ -1051,7 +1113,7 @@ $add_out"
     fi
   fi
   if (( hermetic )); then
-    create_out="$(HERDR_SOCKET_PATH="$remote_socket" XDG_CONFIG_HOME="$remote_home" \
+    create_out="$(HERDR_SOCKET_PATH="$remote_socket" XDG_CONFIG_HOME="$remote_home" XDG_STATE_HOME="$dir/remote-state-home" \
       "$HERDR_BINARY" workspace create </dev/null 2>&1)" \
       || die "remote workspace create failed:
 $create_out"
@@ -1085,7 +1147,7 @@ $create_out"
     fi
   fi
   if (( hermetic )); then
-    HERDR_SOCKET_PATH="$remote_socket" XDG_CONFIG_HOME="$remote_home" "$HERDR_BINARY" \
+    HERDR_SOCKET_PATH="$remote_socket" XDG_CONFIG_HOME="$remote_home" XDG_STATE_HOME="$dir/remote-state-home" "$HERDR_BINARY" \
       pane report-agent "$remote_pane_id" \
       --source "$FIXTURE_AGENT_SOURCE" --agent claude --state working \
       --agent-session-id "$FEDERATION_AGENT_SESSION_ID" </dev/null >/dev/null 2>&1 \
@@ -1186,7 +1248,7 @@ stop_hermetic_federation_server() {
   fi
   if [[ -d "$dir" ]]; then
     HERDR_SOCKET_PATH="$socket" \
-      XDG_CONFIG_HOME="$dir/remote-config-home" "$binary" \
+      XDG_CONFIG_HOME="$dir/remote-config-home" XDG_STATE_HOME="$dir/remote-state-home" "$binary" \
       server stop </dev/null >/dev/null 2>&1 || true
   else
     # The workdir (and its remote-config-home) is gone; the socket address
@@ -1232,6 +1294,7 @@ command_down() {
     stop_workdir_processes "$dir"
     rm -rf "$dir"
     log "torn down $dir"
+    log "herdr.account.after $(account_herdr_fingerprint)"
   else
     log "nothing to tear down at $dir"
   fi
