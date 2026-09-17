@@ -2756,8 +2756,9 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
 
     func testPluginSetupDecodesTheListingAndReportsAnAlreadyCurrentPlugin() throws {
         let calls = PluginSetupCalls()
+        let current = ClaudeRemoteEnrollmentService.remotePluginVersion
         let service = ClaudeRemoteEnrollmentService(
-            runner: pluginSetupRunner(before: "1.9.0", after: "1.9.0", calls: calls)
+            runner: pluginSetupRunner(before: current, after: current, calls: calls)
         )
 
         XCTAssertEqual(
@@ -2781,7 +2782,11 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     func testPluginSetupUpdatesAStalePluginAndReadsTheNewVersionBack() throws {
         let calls = PluginSetupCalls()
         let service = ClaudeRemoteEnrollmentService(
-            runner: pluginSetupRunner(before: "1.4.0", after: "1.9.0", calls: calls)
+            runner: pluginSetupRunner(
+                before: "1.4.0",
+                after: ClaudeRemoteEnrollmentService.remotePluginVersion,
+                calls: calls
+            )
         )
         XCTAssertEqual(
             try service.setupRemotePlugin(sshHostAlias: "builder", token: nil, remoteForwardPort: 28_511),
@@ -2795,7 +2800,11 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     func testPluginSetupInstallsAnAbsentPluginWhenItHasAToken() throws {
         let calls = PluginSetupCalls()
         let service = ClaudeRemoteEnrollmentService(
-            runner: pluginSetupRunner(before: nil, after: "1.9.0", calls: calls)
+            runner: pluginSetupRunner(
+                before: nil,
+                after: ClaudeRemoteEnrollmentService.remotePluginVersion,
+                calls: calls
+            )
         )
         XCTAssertEqual(
             try service.setupRemotePlugin(sshHostAlias: "builder", token: "t0k", remoteForwardPort: 28_511),
@@ -2819,7 +2828,11 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         ) { error in
             guard case ClaudeRemoteEnrollmentService.ServiceError.commandFailed(_, _, 43, let message) = error
             else { return XCTFail("expected the read-back diagnosis, got \(error)") }
-            XCTAssertEqual(message, "The plugin reports version 1.6.0 after setup, not 1.9.0.")
+            XCTAssertEqual(
+                message,
+                "The plugin reports version 1.6.0 after setup, not "
+                    + "\(ClaudeRemoteEnrollmentService.remotePluginVersion)."
+            )
         }
     }
 

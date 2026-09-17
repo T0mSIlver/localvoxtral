@@ -1,3 +1,4 @@
+import ClaudeContextWire
 import Foundation
 import Observation
 
@@ -243,6 +244,44 @@ public final class ClaudeIntegrationSettingsModel {
         public var canHoldForward: Bool = false
         /// Last setup outcome for this host during the current app session.
         public var setupStatusText: String?
+        /// Whether the highest plugin version this host's authenticated hooks
+        /// have reported this app session is OLDER than the one this build
+        /// installs (or no version header at all, which means ≤ 1.9.0).
+        /// False when nothing has been heard: an update hint with no evidence
+        /// is noise, and a host that has never dialed has no plugin fact to
+        /// state. The record is monotone, so an old session's headerless hook
+        /// cannot re-flag a host whose update a read-back already proved.
+        public var pluginNeedsUpdate: Bool = false
+    }
+
+    /// The one fixed sentence the row's status position shows while
+    /// `pluginNeedsUpdate`. Deliberately no version numbers (owner rule: the
+    /// row is one short line) — the fact, not the arithmetic.
+    public static let pluginUpdateAvailableText = "Plugin update available"
+
+    /// Whether a host's REPORTED plugin version is older than the one this
+    /// build installs. The four cases, exactly:
+    ///
+    /// * never heard from the host (`reported == nil`) → false;
+    /// * authenticated hook without a valid version header (`.headerAbsent`)
+    ///   → true — that is the ≤ 1.9.0 generation the header was added for;
+    /// * reported older than expected → true;
+    /// * reported equal or NEWER → false. A newer report means this app is
+    ///   behind the host, which is not the host's problem to fix.
+    ///
+    /// The numeric comparison is `ClaudeRemotePluginVersionCodec`'s — the
+    /// same single implementation the registry's monotone record uses, so
+    /// "what the registry kept" and "what the row says" can never disagree.
+    static func pluginNeedsUpdate(
+        reported: ClaudeRemotePluginVersionReport?,
+        expected: String
+    ) -> Bool {
+        switch reported {
+        case nil: return false
+        case .headerAbsent: return true
+        case .version(let version):
+            return ClaudeRemotePluginVersionCodec.isVersion(version, olderThan: expected)
+        }
     }
 
     /// "Last context: 2 min ago", from a clock the caller supplies.
@@ -904,7 +943,14 @@ public final class ClaudeIntegrationSettingsModel {
                 canHoldForward: forwards != nil
                     && !host.isRevoked
                     && host.sshHostAlias.map(ClaudeRemoteEnrollmentService.isValidHostAlias) == true,
-                setupStatusText: setupSummaries[host.id]
+                setupStatusText: setupSummaries[host.id],
+                // A revoked host cannot authenticate, so its recorded report
+                // is stale by construction — and its status position has to
+                // keep saying "Revoked", the fact that matters for it.
+                pluginNeedsUpdate: !host.isRevoked && Self.pluginNeedsUpdate(
+                    reported: host.reportedPluginVersion,
+                    expected: ClaudeRemoteEnrollmentService.remotePluginVersion
+                )
             )
         }
         herdrMachines = Self.herdrMachineSection(
@@ -1947,6 +1993,15 @@ public final class ClaudeIntegrationSettingsModel {
             )
             return
         }
+        // A successful `setupRemotePlugin` return already PROVED the installed
+        // version by decoded read-back, so record it here: the row's update
+        // indicator must clear on this run, not at the host's next hook (the
+        // host may not run another hook for hours, and the user is looking at
+        // the row right now).
+        registry?.notePluginVersion(
+            hostID: hostID,
+            .version(ClaudeRemoteEnrollmentService.remotePluginVersion)
+        )
         switch pluginAttempt.steps.first?.message {
         case "installed": markSetup(.remotePlugin, .done("The remote plugin was installed and verified."))
         case "updated": markSetup(.remotePlugin, .done("The remote plugin was updated and verified."))

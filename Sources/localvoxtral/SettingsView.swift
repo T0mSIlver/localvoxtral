@@ -1780,18 +1780,33 @@ private struct ClaudeRemoteHostsRows: View {
                             // "Last context: 2 min ago" — and refreshed with the
                             // rest of the section. A tunnel that quietly stopped
                             // delivering context is otherwise invisible here.
-                            Text(host.statusText)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .layoutPriority(1)
+                            // An outdated plugin takes the position over: the
+                            // fixed "Plugin update available" sentence is the
+                            // fact the user can act on from this row.
+                            Text(
+                                host.pluginNeedsUpdate
+                                    ? ClaudeIntegrationSettingsModel.pluginUpdateAvailableText
+                                    : host.statusText
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .layoutPriority(1)
+                            .accessibilityIdentifier("claude.remote.host.\(host.id).pluginUpdate")
                         }
 
                         Spacer(minLength: 8)
 
                         HStack(spacing: 8) {
-                            Button("Update…") { model.requestPluginUpdate(hostID: host.id) }
+                            // `.fixedSize()` so the longer label never truncates
+                            // — the row's host label (middle-truncating,
+                            // layoutPriority 0) absorbs the squeeze instead.
+                            // Prominent only while the plugin is outdated: the
+                            // highlight IS the indicator.
+                            Button("Update Plugin…") { model.requestPluginUpdate(hostID: host.id) }
                                 .controlSize(.small)
+                                .fixedSize()
+                                .pluginUpdateProminence(needsUpdate: host.pluginNeedsUpdate)
                                 .disabled(model.isEnrollmentBusy)
                             Button("Rotate token") { Task { await model.rotate(hostID: host.id) } }
                                 .controlSize(.small)
@@ -2742,5 +2757,20 @@ private struct OpencodePluginSetupSheet: View {
         }
         .padding(16)
         .frame(width: 460)
+    }
+}
+
+private extension View {
+    /// `.borderedProminent` only while the host's plugin is outdated — the
+    /// highlight is the update indicator, so it must never decorate a current
+    /// host. Written as an `if`, not a ternary: `buttonStyle(_:)` is generic
+    /// over the style type, so the two branches cannot share one expression.
+    @ViewBuilder
+    func pluginUpdateProminence(needsUpdate: Bool) -> some View {
+        if needsUpdate {
+            buttonStyle(.borderedProminent)
+        } else {
+            self
+        }
     }
 }

@@ -490,6 +490,21 @@ public final class ClaudeRemoteContextListener: Sendable {
         debugPostAuthenticationHook.withLock { $0 }?()
         #endif
 
+        // The hook's own plugin version: parsed here, but RECORDED only where
+        // the request is finally accepted — the same two points
+        // `noteActivity` is called below. First-auth alone is not acceptance:
+        // the revocation-safe re-authentication happens later, and a request
+        // whose host was revoked (or whose token rotated) in between must not
+        // mutate that host's report — rotation would carry the field into the
+        // reinstated host. The codec validates a strict numeric shape and
+        // collapses everything else onto `.headerAbsent`, the pre-1.10.0
+        // plugin generation that sends no header at all; the registry keeps
+        // the highest report this app session, so header-less hooks from
+        // sessions still running a pre-update shim cannot un-do a verified
+        // update. Never logged, never in a response body; it only selects a
+        // fixed UI string.
+        let pluginVersionReport = ClaudeRemotePluginVersionCodec.report(in: request.headers)
+
         guard ClaudeRemoteHTTPCodec.eventName(inPath: request.path) != nil else {
             respond(fd: fd, status: 404)
             return
@@ -515,7 +530,10 @@ public final class ClaudeRemoteContextListener: Sendable {
             // Unparseable payloads never touch the session registry, so
             // revocation has nothing to protect. The body stays identical to
             // an ingested record; only this fixed status header differs.
+            // This is an ACCEPTED outcome — the host is noted alive here, and
+            // its plugin report lands with it.
             hosts.noteActivity(hostID: host.id)
+            hosts.notePluginVersion(hostID: host.id, pluginVersionReport)
             respond(
                 fd: fd,
                 status: 200,
@@ -531,13 +549,22 @@ public final class ClaudeRemoteContextListener: Sendable {
                 commitIngest(prepared)
             }
         ) else {
+            // Rejected as revoked-before-ingest: nothing is recorded — not
+            // activity, and not the plugin report (review finding: the report
+            // used to be written on first auth alone, letting an in-flight
+            // request mutate a host the re-authentication had just refused,
+            // with rotation preserving the field into the reinstated host).
             Log.claudeContext.error(
                 "Rejected remote connection: host was revoked before ingest"
             )
             respond(fd: fd, status: 401)
             return
         }
+        // AFTER the closure has returned and its lock is released: both notes
+        // take persistLock → state, so neither may run inside the
+        // `withAuthenticatedHost` body above.
         hosts.noteActivity(hostID: host.id)
+        hosts.notePluginVersion(hostID: host.id, pluginVersionReport)
         if let socketPath = prepared.environment?.herdrSocketPath {
             onRemoteHerdrActivity(host.id, socketPath)
         }

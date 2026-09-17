@@ -328,6 +328,50 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         )
     }
 
+    // MARK: Plugin version advertisement
+    //
+    // One version stated three ways — the manifest Claude Code installs and
+    // updates against, the header constant the shim sends on every post, and
+    // the Swift constant the app compares reports to. Field finding
+    // 2026-09-17: a host ran 1.8.0 for weeks while the app expected 1.9.0 and
+    // nothing anywhere said so. Any two of the three drifting apart is either
+    // a user told to update an already-current plugin or — the failure that
+    // actually happened — an outdated host read as current.
+
+    func testTheManifestTheShimAndTheAppAgreeOnOnePluginVersion() throws {
+        let expected = ClaudeRemoteEnrollmentService.remotePluginVersion
+        XCTAssertEqual(
+            try manifest()["version"] as? String, expected,
+            "plugin.json must ship the version the app's update flow verifies against"
+        )
+        XCTAssertTrue(
+            try shimSource().contains("X-Lvx-Plugin-Version: \(expected)\n"),
+            "the shim must advertise that same version as a header CONSTANT"
+        )
+    }
+
+    func testTheShimSendsItsPluginVersionHeaderOnEveryPost() throws {
+        // Behavioral, not source-level: the header must be in the actual
+        // header file curl was handed — the wire bytes the listener parses —
+        // and must come back out of the same codec the listener uses.
+        let captured = try capturedRequestHeaders(environment: [:])
+        XCTAssertTrue(
+            captured.contains(
+                "\(ClaudeRemotePluginVersionCodec.headerName): "
+                    + ClaudeRemoteEnrollmentService.remotePluginVersion
+            ),
+            "the version header rides in the same private file as the token"
+        )
+        let request = try parseCapturedHeaders(captured)
+        XCTAssertEqual(
+            ClaudeRemotePluginVersionCodec.report(in: request.headers),
+            .version(ClaudeRemoteEnrollmentService.remotePluginVersion),
+            "what the shim sends must be what the listener records"
+        )
+        // The token line is still the first thing in the file and untouched.
+        XCTAssertEqual(request.bearerToken, "unit-test-token")
+    }
+
     func testEveryHookHasAShortTimeout() throws {
         for (event, entry) in try allHookEntries() {
             let timeout = try XCTUnwrap(entry["timeout"] as? Int, "\(event) needs a timeout")

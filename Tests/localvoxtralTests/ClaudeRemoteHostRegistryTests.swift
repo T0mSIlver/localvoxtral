@@ -269,11 +269,14 @@ final class ClaudeRemoteHostRegistryTests: XCTestCase {
         // `persistentForwardEnabled` joined it for the same reason: it is a
         // per-host preference (does the app hold this host's ssh forward), not
         // credential material, and the pane has to be able to render it.
+        // `reportedPluginVersion` too: a strict-shape version label the host's
+        // own authenticated hooks sent (never a token), and the pane needs it
+        // to say the plugin is outdated.
         XCTAssertEqual(
             Set(properties),
             [
                 "id", "label", "sshHostAlias", "createdAt", "lastSeenAt", "revokedAt",
-                "persistentForwardEnabled",
+                "persistentForwardEnabled", "reportedPluginVersion",
             ]
         )
         let described = String(describing: enrollment.host)
@@ -430,6 +433,128 @@ final class ClaudeRemoteHostRegistryTests: XCTestCase {
         advance(10)
         registry.noteActivity(hostID: enrollment.host.id)
         XCTAssertEqual(io.written(at: fileURL), before)
+    }
+
+    // MARK: Plugin version reports
+
+    func testNotePluginVersionRecordsWithoutClobberingLastSeenAndViceVersa() throws {
+        // The two notes describe the same request but different facts, and
+        // each must survive the other: the lock order in `notePluginVersion`
+        // is the one `noteActivity` uses, so neither can lose the other's
+        // update to a transaction's candidate installation.
+        let registry = try makeRegistry()
+        let enrollment = try registry.enroll(label: "buildhost")
+        XCTAssertNil(registry.host(id: enrollment.host.id)?.reportedPluginVersion)
+
+        advance(300)
+        registry.notePluginVersion(hostID: enrollment.host.id, .version("1.10.0"))
+        XCTAssertEqual(registry.host(id: enrollment.host.id)?.reportedPluginVersion, .version("1.10.0"))
+        XCTAssertNil(
+            registry.host(id: enrollment.host.id)?.lastSeenAt,
+            "a version report is not activity"
+        )
+
+        registry.noteActivity(hostID: enrollment.host.id)
+        XCTAssertEqual(registry.host(id: enrollment.host.id)?.lastSeenAt, clock.now())
+        XCTAssertEqual(
+            registry.host(id: enrollment.host.id)?.reportedPluginVersion, .version("1.10.0"),
+            "noting activity must not forget the version"
+        )
+
+        // headerAbsent is a recorded fact about a hook that DID authenticate —
+        // distinct from nil, "no authenticated hook this session" — but it can
+        // never LOWER what a version-carrying hook already established
+        // (see testNotePluginVersionNeverLowersTheRecordedReport).
+        registry.notePluginVersion(hostID: enrollment.host.id, .headerAbsent)
+        XCTAssertEqual(
+            registry.host(id: enrollment.host.id)?.reportedPluginVersion, .version("1.10.0"),
+            "a headerless hook from an old session must not un-record a version"
+        )
+        XCTAssertEqual(registry.host(id: enrollment.host.id)?.lastSeenAt, clock.now())
+    }
+
+    /// The defect this pins (follow-up to the 2026-09-17 indicator): Claude
+    /// Code applies a plugin update only on session restart, so a host's
+    /// already-running sessions keep executing the OLD plugin's post.sh after
+    /// "Update Plugin…" succeeds — and their next hook sends no version header.
+    /// A last-writer-wins record let that headerless hook flip a verified
+    /// host back to "Plugin update available", with an update button whose
+    /// run was a guaranteed no-op. The record must therefore be monotone: the
+    /// highest report this app session wins, and only a strictly higher one
+    /// replaces it.
+    func testNotePluginVersionNeverLowersTheRecordedReport() throws {
+        let registry = try makeRegistry()
+        let enrollment = try registry.enroll(label: "buildhost")
+        let hostID = enrollment.host.id
+
+        // From nil, headerAbsent is the floor and is recorded.
+        registry.notePluginVersion(hostID: hostID, .headerAbsent)
+        XCTAssertEqual(registry.host(id: hostID)?.reportedPluginVersion, .headerAbsent)
+
+        // A real version is strictly higher and replaces it.
+        registry.notePluginVersion(hostID: hostID, .version("1.10.0"))
+        XCTAssertEqual(registry.host(id: hostID)?.reportedPluginVersion, .version("1.10.0"))
+
+        // The old sessions' headerless hooks arrive AFTER the update: ignored.
+        registry.notePluginVersion(hostID: hostID, .headerAbsent)
+        XCTAssertEqual(
+            registry.host(id: hostID)?.reportedPluginVersion, .version("1.10.0"),
+            "headerAbsent after a version must never lower the record"
+        )
+
+        // An older version's hooks are equally ignored (a stale install, or a
+        // session on a second plugin cache dir one step behind).
+        registry.notePluginVersion(hostID: hostID, .version("1.9.0"))
+        XCTAssertEqual(
+            registry.host(id: hostID)?.reportedPluginVersion, .version("1.10.0"),
+            "an older report must never lower the record"
+        )
+
+        // An equal report is not strictly higher: no change (and no-op writes
+        // cost nothing, but the assertion pins the retention itself).
+        registry.notePluginVersion(hostID: hostID, .version("1.10.0"))
+        XCTAssertEqual(registry.host(id: hostID)?.reportedPluginVersion, .version("1.10.0"))
+
+        // A strictly newer report is the one thing that still replaces.
+        registry.notePluginVersion(hostID: hostID, .version("1.11.0"))
+        XCTAssertEqual(
+            registry.host(id: hostID)?.reportedPluginVersion, .version("1.11.0"),
+            "a strictly higher report replaces the record"
+        )
+
+        // And the floor holds against everything above it afterwards.
+        registry.notePluginVersion(hostID: hostID, .headerAbsent)
+        registry.notePluginVersion(hostID: hostID, .version("1.10.0"))
+        XCTAssertEqual(registry.host(id: hostID)?.reportedPluginVersion, .version("1.11.0"))
+    }
+
+    func testNotePluginVersionIsTransientAndWritesNothing() throws {
+        // Same best-effort discipline as noteActivity, one step further: the
+        // field is not persisted AT ALL, so a relaunch reads "never heard"
+        // until the host's next hook — the reading the pane already makes of
+        // lastSeenAt.
+        let registry = try makeRegistry()
+        let enrollment = try registry.enroll(label: "buildhost")
+        let before = io.written(at: fileURL)
+        registry.notePluginVersion(hostID: enrollment.host.id, .version("1.10.0"))
+        XCTAssertEqual(io.written(at: fileURL), before)
+        let persisted = String(decoding: try XCTUnwrap(before), as: UTF8.self)
+        XCTAssertFalse(
+            persisted.contains("pluginVersion"),
+            "the transient report must not leak into the store file"
+        )
+
+        let relaunched = try makeRegistry()
+        XCTAssertNil(
+            relaunched.host(id: enrollment.host.id)?.reportedPluginVersion,
+            "the persisted file never carried the report"
+        )
+    }
+
+    func testNotePluginVersionOnAnUnknownHostIsANoOp() throws {
+        let registry = try makeRegistry()
+        registry.notePluginVersion(hostID: "hnope", .version("1.10.0"))
+        XCTAssertNil(registry.host(id: "hnope"))
     }
 
     // MARK: Persistent forward opt-in

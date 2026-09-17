@@ -377,6 +377,149 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         XCTAssertTrue(sessions.liveLocalHerdrSocketPaths().isEmpty)
     }
 
+    // MARK: - Plugin version advertisement (field finding 2026-09-17)
+
+    /// The listener records the hook's self-reported plugin version on the
+    /// host that authenticated — that is the whole mechanism behind the
+    /// "Plugin update available" row, and it must work before anything breaks.
+    func testAnAuthenticatedHookRecordsItsReportedPluginVersion() throws {
+        try startListener()
+        let response = try XCTUnwrap(
+            try send(hookRequest(token: token, extraHeaders: [
+                "X-Lvx-Plugin-Version: 1.10.0",
+            ]))
+        )
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(
+            hosts.host(id: hostID)?.reportedPluginVersion, .version("1.10.0")
+        )
+    }
+
+    /// Absent and malformed are the SAME recorded fact — an authenticated hook
+    /// whose plugin cannot state its version, i.e. the pre-1.10.0 generation —
+    /// and both are distinct from never having heard from the host at all.
+    func testAnAuthenticatedHookWithoutAValidVersionHeaderIsRecordedAsAbsent() throws {
+        try startListener()
+        _ = try send(hookRequest(token: token))
+        XCTAssertEqual(hosts.host(id: hostID)?.reportedPluginVersion, .headerAbsent)
+
+        for malformed in ["1.10", "v1.10.0", "1.10.0.0", "12345.0.0", "1.1o.0"] {
+            _ = try send(hookRequest(token: token, extraHeaders: [
+                "X-Lvx-Plugin-Version: \(malformed)",
+            ]))
+            XCTAssertEqual(
+                hosts.host(id: hostID)?.reportedPluginVersion, .headerAbsent,
+                "'\(malformed)' must read as absent, never as a fact"
+            )
+        }
+    }
+
+    /// The record is strictly post-authentication: a stranger on the forwarded
+    /// port can send any version string it likes and may not touch the host's
+    /// state — same rule as ingest, one decision earlier.
+    func testAnUnauthenticatedRequestRecordsNoPluginVersion() throws {
+        try startListener()
+        let response = try XCTUnwrap(
+            try send(hookRequest(
+                token: "stranger-token-000000",
+                extraHeaders: ["X-Lvx-Plugin-Version: 9.9.9"]
+            ))
+        )
+        XCTAssertEqual(response.status, 401)
+        XCTAssertNil(
+            hosts.host(id: hostID)?.reportedPluginVersion,
+            "an unauthenticated peer's header proves nothing and records nothing"
+        )
+    }
+
+    /// Version knowledge is per HOST, namespaced by the token that
+    /// authenticated: two enrolled hosts each carry their own report.
+    func testVersionReportsAreRecordedPerHost() throws {
+        let second = try hosts.enroll(label: "otherhost")
+        try startListener()
+
+        _ = try send(hookRequest(token: token, extraHeaders: [
+            "X-Lvx-Plugin-Version: 1.9.0",
+        ]))
+        _ = try send(hookRequest(token: second.token))
+
+        XCTAssertEqual(hosts.host(id: hostID)?.reportedPluginVersion, .version("1.9.0"))
+        XCTAssertEqual(hosts.host(id: second.host.id)?.reportedPluginVersion, .headerAbsent)
+    }
+
+    /// Review finding on the report's placement: it used to be recorded right
+    /// after the FIRST authentication — before the revocation-safe
+    /// re-authentication — so a request whose host was revoked (or whose token
+    /// was rotated) between the two still mutated that host's report, and
+    /// rotation preserves the transient field into the reinstated host. The
+    /// report may only be written where the request is finally ACCEPTED,
+    /// exactly where `noteActivity` is; the revoked-before-ingest 401 records
+    /// nothing. Same seam as the session-seeding test above.
+    func testRevocationBetweenAuthenticationAndCommitRecordsNoPluginVersion() throws {
+        listener = ClaudeRemoteContextListener(
+            registry: sessions,
+            hosts: hosts,
+            limits: ClaudeRemoteListenerLimits(port: port)
+        )
+        let hostStore = hosts!
+        let revokedHostID = hostID!
+        listener.debugConfigurePostAuthenticationHook {
+            try! hostStore.revoke(hostID: revokedHostID)
+        }
+        try listener.start()
+
+        let response = try XCTUnwrap(
+            try send(hookRequest(token: token, extraHeaders: [
+                "X-Lvx-Plugin-Version: 1.10.0",
+            ]))
+        )
+        XCTAssertEqual(response.status, 401, "the re-authentication must still refuse the host")
+        XCTAssertNil(
+            hosts.host(id: hostID)?.reportedPluginVersion,
+            "a request rejected as revoked-before-ingest must not record a report"
+        )
+
+        // Rotation reinstates the host and carries the transient field with
+        // it: had the in-flight request seeded a report, this is where it
+        // would resurface.
+        _ = try hosts.rotateToken(hostID: hostID)
+        XCTAssertNil(
+            hosts.host(id: hostID)?.reportedPluginVersion,
+            "nothing may have been recorded for the reinstated host to inherit"
+        )
+    }
+
+    /// The 404 path is not an accepted outcome — `noteActivity` is never
+    /// called there, so neither is the report.
+    func testAnUnknownEventPathRecordsNoPluginVersion() throws {
+        try startListener()
+        let response = try XCTUnwrap(
+            try send(hookRequest(
+                event: "not/an-event",
+                token: token,
+                extraHeaders: ["X-Lvx-Plugin-Version: 1.10.0"]
+            ))
+        )
+        XCTAssertEqual(response.status, 404)
+        XCTAssertNil(hosts.host(id: hostID)?.reportedPluginVersion)
+    }
+
+    /// The unparseable-payload 200 is one of the two ACCEPTED outcomes — the
+    /// host is noted alive there exactly like a healthy ingest, so the report
+    /// must land there too. (Placement guard for the call-site move; it
+    /// passed before the move as well.)
+    func testAnUnparseablePayloadStillRecordsThePluginVersionReport() throws {
+        try startListener()
+        let body = Data("not json at all".utf8)
+        var text = "POST /v1/hook/SessionStart HTTP/1.1\r\nAuthorization: Bearer \(token!)\r\n"
+        text += "X-Lvx-Plugin-Version: 1.10.0\r\n"
+        text += "Content-Length: \(body.count)\r\n\r\n"
+        let response = try XCTUnwrap(try send(Data(text.utf8) + body))
+
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(hosts.host(id: hostID)?.reportedPluginVersion, .version("1.10.0"))
+    }
+
     func testAProcessBlockInARemoteBodyIsIgnoredEvenWhenTheHeadersAreHonest() throws {
         // The other half of the same invariant, from the body side: a remote
         // payload can WRITE a `process` object, and the parser's allowlist has

@@ -1221,6 +1221,20 @@ there is not.
   that could put a byte on a terminal, so there is no variable part left for a
   squatter to aim at. The fixed `X-Lvx-Session: joined|unknown` response header
   only selects a private per-session status stamp and never reaches stdout.
+  The shim's request-side `X-Lvx-Plugin-Version` header (its own version, a
+  constant in `post.sh`) is the same shape of rule: validated to a strict
+  numeric shape on arrival (`ClaudeRemotePluginVersionCodec`), recorded on the
+  host only where the request is finally ACCEPTED — the same points
+  `lastSeenAt` is noted, never on first authentication alone, so a request
+  the revocation re-check refuses cannot mutate a report that rotation would
+  then preserve — never logged, and used only to
+  select the fixed "Plugin update available" string in Settings. The
+  recorded value is the HIGHEST any of that host's hooks reported this app
+  session and is never lowered, because Claude Code applies a plugin update
+  only on session restart — after "Update Plugin…" the host's already-running
+  sessions keep sending header-less hooks from the old shim, and a
+  last-writer-wins record would flip a verified host back to "update
+  available" over an install the read-back had just proven current.
   Note also what is NOT defensible: a
   malicious process running as the user on the REMOTE host can still read
   `~/.claude/` and therefore the plugin's token no matter what we do. Say so
