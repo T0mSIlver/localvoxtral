@@ -46,6 +46,31 @@ final class SpeechdLaunchOptionsTests: XCTestCase {
         }
     }
 
+    func testUtteranceLimitDefaultsAndParses() throws {
+        XCTAssertEqual(
+            try SpeechdOptionParser.parse(["--model", "example/model"]).utteranceLimit,
+            UtteranceLimit(seconds: UtteranceLimit.defaultSeconds)
+        )
+        XCTAssertEqual(
+            try SpeechdOptionParser.parse([
+                "--model", "example/model", "--max-utterance-seconds", "900",
+            ]).utteranceLimit,
+            UtteranceLimit(seconds: 900)
+        )
+    }
+
+    func testUtteranceLimitRejectsNonPositiveAndNonNumericValues() {
+        for value in ["0", "-5", "ten"] {
+            XCTAssertThrowsError(
+                try SpeechdOptionParser.parse([
+                    "--model", "example/model", "--max-utterance-seconds", value,
+                ])
+            ) { error in
+                XCTAssertEqual(error as? SpeechdOptionError, .invalidValue("--max-utterance-seconds"))
+            }
+        }
+    }
+
     func testParsesBenchmarkOptions() throws {
         let options = try SpeechdOptionParser.parse([
             "--model", "example/model",

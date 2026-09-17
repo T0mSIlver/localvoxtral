@@ -52,6 +52,13 @@ public enum RealtimeServerMessage: Equatable, Sendable {
     case transcriptDelta(String)
     case transcriptDone(text: String)
     case error(message: String)
+    /// The engine stopped transcribing before the client's final commit (length limit or
+    /// model end-of-stream). An `error` frame, so any OpenAI-Realtime client still sees a
+    /// failure, with a `code` the app keys on to show `message` as its status line (#314).
+    case transcriptionStopped(message: String)
+
+    /// `code` of a `transcriptionStopped` frame.
+    public static let transcriptionStoppedCode = "transcription_stopped"
 
     public func json() -> String {
         switch self {
@@ -65,6 +72,10 @@ public enum RealtimeServerMessage: Equatable, Sendable {
             return Self.object(["type": "response.audio_transcript.done", "text": text])
         case .error(let message):
             return Self.object(["type": "error", "message": message])
+        case .transcriptionStopped(let message):
+            return Self.object([
+                "type": "error", "code": Self.transcriptionStoppedCode, "message": message,
+            ])
         }
     }
 

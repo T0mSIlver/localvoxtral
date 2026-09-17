@@ -21,8 +21,14 @@ public enum StreamingSpeechBenchmark {
             seconds: benchmark.seconds,
             wavPath: benchmark.wavPath
         )
+        // Same token cap the server uses, so a long benchmark measures what a long
+        // dictation costs instead of an engine that silently stopped decoding (#314).
+        let maxDecodedTokens = options.utteranceLimit.maxDecodedTokens(
+            frameRate: model.config.audioEncodingArgs.frameRate
+        )
         let session = model.makeStreamSession(
             temperature: 0.0,
+            maxTokens: maxDecodedTokens,
             transcriptionDelayMs: options.transcriptionDelayMs
         )
         var batcher = StepBatcher(
@@ -30,7 +36,9 @@ public enum StreamingSpeechBenchmark {
             sampleRate: sampleRate
         )
         var records: [StepRecord] = []
-        let marks = [5, 15, 30, 60].filter { $0 <= benchmark.seconds }
+        // Early marks show warm-up; one mark per minute after that shows long-session drift.
+        let marks = ([5, 15, 30, 60] + Array(stride(from: 120, through: benchmark.seconds, by: 60)))
+            .filter { $0 <= benchmark.seconds }
         var nextMarkIndex = 0
         var appendedSamples = 0
         var steppedSamples = 0
@@ -52,7 +60,8 @@ public enum StreamingSpeechBenchmark {
                 printMark(
                     marks[nextMarkIndex],
                     cadenceMilliseconds: benchmark.cadenceMilliseconds,
-                    records: records
+                    records: records,
+                    session: session
                 )
                 nextMarkIndex += 1
             }
@@ -70,10 +79,16 @@ public enum StreamingSpeechBenchmark {
             printMark(
                 marks[nextMarkIndex],
                 cadenceMilliseconds: benchmark.cadenceMilliseconds,
-                records: records
+                records: records,
+                session: session
             )
             nextMarkIndex += 1
         }
+        print(
+            "BENCH done seconds=\(benchmark.seconds) limit_s=\(options.utteranceLimit.seconds) "
+                + "max_tokens=\(maxDecodedTokens) tokens=\(session.tokens.count) "
+                + "finished=\(session.isFinished ? 1 : 0)"
+        )
     }
 
     private struct StepRecord {
@@ -103,7 +118,8 @@ public enum StreamingSpeechBenchmark {
     private static func printMark(
         _ markSeconds: Int,
         cadenceMilliseconds: Int,
-        records: [StepRecord]
+        records: [StepRecord],
+        session: VoxtralRealtimeStreamSession
     ) {
         let markSamples = markSeconds * sampleRate
         guard let current = records.last(where: { $0.audioSamples <= markSamples }) ?? records.last else {
@@ -124,7 +140,8 @@ public enum StreamingSpeechBenchmark {
             String(
                 format:
                     "BENCH mark=%ds cadence_ms=%d steps=%d step_ms=%.3f mean_ms=%.3f "
-                    + "active_mb=%.1f cache_mb=%.1f peak_mb=%.1f swing_mb=%.1f",
+                    + "active_mb=%.1f cache_mb=%.1f peak_mb=%.1f swing_mb=%.1f "
+                    + "tokens=%d finished=%d",
                 markSeconds,
                 cadenceMilliseconds,
                 records.filter { $0.audioSamples <= markSamples }.count,
@@ -133,7 +150,9 @@ public enum StreamingSpeechBenchmark {
                 Double(current.memory.activeMemory) / bytesPerMB,
                 Double(current.memory.cacheMemory) / bytesPerMB,
                 Double(current.memory.peakMemory) / bytesPerMB,
-                Double(swing) / bytesPerMB
+                Double(swing) / bytesPerMB,
+                session.tokens.count,
+                session.isFinished ? 1 : 0
             )
         )
     }

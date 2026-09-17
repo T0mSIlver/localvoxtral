@@ -17,6 +17,9 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
     private let model: VoxtralRealtimeModel
     private let transcriptionDelayMs: Int?
     private let stepMilliseconds: Int
+    private let utteranceLimit: UtteranceLimit
+    /// The engine's decoded-token cap for `utteranceLimit` at this model's frame rate.
+    private let maxDecodedTokens: Int
     private let listener: NWListener
     private let netQueue = DispatchQueue(label: "localvoxtral.speechd.net")
     private let inferenceQueue = DispatchQueue(label: "localvoxtral.speechd.inference")
@@ -35,7 +38,8 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         port: UInt16,
         transcriptionDelayMs: Int?,
         cacheLimitMB: Int,
-        stepMilliseconds: Int = 100
+        stepMilliseconds: Int = 100,
+        utteranceLimit: UtteranceLimit = UtteranceLimit()
     ) async throws -> RealtimeSpeechServer {
         Memory.cacheLimit = cacheLimitMB * 1024 * 1024
         let model = try await SpeechModelLoader.load(
@@ -47,7 +51,8 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
             model: model,
             port: port,
             transcriptionDelayMs: transcriptionDelayMs,
-            stepMilliseconds: stepMilliseconds
+            stepMilliseconds: stepMilliseconds,
+            utteranceLimit: utteranceLimit
         )
     }
 
@@ -57,11 +62,16 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         model: VoxtralRealtimeModel,
         port: UInt16,
         transcriptionDelayMs: Int?,
-        stepMilliseconds: Int
+        stepMilliseconds: Int,
+        utteranceLimit: UtteranceLimit
     ) throws {
         self.model = model
         self.transcriptionDelayMs = transcriptionDelayMs
         self.stepMilliseconds = stepMilliseconds
+        self.utteranceLimit = utteranceLimit
+        self.maxDecodedTokens = utteranceLimit.maxDecodedTokens(
+            frameRate: model.config.audioEncodingArgs.frameRate
+        )
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
         parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
@@ -128,6 +138,9 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         // Feed it the session's full-transcript snapshot after each step/finish; emit only
         // its append-only delta. Touched only on the inference queue, like `session`.
         var deltas = TranscriptDeltaEmitter()
+        // Latches an early engine stop (length cap or end-of-stream) so it is reported once
+        // per engine session. Inference queue only, like `session`.
+        var stopReporter = UtteranceStopReporter()
         enum Phase { case http, webSocket }
 
         init(stepMilliseconds: Int) {
@@ -204,6 +217,7 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
             // any already-queued steps for this connection.
             inferenceQueue.async {
                 ctx.session = nil
+                ctx.stopReporter.reset()
                 Memory.clearCache()
             }
         case .pong, .continuation:
@@ -241,6 +255,7 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                     // step — our no-backspace insertion path would duplicate it).
                     let delta = ctx.deltas.emit(fullText: session.text)
                     if !delta.isEmpty { self.sendServer(connection, .transcriptDelta(delta)) }
+                    self.reportEarlyStopIfNeeded(session, connection, ctx)
                 }
             case .commit(let final):
                 guard final else { return }  // non-final commit is a no-op, matching voxmlx
@@ -255,6 +270,7 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                 self.sendServer(connection, .transcriptDone(text: ctx.deltas.emittedText))
                 ctx.session = nil  // ready for the next utterance
                 ctx.deltas = TranscriptDeltaEmitter()
+                ctx.stopReporter.reset()
                 ctx.stepBatcher.clear()
                 // The engine's finish() clears the buffer pool, but at that point the
                 // session's KV caches and encoder state are still live — dropping the
@@ -267,6 +283,7 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
             case .clear:
                 ctx.session = nil
                 ctx.deltas = TranscriptDeltaEmitter()
+                ctx.stopReporter.reset()
                 ctx.stepBatcher.clear()
                 // Same idle-footprint contract as the commit path above.
                 Memory.clearCache()
@@ -279,9 +296,42 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
     /// Must be called on `inferenceQueue`.
     private func ensureSession(_ ctx: Connection) -> VoxtralRealtimeStreamSession {
         if let s = ctx.session { return s }
-        let s = model.makeStreamSession(temperature: 0.0, transcriptionDelayMs: transcriptionDelayMs)
+        let s = model.makeStreamSession(
+            temperature: 0.0,
+            maxTokens: maxDecodedTokens,
+            transcriptionDelayMs: transcriptionDelayMs
+        )
         ctx.session = s
         return s
+    }
+
+    /// An engine session that stops before the client's final commit returns nothing from
+    /// every later step, so the app would see deltas simply stop (#314). Say so once: an
+    /// `error` event the app shows on its status line, and a stderr line for the helper log.
+    /// Must be called on `inferenceQueue`.
+    private func reportEarlyStopIfNeeded(
+        _ session: VoxtralRealtimeStreamSession,
+        _ connection: NWConnection,
+        _ ctx: Connection
+    ) {
+        guard let stop = ctx.stopReporter.check(
+            isFinished: session.isFinished,
+            decodedTokenCount: session.tokens.count,
+            maxDecodedTokens: maxDecodedTokens
+        ) else { return }
+        switch stop {
+        case .lengthLimit:
+            FileHandle.standardError.write(Data(
+                "speechd: utterance reached the \(utteranceLimit.seconds)s limit (\(maxDecodedTokens) tokens); later audio is not transcribed\n".utf8))
+            sendServer(connection, .transcriptionStopped(message: utteranceLimit.reachedMessage))
+        case .endOfStream:
+            FileHandle.standardError.write(Data(
+                "speechd: model ended the stream after \(session.tokens.count) tokens; later audio is not transcribed\n".utf8))
+            sendServer(
+                connection,
+                .transcriptionStopped(message: UtteranceLimit.endOfStreamMessage)
+            )
+        }
     }
 
     // MARK: - Send helpers

@@ -138,6 +138,19 @@ final class RealtimeServerCodecTests: XCTestCase {
         XCTAssertEqual(parsed?["text"], "he said \"hi\"\nbye")
     }
 
+    func testTranscriptionStoppedIsAnErrorFrameWithACode() {
+        let json = RealtimeServerMessage.transcriptionStopped(
+            message: "10-minute limit reached; start again."
+        ).json()
+        let parsed = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: String]
+        XCTAssertEqual(parsed?["type"], "error")
+        XCTAssertEqual(parsed?["code"], "transcription_stopped")
+        XCTAssertEqual(
+            parsed?["message"],
+            "10-minute limit reached; start again."
+        )
+    }
+
     // MARK: PCM16
 
     func testPCM16DecodeNormalizes() {

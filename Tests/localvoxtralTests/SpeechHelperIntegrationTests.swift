@@ -364,7 +364,7 @@ final class SpeechHelperIntegrationTests: XCTestCase {
                 finalTranscript.fulfill()
             case .transcriptionFinalized:
                 transcriptionFinalized.fulfill()
-            case .error:
+            case .error, .transcriptionStopped:
                 realtimeError.fulfill()
             case .disconnected:
                 disconnected.fulfill()
@@ -416,6 +416,105 @@ final class SpeechHelperIntegrationTests: XCTestCase {
             accuracy,
             0.55,
             "Expected synthetic-audio transcript accuracy >= 0.55. Transcript: \(doneText)"
+        )
+        XCTAssertTrue(process.isRunning)
+        process.terminate()
+    }
+
+    /// #314: the engine stops decoding once an utterance reaches its token cap and returns
+    /// nothing from every later step. Before the fix the helper never noticed, so a long
+    /// dictation simply stopped producing text with no error anywhere. A short limit here
+    /// stands in for the real one: the stop must arrive as exactly one realtime error event
+    /// naming the limit, and as one line in the helper's log.
+    func testUtteranceLimitStopIsReportedOnceInsteadOfSilently() async throws {
+        let (binary, model) = try helperConfiguration()
+        try await ensureModelCached(model)
+        let limitSeconds = 3
+        let (process, stderrLog) = try await launchHelper(
+            binary: binary,
+            model: model,
+            extraArguments: ["--max-utterance-seconds", "\(limitSeconds)"]
+        )
+
+        // The helper's cap is ceil(limit x 12.5) + 64 finish-padding tokens, and decoded
+        // tokens trail the audio by up to the 30-token maximum transcription delay. The cap
+        // must cross while audio is still streaming (the final commit path reports nothing),
+        // so the speech has to outlast that budget with room to spare.
+        let maxDecodedTokens = Int((Double(limitSeconds) * 12.5).rounded(.up)) + 64
+        let secondsToCrossCap = Double(maxDecodedTokens + 30) / 12.5
+        let phrase = [
+            "this is a longer synthetic audio passage for integration testing.",
+            "we are verifying that the realtime server reports when an utterance reaches its limit.",
+            "the websocket client sends pcm sixteen audio at sixteen kilohertz in sequential chunks.",
+            "every chunk after the limit must stay quiet instead of repeating the same report.",
+        ].joined(separator: " ")
+        let pcm16 = try makeSpokenPCM16Data(phrase: phrase)
+        let spokenSeconds = Double(pcm16.count) / 32_000
+        XCTAssertGreaterThan(
+            spokenSeconds,
+            secondsToCrossCap + 3,
+            "the TTS audio is too short to cross the cap while streaming"
+        )
+        let chunks = IntegrationTestSupport.splitPCM16IntoChunks(pcm16, chunkSizeBytes: 3_200)
+
+        let client = RealtimeAPIWebSocketClient()
+        let transcript = TranscriptCapture()
+        let stops = TranscriptCapture()
+        let errors = TranscriptCapture()
+        let connected = expectation(description: "connected")
+        let finalTranscript = expectation(description: "final transcript")
+        finalTranscript.assertForOverFulfill = false
+        let disconnected = expectation(description: "disconnected")
+
+        client.setEventHandler { event in
+            switch event {
+            case .connected:
+                connected.fulfill()
+                for chunk in chunks {
+                    client.sendAudioChunk(chunk)
+                }
+                client.sendCommit(final: true)
+            case .partialTranscript(let delta):
+                transcript.append(delta: delta)
+            case .finalTranscript(let text):
+                transcript.append(doneText: text)
+                finalTranscript.fulfill()
+            case .transcriptionStopped(let message):
+                stops.append(delta: message)
+            case .error(let message):
+                errors.append(delta: message)
+            case .disconnected:
+                disconnected.fulfill()
+            case .status, .transcriptionFinalized:
+                break
+            }
+        }
+
+        try client.connect(configuration: RealtimeSessionConfiguration(
+            endpoint: URL(string: "ws://127.0.0.1:\(Self.testPort)/v1/realtime")!,
+            apiKey: "",
+            model: model
+        ))
+        await fulfillment(of: [connected, finalTranscript], timeout: 180)
+        client.disconnect()
+        await fulfillment(of: [disconnected], timeout: 5)
+
+        XCTAssertEqual(
+            stops.snapshot().deltas,
+            ["\(limitSeconds)-second limit reached; start again."],
+            "the limit stop must reach the client exactly once, as a transcription stop"
+        )
+        XCTAssertEqual(errors.snapshot().deltas, [], "no generic realtime error")
+        let logTail = stderrLog.tail(50)
+        XCTAssertTrue(
+            logTail.contains("utterance reached the \(limitSeconds)s limit"),
+            "the limit stop must be logged by the helper: \(logTail)"
+        )
+        // The transcript still ends cleanly with what was decoded before the stop.
+        let doneText = try XCTUnwrap(transcript.snapshot().doneTexts.only)
+        print(
+            "speechd limit test: \(String(format: "%.1f", spokenSeconds))s spoken, "
+                + "transcript: \(doneText)"
         )
         XCTAssertTrue(process.isRunning)
         process.terminate()

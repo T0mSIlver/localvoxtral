@@ -20,6 +20,10 @@ enum RealtimeEvent: Sendable {
     case finalTranscript(String)
     case transcriptionFinalized
     case error(String)
+    /// The backend stopped transcribing before the final commit (the bundled helper's
+    /// utterance limit, or a model end-of-stream). The message is one short sentence meant
+    /// for the status line; the connection stays open (#314).
+    case transcriptionStopped(String)
 }
 
 /// `Sendable` because the session's audio-send and periodic-commit tasks hold

@@ -27,6 +27,8 @@ extension DictationViewModel {
             handleTranscriptionFinalizedEvent()
         case .error(let message):
             handleErrorEvent(message)
+        case .transcriptionStopped(let message):
+            handleTranscriptionStoppedEvent(message)
         }
     }
 
@@ -223,6 +225,16 @@ extension DictationViewModel {
         Log.dictation.error("Realtime error: \(message, privacy: .public)")
     }
 
+    /// The backend stopped transcribing mid-dictation and said why in one short sentence
+    /// (#314). That sentence IS the status line: a generic "Realtime error." with "See
+    /// Console for details." would hide the only actionable part. The mic stays open, so
+    /// nothing later overwrites it until the user stops.
+    private func handleTranscriptionStoppedEvent(_ message: String) {
+        Log.dictation.error("Realtime transcription stopped: \(message, privacy: .public)")
+        guard acceptsRealtimeEvents, !isFinalizingStop else { return }
+        statusText = message
+    }
+
     // MARK: - Segment Promotion
 
     @discardableResult
@@ -315,6 +327,10 @@ extension DictationViewModel {
         case .error(let message):
             Log.deltas.notice(
                 "[delta-log seq=\(sequence)] error: \(message, privacy: .public)")
+            emitDeltaLogRecord(.error, sequence: sequence, payload: message)
+        case .transcriptionStopped(let message):
+            Log.deltas.notice(
+                "[delta-log seq=\(sequence)] transcription stopped: \(message, privacy: .public)")
             emitDeltaLogRecord(.error, sequence: sequence, payload: message)
         case .transcriptionFinalized:
             Log.deltas.notice(
