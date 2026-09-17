@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# `lv_open`: `open`, plus the env the CI lanes need the app to see.
+# shellcheck source=scripts/lib/launch-app.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/launch-app.sh"
+
 # Record the README demo video as H.264:
 #   dist/demo/demo.mp4      (encoded, ready to drag-drop into a GitHub PR/issue
 #                            comment — GitHub only renders inline video from
@@ -671,7 +675,7 @@ sleep 1
 
 # --- launch + warm up the backends off-camera ------------------------------------
 LAUNCHED_APP=1
-open "$APP_PATH"
+lv_open "$APP_PATH"
 for _ in $(seq 1 20); do pgrep -xq "$APP_PROCESS" && break; sleep 0.5; done
 pgrep -xq "$APP_PROCESS" || { echo "$APP_PROCESS did not launch." >&2; exit 1; }
 sleep 2

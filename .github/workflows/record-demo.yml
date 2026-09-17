@@ -137,6 +137,9 @@ jobs:
         id: record
         if: steps.guard.outputs.present == 'true'
         env:
+          # See the note in ui-smoke.yml: a fresh build reading a keychain item
+          # pops a modal prompt on the owner's Mac, and the demo needs no key.
+          LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN: "1"
           DEMO_HANDS_FREE: "1"
           DEMO_WARMUP_SECONDS: "25"
           DEMO_TERMINAL_AGENT: ${{ inputs.terminal_agent || 'auto' }}

@@ -170,6 +170,10 @@ final class SecretStoreTests: XCTestCase {
         first.mistralAPIKey = "mk-mistral"
 
         let second = makeStore(secretStore: secrets)
+        // Reads are deferred to whoever needs the key — here, the Settings
+        // window showing all three fields (LazySecretLoadingTests pins when
+        // each one is fetched).
+        second.ensureAllSecretsLoaded()
         XCTAssertEqual(second.apiKey, "sk-realtime")
         XCTAssertEqual(second.llmPolishingAPIKey, "polish-key")
         XCTAssertEqual(second.mistralAPIKey, "mk-mistral")
@@ -298,6 +302,7 @@ final class SecretStoreTests: XCTestCase {
         )
 
         let store = makeStore(secretStore: secrets)
+        store.ensureAllSecretsLoaded()
 
         XCTAssertEqual(store.apiKey, "")
         XCTAssertEqual(store.llmPolishingAPIKey, "")
@@ -328,6 +333,7 @@ final class SecretStoreTests: XCTestCase {
 
     func testAHealthyStoreShowsTheOrdinaryMistralStatus() {
         let store = makeStore(secretStore: InMemorySecretStore())
+        store.ensureAllSecretsLoaded()
         XCTAssertEqual(store.mistralAPIStatusSummary, "API key missing")
         store.mistralAPIKey = "mk-mistral"
         XCTAssertEqual(store.mistralAPIStatusSummary, "Ready")
@@ -361,6 +367,10 @@ final class SecretStoreTests: XCTestCase {
         let store = makeStore(
             secretStore: secrets, environment: ["MISTRAL_API_KEY": "mk-from-env"])
 
+        // Until the key is fetched the env value stands in; once it is, the
+        // user's stored key wins — and selecting the engine fetches it.
+        XCTAssertEqual(store.mistralAPIKey, "mk-from-env")
+        store.dictationBackendMode = .mistralAPI
         XCTAssertEqual(store.mistralAPIKey, "mk-stored")
     }
 }

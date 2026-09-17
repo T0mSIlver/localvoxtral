@@ -112,9 +112,20 @@ public struct CmuxSocketPasswordStore: CmuxPasswordStoring {
 /// only ever runs while the user is at the machine dictating, so there is no
 /// reason for this secret to be readable while the Mac is locked.
 struct SecItemCmuxKeychainBackend: CmuxKeychainBackend {
-    init() {}
+    /// False on a CI lane that launches the app on the owner's Mac: every
+    /// SecItem call from a freshly built binary can raise a modal keychain
+    /// prompt there (`StartupPermissionSuppression`). Resolved once at
+    /// construction so a settings model built on that run reads "no password"
+    /// rather than prompting.
+    private let isKeychainPermitted: Bool
+
+    init(environment: [String: String] = ProcessInfo.processInfo.environment) {
+        isKeychainPermitted = !StartupPermissionSuppression.loginKeychainIsDisabled(
+            environment: environment)
+    }
 
     func read(service: String, account: String) -> Data? {
+        guard isKeychainPermitted else { return nil }
         #if canImport(Security)
         var query = Self.baseQuery(service: service, account: account)
         query[kSecReturnData as String] = true
@@ -136,6 +147,7 @@ struct SecItemCmuxKeychainBackend: CmuxKeychainBackend {
     }
 
     func write(_ data: Data, service: String, account: String) -> Bool {
+        guard isKeychainPermitted else { return false }
         #if canImport(Security)
         let query = Self.baseQuery(service: service, account: account)
         let update: [String: Any] = [kSecValueData as String: data]
@@ -163,6 +175,7 @@ struct SecItemCmuxKeychainBackend: CmuxKeychainBackend {
     }
 
     func delete(service: String, account: String) -> Bool {
+        guard isKeychainPermitted else { return false }
         #if canImport(Security)
         let status = SecItemDelete(Self.baseQuery(service: service, account: account) as CFDictionary)
         // Nothing stored is the state the caller asked for, so it is a success.

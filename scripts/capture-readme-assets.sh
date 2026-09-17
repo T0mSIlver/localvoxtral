@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# `lv_open`: `open`, plus the env the CI lanes need the app to see.
+# shellcheck source=scripts/lib/launch-app.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/launch-app.sh"
+
 # Regenerate the README screenshots:
 #   assets/popover.png                     (menu bar menu)
 #   assets/settings-general.png            (Settings > General)
@@ -262,7 +266,7 @@ defaults write "$BUNDLE_ID" "settings.onboarding_completed" -bool true
 defaults write "$BUNDLE_ID" "settings.modifier_only_hotkey_enabled" -bool true
 defaults write "$BUNDLE_ID" "settings.llm_polishing_enabled" -bool true
 LAUNCHED_APP=1
-open "$APP_PATH"
+lv_open "$APP_PATH"
 for _ in $(seq 1 20); do pgrep -xq "$APP_PROCESS" && break; sleep 0.5; done
 APP_PID="$(pgrep -xn "$APP_PROCESS")"
 sleep 2 # let the status item settle
@@ -344,7 +348,7 @@ sleep 1
 # snapshotted domain (restored on exit); deleted here as well so a run that
 # ends between here and cleanup cannot leave it armed.
 defaults write "$BUNDLE_ID" "debug.enrollment_sheet_preview" -bool true
-open "$APP_PATH"
+lv_open "$APP_PATH"
 for _ in $(seq 1 20); do pgrep -xq "$APP_PROCESS" && break; sleep 0.5; done
 APP_PID="$(pgrep -xn "$APP_PROCESS")"
 sleep 2

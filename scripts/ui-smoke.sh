@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
+# `lv_open`: `open`, plus the env the CI lanes need the app to see.
+# shellcheck source=scripts/lib/launch-app.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/launch-app.sh"
+
 # AX-driven packaged-app smoke drill. Run on a macOS GUI session:
 #   ./scripts/ui-smoke.sh [dist/localvoxtral.app]
 #
@@ -278,7 +282,7 @@ if pgrep -x "$APP_PROCESS" >/dev/null 2>&1; then
 fi
 
 start_backend_sampler
-open -n "$APP_PATH"
+lv_open -n "$APP_PATH"
 launch_deadline=$((SECONDS + 10))
 while ((SECONDS < launch_deadline)); do
   APP_PID="$(pgrep -xn "$APP_PROCESS" 2>/dev/null || true)"
