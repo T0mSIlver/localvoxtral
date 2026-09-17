@@ -77,6 +77,7 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
 
     private struct Response {
         var status: Int
+        var headers: [String: String]
         var body: String
     }
 
@@ -137,9 +138,17 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         guard let separator = raw.range(of: Data("\r\n\r\n".utf8)) else { return nil }
         let head = String(decoding: raw[..<separator.lowerBound], as: UTF8.self)
         let body = String(decoding: raw[separator.upperBound...], as: UTF8.self)
-        let statusLine = head.components(separatedBy: "\r\n")[0].split(separator: " ")
+        let lines = head.components(separatedBy: "\r\n")
+        let statusLine = lines[0].split(separator: " ")
         guard statusLine.count >= 2, let status = Int(statusLine[1]) else { return nil }
-        return Response(status: status, body: body)
+        var headers: [String: String] = [:]
+        for line in lines.dropFirst() {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let name = line[..<colon].lowercased()
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            headers[name] = value
+        }
+        return Response(status: status, headers: headers, body: body)
     }
 
     /// - Parameter rawAuthorization: the `Authorization` value verbatim, for the
@@ -190,6 +199,7 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         )
 
         XCTAssertEqual(response.status, 401, "an unauthenticated peer is still refused")
+        XCTAssertNil(response.headers["x-lvx-session"])
         XCTAssertTrue(witness.consume(nonce), "arrival IS the proof; nothing else is read")
         XCTAssertTrue(
             listener.rejectionSnapshot.isEmpty,
@@ -260,6 +270,7 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         try startListener()
         let response = try XCTUnwrap(try send(hookRequest(token: token)))
         XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(response.headers["x-lvx-session"], "joined")
 
         XCTAssertEqual(
             Data(response.body.utf8), ClaudeRemoteHTTPCodec.hookResponseBody,
@@ -332,7 +343,7 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         XCTAssertEqual(snapshot.workspace, .remoteOpaque(label: "service"))
     }
 
-    func testAllowlistedEnvHeadersReachTheSnapshotWithoutTouchingProcessIdentity() throws {
+    func testSessionStartRegistersEnvLabelsWithoutTouchingProcessIdentity() throws {
         // The enrichment rides as headers because the body must stay Claude
         // Code's JSON byte-for-byte (no jq on the remote host). It must arrive —
         // and it must arrive in `remoteEnvironment`, never in `process`, which
@@ -350,6 +361,7 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         XCTAssertEqual(response.status, 200)
 
         let snapshot = try XCTUnwrap(sessions.liveSessions().first)
+        XCTAssertEqual(snapshot.activity, .idle)
         let environment = try XCTUnwrap(snapshot.remoteSessionEnvironment)
         XCTAssertEqual(environment.herdrPaneID, "pane-7")
         XCTAssertEqual(environment.herdrSocketPath, "/run/user/1000/herdr/default.sock")
@@ -841,6 +853,7 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         text += "Content-Length: \(body.count)\r\n\r\n"
         let response = try XCTUnwrap(try send(Data(text.utf8) + body))
         XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(response.headers["x-lvx-session"], "unknown")
         let object = try XCTUnwrap(
             try JSONSerialization.jsonObject(with: Data(response.body.utf8)) as? [String: Any]
         )
@@ -849,6 +862,17 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
             "a discarded record is byte-identical on the wire to an accepted one"
         )
         XCTAssertEqual(Set(object.keys), ["suppressOutput"])
+        XCTAssertTrue(sessions.liveSessions().isEmpty)
+    }
+
+    func testSessionEndReturnsUnknownWithTheSameBodyAndRemovesTheSession() throws {
+        try startListener()
+        let joined = try XCTUnwrap(try send(hookRequest(token: token)))
+        let ended = try XCTUnwrap(try send(hookRequest(event: "SessionEnd", token: token)))
+
+        XCTAssertEqual(joined.headers["x-lvx-session"], "joined")
+        XCTAssertEqual(ended.headers["x-lvx-session"], "unknown")
+        XCTAssertEqual(ended.body, joined.body, "the status header must not change the stdout body")
         XCTAssertTrue(sessions.liveSessions().isEmpty)
     }
 

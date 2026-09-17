@@ -122,6 +122,11 @@ public enum ClaudeRemoteHTTPError: Error, Equatable {
     case bodyTooLarge(Int)
 }
 
+public enum ClaudeRemoteSessionStatus: String, Sendable {
+    case joined
+    case unknown
+}
+
 public enum ClaudeRemoteHTTPCodec {
     /// URL path prefix. The event name is the last component, which gives the
     /// parser a fallback when a payload omits `hook_event_name`.
@@ -317,12 +322,19 @@ public enum ClaudeRemoteHTTPCodec {
     /// Serialize a response. Always `Connection: close` — one request per
     /// connection means a peer can never keep a slot alive by going quiet
     /// between requests.
-    public static func response(status: Int, body: Data? = nil) -> Data {
+    public static func response(
+        status: Int,
+        body: Data? = nil,
+        sessionStatus: ClaudeRemoteSessionStatus? = nil
+    ) -> Data {
         var head = "HTTP/1.1 \(status) \(reasonPhrase(for: status))\r\n"
         head += "Connection: close\r\n"
         head += "Content-Type: application/json\r\n"
         head += "Content-Length: \(body?.count ?? 0)\r\n"
         if status == 401 { head += "WWW-Authenticate: Bearer\r\n" }
+        if status == 200, let sessionStatus {
+            head += "X-Lvx-Session: \(sessionStatus.rawValue)\r\n"
+        }
         head += "\r\n"
         var data = Data(head.utf8)
         if let body { data.append(body) }

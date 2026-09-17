@@ -209,7 +209,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     func testDeclaresEveryRequiredEvent() throws {
         XCTAssertEqual(
             Set(try hooksByEvent().keys),
-            ["UserPromptSubmit", "CwdChanged", "PostToolUse", "Stop", "SessionEnd"]
+            ["SessionStart", "UserPromptSubmit", "CwdChanged", "PostToolUse", "Stop", "SessionEnd"]
         )
     }
 
@@ -416,14 +416,54 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             )
         }
 
-        // 200 → ok.
+        // 200 + listener verdict updates both host and session state.
         _ = try runShimWithStubCurl(
             status: "200",
             body: ClaudeRemoteHTTPCodec.hookResponseBody,
+            responseHeaders: "X-Lvx-Session: joined\r\n",
             extraEnvironment: ownState
         )
         XCTAssertTrue(try stamp().hasPrefix("ok "), "a 200 exchange must stamp ok")
         assertGrammar(try stamp())
+        let sessionStamp = state.appendingPathComponent("localvoxtral/sessions/s1")
+        XCTAssertTrue(
+            try String(contentsOf: sessionStamp, encoding: .utf8).hasPrefix("joined ")
+        )
+        let sessionDirectory = sessionStamp.deletingLastPathComponent()
+        let directoryMode = try FileManager.default.attributesOfItem(atPath: sessionDirectory.path)[.posixPermissions] as? NSNumber
+        let fileMode = try FileManager.default.attributesOfItem(atPath: sessionStamp.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(directoryMode?.intValue, 0o700)
+        XCTAssertEqual(fileMode?.intValue, 0o600)
+
+        _ = try runShimWithStubCurl(
+            status: "200",
+            body: ClaudeRemoteHTTPCodec.hookResponseBody,
+            responseHeaders: "x-lvx-session: unknown\r\n",
+            extraEnvironment: ownState
+        )
+        XCTAssertTrue(
+            try String(contentsOf: sessionStamp, encoding: .utf8).hasPrefix("unknown ")
+        )
+
+        _ = try runShimWithStubCurl(
+            event: "SessionEnd",
+            status: "200",
+            body: ClaudeRemoteHTTPCodec.hookResponseBody,
+            responseHeaders: "X-Lvx-Session: unknown\r\n",
+            extraEnvironment: ownState
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sessionStamp.path))
+
+        _ = try runShimWithStubCurl(
+            status: "200",
+            body: ClaudeRemoteHTTPCodec.hookResponseBody,
+            responseHeaders: "X-Lvx-Session: joined extra\r\n",
+            extraEnvironment: ownState
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: sessionStamp.path),
+            "the response value must match exactly"
+        )
 
         // Completed non-200 → http-<code> (the 401 is the one users will see).
         _ = try runShimWithStubCurl(status: "401", body: nil, extraEnvironment: ownState)
@@ -443,12 +483,102 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         assertGrammar(try stamp())
     }
 
+    func testShimNeverCreatesAStampForAHostileSessionID() throws {
+        let state = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hostile-session-state-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: state) }
+
+        for sessionID in [
+            "../x",
+            String(repeating: "a", count: 65),
+            "quoted\\\"id",
+        ] {
+            _ = try runShimWithStubCurl(
+                status: "200",
+                body: ClaudeRemoteHTTPCodec.hookResponseBody,
+                responseHeaders: "X-Lvx-Session: joined\r\n",
+                extraEnvironment: ["XDG_RUNTIME_DIR": state.path],
+                payload: Data("{\"session_id\":\"\(sessionID)\"}".utf8)
+            )
+        }
+
+        let sessions = state.appendingPathComponent("localvoxtral/sessions")
+        let contents = (try? FileManager.default.contentsOfDirectory(atPath: sessions.path)) ?? []
+        XCTAssertTrue(contents.isEmpty, "hostile ids must not become paths")
+    }
+
+    func testHooksUseTopLevelSessionIDBeforeNestedToolSessionIDs() throws {
+        let state = FileManager.default.temporaryDirectory
+            .appendingPathComponent("nested-session-state-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: state) }
+        let payload = Data(
+            #"{"session_id":"top-level","tool_input":{"session_id":"input-id"},"tool_response":{"session_id":"response-id"}}"#.utf8
+        )
+
+        _ = try runShimWithStubCurl(
+            event: "PostToolUse",
+            status: "200",
+            body: ClaudeRemoteHTTPCodec.hookResponseBody,
+            responseHeaders: "X-Lvx-Session: joined\r\n",
+            extraEnvironment: ["XDG_RUNTIME_DIR": state.path],
+            payload: payload
+        )
+
+        let sessions = state.appendingPathComponent("localvoxtral/sessions")
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: sessions.appendingPathComponent("top-level").path
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: sessions.appendingPathComponent("input-id").path
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: sessions.appendingPathComponent("response-id").path
+        ))
+
+        let rendered = try runStatusLineRenderer(
+            stamp: "ok 2000000000",
+            sessionStamps: ["top-level": "joined 2000000000"],
+            payload: payload
+        )
+        XCTAssertEqual(rendered.exitCode, 0)
+        XCTAssertEqual(rendered.stdout, "lvx \u{1B}[32m\u{25CF}\u{1B}[0m\n")
+        XCTAssertEqual(rendered.stderr, "")
+    }
+
+    func testSessionStartPrunesSessionStampsOlderThanADay() throws {
+        let state = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prune-session-state-\(UUID().uuidString)")
+        let sessions = state.appendingPathComponent("localvoxtral/sessions")
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: state) }
+        let old = sessions.appendingPathComponent("old-session")
+        try "joined 1\n".write(to: old, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1)], ofItemAtPath: old.path
+        )
+
+        _ = try runShimWithStubCurl(
+            event: "SessionStart",
+            status: "200",
+            body: ClaudeRemoteHTTPCodec.hookResponseBody,
+            responseHeaders: "X-Lvx-Session: joined\r\n",
+            extraEnvironment: ["XDG_RUNTIME_DIR": state.path]
+        )
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: old.path))
+    }
+
     /// Runs statusline.sh with an isolated state dir holding the given stamp
     /// (nil = no stamp at all), a status-line payload on stdin, and captures
     /// everything.
     private func runStatusLineRenderer(
         stamp: String?,
-        environment overrides: [String: String] = [:]
+        sessionStamps: [String: String] = [:],
+        payload: Data = Data(#"{"session_id":"s1"}"#.utf8),
+        environment overrides: [String: String] = [:],
+        rendererURL: URL? = nil
     ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
         let state = FileManager.default.temporaryDirectory
             .appendingPathComponent("statusline-state-\(UUID().uuidString)")
@@ -461,16 +591,35 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
                 to: directory.appendingPathComponent("hook-status"), atomically: true, encoding: .utf8
             )
         }
+        if !sessionStamps.isEmpty {
+            let directory = state.appendingPathComponent("localvoxtral/sessions")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            for (sessionID, value) in sessionStamps {
+                try value.write(
+                    to: directory.appendingPathComponent(sessionID),
+                    atomically: true,
+                    encoding: .utf8
+                )
+            }
+        }
+        let bin = state.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let date = bin.appendingPathComponent("date")
+        try "#!/bin/sh\nprintf '%s\\n' 2000000000\n".write(
+            to: date, atomically: true, encoding: .utf8
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: date.path)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = [statusLineRendererURL.path]
+        process.arguments = [(rendererURL ?? statusLineRendererURL).path]
         var environment = ProcessInfo.processInfo.environment
         environment["XDG_RUNTIME_DIR"] = state.path
         environment.removeValue(forKey: "NO_COLOR")
         environment["TERM"] = "xterm-256color"
+        environment["PATH"] = "\(bin.path):\(environment["PATH"] ?? "/usr/bin:/bin")"
         for (key, value) in overrides { environment[key] = value }
         process.environment = environment
-        return try Self.runToCompletion(process, stdin: Data(#"{"session_id":"s1"}"#.utf8))
+        return try Self.runToCompletion(process, stdin: payload)
     }
 
     /// Runs `process` to completion with `stdin` on its standard input, and
@@ -522,10 +671,12 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     private static let stubCurlScript = """
         #!/bin/sh
         out=""
+        response_headers=""
         previous=""
         url=""
         for argument in "$@"; do
           [ "$previous" = "--output" ] && out="$argument"
+          [ "$previous" = "--dump-header" ] && response_headers="$argument"
           if [ "$previous" = "--header" ] && [ -n "${FAKE_CURL_HEADER_DUMP:-}" ]; then
             case "$argument" in
             @*) cat "${argument#@}" >>"$FAKE_CURL_HEADER_DUMP" 2>/dev/null ;;
@@ -540,6 +691,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         [ -n "${FAKE_CURL_LOG:-}" ] && printf '%s\\n' "$url" >>"$FAKE_CURL_LOG"
         cat >/dev/null
         [ -n "$out" ] && cp "$FAKE_CURL_BODY" "$out" 2>/dev/null
+        [ -n "$response_headers" ] && printf '%s' "${FAKE_CURL_RESPONSE_HEADERS:-}" >"$response_headers"
         printf '%s' "$FAKE_CURL_STATUS"
         exit "${FAKE_CURL_EXIT:-0}"
         """
@@ -571,35 +723,34 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
 
     func testStatusLineRendererMapsEachStampStateToItsFixedString() throws {
         let esc = "\u{1B}"
-        // The current time is DATA here, not timing: the renderer compares the
-        // stamp's epoch against its own `date +%s`, so a "fresh" fixture must
-        // be minted at run time (a literal would silently cross the 15-minute
-        // staleness gate one day and start failing). No sleeps, no tolerances.
-        let fresh = String(Int(Date().timeIntervalSince1970))
-        let stale = String(Int(Date().timeIntervalSince1970) - 3600)
-        let cases: [(stamp: String?, expected: String)] = [
-            ("ok \(fresh)", "lvx \(esc)[32m\u{25CF}\(esc)[0m\n"),
-            // A green light must expire: ok past the staleness gate demotes to
-            // the dim no-recent-hooks line rather than claiming a live app.
-            ("ok \(stale)", "lvx \(esc)[90m\u{25CF}\(esc)[0m\n"),
-            // Freshness is a refinement, never a new failure mode: an epoch we
-            // cannot read renders exactly as pre-gate ok did.
-            ("ok not-an-epoch", "lvx \(esc)[32m\u{25CF}\(esc)[0m\n"),
-            ("ok", "lvx \(esc)[32m\u{25CF}\(esc)[0m\n"),
-            // Failure states are never demoted — stale bad news is still the
-            // last known truth, and staying conservative cannot mislead.
-            ("http-401 \(stale)", "lvx \(esc)[31m\u{25CF}\(esc)[0m\n"),
-            ("http-503 \(fresh)", "lvx \(esc)[31m\u{25CF}\(esc)[0m\n"),
-            ("down \(stale)", "lvx \(esc)[90m\u{25CF}\(esc)[0m\n"),
-            ("unconfigured \(fresh)", "lvx \(esc)[31m\u{25CF}\(esc)[0m\n"),
-            (nil, "lvx \(esc)[90m\u{25CF}\(esc)[0m\n"),
+        let now = 2_000_000_000
+        let cases: [(stamp: String?, sessions: [String: String], expected: String)] = [
+            ("ok \(now)", ["s1": "joined \(now)"], "lvx \(esc)[32m●\(esc)[0m\n"),
+            ("ok \(now)", ["s1": "unknown \(now)"], "lvx \(esc)[33m◐\(esc)[0m\n"),
+            ("ok \(now)", [:], "lvx \(esc)[33m◐\(esc)[0m\n"),
+            ("ok \(now)", ["s1": "joined \(now - 14_401)"], "lvx \(esc)[33m◐\(esc)[0m\n"),
+            ("ok \(now - 901)", ["s1": "joined \(now)"], "lvx \(esc)[90m○\(esc)[0m\n"),
+            ("down \(now)", [:], "lvx \(esc)[90m○\(esc)[0m\n"),
+            ("http-401 \(now)", [:], "lvx \(esc)[31m✕\(esc)[0m\n"),
+            ("unconfigured \(now)", [:], "lvx \(esc)[31m✕\(esc)[0m\n"),
+            (nil, [:], "lvx \(esc)[90m○\(esc)[0m\n"),
         ]
-        for (stamp, expected) in cases {
-            let result = try runStatusLineRenderer(stamp: stamp)
+        for (stamp, sessions, expected) in cases {
+            let result = try runStatusLineRenderer(stamp: stamp, sessionStamps: sessions)
             XCTAssertEqual(result.exitCode, 0, "\(stamp ?? "<none>") must exit 0")
             XCTAssertEqual(result.stdout, expected, "wrong rendering for \(stamp ?? "<none>")")
             XCTAssertEqual(result.stderr, "", "the renderer must never be noisy")
         }
+    }
+
+    func testStatusLineDoesNotBorrowAnotherSessionsJoinedStamp() throws {
+        let result = try runStatusLineRenderer(
+            stamp: "ok 2000000000",
+            sessionStamps: ["other": "joined 2000000000"]
+        )
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stdout, "lvx \u{1B}[33m\u{25D0}\u{1B}[0m\n")
+        XCTAssertEqual(result.stderr, "")
     }
 
     func testStatusLineRendererNeverEchoesStampBytes() throws {
@@ -608,7 +759,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         // status line. So the stamp's first token only ever SELECTS a fixed
         // string; unrecognized states render the never-heard-anything default
         // and not one byte of the file.
-        let defaultLine = "lvx \u{1B}[90m\u{25CF}\u{1B}[0m\n"
+        let defaultLine = "lvx \u{1B}[90m\u{25CB}\u{1B}[0m\n"
         for hostile in [
             "$(uname) 1786204746",
             "ok`uname` 1786204746",
@@ -624,16 +775,26 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             )
             XCTAssertEqual(result.stderr, "")
         }
+
+        let hostileSession = try runStatusLineRenderer(
+            stamp: "ok 2000000000",
+            sessionStamps: ["s1": "joined 2000000000\u{1B}]0;evil\u{07}"]
+        )
+        XCTAssertEqual(hostileSession.stdout, "lvx \u{1B}[33m\u{25D0}\u{1B}[0m\n")
+        XCTAssertEqual(hostileSession.stderr, "")
     }
 
     func testStatusLineRendererUsesPlainTextWhenColorIsDisabled() throws {
-        let fresh = String(Int(Date().timeIntervalSince1970))
-        for (stamp, environment, expected) in [
-            ("ok \(fresh)", ["NO_COLOR": ""], "lvx ok\n"),
-            ("down \(fresh)", ["TERM": "dumb"], "lvx off\n"),
-            ("http-401 \(fresh)", ["NO_COLOR": "1"], "lvx err\n"),
+        let now = 2_000_000_000
+        for (stamp, sessions, environment, expected) in [
+            ("ok \(now)", ["s1": "joined \(now)"], ["NO_COLOR": ""], "lvx ●\n"),
+            ("ok \(now)", [:], ["TERM": "dumb"], "lvx ◐\n"),
+            ("down \(now)", [:], ["TERM": "dumb"], "lvx ○\n"),
+            ("http-401 \(now)", [:], ["NO_COLOR": "1"], "lvx ✕\n"),
         ] {
-            let result = try runStatusLineRenderer(stamp: stamp, environment: environment)
+            let result = try runStatusLineRenderer(
+                stamp: stamp, sessionStamps: sessions, environment: environment
+            )
             XCTAssertEqual(result.exitCode, 0)
             XCTAssertEqual(result.stdout, expected)
             XCTAssertEqual(result.stderr, "")
@@ -671,7 +832,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     private func runShim(
         event: String = "Stop",
         environment: [String: String],
-        workingDirectory: URL? = nil
+        workingDirectory: URL? = nil,
+        payload: Data = Data("{}".utf8)
     ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
         let isolatedState = FileManager.default.temporaryDirectory
             .appendingPathComponent("shim-state-\(UUID().uuidString)")
@@ -694,7 +856,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         // Only the glob case sets this: what the shim's cwd contains decides
         // what an unsuppressed `*` would expand to.
         if let workingDirectory { process.currentDirectoryURL = workingDirectory }
-        return try Self.runToCompletion(process, stdin: Data("{}".utf8))
+        return try Self.runToCompletion(process, stdin: payload)
     }
 
     // MARK: Shim stdout gate
@@ -713,9 +875,9 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         // The fixture comes from the REAL codec, not a hand-written string: if
         // JSONEncoder's escaping or key order ever changes shape, this fails
         // loudly instead of the shim silently swallowing every legitimate
-        // response. There is exactly ONE body now — the listener answers an
-        // accepted record and a discarded one identically — so the grammar has
-        // no variable part left for a squatter to aim at.
+        // response. There is exactly ONE body now. The listener's fixed
+        // X-Lvx-Session header differs, but the stdout grammar has no variable
+        // part for a squatter to aim at.
         let body = ClaudeRemoteHTTPCodec.hookResponseBody
         let result = try runShimWithStubCurl(status: "200", body: body)
         XCTAssertEqual(result.exitCode, 0)
@@ -802,8 +964,10 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         status: String,
         body: Data?,
         curlExitCode: Int32 = 0,
+        responseHeaders: String = "",
         extraEnvironment: [String: String] = [:],
-        workingDirectory: URL? = nil
+        workingDirectory: URL? = nil,
+        payload: Data = Data(#"{"session_id":"s1"}"#.utf8)
     ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
         // The stub itself is shared (see `stubCurlDirectory`); the body fixture
         // is the part that differs per call and keeps its own directory, so no
@@ -822,10 +986,14 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             "FAKE_CURL_BODY": bodyFixture.path,
             "FAKE_CURL_STATUS": status,
             "FAKE_CURL_EXIT": String(curlExitCode),
+            "FAKE_CURL_RESPONSE_HEADERS": responseHeaders,
         ]
         environment.merge(extraEnvironment) { _, new in new }
         return try runShim(
-            event: event, environment: environment, workingDirectory: workingDirectory
+            event: event,
+            environment: environment,
+            workingDirectory: workingDirectory,
+            payload: payload
         )
     }
 

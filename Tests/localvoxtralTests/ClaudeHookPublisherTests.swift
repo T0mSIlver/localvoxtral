@@ -329,11 +329,11 @@ final class ClaudeHookPublisherTests: XCTestCase {
         )
         XCTAssertEqual(
             ClaudeHookPublisher.statusLineText(for: .sessionUnknown),
-            "lvx \u{1B}[31m\u{25CF}\u{1B}[0m"
+            "lvx \u{1B}[33m\u{25D0}\u{1B}[0m"
         )
         XCTAssertEqual(
             ClaudeHookPublisher.statusLineText(for: .appUnreachable),
-            "lvx \u{1B}[90m\u{25CF}\u{1B}[0m"
+            "lvx \u{1B}[90m\u{25CB}\u{1B}[0m"
         )
         XCTAssertNil(
             ClaudeHookPublisher.statusLineText(for: .unparseablePayload),
@@ -341,15 +341,15 @@ final class ClaudeHookPublisherTests: XCTestCase {
         )
     }
 
-    func testStatusLinePlainTextFallbackUsesThreeFixedStates() {
+    func testStatusLinePlainTextFallbackUsesTheSameGlyphs() {
         XCTAssertEqual(
-            ClaudeHookPublisher.statusLineText(for: .connected, useColor: false), "lvx ok"
+            ClaudeHookPublisher.statusLineText(for: .connected, useColor: false), "lvx \u{25CF}"
         )
         XCTAssertEqual(
-            ClaudeHookPublisher.statusLineText(for: .sessionUnknown, useColor: false), "lvx err"
+            ClaudeHookPublisher.statusLineText(for: .sessionUnknown, useColor: false), "lvx \u{25D0}"
         )
         XCTAssertEqual(
-            ClaudeHookPublisher.statusLineText(for: .appUnreachable, useColor: false), "lvx off"
+            ClaudeHookPublisher.statusLineText(for: .appUnreachable, useColor: false), "lvx \u{25CB}"
         )
         XCTAssertFalse(ClaudeHookPublisher.statusLineUsesColor(environment: ["NO_COLOR": ""]))
         XCTAssertFalse(ClaudeHookPublisher.statusLineUsesColor(environment: ["TERM": "dumb"]))

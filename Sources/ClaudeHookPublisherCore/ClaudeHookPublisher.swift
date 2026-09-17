@@ -196,9 +196,9 @@ public struct ClaudeHookPublisher: Sendable {
     ) -> String? {
         if !useColor {
             switch outcome {
-            case .connected: return "lvx ok"
-            case .sessionUnknown: return "lvx err"
-            case .appUnreachable: return "lvx off"
+            case .connected: return "lvx \u{25CF}"
+            case .sessionUnknown: return "lvx \u{25D0}"
+            case .appUnreachable: return "lvx \u{25CB}"
             case .unparseablePayload: return nil
             }
         }
@@ -206,9 +206,9 @@ public struct ClaudeHookPublisher: Sendable {
         case .connected:
             return "lvx \u{1B}[32m\u{25CF}\u{1B}[0m"
         case .sessionUnknown:
-            return "lvx \u{1B}[31m\u{25CF}\u{1B}[0m"
+            return "lvx \u{1B}[33m\u{25D0}\u{1B}[0m"
         case .appUnreachable:
-            return "lvx \u{1B}[90m\u{25CF}\u{1B}[0m"
+            return "lvx \u{1B}[90m\u{25CB}\u{1B}[0m"
         case .unparseablePayload:
             return nil
         }
