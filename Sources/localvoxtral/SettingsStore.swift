@@ -209,7 +209,7 @@ final class SettingsStore {
         static let realtimeAPIEndpointURL = "settings.realtime_api_endpoint_url"
         /// LEGACY. The three API keys now live in the login Keychain
         /// (`SecretKey` / `KeychainSecretStore`); these defaults keys exist
-        /// only so `loadSecrets` can find and remove a value
+        /// only so `migrateLegacySecrets` can find and remove a value
         /// written by a build that predates the move. Nothing else may read
         /// or write them.
         static let apiKey = "settings.api_key"
@@ -897,7 +897,14 @@ final class SettingsStore {
         // of truth. Done here rather than lazily so a plist copy of a secret
         // stops existing at the first launch that can remove it. Reading the
         // keys back is NOT done here — see `ensureSecretsLoaded`.
-        let secrets = Self.migrateLegacySecrets(defaults: defaults, secretStore: secretStore)
+        // ... but NOT on a run whose secret store dies with the process: the
+        // sweep removes the plist copy once the write "succeeds", and an
+        // in-memory write always succeeds. A CI launch would take the user's
+        // only copy of a not-yet-migrated key with it.
+        let secrets =
+            StartupPermissionSuppression.loginKeychainIsDisabled(environment: environment)
+            ? ResolvedSecrets()
+            : Self.migrateLegacySecrets(defaults: defaults, secretStore: secretStore)
         secretStoreFailureSummary = secrets.failureSummary
 
         apiKey = Self.resolveSecret(
@@ -1336,11 +1343,14 @@ final class SettingsStore {
     private func persistSecret(_ value: String, for key: SecretKey) {
         // A value the store just handed us is not a change to write back.
         guard !isApplyingStoredSecret else { return }
+        // Marked loaded either way. On success the store holds exactly this
+        // value, so there is nothing to fetch. On failure the value is still
+        // the one this process runs with ("works this session but is not
+        // saved"), and a later fetch would overwrite what the user just typed
+        // with the stale stored key.
+        loadedSecretKeys.insert(key)
         do {
             try secretStore.setSecret(value.trimmed, for: key)
-            // What we just wrote is what is stored, so a later
-            // `ensureSecretsLoaded` has nothing to fetch.
-            loadedSecretKeys.insert(key)
         } catch {
             secretStoreFailureSummary = Self.secretStoreWriteFailureSummary
             Log.secrets.error(

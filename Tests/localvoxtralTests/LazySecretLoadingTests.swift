@@ -13,14 +13,20 @@ final class CountingSecretStore: SecretStoring, @unchecked Sendable {
     private struct State {
         var values: [SecretKey: String]
         var readFailures: Set<SecretKey>
+        var writeFailures: Set<SecretKey>
         var reads: [SecretKey] = []
         var writes: [SecretKey] = []
     }
 
     private let state: Mutex<State>
 
-    init(_ values: [SecretKey: String] = [:], readFailures: Set<SecretKey> = []) {
-        state = Mutex(State(values: values, readFailures: readFailures))
+    init(
+        _ values: [SecretKey: String] = [:],
+        readFailures: Set<SecretKey> = [],
+        writeFailures: Set<SecretKey> = []
+    ) {
+        state = Mutex(
+            State(values: values, readFailures: readFailures, writeFailures: writeFailures))
     }
 
     func secret(for key: SecretKey) throws -> String? {
@@ -36,8 +42,13 @@ final class CountingSecretStore: SecretStoring, @unchecked Sendable {
     }
 
     func setSecret(_ value: String?, for key: SecretKey) throws {
-        state.withLock { state in
+        try state.withLock { state in
             state.writes.append(key)
+            guard !state.writeFailures.contains(key) else {
+                throw SecretStoreError(
+                    operation: .write, key: key, status: Self.interactionNotAllowed,
+                    message: "User interaction is not allowed.")
+            }
             guard let value, !value.isEmpty else {
                 state.values.removeValue(forKey: key)
                 return
@@ -228,6 +239,51 @@ final class LazySecretLoadingTests: XCTestCase {
             secrets.reads.filter { $0 == .mistralAPIKey }, [.mistralAPIKey],
             "one refused read, not one per engine switch")
         XCTAssertEqual(store.mistralAPIKey, "")
+    }
+
+    /// A refused write leaves the typed key in memory and says so. The key
+    /// must NOT be fetched afterwards: the stored value is the old one, and
+    /// assigning it would silently undo what the user just typed.
+    func testARefusedWriteIsNotOverwrittenByALaterFetch() {
+        let secrets = CountingSecretStore([.mistralAPIKey: "mk-stale"], writeFailures: [.mistralAPIKey])
+        let store = makeStore(secrets)
+
+        store.mistralAPIKey = "mk-typed"
+        XCTAssertEqual(
+            store.secretStoreFailureSummary, SettingsStore.secretStoreWriteFailureSummary)
+
+        // Settings reopened, engine switched — every path that fetches keys.
+        store.ensureAllSecretsLoaded()
+        store.dictationBackendMode = .mistralAPI
+
+        XCTAssertEqual(store.mistralAPIKey, "mk-typed", "the key still works this session")
+        XCTAssertFalse(
+            secrets.reads.contains(.mistralAPIKey),
+            "a key this process is already holding is never fetched over")
+    }
+
+    // MARK: - Migration is destructive, so a throwaway store must not run it
+
+    /// The legacy sweep deletes the plist copy once the write succeeds — and an
+    /// in-memory write always succeeds. A CI launch under either flag would
+    /// take the user's only copy of a not-yet-migrated key with it.
+    func testACIFlaggedLaunchLeavesAnUnmigratedPlistKeyAlone() {
+        defaults.set(false, forKey: Self.migratedFlagKey)
+        defaults.set("mk-only-copy", forKey: "settings.mistral_api_key")
+
+        let settings = SettingsStore(
+            defaults: defaults,
+            environment: [StartupPermissionSuppression.keychainEnvironmentKey: "1"]
+        )
+        settings.ensureAllSecretsLoaded()
+
+        XCTAssertEqual(
+            defaults.string(forKey: "settings.mistral_api_key"), "mk-only-copy",
+            "the only copy of the key must survive a run that cannot store it")
+        XCTAssertFalse(
+            defaults.bool(forKey: Self.migratedFlagKey),
+            "and the real next launch must still run the sweep")
+        XCTAssertEqual(settings.mistralAPIKey, "", "the CI run gets no key of the user's")
     }
 
     // MARK: - Which engine needs which key

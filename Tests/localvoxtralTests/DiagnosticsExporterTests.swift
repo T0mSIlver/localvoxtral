@@ -60,6 +60,32 @@ final class DiagnosticsExporterTests: XCTestCase {
         )
     }
 
+    // MARK: - Stored keys
+
+    /// The export reports whether each key is set, and the app no longer reads
+    /// a key until something needs it. Without the exporter's own fetch, a
+    /// managed-local user's report would claim "not set" for keys they have
+    /// stored — and send whoever reads the report after the wrong thing.
+    func testTheExportFetchesStoredKeysBeforeReportingThem() {
+        let secrets = CountingSecretStore([
+            .realtimeAPIKey: "sk-realtime",
+            .llmPolishingAPIKey: "polish-key",
+            .mistralAPIKey: "mk-mistral",
+        ])
+        let store = SettingsStore(
+            defaults: defaults, environment: [:], secretStore: secrets)
+        XCTAssertEqual(secrets.reads, [], "managed local reads nothing at launch")
+
+        let snapshot = makeSnapshot(settings: store)
+
+        XCTAssertEqual(Set(secrets.reads), Set(SecretKey.allCases))
+        XCTAssertTrue(snapshot.hasRealtimeAPIKey)
+        XCTAssertTrue(snapshot.hasPolishingAPIKey)
+        let report = DiagnosticsExporter.makeReport(snapshot: snapshot, now: Date())
+        XCTAssertTrue(report.contains("realtime API key: set"))
+        XCTAssertFalse(report.contains("sk-realtime"), "never the key itself")
+    }
+
     // MARK: - Section presence
 
     func testReportContainsExpectedSections() {
