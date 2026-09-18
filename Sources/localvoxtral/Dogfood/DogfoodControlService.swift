@@ -294,6 +294,10 @@ final class DogfoodControlService {
     /// wire reports it.
     var isAutoStopArmed: Bool { autoStopTask != nil }
 
+    /// The armed cap's task, so a test can await the stop decision itself
+    /// instead of yielding and hoping it already ran. Test seam only.
+    var autoStopTaskForTesting: Task<Void, Never>? { autoStopTask }
+
     // MARK: - join / probe / registry
 
     /// The join the LAST dictation resolved, with the abstention chain that
