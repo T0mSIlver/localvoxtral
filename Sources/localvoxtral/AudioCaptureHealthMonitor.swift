@@ -79,6 +79,15 @@ final class AudioCaptureHealthMonitor {
         scheduleAudioChangeEvaluation()
     }
 
+    #if DEBUG
+    /// Runs the pending device/route evaluation now instead of after its
+    /// debounce sleep.
+    func debugEvaluateAudioChangeNow() {
+        pendingAudioChangeTask?.cancel()
+        evaluateAudioChange()
+    }
+    #endif
+
     func resetState() {
         captureInterruptionDetectedAt = nil
         startupCaptureGraceUntil = nil
