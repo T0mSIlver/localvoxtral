@@ -241,15 +241,22 @@ struct LLMPromptTemplates: Equatable, Sendable {
     /// to the system prompt. It rides the SYSTEM message because it is stable
     /// across dictations, so it stays inside the prefix polishd checkpoints;
     /// the warmup applies the same call so both prefixes match.
-    func withSpeakerProfile(_ profile: String) -> LLMPromptTemplates {
+    func withSpeakerProfile(_ profile: String, terms: [String] = []) -> LLMPromptTemplates {
         let trimmed = String(
             PolishContextClipboardReader.sanitizeControlCharacters(profile)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .prefix(Self.speakerProfileMaxCharacters)
         )
-        guard !trimmed.isEmpty else { return self }
+        let sanitizedTerms = SpeakerTerms.sanitized(terms)
+        var lines: [String] = []
+        if !trimmed.isEmpty { lines.append(trimmed) }
+        if !sanitizedTerms.isEmpty {
+            lines.append("Names and terms they use: " + sanitizedTerms.joined(separator: ", "))
+        }
+        guard !lines.isEmpty else { return self }
         return LLMPromptTemplates(
-            systemContent: "\(systemContent)\n\n\(Self.speakerProfileHeader)\n\(trimmed)\n",
+            systemContent: "\(systemContent)\n\n\(Self.speakerProfileHeader)\n"
+                + lines.joined(separator: "\n") + "\n",
             userContent: userContent
         )
     }

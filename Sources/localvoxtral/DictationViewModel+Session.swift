@@ -269,9 +269,7 @@ extension DictationViewModel {
         clearLatchedSessionMetadata()
         sessionOutputMode = requestedOutputMode
         sessionStartedAt = Date()
-        sessionReplacementDictionary = settings.replacementDictionaryEnabled
-            ? appConfigStore.loadReplacementDictionary()
-            : nil
+        sessionReplacementDictionary = loadEffectiveReplacementDictionary()
         setRealtimeIndicatorIdle()
 
         let provider = settings.realtimeProvider
@@ -634,22 +632,18 @@ extension DictationViewModel {
             let polishingConfig = settings.llmPolishingConfiguration
             let shouldLoadReplacementDictionary =
                 settings.replacementDictionaryEnabled || polishingConfig != nil
-            let replacementDictionary: ReplacementDictionary
-            if settings.replacementDictionaryEnabled,
-               let sessionReplacementDictionary
-            {
-                replacementDictionary = sessionReplacementDictionary
-            } else {
-                replacementDictionary = shouldLoadReplacementDictionary
-                    ? appConfigStore.loadReplacementDictionary()
-                    : ReplacementDictionary(entries: [])
-            }
+            // The FILE dictionary alone renders into the prompt (the polisher
+            // gets it even with exact replacement off); the user's terms reach
+            // the prompt through the About-you block instead, and join the
+            // file's rules only for what is applied locally.
+            let replacementDictionary = shouldLoadReplacementDictionary
+                ? appConfigStore.loadReplacementDictionary()
+                : ReplacementDictionary(entries: [])
             let replacementDictionaryPrompt = replacementDictionary.renderedPromptSection()
             let originalText = currentDictationEventText
             let replacementAppliedText =
-                settings.replacementDictionaryEnabled
-                ? replacementDictionary.apply(to: originalText)
-                : originalText
+                (sessionReplacementDictionary ?? loadEffectiveReplacementDictionary())?
+                    .apply(to: originalText) ?? originalText
             // Spoken clipboard-paste macro (Overlay Buffer only): after the
             // replacement dictionary and BEFORE the polish request is built,
             // swap each spoken marker for the env-var-shaped placeholder and
@@ -701,7 +695,7 @@ extension DictationViewModel {
                 )
                 let capturedPolishProfile = polishProfile.rawValue
                 let promptTemplates = appConfigStore.loadLLMPromptTemplates(profile: polishProfile)
-                    .withSpeakerProfile(settings.polishSpeakerProfile)
+                    .withSpeakerProfile(settings.polishSpeakerProfile, terms: settings.polishSpeakerTerms)
 
                 statusText = StatusStrings.polishing
                 debugLog("LLM polishing started for \(workingText.count) chars")
@@ -2122,13 +2116,23 @@ extension DictationViewModel {
     }
 
     func replacementDictionaryForCurrentSession() -> ReplacementDictionary? {
-        guard settings.replacementDictionaryEnabled else { return nil }
         if let sessionReplacementDictionary {
             return sessionReplacementDictionary
         }
-        let dictionary = appConfigStore.loadReplacementDictionary()
+        let dictionary = loadEffectiveReplacementDictionary()
         sessionReplacementDictionary = dictionary
         return dictionary
+    }
+
+    /// Everything applied to the transcript without a model: the file's rules
+    /// when exact replacement is on, then the casing rules of the user's
+    /// terms. Nil when there is nothing to apply.
+    func loadEffectiveReplacementDictionary() -> ReplacementDictionary? {
+        let fileEntries = settings.replacementDictionaryEnabled
+            ? appConfigStore.loadReplacementDictionary()
+            : ReplacementDictionary(entries: [])
+        let effective = fileEntries.adding(speakerTerms: settings.polishSpeakerTerms)
+        return effective.entries.isEmpty ? nil : effective
     }
 
     // MARK: - Connect Timeout

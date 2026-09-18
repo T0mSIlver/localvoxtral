@@ -567,7 +567,7 @@ assert_tab "endpoints" "Engines" "Dictation"
 # "Trigger" is the Dictation pane's first group title; the pre-#278 needle
 # ("Start dictation with") named copy that no longer exists.
 assert_tab "dictation" "Dictation" "Trigger"
-assert_tab "textProcessing" "Text Processing" "Replacements"
+assert_tab "textProcessing" "Text Processing" "About you"
 # The polish feature toggles live on Text Processing (moved from Engines).
 assert_tab "textProcessing" "Text Processing" "Polishing"
 # The consent-grade context sources live on their own pane (moved off Text

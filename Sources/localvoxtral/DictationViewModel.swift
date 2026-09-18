@@ -827,6 +827,7 @@ final class DictationViewModel {
             refreshMicrophoneInputs()
             registerLifecycleObservers()
             requestStartupPermissionsIfNeeded()
+            importSpeakerTermsFromReplacementDictionaryIfNeeded()
             // Subscribe BEFORE the launch warmup below so the very first
             // polishd ready edge is observed and prompt-prefix-warmed.
             let promptWarmup = PolishPromptWarmupCoordinator(
@@ -962,6 +963,16 @@ final class DictationViewModel {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
         StartupPermissionSuppression.isActive(environment: environment)
+    }
+
+    /// Once per install: the spellings the user already maintains in
+    /// `replacement_dictionary.toml` become their first terms. Writing the
+    /// (possibly empty) result is what marks the import done.
+    private func importSpeakerTermsFromReplacementDictionaryIfNeeded() {
+        guard !settings.hasStoredPolishSpeakerTerms else { return }
+        let imported = SpeakerTerms.migrated(from: appConfigStore.loadReplacementDictionary())
+        settings.polishSpeakerTerms = imported
+        Log.config.info("Speaker terms imported from replacement dictionary: \(imported.count, privacy: .public)")
     }
 
     private func requestStartupPermissionsIfNeeded() {

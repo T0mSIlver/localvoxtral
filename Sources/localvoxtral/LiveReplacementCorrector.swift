@@ -207,6 +207,10 @@ struct LiveReplacementCorrector {
                     continue
                 }
 
+                // A term's casing rule also matches text that is already
+                // right; retyping it in place would be a visible no-op.
+                guard searchText[matchRange] != rule.replaceWith else { continue }
+
                 let matchStartDelta = searchText.distance(
                     from: searchText.startIndex,
                     to: matchRange.lowerBound
