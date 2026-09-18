@@ -98,9 +98,11 @@ there is not.
   timeout). `high` needs no per-model table: `/v1/models` reports only whether
   a model reasons, and `high` is the one level every reasoning model accepted
   (GLM low/high/max, Mistral none/high). Self-hosted shapes are untouched.
-  Two rules protect dictation from it: a dictation start cancels a run in
-  flight (`cancelForDictation` — the bundled helper generates one request at a
-  time, so a polish would wait behind it into its 40 s timeout), and the
+  On a hosted or external endpoint the run simply continues in the background
+  while the user dictates; those servers answer a polish concurrently. Two
+  rules protect dictation on the BUNDLED HELPER only: a dictation start cancels
+  a run in flight (`cancelForDictation` — it generates one request at a time,
+  so a polish would wait behind the run into its 40 s timeout), and the
   request is ONE user message with no system message, because polishd
   checkpoints every message but the last and its two prompt-cache slots
   belong to the dictation profiles.

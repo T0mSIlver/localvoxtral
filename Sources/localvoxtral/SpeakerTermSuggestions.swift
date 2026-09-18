@@ -165,18 +165,25 @@ final class SpeakerTermSuggestionModel {
     private let recentTexts: @MainActor () async -> [String]
     private let service: @MainActor () -> any LLMPolishingServicing
     private let isDictating: @MainActor () -> Bool
+    /// True when the polishing backend generates ONE request at a time (the
+    /// bundled helper). A hosted or external server answers a polish while a
+    /// suggestion run is still going, so there the run just continues in the
+    /// background through any number of dictations.
+    private let sharesOneGenerationSlot: @MainActor () -> Bool
     @ObservationIgnored private var task: Task<Void, Never>?
 
     init(
         settings: SettingsStore,
         recentTexts: @escaping @MainActor () async -> [String],
         service: @escaping @MainActor () -> any LLMPolishingServicing,
-        isDictating: @escaping @MainActor () -> Bool = { false }
+        isDictating: @escaping @MainActor () -> Bool = { false },
+        sharesOneGenerationSlot: @escaping @MainActor () -> Bool = { false }
     ) {
         self.settings = settings
         self.recentTexts = recentTexts
         self.service = service
         self.isDictating = isDictating
+        self.sharesOneGenerationSlot = sharesOneGenerationSlot
     }
 
     /// The button's action. The model owns the task so a dictation can stop it.
@@ -185,11 +192,11 @@ final class SpeakerTermSuggestionModel {
         task = Task { await suggest() }
     }
 
-    /// A dictation is starting. The bundled helper generates one request at a
-    /// time, so a suggestion run in flight would make the polish wait behind
-    /// it and hit its 40 s timeout; the dictation always wins.
+    /// A dictation is starting. On the bundled helper a suggestion run in
+    /// flight would make the polish wait behind it and hit its 40 s timeout,
+    /// so there the dictation wins. Everywhere else this does nothing.
     func cancelForDictation() {
-        guard phase == .loading else { return }
+        guard phase == .loading, sharesOneGenerationSlot() else { return }
         task?.cancel()
         task = nil
         phase = .failed("Stopped: a dictation started.")
@@ -198,7 +205,7 @@ final class SpeakerTermSuggestionModel {
 
     func suggest() async {
         guard phase != .loading else { return }
-        guard !isDictating() else {
+        guard !(isDictating() && sharesOneGenerationSlot()) else {
             phase = .failed("Finish dictating first.")
             return
         }

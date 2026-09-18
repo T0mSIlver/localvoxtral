@@ -409,7 +409,10 @@ final class DictationViewModel {
                 ) ?? []
             },
             service: { [weak self] in self?.llmPolishingService ?? LLMPolishingService() },
-            isDictating: { [weak self] in self?.isDictating ?? false }
+            isDictating: { [weak self] in self?.isDictating ?? false },
+            sharesOneGenerationSlot: { [weak self] in
+                self?.settings.polishingBackendMode == .managedLocal
+            }
         )
         storedTermSuggestions = model
         return model

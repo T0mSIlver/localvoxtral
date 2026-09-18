@@ -300,7 +300,8 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         let settings = makeSettings()
         let service = GatedService()
         let model = SpeakerTermSuggestionModel(
-            settings: settings, recentTexts: { ["a text"] }, service: { service }
+            settings: settings, recentTexts: { ["a text"] }, service: { service },
+            sharesOneGenerationSlot: { true }
         )
 
         model.start()
@@ -319,12 +320,32 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         XCTAssertEqual(requestCount, 1)
     }
 
-    func testSuggestRefusesWhileDictating() async {
+    /// A hosted or external server answers a polish while the run is going:
+    /// the run survives the dictation and its answer is used.
+    func testOnAConcurrentBackendTheRunContinuesThroughADictation() async {
+        let settings = makeSettings()
+        let service = GatedService()
+        let model = SpeakerTermSuggestionModel(
+            settings: settings, recentTexts: { ["a text"] }, service: { service },
+            isDictating: { true }, sharesOneGenerationSlot: { false }
+        )
+
+        model.start()
+        await service.waitUntilRequested()
+        model.cancelForDictation()
+        XCTAssertEqual(model.phase, .loading)
+
+        await service.release(with: #"["Qwen"]"#)
+        while model.phase == .loading { await Task.yield() }
+        XCTAssertEqual(model.suggestions, ["Qwen"])
+    }
+
+    func testSuggestRefusesWhileDictatingOnTheBundledHelper() async {
         let settings = makeSettings()
         let service = Service()
         let model = SpeakerTermSuggestionModel(
             settings: settings, recentTexts: { ["a text"] }, service: { service },
-            isDictating: { true }
+            isDictating: { true }, sharesOneGenerationSlot: { true }
         )
         await model.suggest()
         XCTAssertEqual(model.phase, .failed("Finish dictating first."))
