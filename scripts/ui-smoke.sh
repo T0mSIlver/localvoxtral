@@ -30,6 +30,9 @@ APP_PID=""
 # it to make room for a fresh launch, so cleanup can relaunch it. Empty means
 # the drill has not touched the owner's app and must not quit anything.
 OWNER_APP_BUNDLE=""
+# Set just before `open`, not when the pid is found: a signal in between must
+# still quit the instance being launched.
+DRILL_LAUNCHED=0
 FAILED=0
 CLEANED_UP=0
 OSASCRIPT_TIMEOUT_SECONDS="${OSASCRIPT_TIMEOUT_SECONDS:-8}"
@@ -216,17 +219,23 @@ cleanup() {
     return
   fi
   CLEANED_UP=1
+  # A signal mid-cleanup would re-enter it as a no-op and exit, leaving the
+  # owner's app stopped and the drill's defaults installed. Every step below
+  # is bounded, so finish it.
+  trap '' INT TERM HUP
 
   stop_backend_sampler
   # Only a drill that launched, or cleared the slot to launch, owns whatever
   # localvoxtral is running now. Before that point it is the owner's app.
-  if [[ -n "$APP_PID" || -n "$OWNER_APP_BUNDLE" ]]; then
+  if ((DRILL_LAUNCHED)) || [[ -n "$OWNER_APP_BUNDLE" ]]; then
     quit_app
   fi
-  if ! restore_defaults; then
-    printf 'WARNING: failed to restore defaults backup at %s; leaving it in place for the next run.\n' "$PERSISTENT_DEFAULTS_BACKUP" >&2
+  if restore_defaults; then
+    relaunch_owner_app
+  else
+    # The owner's app would start on the drill's forced modes, or on none.
+    printf 'WARNING: failed to restore defaults backup at %s; leaving it in place for the next run and NOT relaunching the owner app at %s.\n' "$PERSISTENT_DEFAULTS_BACKUP" "$OWNER_APP_BUNDLE" >&2
   fi
-  relaunch_owner_app
   [[ -n "$PREFLIGHT_HELPER" ]] && rm -f "$PREFLIGHT_HELPER"
   [[ -n "$BACKEND_SAMPLE_FILE" ]] && rm -f "$BACKEND_SAMPLE_FILE"
 }
@@ -333,6 +342,7 @@ record_pass "Defaults domain snapshot captured and smoke run forced to external 
 BASELINE_BACKEND_PIDS="$(managed_backend_pids)"
 
 start_backend_sampler
+DRILL_LAUNCHED=1
 lv_open -n "$APP_PATH"
 launch_deadline=$((SECONDS + LAUNCH_TIMEOUT_SECONDS))
 while ((SECONDS < launch_deadline)); do

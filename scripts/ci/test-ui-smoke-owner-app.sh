@@ -67,6 +67,7 @@ cat >"$BIN/defaults" <<'STUB'
 echo "defaults $1" >>"$EVENTS"
 case "$1" in
   export) printf '<plist/>\n' >"$3" ;;
+  import) exit "${STUB_IMPORT_STATUS:-0}" ;;
 esac
 exit 0
 STUB
@@ -93,6 +94,13 @@ run_drill() {
 
 line_of() { grep -n -m1 -x -- "$1" "$EVENTS" | cut -d: -f1 || true; }
 
+# Cases 2-4 must end at the drill's own launch; anything earlier would satisfy
+# their assertions for the wrong reason.
+assert_reached_launch() {
+  grep -q "App process did not start" "$WORK/out" \
+    || fail "the drill ended before its launch: $(tail -n 3 "$WORK/out")"
+}
+
 # 1. Preflight fails: the drill never launches, so the owner's app is untouched.
 run_drill 1 yes
 grep -qx "quit" "$EVENTS" && fail "a drill that failed its preflight quit the owner's app"
@@ -104,6 +112,7 @@ echo "PASS: failed preflight leaves the owner's app running"
 #    any defaults write, then relaunched from its own bundle after the owner's
 #    defaults are restored, without the CI-only env.
 run_drill 0 yes
+assert_reached_launch
 quit_line="$(line_of "quit")"
 write_line="$(line_of "defaults write")"
 import_line="$(line_of "defaults import")"
@@ -121,7 +130,16 @@ echo "PASS: the owner's app is quit before defaults change and relaunched after 
 
 # 3. No owner app running: nothing gets relaunched.
 run_drill 0 no
+assert_reached_launch
 grep -q "^open $OWNER_BUNDLE" "$EVENTS" && fail "the drill relaunched an app that was not running before"
 echo "PASS: no relaunch when the owner's app was not running"
+
+# 4. Restoring the owner's defaults fails: the owner's app stays down rather
+#    than starting on the drill's forced modes.
+STUB_IMPORT_STATUS=1 run_drill 0 yes
+assert_reached_launch
+grep -q "^open $OWNER_BUNDLE" "$EVENTS" && fail "the owner's app was relaunched without its defaults"
+grep -q "NOT relaunching the owner app" "$WORK/out" || fail "the skipped relaunch is not reported"
+echo "PASS: no relaunch when the owner's defaults could not be restored"
 
 echo "ui-smoke owner-app tests passed"
