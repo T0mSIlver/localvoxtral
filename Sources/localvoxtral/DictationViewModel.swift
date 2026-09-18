@@ -1806,8 +1806,16 @@ final class DictationViewModel {
 
     /// CoreAudio reported a device plugged in, unplugged, or a new system
     /// default input.
+    /// While a capture runs the health monitor owns the refresh: it compares
+    /// the selection before and after to catch the live mic disappearing.
+    /// Otherwise nobody is listening, so refresh here — without this a mic
+    /// plugged in after launch stayed out of the menu until relaunch.
     func handleMicrophoneInputDevicesChanged() {
-        healthMonitor.handleInputDevicesChanged()
+        if healthMonitor.isMonitoring {
+            healthMonitor.handleInputDevicesChanged()
+        } else {
+            refreshMicrophoneInputs()
+        }
     }
 
     func refreshMicrophoneInputs() {
@@ -1848,17 +1856,25 @@ final class DictationViewModel {
         if selectedInputDeviceID != resolvedSelection {
             selectedInputDeviceID = resolvedSelection
         }
-        if settings.selectedInputDeviceUID != resolvedSelection {
+        // A saved mic that is only unplugged stays saved, so plugging it back
+        // in selects it again. Only a first run with nothing saved records
+        // the fallback.
+        if savedSelection.isEmpty {
             settings.selectedInputDeviceUID = resolvedSelection
         }
     }
 
     func selectMicrophoneInput(id: String) {
         guard !id.isEmpty else { return }
+        // Save even when `id` is already selected: it may be the fallback
+        // standing in for an unplugged saved mic, and clicking it means
+        // "use this one from now on".
+        if settings.selectedInputDeviceUID != id {
+            settings.selectedInputDeviceUID = id
+        }
         guard selectedInputDeviceID != id else { return }
 
         selectedInputDeviceID = id
-        settings.selectedInputDeviceUID = id
 
         guard isDictating else { return }
         stopDictation(reason: "input device changed by user", finalizeRemainingAudio: false)

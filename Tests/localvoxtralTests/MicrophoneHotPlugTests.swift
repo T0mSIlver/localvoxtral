@@ -59,6 +59,25 @@ final class MicrophoneHotPlugTests: XCTestCase {
         XCTAssertEqual(viewModel.selectedInputDeviceID, usb.id)
     }
 
+    func testPickingTheFallbackWhileSavedMicIsUnpluggedSavesIt() {
+        let (viewModel, settings) = makeViewModel()
+        viewModel.microphone.debugConfigureDeviceEnumeration(
+            devices: [builtIn, usb], defaultInputDeviceID: builtIn.id)
+        viewModel.refreshMicrophoneInputs()
+        viewModel.selectMicrophoneInput(id: usb.id)
+        viewModel.microphone.debugConfigureDeviceEnumeration(
+            devices: [builtIn], defaultInputDeviceID: builtIn.id)
+        viewModel.handleMicrophoneInputDevicesChanged()
+
+        viewModel.selectMicrophoneInput(id: builtIn.id)
+        viewModel.microphone.debugConfigureDeviceEnumeration(
+            devices: [builtIn, usb], defaultInputDeviceID: builtIn.id)
+        viewModel.handleMicrophoneInputDevicesChanged()
+
+        XCTAssertEqual(settings.selectedInputDeviceUID, builtIn.id)
+        XCTAssertEqual(viewModel.selectedInputDeviceID, builtIn.id)
+    }
+
     func testFirstRefreshSavesTheResolvedDefault() {
         let (viewModel, settings) = makeViewModel()
         viewModel.microphone.debugConfigureDeviceEnumeration(

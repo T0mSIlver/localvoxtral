@@ -38,6 +38,8 @@ final class AudioCaptureHealthMonitor {
     static let maxCaptureRecoveryAttempts = 3
     static let fastAudioChangeEvaluationDelayMilliseconds = 120
 
+    var isMonitoring: Bool { callbacks != nil }
+
     func start(microphone: MicrophoneCaptureService, callbacks: Callbacks) {
         self.microphone = microphone
         self.callbacks = callbacks
