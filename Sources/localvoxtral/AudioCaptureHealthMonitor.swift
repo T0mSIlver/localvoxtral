@@ -16,6 +16,10 @@ final class AudioCaptureHealthMonitor {
 
     private var callbacks: Callbacks?
     private var microphone: MicrophoneCaptureService?
+    /// The input the running capture was started on. The selection cannot
+    /// stand in for it: a device refresh moves the selection to a fallback
+    /// as soon as the selected mic disappears.
+    private var captureInputID = ""
     private var captureHealthTask: Task<Void, Never>?
     private var pendingAudioChangeTask: Task<Void, Never>?
     private var captureInterruptionDetectedAt: Date?
@@ -43,6 +47,7 @@ final class AudioCaptureHealthMonitor {
     func start(microphone: MicrophoneCaptureService, callbacks: Callbacks) {
         self.microphone = microphone
         self.callbacks = callbacks
+        captureInputID = callbacks.selectedInputDeviceID()
         resetState()
         startupCaptureGraceUntil = Date().addingTimeInterval(Self.startupCaptureGraceSeconds)
         restartCaptureHealthTask()
@@ -56,6 +61,7 @@ final class AudioCaptureHealthMonitor {
         resetState()
         callbacks = nil
         microphone = nil
+        captureInputID = ""
     }
 
     func handleConfigurationChange() {
@@ -146,7 +152,6 @@ final class AudioCaptureHealthMonitor {
         pendingAudioChangeTask = nil
         guard let microphone, let callbacks else { return }
 
-        let previousSelection = callbacks.selectedInputDeviceID()
         callbacks.refreshMicrophoneInputs()
 
         guard callbacks.isDictating() else {
@@ -154,9 +159,8 @@ final class AudioCaptureHealthMonitor {
             return
         }
 
-        if !previousSelection.isEmpty,
-           callbacks.selectedInputDeviceID() == previousSelection,
-           !callbacks.availableInputDevices().contains(where: { $0.id == previousSelection })
+        if !captureInputID.isEmpty,
+           !callbacks.availableInputDevices().contains(where: { $0.id == captureInputID })
         {
             callbacks.stopDictation("selected input unavailable")
             callbacks.setError("Selected microphone became unavailable. Reconnect it or select another input.")
@@ -317,6 +321,7 @@ final class AudioCaptureHealthMonitor {
         do {
             debugLog("attempting microphone recovery input=\(inputID ?? "default")")
             try callbacks.restartMicrophone(inputID)
+            captureInputID = preferredInputID
             callbacks.setStatus("Listening...")
             debugLog("microphone recovery succeeded")
             return true
