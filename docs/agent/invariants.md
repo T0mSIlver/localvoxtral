@@ -35,7 +35,9 @@ there is not.
   path. Repo/clipboard vocabulary is an INPUT-side exception: a transcript
   span that NORMALIZES TO A LOCAL TERM ITSELF ("use auth dot ts" ->
   `useAuth.ts`) is boundary-checked and pre-applied before the single polish
-  call. Nothing weaker rewrites the transcript. The sound-alike tiers (edit
+  call; a LONE word may change letter case and nothing else (French "Sans"
+  equals the flag `--sans` once dashes are ignored). Nothing weaker rewrites
+  the transcript. The sound-alike tiers (edit
   distance one, Double Metaphone key, bounded aligned fallback) only NOMINATE:
   their terms reach the model as a plain list of at most four, with no heard
   span beside them, and a file name whose extension the speaker never said is

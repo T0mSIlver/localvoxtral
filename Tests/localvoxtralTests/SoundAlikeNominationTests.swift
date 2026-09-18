@@ -77,6 +77,38 @@ final class SoundAlikeNominationTests: XCTestCase {
             in: "Regarde, dictation vie ou modèle."
         ))
         XCTAssertFalse(withheld("SessionStart", "session", in: "after starting a session"))
+        // Letters spoken one by one after the separator.
+        XCTAssertFalse(withheld("useAuth.ts", "use auth dot t s", in: "fix use auth dot t s"))
+        XCTAssertTrue(withheld("useAuth.ts", "use auth dots", in: "fix use auth dots"))
+        // The cue may precede a later occurrence of the span.
+        XCTAssertFalse(withheld(
+            "SettingsView.swift", "settings view",
+            in: "the settings view is slow, so open settings view"
+        ))
+    }
+
+    /// A term one source already wrote into the transcript is not offered
+    /// again from another source's damaged span.
+    func testPreAppliedTermIsNotAlsoOffered() {
+        let merged = PolishContextGrounding.merge([
+            .init(
+                source: .repository,
+                entries: [ReplacementEntry(replaceWith: "ConfigStore", matches: ["config store"])],
+                isFallbackOnly: false
+            ),
+            .init(
+                source: .clipboard,
+                entries: [],
+                isFallbackOnly: false,
+                verificationEntries: [
+                    ReplacementEntry(replaceWith: "ConfigStore", matches: ["config stor"]),
+                    ReplacementEntry(replaceWith: "ConfigLoader", matches: ["config lauder"]),
+                ]
+            ),
+        ])
+
+        XCTAssertEqual(merged.all.map(\.replaceWith), ["ConfigStore"])
+        XCTAssertEqual(merged.verificationPairs.map(\.exact), ["ConfigLoader"])
     }
 
     /// French "Sans" equals the flag `--sans` once dashes are ignored. One

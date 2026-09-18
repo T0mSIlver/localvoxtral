@@ -83,7 +83,8 @@ toggle that relaxes that.
 
 How the names are used: a phrase you said that matches a name exactly once
 case and separators are ignored ("use auth dot ts" → `useAuth.ts`) is
-corrected before the polisher runs. A name that only sounds like what you said
+corrected before the polisher runs (a single spoken word only when it differs
+from the name by letter case alone). A name that only sounds like what you said
 is offered to the polisher as a candidate — at most four, never a file
 extension you didn't say — and the polisher decides from the sentence.
 

@@ -1240,6 +1240,14 @@ private struct TextProcessingSettingsPane: View {
                                     .strokeBorder(Color(nsColor: .separatorColor))
                             )
                             .accessibilityIdentifier("settings.polishing.speakerProfile")
+                    } footer: {
+                        if settings.polishSpeakerProfile.count
+                            > LLMPromptTemplates.speakerProfileMaxCharacters
+                        {
+                            Text("Only the first \(LLMPromptTemplates.speakerProfileMaxCharacters) characters are sent.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
                 .disabled(!isLLMPolishingReachable)

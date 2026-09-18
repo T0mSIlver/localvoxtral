@@ -1039,7 +1039,10 @@ enum RepoVocabularyMatcher {
     /// `pane`/`pain` therefore remain ordinary prose unless another tier owns
     /// them, while a phrase like `terminal pane` is eligible.
     static let phoneticMinSingleWordNormalizedLength = 8
-    /// Pre-application (a silent rewrite) demands more evidence than a
+    /// Ranking grade, not a rewrite: since the 2026-09-18 rework no phonetic
+    /// hit is pre-applied, and hits meeting these thresholds are only offered
+    /// to the model AHEAD of weaker ones. The thresholds were set when the
+    /// grade did mean a silent rewrite, which demanded more evidence than a
     /// verification suggestion, for every window shape: the heard span must
     /// carry as many normalized characters as a single-word candidate needs,
     /// and the agreeing key must carry enough consonant structure that the
@@ -1409,8 +1412,10 @@ enum RepoVocabularyMatcher {
         return Array(ranked.prefix(maxEntries))
     }
 
-    /// Production matcher: keep entries approved by the existing exact /
-    /// edit-distance-one tiers unless one heard span maps to multiple terms.
+    /// The spans the production matcher REWRITES: exact-tier hits only (a lone
+    /// word may change letter case and nothing else). Sound-alike hits are in
+    /// `groundedCandidates(...).verificationCandidates`. Historical notes on
+    /// the tiers: a heard span that maps to multiple terms abstains.
     /// Exact-index hits are single-valued; multiple terms for the same span are
     /// therefore tied distance-one fuzzy hits and must all abstain. Only when
     /// those tiers leave NOTHING, try one broader aligned match (which applies
@@ -1633,17 +1638,34 @@ enum RepoVocabularyMatcher {
     ) -> Bool {
         guard let fileExtension = shortFileExtension(in: term) else { return false }
         let spoken = heard.lowercased()
+        let spokenWords = tokenize(spoken)
         if spoken.contains(".\(fileExtension)") { return false }
-        if tokenize(spoken).last.map(normalize) == fileExtension { return false }
+        if spokenWords.last.map(normalize) == fileExtension { return false }
+        // "use auth dot t s": the letters arrive as separate words, so look
+        // for the extension at the end of everything after a spoken separator.
+        if let separator = spokenWords.lastIndex(where: { ["dot", "point"].contains($0) }),
+           normalize(spokenWords[(separator + 1)...].joined()) == fileExtension
+        {
+            return false
+        }
 
-        let before = transcript.range(of: heard).map { transcript[..<$0.lowerBound] } ?? ""
-        let nearby = tokenize(String(before)).suffix(3) + tokenize(heard)
-        return !nearby.contains { word in
+        func isCue(_ word: String) -> Bool {
             fileReferenceCues.contains(word.folding(
                 options: [.caseInsensitive, .diacriticInsensitive],
                 locale: Locale(identifier: "en_US_POSIX")
             ))
         }
+        if spokenWords.contains(where: isCue) { return false }
+        // The matcher may have matched any occurrence of the span; a cue
+        // before one of them is enough.
+        var searchStart = transcript.startIndex
+        while let range = transcript.range(of: heard, range: searchStart..<transcript.endIndex) {
+            if tokenize(String(transcript[..<range.lowerBound])).suffix(3).contains(where: isCue) {
+                return false
+            }
+            searchStart = range.upperBound
+        }
+        return true
     }
 
     /// Places exact vocabulary bytes into only the literal ASR spans already
@@ -2151,8 +2173,8 @@ enum RepoVocabularyMatcher {
     /// pairs, models applied the pair as an instruction (replay 2026-09-18:
     /// five wrong insertions with pairs, three with this list, none without).
     static let verificationCandidatesHeader =
-        "Terms visible in the speaker's current project or screen. The speaker may or "
-        + "may not have said any of them. Use one ONLY where the text contains a word or "
+        "Terms from the speaker's current project, screen, clipboard or coding-agent "
+        + "session. The speaker may or may not have said any of them. Use one ONLY where the text contains a word or "
         + "phrase that sounds like it AND makes less sense than the term would in that "
         + "sentence; write it exactly as spelled here. Ordinary words that already make "
         + "sense stay as they are:"
