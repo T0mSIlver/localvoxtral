@@ -1129,6 +1129,11 @@ private struct TextProcessingSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
 
+    static let speakerProfileExample = """
+        Backend engineer at Acme, mostly Swift and Python.
+        • Names I say a lot: Qwen, Claude Code, vLLM, Ghostty
+        """
+
     private var isLLMPolishingReachable: Bool {
         settings.isOverlayBufferSessionReachable
     }
@@ -1198,14 +1203,28 @@ private struct TextProcessingSettingsPane: View {
 
                     SettingsFieldRow(
                         title: "About you",
-                        help:
-                            "Your work, tools and the names you say often, so misheard ones get fixed.",
+                        help: "Sent to the polishing model with every dictation.",
                         layout: .stacked
                     ) {
                         TextEditor(text: $settings.polishSpeakerProfile)
                             .font(.body)
                             .frame(height: 96)
                             .scrollContentBackground(.hidden)
+                            .scrollIndicators(.never)
+                            .overlay(alignment: .topLeading) {
+                                if settings.polishSpeakerProfile.isEmpty {
+                                    // TextEditor has no prompt of its own. The
+                                    // 5pt inset is NSTextView's line-fragment
+                                    // padding, so the example sits where typed
+                                    // text will.
+                                    Text(Self.speakerProfileExample)
+                                        .font(.body)
+                                        .foregroundStyle(.tertiary)
+                                        .padding(.leading, 5)
+                                        .allowsHitTesting(false)
+                                        .accessibilityHidden(true)
+                                }
+                            }
                             .padding(6)
                             .background(
                                 RoundedRectangle(cornerRadius: 6)
