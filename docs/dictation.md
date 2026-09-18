@@ -68,7 +68,8 @@ Open **Settings** from the menu bar popover:
   LLM Polishing switch, the agent prompt profile and spoken clipboard paste.
   **Advanced** holds the legacy replacement dictionary (fixed
   `replace_with`/`matches` rewrites, useful for Live Auto-Paste without
-  polishing; its spellings were imported into your terms once) and the prompt
+  polishing; the polisher no longer sees it, and its spellings were imported
+  into your terms once) and the prompt
   files
 - **Context** — what the polisher may see (repo vocabulary, clipboard, the
   agent's screen and session); each toggle's help is one line naming what

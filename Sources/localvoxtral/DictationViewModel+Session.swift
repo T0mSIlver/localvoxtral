@@ -630,16 +630,13 @@ extension DictationViewModel {
 
         if shouldCommitOverlay, !wasCancelled {
             let polishingConfig = settings.llmPolishingConfiguration
-            let shouldLoadReplacementDictionary =
-                settings.replacementDictionaryEnabled || polishingConfig != nil
-            // The FILE dictionary alone renders into the prompt (the polisher
-            // gets it even with exact replacement off); the user's terms reach
-            // the prompt through the About-you block instead, and join the
-            // file's rules only for what is applied locally.
-            let replacementDictionary = shouldLoadReplacementDictionary
-                ? appConfigStore.loadReplacementDictionary()
-                : ReplacementDictionary(entries: [])
-            let replacementDictionaryPrompt = replacementDictionary.renderedPromptSection()
+            // The polisher never sees replacement_dictionary.toml (owner
+            // ruling 2026-09-18): its `matches` are predictions of recognizer
+            // errors, and the model is better off with the user's terms in the
+            // About-you block. The file's rules still apply locally below.
+            // The `{{replacement_dictionary}}` slot stays: the vocabulary
+            // sections ride in it.
+            let replacementDictionaryPrompt = ""
             let originalText = currentDictationEventText
             let replacementAppliedText =
                 (sessionReplacementDictionary ?? loadEffectiveReplacementDictionary())?
@@ -1661,13 +1658,16 @@ extension DictationViewModel {
         // Terminal-like targets always begin a live session even with the
         // dictionary disabled: the hold-back stream's newline/tab sanitization
         // must protect the terminal regardless of replacements.
-        guard settings.replacementDictionaryEnabled || sessionTargetIsTerminalLike else {
+        // The user's terms carry casing rules even with the dictionary toggle
+        // off. Nothing to apply and not a terminal keeps the no-session path:
+        // no hold-back, no delay.
+        let dictionary = replacementDictionaryForCurrentSession()
+        guard dictionary != nil || sessionTargetIsTerminalLike else {
             textInsertion.endLiveReplacementSession()
             return
         }
 
         overlayBufferCoordinator.captureLiveCommitTargetAppPID()
-        let dictionary = replacementDictionaryForCurrentSession()
         textInsertion.beginLiveReplacementSession(
             dictionary: dictionary,
             preferredAppPID: overlayBufferCoordinator.commitTargetAppPID,

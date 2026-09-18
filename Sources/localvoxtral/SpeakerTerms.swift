@@ -38,10 +38,10 @@ enum SpeakerTerms {
     /// Rules that rewrite a term's own words to its spelling, whatever the
     /// case or spacing ("claude code" -> "Claude Code", "vllm" -> "vLLM").
     ///
-    /// A plain capitalized word gets NO rule: with "Work" or "Vibe" in the list
-    /// it would capitalize the ordinary word in every sentence, and nothing
-    /// without a model can tell the product from the noun. Those terms reach
-    /// the polish prompt only.
+    /// A plain capitalized word or an acronym gets NO rule: with "Work", "Vibe"
+    /// or "IT" in the list it would rewrite the ordinary word in every
+    /// sentence, and nothing without a model can tell the product from the
+    /// noun. Those terms reach the polish prompt only.
     static func replacementEntries(for terms: [String]) -> [ReplacementEntry] {
         sanitized(terms).compactMap { term in
             guard hasDistinctiveShape(term) else { return nil }
@@ -52,7 +52,10 @@ enum SpeakerTerms {
     static func hasDistinctiveShape(_ term: String) -> Bool {
         if term.contains(where: \.isWhitespace) { return true }
         if term.contains(where: { !$0.isLetter }) { return true }
-        return term.dropFirst().contains(where: \.isUppercase)
+        // Mixed case, not "any inner capital": an acronym is all capitals, and
+        // "US" or "IT" would uppercase the ordinary words "us" and "it".
+        return term.contains(where: \.isLowercase)
+            && term.dropFirst().contains(where: \.isUppercase)
     }
 
     /// The spellings the user already maintains in the replacement dictionary.

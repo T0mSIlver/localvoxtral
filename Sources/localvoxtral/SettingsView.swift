@@ -2536,7 +2536,11 @@ private struct SpeakerTermsField: View {
             TextField("", text: $draft, prompt: Text("Qwen, Claude Code, vLLM…"))
                 .textFieldStyle(.roundedBorder)
                 .onSubmit {
-                    terms = SpeakerTerms.adding(draft, to: terms)
+                    // Past a cap, or a duplicate: the text stays so the
+                    // Return visibly did nothing instead of eating the term.
+                    let updated = SpeakerTerms.adding(draft, to: terms)
+                    guard updated != terms else { return }
+                    terms = updated
                     draft = ""
                 }
                 .accessibilityIdentifier("settings.aboutYou.termsField")
@@ -2544,7 +2548,9 @@ private struct SpeakerTermsField: View {
     }
 }
 
-/// Left-to-right wrapping rows for the term chips.
+/// Left-to-right wrapping rows for the term chips. Only used where the parent
+/// proposes a finite width (a stacked settings row); with no width proposed
+/// everything sits on one row.
 private struct SpeakerTermsFlow: Layout {
     var spacing: CGFloat
 

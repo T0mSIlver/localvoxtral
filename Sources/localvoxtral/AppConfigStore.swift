@@ -13,12 +13,22 @@ enum PolishPromptProfile: String, Sendable {
 protocol AppConfigServing {
     func configDirectoryURL() -> URL
     func loadReplacementDictionary() -> ReplacementDictionary
+    /// A REQUIREMENT, not only an extension method: called through
+    /// `any AppConfigServing`, an extension-only method would never reach the
+    /// conforming type's version.
+    func loadReplacementDictionaryIfReadable() -> ReplacementDictionary?
     func loadLLMPromptTemplates() -> LLMPromptTemplates
     func loadLLMPromptTemplates(profile: PolishPromptProfile) -> LLMPromptTemplates
     func loadTerminalAppBundleIDs() -> [String]
 }
 
 extension AppConfigServing {
+    /// The user's dictionary, or nil when the file could not be read or parsed
+    /// (`loadReplacementDictionary` hides that behind the bundled default).
+    func loadReplacementDictionaryIfReadable() -> ReplacementDictionary? {
+        loadReplacementDictionary()
+    }
+
     /// Default conformance so existing callers/mocks that only implement the
     /// zero-arg loader keep the standard behavior for every profile. The real
     /// `AppConfigStore` overrides this to load the agent files for `.agent`.
@@ -491,6 +501,13 @@ struct AppConfigStore: AppConfigServing {
             )
             return defaultDictionary
         }
+    }
+
+    func loadReplacementDictionaryIfReadable() -> ReplacementDictionary? {
+        let file = ConfigFile.replacementDictionary
+        ensureConfigFilesExist(at: resolvedConfigDirectoryURL())
+        guard let data = try? Data(contentsOf: userConfigURL(for: file)) else { return nil }
+        return try? Self.parseReplacementDictionary(data: data, fileName: file.fileName)
     }
 
     func loadLLMPromptTemplates() -> LLMPromptTemplates {

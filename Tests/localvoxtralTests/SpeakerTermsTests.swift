@@ -62,20 +62,119 @@ final class SpeakerTermsTests: XCTestCase {
         XCTAssertEqual(SpeakerTerms.migrated(from: dictionary), ["Qwen", "Claude Code"])
     }
 
-    func testLiveCorrectorDoesNotRetypeATermThatIsAlreadyRight() {
+    /// Asserted on the correction itself: a no-op correction leaves the text
+    /// unchanged, so comparing strings could not see it.
+    func testLiveCorrectorEmitsNoCorrectionForATermThatIsAlreadyRight() {
         let dictionary = ReplacementDictionary(entries: []).adding(speakerTerms: ["Claude Code"])
+
+        var right = LiveReplacementCorrector(dictionary: dictionary)
+        right.recordInsertedText("open Claude Code now")
+        XCTAssertNil(right.nextCompletedBoundaryCorrection())
+
+        var wrong = LiveReplacementCorrector(dictionary: dictionary)
+        wrong.recordInsertedText("open claude code now")
+        XCTAssertEqual(wrong.nextCompletedBoundaryCorrection()?.replacementText, "Claude Code ")
+    }
+
+    /// "US" and "IT" are all capitals: a rule would uppercase "us" and "it".
+    func testAcronymGetsNoRule() {
+        XCTAssertTrue(SpeakerTerms.replacementEntries(for: ["US", "IT", "GLM", "MCP"]).isEmpty)
         XCTAssertEqual(
-            LiveReplacementCorrector.completedBoundaryCorrectedText(
-                "open Claude Code now", dictionary: dictionary
-            ),
-            "open Claude Code now"
+            ReplacementDictionary(entries: []).adding(speakerTerms: ["US", "IT"])
+                .apply(to: "give it to us tomorrow"),
+            "give it to us tomorrow"
         )
         XCTAssertEqual(
-            LiveReplacementCorrector.completedBoundaryCorrectedText(
-                "open claude code now", dictionary: dictionary
-            ),
-            "open Claude Code now"
+            SpeakerTerms.replacementEntries(for: ["vLLM", "iPhone", "GitHub"]).map(\.replaceWith),
+            ["vLLM", "iPhone", "GitHub"]
         )
+    }
+}
+
+@MainActor
+final class SpeakerTermsImportTests: XCTestCase {
+    private final class Store: AppConfigServing {
+        var dictionary: ReplacementDictionary?
+        func configDirectoryURL() -> URL { FileManager.default.temporaryDirectory }
+        func loadReplacementDictionary() -> ReplacementDictionary {
+            dictionary ?? ReplacementDictionary(entries: [])
+        }
+        func loadReplacementDictionaryIfReadable() -> ReplacementDictionary? { dictionary }
+        func loadLLMPromptTemplates() -> LLMPromptTemplates {
+            LLMPromptTemplates(systemContent: "system", userContent: "{{input_text}}")
+        }
+        func loadTerminalAppBundleIDs() -> [String] { [] }
+    }
+
+    private func makeViewModel(store: Store) -> DictationViewModel {
+        let suiteName = "localvoxtral.SpeakerTermsImportTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let viewModel = DictationViewModel(
+            settings: SettingsStore(
+                defaults: defaults, environment: [:], secretStore: InMemorySecretStore()
+            ),
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = store
+        return viewModel
+    }
+
+    func testImportRunsOnceAndAnEmptiedListStaysEmpty() {
+        let store = Store()
+        store.dictionary = ReplacementDictionary(entries: [
+            ReplacementEntry(replaceWith: "Qwen", matches: ["coin"]),
+        ])
+        let viewModel = makeViewModel(store: store)
+
+        viewModel.importSpeakerTermsFromReplacementDictionary()
+        XCTAssertEqual(viewModel.settings.polishSpeakerTerms, ["Qwen"])
+
+        viewModel.settings.polishSpeakerTerms = []
+        viewModel.importSpeakerTermsFromReplacementDictionary()
+        XCTAssertEqual(viewModel.settings.polishSpeakerTerms, [])
+    }
+
+    /// What the Live Auto-Paste gate and the overlay commit both read: terms
+    /// apply with the legacy dictionary toggle OFF (its default), and with
+    /// nothing to apply there is no dictionary at all, so no hold-back.
+    func testTermsApplyWithTheDictionaryToggleOff() {
+        let store = Store()
+        store.dictionary = ReplacementDictionary(entries: [
+            ReplacementEntry(replaceWith: "FROM FILE", matches: ["from file"]),
+        ])
+        let viewModel = makeViewModel(store: store)
+        viewModel.settings.replacementDictionaryEnabled = false
+
+        XCTAssertNil(viewModel.loadEffectiveReplacementDictionary())
+
+        viewModel.settings.polishSpeakerTerms = ["Claude Code"]
+        XCTAssertEqual(
+            viewModel.loadEffectiveReplacementDictionary()?.apply(to: "claude code from file"),
+            "Claude Code from file"
+        )
+
+        viewModel.settings.replacementDictionaryEnabled = true
+        XCTAssertEqual(
+            viewModel.loadEffectiveReplacementDictionary()?.apply(to: "claude code from file"),
+            "Claude Code FROM FILE"
+        )
+    }
+
+    /// A TOML error on the first launch must not burn the one import.
+    func testUnreadableDictionaryPostponesTheImport() {
+        let store = Store()
+        let viewModel = makeViewModel(store: store)
+
+        viewModel.importSpeakerTermsFromReplacementDictionary()
+        XCTAssertFalse(viewModel.settings.hasStoredPolishSpeakerTerms)
+
+        store.dictionary = ReplacementDictionary(entries: [
+            ReplacementEntry(replaceWith: "Claude Code", matches: ["cloud code"]),
+        ])
+        viewModel.importSpeakerTermsFromReplacementDictionary()
+        XCTAssertEqual(viewModel.settings.polishSpeakerTerms, ["Claude Code"])
     }
 }
 
