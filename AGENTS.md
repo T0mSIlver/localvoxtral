@@ -104,11 +104,11 @@ ablation workflows: `docs/agent/test-tiers.md`.
 
 ## CI / shipping
 
-- CI is two parallel jobs: `build-test` (tier 0, GitHub-hosted, EVERY event
-  and contributor, the required check) and `mac-lanes` (self-hosted, never
-  for fork PRs). A new lane goes in `build-test` unless you can name what on
-  the owner's Mac it needs — signing identity, STT service, Metal, herdr
-  fixture, GUI session. Never move fork-PR work to the self-hosted runner.
+- CI is two parallel jobs, both required checks on main: `build-test`
+  (tier 0, GitHub-hosted, EVERY event and contributor) and `mac-lanes`
+  (self-hosted, never for fork PRs). A new lane goes in `build-test` unless
+  you can name what on the owner's Mac it needs — signing identity, STT
+  service, Metal, herdr fixture, GUI session. Never move fork-PR work to the self-hosted runner.
 - Docs-only diffs take a fast path (`scripts/ci/docs-only-filter.sh`,
   conservative allowlist; unknown paths fail open to the full run). Only
   `build-test` fast-paths; release and every other workflow stay fully gated.
