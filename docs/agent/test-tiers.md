@@ -112,8 +112,8 @@ when a matching change (or the marker) triggers it.
 what it needs, not about cost:
 
 - **`build-test`, GitHub-hosted `macos-latest`, every event and every
-  contributor** — the required status check on main. Anything that needs only
-  a macOS toolchain: the pure-shell gate suites, the installer test, format
+  contributor** — a required status check on main, like `mac-lanes`.
+  Anything that needs only a macOS toolchain: the pure-shell gate suites, the installer test, format
   lint, the unit suite, coverage. A fork PR gets ONLY this job, so it also
   packages/uploads/smokes an ad-hoc-signed bundle there.
 - **`mac-lanes`, the self-hosted Mac, same-repo PRs + pushes + dispatches** —
