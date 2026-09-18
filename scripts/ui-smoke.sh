@@ -26,10 +26,16 @@ PREFLIGHT_HELPER=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AX_PROBE="${SCRIPT_DIR}/lib/ax-probe.swift"
 APP_PID=""
+# The bundle of the owner's own running instance, recorded when the drill quits
+# it to make room for a fresh launch, so cleanup can relaunch it. Empty means
+# the drill has not touched the owner's app and must not quit anything.
+OWNER_APP_BUNDLE=""
 FAILED=0
 CLEANED_UP=0
 OSASCRIPT_TIMEOUT_SECONDS="${OSASCRIPT_TIMEOUT_SECONDS:-8}"
 OSASCRIPT_TIMEOUT_BIN=""
+# Test seam (test-ui-smoke-owner-app.sh): its stubbed launch never starts.
+LAUNCH_TIMEOUT_SECONDS="${UI_SMOKE_LAUNCH_TIMEOUT_SECONDS:-10}"
 BACKEND_SAMPLE_FILE=""
 BACKEND_SAMPLER_PID=""
 SUMMARY=()
@@ -136,6 +142,44 @@ quit_app() {
   done
 }
 
+# Quits the owner's running instance, remembering its bundle for
+# relaunch_owner_app. The bundle is read off the executable path because the
+# owner may run a try-pr copy rather than /Applications.
+quit_owner_app() {
+  local pid executable
+  pid="$(pgrep -x "$APP_PROCESS" 2>/dev/null | head -n 1)"
+  [[ -n "$pid" ]] || return 0
+  executable="$(ps -o comm= -p "$pid" 2>/dev/null || true)"
+  if [[ "$executable" == */Contents/MacOS/* ]]; then
+    OWNER_APP_BUNDLE="${executable%%/Contents/MacOS/*}"
+  else
+    # Unresolvable: still mark the slot as taken so cleanup quits the drill's
+    # instance, but there is nothing to relaunch.
+    OWNER_APP_BUNDLE="unknown"
+    printf 'WARNING: could not resolve the bundle of running pid %s (%s); it will not be relaunched.\n' "$pid" "$executable" >&2
+  fi
+  quit_app
+}
+
+# Plain `open`, not lv_open: the owner's app must come back with the owner's
+# environment, not the lane's CI-only flags (they would hide its API keys).
+relaunch_owner_app() {
+  [[ -n "$OWNER_APP_BUNDLE" && "$OWNER_APP_BUNDLE" != "unknown" ]] || return 0
+  if pgrep -x "$APP_PROCESS" >/dev/null 2>&1; then
+    printf 'WARNING: a localvoxtral instance is still running; not relaunching the owner app at %s.\n' "$OWNER_APP_BUNDLE" >&2
+    return 0
+  fi
+  if [[ ! -d "$OWNER_APP_BUNDLE" ]]; then
+    printf 'WARNING: the owner app at %s is gone; not relaunching it.\n' "$OWNER_APP_BUNDLE" >&2
+    return 0
+  fi
+  if open "$OWNER_APP_BUNDLE"; then
+    printf "Relaunched the owner's app at %s.\n" "$OWNER_APP_BUNDLE"
+  else
+    printf 'WARNING: failed to relaunch the owner app at %s.\n' "$OWNER_APP_BUNDLE" >&2
+  fi
+}
+
 managed_backend_pids() {
   pgrep -f 'voxmlx-serve|mlx_lm\.server|localvoxtral-polishd' 2>/dev/null | sort || true
 }
@@ -174,10 +218,15 @@ cleanup() {
   CLEANED_UP=1
 
   stop_backend_sampler
-  quit_app
+  # Only a drill that launched, or cleared the slot to launch, owns whatever
+  # localvoxtral is running now. Before that point it is the owner's app.
+  if [[ -n "$APP_PID" || -n "$OWNER_APP_BUNDLE" ]]; then
+    quit_app
+  fi
   if ! restore_defaults; then
     printf 'WARNING: failed to restore defaults backup at %s; leaving it in place for the next run.\n' "$PERSISTENT_DEFAULTS_BACKUP" >&2
   fi
+  relaunch_owner_app
   [[ -n "$PREFLIGHT_HELPER" ]] && rm -f "$PREFLIGHT_HELPER"
   [[ -n "$BACKEND_SAMPLE_FILE" ]] && rm -f "$BACKEND_SAMPLE_FILE"
 }
@@ -242,6 +291,15 @@ else
   exit 1
 fi
 
+# Quit the owner's instance before touching defaults: a running app would see
+# the forced modes live and could write its own values back on quit.
+quit_owner_app
+if pgrep -x "$APP_PROCESS" >/dev/null 2>&1; then
+  record_fail "Existing app instance did not quit before smoke launch; cannot launch a fresh instance."
+  print_summary
+  exit 1
+fi
+
 if ! snapshot_defaults; then
   record_fail "Could not create persistent defaults backup at $PERSISTENT_DEFAULTS_BACKUP; refusing to mutate owner defaults."
   print_summary
@@ -274,16 +332,9 @@ record_pass "Defaults domain snapshot captured and smoke run forced to external 
 # AFTER app launch count as violations.
 BASELINE_BACKEND_PIDS="$(managed_backend_pids)"
 
-quit_app
-if pgrep -x "$APP_PROCESS" >/dev/null 2>&1; then
-  record_fail "Existing app instance did not quit before smoke launch; cannot launch a fresh instance."
-  print_summary
-  exit 1
-fi
-
 start_backend_sampler
 lv_open -n "$APP_PATH"
-launch_deadline=$((SECONDS + 10))
+launch_deadline=$((SECONDS + LAUNCH_TIMEOUT_SECONDS))
 while ((SECONDS < launch_deadline)); do
   APP_PID="$(pgrep -xn "$APP_PROCESS" 2>/dev/null || true)"
   [[ -n "$APP_PID" ]] && break
@@ -291,7 +342,7 @@ while ((SECONDS < launch_deadline)); do
 done
 
 if [[ -z "$APP_PID" ]]; then
-  record_fail "App process did not start within 10 seconds."
+  record_fail "App process did not start within ${LAUNCH_TIMEOUT_SECONDS} seconds."
   print_summary
   exit 1
 fi

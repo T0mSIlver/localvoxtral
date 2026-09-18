@@ -201,6 +201,7 @@ jobs:
           ./scripts/ci/test-remote-build-gc.sh
           ./scripts/ci/test-run-supervised-command.sh
           ./scripts/ci/test-ui-smoke-guard.sh
+          ./scripts/ci/test-ui-smoke-owner-app.sh
           ./scripts/ci/test-ui-gate.sh
           ./scripts/ci/test-runner-node-resign.sh
           ./scripts/ci/test-launch-app-shim.sh
