@@ -946,20 +946,27 @@ private enum MenuBarIconAsset {
     static let connectedIcon: NSImage? = adaptiveIcon(coloredCandidates: [
         "MicIconTemplate_connected",
         "MicIconTemplate@2x_connected",
-    ])
+    ], darkMenuBarAccent: MenuBarStatusIcon.sessionActiveDarkMenuBarAccent)
 
     static let failureIcon: NSImage? = adaptiveIcon(coloredCandidates: [
         "MicIconTemplate_failure",
         "MicIconTemplate@2x_failure",
     ])
 
-    private static func adaptiveIcon(coloredCandidates: [String]) -> NSImage? {
+    private static func adaptiveIcon(
+        coloredCandidates: [String],
+        darkMenuBarAccent: NSColor? = nil
+    ) -> NSImage? {
         guard let template = idleIcon,
               let colored = loadIcon(candidates: coloredCandidates, asTemplate: false)
         else {
             return nil
         }
-        return MenuBarStatusIcon.appearanceAdaptive(template: template, colored: colored)
+        return MenuBarStatusIcon.appearanceAdaptive(
+            template: template,
+            colored: colored,
+            darkMenuBarAccent: darkMenuBarAccent
+        )
     }
 
     private static func loadIcon(candidates: [String], asTemplate: Bool) -> NSImage? {
