@@ -28,48 +28,32 @@ final class MenuBarStatusIconTests: XCTestCase {
         XCTAssertGreaterThan(brightness(dark), 0.8, "mic on a dark menu bar: \(dark)")
     }
 
-    func testFailureAccentStaysRedInBothAppearances() throws {
-        let icon = try makeIcon(colored: "MicIconTemplate@2x_failure.png")
-        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
-            let color = try XCTUnwrap(
-                render(icon, appearance: appearance).colorAt(x: accentPixel.x, y: accentPixel.y)
-            )
-            XCTAssertEqual(color.redComponent * 255, 225, accuracy: 3, appearance.rawValue)
-            XCTAssertEqual(color.greenComponent * 255, 5, accuracy: 3, appearance.rawValue)
-            XCTAssertEqual(color.blueComponent * 255, 0, accuracy: 3, appearance.rawValue)
-        }
-    }
-
-    func testSessionActiveAccentIsYellowOnLightAndOrangeOnDarkMenuBar() throws {
-        let icon = try makeIcon(
-            colored: "MicIconTemplate@2x_connected.png",
-            darkMenuBarAccent: MenuBarStatusIcon.sessionActiveDarkMenuBarAccent
-        )
-        for (appearance, expected) in [
-            (NSAppearance.Name.aqua, (r: 225.0, g: 216.0, b: 0.0)),
-            (.vibrantLight, (r: 225.0, g: 216.0, b: 0.0)),
-            (.darkAqua, (r: 255.0, g: 130.0, b: 4.0)),
-            (.vibrantDark, (r: 255.0, g: 130.0, b: 4.0)),
+    func testAccentsKeepTheirColorInEveryAppearance() throws {
+        for (file, expected) in [
+            ("MicIconTemplate@2x_connected.png", (r: 255.0, g: 130.0, b: 4.0)),
+            ("MicIconTemplate@2x_failure.png", (r: 225.0, g: 5.0, b: 0.0)),
         ] {
-            let color = try XCTUnwrap(
-                render(icon, appearance: appearance).colorAt(x: accentPixel.x, y: accentPixel.y)
-            )
-            XCTAssertEqual(color.redComponent * 255, expected.r, accuracy: 3, appearance.rawValue)
-            XCTAssertEqual(color.greenComponent * 255, expected.g, accuracy: 3, appearance.rawValue)
-            XCTAssertEqual(color.blueComponent * 255, expected.b, accuracy: 3, appearance.rawValue)
+            let icon = try makeIcon(colored: file)
+            for appearance in [NSAppearance.Name.aqua, .vibrantLight, .darkAqua, .vibrantDark] {
+                let color = try XCTUnwrap(
+                    render(icon, appearance: appearance).colorAt(x: accentPixel.x, y: accentPixel.y)
+                )
+                let context = "\(file) \(appearance.rawValue)"
+                XCTAssertEqual(color.redComponent * 255, expected.r, accuracy: 3, context)
+                XCTAssertEqual(color.greenComponent * 255, expected.g, accuracy: 3, context)
+                XCTAssertEqual(color.blueComponent * 255, expected.b, accuracy: 3, context)
+            }
         }
     }
 
-    private func makeIcon(colored file: String, darkMenuBarAccent: NSColor? = nil) throws -> NSImage {
+    private func makeIcon(colored file: String) throws -> NSImage {
         let template = try XCTUnwrap(
             NSImage(contentsOf: Self.iconDirectory.appendingPathComponent("MicIconTemplate@2x.png"))
         )
         template.isTemplate = true
         let colored = try XCTUnwrap(NSImage(contentsOf: Self.iconDirectory.appendingPathComponent(file)))
         colored.size = template.size
-        return MenuBarStatusIcon.appearanceAdaptive(
-            template: template, colored: colored, darkMenuBarAccent: darkMenuBarAccent
-        )
+        return MenuBarStatusIcon.appearanceAdaptive(template: template, colored: colored)
     }
 
     private func render(_ image: NSImage, appearance: NSAppearance.Name) throws -> NSBitmapImageRep {
