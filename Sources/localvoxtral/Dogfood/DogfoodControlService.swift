@@ -493,6 +493,7 @@ final class DogfoodControlService {
         case .hotKeyShortcutUnavailable: return "hotKeyShortcutUnavailable"
         case .websocketReceiveFailed: return "websocketReceiveFailed"
         case .secureKeyboardEntryActive: return "secureKeyboardEntryActive"
+        case .microphoneDisconnected: return "microphoneDisconnected"
         case .other: return "other"
         }
     }

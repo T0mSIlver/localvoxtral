@@ -2,10 +2,10 @@ import Foundation
 import XCTest
 @testable import localvoxtral
 
-/// Unplugging the mic a dictation is capturing from must stop the dictation
-/// with an error. The check used to compare the selection after the device
-/// refresh, and the refresh had already moved the selection to a fallback
-/// mic, so the stop never fired whenever a second mic was present.
+/// Unplugging the mic a dictation is capturing from must stop the dictation.
+/// The check used to compare the selection after the device refresh, and the
+/// refresh had already moved the selection to a fallback mic, so the stop
+/// never fired whenever a second mic was present.
 @MainActor
 final class AudioCaptureHealthMonitorUnplugTests: XCTestCase {
     private static var retainedMicrophones: [MicrophoneCaptureService] = []
@@ -17,11 +17,7 @@ final class AudioCaptureHealthMonitorUnplugTests: XCTestCase {
         state.available = ["built-in"]
         monitor.debugEvaluateAudioChangeNow()
 
-        XCTAssertEqual(state.stopReasons, ["selected input unavailable"])
-        XCTAssertEqual(
-            state.errors.last ?? nil,
-            "Selected microphone became unavailable. Reconnect it or select another input."
-        )
+        XCTAssertEqual(state.stopReasons, ["input unavailable"])
     }
 
     func testPluggingAnotherMicInDuringDictationKeepsDictating() {
@@ -51,7 +47,6 @@ private final class FakeAudioState {
     var selected: String
     var available: [String]
     private(set) var stopReasons: [String] = []
-    private(set) var errors: [String?] = []
 
     init(selected: String, available: [String]) {
         self.selected = selected
@@ -66,13 +61,14 @@ private final class FakeAudioState {
                 }
             },
             stopDictation: { [unowned self] reason in stopReasons.append(reason) },
+            stopForUnavailableInput: { [unowned self] in stopReasons.append("input unavailable") },
             isDictating: { [unowned self] in stopReasons.isEmpty },
             selectedInputDeviceID: { [unowned self] in selected },
             availableInputDevices: { [unowned self] in
                 available.map { MicrophoneInputDevice(id: $0, name: $0, channelCount: 1) }
             },
             setStatus: { _ in },
-            setError: { [unowned self] message in errors.append(message) },
+            setError: { _ in },
             restartMicrophone: { _ in }
         )
     }

@@ -6,6 +6,7 @@ final class AudioCaptureHealthMonitor {
     struct Callbacks {
         var refreshMicrophoneInputs: () -> Void
         var stopDictation: (String) -> Void
+        var stopForUnavailableInput: () -> Void
         var isDictating: () -> Bool
         var selectedInputDeviceID: () -> String
         var availableInputDevices: () -> [MicrophoneInputDevice]
@@ -162,8 +163,7 @@ final class AudioCaptureHealthMonitor {
         if !captureInputID.isEmpty,
            !callbacks.availableInputDevices().contains(where: { $0.id == captureInputID })
         {
-            callbacks.stopDictation("selected input unavailable")
-            callbacks.setError("Selected microphone became unavailable. Reconnect it or select another input.")
+            callbacks.stopForUnavailableInput()
             return
         }
 

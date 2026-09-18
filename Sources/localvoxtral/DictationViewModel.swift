@@ -88,6 +88,7 @@ final class DictationViewModel {
         case hotKeyShortcutUnavailable
         case websocketReceiveFailed
         case secureKeyboardEntryActive
+        case microphoneDisconnected
         case other
 
         @MainActor
@@ -112,6 +113,9 @@ final class DictationViewModel {
             if message.localizedCaseInsensitiveContains("websocket receive failed") {
                 return .websocketReceiveFailed
             }
+            if message == DictationViewModel.microphoneDisconnectedMessage {
+                return .microphoneDisconnected
+            }
             return .other
         }
     }
@@ -133,6 +137,7 @@ final class DictationViewModel {
         static let finalizing = "Finalizing..."
     }
 
+    static let microphoneDisconnectedMessage = "Mic disconnected."
     private static let microphoneDeniedMessage =
         "Grant microphone access in System Settings > Privacy & Security > Microphone."
 
@@ -497,6 +502,10 @@ final class DictationViewModel {
     var isResolvingConnectTimeout = false
     @ObservationIgnored
     var recentFailureResetTask: Task<Void, Never>?
+    /// Set when a stop is itself a failure: the stop's finalization would
+    /// otherwise turn the red icon back to idle as soon as it completes.
+    @ObservationIgnored
+    var holdFailureIndicatorUntilStopCompletes = false
     @ObservationIgnored
     var finalizationWatchdogTask: Task<Void, Never>?
     @ObservationIgnored
