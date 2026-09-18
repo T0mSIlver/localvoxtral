@@ -1987,7 +1987,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
                 entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot ts"])],
                 isFallbackOnly: false
             ),
-            clipboard: "see useAuth.tsx for the hook",
+            clipboard: "see use_auth.ts for the hook",
             transcript: "open use auth dot ts and fix the import"
         )
         let request = result.request
@@ -2016,7 +2016,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
                 entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot ts"])],
                 isFallbackOnly: false
             ),
-            clipboard: "see useAuth.tsx for the hook",
+            clipboard: "see use_auth.ts for the hook",
             transcript: "open use auth dot ts and fix the import",
             templateUserContent: "Clean this up.\nWorking text:\n{{input_text}}"
         )

@@ -229,6 +229,31 @@ struct LLMPromptTemplates: Equatable, Sendable {
         userContent.contains("{{replacement_dictionary}}")
     }
 
+    static let speakerProfileMaxCharacters = 1500
+
+    static let speakerProfileHeader =
+        "About the speaker (written by them). Use it to recognize names and terms the "
+        + "speech-to-text system misheard: when a word or phrase sounds like one of these "
+        + "and makes less sense than it would in that sentence, write the term as spelled "
+        + "here. Never insert any of this where nothing similar was said:"
+
+    /// These templates with the user's own description of themselves appended
+    /// to the system prompt. It rides the SYSTEM message because it is stable
+    /// across dictations, so it stays inside the prefix polishd checkpoints;
+    /// the warmup applies the same call so both prefixes match.
+    func withSpeakerProfile(_ profile: String) -> LLMPromptTemplates {
+        let trimmed = String(
+            PolishContextClipboardReader.sanitizeControlCharacters(profile)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .prefix(Self.speakerProfileMaxCharacters)
+        )
+        guard !trimmed.isEmpty else { return self }
+        return LLMPromptTemplates(
+            systemContent: "\(systemContent)\n\n\(Self.speakerProfileHeader)\n\(trimmed)\n",
+            userContent: userContent
+        )
+    }
+
     func renderedUserPrompt(
         inputText: String,
         replacementDictionary: String

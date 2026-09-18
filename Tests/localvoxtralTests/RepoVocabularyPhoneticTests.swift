@@ -34,10 +34,9 @@ final class RepoVocabularyPhoneticTests: XCTestCase {
         )
     }
 
-    /// `pain` and `pane` have equal full-length keys. The surrounding word
-    /// makes the term eligible and preserves per-word alignment, so the sole
-    /// exact-key owner is safe at the phonetic guess grade.
-    func testTerminalPaneExactPhoneticHitPreApplies() {
+    /// `pain` and `pane` have equal full-length keys, the strongest phonetic
+    /// evidence there is. It still only nominates: the transcript is untouched.
+    func testTerminalPaneExactPhoneticHitNominates() {
         let transcript = "click the terminal pain"
         let outcome = RepoVocabularyMatcher.groundedCandidates(
             transcript: transcript,
@@ -45,13 +44,10 @@ final class RepoVocabularyPhoneticTests: XCTestCase {
         )
 
         XCTAssertTrue(outcome.entries.isEmpty)
+        XCTAssertTrue(outcome.phoneticEntries.isEmpty)
         XCTAssertEqual(
-            outcome.phoneticEntries,
+            outcome.verificationCandidates,
             [ReplacementEntry(replaceWith: "terminal pane", matches: ["terminal pain"])]
-        )
-        XCTAssertEqual(
-            RepoVocabularyMatcher.preapplying(entries: outcome.phoneticEntries, to: transcript),
-            "click the terminal pane"
         )
     }
 

@@ -1337,6 +1337,18 @@ enum RepoVocabularyMatcher {
         transcript: String,
         vocabulary: RepoVocabulary
     ) -> [ReplacementEntry] {
+        rankedHits(transcript: transcript, vocabulary: vocabulary).map {
+            ReplacementEntry(replaceWith: $0.term, matches: [$0.spoken])
+        }
+    }
+
+    /// `candidateEntries` with each hit's tier retained: `exact` separates
+    /// "the speaker said this term" from "the speaker said something one edit
+    /// away from it", which decides whether the hit may rewrite the transcript.
+    private static func rankedHits(
+        transcript: String,
+        vocabulary: RepoVocabulary
+    ) -> [Hit] {
         let words = tokenize(transcript)
         guard !words.isEmpty, !vocabulary.exactIndex.isEmpty else { return [] }
 
@@ -1394,9 +1406,7 @@ enum RepoVocabularyMatcher {
             }
             return lhs.position < rhs.position
         }
-        return ranked.prefix(maxEntries).map {
-            ReplacementEntry(replaceWith: $0.term, matches: [$0.spoken])
-        }
+        return Array(ranked.prefix(maxEntries))
     }
 
     /// Production matcher: keep entries approved by the existing exact /
@@ -1414,20 +1424,18 @@ enum RepoVocabularyMatcher {
 
     /// One source's grounding decision, carrying HOW it was reached.
     ///
-    /// `isFallbackOnly` distinguishes "the exact / edit-distance-one tiers
-    /// approved these" from "those tiers found nothing and the bounded aligned
-    /// matcher guessed once". Within a single source that difference is already
-    /// spent; across sources it decides who yields — see
-    /// `PolishContextGrounding`.
+    /// `entries` holds only spans that normalize to the term itself, so
+    /// `isFallbackOnly` is always false here; `PolishContextGrounding` keeps
+    /// the grade for callers that build candidates by hand.
     struct GroundingOutcome: Equatable, Sendable {
         let entries: [ReplacementEntry]
         let isFallbackOnly: Bool
-        /// Exact, unambiguous phonetic-key matches. They are still guess grade
-        /// across sources, but may be pre-applied when nobody contests them.
+        /// Always empty from `groundedCandidates`: phonetic hits nominate now
+        /// (see there). Kept because the cross-source merge and the dogfood
+        /// record still carry the grade.
         let phoneticEntries: [ReplacementEntry]
-        /// Weak or contested evidence whose original transcript bytes must
-        /// remain untouched. A later prompt renderer can present these as
-        /// explicit possible-mishearing pairs.
+        /// Every sound-alike hit, strongest tier first. The transcript bytes
+        /// stay untouched; the prompt renderer offers the terms to the model.
         let verificationCandidates: [ReplacementEntry]
 
         init(
@@ -1457,7 +1465,21 @@ enum RepoVocabularyMatcher {
         transcript: String,
         vocabulary: RepoVocabulary
     ) -> GroundingOutcome {
-        let approved = candidateEntries(transcript: transcript, vocabulary: vocabulary)
+        let hits = rankedHits(transcript: transcript, vocabulary: vocabulary)
+        // A lone word that merely normalizes to a term is not evidence the
+        // speaker said the term: French "Sans" equals the flag `--sans` once
+        // dashes are ignored (field, 2026-09-18). One word may change its
+        // letter case and nothing else; spoken forms ("use auth dot ts") are
+        // several words and keep the full rewrite.
+        let exactTerms = Set(hits.filter { hit in
+            hit.exact && (
+                hit.spoken.contains(" ")
+                    || hit.spoken.lowercased() == hit.term.lowercased()
+            )
+        }.map(\.term))
+        let approved = hits.map {
+            ReplacementEntry(replaceWith: $0.term, matches: [$0.spoken])
+        }
         var termsByHeard: [String: Set<String>] = [:]
         for entry in approved {
             for heard in entry.matches {
@@ -1546,24 +1568,15 @@ enum RepoVocabularyMatcher {
             }
         }
 
-        let primaryEntries: [ReplacementEntry]
-        let isFallbackOnly: Bool
-        if !unambiguous.isEmpty {
-            primaryEntries = unambiguous
-            isFallbackOnly = false
-        } else if let fallback {
-            primaryEntries = [fallback]
-            isFallbackOnly = true
-        } else {
-            primaryEntries = []
-            isFallbackOnly = false
-        }
-
-        // `maxEntries` remains the total pre-application budget. Existing
-        // solid/fallback entries spend it first; phonetic guesses use only the
-        // remainder and never displace stronger evidence.
-        let phoneticBudget = max(0, maxEntries - primaryEntries.count)
-        phoneticPreApply = Array(phoneticPreApply.prefix(phoneticBudget))
+        // Only a span that normalizes to the term itself rewrites the
+        // transcript. Every sound-alike tier — edit distance one, phonetic
+        // key, aligned fallback — nominates its term to the model instead:
+        // field history (2026-09-18) showed those tiers writing code terms
+        // over ordinary prose ("on peut" -> `toolInput`).
+        let primaryEntries = unambiguous.filter { exactTerms.contains($0.replaceWith) }
+        let demoted = unambiguous.filter { !exactTerms.contains($0.replaceWith) }
+            + phoneticPreApply
+            + (fallback.map { [$0] } ?? [])
 
         // Conflict demotion can append formerly-high hits after already-weak
         // hits. Restore the phonetic tier's documented global rank before the
@@ -1585,8 +1598,10 @@ enum RepoVocabularyMatcher {
 
         var verificationCandidates: [ReplacementEntry] = []
         var seenVerification = Set<VerificationKey>()
-        for entry in phoneticVerification + alignedVerification {
-            for heard in entry.matches {
+        for entry in demoted + phoneticVerification + alignedVerification {
+            for heard in entry.matches where !addsUnspokenExtension(
+                term: entry.replaceWith, heard: heard, transcript: transcript
+            ) {
                 let key = VerificationKey(heardKey: normalize(heard), term: entry.replaceWith)
                 guard seenVerification.insert(key).inserted else { continue }
                 verificationCandidates.append(ReplacementEntry(
@@ -1600,10 +1615,35 @@ enum RepoVocabularyMatcher {
 
         return GroundingOutcome(
             entries: primaryEntries,
-            isFallbackOnly: isFallbackOnly,
-            phoneticEntries: phoneticPreApply,
+            isFallbackOnly: false,
+            phoneticEntries: [],
             verificationCandidates: verificationCandidates
         )
+    }
+
+    /// A nominated file name whose extension the speaker never said. Shown to
+    /// the model, "local Voxtral" came back as `localvoxtral.js` on every model
+    /// tried, so the nomination is withheld rather than left to judgment —
+    /// unless the speaker was plainly naming a file ("regarde dictation view
+    /// model"), the same cue the aligned fallback already honours.
+    static func addsUnspokenExtension(
+        term: String,
+        heard: String,
+        transcript: String
+    ) -> Bool {
+        guard let fileExtension = shortFileExtension(in: term) else { return false }
+        let spoken = heard.lowercased()
+        if spoken.contains(".\(fileExtension)") { return false }
+        if tokenize(spoken).last.map(normalize) == fileExtension { return false }
+
+        let before = transcript.range(of: heard).map { transcript[..<$0.lowerBound] } ?? ""
+        let nearby = tokenize(String(before)).suffix(3) + tokenize(heard)
+        return !nearby.contains { word in
+            fileReferenceCues.contains(word.folding(
+                options: [.caseInsensitive, .diacriticInsensitive],
+                locale: Locale(identifier: "en_US_POSIX")
+            ))
+        }
     }
 
     /// Places exact vocabulary bytes into only the literal ASR spans already
@@ -2104,31 +2144,34 @@ enum RepoVocabularyMatcher {
         + "speaker's open coding-agent session; use them to correct near-miss spellings "
         + "of the terms below, never to add new content):"
 
-    /// Header for below-threshold matcher candidates rendered as explicit
-    /// verification suggestions rather than pre-applied bytes. The matcher was
-    /// not confident enough to edit the user's words deterministically, so the
-    /// model verifies each untrusted guess against the surrounding transcript —
-    /// the same reference-block defense framing used by the context sections.
+    /// Header for the terms the sound-alike tiers nominated. The matcher only
+    /// knows that something in the transcript sounds like one of them; whether
+    /// the speaker meant it depends on the sentence, which is the model's call.
+    /// The heard span is deliberately NOT rendered: shown as `"heard" -> "term"`
+    /// pairs, models applied the pair as an instruction (replay 2026-09-18:
+    /// five wrong insertions with pairs, three with this list, none without).
     static let verificationCandidatesHeader =
-        "Possible mishearings (unverified guesses pairing a transcript phrase with a "
-        + "project term it may be a mishearing of; rewrite a phrase to its paired term "
-        + "only when the surrounding transcript clearly supports that term; when unsure, "
-        + "keep the transcript's words unchanged; never use these to add new content):"
+        "Terms visible in the speaker's current project or screen. The speaker may or "
+        + "may not have said any of them. Use one ONLY where the text contains a word or "
+        + "phrase that sounds like it AND makes less sense than the term would in that "
+        + "sentence; write it exactly as spelled here. Ordinary words that already make "
+        + "sense stay as they are:"
 
-    /// Renders the merge's prompt-only guesses as explicit heard/exact pairs.
-    /// Both sides pass through the same single-line defense as vocabulary terms;
-    /// a malformed or now-identical pair contributes no instruction to the model.
+    /// Renders the merge's prompt-only nominations as a plain term list. Terms
+    /// pass through the same single-line defense as vocabulary terms.
     static func verificationPromptSection(
         pairs: [PolishContextGrounding.VerificationPair]
     ) -> String {
+        var seen = Set<String>()
         let lines: [String] = pairs.compactMap { pair in
             let heard = sanitizedTerm(pair.heard)
             let exact = sanitizedTerm(pair.exact)
             guard isRenderableTerm(heard),
                   isRenderableTerm(exact),
-                  heard != exact
+                  heard != exact,
+                  seen.insert(exact).inserted
             else { return nil }
-            return "- possible mishearing: \"\(heard)\" -> \"\(exact)\""
+            return "- \(exact)"
         }
         guard !lines.isEmpty else { return "" }
         return "\(verificationCandidatesHeader)\n\(lines.joined(separator: "\n"))"
