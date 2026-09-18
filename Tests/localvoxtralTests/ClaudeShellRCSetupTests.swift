@@ -545,4 +545,28 @@ final class ClaudeShellRCSetupTests: XCTestCase {
             "not a path"
         )
     }
+
+    /// Field crash 2026-09-18 (nightly 0.9.1-nightly.20260917): the host
+    /// row's update panel builds its consent sentence during SwiftUI's view
+    /// update, and that sentence asks `dscl` for the login shell. Waiting
+    /// with `Process.waitUntilExit()` spins the main run loop, which on
+    /// macOS 26 re-entered the in-progress update cycle and SIGSEGV'd. The
+    /// wait must block without running anything else queued on the run loop.
+    func testReadingTheLoginShellNeverSpinsTheMainRunLoop() {
+        XCTAssertTrue(Thread.isMainThread)
+        final class Flag: @unchecked Sendable { var fired = false }
+        let flag = Flag()
+        RunLoop.main.perform { flag.fired = true }
+
+        let output = ClaudeLoginShellReader.runCapturingOutput(
+            executableURL: URL(fileURLWithPath: "/bin/echo"),
+            arguments: ["UserShell: /bin/zsh"]
+        )
+
+        XCTAssertEqual(output.flatMap(ClaudeLoginShellReader.parse), "/bin/zsh")
+        XCTAssertFalse(
+            flag.fired,
+            "the wait ran other main-run-loop work — re-entrancy into a SwiftUI update"
+        )
+    }
 }

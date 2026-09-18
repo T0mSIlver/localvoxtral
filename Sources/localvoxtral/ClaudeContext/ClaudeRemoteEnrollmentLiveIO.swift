@@ -413,12 +413,27 @@ enum ClaudeLoginShellReader {
     /// `dscl . -read /Users/<me> UserShell` prints `UserShell: /bin/zsh`.
     /// Returns that line verbatim; `parse` turns it into a path.
     static func liveDSCL() -> String? {
+        runCapturingOutput(
+            executableURL: URL(fileURLWithPath: "/usr/bin/dscl"),
+            arguments: [".", "-read", "/Users/\(NSUserName())", "UserShell"]
+        )
+    }
+
+    /// Runs a short command and returns its stdout, blocking WITHOUT running
+    /// the caller's run loop. Settings builds its consent sentences inside
+    /// SwiftUI's view update, and `Process.waitUntilExit()` spins the run
+    /// loop there: on macOS 26 that re-entered the update cycle and crashed
+    /// the app (field crash 2026-09-18, opening a host's Update panel).
+    static func runCapturingOutput(executableURL: URL, arguments: [String]) -> String? {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/dscl")
-        process.arguments = [".", "-read", "/Users/\(NSUserName())", "UserShell"]
+        process.executableURL = executableURL
+        process.arguments = arguments
         let output = Pipe()
         process.standardOutput = output
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
+        // Set before run() so an instant exit cannot be missed.
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         guard (try? process.run()) != nil else { return nil }
         // `POSIXPipeRead`, never `FileHandle.availableData` (banned repo-wide,
         // PR #60). `dscl`'s answer is one short line, so one chunk is the whole
@@ -426,7 +441,11 @@ enum ClaudeLoginShellReader {
         let data = POSIXPipeRead.nextChunk(
             fromDescriptor: output.fileHandleForReading.fileDescriptor
         )
-        process.waitUntilExit()
+        guard exited.wait(timeout: .now() + 5) == .success else {
+            process.terminate()
+            Log.claudeContext.error("Login shell probe did not exit within 5s; using $SHELL")
+            return nil
+        }
         guard process.terminationStatus == 0 else { return nil }
         return String(data: data, encoding: .utf8)
     }
