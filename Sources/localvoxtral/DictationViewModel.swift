@@ -396,7 +396,7 @@ final class DictationViewModel {
     @ObservationIgnored
     var sessionStore: DictationSessionStore?
     @ObservationIgnored
-    private(set) var storedTermSuggestions: SpeakerTermSuggestionModel?
+    private var storedTermSuggestions: SpeakerTermSuggestionModel?
     /// Built on first use (Settings opening the About-you group); reads the
     /// store and the service at call time, so a test's replacements are seen.
     var termSuggestions: SpeakerTermSuggestionModel {
@@ -409,9 +409,10 @@ final class DictationViewModel {
                 ) ?? []
             },
             service: { [weak self] in self?.llmPolishingService ?? LLMPolishingService() },
-            isDictating: { [weak self] in self?.isDictating ?? false },
-            sharesOneGenerationSlot: { [weak self] in
+            unavailableReason: { [weak self] in
                 self?.settings.polishingBackendMode == .managedLocal
+                    ? "Needs a hosted polishing model."
+                    : nil
             }
         )
         storedTermSuggestions = model

@@ -98,13 +98,15 @@ there is not.
   timeout). `high` needs no per-model table: `/v1/models` reports only whether
   a model reasons, and `high` is the one level every reasoning model accepted
   (GLM low/high/max, Mistral none/high). Self-hosted shapes are untouched.
-  On a hosted or external endpoint the run simply continues in the background
-  while the user dictates; those servers answer a polish concurrently. Two
-  rules protect dictation on the BUNDLED HELPER only: a dictation start cancels
-  a run in flight (`cancelForDictation` — it generates one request at a time,
-  so a polish would wait behind the run into its 40 s timeout), and the
-  request is ONE user message with no system message, because polishd
-  checkpoints every message but the last and its two prompt-cache slots
+  The button is unavailable on the BUNDLED helper ("Needs a hosted polishing
+  model."): measured on the owner's Mac 2026-09-19, the 4B took 177 s on 133
+  dictations, listed the polish mistakes it was told to leave out (OpenShift,
+  Cohere, `toolInput`, Coin, Kuen) and ended in a repetition loop, all while
+  holding the helper's single generation slot against every polish; batches
+  of ten returned nothing. On a hosted or external endpoint a run continues in
+  the background while the user dictates. The request is ONE user message
+  with no system message: an external server may be another polishd, which
+  checkpoints every message but the last, and its two prompt-cache slots
   belong to the dictation profiles.
 
 - **Claude Code context reaches the prompt only through a positive join.**

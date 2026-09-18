@@ -67,8 +67,9 @@ Open **Settings** from the menu bar popover:
   mixed-case term is fixed even in Live Auto-Paste with no polishing.
   **Suggest terms** sends your recent dictations to your polishing model and
   shows the names it finds as dashed tags: + adds one, × refuses it for good
-  (**Advanced → Dismissed suggestions → Forget** undoes that). It works best
-  with a large model; a small local one returns a noisier list. Then the
+  (**Advanced → Dismissed suggestions → Forget** undoes that). It needs a
+  hosted polishing model (Mistral API or your own server) and keeps running
+  in the background while you dictate; the bundled local model cannot do it. Then the
   LLM Polishing switch, the agent prompt profile and spoken clipboard paste.
   **Advanced** holds the legacy replacement dictionary (fixed
   `replace_with`/`matches` rewrites, useful for Live Auto-Paste without

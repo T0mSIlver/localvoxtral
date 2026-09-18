@@ -1293,7 +1293,7 @@ private struct TextProcessingSettingsPane: View {
 
                 SettingsFieldRow(
                     title: "Suggestions",
-                    help: "Sends your recent dictations to \(suggestionModelName). Works best with a large model.",
+                    help: "Sends your recent dictations to \(suggestionModelName).",
                     layout: .stacked
                 ) {
                     SpeakerTermSuggestionsView(model: viewModel.termSuggestions)
@@ -2627,12 +2627,17 @@ private struct SpeakerTermSuggestionsView: View {
                     Button(model.suggestions.isEmpty ? "Suggest terms" : "Suggest again") {
                         model.start()
                     }
+                    .disabled(model.unavailableReason != nil)
                     .accessibilityIdentifier("settings.aboutYou.suggestTerms")
 
                     if !model.suggestions.isEmpty {
                         Button("Add all") { model.acceptAll() }
                     }
 
+                    if let reason = model.unavailableReason {
+                        Text(reason)
+                            .font(.callout).foregroundStyle(.secondary)
+                    } else {
                     switch model.phase {
                     case .nothingFound:
                         Text("Nothing new to suggest.")
@@ -2642,6 +2647,7 @@ private struct SpeakerTermSuggestionsView: View {
                             .font(.callout).foregroundStyle(.secondary).lineLimit(1)
                     case .idle, .loading:
                         EmptyView()
+                    }
                     }
                 }
             }

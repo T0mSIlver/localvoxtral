@@ -167,12 +167,12 @@ final class SpeakerTermSuggestionModel {
     private let settings: SettingsStore
     private let recentTexts: @MainActor () async -> [String]
     private let service: @MainActor () -> any LLMPolishingServicing
-    private let isDictating: @MainActor () -> Bool
-    /// True when the polishing backend generates ONE request at a time (the
-    /// bundled helper). A hosted or external server answers a polish while a
-    /// suggestion run is still going, so there the run just continues in the
-    /// background through any number of dictations.
-    private let sharesOneGenerationSlot: @MainActor () -> Bool
+    /// Why the button cannot be used right now, or nil. Measured on the
+    /// owner's history (2026-09-19): the bundled 4B took 177 s, listed the
+    /// polish mistakes it was told to leave out and ended in a repetition
+    /// loop, while holding the helper's single generation slot against every
+    /// polish. Batches of ten returned nothing. Hosted models only.
+    private let unavailableReasonProvider: @MainActor () -> String?
     private let now: @MainActor () -> Date
     @ObservationIgnored private var task: Task<Void, Never>?
 
@@ -180,15 +180,13 @@ final class SpeakerTermSuggestionModel {
         settings: SettingsStore,
         recentTexts: @escaping @MainActor () async -> [String],
         service: @escaping @MainActor () -> any LLMPolishingServicing,
-        isDictating: @escaping @MainActor () -> Bool = { false },
-        sharesOneGenerationSlot: @escaping @MainActor () -> Bool = { false },
+        unavailableReason: @escaping @MainActor () -> String? = { nil },
         now: @escaping @MainActor () -> Date = { Date() }
     ) {
         self.settings = settings
         self.recentTexts = recentTexts
         self.service = service
-        self.isDictating = isDictating
-        self.sharesOneGenerationSlot = sharesOneGenerationSlot
+        self.unavailableReasonProvider = unavailableReason
         self.now = now
     }
 
@@ -207,21 +205,12 @@ final class SpeakerTermSuggestionModel {
         Log.polishing.info("Term suggestions stopped by the user")
     }
 
-    /// A dictation is starting. On the bundled helper a suggestion run in
-    /// flight would make the polish wait behind it and hit its 40 s timeout,
-    /// so there the dictation wins. Everywhere else this does nothing.
-    func cancelForDictation() {
-        guard phase == .loading, sharesOneGenerationSlot() else { return }
-        task?.cancel()
-        task = nil
-        phase = .failed("Stopped: a dictation started.")
-        Log.polishing.info("Term suggestions cancelled by a dictation")
-    }
+    var unavailableReason: String? { unavailableReasonProvider() }
 
     func suggest() async {
         guard phase != .loading else { return }
-        guard !(isDictating() && sharesOneGenerationSlot()) else {
-            phase = .failed("Finish dictating first.")
+        if let reason = unavailableReasonProvider() {
+            phase = .failed(reason)
             return
         }
         guard let configuration = settings.llmPolishingConfiguration else {
@@ -251,7 +240,7 @@ final class SpeakerTermSuggestionModel {
                 ),
                 configuration: configuration
             )
-            // Cancelled while waiting: `cancelForDictation` already said why.
+            // Stopped while waiting: the row already went back to its button.
             guard phase == .loading, !Task.isCancelled else { return }
             suggestions = Array(SpeakerTermSuggestions.ranked(
                 SpeakerTermSuggestions.filtered(

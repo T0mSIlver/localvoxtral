@@ -294,52 +294,6 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         XCTAssertEqual(settings.polishDismissedTermSuggestions.first, "Refused1x")
     }
 
-    /// The bundled helper generates one request at a time: a dictation must
-    /// not wait behind a suggestion run.
-    func testADictationStopsARunInFlightAndItsLateAnswerIsIgnored() async {
-        let settings = makeSettings()
-        let service = GatedService()
-        let model = SpeakerTermSuggestionModel(
-            settings: settings, recentTexts: { ["a text"] }, service: { service },
-            sharesOneGenerationSlot: { true }
-        )
-
-        model.start()
-        await service.waitUntilRequested()
-        XCTAssertEqual(model.phase, .loading)
-        model.start()  // a second click while loading does nothing
-
-        model.cancelForDictation()
-        XCTAssertEqual(model.phase, .failed("Stopped: a dictation started."))
-
-        await service.release(with: #"["Qwen"]"#)
-        await Task.yield()
-        XCTAssertEqual(model.suggestions, [])
-        XCTAssertEqual(model.phase, .failed("Stopped: a dictation started."))
-        let requestCount = await service.requestCount
-        XCTAssertEqual(requestCount, 1)
-    }
-
-    /// A hosted or external server answers a polish while the run is going:
-    /// the run survives the dictation and its answer is used.
-    func testOnAConcurrentBackendTheRunContinuesThroughADictation() async {
-        let settings = makeSettings()
-        let service = GatedService()
-        let model = SpeakerTermSuggestionModel(
-            settings: settings, recentTexts: { ["a text"] }, service: { service },
-            isDictating: { true }, sharesOneGenerationSlot: { false }
-        )
-
-        model.start()
-        await service.waitUntilRequested()
-        model.cancelForDictation()
-        XCTAssertEqual(model.phase, .loading)
-
-        await service.release(with: #"["Qwen"]"#)
-        while model.phase == .loading { await Task.yield() }
-        XCTAssertEqual(model.suggestions, ["Qwen"])
-    }
-
     /// What the progress line shows, and the Stop button: the late answer of
     /// a stopped run is ignored and the row goes back to its button.
     func testARunReportsWhatItReadsSinceWhenAndCanBeStopped() async {
@@ -356,6 +310,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .loading)
         XCTAssertEqual(model.readingCount, 3)
         XCTAssertEqual(model.startedAt, start)
+        model.start()  // a second click while loading sends nothing more
 
         model.stop()
         XCTAssertEqual(model.phase, .idle)
@@ -364,17 +319,20 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         await Task.yield()
         XCTAssertEqual(model.suggestions, [])
         XCTAssertEqual(model.phase, .idle)
+        let requestCount = await service.requestCount
+        XCTAssertEqual(requestCount, 1)
     }
 
-    func testSuggestRefusesWhileDictatingOnTheBundledHelper() async {
+    /// The bundled 4B cannot do this (measured): no request is ever sent.
+    func testNothingIsSentWhenSuggestionsAreUnavailable() async {
         let settings = makeSettings()
         let service = Service()
         let model = SpeakerTermSuggestionModel(
             settings: settings, recentTexts: { ["a text"] }, service: { service },
-            isDictating: { true }, sharesOneGenerationSlot: { true }
+            unavailableReason: { "Needs a hosted polishing model." }
         )
         await model.suggest()
-        XCTAssertEqual(model.phase, .failed("Finish dictating first."))
+        XCTAssertEqual(model.phase, .failed("Needs a hosted polishing model."))
         XCTAssertTrue(service.requests.isEmpty)
     }
 
