@@ -492,15 +492,6 @@ final class SettingsStore {
         }
     }
 
-    /// When true, a capped, sanitized excerpt of the clipboard is fed to the
-    /// polish LLM as reference context so it can ground near-miss STT of
-    /// technical terms (file names, identifiers, URLs, error names) to their
-    /// exact spelling. Opt-in (default false), and applied only when the
-    /// polishing endpoint is permitted (`PolishContextClipboardReader
-    /// .isPermittedContextEndpoint`: loopback, or any endpoint under the
-    /// explicit `polishContextTrustedEndpointEnabled` opt-in) — an endpoint the
-    /// user has not consented to must never receive clipboard content. When off
-    /// or the endpoint is not permitted, the pasteboard is never read at all.
     /// The user's own description of who they are and the names they use,
     /// sent with every polish request (any app, any endpoint — like the
     /// replacement dictionary, it is text they typed for this purpose).
@@ -510,6 +501,15 @@ final class SettingsStore {
         }
     }
 
+    /// When true, a capped, sanitized excerpt of the clipboard is fed to the
+    /// polish LLM as reference context so it can ground near-miss STT of
+    /// technical terms (file names, identifiers, URLs, error names) to their
+    /// exact spelling. Opt-in (default false), and applied only when the
+    /// polishing endpoint is permitted (`PolishContextClipboardReader
+    /// .isPermittedContextEndpoint`: loopback, or any endpoint under the
+    /// explicit `polishContextTrustedEndpointEnabled` opt-in) — an endpoint the
+    /// user has not consented to must never receive clipboard content. When off
+    /// or the endpoint is not permitted, the pasteboard is never read at all.
     var polishClipboardContextEnabled: Bool {
         didSet {
             defaults.set(polishClipboardContextEnabled, forKey: Keys.polishClipboardContextEnabled)

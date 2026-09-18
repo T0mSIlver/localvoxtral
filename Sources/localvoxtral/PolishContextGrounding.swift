@@ -21,6 +21,11 @@ import Foundation
 ///   conflicting guess-grade readings remain bounded prompt suggestions only
 ///   while their literal heard bytes have not been pre-applied by another hit.
 ///
+/// Since the 2026-09-18 nomination rework every production source emits only
+/// solid entries (`isFallbackOnly` false, `phoneticEntries` empty): sound-alike
+/// hits arrive as `verificationEntries`. The guess-grade rules above still hold
+/// for candidates built by hand, which is how the tests pin them.
+///
 /// Pure and deterministic — decisions depend only on the candidates and the
 /// fixed `PolishContextSource` order.
 enum PolishContextGrounding {
@@ -171,6 +176,7 @@ enum PolishContextGrounding {
         }
 
         let preAppliedKeys = Set(surviving.map(\.heardKey))
+        let preAppliedTerms = Set(surviving.map(\.exact))
         var verificationPairs: [VerificationPair] = []
         var seenVerification = Set<VerificationKey>()
         func appendVerification(heard: String, exact: String) {
@@ -178,7 +184,9 @@ enum PolishContextGrounding {
                   heard != exact
             else { return }
             let heardKey = RepoVocabularyMatcher.normalize(heard)
-            guard !preAppliedKeys.contains(heardKey) else { return }
+            guard !preAppliedKeys.contains(heardKey),
+                  !preAppliedTerms.contains(exact)
+            else { return }
             let key = VerificationKey(heardKey: heardKey, exact: exact)
             guard seenVerification.insert(key).inserted else { return }
             verificationPairs.append(VerificationPair(heard: heard, exact: exact))

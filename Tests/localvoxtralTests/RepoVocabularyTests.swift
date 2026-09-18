@@ -646,7 +646,7 @@ final class RepoVocabularyMatcherTests: XCTestCase {
 
     func testGroundedFuzzyTierAbstainsForTiedDistanceOneCandidates() {
         let transcript = "Open ConfigC.swift."
-        let result = RepoVocabularyMatcher.groundedCandidateEntries(
+        let outcome = RepoVocabularyMatcher.groundedCandidates(
             transcript: transcript,
             vocabulary: RepoVocabulary(
                 terms: ["ConfigA.swift", "ConfigB.swift"],
@@ -654,10 +654,16 @@ final class RepoVocabularyMatcherTests: XCTestCase {
             )
         )
 
-        XCTAssertTrue(result.isEmpty, "entries: \(result)")
+        XCTAssertTrue(outcome.entries.isEmpty, "entries: \(outcome.entries)")
         XCTAssertEqual(
-            RepoVocabularyMatcher.preapplying(entries: result, to: transcript),
+            RepoVocabularyMatcher.preapplying(entries: outcome.entries, to: transcript),
             transcript
+        )
+        // The tie reaches the model as two terms on offer (the phonetic tier's
+        // contested-span rule, unchanged); neither is written for it.
+        XCTAssertEqual(
+            Set(outcome.verificationCandidates.map(\.replaceWith)),
+            ["ConfigA.swift", "ConfigB.swift"]
         )
     }
 
@@ -718,19 +724,23 @@ final class RepoVocabularyMatcherTests: XCTestCase {
     }
 
     func testAlignedFallbackAbstainsWhenCandidatesAreAmbiguous() {
-        let result = RepoVocabularyMatcher.groundedCandidateEntries(
+        let outcome = RepoVocabularyMatcher.groundedCandidates(
             transcript: "Open auth sir vice here.",
             vocabulary: RepoVocabulary(
                 terms: ["AuthService.ts", "AuthServices.ts"],
                 branch: nil
             )
         )
-        XCTAssertTrue(result.isEmpty, "entries: \(result)")
+        XCTAssertTrue(outcome.entries.isEmpty, "entries: \(outcome.entries)")
+        // Neither reading wins, so both are offered and the model decides.
+        XCTAssertEqual(
+            Set(outcome.verificationCandidates.map(\.replaceWith)),
+            ["AuthService.ts", "AuthServices.ts"]
+        )
     }
 
     func testAlignedFallbackAbstainsOnUnrelatedProse() {
-        let result = RepoVocabularyMatcher.groundedCandidateEntries(
-            transcript: "Please improve the error message for users.",
+        let result = found("Please improve the error message for users.",
             vocabulary: RepoVocabulary(
                 terms: ["UserSessionManager.swift", "AuthService.ts"],
                 branch: nil
@@ -740,16 +750,14 @@ final class RepoVocabularyMatcherTests: XCTestCase {
     }
 
     func testAlignedFallbackDoesNotForceUnspokenFileExtensionWithoutFileCue() {
-        let result = RepoVocabularyMatcher.groundedCandidateEntries(
-            transcript: "Fix the user session manager.",
+        let result = found("Fix the user session manager.",
             vocabulary: RepoVocabulary(terms: ["UserSessionManager.swift"], branch: nil)
         )
         XCTAssertTrue(result.isEmpty, "entries: \(result)")
     }
 
     func testAlignedFallbackAbstainsOnGluedSingleTokenThatWouldDeleteProse() {
-        let result = RepoVocabularyMatcher.groundedCandidateEntries(
-            transcript: "Ouvreusot.ts maintenant.",
+        let result = found("Ouvreusot.ts maintenant.",
             vocabulary: RepoVocabulary(terms: ["useAuth.ts"], branch: nil)
         )
         XCTAssertTrue(result.isEmpty, "entries: \(result)")
