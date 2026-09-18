@@ -150,6 +150,8 @@ struct StatusPopoverView: View {
 
             if let connectionFailureDetail {
                 statusDetailView(connectionFailureDetail)
+            } else if viewModel.currentErrorToken == .microphoneDisconnected {
+                statusDetailView(DictationViewModel.microphoneDisconnectedMessage)
             } else if viewModel.lastError != nil {
                 statusDetailView("See Console for details.")
             }

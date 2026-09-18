@@ -468,6 +468,9 @@ extension DictationViewModel {
             stopDictation: { [weak self] reason in
                 self?.stopDictation(reason: reason)
             },
+            stopForUnavailableInput: { [weak self] in
+                self?.stopDictationForUnavailableMicrophone()
+            },
             isDictating: { [weak self] in
                 self?.isDictating ?? false
             },
@@ -1695,7 +1698,12 @@ extension DictationViewModel {
         // transcript, polishing disabled, cancelled overlay.
         discardTerminalScreenCapture()
         clearLatchedSessionMetadata()
-        setRealtimeIndicatorIdle()
+        if holdFailureIndicatorUntilStopCompletes {
+            holdFailureIndicatorUntilStopCompletes = false
+            markRecentConnectionFailureIndicator()
+        } else {
+            setRealtimeIndicatorIdle()
+        }
         livePartialText = ""
         pendingSegmentText = ""
         switch overlayCommitOutcome {
@@ -2186,6 +2194,19 @@ extension DictationViewModel {
         recentFailureResetTask?.cancel()
         recentFailureResetTask = nil
         realtimeSessionIndicatorState = .connected
+    }
+
+    /// The mic the dictation was capturing from was unplugged. The text
+    /// captured so far still finalizes and commits; the menu bar icon stays
+    /// red through that and for the usual failure window after it.
+    func stopDictationForUnavailableMicrophone() {
+        Log.dictation.error(
+            "Selected microphone became unavailable during dictation; dictation stopped. Reconnect it or select another input."
+        )
+        stopDictation(reason: "selected input unavailable")
+        lastError = Self.microphoneDisconnectedMessage
+        holdFailureIndicatorUntilStopCompletes = isFinalizingStop
+        markRecentConnectionFailureIndicator()
     }
 
     func markRecentConnectionFailureIndicator() {

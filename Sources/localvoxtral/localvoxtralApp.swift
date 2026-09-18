@@ -61,7 +61,7 @@ struct localvoxtralApp: App {
                                 .original,
                                 "realtime-failed",
                                 viewModel.realtimeSessionIndicatorState == .recentFailure
-                                    ? "localvoxtral, realtime connection failed recently"
+                                    ? "localvoxtral, dictation failed recently"
                                     : "localvoxtral, dictation backend not ready"
                             )
                         }
@@ -70,7 +70,7 @@ struct localvoxtralApp: App {
                             .template,
                             "realtime-failed",
                             viewModel.realtimeSessionIndicatorState == .recentFailure
-                                ? "localvoxtral, realtime connection failed recently"
+                                ? "localvoxtral, dictation failed recently"
                                 : "localvoxtral, dictation backend not ready"
                         )
                     }
