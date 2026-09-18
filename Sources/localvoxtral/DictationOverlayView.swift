@@ -235,23 +235,7 @@ struct DictationOverlayView: View {
 
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: true) {
-                    VStack(spacing: 0) {
-                        Text(displayText)
-                            .font(.system(size: metrics.bodyFontSize))
-                            .foregroundStyle(.primary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(
-                                maxWidth: .infinity,
-                                minHeight: minimumBodyTextHeight,
-                                alignment: .topLeading
-                            )
-
-                        // Invisible anchor for scroll-to-bottom
-                        Color.clear
-                            .frame(height: 1)
-                            .id("bottom")
-                    }
-                    .padding(.bottom, 12)
+                    OverlayBodyScrollContent(text: displayText, metrics: metrics)
                 }
                 .scrollDisabled(textHeight <= maxScrollableHeight)
                 .frame(
@@ -263,7 +247,7 @@ struct DictationOverlayView: View {
                 .onChange(of: text) { _, _ in
                     if textHeight > maxScrollableHeight {
                         withAnimation(.easeOut(duration: 0.15)) {
-                            proxy.scrollTo("bottom", anchor: .bottom)
+                            proxy.scrollTo(OverlayBodyScrollContent.bottomAnchorID, anchor: .bottom)
                         }
                     }
                 }
@@ -294,5 +278,36 @@ struct DictationOverlayView: View {
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .compositingGroup()
         .shadow(color: Color.black.opacity(0.18), radius: 16, x: 0, y: 8)
+    }
+}
+
+/// The overlay body's scrollable document: the transcript plus the invisible
+/// anchor auto-scroll targets. The anchor must be the last thing in the
+/// document — anything below it (a bottom padding did this) is scroll range
+/// auto-scroll never reaches, so the scroller stops short of the bottom and a
+/// manual scroll pushes the last line up.
+struct OverlayBodyScrollContent: View {
+    static let bottomAnchorID = "bottom"
+    static let bottomAnchorHeight: CGFloat = 1
+
+    let text: String
+    let metrics: OverlayLayoutMetrics
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text(text)
+                .font(.system(size: metrics.bodyFontSize))
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: metrics.bodyLineHeight,
+                    alignment: .topLeading
+                )
+
+            Color.clear
+                .frame(height: Self.bottomAnchorHeight)
+                .id(Self.bottomAnchorID)
+        }
     }
 }
