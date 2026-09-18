@@ -725,8 +725,11 @@ private struct MistralModelPickerRow: View {
             }
             .pickerStyle(.menu)
             .labelsHidden()
-            .frame(maxWidth: SettingsLayout.textFieldWidth)
             .accessibilityIdentifier(identifier)
+            // Capped so a long model name cannot squeeze the label, and
+            // trailing like every other menu in the pane: the cap's frame
+            // centres its content otherwise.
+            .frame(maxWidth: SettingsLayout.textFieldWidth, alignment: .trailing)
         }
     }
 }
