@@ -211,3 +211,41 @@ final class OverlayLayoutMetricsTests: XCTestCase {
         }
     }
 }
+
+// MARK: - Scroll-to-bottom reaches the real bottom (field report 2026-09-18)
+
+@MainActor
+final class OverlayBodyScrollContentTests: XCTestCase {
+    /// Auto-scroll puts the bottom anchor at the viewport's bottom edge. A
+    /// 12pt padding under the anchor left that much scroll range unreached:
+    /// the scroller stopped short of the bottom, and scrolling by hand
+    /// revealed the padding and lifted the last line. The document must end
+    /// where the anchor ends.
+    func testScrollDocumentEndsAtTheBottomAnchor() {
+        let text = String(repeating: "scrolling buffer text keeps growing ", count: 60)
+        for size in [
+            OverlayLayoutMetrics.minimumBodyFontSize,
+            OverlayLayoutMetrics.defaultBodyFontSize,
+            OverlayLayoutMetrics.maximumBodyFontSize,
+        ] {
+            let metrics = OverlayLayoutMetrics(bodyFontSize: size)
+            let width = metrics.textMeasurementWidth
+            let proposal = CGSize(width: width, height: .greatestFiniteMagnitude)
+            let textHeight = NSHostingController(
+                rootView: Text(text)
+                    .font(.system(size: metrics.bodyFontSize))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: width, alignment: .topLeading)
+            ).sizeThatFits(in: proposal).height
+            let documentHeight = NSHostingController(
+                rootView: OverlayBodyScrollContent(text: text, metrics: metrics)
+                    .frame(width: width)
+            ).sizeThatFits(in: proposal).height
+
+            XCTAssertEqual(
+                documentHeight, textHeight + OverlayBodyScrollContent.bottomAnchorHeight,
+                accuracy: 0.5,
+                "scroll range extends past the bottom anchor at font size \(size)")
+        }
+    }
+}
