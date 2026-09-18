@@ -972,7 +972,9 @@ final class DictationViewModel {
     /// store there is still the real one, and a test must not read or seed
     /// the machine's config directory.
     private func importSpeakerTermsFromReplacementDictionaryIfNeeded() {
-        guard !TerminalTargetDetector.isRunningUnderXCTest else { return }
+        #if DEBUG
+        if TerminalTargetDetector.isRunningUnderXCTest { return }
+        #endif
         importSpeakerTermsFromReplacementDictionary()
     }
 
