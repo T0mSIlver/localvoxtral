@@ -301,7 +301,7 @@ final class DictationViewModel {
     /// keeps the one-line explanation in the popover. A stopped session that
     /// is still finalizing/polishing is NOT an ended attempt — its text is
     /// still headed for the clipboard fallback, and clearing here dropped
-    /// the icon to the yellow session state mid-polish (owner field feedback
+    /// the icon to the orange session state mid-polish (owner field feedback
     /// on #90); session teardown owns that clear.
     func clearSecureInputRefusalSignalsIfAttemptEnded() {
         guard !isDictating, !isConnectingRealtimeSession, !isFinalizingStop,
