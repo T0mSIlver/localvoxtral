@@ -258,6 +258,19 @@ final class DictationViewModel {
     @ObservationIgnored
     private(set) var mistralAPIKeyCheckTask: Task<Void, Never>?
 
+    /// The Mistral model pickers' fetch state.
+    var mistralModelListState: MistralModelListState = .idle
+
+    /// The in-flight model list fetch, awaitable for the same reason as
+    /// `mistralAPIKeyCheckTask`.
+    @ObservationIgnored
+    private(set) var mistralModelListTask: Task<Void, Never>?
+
+    /// The key the model list was last loaded with, so reopening the pane
+    /// does not refetch a list it already has.
+    @ObservationIgnored
+    private var mistralModelListLoadedKey: String?
+
     /// Secure Keyboard Entry state sampled for the CURRENT session — drives
     /// the menu bar warning icon independently of `lastError` (whose popover
     /// line a higher-priority warning may own). Set when the session verdict
@@ -347,6 +360,8 @@ final class DictationViewModel {
     /// point it at a fake so nothing reaches api.mistral.ai off a button press.
     @ObservationIgnored
     var mistralAPIKeyVerifier: any MistralAPIKeyVerifying = MistralAPIKeyVerifier()
+    @ObservationIgnored
+    var mistralModelLister: any MistralModelListing = MistralModelLister()
     #if LOCALVOXTRAL_DOGFOOD
     /// `var` for the same reason `llmPolishingService` is: tests point it at a
     /// temp directory. Production uses the Application Support default.
@@ -1332,6 +1347,37 @@ final class DictationViewModel {
             guard let self else { return }
             let verification = await self.verifyMistralAPIKey(apiKey)
             self.mistralAPIKeyCheckState = .finished(verification)
+        }
+    }
+
+    /// Load the models the stored Mistral key can use into
+    /// `settings.mistralModelCatalog`. Once per key: the list changes when
+    /// Mistral ships a model, not while Settings is open. A failure keeps the
+    /// cached list, so the pickers never empty out over a network blip.
+    func refreshMistralModelCatalog(force: Bool = false) {
+        let apiKey = settings.trimmedMistralAPIKey
+        guard !apiKey.isEmpty else { return }
+        guard force || mistralModelListLoadedKey != apiKey else { return }
+        mistralModelListTask?.cancel()
+        mistralModelListState = .loading
+        mistralModelListTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let result = await self.mistralModelLister.listModels(apiKey: apiKey)
+            // Superseded: the newer fetch owns the state.
+            guard !Task.isCancelled else { return }
+            guard self.settings.trimmedMistralAPIKey == apiKey else {
+                // The key changed under the fetch; its list is not this key's.
+                self.mistralModelListState = .idle
+                return
+            }
+            switch result {
+            case .loaded(let models):
+                self.settings.mistralModelCatalog = models
+                self.mistralModelListLoadedKey = apiKey
+                self.mistralModelListState = .loaded
+            case .rejected, .failed:
+                self.mistralModelListState = .failed(result)
+            }
         }
     }
 

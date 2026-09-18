@@ -294,6 +294,69 @@ final class MistralAPIModeTests: XCTestCase {
         XCTAssertEqual(verification, .unreachable("Enter an API key first."))
     }
 
+    // MARK: - Model list
+
+    func testModelListLoadsOncePerKeyIntoSettings() async {
+        let (viewModel, settings, _) = makeViewModel()
+        let glm = MistralModel(
+            id: "zai-glm-5-3", ids: ["zai-glm-5-3", "zai-glm-latest"], supportsChat: true,
+            supportsRealtimeTranscription: false, supportsReasoning: true, isDeprecated: false
+        )
+        let lister = FakeMistralModelLister(result: .loaded([glm]))
+        viewModel.mistralModelLister = lister
+        settings.mistralAPIKey = " mk-mistral "
+
+        viewModel.refreshMistralModelCatalog()
+        XCTAssertEqual(viewModel.mistralModelListState, .loading)
+        XCTAssertEqual(viewModel.mistralModelListState.statusLine, "Loading models…")
+        await viewModel.mistralModelListTask?.value
+
+        XCTAssertEqual(settings.mistralModelCatalog, [glm])
+        XCTAssertEqual(viewModel.mistralModelListState, .loaded)
+        XCTAssertNil(viewModel.mistralModelListState.statusLine)
+        XCTAssertEqual(lister.requestedKeys, ["mk-mistral"])
+
+        // Reopening the pane with the same key costs no request.
+        viewModel.refreshMistralModelCatalog()
+        await viewModel.mistralModelListTask?.value
+        XCTAssertEqual(lister.requestedKeys, ["mk-mistral"])
+    }
+
+    /// A failed fetch says so in one line and keeps the list it had: the
+    /// pickers must not empty out because Wi-Fi dropped.
+    func testAFailedModelListKeepsTheCachedList() async {
+        let (viewModel, settings, _) = makeViewModel()
+        let cached = MistralModel(
+            id: "mistral-small-2603", ids: ["mistral-small-2603"], supportsChat: true,
+            supportsRealtimeTranscription: false, supportsReasoning: true, isDeprecated: false
+        )
+        settings.mistralModelCatalog = [cached]
+        settings.mistralAPIKey = "mk-wrong"
+        viewModel.mistralModelLister = FakeMistralModelLister(result: .rejected(statusCode: 401))
+
+        viewModel.refreshMistralModelCatalog()
+        await viewModel.mistralModelListTask?.value
+
+        XCTAssertEqual(settings.mistralModelCatalog, [cached])
+        XCTAssertEqual(viewModel.mistralModelListState.statusLine, "Key rejected")
+        XCTAssertEqual(
+            MistralModelListState.failed(.failed("A long\nsystem error")).statusLine,
+            "Could not load models"
+        )
+    }
+
+    func testModelListWithoutAKeyNeverAsks() async {
+        let (viewModel, _, _) = makeViewModel()
+        let lister = FakeMistralModelLister(result: .loaded([]))
+        viewModel.mistralModelLister = lister
+
+        viewModel.refreshMistralModelCatalog()
+
+        XCTAssertNil(viewModel.mistralModelListTask)
+        XCTAssertEqual(lister.requestedKeys, [])
+        XCTAssertEqual(viewModel.mistralModelListState, .idle)
+    }
+
     // MARK: - Fixtures
 
     /// Drain the backend-lifecycle tasks a mode change starts. No polling and
@@ -387,4 +450,20 @@ private final class MistralNoopOverlayCoordinator: OverlayBufferSessionCoordinat
     func dismissAfterHold(minimumVisibility: TimeInterval) {}
     func reset() {}
     func captureLiveCommitTargetAppPID() {}
+}
+
+private final class FakeMistralModelLister: MistralModelListing {
+    private let result: MistralModelListResult
+    private let recorded = Mutex<[String]>([])
+
+    init(result: MistralModelListResult) {
+        self.result = result
+    }
+
+    var requestedKeys: [String] { recorded.withLock { $0 } }
+
+    func listModels(apiKey: String) async -> MistralModelListResult {
+        recorded.withLock { $0.append(apiKey) }
+        return result
+    }
 }
