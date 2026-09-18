@@ -711,7 +711,11 @@ final class DictationViewModel {
             self.overlayBufferCoordinator = OverlayBufferSessionCoordinator(
                 stateMachine: OverlayBufferStateMachine(),
                 renderer: DictationOverlayController(
-                    fontSizeProvider: { settings.overlayBufferFontSize }
+                    metricsProvider: {
+                        OverlayLayoutMetrics(
+                            bodyFontSize: settings.overlayBufferFontSize,
+                            visibleLines: settings.overlayBufferVisibleLines)
+                    }
                 ),
                 anchorResolver: anchorResolver
             )

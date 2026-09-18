@@ -46,11 +46,11 @@ final class DictationOverlayController {
     private let panel: NonActivatingPanel
     private let hostingView: TransparentHostingView<DictationOverlayView>
     private let cornerRadius: CGFloat = 12
-    /// Reads the user's overlay font size at the start of each overlay
-    /// session; the value is then locked until `hide()` (see
+    /// Builds metrics from the user's overlay settings at the start of each
+    /// overlay session; they are then locked until `hide()` (see
     /// `OverlaySessionMetricsLock` — the panel's locked X origin assumes a
     /// constant width), so setting changes apply to the next dictation.
-    private let fontSizeProvider: @MainActor () -> Double
+    private let metricsProvider: @MainActor () -> OverlayLayoutMetrics
     private var metricsLock = OverlaySessionMetricsLock()
 
     /// Locked placement state for the current session. Set on first render,
@@ -66,11 +66,11 @@ final class DictationOverlayController {
     private var lockedOriginX: CGFloat?
 
     init(
-        fontSizeProvider: @escaping @MainActor () -> Double = {
-            OverlayLayoutMetrics.defaultBodyFontSize
+        metricsProvider: @escaping @MainActor () -> OverlayLayoutMetrics = {
+            OverlayLayoutMetrics(bodyFontSize: OverlayLayoutMetrics.defaultBodyFontSize)
         }
     ) {
-        self.fontSizeProvider = fontSizeProvider
+        self.metricsProvider = metricsProvider
         panel = NonActivatingPanel(
             contentRect: NSRect(x: 0, y: 0, width: 420, height: 120),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -94,7 +94,7 @@ final class DictationOverlayController {
             text: "",
             errorMessage: nil,
             secureInputActive: false,
-            metrics: OverlayLayoutMetrics(bodyFontSize: fontSizeProvider()),
+            metrics: metricsProvider(),
             polished: false,
             claudeJoin: .hidden
         )
@@ -137,7 +137,7 @@ final class DictationOverlayController {
             return
         }
 
-        let metrics = metricsLock.metrics(currentFontSize: fontSizeProvider())
+        let metrics = metricsLock.metrics(current: metricsProvider)
         hostingView.rootView = DictationOverlayView(
             phase: snapshot.phase,
             text: snapshot.bufferText,
