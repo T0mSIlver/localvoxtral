@@ -32,17 +32,38 @@ there is not.
 - **LLM polishing trusts the model's text in both profiles.** Human dictation
   evaluation found that `PolishTokenGuard` could reduce fidelity by undoing
   useful formatting and reconstructed identifiers, so it is not in the commit
-  path. Repo/clipboard vocabulary is an INPUT-side exception: matcher-approved
-  `(heard span, exact local term)` pairs are boundary-checked and pre-applied
-  before the single polish call. When the existing exact/edit-distance-one
-  matcher finds nothing, a bounded aligned fallback may emit at most one pair;
-  it score/margin-gates, abstains on ambiguity/glued prose, and will not add an
-  unspoken filename extension without a nearby file cue. This is grounding,
+  path. Repo/clipboard vocabulary is an INPUT-side exception: a transcript
+  span that NORMALIZES TO A LOCAL TERM ITSELF ("use auth dot ts" ->
+  `useAuth.ts`) is boundary-checked and pre-applied before the single polish
+  call; a LONE word may change letter case and nothing else (French "Sans"
+  equals the flag `--sans` once dashes are ignored). Nothing weaker rewrites
+  the transcript. The sound-alike tiers (edit
+  distance one, Double Metaphone key, bounded aligned fallback) only NOMINATE:
+  their terms reach the model as a plain list (four, growing with the length
+  of the dictation up to twelve), with no heard
+  span beside them, and a file name whose extension the speaker never said is
+  withheld altogether. Owner field history 2026-09-18: those tiers, applied
+  silently or shown as `"heard" -> "term"` pairs, wrote `toolInput`,
+  `SessionStart`, `--sans` and `localvoxtral.js` over ordinary French and
+  English prose; on replay the pair rendering produced five wrong insertions
+  on Mistral Medium where the list produced three and no section none, and
+  every survivor on GLM 5.3 was an unspoken extension. Do not restore
+  pre-application or the pair rendering without replaying that set
+  (`SoundAlikeNominationTests` pins the field spans). This is grounding,
   not an output guard. No content-based leak detector scans or rejects model
   output. Only explicit clipboard-paste payload-placeholder count integrity
   remains active for both profiles. The token guard type remains as a recognizer
   used by clipboard vocabulary and by focused unit coverage; do not infer that
   it runs at commit.
+
+- **"About you" is the only place the model is told to infer a misheard name.**
+  `LLMPromptTemplates.withSpeakerProfile` appends the user's own text to the
+  SYSTEM prompt (stable, so it stays inside the prefix polishd checkpoints —
+  the warmup applies the same call). The same "sounds like it AND fits better"
+  rule was tried in the bundled prompts with no profile present and made both
+  GLM 5.3 and Mistral Medium guess ("Coin 3.6" -> Claude, -> Code; "H200" ->
+  H100); with the profile the same dictations came back as Qwen. Keep the rule
+  attached to evidence the user supplied.
 
 - **Claude Code context reaches the prompt only through a positive join.**
   The joined session's repository (status, uncommitted diffs, contents

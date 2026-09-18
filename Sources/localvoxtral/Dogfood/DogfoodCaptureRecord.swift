@@ -153,15 +153,15 @@ struct DogfoodCaptureRecord: Codable, Equatable, Sendable {
         var harvestCount: Int
         var harvestTruncated: Bool = false
 
-        /// Pre-apply eligible matches from the exact / edit-distance-one tiers.
+        /// Pre-applied matches: spans that normalize to the term itself.
         var entries: [Entry]
-        /// Exact unambiguous phonetic matches — guess grade once sources are
-        /// reconciled, so they can be dropped by the merge even when correct.
+        /// Always empty since the 2026-09-18 nomination rework (phonetic hits
+        /// are in `verificationEntries`); kept for record-format stability.
         var phoneticEntries: [Entry]
-        /// Prompt-only mishearing suggestions; never pre-applied.
+        /// Every sound-alike hit (edit distance one, phonetic, aligned),
+        /// offered to the model as a term; never pre-applied.
         var verificationEntries: [Entry]
-        /// True when `entries` came from the bounded aligned fallback rather
-        /// than a solid tier.
+        /// Always false since the same rework; kept for format stability.
         var isFallbackOnly: Bool
 
         /// The excerpt this source rendered into the prompt, if any.

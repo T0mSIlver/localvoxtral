@@ -701,6 +701,7 @@ extension DictationViewModel {
                 )
                 let capturedPolishProfile = polishProfile.rawValue
                 let promptTemplates = appConfigStore.loadLLMPromptTemplates(profile: polishProfile)
+                    .withSpeakerProfile(settings.polishSpeakerProfile)
 
                 statusText = StatusStrings.polishing
                 debugLog("LLM polishing started for \(workingText.count) chars")
@@ -990,10 +991,8 @@ extension DictationViewModel {
 
                     // Sources matched independently; the merge is what resolves
                     // them against each other (agreement collapses, conflicting
-                    // spans abstain, a fallback guess yields to a solid hit).
-                    // Every side carries REAL provenance — a repo aligned-fallback
-                    // guess yields to a clipboard exact hit on the same span,
-                    // and vice versa.
+                    // spans abstain, and a sound-alike term is not offered for
+                    // a span or a term another source already rewrote).
                     //
                     // The terminal votes HERE, in the same single merge, rather
                     // than appending its entries downstream. That is the whole
@@ -1053,7 +1052,9 @@ extension DictationViewModel {
                             phoneticEntries: clipboardVocabularyOutcome.phoneticEntries,
                             verificationEntries: clipboardVocabularyOutcome.verificationCandidates
                         ),
-                    ])
+                    ], maxVerificationPairs: RepoVocabularyMatcher.nominationCap(
+                        forTranscript: workingText
+                    ))
                     let repoVocabularyEntries = merged.entries(from: .repository)
                     let clipboardVocabularyEntries = merged.entries(from: .clipboard)
                     let screenVocabularyEntries = merged.entries(from: .terminal)

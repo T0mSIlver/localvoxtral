@@ -250,6 +250,7 @@ final class SettingsStore {
         static let replacementDictionaryEnabled = "settings.replacement_dictionary_enabled"
         static let agentPolishProfileEnabled = "settings.agent_polish_profile_enabled"
         static let polishClipboardContextEnabled = "settings.polish_clipboard_context_enabled"
+        static let polishSpeakerProfile = "settings.polish_speaker_profile"
         static let clipboardPayloadMacroEnabled = "settings.clipboard_payload_macro_enabled"
         static let terminalScreenContextEnabled = "settings.terminal_screen_context_enabled"
         static let repoVocabularyEnabled = "settings.repo_vocabulary_enabled"
@@ -489,6 +490,15 @@ final class SettingsStore {
     var agentPolishProfileEnabled: Bool {
         didSet {
             defaults.set(agentPolishProfileEnabled, forKey: Keys.agentPolishProfileEnabled)
+        }
+    }
+
+    /// The user's own description of who they are and the names they use,
+    /// sent with every polish request (any app, any endpoint — like the
+    /// replacement dictionary, it is text they typed for this purpose).
+    var polishSpeakerProfile: String {
+        didSet {
+            defaults.set(polishSpeakerProfile, forKey: Keys.polishSpeakerProfile)
         }
     }
 
@@ -1032,6 +1042,7 @@ final class SettingsStore {
             defaults: defaults, key: Keys.replacementDictionaryEnabled, fallback: false)
         agentPolishProfileEnabled = Self.loadBool(
             defaults: defaults, key: Keys.agentPolishProfileEnabled, fallback: true)
+        polishSpeakerProfile = defaults.string(forKey: Keys.polishSpeakerProfile) ?? ""
         polishClipboardContextEnabled = Self.loadBool(
             defaults: defaults, key: Keys.polishClipboardContextEnabled, fallback: false)
         clipboardPayloadMacroEnabled = Self.loadBool(

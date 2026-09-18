@@ -79,6 +79,20 @@ reasoning switched off, so polishing asks it for its lowest setting (`low`);
 models without reasoning are sent no reasoning setting at all. In this mode
 your audio and transcripts reach Mistral.
 
+The **Usage** row in the pane's Mistral API group estimates what those
+requests cost, in EUR, over today, the last 7, 30 or 90 days, or all time.
+The app logs every request it sends to Mistral in
+`~/Library/Application Support/localvoxtral/mistral-usage.jsonl`, one line
+per request: time, model, the seconds of audio sent (dictation) or the tokens
+Mistral reports (polishing), and the estimated cost. The log never holds what
+you said, and nothing in it leaves the Mac. Prices are Mistral's EUR list
+prices, built into the app, so the estimate can differ from your invoice:
+Mistral does not document how it rounds audio time, and a model the app has
+no price for is counted but left out of the total. Dictation is timed on the
+Mac because the audio duration Mistral reports back is wrong (it reported 2
+seconds for clips from 4.6 to 30.7 seconds long). For the billed figure, see
+the usage page in Mistral's admin console.
+
 ## Bring your own server
 
 Prefer your own hardware? Switch Dictation or Polishing to **External URL**

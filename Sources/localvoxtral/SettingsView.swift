@@ -688,11 +688,58 @@ private struct ConnectionSettingsPane: View {
                     .disabled(!settings.isMistralAPIConfigured)
                     .accessibilityIdentifier("engines.mistral.quickSetup")
                 }
+
+                MistralUsageRow(viewModel: viewModel)
             }
         }
         .task(id: mistralModelListTrigger) {
             guard !mistralModelListTrigger.isEmpty else { return }
             viewModel.refreshMistralModelCatalog()
+        }
+    }
+}
+
+/// What the Mistral requests made from this Mac cost over a chosen window,
+/// estimated from list prices in the local ledger.
+private struct MistralUsageRow: View {
+    let viewModel: DictationViewModel
+    @AppStorage("mistralUsagePeriod") private var periodRawValue =
+        MistralUsagePeriod.thirtyDays.rawValue
+
+    private var period: Binding<MistralUsagePeriod> {
+        Binding(
+            get: { MistralUsagePeriod(rawValue: periodRawValue) ?? .thirtyDays },
+            set: { periodRawValue = $0.rawValue }
+        )
+    }
+
+    private var summary: MistralUsageSummary {
+        // Read so a ledger write re-renders the row.
+        _ = viewModel.mistralUsageRevision
+        return viewModel.mistralUsageLedger?.summary(for: period.wrappedValue)
+            ?? MistralUsageSummary()
+    }
+
+    var body: some View {
+        let summary = summary
+        SettingsFieldRow(
+            title: "Usage",
+            status: summary.line,
+            statusAccessibilityIdentifier: "engines.mistral.usage.status"
+        ) {
+            Picker("", selection: period) {
+                ForEach(MistralUsagePeriod.allCases) { period in
+                    Text(period.label).tag(period)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .fixedSize()
+            .accessibilityIdentifier("engines.mistral.usage.period")
+        } footer: {
+            if let note = summary.unpricedNote {
+                SettingsHelpText(note)
+            }
         }
     }
 }
@@ -1153,6 +1200,11 @@ private struct TextProcessingSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
 
+    static let speakerProfileExample = """
+        Backend engineer at Acme, mostly Swift and Python.
+        • Names I say a lot: Qwen, Claude Code, vLLM, Ghostty
+        """
+
     private var isLLMPolishingReachable: Bool {
         settings.isOverlayBufferSessionReachable
     }
@@ -1218,6 +1270,50 @@ private struct TextProcessingSettingsPane: View {
                     ) {
                         Toggle("", isOn: $settings.clipboardPayloadMacroEnabled)
                             .labelsHidden()
+                    }
+
+                    SettingsFieldRow(
+                        title: "About you",
+                        help: "Sent to the polishing model with every dictation.",
+                        layout: .stacked
+                    ) {
+                        TextEditor(text: $settings.polishSpeakerProfile)
+                            .font(.body)
+                            .frame(height: 96)
+                            .scrollContentBackground(.hidden)
+                            .scrollIndicators(.never)
+                            .overlay(alignment: .topLeading) {
+                                if settings.polishSpeakerProfile.isEmpty {
+                                    // TextEditor has no prompt of its own. The
+                                    // 5pt inset is NSTextView's line-fragment
+                                    // padding, so the example sits where typed
+                                    // text will.
+                                    Text(Self.speakerProfileExample)
+                                        .font(.body)
+                                        .foregroundStyle(.tertiary)
+                                        .padding(.leading, 5)
+                                        .allowsHitTesting(false)
+                                        .accessibilityHidden(true)
+                                }
+                            }
+                            .padding(6)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(Color(nsColor: .textBackgroundColor))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .strokeBorder(Color(nsColor: .separatorColor))
+                            )
+                            .accessibilityIdentifier("settings.polishing.speakerProfile")
+                    } footer: {
+                        if settings.polishSpeakerProfile.count
+                            > LLMPromptTemplates.speakerProfileMaxCharacters
+                        {
+                            Text("Only the first \(LLMPromptTemplates.speakerProfileMaxCharacters) characters are sent.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
                 .disabled(!isLLMPolishingReachable)

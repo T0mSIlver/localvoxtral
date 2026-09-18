@@ -357,6 +357,37 @@ final class MistralAPIModeTests: XCTestCase {
         XCTAssertEqual(viewModel.mistralModelListState, .idle)
     }
 
+    // MARK: - Usage ledger
+
+    /// Both Mistral request paths write the ledger Settings reads: the
+    /// realtime socket the view model owns, and the polishing service it
+    /// calls. A path left unwired would under-report without any error.
+    func testInstalledUsageLedgerReceivesBothMistralPaths() async throws {
+        let (viewModel, _, _) = makeViewModel()
+        XCTAssertNil(viewModel.mistralUsageLedger, "tests never write the user's ledger")
+        let ledger = MistralUsageLedger(fileURL: nil)
+        viewModel.installMistralUsageLedger(ledger)
+        XCTAssertTrue(viewModel.mistralUsageLedger === ledger)
+
+        #if DEBUG
+        let session = URLSession(configuration: .ephemeral)
+        let task = session.webSocketTask(with: URL(string: "ws://127.0.0.1:65535/test")!)
+        defer {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+        viewModel.mistralRealtimeClient.debugPrimeConnectedStateForTesting(
+            task: task, isUserInitiatedDisconnect: true, hasReceivedSessionCreated: true,
+            usageModel: MistralRealtimeWebSocketClient.defaultModel)
+        viewModel.mistralRealtimeClient.sendAudioChunk(Data(count: 16_000))
+        viewModel.mistralRealtimeClient.disconnect()
+        XCTAssertEqual(ledger.entries().map(\.audioSeconds), [0.5])
+        #endif
+
+        let service = try XCTUnwrap(viewModel.llmPolishingService as? LLMPolishingService)
+        XCTAssertTrue((service.usageRecorder as? MistralUsageLedger) === ledger)
+    }
+
     // MARK: - Fixtures
 
     /// Drain the backend-lifecycle tasks a mode change starts. No polling and
