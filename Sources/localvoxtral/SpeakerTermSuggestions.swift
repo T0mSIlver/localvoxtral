@@ -14,7 +14,8 @@ enum SpeakerTermSuggestions {
     static let maxRequestCharacters = 60_000
     static let maxShown = 12
     static let maxDismissed = 400
-    static let timeoutSeconds: TimeInterval = 240
+    /// Mistral Medium at high effort took 170 s on 74 dictations.
+    static let timeoutSeconds: TimeInterval = 420
 
     /// Measured on the owner's 74-dictation history (2026-09-18): one batch
     /// request with this wording gave the cleanest list on GLM 5.3 — it
@@ -77,7 +78,8 @@ enum SpeakerTermSuggestions {
             inputText: message,
             systemPrompt: "",
             userPrompts: [message],
-            timeoutSeconds: timeoutSeconds
+            timeoutSeconds: timeoutSeconds,
+            prefersDeepReasoning: true
         )
     }
 

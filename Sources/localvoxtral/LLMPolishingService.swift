@@ -23,19 +23,25 @@ struct LLMPolishingRequest: Sendable {
     /// request reads weeks of dictations in one go and is started from
     /// Settings, so it may take longer than a polish is allowed to.
     let timeoutSeconds: TimeInterval?
+    /// False for a polish, which has to be fast. True asks a hosted reasoning
+    /// model to think before answering (`MistralReasoningEffort.high`);
+    /// self-hosted shapes ignore it and keep their configured behaviour.
+    let prefersDeepReasoning: Bool
 
     init(
         inputText: String,
         systemPrompt: String,
         userPrompts: [String],
         maxTokens: Int? = nil,
-        timeoutSeconds: TimeInterval? = nil
+        timeoutSeconds: TimeInterval? = nil,
+        prefersDeepReasoning: Bool = false
     ) {
         self.inputText = inputText
         self.systemPrompt = systemPrompt
         self.userPrompts = userPrompts
         self.maxTokens = maxTokens
         self.timeoutSeconds = timeoutSeconds
+        self.prefersDeepReasoning = prefersDeepReasoning
     }
 }
 
@@ -497,9 +503,10 @@ struct LLMPolishingService: LLMPolishingServicing {
             // is an extension some self-hosted server invented; sending one
             // costs the whole request (422), so the Mistral shape stops here
             // with only the fields the schema names.
-            let effort =
+            let polishEffort =
                 configuration.mistralReasoningEffort
                 ?? MistralReasoningEffort.forModel(configuration.model)
+            let effort = request.prefersDeepReasoning ? polishEffort.deepened : polishEffort
             if let wireValue = effort.wireValue {
                 body["reasoning_effort"] = wireValue
             }

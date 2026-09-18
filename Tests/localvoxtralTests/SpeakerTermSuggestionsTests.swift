@@ -98,6 +98,45 @@ final class SpeakerTermSuggestionsTests: XCTestCase {
         XCTAssertEqual(messages.map { $0["role"] }, ["user"])
     }
 
+    /// Polishing stays at the model's lowest effort; only the suggestion
+    /// request thinks. `high` is the one level every hosted reasoning model
+    /// accepts, and a model that does not reason still gets no field at all.
+    func testOnlyTheSuggestionRequestAsksForHighReasoning() throws {
+        func effort(_ polishEffort: MistralReasoningEffort, deep: Bool) throws -> String? {
+            let configuration = LLMPolishingConfiguration(
+                endpointURL: MistralPolishDefaults.endpoint, apiKey: "secret",
+                model: "any", requestShape: .mistral, mistralReasoningEffort: polishEffort
+            )
+            let request = deep
+                ? SpeakerTermSuggestions.request(texts: ["a"], terms: [], dismissed: [])
+                : LLMPolishingRequest(inputText: "a", systemPrompt: "s", userPrompts: ["a"])
+            let json = try XCTUnwrap(JSONSerialization.jsonObject(
+                with: LLMPolishingService.requestBody(request: request, configuration: configuration)
+            ) as? [String: Any])
+            return json["reasoning_effort"] as? String
+        }
+
+        XCTAssertEqual(try effort(.off, deep: false), "none")
+        XCTAssertEqual(try effort(.low, deep: false), "low")
+        XCTAssertEqual(try effort(.off, deep: true), "high")
+        XCTAssertEqual(try effort(.low, deep: true), "high")
+        XCTAssertNil(try effort(.omitted, deep: true))
+    }
+
+    func testASelfHostedServerIsSentNoReasoningFieldEitherWay() throws {
+        let configuration = LLMPolishingConfiguration(
+            endpointURL: URL(string: "http://127.0.0.1:9/v1/chat/completions")!,
+            apiKey: "", model: "local"
+        )
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: LLMPolishingService.requestBody(
+                request: SpeakerTermSuggestions.request(texts: ["a"], terms: [], dismissed: []),
+                configuration: configuration
+            )
+        ) as? [String: Any])
+        XCTAssertNil(json["reasoning_effort"])
+    }
+
     func testRequestNamesKnownAndRefusedTermsAndAllowsALongWait() {
         let request = SpeakerTermSuggestions.request(
             texts: ["first", "second"], terms: ["Qwen"], dismissed: ["SessionStart"]

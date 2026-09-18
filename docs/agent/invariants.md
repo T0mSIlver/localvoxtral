@@ -91,6 +91,13 @@ there is not.
   Medium lists everything it saw, which the ranking makes usable. The request
   is user-initiated and the row names the model the dictations go to; it may
   include dictations made while a different endpoint was configured.
+  On a hosted model the request asks for `reasoning_effort: "high"` while a
+  polish keeps the model's lowest level: at polish effort Mistral Medium
+  returned ~70 items including "Coin 3.6" and "Kuen"; at high it returned 11
+  clean terms with "Qwen" recovered (170 s; GLM 5.3: 69 s — hence the 420 s
+  timeout). `high` needs no per-model table: `/v1/models` reports only whether
+  a model reasons, and `high` is the one level every reasoning model accepted
+  (GLM low/high/max, Mistral none/high). Self-hosted shapes are untouched.
   Two rules protect dictation from it: a dictation start cancels a run in
   flight (`cancelForDictation` — the bundled helper generates one request at a
   time, so a polish would wait behind it into its 40 s timeout), and the
