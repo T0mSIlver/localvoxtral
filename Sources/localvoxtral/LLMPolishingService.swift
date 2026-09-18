@@ -156,11 +156,22 @@ struct LLMTokenUsage: Equatable, Sendable {
 
 extension MistralUsageEntry {
     /// A polish request's entry. The answering model prices it when the
-    /// response names one; a request with no usage is counted, unpriced.
+    /// response names one the price table knows, the requested model
+    /// otherwise (an alias that starts answering with a newer id keeps its
+    /// price); a request with no usage is counted, unpriced.
     static func polish(date: Date, requestedModel: String, usage: LLMTokenUsage?) -> Self {
-        let model = usage?.model ?? requestedModel.trimmed
+        let requested = requestedModel.trimmed
+        let model = usage?.model ?? requested
         guard let usage else {
             return MistralUsageEntry(date: date, kind: .polish, model: model)
+        }
+        let cost = { (id: String) in
+            MistralPricing.polishCost(
+                model: id,
+                promptTokens: usage.promptTokens,
+                cachedPromptTokens: usage.cachedPromptTokens,
+                completionTokens: usage.completionTokens
+            )
         }
         return MistralUsageEntry(
             date: date,
@@ -169,12 +180,7 @@ extension MistralUsageEntry {
             promptTokens: usage.promptTokens,
             cachedPromptTokens: usage.cachedPromptTokens,
             completionTokens: usage.completionTokens,
-            costEUR: MistralPricing.polishCost(
-                model: model,
-                promptTokens: usage.promptTokens,
-                cachedPromptTokens: usage.cachedPromptTokens,
-                completionTokens: usage.completionTokens
-            )
+            costEUR: cost(model) ?? cost(requested)
         )
     }
 }
@@ -258,10 +264,12 @@ struct LLMPolishingService: LLMPolishingServicing {
                 forTransportError: error,
                 timeoutSeconds: urlRequest.timeoutInterval
             )
-            // A request abandoned after it was sent may still be billed, and
+            // A request abandoned after it was sent (timed out, cancelled by
+            // the next dictation, connection dropped) may still be billed, and
             // Mistral never gets to say for how much: record it as unpriced
-            // rather than let it vanish from the total.
-            if case .timedOut = polishingError {
+            // rather than let it vanish. One that never left costs nothing
+            // either way — it only shows in the unpriced count.
+            if Self.mayHaveBeenBilled(transportError: error) {
                 recordMistralUsage(configuration: configuration, usage: nil)
             }
             throw polishingError
@@ -302,6 +310,18 @@ struct LLMPolishingService: LLMPolishingServicing {
             durationSeconds: duration,
             usage: usage
         )
+    }
+
+    static func mayHaveBeenBilled(transportError error: Error) -> Bool {
+        guard let urlError = error as? URLError else {
+            return error is CancellationError
+        }
+        switch urlError.code {
+        case .timedOut, .cancelled, .networkConnectionLost:
+            return true
+        default:
+            return false
+        }
     }
 
     private func recordMistralUsage(

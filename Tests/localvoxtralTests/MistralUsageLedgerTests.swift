@@ -181,7 +181,6 @@ final class MistralUsageLedgerTests: XCTestCase {
         let writer = MistralUsageLedger(fileURL: url)
         writer.record(first)
         writer.record(second)
-        writer.flushForTesting()
 
         XCTAssertEqual(MistralUsageLedger(fileURL: url).entries(), [first, second])
     }
@@ -298,6 +297,32 @@ final class MistralUsageLedgerTests: XCTestCase {
         XCTAssertNil(ledger.entries().first?.promptTokens)
     }
 
+    /// A polish cancelled by the next dictation, or cut off mid-flight, may
+    /// already be billed: it is counted, unpriced.
+    func testAbandonedMistralPolishIsRecordedUnpriced() async {
+        let ledger = MistralUsageLedger(fileURL: nil)
+        let service = LLMPolishingService(usageRecorder: ledger)
+
+        for code in [URLError.Code.cancelled, .networkConnectionLost] {
+            await withStub(.failure(URLError(code))) {
+                _ = try? await service.polish(
+                    request: polishRequest, configuration: polishConfiguration())
+            }
+        }
+
+        XCTAssertEqual(ledger.entries().count, 2)
+        XCTAssertEqual(ledger.entries().map(\.costEUR), [nil, nil])
+    }
+
+    func testUnknownAnsweringModelFallsBackToTheRequestedModelsPrice() throws {
+        let usage = LLMTokenUsage(
+            model: "zai-glm-9-9", promptTokens: 1_000_000, completionTokens: 0)
+        let entry = MistralUsageEntry.polish(
+            date: Date(timeIntervalSince1970: 0), requestedModel: "zai-glm-latest", usage: usage)
+        XCTAssertEqual(entry.model, "zai-glm-9-9")
+        XCTAssertEqual(try XCTUnwrap(entry.costEUR), 1.19, accuracy: 1e-9)
+    }
+
     func testRejectedAndUnreachablePolishesAreNotRecorded() async {
         let ledger = MistralUsageLedger(fileURL: nil)
         let service = LLMPolishingService(usageRecorder: ledger)
@@ -343,6 +368,9 @@ final class MistralUsageLedgerTests: XCTestCase {
 extension MistralUsageLedgerTests {
     // MARK: - Dictation sockets
 
+    /// The primed task is never resumed, so its `send` completions do not
+    /// fire until cleanup cancels it; a completion error mid-test would close
+    /// the socket early and fail the audio-seconds assertions loudly.
     private func makePrimedClient(sessionCreated: Bool)
         -> (MistralRealtimeWebSocketClient, MistralUsageLedger, () -> Void)
     {

@@ -488,6 +488,9 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
                     return .queued
                 }
                 guard let webSocketTask = s.base.webSocketTask else { return .dropped }
+                // Counted when handed to the socket, not on its completion: a
+                // send that fails as the socket dies over-counts by the frames
+                // in flight — at most a fraction of a second.
                 s.sentAudioBytes += audioBytes
                 return .send(task: webSocketTask, text: text)
             case .connecting:

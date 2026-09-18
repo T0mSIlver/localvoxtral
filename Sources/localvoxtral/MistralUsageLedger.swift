@@ -252,10 +252,15 @@ final class MistralUsageLedger: MistralUsageRecording, @unchecked Sendable {
     private let writeQueue = DispatchQueue(label: "localvoxtral.mistral-usage", qos: .utility)
     private let onChange: (@Sendable () -> Void)?
 
-    /// `fileURL` nil keeps the ledger in memory only (tests, previews).
+    /// `fileURL` nil keeps the ledger in memory only (tests, previews). The
+    /// file is read on a background queue right away, so the first Settings
+    /// render does not pay for it on the main thread.
     init(fileURL: URL?, onChange: (@Sendable () -> Void)? = nil) {
         self.fileURL = fileURL
         self.onChange = onChange
+        if fileURL != nil {
+            writeQueue.async { [self] in _ = entries() }
+        }
     }
 
     static func defaultFileURL() -> URL {
@@ -284,8 +289,11 @@ final class MistralUsageLedger: MistralUsageRecording, @unchecked Sendable {
         Log.persistence.info(
             "mistral usage: \(entry.kind.rawValue, privacy: .public) model=\(entry.model, privacy: .public) audioSeconds=\(entry.audioSeconds ?? 0, privacy: .public) promptTokens=\(entry.promptTokens ?? -1, privacy: .public) completionTokens=\(entry.completionTokens ?? -1, privacy: .public) costEUR=\(entry.costEUR ?? -1, privacy: .public)"
         )
+        // Synchronous: one short append, and a line still queued when the app
+        // quits would be lost. Callers are socket and network threads, never
+        // the main thread.
         if let fileURL, let line {
-            writeQueue.async {
+            writeQueue.sync {
                 Self.append(line, to: fileURL)
             }
         }
@@ -301,11 +309,6 @@ final class MistralUsageLedger: MistralUsageRecording, @unchecked Sendable {
 
     func summary(for period: MistralUsagePeriod, now: Date = Date()) -> MistralUsageSummary {
         MistralUsageSummary(entries: entries(), since: period.start(now: now))
-    }
-
-    /// Blocks until every queued write has reached the file.
-    func flushForTesting() {
-        writeQueue.sync {}
     }
 
     // MARK: File
