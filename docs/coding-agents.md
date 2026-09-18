@@ -81,6 +81,12 @@ toggle that relaxes that.
   the polishing endpoint you configured. Enable it only for an endpoint you
   trust, such as a server on your own network.
 
+How the names are used: a phrase you said that matches a name exactly once
+case and separators are ignored ("use auth dot ts" → `useAuth.ts`) is
+corrected before the polisher runs. A name that only sounds like what you said
+is offered to the polisher as a candidate — at most four, never a file
+extension you didn't say — and the polisher decides from the sentence.
+
 The **Join sessions in cmux** toggle and its **Socket password** row (both on
 **Settings → Terminals → cmux**) are covered in the
 [plugin README](../integrations/claude-code/README.md#which-terminal-am-i-dictating-into):

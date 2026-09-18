@@ -701,6 +701,7 @@ extension DictationViewModel {
                 )
                 let capturedPolishProfile = polishProfile.rawValue
                 let promptTemplates = appConfigStore.loadLLMPromptTemplates(profile: polishProfile)
+                    .withSpeakerProfile(settings.polishSpeakerProfile)
 
                 statusText = StatusStrings.polishing
                 debugLog("LLM polishing started for \(workingText.count) chars")

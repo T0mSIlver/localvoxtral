@@ -1219,6 +1219,28 @@ private struct TextProcessingSettingsPane: View {
                         Toggle("", isOn: $settings.clipboardPayloadMacroEnabled)
                             .labelsHidden()
                     }
+
+                    SettingsFieldRow(
+                        title: "About you",
+                        help:
+                            "Your work, tools and the names you say often, so misheard ones get fixed.",
+                        layout: .stacked
+                    ) {
+                        TextEditor(text: $settings.polishSpeakerProfile)
+                            .font(.body)
+                            .frame(height: 96)
+                            .scrollContentBackground(.hidden)
+                            .padding(6)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(Color(nsColor: .textBackgroundColor))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .strokeBorder(Color(nsColor: .separatorColor))
+                            )
+                            .accessibilityIdentifier("settings.polishing.speakerProfile")
+                    }
                 }
                 .disabled(!isLLMPolishingReachable)
                 .opacity(isLLMPolishingReachable ? 1.0 : 0.5)
