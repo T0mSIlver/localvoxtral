@@ -433,8 +433,9 @@ public final class ClaudeSessionRegistry: Sendable {
     /// Look up by Claude Code "Remote Control" bridge session id — the browser
     /// tab join.
     ///
-    /// This is the ONE arm that spans LOCAL and REMOTE sessions, and that is a
-    /// property of the key rather than a relaxed rule. Every other local arm
+    /// This arm and the Claude Desktop one are the two that span LOCAL and
+    /// REMOTE sessions, and that is a property of the key rather than a
+    /// relaxed rule. Every other local arm
     /// keys on a per-machine name (a TTY device, a herdr pane id, a pid) that
     /// another machine can hold identically, so matching a remote session on one
     /// would let an SSH host claim a local pane by echoing it. A bridge session
@@ -448,15 +449,35 @@ public final class ClaudeSessionRegistry: Sendable {
     /// Exact equality, and zero or several matches abstain: two sessions
     /// reporting one bridge id means we cannot tell which the tab belongs to.
     public func resolve(bridgeSessionID: String) -> ClaudeSessionResolution {
+        resolveUnique(reporting: bridgeSessionID, via: \.bridgeSessionID)
+    }
+
+    /// Look up by Claude Desktop Code-tab session id — the desktop window join.
+    ///
+    /// Spans LOCAL and REMOTE sessions for the reason `resolve(bridgeSessionID:)`
+    /// does: the desktop app allocates the `local_<uuid>` id and shows it as
+    /// the address of the web view that displays the session, whichever
+    /// machine runs it. Exact equality; zero or several matches abstain.
+    public func resolve(desktopSessionID: String) -> ClaudeSessionResolution {
+        resolveUnique(reporting: desktopSessionID, via: \.desktopSessionID)
+    }
+
+    /// The one fresh session whose `key` equals `value`, across both origins.
+    /// Shared by the two globally-unique-id arms so they cannot drift apart on
+    /// the stale/ambiguous rules.
+    private func resolveUnique(
+        reporting value: String,
+        via key: KeyPath<ClaudeSessionSnapshot, String?>
+    ) -> ClaudeSessionResolution {
         let timestamp = now()
         return state.withLock { state in
             let matches = state.sessions.values.filter { snapshot in
-                snapshot.bridgeSessionID == bridgeSessionID && isFresh(snapshot, now: timestamp)
+                snapshot[keyPath: key] == value && isFresh(snapshot, now: timestamp)
             }
             switch matches.count {
             case 0:
                 let hadStale = state.sessions.values.contains {
-                    $0.bridgeSessionID == bridgeSessionID
+                    $0[keyPath: key] == value
                 }
                 return hadStale ? .stale : .unknown
             case 1:

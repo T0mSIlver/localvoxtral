@@ -94,6 +94,9 @@ enum ClaudeSurfaceProbeCommand {
     /// * `focusedBrowserTabURL` — a tab URL is a page the user is looking at.
     ///   The browser arm abstains here rather than have a debug verb read the
     ///   address bar.
+    /// * `focusedDesktopSessionURL` — the same, for the Claude Desktop web
+    ///   view holding focus; the read also switches Electron's accessibility
+    ///   tree on, which a diagnostic has no business doing.
     /// * `readFocusedGrid` — screen text, and only the panel-nonce match ever
     ///   needed it. The probe reads no screen content at all.
     private static func makeResolver(registry: ClaudeSessionRegistry) -> ClaudeSessionJoinResolver {

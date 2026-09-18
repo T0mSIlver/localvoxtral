@@ -205,7 +205,7 @@ fi
 # the app validates the shape and trusts nothing else about it.
 cat 2>/dev/null >"$WORK/header" <<EOF || fail_open
 Authorization: Bearer $TOKEN
-X-Lvx-Plugin-Version: 1.10.0
+X-Lvx-Plugin-Version: 1.11.0
 EOF
 
 # --- Allowlisted environment enrichment --------------------------------------
@@ -268,6 +268,10 @@ EOF
   lvx_env_header 'X-Lvx-Env-Cmux-Surface-Id' "${CMUX_SURFACE_ID:-}"
   lvx_env_header 'X-Lvx-Env-Cmux-Socket-Path' "${CMUX_SOCKET_PATH:-}"
   lvx_env_header 'X-Lvx-Env-Bridge-Session-Id' "${CLAUDE_CODE_BRIDGE_SESSION_ID:-}"
+  # Claude Desktop's local_<uuid> handle for a Code-tab session it runs on this
+  # host over its own ssh. The Mac matches it against the session the desktop
+  # window shows.
+  lvx_env_header 'X-Lvx-Env-Desktop-Session-Id' "${CLAUDE_CODE_HOST_SESSION_ID:-}"
   lvx_env_header 'X-Lvx-Env-Tmux' "${TMUX:-}"
   lvx_env_header 'X-Lvx-Env-Tmux-Pane' "${TMUX_PANE:-}"
   # GNU screen and zellij, for the same reason as TMUX: both are multiplexer

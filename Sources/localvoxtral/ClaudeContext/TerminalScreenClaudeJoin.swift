@@ -21,6 +21,11 @@ enum ClaudeSessionJoinMechanism: Sendable, Equatable {
     /// session's Remote Control bridge session id. No screen is ever read for
     /// this mechanism — see `TerminalScreenClaudeJoinAuthorizer`.
     case browserTab
+    /// The web view holding keyboard focus in Claude Desktop is a Code-tab
+    /// session page whose `local_…` id matched a live session's
+    /// `CLAUDE_CODE_HOST_SESSION_ID`. No screen is ever read for this
+    /// mechanism either — see `TerminalScreenClaudeJoinAuthorizer`.
+    case desktopSession
     /// A cmux surface, matched by the surface id cmux injected into the
     /// session's environment. Local surfaces and `cmux ssh` remote shells both
     /// arrive here — see `ClaudeSessionJoinResolver.resolveViaCmux`.
@@ -69,6 +74,13 @@ struct ClaudeBrowserTabBinding: Sendable, Equatable {
     let bridgeSessionID: String
 }
 
+/// The Claude Desktop session id a `.desktopSession` join resolved on. Same
+/// role as `ClaudeBrowserTabBinding`: commit-time liveness re-resolves THIS id
+/// instead of reading the desktop window a second time.
+struct ClaudeDesktopSessionBinding: Sendable, Equatable {
+    let desktopSessionID: String
+}
+
 /// The cmux surface a `.cmuxSurface` join resolved to. Same role as
 /// `ClaudeHerdrPaneBinding`: captured at resolution so the surface-text fetch
 /// can only ever be keyed by the surface the join is ABOUT.
@@ -102,6 +114,10 @@ struct ClaudeSessionJoin: Sendable, Equatable {
     /// (`isStillLive`), which is how a Remote Control disconnect ages the join
     /// out on the session's own next hook rather than on a timer of ours.
     let browserTab: ClaudeBrowserTabBinding?
+    /// Non-nil exactly for `.desktopSession` joins: the desktop session id the
+    /// focused web view and the session's hooks agreed on. Commit-time
+    /// liveness re-checks it the way it re-checks a browser tab's.
+    let desktopSession: ClaudeDesktopSessionBinding?
     /// Non-nil exactly for `.cmuxSurface` joins: the surface whose clean,
     /// per-surface text (`surface.read_text`) is the ONLY screen route cmux has.
     let cmuxSurface: ClaudeCmuxSurfaceBinding?
@@ -125,6 +141,7 @@ struct ClaudeSessionJoin: Sendable, Equatable {
         mechanism: ClaudeSessionJoinMechanism,
         herdrPane: ClaudeHerdrPaneBinding? = nil,
         browserTab: ClaudeBrowserTabBinding? = nil,
+        desktopSession: ClaudeDesktopSessionBinding? = nil,
         cmuxSurface: ClaudeCmuxSurfaceBinding? = nil,
         remoteHerdrForward: ClaudeRemoteHerdrForwardHandle? = nil,
         remoteHerdrIndicator: HerdrPanelMicIndicator? = nil
@@ -135,6 +152,7 @@ struct ClaudeSessionJoin: Sendable, Equatable {
         self.mechanism = mechanism
         self.herdrPane = herdrPane
         self.browserTab = browserTab
+        self.desktopSession = desktopSession
         self.cmuxSurface = cmuxSurface
         self.remoteHerdrForward = remoteHerdrForward
         self.remoteHerdrIndicator = remoteHerdrIndicator
@@ -147,7 +165,8 @@ struct ClaudeSessionJoin: Sendable, Equatable {
         switch mechanism {
         case .herdrPane, .remoteHerdrPane, .federatedHerdrPane: return herdrPane?.paneID
         case .cmuxSurface: return cmuxSurface?.surfaceID
-        case .ttyDevice, .browserTab, .remoteSSHConnection, .remoteLocalTTY: return nil
+        case .ttyDevice, .browserTab, .desktopSession, .remoteSSHConnection, .remoteLocalTTY:
+            return nil
         }
     }
 
@@ -203,6 +222,7 @@ struct ClaudeSessionJoinResolver {
     private let registry: ClaudeSessionRegistry
     private let focusedTerminalTTY: (String) async -> String?
     private let focusedBrowserTabURL: (String) async -> String?
+    private let focusedDesktopSessionURL: (pid_t) async -> String?
     private let focusedWindowID: (pid_t) -> CGWindowID?
     private let herdrClientProbe: @Sendable (String) -> Bool
     private let herdrFederation: @Sendable () -> HerdrMachineFederation
@@ -242,6 +262,12 @@ struct ClaudeSessionJoinResolver {
     ///     because a browser tab URL is user CONTENT: no test may reach the
     ///     live reader by forgetting an injection. The app wires
     ///     `AppleScriptFocusedBrowserTabURLReader` explicitly.
+    ///   - focusedDesktopSessionURL: reads the address of the Claude Desktop
+    ///     web view holding keyboard focus, for that app's pid. DEFAULTS TO
+    ///     ABSTAIN: it is an Accessibility read of another process and flips
+    ///     Electron's accessibility tree on, so no test may reach the live
+    ///     reader by forgetting an injection. The app wires
+    ///     `AXClaudeDesktopSessionURLReader` explicitly.
     ///   - focusedWindowID: the join's window identity, from its own
     ///     PID-pinned AX read. It exists to pair a screen capture with the
     ///     join that authorized it; nil means unknown, which the authorizer
@@ -292,6 +318,7 @@ struct ClaudeSessionJoinResolver {
         registry: ClaudeSessionRegistry,
         focusedTerminalTTY: @escaping (String) async -> String? = { _ in nil },
         focusedBrowserTabURL: @escaping (String) async -> String? = { _ in nil },
+        focusedDesktopSessionURL: @escaping (pid_t) async -> String? = { _ in nil },
         focusedWindowID: @escaping (pid_t) -> CGWindowID? = {
             TerminalScreenAXReader.focusedWindowIdentity(applicationPID: $0)
         },
@@ -330,6 +357,7 @@ struct ClaudeSessionJoinResolver {
         self.registry = registry
         self.focusedTerminalTTY = focusedTerminalTTY
         self.focusedBrowserTabURL = focusedBrowserTabURL
+        self.focusedDesktopSessionURL = focusedDesktopSessionURL
         self.focusedWindowID = focusedWindowID
         self.herdrClientProbe = herdrClientProbe
         self.herdrFederation = herdrFederation
@@ -395,6 +423,12 @@ struct ClaudeSessionJoinResolver {
         // below can never both apply to one app.
         if BrowserTabAllowlist.isSupported(target.bundleID) {
             return await resolveViaBrowserTab(target: target)
+        }
+        // Claude Desktop is the third kind of target: one address, read over
+        // Accessibility, no screen. Its allowlist is disjoint from the other
+        // two (pinned by a test).
+        if ClaudeDesktopAllowlist.isSupported(target.bundleID) {
+            return await resolveViaDesktopSession(target: target)
         }
         // The allowlist is re-checked here even though the capture gate already
         // enforced it. This object is reachable independently of that gate, and
@@ -576,6 +610,67 @@ struct ClaudeSessionJoinResolver {
             "Browser tab matched no session (\(outcome, privacy: .public)); Claude context withheld"
         )
         Self.noteAbstention("browserTab: \(outcome)")
+    }
+
+    /// The Claude Desktop arm: the `local_…` id in the address of the web view
+    /// holding keyboard focus, matched by exact equality against the
+    /// `CLAUDE_CODE_HOST_SESSION_ID` a live session's own hooks published.
+    ///
+    /// The browser arm's shape with a different reader. Claude Desktop hosts
+    /// each Code-tab session in a web view at
+    /// `https://claude.ai/epitaxy/local_<uuid>` and exports the same id into
+    /// the session's environment, whether the session runs on this Mac or on
+    /// an ssh host — so, like a bridge session id, it spans both origins.
+    /// Focus decides which session: the walk goes UP from the focused element
+    /// to the nearest web view, so with two sessions side by side the one the
+    /// user is typing into wins, and focus outside any session (the sidebar,
+    /// the chat tab) is no join.
+    ///
+    /// Everything abstains rather than guesses, as in the browser arm.
+    private func resolveViaDesktopSession(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {
+        guard let address = await focusedDesktopSessionURL(target.pid) else {
+            Self.abstainedDesktopSessionJoin(outcome: "focused web view address unavailable")
+            return nil
+        }
+        guard let desktopSessionID = ClaudeDesktopSessionURL.sessionID(inWebAreaURL: address) else {
+            // Never the address itself: it names what the user is looking at.
+            Self.abstainedDesktopSessionJoin(outcome: "focus is not in a Claude Code session")
+            return nil
+        }
+
+        switch registry.resolve(desktopSessionID: desktopSessionID) {
+        case .resolved(let snapshot):
+            Log.claudeContext.info(
+                "Claude Desktop joined to a live Claude session via its desktop session id"
+            )
+            return ClaudeSessionJoin(
+                target: target,
+                snapshot: snapshot,
+                // Nil for the browser arm's reason: a window identity pairs a
+                // SCREEN capture with its join, and this mechanism has none.
+                windowID: nil,
+                mechanism: .desktopSession,
+                desktopSession: ClaudeDesktopSessionBinding(desktopSessionID: desktopSessionID)
+            )
+        case .unknown:
+            Self.abstainedDesktopSessionJoin(outcome: "no live session reports this desktop session")
+            return nil
+        case .stale:
+            Self.abstainedDesktopSessionJoin(outcome: "stale")
+            return nil
+        case .ambiguous:
+            Self.abstainedDesktopSessionJoin(outcome: "ambiguous")
+            return nil
+        }
+    }
+
+    /// Outcome only. The desktop session id is a live handle to a session's
+    /// context; it does not belong in the log.
+    private static func abstainedDesktopSessionJoin(outcome: String) {
+        Log.claudeContext.info(
+            "Claude Desktop matched no session (\(outcome, privacy: .public)); Claude context withheld"
+        )
+        Self.noteAbstention("desktopSession: \(outcome)")
     }
 
     private func resolveViaHerdr(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {
@@ -2355,6 +2450,9 @@ struct ClaudeSessionJoinResolver {
     ///   every other arm — on the registry's injected clock.
     func isStillLive(_ join: ClaudeSessionJoin) -> Bool {
         guard registry.snapshot(sessionID: join.snapshot.sessionID) != nil else { return false }
+        if join.mechanism == .desktopSession {
+            return desktopSessionStillResolves(join)
+        }
         guard join.mechanism == .browserTab else { return true }
         guard let binding = join.browserTab else {
             // Unreachable through `resolveViaBrowserTab`, which always binds.
@@ -2382,6 +2480,34 @@ struct ClaudeSessionJoinResolver {
         else {
             Log.claudeContext.info(
                 "Remote Control bridge session no longer resolves to this session alone; Claude context withheld"
+            )
+            return false
+        }
+        return true
+    }
+
+    /// The `.desktopSession` half of `isStillLive`: the bound id must still
+    /// resolve to THIS session alone, re-asked for the browser arm's reason —
+    /// a second reporter arriving mid-dictation is the ambiguity the start-time
+    /// arm abstains on, and an enrolled host can publish any label it likes.
+    /// Unlike the bridge id the desktop id never goes away while the session
+    /// runs, so this adds no disconnect signal; the registry's freshness still
+    /// covers a session that ended.
+    private func desktopSessionStillResolves(_ join: ClaudeSessionJoin) -> Bool {
+        guard let binding = join.desktopSession else {
+            // Unreachable through `resolveViaDesktopSession`, which always
+            // binds. Fail closed anyway.
+            Log.claudeContext.info(
+                "Claude Desktop join carries no session binding; treating it as ended"
+            )
+            return false
+        }
+        guard case .resolved(let current) =
+            registry.resolve(desktopSessionID: binding.desktopSessionID),
+            current.sessionID == join.snapshot.sessionID
+        else {
+            Log.claudeContext.info(
+                "Claude Desktop session no longer resolves to this session alone; Claude context withheld"
             )
             return false
         }
@@ -2458,6 +2584,14 @@ struct TerminalScreenClaudeJoinAuthorizer: TerminalScreenRawAttachmentAuthorizin
             // browser join buys session/repository context only.
             Log.claudeContext.info(
                 "Browser tab join cannot authorize raw screen attachment; withheld"
+            )
+            return false
+        case .desktopSession:
+            // Claude Desktop is not a terminal grid either, and its window
+            // shows the whole conversation. The join buys session/repository
+            // context only; the session's hooks already deliver its prompt.
+            Log.claudeContext.info(
+                "Claude Desktop join cannot authorize raw screen attachment; withheld"
             )
             return false
         }

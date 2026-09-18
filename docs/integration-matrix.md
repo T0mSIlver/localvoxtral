@@ -28,6 +28,7 @@ contributes to a dictation, plus how the app learns about the session.
 | Claude Code, **plain ssh** (no multiplexer) | the LOCAL tty: the shell exports `LC_LVX_TTY`, ssh carries it into the session (`SendEnv`/`AcceptEnv LC_*`), and it must equal the focused window's tty — pinned to the enrolled host the surface's ssh goes to. Falls back to the TCP connection (socket ports vs `$SSH_CONNECTION`) when the variable is not set | none | no | yes, plus bounded sanitized tool excerpts | remote HTTP | the tty echo works through **ProxyJump and ControlMaster** (env travels per session channel); the connection fallback does not. Neither joins inside tmux/screen/zellij. One rc line of setup; needs remote plugin ≥ 1.7.0 |
 | Claude Code inside **tmux** (local or remote) | none | none | no | no | | `$TMUX` is transported and READ — to refuse the plain-ssh connection join, since a tmux server keeps the first attaching connection's `$SSH_CONNECTION`. `$STY`/`$ZELLIJ` are transported for the same refusal. A positive tmux join is still a roadmap item |
 | Claude Code **Remote Control** (claude.ai/code tab in Chrome, Brave, Safari) | focused tab's `session_…` URL matched to `CLAUDE_CODE_BRIDGE_SESSION_ID` | **none, by design** (see below) | local session only | yes | local hook or remote HTTP; tab URL over AppleScript | asked only under the repo setting; Firefox has no AppleScript tab URL |
+| Claude Code in **Claude Desktop**'s Code tab (sessions on this Mac or on an ssh host) | the focused session's web view address (`claude.ai/epitaxy/local_…`, read over Accessibility) matched to `CLAUDE_CODE_HOST_SESSION_ID` | **none, by design** (see below) | local session only | yes | local hook or remote HTTP | asked only under the repo setting; remote hosts need plugin ≥ 1.11.0; both ids are undocumented desktop internals |
 | **opencode**, local | tty via the plugin's focus declarations (45 s TTL, pid-checked); herdr pane join works unchanged | herdr `pane.read` in a herdr pane, else the terminal's route | yes | prompt, cwd, touched paths | opencode JS plugin over the local socket | no statusline; no remote path; inside cmux never joins |
 
 Statusline / connection indicator: the local `--statusline` query for local
@@ -58,6 +59,11 @@ text the session's hooks already deliver as the prompt block. The browser is
 consulted for exactly one thing, the focused tab's URL, and only when the
 repo setting is on, because the screen setting alone must never automate a
 browser.
+
+**No screen context for a Claude Desktop session either**, for the same
+reason: the window shows the whole conversation, not a terminal grid, and the
+session's hooks already deliver the prompt. The app reads one thing from
+Claude Desktop, the address of the web view holding keyboard focus.
 
 **Why the join needs the herdr panel to be visible.** The remote-herdr join
 must prove that the window you are looking at displays *that* server before

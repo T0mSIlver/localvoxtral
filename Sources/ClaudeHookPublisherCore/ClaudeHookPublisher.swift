@@ -240,7 +240,8 @@ public struct ClaudeHookPublisher: Sendable {
             herdrSocketPath: nonEmptyVariable("HERDR_SOCKET_PATH"),
             cmuxSurfaceID: nonEmptyVariable("CMUX_SURFACE_ID"),
             cmuxSocketPath: nonEmptyVariable("CMUX_SOCKET_PATH"),
-            bridgeSessionID: nonEmptyVariable("CLAUDE_CODE_BRIDGE_SESSION_ID")
+            bridgeSessionID: nonEmptyVariable("CLAUDE_CODE_BRIDGE_SESSION_ID"),
+            desktopSessionID: nonEmptyVariable("CLAUDE_CODE_HOST_SESSION_ID")
         )
     }
 
