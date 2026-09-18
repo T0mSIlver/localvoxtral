@@ -39,7 +39,8 @@ there is not.
   equals the flag `--sans` once dashes are ignored). Nothing weaker rewrites
   the transcript. The sound-alike tiers (edit
   distance one, Double Metaphone key, bounded aligned fallback) only NOMINATE:
-  their terms reach the model as a plain list of at most four, with no heard
+  their terms reach the model as a plain list (four, growing with the length
+  of the dictation up to twelve), with no heard
   span beside them, and a file name whose extension the speaker never said is
   withheld altogether. Owner field history 2026-09-18: those tiers, applied
   silently or shown as `"heard" -> "term"` pairs, wrote `toolInput`,

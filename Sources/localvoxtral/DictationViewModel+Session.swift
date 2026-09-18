@@ -1049,7 +1049,9 @@ extension DictationViewModel {
                             phoneticEntries: clipboardVocabularyOutcome.phoneticEntries,
                             verificationEntries: clipboardVocabularyOutcome.verificationCandidates
                         ),
-                    ])
+                    ], maxVerificationPairs: RepoVocabularyMatcher.nominationCap(
+                        forTranscript: workingText
+                    ))
                     let repoVocabularyEntries = merged.entries(from: .repository)
                     let clipboardVocabularyEntries = merged.entries(from: .clipboard)
                     let screenVocabularyEntries = merged.entries(from: .terminal)

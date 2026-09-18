@@ -1058,6 +1058,16 @@ enum RepoVocabularyMatcher {
     /// Weak phonetic evidence is prompt-only and deliberately scarce: it
     /// should help verification, not become a vocabulary dump.
     static let phoneticMaxVerificationCandidates = 4
+
+    /// How many sound-alike terms one dictation may be offered. A fixed four
+    /// starved long dictations (five damaged file names in a 300-word prompt
+    /// lost one) while already being generous for a sentence, so the cap keeps
+    /// roughly the same density instead: four up to 60 words, one more per 15
+    /// words after that, never above `maxEntries` — broad lists regressed the
+    /// 4B model in the 2026-07-21 context eval.
+    static func nominationCap(forTranscript transcript: String) -> Int {
+        min(maxEntries, max(phoneticMaxVerificationCandidates, tokenize(transcript).count / 15))
+    }
     /// The aligned fallback is intentionally narrower than the exact matcher:
     /// short strings collide too easily in normal prose.
     static let alignedMinNormalizedLength = 8
@@ -1321,7 +1331,7 @@ enum RepoVocabularyMatcher {
             ReplacementEntry(replaceWith: $0.term, matches: [$0.spoken])
         }
         let verification = bestVerificationByTerm.values.sorted(by: rank)
-            .prefix(phoneticMaxVerificationCandidates).map {
+            .prefix(nominationCap(forTranscript: transcript)).map {
                 ReplacementEntry(replaceWith: $0.term, matches: [$0.spoken])
             }
         return PhoneticOutcome(preApply: Array(preApply), verification: Array(verification))
@@ -1601,6 +1611,7 @@ enum RepoVocabularyMatcher {
             return (lhs.matches.first ?? "") < (rhs.matches.first ?? "")
         }
 
+        let offerLimit = nominationCap(forTranscript: transcript)
         var verificationCandidates: [ReplacementEntry] = []
         var seenVerification = Set<VerificationKey>()
         for entry in demoted + phoneticVerification + alignedVerification {
@@ -1613,9 +1624,9 @@ enum RepoVocabularyMatcher {
                     replaceWith: entry.replaceWith,
                     matches: [heard]
                 ))
-                if verificationCandidates.count == phoneticMaxVerificationCandidates { break }
+                if verificationCandidates.count == offerLimit { break }
             }
-            if verificationCandidates.count == phoneticMaxVerificationCandidates { break }
+            if verificationCandidates.count == offerLimit { break }
         }
 
         return GroundingOutcome(

@@ -87,6 +87,42 @@ final class SoundAlikeNominationTests: XCTestCase {
         ))
     }
 
+    func testNominationCapGrowsWithTheDictation() {
+        func cap(words: Int) -> Int {
+            RepoVocabularyMatcher.nominationCap(
+                forTranscript: Array(repeating: "word", count: words).joined(separator: " ")
+            )
+        }
+        XCTAssertEqual(cap(words: 0), 4)
+        XCTAssertEqual(cap(words: 60), 4)
+        XCTAssertEqual(cap(words: 90), 6)
+        XCTAssertEqual(cap(words: 150), 10)
+        XCTAssertEqual(cap(words: 1000), RepoVocabularyMatcher.maxEntries)
+    }
+
+    /// Five damaged names in one long dictation: a fixed cap of four lost one.
+    func testLongDictationIsOfferedMoreThanFourTerms() {
+        let filler = Array(repeating: "and then we move on to the next part of the work", count: 8)
+            .joined(separator: " ")
+        let transcript = "look at the settings stor, the overlay bufer, the session registri, "
+            + "the context composr and the polish servise. " + filler
+        let terms = [
+            "SettingsStore", "OverlayBuffer", "SessionRegistry", "ContextComposer", "PolishService",
+        ]
+        let result = outcome(transcript, terms: terms)
+
+        XCTAssertEqual(Set(result.verificationCandidates.map(\.replaceWith)), Set(terms))
+
+        let merged = PolishContextGrounding.merge(
+            [.init(
+                source: .repository, entries: [], isFallbackOnly: false,
+                verificationEntries: result.verificationCandidates
+            )],
+            maxVerificationPairs: RepoVocabularyMatcher.nominationCap(forTranscript: transcript)
+        )
+        XCTAssertEqual(merged.verificationPairs.count, 5)
+    }
+
     /// A term one source already wrote into the transcript is not offered
     /// again from another source's damaged span.
     func testPreAppliedTermIsNotAlsoOffered() {
