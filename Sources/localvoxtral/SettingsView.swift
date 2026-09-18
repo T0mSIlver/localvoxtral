@@ -1200,6 +1200,12 @@ private struct TextProcessingSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
 
+    /// Named in the row so the user sees where their dictations are about to
+    /// go before pressing the button.
+    private var suggestionModelName: String {
+        settings.llmPolishingConfiguration?.model ?? "your polishing model"
+    }
+
     static let speakerProfileExample = """
         Backend engineer at Acme, mostly Swift and Python.
         • Names I say a lot: Qwen, Claude Code, vLLM, Ghostty
@@ -1281,6 +1287,14 @@ private struct TextProcessingSettingsPane: View {
                 ) {
                     SpeakerTermsField(terms: $settings.polishSpeakerTerms)
                 }
+
+                SettingsFieldRow(
+                    title: "Suggestions",
+                    help: "Sends your recent dictations to \(suggestionModelName). Works best with a large model.",
+                    layout: .stacked
+                ) {
+                    SpeakerTermSuggestionsView(model: viewModel.termSuggestions)
+                }
             }
 
             SettingsGroup(title: "Polishing") {
@@ -1321,6 +1335,16 @@ private struct TextProcessingSettingsPane: View {
             }
 
             SettingsGroup(title: "Advanced") {
+                SettingsFieldRow(
+                    title: "Dismissed suggestions",
+                    status: "\(settings.polishDismissedTermSuggestions.count)"
+                ) {
+                    Button("Forget") {
+                        settings.polishDismissedTermSuggestions = []
+                    }
+                    .disabled(settings.polishDismissedTermSuggestions.isEmpty)
+                }
+
                 SettingsFieldRow(
                     title: "Replacement dictionary",
                     help: "Legacy. Fixed rewrites from replacement_dictionary.toml, for Live Auto-Paste without polishing."
@@ -2544,6 +2568,79 @@ private struct SpeakerTermsField: View {
                     draft = ""
                 }
                 .accessibilityIdentifier("settings.aboutYou.termsField")
+        }
+    }
+}
+
+/// Suggested terms as ghost chips: the + adds one to the list, the × refuses
+/// it for good. Nothing is added without a click.
+private struct SpeakerTermSuggestionsView: View {
+    let model: SpeakerTermSuggestionModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !model.suggestions.isEmpty {
+                SpeakerTermsFlow(spacing: 6) {
+                    ForEach(model.suggestions, id: \.self) { term in
+                        HStack(spacing: 4) {
+                            Button {
+                                model.accept(term)
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "plus")
+                                        .font(.caption2.weight(.bold))
+                                    Text(term).lineLimit(1)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Add \(term)")
+
+                            Button {
+                                model.dismiss(term)
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.caption2.weight(.bold))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("Never suggest \(term)")
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .overlay(
+                            Capsule().strokeBorder(
+                                Color.secondary.opacity(0.6),
+                                style: StrokeStyle(lineWidth: 1, dash: [3, 2])
+                            )
+                        )
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                Button(model.suggestions.isEmpty ? "Suggest terms" : "Suggest again") {
+                    Task { await model.suggest() }
+                }
+                .disabled(model.phase == .loading)
+                .accessibilityIdentifier("settings.aboutYou.suggestTerms")
+
+                if !model.suggestions.isEmpty {
+                    Button("Add all") { model.acceptAll() }
+                }
+
+                switch model.phase {
+                case .loading:
+                    ProgressView().controlSize(.small)
+                case .nothingFound:
+                    Text("Nothing new to suggest.")
+                        .font(.callout).foregroundStyle(.secondary)
+                case .failed(let message):
+                    Text(message)
+                        .font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                case .idle:
+                    EmptyView()
+                }
+            }
         }
     }
 }

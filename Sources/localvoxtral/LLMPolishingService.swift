@@ -19,17 +19,23 @@ struct LLMPolishingRequest: Sendable {
     /// prompt-prefix warmup sets 1 so the throwaway generation costs a
     /// single token.
     let maxTokens: Int?
+    /// Nil for a polish, which the user is waiting on. The term-suggestion
+    /// request reads weeks of dictations in one go and is started from
+    /// Settings, so it may take longer than a polish is allowed to.
+    let timeoutSeconds: TimeInterval?
 
     init(
         inputText: String,
         systemPrompt: String,
         userPrompts: [String],
-        maxTokens: Int? = nil
+        maxTokens: Int? = nil,
+        timeoutSeconds: TimeInterval? = nil
     ) {
         self.inputText = inputText
         self.systemPrompt = systemPrompt
         self.userPrompts = userPrompts
         self.maxTokens = maxTokens
+        self.timeoutSeconds = timeoutSeconds
     }
 }
 
@@ -445,7 +451,7 @@ struct LLMPolishingService: LLMPolishingServicing {
         if configuration.passthroughExtraParameters, configuration.requestShape != .mistral {
             urlRequest.setValue("true", forHTTPHeaderField: "x-bf-passthrough-extra-params")
         }
-        urlRequest.timeoutInterval = Self.requestTimeoutInterval
+        urlRequest.timeoutInterval = request.timeoutSeconds ?? Self.requestTimeoutInterval
         urlRequest.httpBody = try requestBody(
             request: request,
             configuration: configuration

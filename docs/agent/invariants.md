@@ -78,6 +78,20 @@ there is not.
   sections ride in it. The About-you text and terms are user-typed
   and go to ANY polishing endpoint, like the replacement dictionary.
 
+- **Suggested terms: the model judges what a name is; the app guarantees the
+  rest.** No capitalization or dictionary heuristic decides name-vs-word
+  (owner ruling 2026-09-18: German capitalizes every noun). The app's own
+  guarantees hold whatever the model returns: nothing is added without a
+  click, and `SpeakerTermSuggestions.filtered` drops anything already a term
+  or ever dismissed, compared by a key that ignores case, spacing and
+  punctuation. `ranked` only REORDERS, by counting in how many dictations a
+  candidate literally occurs — it must never drop, because a spelling the
+  model recovered from misrecognitions ("Qwen" from Coin/Kuen) occurs in no
+  text. Measured on the owner's history: GLM 5.3 returns a clean list; Mistral
+  Medium lists everything it saw, which the ranking makes usable. The request
+  is user-initiated and the row names the model the dictations go to; it may
+  include dictations made while a different endpoint was configured.
+
 - **Claude Code context reaches the prompt only through a positive join.**
   The joined session's repository (status, uncommitted diffs, contents
   of files the agent just touched) and its prior user prompt are attached as

@@ -252,6 +252,7 @@ final class SettingsStore {
         static let polishClipboardContextEnabled = "settings.polish_clipboard_context_enabled"
         static let polishSpeakerProfile = "settings.polish_speaker_profile"
         static let polishSpeakerTerms = "settings.polish_speaker_terms"
+        static let polishDismissedTermSuggestions = "settings.polish_dismissed_term_suggestions"
         static let clipboardPayloadMacroEnabled = "settings.clipboard_payload_macro_enabled"
         static let terminalScreenContextEnabled = "settings.terminal_screen_context_enabled"
         static let repoVocabularyEnabled = "settings.repo_vocabulary_enabled"
@@ -509,7 +510,38 @@ final class SettingsStore {
     var polishSpeakerTerms: [String] {
         didSet {
             defaults.set(polishSpeakerTerms, forKey: Keys.polishSpeakerTerms)
+            // A term the user adds by hand is no longer a refusal.
+            let added = Set(polishSpeakerTerms.map(SpeakerTermSuggestions.key))
+            if polishDismissedTermSuggestions.contains(where: {
+                added.contains(SpeakerTermSuggestions.key($0))
+            }) {
+                polishDismissedTermSuggestions.removeAll {
+                    added.contains(SpeakerTermSuggestions.key($0))
+                }
+            }
         }
+    }
+
+    /// Suggested terms the user refused, oldest first. Never expires; only
+    /// adding the term by hand or "Forget dismissed suggestions" removes one.
+    var polishDismissedTermSuggestions: [String] {
+        didSet {
+            defaults.set(
+                polishDismissedTermSuggestions, forKey: Keys.polishDismissedTermSuggestions)
+        }
+    }
+
+    func dismissTermSuggestion(_ term: String) {
+        let key = SpeakerTermSuggestions.key(term)
+        guard !key.isEmpty,
+              !polishDismissedTermSuggestions.contains(where: {
+                  SpeakerTermSuggestions.key($0) == key
+              })
+        else { return }
+        polishDismissedTermSuggestions = Array(
+            (polishDismissedTermSuggestions + [term])
+                .suffix(SpeakerTermSuggestions.maxDismissed)
+        )
     }
 
     var hasStoredPolishSpeakerTerms: Bool {
@@ -1057,6 +1089,8 @@ final class SettingsStore {
         agentPolishProfileEnabled = Self.loadBool(
             defaults: defaults, key: Keys.agentPolishProfileEnabled, fallback: true)
         polishSpeakerProfile = defaults.string(forKey: Keys.polishSpeakerProfile) ?? ""
+        polishDismissedTermSuggestions =
+            defaults.stringArray(forKey: Keys.polishDismissedTermSuggestions) ?? []
         polishSpeakerTerms = SpeakerTerms.sanitized(
             defaults.stringArray(forKey: Keys.polishSpeakerTerms) ?? [])
         polishClipboardContextEnabled = Self.loadBool(

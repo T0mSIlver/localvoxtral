@@ -64,7 +64,11 @@ Open **Settings** from the menu bar popover:
   words, plus a list of the names and terms you say often, spelled the way
   they should appear ("Qwen", "Claude Code", "vLLM"). You never list how they
   get misheard; the polisher works that out, and the casing of a multi-word or
-  mixed-case term is fixed even in Live Auto-Paste with no polishing. Then the
+  mixed-case term is fixed even in Live Auto-Paste with no polishing.
+  **Suggest terms** sends your recent dictations to your polishing model and
+  shows the names it finds as dashed tags: + adds one, × refuses it for good
+  (**Advanced → Dismissed suggestions → Forget** undoes that). It works best
+  with a large model; a small local one returns a noisier list. Then the
   LLM Polishing switch, the agent prompt profile and spoken clipboard paste.
   **Advanced** holds the legacy replacement dictionary (fixed
   `replace_with`/`matches` rewrites, useful for Live Auto-Paste without
