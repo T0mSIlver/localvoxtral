@@ -558,9 +558,11 @@ final class ClaudeShellRCSetupTests: XCTestCase {
         let flag = Flag()
         RunLoop.main.perform { flag.fired = true }
 
+        // The child outlives its output, so a run-loop-spinning wait is
+        // guaranteed to be waiting (and spinning) when it is reached.
         let output = ClaudeLoginShellReader.runCapturingOutput(
-            executableURL: URL(fileURLWithPath: "/bin/echo"),
-            arguments: ["UserShell: /bin/zsh"]
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "printf 'UserShell: /bin/zsh\\n'; exec sleep 0.5"]
         )
 
         XCTAssertEqual(output.flatMap(ClaudeLoginShellReader.parse), "/bin/zsh")
@@ -568,5 +570,18 @@ final class ClaudeShellRCSetupTests: XCTestCase {
             flag.fired,
             "the wait ran other main-run-loop work — re-entrancy into a SwiftUI update"
         )
+    }
+
+    /// The bound must cover a `dscl` that hangs WITHOUT printing (a stalled
+    /// opendirectoryd), not just one that printed and then hung: a blocking
+    /// read before the deadline would freeze the main thread inside a view
+    /// update with the timeout never reached.
+    func testASilentHungChildIsGivenUpOnAtTheDeadline() {
+        let output = ClaudeLoginShellReader.runCapturingOutput(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "exec sleep 3"],
+            timeout: 0.2
+        )
+        XCTAssertNil(output, "a child that never answered must fall back to $SHELL")
     }
 }

@@ -419,35 +419,44 @@ enum ClaudeLoginShellReader {
         )
     }
 
-    /// Runs a short command and returns its stdout, blocking WITHOUT running
-    /// the caller's run loop. Settings builds its consent sentences inside
-    /// SwiftUI's view update, and `Process.waitUntilExit()` spins the run
-    /// loop there: on macOS 26 that re-entered the update cycle and crashed
-    /// the app (field crash 2026-09-18, opening a host's Update panel).
-    static func runCapturingOutput(executableURL: URL, arguments: [String]) -> String? {
-        let process = Process()
-        process.executableURL = executableURL
-        process.arguments = arguments
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        // Set before run() so an instant exit cannot be missed.
-        let exited = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in exited.signal() }
-        guard (try? process.run()) != nil else { return nil }
-        // `POSIXPipeRead`, never `FileHandle.availableData` (banned repo-wide,
-        // PR #60). `dscl`'s answer is one short line, so one chunk is the whole
-        // of it; a longer answer is not one this parser would accept anyway.
-        let data = POSIXPipeRead.nextChunk(
-            fromDescriptor: output.fileHandleForReading.fileDescriptor
+    /// Runs a short command and returns its output, never running the
+    /// caller's run loop and never waiting past `timeout`. Settings builds its
+    /// consent sentences inside SwiftUI's view update, on the main thread:
+    ///
+    /// * `Process.waitUntilExit()` spins the run loop, and on macOS 26 that
+    ///   re-entered the update cycle and crashed the app (field crash
+    ///   2026-09-18, opening a host's Update panel);
+    /// * an unbounded pipe read would instead freeze it for as long as a
+    ///   stalled `dscl` stays silent.
+    ///
+    /// `ClaudePluginInstallService.processRunner` already does both right
+    /// (`poll()`-gated reads, semaphore exit, SIGTERM then SIGKILL).
+    static func runCapturingOutput(
+        executableURL: URL,
+        arguments: [String],
+        timeout: TimeInterval = 5
+    ) -> String? {
+        let run = ClaudePluginInstallService.processRunner(
+            executableURL: executableURL,
+            timeout: timeout
         )
-        guard exited.wait(timeout: .now() + 5) == .success else {
-            process.terminate()
-            Log.claudeContext.error("Login shell probe did not exit within 5s; using $SHELL")
+        do {
+            let result = try run(.init(arguments: arguments))
+            guard result.exitCode == 0 else {
+                Log.claudeContext.error(
+                    "Login shell probe exited with status \(result.exitCode, privacy: .public); using $SHELL"
+                )
+                return nil
+            }
+            return result.message
+        } catch ClaudePluginInstallService.ServiceError.commandTimedOut {
+            Log.claudeContext.error("Login shell probe gave no answer within \(timeout, privacy: .public)s; using $SHELL")
+            return nil
+        } catch {
+            // Not `error` itself: its arguments carry the user name.
+            Log.claudeContext.error("Login shell probe could not run; using $SHELL")
             return nil
         }
-        guard process.terminationStatus == 0 else { return nil }
-        return String(data: data, encoding: .utf8)
     }
 
     /// `UserShell: /bin/zsh` → `/bin/zsh`.
