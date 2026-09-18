@@ -156,7 +156,7 @@ expect_rc 0 "stale green rollup on a fresh head"
 [[ "$(polls "check-runs.$NEW_SHA")" == 5 ]] \
   || fail "stale green rollup on a fresh head: passed after $(polls "check-runs.$NEW_SHA") polls of the head's checks, expected 5 (2 empty, 2 pending, 1 green)
 $OUT"
-grep -q "no checks registered yet" <<<"$OUT" \
+grep -q "build-test is not registered yet" <<<"$OUT" \
   || fail "stale green rollup on a fresh head: never reported waiting for checks
 $OUT"
 [[ "$(polls "check-runs.$OLD_SHA")" == 0 ]] \
@@ -169,12 +169,34 @@ new_scenario
 pr_view "$NEW_SHA" "$GREEN_ROLLUP" >"$SCEN/pr-view.1"
 run_watch 0 336
 expect_rc 5 "no check ever appears"
-grep -q "no checks appeared on ${NEW_SHA:0:12}" <<<"$OUT" \
+grep -q "build-test never appeared on ${NEW_SHA:0:12}" <<<"$OUT" \
   || fail "no check ever appears: message does not name the head
 $OUT"
 if grep -q "^OK" <<<"$OUT"; then fail "no check ever appears: printed OK
 $OUT"; fi
 pass "zero checks past the grace window exits 5 with the head named, never OK"
+
+# --- another check is green on the head before the CI run registers ----------
+# (a bot check, or a dispatched run on the same SHA)
+
+new_scenario
+pr_view "$NEW_SHA" '[]' >"$SCEN/pr-view.1"
+check_runs some-bot:completed:success >"$SCEN/check-runs.$NEW_SHA.1"
+check_runs some-bot:completed:success build-test:queued:null mac-lanes:queued:null >"$SCEN/check-runs.$NEW_SHA.2"
+check_runs some-bot:completed:success build-test:completed:success mac-lanes:completed:success >"$SCEN/check-runs.$NEW_SHA.3"
+run_watch 3600 336
+expect_rc 0 "an unrelated green check before the CI run"
+[[ "$(polls "check-runs.$NEW_SHA")" == 3 ]] \
+  || fail "an unrelated green check before the CI run: passed after $(polls "check-runs.$NEW_SHA") polls, expected 3
+$OUT"
+pass "an unrelated green check does not pass a head whose build-test has not registered"
+
+new_scenario
+pr_view "$NEW_SHA" '[]' >"$SCEN/pr-view.1"
+check_runs some-bot:completed:success >"$SCEN/check-runs.$NEW_SHA.1"
+run_watch 0 336
+expect_rc 5 "only an unrelated green check, ever"
+pass "a head that only ever gets an unrelated green check exits 5"
 
 # --- ordinary outcomes on the pinned head ------------------------------------
 

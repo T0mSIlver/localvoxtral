@@ -16,7 +16,8 @@ set -uo pipefail
 #   scripts/watch-checks.sh --run <run-id>   # watch a workflow run (push/rerun)
 #
 # Env: LV_BUILD_HOST overrides the probed host; LV_WATCH_INTERVAL poll seconds;
-# LV_ZERO_CHECK_GRACE seconds to wait for the first check to appear.
+# LV_ZERO_CHECK_GRACE seconds to wait for the required check to appear;
+# LV_REQUIRED_CHECK its name (default build-test).
 #
 # Exit codes:
 #   0  checks/run succeeded
@@ -24,7 +25,7 @@ set -uo pipefail
 #   2  usage or gh query error
 #   3  fail-fast: build host unreachable while work is pending
 #   4  PR head advanced while watching
-#   5  no check ever appeared on the PR head
+#   5  the required check never appeared on the PR head
 
 usage() {
   echo "usage: $0 <pr-number> | --run <run-id>" >&2
@@ -48,6 +49,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST="${LV_BUILD_HOST:-$(git -C "$ROOT_DIR" config --get localvoxtral.buildhost || true)}"
 INTERVAL="${LV_WATCH_INTERVAL:-15}"
 ZERO_CHECK_GRACE="${LV_ZERO_CHECK_GRACE:-180}"
+# build-test runs for every event and contributor, docs-only fast path
+# included, so a head without it has no CI run yet — whatever else (a bot
+# check, a dispatched run on the same SHA) already went green there.
+REQUIRED_CHECK="${LV_REQUIRED_CHECK:-build-test}"
+
+# gh resolves the repository (and {owner}/{repo}) from the working directory.
+cd "$ROOT_DIR" || exit 2
 
 # Reachable means SSH answered at all: 0 = gate v2 ran `diag`, 126 = gate
 # denied the command (v1) — both prove the Mac is awake. 255 (connection
@@ -85,7 +93,7 @@ query_pr() {
     query_error="$runs"
     return 1
   fi
-  if ! statuses="$(gh api "repos/{owner}/{repo}/commits/$TARGET_SHA/status?per_page=100" --jq '
+  if ! statuses="$(gh api --paginate "repos/{owner}/{repo}/commits/$TARGET_SHA/status?per_page=100" --jq '
     .statuses[] | [
       .context,
       (if .state == "pending" then "pending" elif .state == "success" then "pass" else "fail" end),
@@ -163,8 +171,10 @@ while :; do
     check_count=0
     pending_count=0
     failing_count=0
-    while IFS=$'\t' read -r _ bucket _; do
+    required_seen=0
+    while IFS=$'\t' read -r name bucket _; do
       [[ -n "$bucket" ]] || continue
+      [[ "$name" != "$REQUIRED_CHECK" ]] || required_seen=1
       check_count=$((check_count + 1))
       case "$bucket" in
         pending) pending_count=$((pending_count + 1)) ;;
@@ -177,17 +187,19 @@ while :; do
       exit 4
     fi
 
-    if [[ "$check_count" == 0 ]]; then
+    if [[ "$required_seen" == 0 ]]; then
       if [[ -z "$zero_checks_since" ]]; then
         zero_checks_since=$SECONDS
       fi
       elapsed_zero=$((SECONDS - zero_checks_since))
       if [[ $elapsed_zero -lt $ZERO_CHECK_GRACE ]]; then
-        echo "no checks registered yet -- waiting for GitHub... (${elapsed_zero}s/${ZERO_CHECK_GRACE}s)"
+        print_checks
+        echo "$REQUIRED_CHECK is not registered yet ($check_count other checks) -- waiting for GitHub... (${elapsed_zero}s/${ZERO_CHECK_GRACE}s)"
         status_desc="no checks are registered yet"
       else
-        echo "FAIL: no checks appeared on ${TARGET_SHA:0:12} within ${ZERO_CHECK_GRACE}s." \
-          "Every PR reports at least build-test, so this is not a pass:" \
+        print_checks >&2
+        echo "FAIL: $REQUIRED_CHECK never appeared on ${TARGET_SHA:0:12} within ${ZERO_CHECK_GRACE}s" \
+          "($check_count other checks). Every PR reports it, so this is not a pass:" \
           "look for a workflow run that never started (gh run list --commit $TARGET_SHA)" >&2
         exit 5
       fi
