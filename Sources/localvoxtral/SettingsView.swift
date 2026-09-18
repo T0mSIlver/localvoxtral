@@ -1203,7 +1203,10 @@ private struct TextProcessingSettingsPane: View {
     /// Named in the row so the user sees where their dictations are about to
     /// go before pressing the button.
     private var suggestionModelName: String {
-        settings.llmPolishingConfiguration?.model ?? "your polishing model"
+        guard let model = settings.llmPolishingConfiguration?.model else {
+            return "your polishing model"
+        }
+        return PolishModelCatalog.option(forRepoID: model)?.displayName ?? model
     }
 
     static let speakerProfileExample = """
@@ -2619,7 +2622,7 @@ private struct SpeakerTermSuggestionsView: View {
 
             HStack(spacing: 8) {
                 Button(model.suggestions.isEmpty ? "Suggest terms" : "Suggest again") {
-                    Task { await model.suggest() }
+                    model.start()
                 }
                 .disabled(model.phase == .loading)
                 .accessibilityIdentifier("settings.aboutYou.suggestTerms")

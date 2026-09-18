@@ -463,7 +463,14 @@ struct LLMPolishingService: LLMPolishingServicing {
         request: LLMPolishingRequest,
         configuration: LLMPolishingConfiguration
     ) throws -> Data {
-        let messages = [["role": "system", "content": request.systemPrompt]]
+        // An empty system prompt sends no system message. polishd checkpoints
+        // every message but the last as a prompt-cache prefix, and its two
+        // slots belong to the two dictation profiles: a one-message request
+        // (term suggestions) has no prefix, so it cannot evict them.
+        let systemMessages = request.systemPrompt.isEmpty
+            ? []
+            : [["role": "system", "content": request.systemPrompt]]
+        let messages = systemMessages
             + request.userPrompts.map { ["role": "user", "content": $0] }
         var body: [String: Any] = [
             "model": configuration.model,

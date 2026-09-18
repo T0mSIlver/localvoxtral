@@ -269,6 +269,7 @@ extension DictationViewModel {
         clearLatchedSessionMetadata()
         sessionOutputMode = requestedOutputMode
         sessionStartedAt = Date()
+        storedTermSuggestions?.cancelForDictation()
         sessionReplacementDictionary = loadEffectiveReplacementDictionary()
         setRealtimeIndicatorIdle()
 

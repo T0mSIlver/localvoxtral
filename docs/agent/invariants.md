@@ -91,6 +91,12 @@ there is not.
   Medium lists everything it saw, which the ranking makes usable. The request
   is user-initiated and the row names the model the dictations go to; it may
   include dictations made while a different endpoint was configured.
+  Two rules protect dictation from it: a dictation start cancels a run in
+  flight (`cancelForDictation` — the bundled helper generates one request at a
+  time, so a polish would wait behind it into its 40 s timeout), and the
+  request is ONE user message with no system message, because polishd
+  checkpoints every message but the last and its two prompt-cache slots
+  belong to the dictation profiles.
 
 - **Claude Code context reaches the prompt only through a positive join.**
   The joined session's repository (status, uncommitted diffs, contents

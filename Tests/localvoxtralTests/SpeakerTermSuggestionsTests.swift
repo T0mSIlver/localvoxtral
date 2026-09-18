@@ -16,6 +16,10 @@ final class SpeakerTermSuggestionsTests: XCTestCase {
         )
         XCTAssertEqual(SpeakerTermSuggestions.parse("I could not find anything."), [])
         XCTAssertEqual(SpeakerTermSuggestions.parse("[not json"), [])
+        XCTAssertEqual(
+            SpeakerTermSuggestions.parse("<think>maybe [x] or [1]</think> [\"Qwen\"] (see [1])"),
+            ["Qwen"]
+        )
     }
 
     /// The model is TOLD what was refused, but this filter is the guarantee.
@@ -27,6 +31,26 @@ final class SpeakerTermSuggestionsTests: XCTestCase {
                 dismissed: ["SessionStart"]
             ),
             ["Qwen", "MCP"]
+        )
+    }
+
+    /// A model that lists everything front-loads what the user already has;
+    /// the 80-term cap must be spent on what is new.
+    func testKnownTermsDoNotCrowdOutNewOnesPastTheCap() {
+        let known = (0..<SpeakerTerms.maxTerms).map { "Known\($0)x" }
+        XCTAssertEqual(
+            SpeakerTermSuggestions.filtered(known + ["Qwen"], terms: known, dismissed: []),
+            ["Qwen"]
+        )
+    }
+
+    func testTheKnownAndRefusedListsSpendTheRequestBudget() {
+        let text = String(repeating: "a", count: 100)
+        XCTAssertEqual(
+            SpeakerTermSuggestions.selected(
+                [text, text], reserved: SpeakerTermSuggestions.maxRequestCharacters - 150
+            ).count,
+            1
         )
     }
 
@@ -52,13 +76,35 @@ final class SpeakerTermSuggestionsTests: XCTestCase {
         )
     }
 
+    /// polishd checkpoints every message but the last; a lone user message
+    /// leaves the two dictation profiles' prompt-cache slots alone.
+    @MainActor
+    func testTheRequestGoesOutAsOneUserMessageWithNoSystemMessage() throws {
+        let settings = SettingsStore(
+            defaults: UserDefaults(suiteName: "localvoxtral.SuggestBody.\(UUID().uuidString)")!,
+            environment: [:], secretStore: InMemorySecretStore()
+        )
+        settings.llmPolishingEnabled = true
+        settings.llmPolishingEndpointURL = "http://127.0.0.1:9/v1/chat/completions"
+        let configuration = try XCTUnwrap(settings.llmPolishingConfiguration)
+
+        let data = try LLMPolishingService.requestBody(
+            request: SpeakerTermSuggestions.request(texts: ["a"], terms: [], dismissed: []),
+            configuration: configuration
+        )
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let messages = try XCTUnwrap(json["messages"] as? [[String: String]])
+
+        XCTAssertEqual(messages.map { $0["role"] }, ["user"])
+    }
+
     func testRequestNamesKnownAndRefusedTermsAndAllowsALongWait() {
         let request = SpeakerTermSuggestions.request(
             texts: ["first", "second"], terms: ["Qwen"], dismissed: ["SessionStart"]
         )
         XCTAssertEqual(
             request.userPrompts,
-            ["""
+            [SpeakerTermSuggestions.instructions + "\n\n" + """
             Already known (do not list): Qwen
 
             Refused by the user (do not list): SessionStart
@@ -71,7 +117,9 @@ final class SpeakerTermSuggestionsTests: XCTestCase {
             """]
         )
         XCTAssertEqual(request.timeoutSeconds, SpeakerTermSuggestions.timeoutSeconds)
-        XCTAssertEqual(request.systemPrompt, SpeakerTermSuggestions.systemPrompt)
+        // No system message: polishd would checkpoint it and evict a
+        // dictation profile's prompt-cache slot.
+        XCTAssertEqual(request.systemPrompt, "")
     }
 }
 
@@ -182,6 +230,68 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         XCTAssertEqual(service.requests.count, 1)
     }
 
+    func testAFullTermsListKeepsTheChipAndSaysWhy() async {
+        let settings = makeSettings()
+        settings.polishSpeakerTerms = (0..<SpeakerTerms.maxTerms).map { "Known\($0)x" }
+        let service = Service()
+        service.reply = .success(#"["Qwen"]"#)
+        let model = makeModel(settings: settings, service: service)
+
+        await model.suggest()
+        model.accept("Qwen")
+
+        XCTAssertEqual(model.suggestions, ["Qwen"])
+        XCTAssertEqual(model.phase, .failed("Terms list is full."))
+        XCTAssertFalse(settings.polishSpeakerTerms.contains("Qwen"))
+    }
+
+    func testTheOldestRefusalIsTheOneTheCapDrops() {
+        let settings = makeSettings()
+        for index in 0...SpeakerTermSuggestions.maxDismissed {
+            settings.dismissTermSuggestion("Refused\(index)x")
+        }
+        XCTAssertEqual(
+            settings.polishDismissedTermSuggestions.count, SpeakerTermSuggestions.maxDismissed)
+        XCTAssertEqual(settings.polishDismissedTermSuggestions.first, "Refused1x")
+    }
+
+    /// The bundled helper generates one request at a time: a dictation must
+    /// not wait behind a suggestion run.
+    func testADictationStopsARunInFlightAndItsLateAnswerIsIgnored() async {
+        let settings = makeSettings()
+        let service = GatedService()
+        let model = SpeakerTermSuggestionModel(
+            settings: settings, recentTexts: { ["a text"] }, service: { service }
+        )
+
+        model.start()
+        await service.waitUntilRequested()
+        XCTAssertEqual(model.phase, .loading)
+        model.start()  // a second click while loading does nothing
+
+        model.cancelForDictation()
+        XCTAssertEqual(model.phase, .failed("Stopped: a dictation started."))
+
+        await service.release(with: #"["Qwen"]"#)
+        await Task.yield()
+        XCTAssertEqual(model.suggestions, [])
+        XCTAssertEqual(model.phase, .failed("Stopped: a dictation started."))
+        let requestCount = await service.requestCount
+        XCTAssertEqual(requestCount, 1)
+    }
+
+    func testSuggestRefusesWhileDictating() async {
+        let settings = makeSettings()
+        let service = Service()
+        let model = SpeakerTermSuggestionModel(
+            settings: settings, recentTexts: { ["a text"] }, service: { service },
+            isDictating: { true }
+        )
+        await model.suggest()
+        XCTAssertEqual(model.phase, .failed("Finish dictating first."))
+        XCTAssertTrue(service.requests.isEmpty)
+    }
+
     func testShowsAtMostTwelve() async {
         let settings = makeSettings()
         let service = Service()
@@ -191,5 +301,32 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
 
         await model.suggest()
         XCTAssertEqual(model.suggestions.count, SpeakerTermSuggestions.maxShown)
+    }
+}
+
+/// Holds the reply until the test releases it; continuations, no clock.
+private actor GatedService: LLMPolishingServicing {
+    private(set) var requestCount = 0
+    private var requested: CheckedContinuation<Void, Never>?
+    private var reply: CheckedContinuation<String, Never>?
+
+    func polish(
+        request: LLMPolishingRequest, configuration: LLMPolishingConfiguration
+    ) async throws -> LLMPolishingResult {
+        requestCount += 1
+        requested?.resume()
+        requested = nil
+        let text = await withCheckedContinuation { reply = $0 }
+        return LLMPolishingResult(rawText: "", polishedText: text, durationSeconds: 0)
+    }
+
+    func waitUntilRequested() async {
+        guard requestCount == 0 else { return }
+        await withCheckedContinuation { requested = $0 }
+    }
+
+    func release(with text: String) {
+        reply?.resume(returning: text)
+        reply = nil
     }
 }
