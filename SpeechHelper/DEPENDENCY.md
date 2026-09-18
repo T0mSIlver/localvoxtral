@@ -17,14 +17,21 @@ checkout — we no longer keep a copy here.
 ```
 .package(
     url: "https://github.com/Blaizzy/mlx-audio-swift.git",
-    revision: "8ed8188bf862062d2c6f4c6ecefbfed301f615a0"
+    revision: "01dec7c9bdce3088a6b6b7ab9f2e403458195efb"
 )
 ```
 
 Pinned to a full-SHA **revision**, not a tag, so the exact reviewed tree is reproducible and
 can't move under us.
 
-`8ed8188` is upstream main at the merge of
+`01dec7c` is upstream main at the merge of
+[Blaizzy/mlx-audio-swift#265](https://github.com/Blaizzy/mlx-audio-swift/pull/265), the last of
+three PRs that bound streaming memory over long sessions: #263 drops conv and adapter rows once
+consumed, #264 appends decoder KV rows in place instead of rebuilding the window, #265 decodes
+the transcript one token at a time instead of re-detokenizing it every step. `session.text` is
+still the full transcript, so the append-only delta routing below is unchanged.
+
+The pin before that, `8ed8188`, was the merge of
 [Blaizzy/mlx-audio-swift#232](https://github.com/Blaizzy/mlx-audio-swift/pull/232): the
 quantized-tied-embedding loader fix, required to load the catalog-pinned `-qhead` checkpoint
 (4-bit/g64-quantized tied embedding/LM head — see `SpeechModelCatalog.swift`); without it the
