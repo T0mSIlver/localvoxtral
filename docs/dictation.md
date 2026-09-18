@@ -59,7 +59,7 @@ Open **Settings** from the menu bar popover:
   use less compute.
 - **Dictation** — the trigger (single modifier key with tap/hold gestures, or
   per-mode keyboard shortcuts), the menu-bar mode, copy on stop, and the
-  overlay font size
+  overlay's font size and how many lines it shows before scrolling
 - **Text Processing** — exact-match replacements, plus the LLM Polishing
   switch, the agent prompt profile, and spoken clipboard paste
 - **Context** — what the polisher may see (repo vocabulary, clipboard, the

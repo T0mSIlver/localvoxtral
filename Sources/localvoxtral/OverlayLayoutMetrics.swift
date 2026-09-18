@@ -10,6 +10,8 @@ import SwiftUI
 /// The whole overlay scales from a single user setting: the body font size
 /// (`SettingsStore.overlayBufferFontSize`). All other fonts and the panel
 /// width scale proportionally so the buffer keeps its shape at any size.
+/// A second setting (`SettingsStore.overlayBufferVisibleLines`) sets how many
+/// body lines show before the text scrolls.
 struct OverlayLayoutMetrics: Equatable {
     /// The body font size the fixed-size overlay historically used; scale 1.0.
     static let baseBodyFontSize: CGFloat = 13
@@ -17,14 +19,24 @@ struct OverlayLayoutMetrics: Equatable {
     static let minimumBodyFontSize: Double = 10
     static let maximumBodyFontSize: Double = 24
 
-    let bodyFontSize: CGFloat
+    static let defaultVisibleLines = 4
+    static let minimumVisibleLines = 2
+    static let maximumVisibleLines = 12
 
-    init(bodyFontSize: Double) {
+    let bodyFontSize: CGFloat
+    let visibleLines: Int
+
+    init(bodyFontSize: Double, visibleLines: Int = defaultVisibleLines) {
         self.bodyFontSize = CGFloat(Self.clampedBodyFontSize(bodyFontSize))
+        self.visibleLines = Self.clampedVisibleLines(visibleLines)
     }
 
     static func clampedBodyFontSize(_ size: Double) -> Double {
         min(max(size, minimumBodyFontSize), maximumBodyFontSize)
+    }
+
+    static func clampedVisibleLines(_ lines: Int) -> Int {
+        min(max(lines, minimumVisibleLines), maximumVisibleLines)
     }
 
     var scale: CGFloat { bodyFontSize / Self.baseBodyFontSize }
@@ -54,10 +66,6 @@ struct OverlayLayoutMetrics: Equatable {
     // weight; only referenced here because the height math needs them.
     static let contentPadding: CGFloat = 10
     static let stackSpacing: CGFloat = 8
-    /// Slack added to the 4-line scroll cap. Same value as `stackSpacing`
-    /// today, but a distinct knob: tuning the VStack gap must not silently
-    /// change when scrolling kicks in.
-    static let bodyScrollSlack: CGFloat = 8
 
     /// Width available to text: panel width minus horizontal padding.
     var textMeasurementWidth: CGFloat { panelWidth - Self.contentPadding * 2 }
@@ -68,9 +76,16 @@ struct OverlayLayoutMetrics: Equatable {
     }
 
     /// Maximum height the body text area can grow to before scrolling kicks
-    /// in: ~4 lines of body text plus some line spacing.
+    /// in: exactly `visibleLines` rendered lines plus the scroll-to-bottom
+    /// anchor under them, so a scrolled buffer shows that many whole lines and
+    /// no sliver of the one above. Measured, not `bodyLineHeight * n`: SwiftUI's
+    /// line height differs from the font metrics at many sizes.
+    @MainActor
     var maxScrollableBodyHeight: CGFloat {
-        bodyLineHeight * 4 + Self.bodyScrollSlack
+        let lines = Array(repeating: "Xg", count: visibleLines).joined(separator: "\n")
+        return OverlayTextMeasurer.height(
+            of: lines, fontSize: bodyFontSize, width: textMeasurementWidth)
+            + OverlayBodyScrollContent.bottomAnchorHeight
     }
 
     /// Height of the body text as rendered at `textMeasurementWidth`, floored
@@ -144,20 +159,20 @@ private enum OverlayTextMeasurer {
 /// A font-size change mid-dictation would violate it: the next render would
 /// keep the stale locked X while the panel widens, pushing the right edge
 /// off-screen. So the metrics are locked alongside: the first render of a
-/// session snapshots the font size, and a settings change applies to the next
-/// session (`unlock()` on hide).
+/// session snapshots the settings, and a change applies to the next session
+/// (`unlock()` on hide).
 struct OverlaySessionMetricsLock {
     private var locked: OverlayLayoutMetrics?
 
-    /// The session's metrics, locking `currentFontSize` on first call.
-    mutating func metrics(currentFontSize: Double) -> OverlayLayoutMetrics {
+    /// The session's metrics, locking `current` on first call.
+    mutating func metrics(current: () -> OverlayLayoutMetrics) -> OverlayLayoutMetrics {
         if let locked { return locked }
-        let metrics = OverlayLayoutMetrics(bodyFontSize: currentFontSize)
+        let metrics = current()
         locked = metrics
         return metrics
     }
 
-    /// Ends the session: the next `metrics(currentFontSize:)` re-reads the size.
+    /// Ends the session: the next `metrics(current:)` re-reads the settings.
     mutating func unlock() {
         locked = nil
     }

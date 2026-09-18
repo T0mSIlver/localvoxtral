@@ -234,6 +234,28 @@ final class SettingsStoreTests: XCTestCase {
             makeStore().overlayBufferFontSize, OverlayLayoutMetrics.minimumBodyFontSize)
     }
 
+    // MARK: - Overlay Buffer visible lines
+
+    func testOverlayBufferVisibleLines_defaultsTo4() {
+        XCTAssertEqual(makeStore().overlayBufferVisibleLines, 4)
+    }
+
+    func testOverlayBufferVisibleLines_persistsAcrossStores() {
+        let store = makeStore()
+        store.overlayBufferVisibleLines = 7
+        XCTAssertEqual(makeStore().overlayBufferVisibleLines, 7)
+    }
+
+    func testOverlayBufferVisibleLines_clampsStoredValueOnLoad() {
+        defaults.set(99, forKey: "settings.overlay_buffer_visible_lines")
+        XCTAssertEqual(
+            makeStore().overlayBufferVisibleLines, OverlayLayoutMetrics.maximumVisibleLines)
+
+        defaults.set(0, forKey: "settings.overlay_buffer_visible_lines")
+        XCTAssertEqual(
+            makeStore().overlayBufferVisibleLines, OverlayLayoutMetrics.minimumVisibleLines)
+    }
+
     // MARK: - resolvedWebSocketURL
 
     func testResolvedURL_wsPassthrough() {

@@ -936,6 +936,13 @@ private struct DictationSettingsPane: View {
             }
         )
     }
+    /// The slider works in `Double`; the setting is a whole line count.
+    private var overlayBufferVisibleLinesBinding: Binding<Double> {
+        Binding(
+            get: { Double(settings.overlayBufferVisibleLines) },
+            set: { settings.overlayBufferVisibleLines = Int($0.rounded()) }
+        )
+    }
     @State private var overlayValidationError: String?
     @State private var livePasteValidationError: String?
 
@@ -1115,6 +1122,23 @@ private struct DictationSettingsPane: View {
                         .frame(width: SettingsLayout.sliderWidth)
 
                         Text("\(Int(settings.overlayBufferFontSize))pt")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, alignment: .trailing)
+                    }
+                }
+
+                SettingsFieldRow(title: "Lines before scrolling") {
+                    HStack(spacing: 8) {
+                        Slider(
+                            value: overlayBufferVisibleLinesBinding,
+                            in: Double(OverlayLayoutMetrics.minimumVisibleLines)
+                                ... Double(OverlayLayoutMetrics.maximumVisibleLines),
+                            step: 1
+                        )
+                        .frame(width: SettingsLayout.sliderWidth)
+
+                        Text("\(settings.overlayBufferVisibleLines)")
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .frame(width: 44, alignment: .trailing)

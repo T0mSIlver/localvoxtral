@@ -89,19 +89,67 @@ final class OverlayLayoutMetricsTests: XCTestCase {
     /// locked origin and can run off-screen.
     func testSessionLockFreezesFontSizeUntilUnlocked() {
         var lock = OverlaySessionMetricsLock()
-        let first = lock.metrics(currentFontSize: 14)
+        let first = lock.metrics { OverlayLayoutMetrics(bodyFontSize: 14) }
         XCTAssertEqual(first.bodyFontSize, 14)
 
         // Mid-session setting change: locked metrics keep the session's size.
-        let midSession = lock.metrics(currentFontSize: 24)
+        let midSession = lock.metrics { OverlayLayoutMetrics(bodyFontSize: 24, visibleLines: 8) }
         XCTAssertEqual(midSession, first)
         XCTAssertEqual(midSession.panelWidth, first.panelWidth)
 
-        // After the session ends the new size applies.
+        // After the session ends the new settings apply.
         lock.unlock()
-        let nextSession = lock.metrics(currentFontSize: 24)
+        let nextSession = lock.metrics { OverlayLayoutMetrics(bodyFontSize: 24, visibleLines: 8) }
         XCTAssertEqual(nextSession.bodyFontSize, 24)
+        XCTAssertEqual(nextSession.visibleLines, 8)
         XCTAssertGreaterThan(nextSession.panelWidth, first.panelWidth)
+    }
+
+    // MARK: - Visible lines setting
+
+    func testInitClampsVisibleLinesToSupportedRange() {
+        XCTAssertEqual(OverlayLayoutMetrics(bodyFontSize: 14).visibleLines, 4)
+        XCTAssertEqual(
+            OverlayLayoutMetrics(bodyFontSize: 14, visibleLines: 99).visibleLines,
+            OverlayLayoutMetrics.maximumVisibleLines)
+        XCTAssertEqual(
+            OverlayLayoutMetrics(bodyFontSize: 14, visibleLines: 0).visibleLines,
+            OverlayLayoutMetrics.minimumVisibleLines)
+    }
+
+    /// The setting is a count of whole lines: N lines of text fit without
+    /// scrolling, N+1 scroll, and a scrolled buffer's viewport is exactly N
+    /// rendered lines plus the scroll-to-bottom anchor — no sliver of the line
+    /// above (the old cap was 4 lines + 8pt, which showed about 4.5).
+    func testScrollCapHoldsExactlyTheChosenNumberOfLines() {
+        for size in [
+            OverlayLayoutMetrics.minimumBodyFontSize,
+            OverlayLayoutMetrics.defaultBodyFontSize,
+            OverlayLayoutMetrics.maximumBodyFontSize,
+        ] {
+            for lines in OverlayLayoutMetrics.minimumVisibleLines
+                ... OverlayLayoutMetrics.maximumVisibleLines
+            {
+                let metrics = OverlayLayoutMetrics(bodyFontSize: size, visibleLines: lines)
+                let fits = Array(repeating: "dictated line", count: lines)
+                    .joined(separator: "\n")
+                let overflows = fits + "\none more"
+                let context = "font size \(size), \(lines) lines"
+
+                XCTAssertLessThanOrEqual(
+                    metrics.unclampedBodyTextHeight(for: fits),
+                    metrics.maxScrollableBodyHeight, "\(context): N lines scroll")
+                XCTAssertGreaterThan(
+                    metrics.unclampedBodyTextHeight(for: overflows),
+                    metrics.maxScrollableBodyHeight, "\(context): N+1 lines don't scroll")
+                XCTAssertEqual(
+                    metrics.maxScrollableBodyHeight,
+                    swiftUIRenderedHeight(
+                        fits, fontSize: metrics.bodyFontSize, width: metrics.textMeasurementWidth)
+                        + OverlayBodyScrollContent.bottomAnchorHeight,
+                    accuracy: 1, "\(context): viewport isn't N whole lines")
+            }
+        }
     }
 
     // The header's pills ("Polished", the Claude join badge) used a hardcoded

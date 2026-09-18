@@ -287,6 +287,7 @@ final class SettingsStore {
             "settings.overlay_buffer_shortcut_carbon_modifiers"
         static let overlayBufferShortcutEnabled = "settings.overlay_buffer_shortcut_enabled"
         static let overlayBufferFontSize = "settings.overlay_buffer_font_size"
+        static let overlayBufferVisibleLines = "settings.overlay_buffer_visible_lines"
         static let livePasteShortcutKeyCode = "settings.live_paste_shortcut_key_code"
         static let livePasteShortcutModifiers = "settings.live_paste_shortcut_carbon_modifiers"
         static let livePasteShortcutEnabled = "settings.live_paste_shortcut_enabled"
@@ -824,6 +825,11 @@ final class SettingsStore {
         didSet { defaults.set(overlayBufferFontSize, forKey: Keys.overlayBufferFontSize) }
     }
 
+    /// Body lines the Overlay Buffer panel shows before its text scrolls.
+    var overlayBufferVisibleLines: Int {
+        didSet { defaults.set(overlayBufferVisibleLines, forKey: Keys.overlayBufferVisibleLines) }
+    }
+
     var livePasteShortcutEnabled: Bool {
         didSet { defaults.set(livePasteShortcutEnabled, forKey: Keys.livePasteShortcutEnabled) }
     }
@@ -1067,6 +1073,11 @@ final class SettingsStore {
             ? defaults.double(forKey: Keys.overlayBufferFontSize)
             : OverlayLayoutMetrics.defaultBodyFontSize
         overlayBufferFontSize = OverlayLayoutMetrics.clampedBodyFontSize(storedOverlayFontSize)
+
+        let storedOverlayVisibleLines = defaults.object(forKey: Keys.overlayBufferVisibleLines) != nil
+            ? defaults.integer(forKey: Keys.overlayBufferVisibleLines)
+            : OverlayLayoutMetrics.defaultVisibleLines
+        overlayBufferVisibleLines = OverlayLayoutMetrics.clampedVisibleLines(storedOverlayVisibleLines)
 
         // Zero-based; negatives are meaningless and an index past the device's
         // channel count is clamped again at capture start (the device can
