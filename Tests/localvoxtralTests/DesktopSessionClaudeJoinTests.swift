@@ -555,6 +555,25 @@ final class ClaudeDesktopSessionReaderTests: XCTestCase {
         XCTAssertEqual(walk(nodes, maxHops: 10), .unavailable)
     }
 
+    // Codex review, PR #333: the hop cap is not a time bound. An app that
+    // answers every message just under the messaging timeout must still be
+    // abandoned once the attempt's budget is spent, having sent no message
+    // after it.
+    func testTheTimeBudgetEndsTheWalkBeforeTheNextMessage() {
+        let nodes = (0..<40).map { Node(role: "AXGroup", parent: $0 + 1 < 40 ? $0 + 1 : nil) }
+        var roleReads = 0
+        var budgetChecks = 0
+        let lookup = AXClaudeDesktopSessionURLReader.nearestWebArea(
+            from: 0,
+            role: { roleReads += 1; return .success(nodes[$0].role) },
+            url: { _ in .success(nil) },
+            parent: { .success(nodes[$0].parent) },
+            outOfTime: { budgetChecks += 1; return budgetChecks > 3 }
+        )
+        XCTAssertEqual(lookup, .unavailable)
+        XCTAssertEqual(roleReads, 3, "no AX message after the budget ran out")
+    }
+
     // MARK: - The retry
 
     private final class Calls: @unchecked Sendable {

@@ -62,8 +62,12 @@ enum ClaudeDesktopWebAreaLookup: Equatable {
 /// - **PID-pinned.** Reached from `AXUIElementCreateApplication(pid)` and the
 ///   focused element's own pid is re-verified.
 /// - **Bounded.** Every element gets the same short messaging timeout as the
-///   terminal reads, the walk is capped at `maxHops`, and the FIRST AX error
-///   ends it: a wedged app costs one timeout, not one per hop.
+///   terminal reads, the FIRST AX error ends the walk (a wedged app costs one
+///   timeout, not one per hop), and each attempt has a total budget of
+///   `attemptBudgetSeconds` checked before every hop. The hop cap alone was
+///   not a bound (codex review, PR #333): an app answering each message just
+///   under the timeout would have held the main actor ~13 s per attempt. With
+///   the budget, two attempts plus the wait stay under ~1 s worst case.
 /// - **Electron's tree is opt-in.** Chromium builds its web accessibility tree
 ///   only for a client that asks, and `AXManualAccessibility` is how an
 ///   assistive client asks. The reader sets it before every read — idempotent,
@@ -80,6 +84,11 @@ struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
 
     /// How long the one retry waits for Chromium to build its tree.
     static let treeBuildWaitSeconds: Double = 0.25
+
+    /// Total time one walk may take. A healthy walk measured 7–39 ms; past
+    /// this the attempt is abandoned as `.unavailable`. The last message in
+    /// flight can still overrun by one messaging timeout.
+    static let attemptBudgetSeconds: Double = 0.25
 
     typealias SleepFor = @Sendable (Double) async -> Void
 
@@ -125,16 +134,19 @@ struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
     /// Generic so the rule is testable without AX. `role`, `url` and `parent`
     /// return `.failure` for an AX error, which ends the walk as
     /// `.unavailable`; a missing parent (`.success(nil)`) is the top of the
-    /// tree.
+    /// tree. `outOfTime` is asked before every hop, and a `true` ends the walk
+    /// as `.unavailable`.
     static func nearestWebArea<Element>(
         from start: Element,
         role: (Element) -> Result<String?, AXLookupError>,
         url: (Element) -> Result<String?, AXLookupError>,
         parent: (Element) -> Result<Element?, AXLookupError>,
+        outOfTime: () -> Bool = { false },
         maxHops: Int = AXClaudeDesktopSessionURLReader.maxHops
     ) -> ClaudeDesktopWebAreaLookup {
         var current = start
         for _ in 0...maxHops {
+            guard !outOfTime() else { return .unavailable }
             guard case .success(let currentRole) = role(current) else { return .unavailable }
             if currentRole == "AXWebArea" {
                 guard case .success(let address) = url(current) else { return .unavailable }
@@ -161,6 +173,8 @@ struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
         if TerminalTargetDetector.isRunningUnderXCTest { return .unavailable }
         #endif
         guard AXIsProcessTrusted() else { return .unavailable }
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(attemptBudgetSeconds))
         let appElement = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(appElement, TerminalScreenAXReader.messagingTimeoutSeconds)
         _ = AXUIElementSetAttributeValue(
@@ -177,7 +191,8 @@ struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
             from: focused,
             role: { string($0, kAXRoleAttribute) },
             url: { address($0) },
-            parent: { element($0, kAXParentAttribute) }
+            parent: { element($0, kAXParentAttribute) },
+            outOfTime: { clock.now >= deadline }
         )
     }
 
