@@ -120,10 +120,11 @@ final class DogfoodControlServiceTests: XCTestCase {
         // The client is gone; the cap's window expires.
         viewModel.isConnectingRealtimeSession = false
         viewModel.isDictating = true
+        guard let cap = service.autoStopTaskForTesting else {
+            return XCTFail("the cap must be armed before its window expires")
+        }
         gate.release()
-        await gate.waitForSleepToReturn()
-        await Task.yield()
-        await Task.yield()
+        await cap.value
 
         XCTAssertFalse(viewModel.isDictating, "the cap must end a session the client abandoned")
     }
@@ -206,10 +207,11 @@ final class DogfoodControlServiceTests: XCTestCase {
         viewModel.isConnectingRealtimeSession = false
         viewModel.isDictating = true
 
+        guard let cap = service.autoStopTaskForTesting else {
+            return XCTFail("the cap must be armed before its window expires")
+        }
         gate.release()
-        await gate.waitForSleepToReturn()
-        await Task.yield()
-        await Task.yield()
+        await cap.value
 
         XCTAssertTrue(
             viewModel.isDictating,
@@ -659,7 +661,6 @@ final class DogfoodControlServiceTests: XCTestCase {
 private final class SleepGate: @unchecked Sendable {
     private let started = DispatchSemaphore(value: 0)
     private let allowed = DispatchSemaphore(value: 0)
-    private let returned = DispatchSemaphore(value: 0)
 
     var sleep: DogfoodControlService.SleepClosure {
         { [self] _ in
@@ -670,21 +671,11 @@ private final class SleepGate: @unchecked Sendable {
                     continuation.resume()
                 }
             }
-            returned.signal()
         }
     }
 
     func release() {
         allowed.signal()
-    }
-
-    func waitForSleepToReturn() async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            DispatchQueue.global().async {
-                self.returned.wait()
-                continuation.resume()
-            }
-        }
     }
 }
 
