@@ -95,7 +95,14 @@ enum PolishContextGrounding {
     static let maxVerificationPairs = 4
 
     /// Merges `candidates` under the rules documented on this type.
-    static func merge(_ candidates: [Candidate]) -> Merged {
+    ///
+    /// `maxVerificationPairs` is the dictation's nomination cap
+    /// (`RepoVocabularyMatcher.nominationCap(forTranscript:)`); the default is
+    /// the floor, for callers with no transcript at hand.
+    static func merge(
+        _ candidates: [Candidate],
+        maxVerificationPairs: Int = PolishContextGrounding.maxVerificationPairs
+    ) -> Merged {
         // Fixed order, stably: rank first, then the caller's order among equal
         // ranks. `sorted(by:)` is not guaranteed stable, so the original index
         // is part of the key.
