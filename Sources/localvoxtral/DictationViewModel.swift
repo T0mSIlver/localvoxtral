@@ -743,7 +743,7 @@ final class DictationViewModel {
 
             microphone.onInputDevicesChanged = { [weak self] in
                 Task { @MainActor [weak self] in
-                    self?.healthMonitor.handleInputDevicesChanged()
+                    self?.handleMicrophoneInputDevicesChanged()
                 }
             }
 
@@ -1802,6 +1802,12 @@ final class DictationViewModel {
         {
             lastError = nil
         }
+    }
+
+    /// CoreAudio reported a device plugged in, unplugged, or a new system
+    /// default input.
+    func handleMicrophoneInputDevicesChanged() {
+        healthMonitor.handleInputDevicesChanged()
     }
 
     func refreshMicrophoneInputs() {
