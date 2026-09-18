@@ -724,7 +724,6 @@ private struct MistralUsageRow: View {
         let summary = summary
         SettingsFieldRow(
             title: "Usage",
-            help: "Estimated from Mistral's list prices, logged on this Mac.",
             status: summary.line,
             statusAccessibilityIdentifier: "engines.mistral.usage.status"
         ) {
