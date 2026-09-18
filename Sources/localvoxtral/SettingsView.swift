@@ -688,11 +688,59 @@ private struct ConnectionSettingsPane: View {
                     .disabled(!settings.isMistralAPIConfigured)
                     .accessibilityIdentifier("engines.mistral.quickSetup")
                 }
+
+                MistralUsageRow(viewModel: viewModel)
             }
         }
         .task(id: mistralModelListTrigger) {
             guard !mistralModelListTrigger.isEmpty else { return }
             viewModel.refreshMistralModelCatalog()
+        }
+    }
+}
+
+/// What the Mistral requests made from this Mac cost over a chosen window,
+/// estimated from list prices in the local ledger.
+private struct MistralUsageRow: View {
+    let viewModel: DictationViewModel
+    @AppStorage("mistralUsagePeriod") private var periodRawValue =
+        MistralUsagePeriod.thirtyDays.rawValue
+
+    private var period: Binding<MistralUsagePeriod> {
+        Binding(
+            get: { MistralUsagePeriod(rawValue: periodRawValue) ?? .thirtyDays },
+            set: { periodRawValue = $0.rawValue }
+        )
+    }
+
+    private var summary: MistralUsageSummary {
+        // Read so a ledger write re-renders the row.
+        _ = viewModel.mistralUsageRevision
+        return viewModel.mistralUsageLedger?.summary(for: period.wrappedValue)
+            ?? MistralUsageSummary()
+    }
+
+    var body: some View {
+        let summary = summary
+        SettingsFieldRow(
+            title: "Usage",
+            help: "Estimated from Mistral's list prices, logged on this Mac.",
+            status: summary.line,
+            statusAccessibilityIdentifier: "engines.mistral.usage.status"
+        ) {
+            Picker("", selection: period) {
+                ForEach(MistralUsagePeriod.allCases) { period in
+                    Text(period.label).tag(period)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .fixedSize()
+            .accessibilityIdentifier("engines.mistral.usage.period")
+        } footer: {
+            if let note = summary.unpricedNote {
+                SettingsHelpText(note)
+            }
         }
     }
 }

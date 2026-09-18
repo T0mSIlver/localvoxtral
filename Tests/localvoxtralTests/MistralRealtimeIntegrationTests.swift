@@ -133,6 +133,8 @@ final class MistralRealtimeIntegrationTests: XCTestCase {
             spokenPCM16, chunkSizeBytes: 3_200)
 
         let client = MistralRealtimeWebSocketClient()
+        let ledger = MistralUsageLedger(fileURL: nil)
+        client.setUsageRecorder(ledger)
         let deltas = LockedStrings()
         let finals = LockedStrings()
         let errors = LockedStrings()
@@ -173,6 +175,14 @@ final class MistralRealtimeIntegrationTests: XCTestCase {
             "Mistral reported errors during transcription: \(errors.snapshot())"
         )
 
+        // The ledger counts the audio this client put on the wire — every
+        // chunk, since all of them went out after session.created.
+        let usage = ledger.entries()
+        XCTAssertEqual(usage.count, 1, "One socket, one ledger entry: \(usage)")
+        XCTAssertEqual(usage.first?.audioSeconds, Double(spokenPCM16.count) / 32_000)
+        XCTAssertNotNil(usage.first?.costEUR, "The realtime model must be priced")
+        print("mistral integration: ledger \(usage)")
+
         let doneText = finals.snapshot().joined(separator: " ")
         let accuracy = IntegrationTestSupport.wordAccuracy(expected: phrase, actual: doneText)
         print(
@@ -198,6 +208,39 @@ final class MistralRealtimeIntegrationTests: XCTestCase {
             done:   \(normalizedDone)
             """
         )
+    }
+
+    // MARK: - (d) Polish usage
+
+    /// A real chat/completions answer carries the `usage` the ledger prices.
+    /// Eight output tokens at most: this costs a small fraction of a cent.
+    func testMistralPolishReportsUsageTheLedgerPrices() async throws {
+        let apiKey = try integrationConfiguration().apiKey
+        let ledger = MistralUsageLedger(fileURL: nil)
+        let service = LLMPolishingService(usageRecorder: ledger)
+
+        _ = try await service.polish(
+            request: LLMPolishingRequest(
+                inputText: "hello world",
+                systemPrompt: "Repeat the user's text.",
+                userPrompts: ["hello world"],
+                maxTokens: 8
+            ),
+            configuration: LLMPolishingConfiguration(
+                endpointURL: MistralPolishDefaults.endpoint,
+                apiKey: apiKey,
+                model: MistralPolishDefaults.model,
+                requestShape: .mistral
+            )
+        )
+
+        let usage = ledger.entries()
+        print("mistral integration: polish ledger \(usage)")
+        XCTAssertEqual(usage.count, 1)
+        let entry = try XCTUnwrap(usage.first)
+        XCTAssertGreaterThan(entry.promptTokens ?? 0, 0)
+        XCTAssertGreaterThan(entry.completionTokens ?? 0, 0)
+        XCTAssertGreaterThan(entry.costEUR ?? 0, 0, "The answering model must be priced: \(entry.model)")
     }
 
     // MARK: - (c) Bogus key

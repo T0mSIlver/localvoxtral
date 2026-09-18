@@ -252,6 +252,13 @@ final class DictationViewModel {
     /// Result of the Engines pane's "Check key" row. Observable so the row's
     /// one-line label follows it; reset to `.idle` is the caller's business.
     var mistralAPIKeyCheckState: MistralAPIKeyCheckState = .idle
+    /// The local record of Mistral requests Settings → Engines sums. Nil
+    /// without runtime services (tests), so a unit test never writes the
+    /// user's ledger.
+    @ObservationIgnored
+    private(set) var mistralUsageLedger: MistralUsageLedger?
+    /// Bumped on every ledger write so the Usage row re-reads the ledger.
+    private(set) var mistralUsageRevision = 0
 
     /// The in-flight key check. Kept awaitable so the unit suite observes the
     /// result without polling a clock.
@@ -798,6 +805,12 @@ final class DictationViewModel {
         textInsertion.refreshAccessibilityTrustState()
         if startRuntimeServices {
             sessionStore = DictationSessionStore()
+            installMistralUsageLedger(
+                MistralUsageLedger(fileURL: MistralUsageLedger.defaultFileURL()) {
+                    [weak self] in
+                    Task { @MainActor in self?.mistralUsageRevision += 1 }
+                }
+            )
             refreshMicrophoneInputs()
             registerLifecycleObservers()
             requestStartupPermissionsIfNeeded()
@@ -819,6 +832,15 @@ final class DictationViewModel {
             promptWarmup.observe(self.backendManager.statusUpdates)
             warmUpManagedBackendsAtLaunchIfNeeded()
         }
+    }
+
+    /// Points both Mistral paths — the realtime socket and the polishing
+    /// service — at `ledger`. Replaces `llmPolishingService`, so a test that
+    /// substitutes a fake does so after this.
+    func installMistralUsageLedger(_ ledger: MistralUsageLedger) {
+        mistralUsageLedger = ledger
+        mistralRealtimeClient.setUsageRecorder(ledger)
+        llmPolishingService = LLMPolishingService(usageRecorder: ledger)
     }
 
     @MainActor

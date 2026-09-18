@@ -52,7 +52,12 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         var hasReceivedSessionCreated = false
         var hasRequestedFinalCommit = false
         var finalCommitCompletionGate: FinalCommitCompletionGate = .idle
-        var pendingMessages: [String] = []
+        var pendingMessages: [PendingFrame] = []
+        /// The model this socket was opened for, nil when none is open.
+        var usageModel: String?
+        /// PCM bytes of `input_audio.append` actually handed to the socket
+        /// since it opened — what Mistral bills, as far as this Mac can tell.
+        var sentAudioBytes = 0
         #if DEBUG
         var skipsSocketCreationForTesting = false
         var recordedFrames: [String] = []
@@ -60,7 +65,15 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         #endif
     }
 
+    /// A frame held until `session.created`, with the PCM bytes it carries
+    /// (zero for a control frame) so audio is counted only once it is sent.
+    private struct PendingFrame {
+        let text: String
+        let audioBytes: Int
+    }
+
     private let state = Mutex(State())
+    private let usageRecorder = Mutex<(any MistralUsageRecording)?>(nil)
 
     /// Latency/accuracy knob (`target_streaming_delay_ms`). `nil` leaves the
     /// server default in place; a later PR surfaces this in Settings.
@@ -75,6 +88,12 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
     init(targetStreamingDelayMilliseconds: Int? = nil) {
         self.targetStreamingDelayMilliseconds = targetStreamingDelayMilliseconds
         super.init()
+    }
+
+    /// Where each socket reports the audio it sent when it closes. Nil (the
+    /// default) records nothing.
+    func setUsageRecorder(_ recorder: (any MistralUsageRecording)?) {
+        usageRecorder.withLock { $0 = recorder }
     }
 
     override var logger: Logger { Log.realtime }
@@ -199,8 +218,10 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
             "mistral realtime connect url=\(request.url?.absoluteString ?? "<none>", privacy: .public)"
         )
 
-        state.withLock { s in
+        let previousUsage: MistralUsageEntry? = state.withLock { s in
+            let usage = takeUsageLocked(&s)
             closeSocketLocked(&s, cancelTask: true)
+            s.usageModel = Self.resolvedModel(configuration.model)
 
             let (session, task) = createWebSocketSession(request: request, delegate: self)
 
@@ -210,17 +231,21 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
             s.base.isUserInitiatedDisconnect = false
 
             task.resume()
+            return usage
         }
+        recordUsage(previousUsage)
     }
 
     func disconnect() {
-        let wasConnected: Bool = state.withLock { s in
+        let (wasConnected, usage): (Bool, MistralUsageEntry?) = state.withLock { s in
             let was = s.base.socketState != .disconnected
-            guard was else { return false }
+            guard was else { return (false, nil) }
             s.base.isUserInitiatedDisconnect = true
+            let usage = takeUsageLocked(&s)
             closeSocketLocked(&s, cancelTask: true)
-            return was
+            return (was, usage)
         }
+        recordUsage(usage)
 
         if wasConnected {
             debugLog("disconnect")
@@ -231,10 +256,13 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
     func sendAudioChunk(_ pcm16Data: Data) {
         guard !pcm16Data.isEmpty else { return }
         debugLog("send input_audio.append bytes=\(pcm16Data.count)")
-        send(event: [
-            "type": "input_audio.append",
-            "audio": pcm16Data.base64EncodedString(),
-        ])
+        send(
+            event: [
+                "type": "input_audio.append",
+                "audio": pcm16Data.base64EncodedString(),
+            ],
+            audioBytes: pcm16Data.count
+        )
     }
 
     func sendCommit(final: Bool) {
@@ -296,7 +324,7 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
     }
 
     private func handleSessionCreated() {
-        let queuedMessages: [String]? = state.withLock { s in
+        let queuedMessages: [PendingFrame]? = state.withLock { s in
             guard s.base.socketState == .connected else { return nil }
             guard !s.hasReceivedSessionCreated else { return nil }
             s.hasReceivedSessionCreated = true
@@ -309,7 +337,7 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
             logger.notice("mistral realtime session ready")
             send(event: sessionUpdatePayload())
             for message in queuedMessages {
-                sendText(message)
+                sendText(message.text, audioBytes: message.audioBytes)
             }
         }
 
@@ -410,7 +438,7 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         case dropped
     }
 
-    private func send(event: [String: Any]) {
+    private func send(event: [String: Any], audioBytes: Int = 0) {
         guard JSONSerialization.isValidJSONObject(event) else {
             emit(.error("Invalid JSON payload generated."))
             return
@@ -445,24 +473,25 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
             if let type = event["type"] as? String {
                 debugLog("queue event type=\(type)")
             }
-            sendText(text)
+            sendText(text, audioBytes: audioBytes)
         } catch {
             emit(.error("Failed to serialize WebSocket payload: \(error.localizedDescription)"))
         }
     }
 
-    private func sendText(_ text: String) {
+    private func sendText(_ text: String, audioBytes: Int) {
         let action: SendAction = state.withLock { s in
             switch s.base.socketState {
             case .connected:
                 guard s.hasReceivedSessionCreated else {
-                    s.pendingMessages.append(text)
+                    s.pendingMessages.append(PendingFrame(text: text, audioBytes: audioBytes))
                     return .queued
                 }
                 guard let webSocketTask = s.base.webSocketTask else { return .dropped }
+                s.sentAudioBytes += audioBytes
                 return .send(task: webSocketTask, text: text)
             case .connecting:
-                s.pendingMessages.append(text)
+                s.pendingMessages.append(PendingFrame(text: text, audioBytes: audioBytes))
                 return .queued
             case .disconnected:
                 return .dropped
@@ -527,15 +556,18 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
             httpStatusCode: (task.response as? HTTPURLResponse)?.statusCode
         )
 
-        let outcome: (error: String?, disconnected: Bool) = state.withLock { s in
-            guard s.base.socketState != .disconnected, s.base.webSocketTask === task else {
-                return (nil, false)
-            }
+        let outcome: (error: String?, disconnected: Bool, usage: MistralUsageEntry?) =
+            state.withLock { s in
+                guard s.base.socketState != .disconnected, s.base.webSocketTask === task else {
+                    return (nil, false, nil)
+                }
 
-            let shouldEmitError = !s.base.isUserInitiatedDisconnect
-            closeSocketLocked(&s, cancelTask: false)
-            return (shouldEmitError ? resolvedMessage : nil, true)
-        }
+                let shouldEmitError = !s.base.isUserInitiatedDisconnect
+                let usage = takeUsageLocked(&s)
+                closeSocketLocked(&s, cancelTask: false)
+                return (shouldEmitError ? resolvedMessage : nil, true, usage)
+            }
+        recordUsage(outcome.usage)
 
         if let error = outcome.error {
             logger.notice("mistral realtime socket failed: \(error, privacy: .public)")
@@ -573,6 +605,32 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         }
     }
 
+    // MARK: - Usage
+
+    /// The closing socket's entry, nil when it sent no audio. Resets the
+    /// counters, so each socket is recorded exactly once whichever path
+    /// closes it.
+    private func takeUsageLocked(_ s: inout State) -> MistralUsageEntry? {
+        defer {
+            s.usageModel = nil
+            s.sentAudioBytes = 0
+        }
+        guard let model = s.usageModel, s.sentAudioBytes > 0 else { return nil }
+        let audioSeconds = Double(s.sentAudioBytes) / Double(Self.audioSampleRate * 2)
+        return MistralUsageEntry(
+            date: Date(),
+            kind: .dictation,
+            model: model,
+            audioSeconds: audioSeconds,
+            costEUR: MistralPricing.dictationCost(model: model, audioSeconds: audioSeconds)
+        )
+    }
+
+    private func recordUsage(_ entry: MistralUsageEntry?) {
+        guard let entry, let recorder = usageRecorder.withLock({ $0 }) else { return }
+        recorder.record(entry)
+    }
+
     // MARK: - State Cleanup
 
     private func closeSocketLocked(_ s: inout State, cancelTask: Bool) {
@@ -605,15 +663,18 @@ extension MistralRealtimeWebSocketClient {
     func debugPrimeConnectedStateForTesting(
         task: URLSessionWebSocketTask,
         isUserInitiatedDisconnect: Bool = false,
-        hasReceivedSessionCreated: Bool = false
+        hasReceivedSessionCreated: Bool = false,
+        usageModel: String? = nil
     ) {
         state.withLock { s in
             closeSocketLocked(&s, cancelTask: false)
+            s.usageModel = usageModel
+            s.sentAudioBytes = 0
             s.base.webSocketTask = task
             s.base.socketState = .connected
             s.base.isUserInitiatedDisconnect = isUserInitiatedDisconnect
             s.hasReceivedSessionCreated = hasReceivedSessionCreated
-            s.pendingMessages = ["pending-message"]
+            s.pendingMessages = [PendingFrame(text: "pending-message", audioBytes: 0)]
             startPingTimerLocked(&s)
         }
     }
