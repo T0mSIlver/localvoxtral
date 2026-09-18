@@ -160,6 +160,9 @@ final class SpeakerTermSuggestionModel {
 
     private(set) var suggestions: [String] = []
     private(set) var phase: Phase = .idle
+    /// What the running state shows: how much is being read, and since when.
+    private(set) var readingCount = 0
+    private(set) var startedAt: Date?
 
     private let settings: SettingsStore
     private let recentTexts: @MainActor () async -> [String]
@@ -170,6 +173,7 @@ final class SpeakerTermSuggestionModel {
     /// suggestion run is still going, so there the run just continues in the
     /// background through any number of dictations.
     private let sharesOneGenerationSlot: @MainActor () -> Bool
+    private let now: @MainActor () -> Date
     @ObservationIgnored private var task: Task<Void, Never>?
 
     init(
@@ -177,19 +181,30 @@ final class SpeakerTermSuggestionModel {
         recentTexts: @escaping @MainActor () async -> [String],
         service: @escaping @MainActor () -> any LLMPolishingServicing,
         isDictating: @escaping @MainActor () -> Bool = { false },
-        sharesOneGenerationSlot: @escaping @MainActor () -> Bool = { false }
+        sharesOneGenerationSlot: @escaping @MainActor () -> Bool = { false },
+        now: @escaping @MainActor () -> Date = { Date() }
     ) {
         self.settings = settings
         self.recentTexts = recentTexts
         self.service = service
         self.isDictating = isDictating
         self.sharesOneGenerationSlot = sharesOneGenerationSlot
+        self.now = now
     }
 
     /// The button's action. The model owns the task so a dictation can stop it.
     func start() {
         guard phase != .loading else { return }
         task = Task { await suggest() }
+    }
+
+    /// The Stop button.
+    func stop() {
+        guard phase == .loading else { return }
+        task?.cancel()
+        task = nil
+        phase = .idle
+        Log.polishing.info("Term suggestions stopped by the user")
     }
 
     /// A dictation is starting. On the bundled helper a suggestion run in
@@ -213,6 +228,8 @@ final class SpeakerTermSuggestionModel {
             phase = .failed("Set up a polishing model first.")
             return
         }
+        readingCount = 0
+        startedAt = now()
         phase = .loading
         let terms = settings.polishSpeakerTerms
         let dismissed = settings.polishDismissedTermSuggestions
@@ -225,6 +242,7 @@ final class SpeakerTermSuggestionModel {
             phase = .failed("No dictations to read yet.")
             return
         }
+        readingCount = texts.count
         Log.polishing.info("Term suggestions requested: \(texts.count, privacy: .public) dictations")
         do {
             let result = try await service().polish(

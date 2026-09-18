@@ -340,6 +340,32 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         XCTAssertEqual(model.suggestions, ["Qwen"])
     }
 
+    /// What the progress line shows, and the Stop button: the late answer of
+    /// a stopped run is ignored and the row goes back to its button.
+    func testARunReportsWhatItReadsSinceWhenAndCanBeStopped() async {
+        let settings = makeSettings()
+        let service = GatedService()
+        let start = Date(timeIntervalSince1970: 1_000)
+        let model = SpeakerTermSuggestionModel(
+            settings: settings, recentTexts: { ["one", "two", "three"] }, service: { service },
+            now: { start }
+        )
+
+        model.start()
+        await service.waitUntilRequested()
+        XCTAssertEqual(model.phase, .loading)
+        XCTAssertEqual(model.readingCount, 3)
+        XCTAssertEqual(model.startedAt, start)
+
+        model.stop()
+        XCTAssertEqual(model.phase, .idle)
+
+        await service.release(with: #"["Qwen"]"#)
+        await Task.yield()
+        XCTAssertEqual(model.suggestions, [])
+        XCTAssertEqual(model.phase, .idle)
+    }
+
     func testSuggestRefusesWhileDictatingOnTheBundledHelper() async {
         let settings = makeSettings()
         let service = Service()

@@ -2620,31 +2620,84 @@ private struct SpeakerTermSuggestionsView: View {
                 }
             }
 
-            HStack(spacing: 8) {
-                Button(model.suggestions.isEmpty ? "Suggest terms" : "Suggest again") {
-                    model.start()
-                }
-                .disabled(model.phase == .loading)
-                .accessibilityIdentifier("settings.aboutYou.suggestTerms")
+            if model.phase == .loading {
+                SpeakerTermSuggestionsProgress(model: model)
+            } else {
+                HStack(spacing: 8) {
+                    Button(model.suggestions.isEmpty ? "Suggest terms" : "Suggest again") {
+                        model.start()
+                    }
+                    .accessibilityIdentifier("settings.aboutYou.suggestTerms")
 
-                if !model.suggestions.isEmpty {
-                    Button("Add all") { model.acceptAll() }
-                }
+                    if !model.suggestions.isEmpty {
+                        Button("Add all") { model.acceptAll() }
+                    }
 
-                switch model.phase {
-                case .loading:
-                    ProgressView().controlSize(.small)
-                case .nothingFound:
-                    Text("Nothing new to suggest.")
-                        .font(.callout).foregroundStyle(.secondary)
-                case .failed(let message):
-                    Text(message)
-                        .font(.callout).foregroundStyle(.secondary).lineLimit(1)
-                case .idle:
-                    EmptyView()
+                    switch model.phase {
+                    case .nothingFound:
+                        Text("Nothing new to suggest.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    case .failed(let message):
+                        Text(message)
+                            .font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                    case .idle, .loading:
+                        EmptyView()
+                    }
                 }
             }
         }
+    }
+}
+
+/// A run in flight: empty dashed chips breathing where the suggestions will
+/// land, and one line that keeps counting — what is being read, for how long.
+/// The clock is the whole message that this can take minutes.
+private struct SpeakerTermSuggestionsProgress: View {
+    let model: SpeakerTermSuggestionModel
+
+    private static let placeholderWidths: [CGFloat] = [64, 96, 52, 80, 70]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                ForEach(Array(Self.placeholderWidths.enumerated()), id: \.offset) { index, width in
+                    Capsule()
+                        .strokeBorder(
+                            Color.secondary.opacity(0.6),
+                            style: StrokeStyle(lineWidth: 1, dash: [3, 2])
+                        )
+                        .frame(width: width, height: 22)
+                        .phaseAnimator([0.25, 0.9]) { chip, opacity in
+                            chip.opacity(opacity)
+                        } animation: { _ in
+                            .easeInOut(duration: 0.9).delay(Double(index) * 0.15)
+                        }
+                }
+            }
+            .accessibilityHidden(true)
+
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(statusLine(at: context.date))
+                        .font(.callout)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Button("Stop") { model.stop() }
+                    .controlSize(.small)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("settings.aboutYou.suggestProgress")
+    }
+
+    private func statusLine(at date: Date) -> String {
+        let elapsed = max(0, Int(date.timeIntervalSince(model.startedAt ?? date)))
+        let clock = String(format: "%d:%02d", elapsed / 60, elapsed % 60)
+        guard model.readingCount > 0 else { return clock }
+        return "Reading \(model.readingCount) dictations · \(clock)"
     }
 }
 
