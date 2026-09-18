@@ -395,6 +395,59 @@ private struct ConnectionSettingsPane: View {
         )
     }
 
+    private var mistralDictationModelEntries: [MistralModelPickerEntry] {
+        MistralModelCatalog.pickerEntries(
+            for: .dictation,
+            catalog: settings.mistralModelCatalog,
+            storedModel: settings.mistralDictationModel,
+            defaultModel: MistralRealtimeWebSocketClient.defaultModel
+        )
+    }
+
+    private var mistralPolishingModelEntries: [MistralModelPickerEntry] {
+        MistralModelCatalog.pickerEntries(
+            for: .polishing,
+            catalog: settings.mistralModelCatalog,
+            storedModel: settings.mistralPolishingModel,
+            defaultModel: MistralPolishDefaults.model
+        )
+    }
+
+    private var mistralDictationModelBinding: Binding<String> {
+        Binding(
+            get: {
+                MistralModelCatalog.selectionTag(
+                    storedModel: settings.mistralDictationModel,
+                    catalog: settings.mistralModelCatalog,
+                    defaultModel: MistralRealtimeWebSocketClient.defaultModel
+                )
+            },
+            set: { settings.mistralDictationModel = $0 }
+        )
+    }
+
+    private var mistralPolishingModelBinding: Binding<String> {
+        Binding(
+            get: {
+                MistralModelCatalog.selectionTag(
+                    storedModel: settings.mistralPolishingModel,
+                    catalog: settings.mistralModelCatalog,
+                    defaultModel: MistralPolishDefaults.model
+                )
+            },
+            set: { settings.mistralPolishingModel = $0 }
+        )
+    }
+
+    /// Changes when the pickers could show a different list: a new key, or an
+    /// engine switched onto Mistral.
+    private var mistralModelListTrigger: String {
+        let usesMistral =
+            settings.dictationBackendMode == .mistralAPI
+            || settings.polishingBackendMode == .mistralAPI
+        return usesMistral ? settings.trimmedMistralAPIKey : ""
+    }
+
     private enum LearnMore {
         static let mistralAPI = URL(
             string:
@@ -463,14 +516,12 @@ private struct ConnectionSettingsPane: View {
                             .frame(maxWidth: SettingsLayout.textFieldWidth)
                     }
                 case .mistralAPI:
-                    SettingsFieldRow(title: "Model") {
-                        TextField(
-                            MistralRealtimeWebSocketClient.defaultModel,
-                            text: $settings.mistralDictationModel
-                        )
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: SettingsLayout.textFieldWidth)
-                    }
+                    MistralModelPickerRow(
+                        entries: mistralDictationModelEntries,
+                        selection: mistralDictationModelBinding,
+                        status: viewModel.mistralModelListState.statusLine,
+                        identifier: "engines.dictation.mistralModel"
+                    )
 
                     SettingsFieldRow(title: "Status") {
                         MistralConfigurationStatusLabel(
@@ -560,14 +611,12 @@ private struct ConnectionSettingsPane: View {
                         .frame(maxWidth: SettingsLayout.textFieldWidth)
                     }
                 case .mistralAPI:
-                    SettingsFieldRow(title: "Model") {
-                        TextField(
-                            MistralPolishDefaults.model,
-                            text: $settings.mistralPolishingModel
-                        )
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: SettingsLayout.textFieldWidth)
-                    }
+                    MistralModelPickerRow(
+                        entries: mistralPolishingModelEntries,
+                        selection: mistralPolishingModelBinding,
+                        status: viewModel.mistralModelListState.statusLine,
+                        identifier: "engines.polishing.mistralModel"
+                    )
 
                     SettingsFieldRow(title: "Status") {
                         MistralConfigurationStatusLabel(
@@ -640,6 +689,44 @@ private struct ConnectionSettingsPane: View {
                     .accessibilityIdentifier("engines.mistral.quickSetup")
                 }
             }
+        }
+        .task(id: mistralModelListTrigger) {
+            guard !mistralModelListTrigger.isEmpty else { return }
+            viewModel.refreshMistralModelCatalog()
+        }
+    }
+}
+
+/// A Mistral engine's model menu: the default first, then Mistral's own
+/// models, then partner models under their maker's name.
+private struct MistralModelPickerRow: View {
+    let entries: [MistralModelPickerEntry]
+    let selection: Binding<String>
+    let status: String?
+    let identifier: String
+
+    var body: some View {
+        SettingsFieldRow(
+            title: "Model",
+            status: status,
+            statusAccessibilityIdentifier: "\(identifier).status"
+        ) {
+            Picker("", selection: selection) {
+                ForEach(MistralModelCatalog.Section.allCases, id: \.self) { section in
+                    let rows = entries.filter { $0.section == section }
+                    if !rows.isEmpty {
+                        Section(section.rawValue) {
+                            ForEach(rows) { entry in
+                                Text(entry.label).tag(entry.tag)
+                            }
+                        }
+                    }
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .frame(maxWidth: SettingsLayout.textFieldWidth)
+            .accessibilityIdentifier(identifier)
         }
     }
 }

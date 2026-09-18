@@ -626,7 +626,7 @@ case "$CMD" in
     if [[ "$EVAL_MODEL" == mistral/* ]]; then
       # Mistral rejects unknown body fields, so the app sends a different
       # request shape entirely (no top_k/min_p/chat_template_kwargs/
-      # thinking_budget_tokens, reasoning_effort=none). The key is a secret:
+      # thinking_budget_tokens, reasoning_effort per model). The key is a secret:
       # it is read from this box's environment into the gitignored marker the
       # EXIT trap removes — never into the SSH command line or the repo.
       if [[ -z "${MISTRAL_API_KEY:-}" ]]; then
@@ -639,7 +639,7 @@ case "$CMD" in
       # the integration-mistral marker (the redirect below keeps the mode).
       (umask 077; : >"$EVAL_MARKER")
       # No useDefaultRequestShape: production Mistral mode sends no catalog
-      # sampling defaults (temperature 0.3 + reasoning_effort=none only), and
+      # sampling defaults (temperature 0.3 + reasoning_effort only), and
       # the eval must score exactly the request shape the app sends.
       printf '{"endpoint": "%s", "model": "%s", "requestShape": "mistral", "apiKey": "%s"}\n' \
         "$EVAL_ENDPOINT" "${EVAL_MODEL#mistral/}" "$MISTRAL_API_KEY" >"$EVAL_MARKER"

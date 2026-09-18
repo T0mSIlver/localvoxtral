@@ -224,6 +224,7 @@ final class SettingsStore {
         static let apiKeysMigratedToKeychain = "settings.api_keys_migrated_to_keychain"
         static let mistralDictationModel = "settings.mistral_dictation_model"
         static let mistralPolishingModel = "settings.mistral_polishing_model"
+        static let mistralModelCatalog = "settings.mistral_model_catalog"
         static let dictationBackendMode = "settings.dictation_backend_mode"
         static let speechdCacheLimit = "settings.speechd_cache_limit"
         static let speechdStepCadence = "settings.speechd_step_cadence"
@@ -400,6 +401,13 @@ final class SettingsStore {
     /// Hosted polishing model. Empty means `MistralPolishDefaults.model`.
     var mistralPolishingModel: String {
         didSet { defaults.set(mistralPolishingModel, forKey: Keys.mistralPolishingModel) }
+    }
+
+    /// The models the Mistral key last listed. Kept across launches so the
+    /// model pickers are whole before (or without) the next fetch, and so a
+    /// polish request knows whether its model takes `reasoning_effort`.
+    var mistralModelCatalog: [MistralModel] {
+        didSet { persistMistralModelCatalog() }
     }
 
     var autoCopyEnabled: Bool {
@@ -619,6 +627,24 @@ final class SettingsStore {
     /// `UserTerminalAppsMigrator`, then owned by Settings → Terminals.
     var userTerminalAppBundleIDs: Set<String> {
         Set(userTerminalApps.map(\.bundleID))
+    }
+
+    private func persistMistralModelCatalog() {
+        guard let data = try? JSONEncoder().encode(mistralModelCatalog) else { return }
+        defaults.set(data, forKey: Keys.mistralModelCatalog)
+    }
+
+    private static func loadMistralModelCatalog(from defaults: UserDefaults) -> [MistralModel] {
+        guard let data = defaults.data(forKey: Keys.mistralModelCatalog) else { return [] }
+        do {
+            return try JSONDecoder().decode([MistralModel].self, from: data)
+        } catch {
+            // A cache: the next fetch rebuilds it.
+            Log.persistence.error(
+                "Stored Mistral model list is unreadable; starting empty. \(error.localizedDescription, privacy: .public)"
+            )
+            return []
+        }
     }
 
     private func persistUserTerminalApps() {
@@ -931,6 +957,7 @@ final class SettingsStore {
             envKey: "MISTRAL_POLISHING_MODEL", fallback: "",
             environment: environment
         )
+        mistralModelCatalog = Self.loadMistralModelCatalog(from: defaults)
 
         autoCopyEnabled = Self.loadBool(
             defaults: defaults, key: Keys.autoCopyEnabled, fallback: false)
@@ -1731,7 +1758,10 @@ final class SettingsStore {
                 endpointURL: MistralPolishDefaults.endpoint,
                 apiKey: key,
                 model: resolvedMistralPolishingModel,
-                requestShape: .mistral
+                requestShape: .mistral,
+                mistralReasoningEffort: MistralReasoningEffort.forModel(
+                    resolvedMistralPolishingModel, catalog: mistralModelCatalog
+                )
             )
         }
         let trimmedEndpoint = llmPolishingEndpointURL.trimmed

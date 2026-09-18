@@ -71,8 +71,13 @@ socket, at 0.006 USD per minute of audio. Polishing uses Mistral Medium 3.5
 (`mistral-medium-3-5`) with reasoning switched off, at 1.5 USD per million
 input tokens and 7.5 USD per million output tokens. Both engines share the
 key and switch independently, so hosted dictation with local polishing
-works, and so does the reverse. Either model field can name another Mistral
-model. In this mode your audio and transcripts reach Mistral.
+works, and so does the reverse. Each engine's **Model** menu lists every
+model your key can use for that job, read from Mistral's model list, so
+polishing can also run on Mistral's other chat models or on partner models
+Mistral hosts, such as Z.ai's GLM 5.3 (`zai-glm-5-3`). GLM does not accept
+reasoning switched off, so polishing asks it for its lowest setting (`low`);
+models without reasoning are sent no reasoning setting at all. In this mode
+your audio and transcripts reach Mistral.
 
 ## Bring your own server
 

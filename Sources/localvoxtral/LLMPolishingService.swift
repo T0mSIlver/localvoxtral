@@ -54,9 +54,10 @@ enum LLMPolishingRequestShape: String, Sendable {
     /// carries them (a catalog model's sampling defaults do). Those four are
     /// llama.cpp / mlx-lm / Bifrost extras with no Mistral equivalent.
     ///
-    /// `reasoning_effort` is pinned to `"none"`: `mistral-medium-3-5` is
-    /// reasoning-capable, and polishing must never pay a reasoning trace's
-    /// latency or output tokens to insert one space before a question mark.
+    /// `reasoning_effort` asks for the least reasoning the model takes
+    /// (`MistralReasoningEffort`): polishing must never pay a reasoning
+    /// trace's latency or output tokens to insert one space before a question
+    /// mark, and a value the model does not take is a 400.
     case mistral
 }
 
@@ -74,6 +75,11 @@ struct LLMPolishingConfiguration: Sendable {
     let passthroughExtraParameters: Bool
     /// The wire dialect this configuration's requests are serialized in.
     let requestShape: LLMPolishingRequestShape
+    /// Mistral shape only. Nil derives it from the model id alone
+    /// (`MistralReasoningEffort.forModel`), which is right for every
+    /// reasoning model; Settings passes the catalog's answer so a model
+    /// without reasoning gets no field at all.
+    let mistralReasoningEffort: MistralReasoningEffort?
 
     init(
         endpointURL: URL,
@@ -83,7 +89,8 @@ struct LLMPolishingConfiguration: Sendable {
         chatTemplateArguments: [String: Bool]? = nil,
         thinkingBudgetTokens: Int? = nil,
         passthroughExtraParameters: Bool = false,
-        requestShape: LLMPolishingRequestShape = .openAICompatible
+        requestShape: LLMPolishingRequestShape = .openAICompatible,
+        mistralReasoningEffort: MistralReasoningEffort? = nil
     ) {
         self.endpointURL = endpointURL
         self.apiKey = apiKey
@@ -93,6 +100,7 @@ struct LLMPolishingConfiguration: Sendable {
         self.thinkingBudgetTokens = thinkingBudgetTokens
         self.passthroughExtraParameters = passthroughExtraParameters
         self.requestShape = requestShape
+        self.mistralReasoningEffort = mistralReasoningEffort
     }
 }
 
@@ -369,7 +377,12 @@ struct LLMPolishingService: LLMPolishingServicing {
             // is an extension some self-hosted server invented; sending one
             // costs the whole request (422), so the Mistral shape stops here
             // with only the fields the schema names.
-            body["reasoning_effort"] = "none"
+            let effort =
+                configuration.mistralReasoningEffort
+                ?? MistralReasoningEffort.forModel(configuration.model)
+            if let wireValue = effort.wireValue {
+                body["reasoning_effort"] = wireValue
+            }
             return try JSONSerialization.data(withJSONObject: body)
         }
 
