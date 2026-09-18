@@ -479,6 +479,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // test that forgot to inject — constructs them.
             let ttyReader = AppleScriptTerminalTTYReader()
             let browserTabReader = AppleScriptFocusedBrowserTabURLReader()
+            let desktopSessionReader = AXClaudeDesktopSessionURLReader()
             let herdrClient = HerdrSocketClient()
             // The cmux password is read from the Keychain lazily, per query, so
             // a user who never enables the arm is never prompted for keychain
@@ -489,6 +490,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 registry: claudeSessionRegistry,
                 focusedTerminalTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) },
                 focusedBrowserTabURL: { await browserTabReader.focusedTabURL(bundleID: $0) },
+                focusedDesktopSessionURL: {
+                    await desktopSessionReader.focusedSessionURL(applicationPID: $0)
+                },
                 herdrClientProbe: {
                     HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0)
                 },

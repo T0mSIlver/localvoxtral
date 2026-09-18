@@ -183,6 +183,12 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
     /// `$CLAUDE_CODE_BRIDGE_SESSION_ID` — the browser-side session handle a
     /// Remote Control bridge injects, when this session is driven by one.
     public var bridgeSessionID: String?
+    /// `$CLAUDE_CODE_HOST_SESSION_ID` — the Claude Desktop Code-tab session
+    /// handle (`local_<uuid>`) the desktop app injects into every session it
+    /// hosts. The same value is the last path component of the web view the
+    /// desktop app shows that session in, which is what the desktop join arm
+    /// compares it against.
+    public var desktopSessionID: String?
 
     public init(
         hookPID: Int32,
@@ -193,7 +199,8 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
         herdrSocketPath: String? = nil,
         cmuxSurfaceID: String? = nil,
         cmuxSocketPath: String? = nil,
-        bridgeSessionID: String? = nil
+        bridgeSessionID: String? = nil,
+        desktopSessionID: String? = nil
     ) {
         self.hookPID = hookPID
         self.claudePID = claudePID
@@ -204,6 +211,7 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
         self.cmuxSurfaceID = cmuxSurfaceID
         self.cmuxSocketPath = cmuxSocketPath
         self.bridgeSessionID = bridgeSessionID
+        self.desktopSessionID = desktopSessionID
     }
 
     enum CodingKeys: String, CodingKey {
@@ -216,6 +224,7 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
         case cmuxSurfaceID = "cmux_surface_id"
         case cmuxSocketPath = "cmux_socket_path"
         case bridgeSessionID = "bridge_session_id"
+        case desktopSessionID = "desktop_session_id"
     }
 }
 
@@ -484,6 +493,9 @@ public enum ClaudeHookWireCodec {
                 truncate($0, toUTF8Bytes: limits.maxPathBytes)
             }
             process.bridgeSessionID = process.bridgeSessionID.map {
+                truncate($0, toUTF8Bytes: limits.maxPathBytes)
+            }
+            process.desktopSessionID = process.desktopSessionID.map {
                 truncate($0, toUTF8Bytes: limits.maxPathBytes)
             }
             clamped.process = process

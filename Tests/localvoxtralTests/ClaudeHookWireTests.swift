@@ -128,6 +128,33 @@ final class ClaudeHookWireCodecTests: XCTestCase {
         XCTAssertEqual(decoded.process?.bridgeSessionID, "bridge-abc")
     }
 
+    func testDesktopSessionProcessFieldUsesItsGoldenWireNameClampsAndStaysAbsent() throws {
+        let record = ClaudeHookRecord(
+            event: .sessionStart,
+            sessionID: "sess-desktop",
+            timestamp: 1.5,
+            process: ClaudeHookProcessInfo(hookPID: 42, claudePID: 41, desktopSessionID: "local_abc")
+        )
+        let encoded = try XCTUnwrap(ClaudeHookWireCodec.encodeLine(record))
+        XCTAssertEqual(
+            String(decoding: encoded, as: UTF8.self),
+            #"{"event":"SessionStart","files":[],"process":{"claude_pid":41,"desktop_session_id":"local_abc","hook_pid":42},"session_id":"sess-desktop","ts":1.5,"v":2}"# + "\n"
+        )
+        XCTAssertEqual(try ClaudeHookWireCodec.decodeLine(encoded).process?.desktopSessionID, "local_abc")
+
+        let clamped = ClaudeHookWireCodec.clamp(record, limits: ClaudeHookLimits(maxPathBytes: 5))
+        XCTAssertEqual(clamped.process?.desktopSessionID, "local")
+
+        // An older publisher's line has no such key, and re-encoding it must
+        // not invent one.
+        let old = try ClaudeHookWireCodec.decodeLine(line(
+            #"{"event":"SessionStart","process":{"claude_pid":1,"hook_pid":2},"session_id":"old","ts":1,"v":2}"#
+        ))
+        XCTAssertNil(old.process?.desktopSessionID)
+        let reencoded = String(decoding: try XCTUnwrap(ClaudeHookWireCodec.encodeLine(old)), as: UTF8.self)
+        XCTAssertFalse(reencoded.contains("desktop_session_id"))
+    }
+
     func testClampTruncatesTheCmuxAndBridgeProcessFields() {
         let record = ClaudeHookRecord(
             event: .sessionStart,

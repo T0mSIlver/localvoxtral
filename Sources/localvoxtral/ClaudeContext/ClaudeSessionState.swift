@@ -116,8 +116,9 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     /// The Claude Code "Remote Control" bridge session id this session last
     /// reported, from whichever side reported it.
     ///
-    /// This is the ONE join key that legitimately spans local and remote, and
-    /// the reason is a property of the value, not a relaxation of the rule: the
+    /// One of the two join keys that legitimately span local and remote (the
+    /// other is `desktopSessionID`), and the reason is a property of the value,
+    /// not a relaxation of the rule: the
     /// id is allocated by Anthropic's bridge, is globally unique, and appears in
     /// the browser URL the user is looking at. A remote host publishing an id
     /// can therefore not collide with a local session's — unlike a TTY path, a
@@ -135,6 +136,24 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
             return process?.bridgeSessionID
         case .remote:
             return remoteSessionEnvironment?.bridgeSessionID
+        }
+    }
+
+    /// The Claude Desktop Code-tab session handle (`local_<uuid>`) this session
+    /// last reported, from whichever side reported it.
+    ///
+    /// Spans local and remote for the same reason `bridgeSessionID` does: the
+    /// desktop app allocates the id, it is a UUID, and it names the web view the
+    /// desktop window shows that session in. Claude Desktop runs Code-tab
+    /// sessions on this Mac AND on ssh hosts, and the window is the UI of
+    /// whichever machine runs the session. The origin still decides which field
+    /// is read.
+    public var desktopSessionID: String? {
+        switch origin {
+        case .localAuthenticated:
+            return process?.desktopSessionID
+        case .remote:
+            return remoteSessionEnvironment?.desktopSessionID
         }
     }
 

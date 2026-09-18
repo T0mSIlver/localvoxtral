@@ -2295,6 +2295,13 @@ final class DictationViewModel {
            !settings.claudeRepoContextEnabled {
             return dogfoodUnresolvedJoin(cause: "gate: browser target without session context")
         }
+        // Claude Desktop, on the same terms: its join authorizes no screen
+        // either, so the screen setting alone must not read another app's
+        // accessibility tree (or switch Electron's tree on to do it).
+        if ClaudeDesktopAllowlist.isSupported(target.bundleID),
+           !settings.claudeRepoContextEnabled {
+            return dogfoodUnresolvedJoin(cause: "gate: Claude Desktop target without session context")
+        }
         return await resolver.resolve(target: target)
     }
 

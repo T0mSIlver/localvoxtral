@@ -107,6 +107,16 @@ Anthropic's bridge and is globally unique, unlike a tty or pane id. Claude Code
 REMOVES the variable when the Remote Control connection ends, so the join ages
 out on the session's next hook.
 
+**Claude Desktop join.** Claude Desktop's Code tab shows each Claude Code
+session in a web view at `https://claude.ai/epitaxy/local_…`, and exports the
+same `local_…` id to the session as `CLAUDE_CODE_HOST_SESSION_ID`. When Claude
+Desktop is frontmost, the app reads the address of the web view that holds
+keyboard focus over Accessibility and matches the id against what the
+session's hooks reported. Sessions the desktop app runs on this Mac join
+through this plugin; sessions it runs on an ssh host join through
+`localvoxtral-remote` (≥ 1.11.0) on that host. Like the browser join, it reads
+no screen and runs only with Claude repo context on.
+
 Supported browsers are **Google Chrome, Brave, and Safari**, and each one needs
 its OWN Automation grant the first time it is used (System Settings → Privacy &
 Security → Automation → localvoxtral). The grant is requested only while
@@ -430,8 +440,8 @@ An allowlist, not a filter:
 * safe process metadata: pid, ppid, controlling TTY, `$TERM_PROGRAM`, and the
   multiplexer/bridge handles that say which pane the session lives in —
   `$HERDR_PANE_ID`, `$HERDR_SOCKET_PATH`, `$CMUX_SURFACE_ID`,
-  `$CMUX_SOCKET_PATH`, `$CLAUDE_CODE_BRIDGE_SESSION_ID`. Never the rest of the
-  environment.
+  `$CMUX_SOCKET_PATH`, `$CLAUDE_CODE_BRIDGE_SESSION_ID`,
+  `$CLAUDE_CODE_HOST_SESSION_ID`. Never the rest of the environment.
 
 What never crosses, by construction:
 
@@ -879,7 +889,8 @@ The same allowlist as the local plugin, plus two additions:
   headers rather than in the body (the body stays Claude Code's event JSON
   byte-for-byte, because the host is not assumed to have `jq`):
   `HERDR_PANE_ID`, `HERDR_SOCKET_PATH`, `HERDR_SESSION`, `CMUX_SURFACE_ID`,
-  `CMUX_SOCKET_PATH`, `CLAUDE_CODE_BRIDGE_SESSION_ID`, `TMUX`, `TMUX_PANE`,
+  `CMUX_SOCKET_PATH`, `CLAUDE_CODE_BRIDGE_SESSION_ID`,
+  `CLAUDE_CODE_HOST_SESSION_ID`, `TMUX`, `TMUX_PANE`,
   `STY`, `ZELLIJ`, `SSH_TTY`, `SSH_CONNECTION`, `LC_LVX_TTY`, and the shim's own
   parent pid. Each is sent only
   if it is non-empty, at most 200 characters, and made purely of ASCII

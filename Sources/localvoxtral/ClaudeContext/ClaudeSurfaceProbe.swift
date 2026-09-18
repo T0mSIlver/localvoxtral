@@ -124,6 +124,7 @@ enum ClaudeSurfaceProbe {
         }
         guard TerminalScreenAllowlist.isSupported(target.bundleID)
             || BrowserTabAllowlist.isSupported(target.bundleID)
+            || ClaudeDesktopAllowlist.isSupported(target.bundleID)
         else {
             // The resolver returns nil for an unlisted bundle without noting a
             // cause, and "no reason at all" is the least useful thing a

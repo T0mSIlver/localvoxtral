@@ -1016,8 +1016,9 @@ there is not.
     strictly (`ClaudeBridgeSessionURL`: https only, host exactly `claude.ai`,
     no userinfo/port, `session_[A-Za-z0-9_-]+` on the percent-ENCODED path) and
     matched by exact equality against the `CLAUDE_CODE_BRIDGE_SESSION_ID` the
-    session's own hooks publish (Claude Code ≥ 2.1.199). This is the ONE arm
-    that spans local and remote sessions, because the id is bridge-allocated and
+    session's own hooks publish (Claude Code ≥ 2.1.199). This arm and the
+    Claude Desktop arm below are the two that span local and remote sessions,
+    because the id is bridge-allocated and
     globally unique — unlike a tty/pane id/pid, which another machine can mirror;
     `ClaudeSessionSnapshot.bridgeSessionID` still routes the read by origin.
     A `.browserTab` join authorizes NO screen capture of any kind (the
@@ -1037,6 +1038,41 @@ there is not.
     browser), and each browser needs its own TCC Automation grant — pre-warmed
     by its own `TerminalAutomationConsentPrewarmSettingsObserver` under that
     same setting, since the consent sheet dies with the 1 s read that raised it.
+  - A Claude Code session in **Claude Desktop's Code tab** (on this Mac, or on
+    an ssh host the desktop app runs it on) joins from the FOCUSED WEB VIEW of
+    the desktop app (`ClaudeDesktopAllowlist`, exactly
+    `com.anthropic.claudefordesktop`, a third list disjoint from the terminal
+    and browser ones). MEASURED on Claude Desktop 2.2553.1 (2026-09-18):
+    each session is shown in a web view whose `AXURL` is
+    `https://claude.ai/epitaxy/local_<uuid>`, and the desktop app exports the
+    same `local_<uuid>` as `CLAUDE_CODE_HOST_SESSION_ID` into the session's
+    Claude Code process, so every hook carries it — local publisher field
+    `desktop_session_id`, remote header `X-Lvx-Env-Desktop-Session-Id`
+    (remote plugin ≥ 1.11.0). `AXClaudeDesktopSessionURLReader` walks UP from
+    the app's focused element to the NEAREST `AXWebArea` and reads only that
+    one's address; `ClaudeDesktopSessionURL` parses it through the same strict
+    checks as the bridge URL (`ClaudeSessionPageURL`), path exactly
+    `/epitaxy/local_[A-Za-z0-9_-]+`; the registry match is exact equality with
+    one fresh reporter (`resolve(desktopSessionID:)`, shared rules with the
+    bridge lookup). Walking up from focus is the rule rather than searching the
+    window because the desktop app can show sessions side by side, and focus
+    outside every session web view (sidebar, chat tab) is correctly no join —
+    the dictation is not going to a session. Everything else follows the
+    browser arm: both origins join (the id is desktop-allocated and names the
+    view the user is looking at), a `.desktopSession` join authorizes NO screen
+    read and carries no window identity, commit-time liveness re-resolves the
+    bound id (the id never disappears while the session runs, so it adds no
+    disconnect signal of its own), and the read happens ONLY under
+    `claudeRepoContextEnabled`. It is an Accessibility read, not an Apple
+    event: no Automation consent, and nothing to pre-warm. It sets Electron's
+    `AXManualAccessibility` on the desktop app before each read (Chromium
+    builds its web accessibility tree only for a client that asks — the switch
+    VoiceOver flips), and when the walk finds no web area at all it waits
+    250 ms once and reads again, so the first dictation after the desktop app
+    launches can still join. Both identifiers are UNDOCUMENTED: a desktop
+    update that renames either stops the arm joining, and cannot make it join
+    the wrong session. `--probe-surface` withholds this reader like the
+    browser one.
   - The overlay's join badge (`OverlayClaudeJoinBadge`) DESCRIBES the resolved
     join; it never resolves one. It reads `claudeSessionJoin` after the single
     start-time resolution and nothing else — a badge that asked again could name

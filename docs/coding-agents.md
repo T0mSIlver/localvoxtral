@@ -74,8 +74,9 @@ toggle that relaxes that.
   recently touched, and the last request you sent that session. For a
   session on a remote host, only the session request and the short excerpts
   its hooks report go; no files are read from that host. Needs a joined
-  Claude Code or opencode session in a supported terminal, or a Claude Code
-  Remote Control session in the focused browser tab.
+  Claude Code or opencode session in a supported terminal, a Claude Code
+  Remote Control session in the focused browser tab, or a Claude Code session
+  focused in Claude Desktop's Code tab.
 - **Non-local endpoints** — when on, the context enabled above also goes to
   the polishing endpoint you configured. Enable it only for an endpoint you
   trust, such as a server on your own network.
@@ -162,8 +163,12 @@ fields and the threat model.
 > of yours and [claude.ai/code](https://claude.ai/code) in a browser is the
 > UI — joins from the focused browser tab instead: its `session_…` URL is
 > matched exactly against the id the session's own hooks report (Chrome,
-> Brave, and Safari; a browser join never reads anything on screen). First
-> use asks for one Automation permission per terminal or browser.
+> Brave, and Safari; a browser join never reads anything on screen). A
+> session in **Claude Desktop**'s Code tab joins the same way from the session
+> you have focused there, whether the desktop app runs it on your Mac or on an
+> ssh host (that host needs the remote plugin 1.11.0 or newer); it needs no
+> extra permission and reads nothing on screen. First use asks for one
+> Automation permission per terminal or browser.
 
 An [opencode plugin](../integrations/opencode/README.md) exists too, installed
 from **Settings → opencode** (copy plus the `tui.json`

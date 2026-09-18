@@ -164,6 +164,7 @@ struct StoredClaudeSessions: Codable {
         var cmuxSurfaceID: String?
         var cmuxSocketPath: String?
         var bridgeSessionID: String?
+        var desktopSessionID: String?
         var tmux: String?
         var tmuxPane: String?
         var screenSession: String?
@@ -180,6 +181,7 @@ struct StoredClaudeSessions: Codable {
             cmuxSurfaceID = value.cmuxSurfaceID
             cmuxSocketPath = value.cmuxSocketPath
             bridgeSessionID = value.bridgeSessionID
+            desktopSessionID = value.desktopSessionID
             tmux = value.tmux
             tmuxPane = value.tmuxPane
             screenSession = value.screenSession
@@ -198,6 +200,7 @@ struct StoredClaudeSessions: Codable {
                 cmuxSurfaceID: cmuxSurfaceID,
                 cmuxSocketPath: cmuxSocketPath,
                 bridgeSessionID: bridgeSessionID,
+                desktopSessionID: desktopSessionID,
                 tmux: tmux,
                 tmuxPane: tmuxPane,
                 screenSession: screenSession,

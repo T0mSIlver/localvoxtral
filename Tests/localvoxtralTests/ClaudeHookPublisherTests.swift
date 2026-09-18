@@ -117,6 +117,23 @@ final class ClaudeHookPublisherTests: XCTestCase {
         XCTAssertNil(bridgeOnly.cmuxSurfaceID)
     }
 
+    // Claude Desktop exports its Code-tab session handle into every session it
+    // hosts (measured on 2.2553.1: CLAUDE_CODE_HOST_SESSION_ID=local_<uuid>).
+    // The desktop join arm matches it against the focused web view's address.
+    func testClaudeDesktopSessionIDIsPublished() {
+        let info = publisher(variables: [
+            "CLAUDE_CODE_HOST_SESSION_ID": "local_fb53459c-6a7b-43b1-a326-52258b970501",
+        ]).processInfo()
+        XCTAssertEqual(info.desktopSessionID, "local_fb53459c-6a7b-43b1-a326-52258b970501")
+        XCTAssertNil(info.bridgeSessionID)
+
+        XCTAssertNil(
+            publisher(variables: ["CLAUDE_CODE_HOST_SESSION_ID": ""]).processInfo().desktopSessionID,
+            "exported-but-empty is absent"
+        )
+        XCTAssertNil(publisher(variables: ["HOME": "/h"]).processInfo().desktopSessionID)
+    }
+
     func testEmptyOrAbsentCmuxAndBridgeValuesAreTreatedAsAbsent() {
         // An exported-but-empty variable is how a shell says "not in one of
         // these". Publishing `""` would let a later join arm match two empty
