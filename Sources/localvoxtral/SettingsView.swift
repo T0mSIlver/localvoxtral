@@ -1806,7 +1806,7 @@ private struct ClaudeStatuslineRow: View {
                         .disabled(model.isPerformingStatuslineAction)
                         .accessibilityIdentifier("integrations.claude.statusline.remove")
                 }
-                if status == .foreign || status == .edited {
+                if status == .edited || status == .combinedBroken || status == .foreignNotCombinable {
                     Link("How to combine status lines", destination: Self.docsURL)
                 }
 
@@ -3196,15 +3196,24 @@ private struct ClaudeStatuslineSetupSheet: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
     var dismiss: () -> Void
 
+    private static func confirmTitle(for status: ClaudeStatuslineInstallService.Status) -> String {
+        switch status {
+        case .foreign: return "Combine"
+        case .stalePath, .otherCopy, .combinedOutdated: return "Update"
+        default: return "Set Up"
+        }
+    }
+
     private static let documentationURL = URL(
         string: "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/claude-code/README.md#connection-indicator-opt-in-status-line"
     )!
 
     var body: some View {
+        let status = model.statuslineStatus
         VStack(alignment: .leading, spacing: 12) {
-            Text("Claude Code status line")
+            Text(status == .foreign ? "Combine with your status line" : "Claude Code status line")
                 .font(.headline)
-            Text(ClaudeStatuslineInstallService.consentSentence)
+            Text(ClaudeStatuslineInstallService.consentSentence(for: status))
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
             Link("Details", destination: Self.documentationURL)
@@ -3213,7 +3222,8 @@ private struct ClaudeStatuslineSetupSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .accessibilityIdentifier("integrations.statuslineSheet.cancel")
-                Button("Set Up") {
+                // The sheet's own button acts at once, so no ellipsis.
+                Button(Self.confirmTitle(for: status)) {
                     Task {
                         await model.applyStatuslineSetup()
                         dismiss()

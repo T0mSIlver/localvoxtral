@@ -324,8 +324,9 @@ That file is yours and Claude Code owns its schema; the CLI is the
 supported interface, and a third-party app editing it is how setups get
 corrupted during an unrelated upgrade. The one exception lives one row down
 in Settings: the opt-in status-line installer writes exactly the
-`statusLine` key after a one-sentence consent, and never over a
-status line you wrote yourself (see above).
+`statusLine` key after a one-sentence consent. Over a status line you wrote
+yourself it writes only through **Combine…**, which keeps your command and
+puts it back on **Remove** (see above).
 
 If you prefer to run the commands yourself, these are the same ones the button
 runs. The only difference is `--config publisher_path=…`: the app knows where
@@ -386,9 +387,14 @@ opens this section. The app writes one `statusLine` entry pointing at its bundle
 `~/.claude/settings.json` is preserved, although the JSON is rewritten with
 sorted keys and normalized formatting. **Remove** takes the entry back out
 (deleting the file when nothing else is in it). If you
-already have your own status line, the row says so and offers no Install
-button: the app never overwrites a script you wrote — combine the two with
-the recipe below instead.
+already have your own status line, the row offers **Combine…** instead: the
+app writes `~/.claude/localvoxtral-statusline.sh`, which runs your command
+and then the indicator on the same line, and points `statusLine` at it. Your
+command is kept in that script, so **Remove** puts it back exactly. If you
+delete the app, the script skips the indicator and your own line keeps
+working. The app never edits a script it did not write: if you change the
+combined script by hand, the row says so and offers no button. The recipe
+below does the same by hand.
 
 If you prefer to wire it by hand, this is the same entry the button writes.
 Claude Code has no plugin-owned status line, so it lives in your own

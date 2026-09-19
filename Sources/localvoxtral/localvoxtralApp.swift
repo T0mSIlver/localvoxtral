@@ -790,7 +790,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             bundledPluginVersion: ClaudePluginAssets.localPluginVersion(),
             statuslineService: {
                 ClaudeStatuslineInstallService(
-                    fileSystem: LiveClaudeStatuslineFileSystem()
+                    fileSystem: LiveClaudeStatuslineFileSystem(),
+                    scriptFileSystem: LiveClaudeStatuslineFileSystem(
+                        relativePath: ClaudeStatuslineCombine.scriptRelativePath
+                    )
                 )
             },
             // The same publisher the plugin shim execs, in `--statusline`
@@ -799,7 +802,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // that prints nothing.
             statuslineHookCommand: {
                 guard let publisher = ClaudePluginAssets.publisherURL() else { return nil }
-                return "\(publisher.path) --statusline"
+                // Quoted when it must be: an app under `~/My Apps` would
+                // otherwise split into two words.
+                return "\(ClaudeStatuslineCombine.shellWord(publisher.path)) --statusline"
             },
             opencodeService: {
                 OpencodePluginInstallService(

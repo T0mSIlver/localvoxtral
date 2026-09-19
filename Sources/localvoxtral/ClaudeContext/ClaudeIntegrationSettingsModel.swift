@@ -1561,6 +1561,9 @@ public final class ClaudeIntegrationSettingsModel {
 
     public var canApplyStatuslineSetup: Bool { statuslineHookCommand() != nil }
 
+    /// What the row's setup button does for the current status: install or
+    /// update our entry, combine with the user's own, or update the combined
+    /// script.
     public func applyStatuslineSetup() async {
         guard
             let service = statuslineService(),
@@ -1570,15 +1573,24 @@ public final class ClaudeIntegrationSettingsModel {
         isPerformingStatuslineAction = true
         statuslineResult = nil
         defer { isPerformingStatuslineAction = false }
-        let failure = await performAsync { try service.apply(hookCommand: hookCommand) }
+        let status = statuslineStatus
+        let failure = await performAsync {
+            switch status {
+            case .foreign: try service.combine(hookCommand: hookCommand)
+            case .combinedOutdated: try service.updateCombined(hookCommand: hookCommand)
+            default: try service.apply(hookCommand: hookCommand)
+            }
+        }
         if let failure {
             alert = DetailAlert(
-                title: "Could not install the status line",
+                title: status == .foreign
+                    ? "Could not combine the status lines"
+                    : "Could not install the status line",
                 detail: failure.describedError
             )
-            statuslineResult = "Could not install."
+            statuslineResult = status == .foreign ? "Could not combine." : "Could not install."
         } else {
-            statuslineResult = "Installed."
+            statuslineResult = status == .foreign ? "Combined." : "Installed."
         }
         refreshStatuslineStatus()
         // M3: an edited formerly-ours entry refuses with its own sentence —
