@@ -1009,7 +1009,9 @@ public final class ClaudeIntegrationSettingsModel {
         let enrolledHosts = registry?.hosts() ?? []
         // Whether the update run's shell step would skip. It skips an applied
         // block, and a shell or writer it has none for.
+        // Read only when there is a host row to decide for.
         let shellStepSettled: Bool = {
+            guard !enrolledHosts.isEmpty else { return true }
             guard let shell = loginShell(), let writer = shellRCWriter(shell) else { return true }
             return writer.isApplied() == true
         }()
