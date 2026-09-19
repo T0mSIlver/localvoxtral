@@ -293,7 +293,7 @@ esac
 UNIT_TEST_SKIPS=(--skip RealtimeAPIVLLMIntegrationTests --skip LLMPolishPromptEvalTests
   --skip PolishHelperIntegrationTests --skip SpeechHelperIntegrationTests
   --skip SpeechdStreamingBenchTests --skip AgentDictationE2EEvalTests
-  --skip HerdrIntegrationTests)
+  --skip HerdrIntegrationTests --skip MistralRealtimeSoakTests)
 
 # On-demand test server to warm before the suite runs (empty = none). The
 # build host's speechd/polishd launchd test services are launch-on-demand to

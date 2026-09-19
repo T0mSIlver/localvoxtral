@@ -58,10 +58,13 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         /// PCM bytes of `input_audio.append` actually handed to the socket
         /// since it opened — what Mistral bills, as far as this Mac can tell.
         var sentAudioBytes = 0
+        /// Silence/ping/send bookkeeping for the open socket, nil when none is.
+        var health: MistralStreamHealth?
         #if DEBUG
         var skipsSocketCreationForTesting = false
         var recordedFrames: [String] = []
         var lastConnectConfigurationForTesting: RealtimeSessionConfiguration?
+        var stallReportsForTesting: [MistralStreamHealth.StallReport] = []
         #endif
     }
 
@@ -70,6 +73,7 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
     private struct PendingFrame {
         let text: String
         let audioBytes: Int
+        var levelDBFS: Double? = nil
     }
 
     private let state = Mutex(State())
@@ -81,12 +85,20 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
 
     let supportsPeriodicCommit = false
 
+    /// Monotonic seconds, injectable so the stall bookkeeping is testable
+    /// without a wall clock.
+    private let now: @Sendable () -> TimeInterval
+
     var isConnected: Bool {
         state.withLock { $0.base.socketState == .connected }
     }
 
-    init(targetStreamingDelayMilliseconds: Int? = nil) {
+    init(
+        targetStreamingDelayMilliseconds: Int? = nil,
+        now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    ) {
         self.targetStreamingDelayMilliseconds = targetStreamingDelayMilliseconds
+        self.now = now
         super.init()
     }
 
@@ -222,6 +234,7 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
             let usage = takeUsageLocked(&s)
             closeSocketLocked(&s, cancelTask: true)
             s.usageModel = Self.resolvedModel(configuration.model)
+            s.health = MistralStreamHealth(openedAt: now())
 
             let (session, task) = createWebSocketSession(request: request, delegate: self)
 
@@ -237,15 +250,24 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
     }
 
     func disconnect() {
-        let (wasConnected, usage): (Bool, MistralUsageEntry?) = state.withLock { s in
-            let was = s.base.socketState != .disconnected
-            guard was else { return (false, nil) }
-            s.base.isUserInitiatedDisconnect = true
-            let usage = takeUsageLocked(&s)
-            closeSocketLocked(&s, cancelTask: true)
-            return (was, usage)
-        }
+        let closedAt = now()
+        let (wasConnected, usage, owedDone): (Bool, MistralUsageEntry?, String?) =
+            state.withLock { s in
+                let was = s.base.socketState != .disconnected
+                guard was else { return (false, nil, nil) }
+                let owedDone =
+                    s.finalCommitCompletionGate == .awaitingFinalCommitTranscriptionDone
+                    ? s.health?.closedAwaitingDone(at: closedAt) : nil
+                s.base.isUserInitiatedDisconnect = true
+                let usage = takeUsageLocked(&s)
+                closeSocketLocked(&s, cancelTask: true)
+                return (was, usage, owedDone)
+            }
         recordUsage(usage)
+        if let owedDone {
+            logger.notice(
+                "mistral realtime closing before transcription.done: \(owedDone, privacy: .public)")
+        }
 
         if wasConnected {
             debugLog("disconnect")
@@ -261,7 +283,8 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
                 "type": "input_audio.append",
                 "audio": pcm16Data.base64EncodedString(),
             ],
-            audioBytes: pcm16Data.count
+            audioBytes: pcm16Data.count,
+            levelDBFS: MistralStreamHealth.rmsDBFS(pcm16: pcm16Data)
         )
     }
 
@@ -269,16 +292,18 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         // Mistral streams deltas continuously; there is no partial commit.
         guard final else { return }
 
-        let shouldEndStream: Bool = state.withLock { s in
-            guard s.base.socketState != .disconnected else { return false }
-            guard !s.hasRequestedFinalCommit else { return false }
+        let committedAt = now()
+        let summary: String? = state.withLock { s in
+            guard s.base.socketState != .disconnected else { return nil }
+            guard !s.hasRequestedFinalCommit else { return nil }
             s.hasRequestedFinalCommit = true
             s.finalCommitCompletionGate = .awaitingFinalCommitTranscriptionDone
-            return true
+            s.health?.endSent(at: committedAt)
+            return s.health?.finalCommitSummary(at: committedAt) ?? ""
         }
-        guard shouldEndStream else { return }
+        guard let summary else { return }
 
-        logger.notice("mistral realtime final commit: flush + end")
+        logger.notice("mistral realtime final commit: flush + end; \(summary, privacy: .public)")
         send(event: ["type": "input_audio.flush"])
         send(event: ["type": "input_audio.end"])
     }
@@ -290,10 +315,17 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         if !type.isEmpty {
             debugLog("recv event type=\(type)")
         }
+        let receivedAt = now()
+        if let silence = state.withLock({ $0.health?.serverEvent(at: receivedAt) ?? nil }) {
+            logger.notice(
+                "mistral realtime server resumed after \(String(format: "%.1f", silence), privacy: .public)s of silence (\(type, privacy: .public))"
+            )
+        }
 
         switch type {
         case "session.created":
-            handleSessionCreated()
+            let session = json["session"] as? [String: Any]
+            handleSessionCreated(requestID: session?["request_id"] as? String)
 
         case "session.updated":
             emit(.status("Session updated."))
@@ -323,21 +355,24 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         }
     }
 
-    private func handleSessionCreated() {
+    private func handleSessionCreated(requestID: String?) {
         let queuedMessages: [PendingFrame]? = state.withLock { s in
             guard s.base.socketState == .connected else { return nil }
             guard !s.hasReceivedSessionCreated else { return nil }
             s.hasReceivedSessionCreated = true
+            s.health?.sessionCreated(requestID: requestID)
             let queued = s.pendingMessages
             s.pendingMessages.removeAll(keepingCapacity: true)
             return queued
         }
 
         if let queuedMessages {
-            logger.notice("mistral realtime session ready")
+            logger.notice(
+                "mistral realtime session ready request_id=\(requestID ?? "<none>", privacy: .public)")
             send(event: sessionUpdatePayload())
             for message in queuedMessages {
-                sendText(message.text, audioBytes: message.audioBytes)
+                sendText(
+                    message.text, audioBytes: message.audioBytes, levelDBFS: message.levelDBFS)
             }
         }
 
@@ -433,12 +468,14 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
     // MARK: - Send Helpers
 
     private enum SendAction: Sendable {
-        case send(task: URLSessionWebSocketTask, text: String)
+        case send(
+            task: URLSessionWebSocketTask, text: String,
+            stall: MistralStreamHealth.StallReport?)
         case queued
         case dropped
     }
 
-    private func send(event: [String: Any], audioBytes: Int = 0) {
+    private func send(event: [String: Any], audioBytes: Int = 0, levelDBFS: Double? = nil) {
         guard JSONSerialization.isValidJSONObject(event) else {
             emit(.error("Invalid JSON payload generated."))
             return
@@ -473,18 +510,19 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
             if let type = event["type"] as? String {
                 debugLog("queue event type=\(type)")
             }
-            sendText(text, audioBytes: audioBytes)
+            sendText(text, audioBytes: audioBytes, levelDBFS: levelDBFS)
         } catch {
             emit(.error("Failed to serialize WebSocket payload: \(error.localizedDescription)"))
         }
     }
 
-    private func sendText(_ text: String, audioBytes: Int) {
+    private func sendText(_ text: String, audioBytes: Int, levelDBFS: Double? = nil) {
         let action: SendAction = state.withLock { s in
             switch s.base.socketState {
             case .connected:
                 guard s.hasReceivedSessionCreated else {
-                    s.pendingMessages.append(PendingFrame(text: text, audioBytes: audioBytes))
+                    s.pendingMessages.append(
+                        PendingFrame(text: text, audioBytes: audioBytes, levelDBFS: levelDBFS))
                     return .queued
                 }
                 guard let webSocketTask = s.base.webSocketTask else { return .dropped }
@@ -492,21 +530,40 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
                 // send that fails as the socket dies over-counts by the frames
                 // in flight — at most a fraction of a second.
                 s.sentAudioBytes += audioBytes
-                return .send(task: webSocketTask, text: text)
+                let stall =
+                    audioBytes > 0 ? s.health?.audioSent(
+                        bytes: audioBytes, levelDBFS: levelDBFS, at: now()) : nil
+                #if DEBUG
+                if let stall { s.stallReportsForTesting.append(stall) }
+                #endif
+                return .send(task: webSocketTask, text: text, stall: stall)
             case .connecting:
-                s.pendingMessages.append(PendingFrame(text: text, audioBytes: audioBytes))
+                s.pendingMessages.append(
+                        PendingFrame(text: text, audioBytes: audioBytes, levelDBFS: levelDBFS))
                 return .queued
             case .disconnected:
                 return .dropped
             }
         }
 
-        guard case .send(let task, let payloadText) = action else {
+        guard case .send(let task, let payloadText, let stall) = action else {
             return
+        }
+        if let stall {
+            logger.notice("mistral realtime server silent: \(stall.logDescription, privacy: .public)")
         }
 
         task.send(.string(payloadText)) { [weak self] error in
-            guard let self, let error else { return }
+            guard let self else { return }
+            guard let error else {
+                if audioBytes > 0 {
+                    self.state.withLock { s in
+                        guard s.base.webSocketTask === task else { return }
+                        s.health?.audioSendCompleted()
+                    }
+                }
+                return
+            }
             self.handleTerminalSocketError(
                 for: task,
                 errorMessage: "WebSocket send failed: \(self.describeSocketError(error))"
@@ -527,13 +584,22 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         timer.schedule(deadline: .now() + 30, repeating: 30)
         timer.setEventHandler { [weak self] in
             guard let self else { return }
+            let sentAt = self.now()
             let task: URLSessionWebSocketTask? = self.state.withLock { s in
                 guard s.base.socketState == .connected else { return nil }
+                s.health?.pingSent(at: sentAt)
                 return s.base.webSocketTask
             }
             guard let task else { return }
             task.sendPing { [weak self] error in
-                guard let self, let error else { return }
+                guard let self else { return }
+                guard let error else {
+                    self.state.withLock { s in
+                        guard s.base.webSocketTask === task else { return }
+                        s.health?.pongReceived()
+                    }
+                    return
+                }
                 self.handleTerminalSocketError(
                     for: task,
                     errorMessage: "Connection lost: \(self.describeSocketError(error))"
@@ -643,6 +709,7 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         s.hasRequestedFinalCommit = false
         s.finalCommitCompletionGate = .idle
         s.pendingMessages.removeAll(keepingCapacity: false)
+        s.health = nil
     }
 }
 
@@ -677,6 +744,7 @@ extension MistralRealtimeWebSocketClient {
             s.base.socketState = .connected
             s.base.isUserInitiatedDisconnect = isUserInitiatedDisconnect
             s.hasReceivedSessionCreated = hasReceivedSessionCreated
+            s.health = MistralStreamHealth(openedAt: now())
             s.pendingMessages = [PendingFrame(text: "pending-message", audioBytes: 0)]
             startPingTimerLocked(&s)
         }
@@ -707,6 +775,11 @@ extension MistralRealtimeWebSocketClient {
     /// nil when this transport was never dialled.
     func debugLastConnectConfigurationForTesting() -> RealtimeSessionConfiguration? {
         state.withLock { $0.lastConnectConfigurationForTesting }
+    }
+
+    /// Every server-silence report this client produced, oldest first.
+    func debugStallReportsForTesting() -> [MistralStreamHealth.StallReport] {
+        state.withLock { $0.stallReportsForTesting }
     }
 
     func debugRecordedFrames() -> [String] {
