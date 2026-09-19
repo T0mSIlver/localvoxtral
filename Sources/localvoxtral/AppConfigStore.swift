@@ -13,12 +13,22 @@ enum PolishPromptProfile: String, Sendable {
 protocol AppConfigServing {
     func configDirectoryURL() -> URL
     func loadReplacementDictionary() -> ReplacementDictionary
+    /// A REQUIREMENT, not only an extension method: called through
+    /// `any AppConfigServing`, an extension-only method would never reach the
+    /// conforming type's version.
+    func loadReplacementDictionaryIfReadable() -> ReplacementDictionary?
     func loadLLMPromptTemplates() -> LLMPromptTemplates
     func loadLLMPromptTemplates(profile: PolishPromptProfile) -> LLMPromptTemplates
     func loadTerminalAppBundleIDs() -> [String]
 }
 
 extension AppConfigServing {
+    /// The user's dictionary, or nil when the file could not be read or parsed
+    /// (`loadReplacementDictionary` hides that behind the bundled default).
+    func loadReplacementDictionaryIfReadable() -> ReplacementDictionary? {
+        loadReplacementDictionary()
+    }
+
     /// Default conformance so existing callers/mocks that only implement the
     /// zero-arg loader keep the standard behavior for every profile. The real
     /// `AppConfigStore` overrides this to load the agent files for `.agent`.
@@ -241,15 +251,22 @@ struct LLMPromptTemplates: Equatable, Sendable {
     /// to the system prompt. It rides the SYSTEM message because it is stable
     /// across dictations, so it stays inside the prefix polishd checkpoints;
     /// the warmup applies the same call so both prefixes match.
-    func withSpeakerProfile(_ profile: String) -> LLMPromptTemplates {
+    func withSpeakerProfile(_ profile: String, terms: [String] = []) -> LLMPromptTemplates {
         let trimmed = String(
             PolishContextClipboardReader.sanitizeControlCharacters(profile)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .prefix(Self.speakerProfileMaxCharacters)
         )
-        guard !trimmed.isEmpty else { return self }
+        let sanitizedTerms = SpeakerTerms.sanitized(terms)
+        var lines: [String] = []
+        if !trimmed.isEmpty { lines.append(trimmed) }
+        if !sanitizedTerms.isEmpty {
+            lines.append("Names and terms they use: " + sanitizedTerms.joined(separator: ", "))
+        }
+        guard !lines.isEmpty else { return self }
         return LLMPromptTemplates(
-            systemContent: "\(systemContent)\n\n\(Self.speakerProfileHeader)\n\(trimmed)\n",
+            systemContent: "\(systemContent)\n\n\(Self.speakerProfileHeader)\n"
+                + lines.joined(separator: "\n") + "\n",
             userContent: userContent
         )
     }
@@ -484,6 +501,13 @@ struct AppConfigStore: AppConfigServing {
             )
             return defaultDictionary
         }
+    }
+
+    func loadReplacementDictionaryIfReadable() -> ReplacementDictionary? {
+        let file = ConfigFile.replacementDictionary
+        ensureConfigFilesExist(at: resolvedConfigDirectoryURL())
+        guard let data = try? Data(contentsOf: userConfigURL(for: file)) else { return nil }
+        return try? Self.parseReplacementDictionary(data: data, fileName: file.fileName)
     }
 
     func loadLLMPromptTemplates() -> LLMPromptTemplates {

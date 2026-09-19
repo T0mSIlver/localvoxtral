@@ -251,6 +251,7 @@ final class SettingsStore {
         static let agentPolishProfileEnabled = "settings.agent_polish_profile_enabled"
         static let polishClipboardContextEnabled = "settings.polish_clipboard_context_enabled"
         static let polishSpeakerProfile = "settings.polish_speaker_profile"
+        static let polishSpeakerTerms = "settings.polish_speaker_terms"
         static let clipboardPayloadMacroEnabled = "settings.clipboard_payload_macro_enabled"
         static let terminalScreenContextEnabled = "settings.terminal_screen_context_enabled"
         static let repoVocabularyEnabled = "settings.repo_vocabulary_enabled"
@@ -500,6 +501,19 @@ final class SettingsStore {
         didSet {
             defaults.set(polishSpeakerProfile, forKey: Keys.polishSpeakerProfile)
         }
+    }
+
+    /// The user's names and terms, correct spelling only (`SpeakerTerms`).
+    /// An ABSENT key means "never set", which is what lets the one-time import
+    /// from the replacement dictionary tell a new install from an emptied list.
+    var polishSpeakerTerms: [String] {
+        didSet {
+            defaults.set(polishSpeakerTerms, forKey: Keys.polishSpeakerTerms)
+        }
+    }
+
+    var hasStoredPolishSpeakerTerms: Bool {
+        defaults.object(forKey: Keys.polishSpeakerTerms) != nil
     }
 
     /// When true, a capped, sanitized excerpt of the clipboard is fed to the
@@ -1043,6 +1057,8 @@ final class SettingsStore {
         agentPolishProfileEnabled = Self.loadBool(
             defaults: defaults, key: Keys.agentPolishProfileEnabled, fallback: true)
         polishSpeakerProfile = defaults.string(forKey: Keys.polishSpeakerProfile) ?? ""
+        polishSpeakerTerms = SpeakerTerms.sanitized(
+            defaults.stringArray(forKey: Keys.polishSpeakerTerms) ?? [])
         polishClipboardContextEnabled = Self.loadBool(
             defaults: defaults, key: Keys.polishClipboardContextEnabled, fallback: false)
         clipboardPayloadMacroEnabled = Self.loadBool(

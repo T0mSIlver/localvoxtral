@@ -572,7 +572,9 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(viewModel.statusText, "Raw transcript copied.")
     }
 
-    func testFinishStoppedSessionSendsReplacementDictionaryInLLMRequest() async {
+    /// The dictionary's rule is applied locally; the polisher is never shown
+    /// the dictionary (owner ruling 2026-09-18 — the model gets the terms).
+    func testFinishStoppedSessionAppliesTheDictionaryButNeverSendsItToThePolisher() async {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.replacementDictionaryEnabled = true
         settings.llmPolishingEnabled = true
@@ -616,14 +618,13 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(request?.systemPrompt, "system instructions")
         XCTAssertEqual(
             request?.userPrompts,
-            [
-                "Replacement dictionary:\n- PostgreSQL: postgres\nWorking text:\nPostgreSQL rocks"
-            ]
+            ["Working text:\nPostgreSQL rocks"]
         )
         XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
     }
 
-    func testFinishStoppedSessionLLMPolishingSendsDictionaryWithoutLocalExactReplacement() async {
+    /// Toggle off: the file is neither applied nor read for the prompt.
+    func testFinishStoppedSessionWithTheDictionaryOffNeitherAppliesNorSendsIt() async {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.replacementDictionaryEnabled = false
         settings.llmPolishingEnabled = true
@@ -664,14 +665,9 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         }
 
         let request = await polishingService.lastRequest()
-        XCTAssertEqual(configStore.loadReplacementDictionaryCallCount, 1)
+        XCTAssertEqual(configStore.loadReplacementDictionaryCallCount, 0)
         XCTAssertEqual(request?.inputText, "postgres rocks")
-        XCTAssertEqual(
-            request?.userPrompts,
-            [
-                "Replacement dictionary:\n- PostgreSQL: postgres\nWorking text:\npostgres rocks"
-            ]
-        )
+        XCTAssertEqual(request?.userPrompts, ["Working text:\npostgres rocks"])
     }
 
     func testFinishStoppedSessionLLMFailureKeepsLocalReplacement() async {

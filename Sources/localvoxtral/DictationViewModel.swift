@@ -827,6 +827,7 @@ final class DictationViewModel {
             refreshMicrophoneInputs()
             registerLifecycleObservers()
             requestStartupPermissionsIfNeeded()
+            importSpeakerTermsFromReplacementDictionaryIfNeeded()
             // Subscribe BEFORE the launch warmup below so the very first
             // polishd ready edge is observed and prompt-prefix-warmed.
             let promptWarmup = PolishPromptWarmupCoordinator(
@@ -962,6 +963,30 @@ final class DictationViewModel {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
         StartupPermissionSuppression.isActive(environment: environment)
+    }
+
+    /// Once per install: the spellings the user already maintains in
+    /// `replacement_dictionary.toml` become their first terms. Writing the
+    /// (possibly empty) result is what marks the import done, so an unreadable
+    /// file leaves it for the next launch. Never at init under XCTest: the
+    /// store there is still the real one, and a test must not read or seed
+    /// the machine's config directory.
+    private func importSpeakerTermsFromReplacementDictionaryIfNeeded() {
+        #if DEBUG
+        if TerminalTargetDetector.isRunningUnderXCTest { return }
+        #endif
+        importSpeakerTermsFromReplacementDictionary()
+    }
+
+    func importSpeakerTermsFromReplacementDictionary() {
+        guard !settings.hasStoredPolishSpeakerTerms else { return }
+        guard let dictionary = appConfigStore.loadReplacementDictionaryIfReadable() else {
+            Log.config.error("Speaker terms import postponed: replacement dictionary unreadable")
+            return
+        }
+        let imported = SpeakerTerms.migrated(from: dictionary)
+        settings.polishSpeakerTerms = imported
+        Log.config.info("Speaker terms imported from replacement dictionary: \(imported.count, privacy: .public)")
     }
 
     private func requestStartupPermissionsIfNeeded() {

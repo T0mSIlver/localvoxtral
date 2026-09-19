@@ -1229,13 +1229,57 @@ private struct TextProcessingSettingsPane: View {
 
     var body: some View {
         SettingsPage(tab: .textProcessing) {
-            SettingsGroup(title: "Replacements") {
-                SettingsFieldRow(title: "Exact match") {
-                    Toggle("", isOn: $settings.replacementDictionaryEnabled)
-                        .labelsHidden()
-                        .help(
-                            "In Live Auto-Paste, corrections briefly retype the last word in place. In apps that do not report the cursor position, stay in place mid-dictation. A correction after a move can overwrite characters at the new position."
+            SettingsGroup(title: "About you") {
+                SettingsFieldRow(
+                    title: "In your words",
+                    help: "Sent to the polishing model with every dictation.",
+                    layout: .stacked
+                ) {
+                    TextEditor(text: $settings.polishSpeakerProfile)
+                        .font(.body)
+                        .frame(height: 96)
+                        .scrollContentBackground(.hidden)
+                        .scrollIndicators(.never)
+                        .overlay(alignment: .topLeading) {
+                            if settings.polishSpeakerProfile.isEmpty {
+                                // TextEditor has no prompt of its own. The
+                                // 5pt inset is NSTextView's line-fragment
+                                // padding, so the example sits where typed
+                                // text will.
+                                Text(Self.speakerProfileExample)
+                                    .font(.body)
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.leading, 5)
+                                    .allowsHitTesting(false)
+                                    .accessibilityHidden(true)
+                            }
+                        }
+                        .padding(6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color(nsColor: .textBackgroundColor))
                         )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .strokeBorder(Color(nsColor: .separatorColor))
+                        )
+                        .accessibilityIdentifier("settings.aboutYou.profile")
+                } footer: {
+                    if settings.polishSpeakerProfile.count
+                        > LLMPromptTemplates.speakerProfileMaxCharacters
+                    {
+                        Text("Only the first \(LLMPromptTemplates.speakerProfileMaxCharacters) characters are sent.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                SettingsFieldRow(
+                    title: "Names and terms",
+                    help: "Spelled the way they should appear. Casing is fixed even without polishing.",
+                    layout: .stacked
+                ) {
+                    SpeakerTermsField(terms: $settings.polishSpeakerTerms)
                 }
             }
 
@@ -1271,56 +1315,23 @@ private struct TextProcessingSettingsPane: View {
                         Toggle("", isOn: $settings.clipboardPayloadMacroEnabled)
                             .labelsHidden()
                     }
-
-                    SettingsFieldRow(
-                        title: "About you",
-                        help: "Sent to the polishing model with every dictation.",
-                        layout: .stacked
-                    ) {
-                        TextEditor(text: $settings.polishSpeakerProfile)
-                            .font(.body)
-                            .frame(height: 96)
-                            .scrollContentBackground(.hidden)
-                            .scrollIndicators(.never)
-                            .overlay(alignment: .topLeading) {
-                                if settings.polishSpeakerProfile.isEmpty {
-                                    // TextEditor has no prompt of its own. The
-                                    // 5pt inset is NSTextView's line-fragment
-                                    // padding, so the example sits where typed
-                                    // text will.
-                                    Text(Self.speakerProfileExample)
-                                        .font(.body)
-                                        .foregroundStyle(.tertiary)
-                                        .padding(.leading, 5)
-                                        .allowsHitTesting(false)
-                                        .accessibilityHidden(true)
-                                }
-                            }
-                            .padding(6)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color(nsColor: .textBackgroundColor))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .strokeBorder(Color(nsColor: .separatorColor))
-                            )
-                            .accessibilityIdentifier("settings.polishing.speakerProfile")
-                    } footer: {
-                        if settings.polishSpeakerProfile.count
-                            > LLMPromptTemplates.speakerProfileMaxCharacters
-                        {
-                            Text("Only the first \(LLMPromptTemplates.speakerProfileMaxCharacters) characters are sent.")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
                 }
                 .disabled(!isLLMPolishingReachable)
                 .opacity(isLLMPolishingReachable ? 1.0 : 0.5)
             }
 
-            SettingsGroup(title: "Configuration") {
+            SettingsGroup(title: "Advanced") {
+                SettingsFieldRow(
+                    title: "Replacement dictionary",
+                    help: "Legacy. Fixed rewrites from replacement_dictionary.toml, for Live Auto-Paste without polishing."
+                ) {
+                    Toggle("", isOn: $settings.replacementDictionaryEnabled)
+                        .labelsHidden()
+                        .help(
+                            "In Live Auto-Paste, corrections briefly retype the last word in place. In apps that do not report the cursor position, stay in place mid-dictation. A correction after a move can overwrite characters at the new position."
+                        )
+                }
+
                 SettingsFieldRow(title: "Config folder") {
                     Button("Open") {
                         viewModel.openConfigFolder()
@@ -2488,6 +2499,95 @@ private struct SettingsPage<Content: View>: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(tab.paneAccessibilityIdentifier)
+    }
+}
+
+/// The terms list: chips you remove with their ×, one field that adds on
+/// Return (a comma-separated paste adds several).
+private struct SpeakerTermsField: View {
+    @Binding var terms: [String]
+    @State private var draft = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !terms.isEmpty {
+                SpeakerTermsFlow(spacing: 6) {
+                    ForEach(terms, id: \.self) { term in
+                        HStack(spacing: 4) {
+                            Text(term)
+                                .lineLimit(1)
+                            Button {
+                                terms.removeAll { $0 == term }
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.caption2.weight(.bold))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("Remove \(term)")
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color(nsColor: .quaternaryLabelColor)))
+                    }
+                }
+            }
+
+            TextField("", text: $draft, prompt: Text("Qwen, Claude Code, vLLM…"))
+                .textFieldStyle(.roundedBorder)
+                .onSubmit {
+                    // Past a cap, or a duplicate: the text stays so the
+                    // Return visibly did nothing instead of eating the term.
+                    let updated = SpeakerTerms.adding(draft, to: terms)
+                    guard updated != terms else { return }
+                    terms = updated
+                    draft = ""
+                }
+                .accessibilityIdentifier("settings.aboutYou.termsField")
+        }
+    }
+}
+
+/// Left-to-right wrapping rows for the term chips. Only used where the parent
+/// proposes a finite width (a stacked settings row); with no width proposed
+/// everything sits on one row.
+private struct SpeakerTermsFlow: Layout {
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let frames = frames(for: subviews, in: proposal.width ?? .infinity)
+        return CGSize(
+            width: proposal.width ?? (frames.map(\.maxX).max() ?? 0),
+            height: frames.map(\.maxY).max() ?? 0
+        )
+    }
+
+    func placeSubviews(
+        in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+    ) {
+        for (subview, frame) in zip(subviews, frames(for: subviews, in: bounds.width)) {
+            subview.place(
+                at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                proposal: ProposedViewSize(frame.size)
+            )
+        }
+    }
+
+    private func frames(for subviews: Subviews, in width: CGFloat) -> [CGRect] {
+        var frames: [CGRect] = []
+        var origin = CGPoint.zero
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if origin.x > 0, origin.x + size.width > width {
+                origin = CGPoint(x: 0, y: origin.y + rowHeight + spacing)
+                rowHeight = 0
+            }
+            frames.append(CGRect(origin: origin, size: size))
+            origin.x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        return frames
     }
 }
 

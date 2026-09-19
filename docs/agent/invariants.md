@@ -65,6 +65,19 @@ there is not.
   H100); with the profile the same dictations came back as Qwen. Keep the rule
   attached to evidence the user supplied.
 
+- **The terms list stores correct spellings only, and a plain capitalized word
+  never becomes a rule.** `SpeakerTerms.replacementEntries` derives a
+  case/spacing rule from a term only when it has a space, a non-letter or
+  mixed case ("Claude Code", "useAuth.ts", "vLLM"). "Work", "Vibe" or the
+  acronym "IT" would otherwise rewrite the ordinary word in every sentence, in Live Auto-Paste
+  too, where no model can tell the product from the noun; those terms reach
+  the About-you block of the prompt only. File-dictionary rules sort first, so
+  a hand-written rule wins a tie. The polisher never sees
+  `replacement_dictionary.toml` (owner ruling 2026-09-18) — only the terms;
+  the `{{replacement_dictionary}}` slot survives because the vocabulary
+  sections ride in it. The About-you text and terms are user-typed
+  and go to ANY polishing endpoint, like the replacement dictionary.
+
 - **Claude Code context reaches the prompt only through a positive join.**
   The joined session's repository (status, uncommitted diffs, contents
   of files the agent just touched) and its prior user prompt are attached as

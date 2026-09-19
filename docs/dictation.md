@@ -60,11 +60,17 @@ Open **Settings** from the menu bar popover:
 - **Dictation** — the trigger (single modifier key with tap/hold gestures, or
   per-mode keyboard shortcuts), the menu-bar mode, copy on stop, and the
   overlay's font size and how many lines it shows before scrolling
-- **Text Processing** — exact-match replacements, plus the LLM Polishing
-  switch, the agent prompt profile, spoken clipboard paste, and **About
-  you**: a few lines on your work, tools and the names you say often
-  ("Qwen", "Claude Code", your company). It is sent with every polish, in any
-  app, so the model can fix names the recognizer misheard
+- **Text Processing** — **About you**: a few lines on your work in your own
+  words, plus a list of the names and terms you say often, spelled the way
+  they should appear ("Qwen", "Claude Code", "vLLM"). You never list how they
+  get misheard; the polisher works that out, and the casing of a multi-word or
+  mixed-case term is fixed even in Live Auto-Paste with no polishing. Then the
+  LLM Polishing switch, the agent prompt profile and spoken clipboard paste.
+  **Advanced** holds the legacy replacement dictionary (fixed
+  `replace_with`/`matches` rewrites, useful for Live Auto-Paste without
+  polishing; the polisher no longer sees it, and its spellings were imported
+  into your terms once) and the prompt
+  files
 - **Context** — what the polisher may see (repo vocabulary, clipboard, the
   agent's screen and session); each toggle's help is one line naming what
   leaves this Mac, and the full terms are in

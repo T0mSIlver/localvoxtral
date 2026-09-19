@@ -269,9 +269,7 @@ extension DictationViewModel {
         clearLatchedSessionMetadata()
         sessionOutputMode = requestedOutputMode
         sessionStartedAt = Date()
-        sessionReplacementDictionary = settings.replacementDictionaryEnabled
-            ? appConfigStore.loadReplacementDictionary()
-            : nil
+        sessionReplacementDictionary = loadEffectiveReplacementDictionary()
         setRealtimeIndicatorIdle()
 
         let provider = settings.realtimeProvider
@@ -632,24 +630,17 @@ extension DictationViewModel {
 
         if shouldCommitOverlay, !wasCancelled {
             let polishingConfig = settings.llmPolishingConfiguration
-            let shouldLoadReplacementDictionary =
-                settings.replacementDictionaryEnabled || polishingConfig != nil
-            let replacementDictionary: ReplacementDictionary
-            if settings.replacementDictionaryEnabled,
-               let sessionReplacementDictionary
-            {
-                replacementDictionary = sessionReplacementDictionary
-            } else {
-                replacementDictionary = shouldLoadReplacementDictionary
-                    ? appConfigStore.loadReplacementDictionary()
-                    : ReplacementDictionary(entries: [])
-            }
-            let replacementDictionaryPrompt = replacementDictionary.renderedPromptSection()
+            // The polisher never sees replacement_dictionary.toml (owner
+            // ruling 2026-09-18): its `matches` are predictions of recognizer
+            // errors, and the model is better off with the user's terms in the
+            // About-you block. The file's rules still apply locally below.
+            // The `{{replacement_dictionary}}` slot stays: the vocabulary
+            // sections ride in it.
+            let replacementDictionaryPrompt = ""
             let originalText = currentDictationEventText
             let replacementAppliedText =
-                settings.replacementDictionaryEnabled
-                ? replacementDictionary.apply(to: originalText)
-                : originalText
+                (sessionReplacementDictionary ?? loadEffectiveReplacementDictionary())?
+                    .apply(to: originalText) ?? originalText
             // Spoken clipboard-paste macro (Overlay Buffer only): after the
             // replacement dictionary and BEFORE the polish request is built,
             // swap each spoken marker for the env-var-shaped placeholder and
@@ -701,7 +692,7 @@ extension DictationViewModel {
                 )
                 let capturedPolishProfile = polishProfile.rawValue
                 let promptTemplates = appConfigStore.loadLLMPromptTemplates(profile: polishProfile)
-                    .withSpeakerProfile(settings.polishSpeakerProfile)
+                    .withSpeakerProfile(settings.polishSpeakerProfile, terms: settings.polishSpeakerTerms)
 
                 statusText = StatusStrings.polishing
                 debugLog("LLM polishing started for \(workingText.count) chars")
@@ -1667,13 +1658,16 @@ extension DictationViewModel {
         // Terminal-like targets always begin a live session even with the
         // dictionary disabled: the hold-back stream's newline/tab sanitization
         // must protect the terminal regardless of replacements.
-        guard settings.replacementDictionaryEnabled || sessionTargetIsTerminalLike else {
+        // The user's terms carry casing rules even with the dictionary toggle
+        // off. Nothing to apply and not a terminal keeps the no-session path:
+        // no hold-back, no delay.
+        let dictionary = replacementDictionaryForCurrentSession()
+        guard dictionary != nil || sessionTargetIsTerminalLike else {
             textInsertion.endLiveReplacementSession()
             return
         }
 
         overlayBufferCoordinator.captureLiveCommitTargetAppPID()
-        let dictionary = replacementDictionaryForCurrentSession()
         textInsertion.beginLiveReplacementSession(
             dictionary: dictionary,
             preferredAppPID: overlayBufferCoordinator.commitTargetAppPID,
@@ -2122,13 +2116,23 @@ extension DictationViewModel {
     }
 
     func replacementDictionaryForCurrentSession() -> ReplacementDictionary? {
-        guard settings.replacementDictionaryEnabled else { return nil }
         if let sessionReplacementDictionary {
             return sessionReplacementDictionary
         }
-        let dictionary = appConfigStore.loadReplacementDictionary()
+        let dictionary = loadEffectiveReplacementDictionary()
         sessionReplacementDictionary = dictionary
         return dictionary
+    }
+
+    /// Everything applied to the transcript without a model: the file's rules
+    /// when exact replacement is on, then the casing rules of the user's
+    /// terms. Nil when there is nothing to apply.
+    func loadEffectiveReplacementDictionary() -> ReplacementDictionary? {
+        let fileEntries = settings.replacementDictionaryEnabled
+            ? appConfigStore.loadReplacementDictionary()
+            : ReplacementDictionary(entries: [])
+        let effective = fileEntries.adding(speakerTerms: settings.polishSpeakerTerms)
+        return effective.entries.isEmpty ? nil : effective
     }
 
     // MARK: - Connect Timeout
