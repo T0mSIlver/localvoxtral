@@ -3213,6 +3213,35 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         return (model, hostID, sshFS, recorder)
     }
 
+    /// The run's shell step skipped any file that had a block, so a block an
+    /// older app wrote was never replaced. It skips only a current block.
+    @MainActor
+    func testSetupRunRewritesAnOlderShellBlockAndSkipsACurrentOne() async throws {
+        let older = ClaudeShellRCSetup.snippet(for: .zsh)
+            .replacingOccurrences(of: "# Publishes", with: "# Exports")
+        let olderFS = StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true, data: Data("\(older)\n".utf8), permissions: 0o644
+        ))
+        let (olderRun, _, _, _) = try await enrollAndRunSetup(rcFileSystem: olderFS)
+        XCTAssertEqual(
+            try XCTUnwrap(olderRun.setupRun).items[1].state,
+            .done("The shell startup block is applied.")
+        )
+        XCTAssertEqual(olderFS.writes, 1, "the older block is replaced")
+
+        let currentFS = StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true,
+            data: Data("\(ClaudeShellRCSetup.snippet(for: .zsh))\n".utf8),
+            permissions: 0o644
+        ))
+        let (currentRun, _, _, _) = try await enrollAndRunSetup(rcFileSystem: currentFS)
+        XCTAssertEqual(
+            try XCTUnwrap(currentRun.setupRun).items[1].state,
+            .done("The shell startup block is already applied.")
+        )
+        XCTAssertEqual(currentFS.writes, 0)
+    }
+
     @MainActor
     func testSetupRunCompletesAllSixStepsInOrder() async throws {
         let rcFS = StubRCFileSystem(state: ClaudeShellRCState(
