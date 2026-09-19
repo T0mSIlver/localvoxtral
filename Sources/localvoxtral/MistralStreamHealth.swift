@@ -18,6 +18,9 @@ struct MistralStreamHealth: Equatable {
     struct StallReport: Equatable {
         let silentFor: TimeInterval
         let audioSecondsSinceLastEvent: Double
+        /// Loudest 100 ms of that audio (RMS, dBFS): speech reads around
+        /// -40 to -20, a quiet room below -50.
+        let loudestDBFSSinceLastEvent: Double?
         let sendsAwaitingCompletion: Int
         /// Seconds since the last ping went out that is still unanswered.
         let unansweredPingAge: TimeInterval?
@@ -27,6 +30,7 @@ struct MistralStreamHealth: Equatable {
     private(set) var requestID: String?
     private var lastServerEventAt: TimeInterval
     private var audioBytesSinceLastEvent = 0
+    private var loudestDBFSSinceLastEvent: Double?
     private var sendsAwaitingCompletion = 0
     private var pingSentAt: TimeInterval?
     private var stallReportedAt: TimeInterval?
@@ -46,6 +50,7 @@ struct MistralStreamHealth: Equatable {
         defer {
             lastServerEventAt = now
             audioBytesSinceLastEvent = 0
+            loudestDBFSSinceLastEvent = nil
             stallReportedAt = nil
         }
         return stallReportedAt.map { _ in now - lastServerEventAt }
@@ -53,15 +58,21 @@ struct MistralStreamHealth: Equatable {
 
     /// Called as an audio frame is handed to the socket. Returns a report the
     /// first time the server has been silent past the threshold.
-    mutating func audioSent(bytes: Int, at now: TimeInterval) -> StallReport? {
+    mutating func audioSent(bytes: Int, levelDBFS: Double? = nil, at now: TimeInterval)
+        -> StallReport?
+    {
         sendsAwaitingCompletion += 1
         audioBytesSinceLastEvent += bytes
+        if let levelDBFS {
+            loudestDBFSSinceLastEvent = max(loudestDBFSSinceLastEvent ?? levelDBFS, levelDBFS)
+        }
         let silentFor = now - lastServerEventAt
         guard stallReportedAt == nil, silentFor >= Self.stallThreshold else { return nil }
         stallReportedAt = now
         return StallReport(
             silentFor: silentFor,
             audioSecondsSinceLastEvent: Double(audioBytesSinceLastEvent) / 32_000,
+            loudestDBFSSinceLastEvent: loudestDBFSSinceLastEvent,
             sendsAwaitingCompletion: sendsAwaitingCompletion,
             unansweredPingAge: pingSentAt.map { now - $0 },
             requestID: requestID
@@ -84,6 +95,37 @@ struct MistralStreamHealth: Equatable {
         endSentAt = now
     }
 
+    /// Describes the audio still untranscribed when the user stops: a final
+    /// transcript that ends early after loud audio here means the server
+    /// dropped speech; quiet audio means the user had stopped talking.
+    func finalCommitSummary(at now: TimeInterval) -> String {
+        String(
+            format: "%.1fs of audio since the last server event (loudest %@), last server event %.2fs ago, request_id=%@",
+            Double(audioBytesSinceLastEvent) / 32_000,
+            Self.describeLevel(loudestDBFSSinceLastEvent), now - lastServerEventAt,
+            requestID ?? "<none>")
+    }
+
+    static func describeLevel(_ dbfs: Double?) -> String {
+        dbfs.map { String(format: "%.0f dBFS", $0) } ?? "n/a"
+    }
+
+    /// RMS level of 16-bit little-endian PCM in dBFS, nil for no samples.
+    static func rmsDBFS(pcm16 data: Data) -> Double? {
+        let count = data.count / 2
+        guard count > 0 else { return nil }
+        var sumOfSquares = 0.0
+        data.withUnsafeBytes { raw in
+            for index in 0..<count {
+                let sample = Double(Int16(littleEndian: raw.loadUnaligned(
+                    fromByteOffset: index * 2, as: Int16.self)))
+                sumOfSquares += sample * sample
+            }
+        }
+        let rms = (sumOfSquares / Double(count)).squareRoot()
+        return rms > 0 ? 20 * log10(rms / 32_768) : -120
+    }
+
     /// Describes a socket closed while `transcription.done` was still owed.
     func closedAwaitingDone(at now: TimeInterval) -> String {
         let endAge = endSentAt.map { String(format: "%.2fs", now - $0) } ?? "never"
@@ -97,7 +139,9 @@ extension MistralStreamHealth.StallReport {
     var logDescription: String {
         let ping = unansweredPingAge.map { String(format: "unanswered for %.1fs", $0) } ?? "answered"
         return String(
-            format: "no server event for %.1fs; %.1fs of audio sent since; %d sends awaiting completion; last ping %@; request_id=%@",
-            silentFor, audioSecondsSinceLastEvent, sendsAwaitingCompletion, ping, requestID ?? "<none>")
+            format: "no server event for %.1fs; %.1fs of audio sent since (loudest %@); %d sends awaiting completion; last ping %@; request_id=%@",
+            silentFor, audioSecondsSinceLastEvent,
+            MistralStreamHealth.describeLevel(loudestDBFSSinceLastEvent),
+            sendsAwaitingCompletion, ping, requestID ?? "<none>")
     }
 }
