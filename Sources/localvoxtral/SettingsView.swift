@@ -1200,15 +1200,6 @@ private struct TextProcessingSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
 
-    /// Named in the row so the user sees where their dictations are about to
-    /// go before pressing the button.
-    private var suggestionModelName: String {
-        guard let model = settings.llmPolishingConfiguration?.model else {
-            return "your polishing model"
-        }
-        return PolishModelCatalog.option(forRepoID: model)?.displayName ?? model
-    }
-
     static let speakerProfileExample = """
         Backend engineer at Acme, mostly Swift and Python.
         • Names I say a lot: Qwen, Claude Code, vLLM, Ghostty
@@ -1241,7 +1232,6 @@ private struct TextProcessingSettingsPane: View {
             SettingsGroup(title: "About you") {
                 SettingsFieldRow(
                     title: "In your words",
-                    help: "Sent to the polishing model with every dictation.",
                     layout: .stacked
                 ) {
                     TextEditor(text: $settings.polishSpeakerProfile)
@@ -1285,7 +1275,6 @@ private struct TextProcessingSettingsPane: View {
 
                 SettingsFieldRow(
                     title: "Names and terms",
-                    help: "Spelled the way they should appear. Casing is fixed even without polishing.",
                     layout: .stacked
                 ) {
                     SpeakerTermsField(terms: $settings.polishSpeakerTerms)
@@ -1293,7 +1282,6 @@ private struct TextProcessingSettingsPane: View {
 
                 SettingsFieldRow(
                     title: "Suggestions",
-                    help: "Sends your recent dictations to \(suggestionModelName).",
                     layout: .stacked
                 ) {
                     SpeakerTermSuggestionsView(model: viewModel.termSuggestions)
@@ -1350,7 +1338,7 @@ private struct TextProcessingSettingsPane: View {
 
                 SettingsFieldRow(
                     title: "Replacement dictionary",
-                    help: "Legacy. Fixed rewrites from replacement_dictionary.toml, for Live Auto-Paste without polishing."
+                    help: "Legacy"
                 ) {
                     Toggle("", isOn: $settings.replacementDictionaryEnabled)
                         .labelsHidden()
@@ -2649,6 +2637,12 @@ private struct SpeakerTermSuggestionsView: View {
                         EmptyView()
                     }
                     }
+                }
+
+                if model.unavailableReason == nil {
+                    Text("Uses API credits")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
