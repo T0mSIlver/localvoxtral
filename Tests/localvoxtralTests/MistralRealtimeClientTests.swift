@@ -327,6 +327,37 @@ final class MistralRealtimeClientTests: XCTestCase {
         XCTAssertEqual(status, "Session ready.")
     }
 
+    /// Field freeze 2026-09-19: deltas stopped mid-dictation with no error.
+    /// The client must name the server's silence, with the request id Mistral
+    /// can look up, while audio is still going out.
+    func testServerSilenceWhileStreamingIsReportedWithTheRequestID() {
+        let clock = ManualSeconds()
+        let client = MistralRealtimeWebSocketClient(now: { clock.value })
+        let (session, task) = makeWebSocketTask()
+        defer {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+        client.debugPrimeConnectedStateForTesting(task: task)
+        client.handle(json: ["type": "session.created", "session": ["request_id": "ws-abc"]])
+
+        for tick in 1...40 {
+            clock.value = Double(tick) / 10
+            client.sendAudioChunk(Data(repeating: 0, count: 3_200))
+        }
+        client.handle(json: ["type": "transcription.text.delta", "text": "Look"])
+        XCTAssertTrue(client.debugStallReportsForTesting().isEmpty, "4 s of silence is speech")
+
+        for tick in 41...120 {
+            clock.value = Double(tick) / 10
+            client.sendAudioChunk(Data(repeating: 0, count: 3_200))
+        }
+        let reports = client.debugStallReportsForTesting()
+        XCTAssertEqual(reports.count, 1)
+        XCTAssertEqual(reports.first?.requestID, "ws-abc")
+        XCTAssertEqual(reports.first?.silentFor ?? 0, 5.0, accuracy: 1e-9)
+    }
+
     func testSessionUpdateCarriesTargetStreamingDelayWhenConfigured() {
         let (client, session, task) = makeFrameRecordingClient(
             targetStreamingDelayMilliseconds: 1_000)
@@ -749,3 +780,12 @@ final class MistralRealtimeClientTests: XCTestCase {
     }
 }
 #endif
+
+private final class ManualSeconds: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: TimeInterval = 0
+    var value: TimeInterval {
+        get { lock.lock(); defer { lock.unlock() }; return current }
+        set { lock.lock(); current = newValue; lock.unlock() }
+    }
+}
