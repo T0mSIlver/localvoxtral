@@ -66,6 +66,66 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
         XCTAssertEqual(healthyService.status(), .installed)
     }
 
+    /// A moved app often leaves its old copy behind, and that copy still
+    /// runs. The row must say the entry points elsewhere, not "Installed."
+    func testARunnableEntryForAnotherCopyIsOtherCopy() throws {
+        let old = "/Users/me/Downloads/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook --statusline"
+        let existing = try settingsJSON(["statusLine": ["type": "command", "command": old]])
+        let service = ClaudeStatuslineInstallService(
+            fileSystem: StubStatuslineFS(state: ClaudeStatuslineState(fileExists: true, data: existing)),
+            isExecutableFile: { _ in true }
+        )
+        XCTAssertEqual(service.status(currentHookCommand: Self.hookCommand), .otherCopy)
+        XCTAssertEqual(
+            ClaudeStatuslineInstallService.sentence(for: .otherCopy),
+            "Points at another copy of localvoxtral."
+        )
+        XCTAssertEqual(service.status(currentHookCommand: old), .installed, "this copy")
+        XCTAssertEqual(service.status(), .installed, "cannot tell which copy is this one")
+        XCTAssertEqual(
+            service.status(currentHookCommand: "/Users/me/Downloads/./localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook --statusline"),
+            .installed, "the same file spelled differently"
+        )
+
+        // A missing file is still stale, whichever copy this is.
+        let gone = ClaudeStatuslineInstallService(
+            fileSystem: StubStatuslineFS(state: ClaudeStatuslineState(fileExists: true, data: existing)),
+            isExecutableFile: { _ in false }
+        )
+        XCTAssertEqual(gone.status(currentHookCommand: Self.hookCommand), .stalePath)
+    }
+
+    func testABareCommandIsNotKnownToBeThisCopy() throws {
+        let existing = try settingsJSON([
+            "statusLine": ["type": "command", "command": "localvoxtral-claude-hook --statusline"],
+        ])
+        let service = ClaudeStatuslineInstallService(
+            fileSystem: StubStatuslineFS(state: ClaudeStatuslineState(fileExists: true, data: existing)),
+            isExecutableFile: { _ in true }
+        )
+        XCTAssertEqual(
+            service.status(currentHookCommand: Self.hookCommand), .otherCopy,
+            "PATH may resolve to an old copy or nothing, so Update… stays"
+        )
+        XCTAssertEqual(service.status(), .installed)
+    }
+
+    func testRowButtonsFollowTheStatus() {
+        let cases: [(ClaudeStatuslineInstallService.Status, String?, Bool)] = [
+            (.notConfigured, "Set up…", false),
+            (.installed, nil, true),
+            (.otherCopy, "Update…", true),
+            (.stalePath, "Update…", true),
+            (.edited, nil, false),
+            (.foreign, nil, false),
+            (.unknown, nil, false),
+        ]
+        for (status, title, remove) in cases {
+            XCTAssertEqual(ClaudeStatuslineInstallService.setupButtonTitle(for: status), title, "\(status)")
+            XCTAssertEqual(ClaudeStatuslineInstallService.offersRemove(for: status), remove, "\(status)")
+        }
+    }
+
     func testUpdateRewritesAStalePath() throws {
         // M2: Update on a stale entry rewrites the path (and keeps padding).
         let stale = "/Volumes/Old/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook --statusline"

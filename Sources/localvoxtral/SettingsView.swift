@@ -1793,24 +1793,21 @@ private struct ClaudeStatuslineRow: View {
             statusAccessibilityIdentifier: "integrations.claude.statusline.status"
         ) {
             HStack(spacing: 8) {
-                switch model.statuslineStatus {
-                case .notConfigured:
-                    Button("Set up…") { isShowingSetup = true }
-                        .disabled(!model.canApplyStatuslineSetup)
-                        .accessibilityIdentifier("integrations.claude.statusline.install")
-                case .installed, .stalePath:
-                    Button("Update…") { isShowingSetup = true }
+                let status = model.statuslineStatus
+                if let title = ClaudeStatuslineInstallService.setupButtonTitle(for: status) {
+                    Button(title) { isShowingSetup = true }
                         .disabled(
                             model.isPerformingStatuslineAction || !model.canApplyStatuslineSetup
                         )
                         .accessibilityIdentifier("integrations.claude.statusline.install")
+                }
+                if ClaudeStatuslineInstallService.offersRemove(for: status) {
                     Button("Remove") { Task { await model.removeStatusline() } }
                         .disabled(model.isPerformingStatuslineAction)
                         .accessibilityIdentifier("integrations.claude.statusline.remove")
-                case .foreign, .edited:
+                }
+                if status == .foreign || status == .edited {
                     Link("How to combine status lines", destination: Self.docsURL)
-                case .unknown:
-                    EmptyView()
                 }
 
                 if model.isPerformingStatuslineAction {
