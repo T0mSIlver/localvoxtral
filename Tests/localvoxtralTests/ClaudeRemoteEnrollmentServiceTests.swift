@@ -2498,6 +2498,32 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: victim), Data("victim".utf8))
     }
 
+    func testLiveLocalHerdrConfigReportsAnUnreadableFileAsUnknownNotAbsent() throws {
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let fileSystem = LiveClaudeLocalHerdrConfigFileSystem(homeDirectoryURL: home)
+        try fileSystem.createConfigDirectory(permissions: 0o755)
+        try fileSystem.atomicWriteConfig(
+            Data("[ui]\n".utf8), permissions: 0o644, expectedConfigPresent: false
+        )
+        let configPath = home.appendingPathComponent(".config/herdr/config.toml").path
+        // Restore the mode so the temporary tree can be removed.
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: 0o644)], ofItemAtPath: configPath
+            )
+        }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o000)], ofItemAtPath: configPath
+        )
+        XCTAssertThrowsError(try fileSystem.readState(), "an unreadable file is not an absent one")
+        XCTAssertEqual(
+            ClaudeRemoteEnrollmentService(localHerdrConfigFileSystem: fileSystem)
+                .localHerdrPanelStatus(),
+            .unknown
+        )
+    }
+
     func testLiveLocalHerdrConfigIgnoresANonDirectoryHerdrDev() throws {
         // A file (or symlink, or socket) at the dev path must not divert the
         // write: only an actual directory selects the dev build.

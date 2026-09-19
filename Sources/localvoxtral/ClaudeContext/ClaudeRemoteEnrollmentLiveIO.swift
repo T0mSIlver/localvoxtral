@@ -150,7 +150,9 @@ struct LiveClaudeLocalHerdrConfigFileSystem: ClaudeLocalHerdrConfigFileSystem {
         let configMetadata = ClaudeSocketGuard.metadata(ofPath: configURL.path)
         let data: Data?
         if configMetadata != nil, configMetadata?.isSymlink != true {
-            data = try? Data(contentsOf: configURL)
+            // Throws rather than reporting nil: nil means "no config", and a
+            // file that exists but cannot be read is not absent.
+            data = try Data(contentsOf: configURL)
         } else {
             data = nil
         }

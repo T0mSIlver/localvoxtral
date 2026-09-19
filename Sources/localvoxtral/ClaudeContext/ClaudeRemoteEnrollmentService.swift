@@ -1352,6 +1352,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         /// points at the manual placement instead.
         case customized
         /// Unreadable, a symlink, not UTF-8, or editing not configured.
+        /// Set up… would refuse, so the row points at the manual placement.
         case unknown
     }
 

@@ -1463,10 +1463,13 @@ public final class ClaudeIntegrationSettingsModel {
         refreshHerdrPaneHostLabels()
     }
 
-    /// The panel row's one line: the last action's outcome, else what the
-    /// config holds. Nil when there is nothing to say before Set up….
+    /// The panel row's one line: the last action's outcome while the config
+    /// still holds the row, else what the config holds. Nil when there is
+    /// nothing to say before Set up….
     public var localHerdrPanelSentence: String? {
-        if let localHerdrPanelResult { return localHerdrPanelResult }
+        if let localHerdrPanelResult, localHerdrPanelStatus == .added {
+            return localHerdrPanelResult
+        }
         switch localHerdrPanelStatus {
         case .notAdded: return nil
         case .added: return "Added."
@@ -1476,9 +1479,10 @@ public final class ClaudeIntegrationSettingsModel {
     }
 
     /// Set up… is offered only where it would write: never over the row
-    /// already there, never over agents rows the user wrote (it refuses).
+    /// already there, over agents rows the user wrote, or over a config it
+    /// cannot read (it refuses all three).
     public var offersLocalHerdrPanelSetup: Bool {
-        localHerdrPanelStatus == .notAdded || localHerdrPanelStatus == .unknown
+        localHerdrPanelStatus == .notAdded
     }
 
     /// Maps the reporting host ids onto enrolled-host labels. An id with no
