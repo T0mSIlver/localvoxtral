@@ -2080,12 +2080,16 @@ private struct ClaudeRemoteHostsRows: View {
                             // — the row's host label (middle-truncating,
                             // layoutPriority 0) absorbs the squeeze instead.
                             // Prominent only while the plugin is outdated: the
-                            // highlight IS the indicator.
-                            Button("Update Plugin…") { model.requestPluginUpdate(hostID: host.id) }
-                                .controlSize(.small)
-                                .fixedSize()
-                                .pluginUpdateProminence(needsUpdate: host.pluginNeedsUpdate)
-                                .disabled(model.isEnrollmentBusy)
+                            // highlight IS the indicator. Hidden once the host
+                            // is known current, since the run would change
+                            // nothing.
+                            if host.offersUpdate {
+                                Button("Update Plugin…") { model.requestPluginUpdate(hostID: host.id) }
+                                    .controlSize(.small)
+                                    .fixedSize()
+                                    .pluginUpdateProminence(needsUpdate: host.pluginNeedsUpdate)
+                                    .disabled(model.isEnrollmentBusy)
+                            }
                             Button("Rotate token") { Task { await model.rotate(hostID: host.id) } }
                                 .controlSize(.small)
                             if !host.isRevoked {

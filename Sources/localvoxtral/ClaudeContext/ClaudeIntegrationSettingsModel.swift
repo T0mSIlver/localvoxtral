@@ -285,6 +285,14 @@ public final class ClaudeIntegrationSettingsModel {
         /// state. The record is monotone, so an old session's headerless hook
         /// cannot re-flag a host whose update a read-back already proved.
         public var pluginNeedsUpdate: Bool = false
+        /// Whether the row offers Update Plugin…. Hidden when the run would
+        /// change nothing it can check from this Mac: the host reported this
+        /// build's plugin (or newer) this app session, its SSH config block is
+        /// current, and the shell startup block is in place. A host not heard
+        /// from yet, or a file that cannot be read, keeps the button. Hidden
+        /// for a revoked host too: the run carries no token, so it cannot
+        /// bring the host back (Rotate token does).
+        public var offersUpdate: Bool = true
     }
 
     /// The one fixed sentence the row's status position shows while
@@ -315,6 +323,17 @@ public final class ClaudeIntegrationSettingsModel {
         case .version(let version):
             return ClaudeRemotePluginVersionCodec.isVersion(version, olderThan: expected)
         }
+    }
+
+    /// Whether a host REPORTED this build's plugin version or a newer one.
+    /// Not the negation of `pluginNeedsUpdate`: a host never heard from is
+    /// neither outdated (no hint without evidence) nor current.
+    static func pluginIsCurrent(
+        reported: ClaudeRemotePluginVersionReport?,
+        expected: String
+    ) -> Bool {
+        guard case .version(let version)? = reported else { return false }
+        return !ClaudeRemotePluginVersionCodec.isVersion(version, olderThan: expected)
     }
 
     /// "Last context: 2 min ago", from a clock the caller supplies.
@@ -988,6 +1007,14 @@ public final class ClaudeIntegrationSettingsModel {
         // cannot disagree about what "now" was.
         let timestamp = now()
         let enrolledHosts = registry?.hosts() ?? []
+        // Whether the update run's shell step would skip. It skips an applied
+        // block, and a shell or writer it has none for.
+        // Read only when there is a host row to decide for.
+        let shellStepSettled: Bool = {
+            guard !enrolledHosts.isEmpty else { return true }
+            guard let shell = loginShell(), let writer = shellRCWriter(shell) else { return true }
+            return writer.isApplied() == true
+        }()
         hosts = enrolledHosts.map { host in
             let forwardState = forwards?.states[host.id]
             return HostRow(
@@ -1016,6 +1043,16 @@ public final class ClaudeIntegrationSettingsModel {
                 pluginNeedsUpdate: !host.isRevoked && Self.pluginNeedsUpdate(
                     reported: host.reportedPluginVersion,
                     expected: ClaudeRemoteEnrollmentService.remotePluginVersion
+                ),
+                offersUpdate: !host.isRevoked && (
+                    !Self.pluginIsCurrent(
+                        reported: host.reportedPluginVersion,
+                        expected: ClaudeRemoteEnrollmentService.remotePluginVersion
+                    )
+                    || enrollmentService.sshConfigBlockIsCurrent(
+                        port: remoteForwardPort, hostID: host.id
+                    ) != true
+                    || !shellStepSettled
                 )
             )
         }
