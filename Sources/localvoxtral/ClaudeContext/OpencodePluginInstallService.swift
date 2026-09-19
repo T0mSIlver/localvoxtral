@@ -54,6 +54,9 @@ public struct OpencodePluginInstallService: Sendable {
     public enum Status: Sendable, Equatable {
         /// No plugin file. Offers Install.
         case notInstalled
+        /// `tui.json` lists the plugin but the file is gone (deleted by
+        /// hand): Set up… restores it, Remove drops the entry.
+        case listedMissing
         /// The file is there but `tui.json` does not list it: content flows,
         /// panes stay undeclared, joins stay impossible.
         case installedUnlisted
@@ -73,13 +76,14 @@ public struct OpencodePluginInstallService: Sendable {
     /// button, since setup is what repairs it.
     public static func setupButtonTitle(for status: Status) -> String? {
         switch status {
-        case .notInstalled, .installedUnlisted, .unknown: return "Set up…"
+        case .notInstalled, .installedUnlisted, .listedMissing, .unknown: return "Set up…"
         case .updateAvailable: return "Update…"
         case .installed: return nil
         }
     }
 
-    /// Remove is offered unless there is no plugin file to remove.
+    /// Remove is offered unless neither the file nor our `tui.json` entry is
+    /// there.
     public static func offersRemove(for status: Status) -> Bool {
         status != .notInstalled
     }
@@ -88,6 +92,7 @@ public struct OpencodePluginInstallService: Sendable {
     public static func sentence(for status: Status) -> String {
         switch status {
         case .notInstalled: return "Not installed."
+        case .listedMissing: return "Listed in tui.json, plugin file missing."
         case .installedUnlisted: return "Installed, not listed in tui.json."
         case .installed: return "Installed."
         case .updateAvailable: return "Update available."
@@ -98,7 +103,16 @@ public struct OpencodePluginInstallService: Sendable {
     public func status() -> Status {
         guard let fileSystem, let state = try? fileSystem.readState() else { return .unknown }
         guard state.pluginData != nil || !state.pluginFileExists else { return .unknown }
-        guard state.pluginFileExists else { return .notInstalled }
+        guard state.pluginFileExists else {
+            // No file, but our entry may still be in tui.json: Remove has
+            // something to clean up then, so this is not "not installed".
+            if state.tuiFileExists, state.tuiData == nil { return .unknown }
+            switch Self.tuiListsPlugin(in: state.tuiData) {
+            case .listed: return .listedMissing
+            case .notListed: return .notInstalled
+            case .unparseable: return .unknown
+            }
+        }
         guard let tuiData = state.tuiData else {
             // No tui.json at all: listed nowhere.
             if state.tuiFileExists { return .unknown }

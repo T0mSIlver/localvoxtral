@@ -85,6 +85,7 @@ final class OpencodePluginInstallServiceTests: XCTestCase {
         let cases: [(OpencodePluginInstallService.Status, String?, Bool)] = [
             (.notInstalled, "Set up…", false),
             (.installedUnlisted, "Set up…", true),
+            (.listedMissing, "Set up…", true),
             (.updateAvailable, "Update…", true),
             (.installed, nil, true),
             (.unknown, "Set up…", true),
@@ -97,6 +98,34 @@ final class OpencodePluginInstallServiceTests: XCTestCase {
                 OpencodePluginInstallService.offersRemove(for: status), remove, "\(status)"
             )
         }
+    }
+
+    func testAMissingFileStillListedInTUIIsNotNotInstalled() throws {
+        // The file was deleted by hand; the entry left in tui.json is ours to
+        // clean up, so the row must keep Remove.
+        let listed = try tuiJSON(["plugin": [OpencodePluginInstallService.tuiPluginEntry]])
+        let (missing, fs) = service(state: OpencodePluginState(
+            pluginFileExists: false, tuiFileExists: true, tuiData: listed
+        ))
+        XCTAssertEqual(missing.status(), .listedMissing)
+        XCTAssertTrue(OpencodePluginInstallService.offersRemove(for: missing.status()))
+        try missing.remove()
+        XCTAssertEqual(fs.deletedTUI, true, "remove drops the stale entry")
+
+        let (other, _) = service(state: OpencodePluginState(
+            pluginFileExists: false, tuiFileExists: true, tuiData: try tuiJSON(["plugin": ["x.js"]])
+        ))
+        XCTAssertEqual(other.status(), .notInstalled)
+
+        let (malformed, _) = service(state: OpencodePluginState(
+            pluginFileExists: false, tuiFileExists: true, tuiData: Data("garbage{".utf8)
+        ))
+        XCTAssertEqual(malformed.status(), .unknown)
+
+        let (unreadable, _) = service(state: OpencodePluginState(
+            pluginFileExists: false, tuiFileExists: true, tuiData: nil
+        ))
+        XCTAssertEqual(unreadable.status(), .unknown)
     }
 
     func testUnreadablePluginFileIsUnknown() {
