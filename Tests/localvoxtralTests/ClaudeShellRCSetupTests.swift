@@ -457,6 +457,30 @@ final class ClaudeShellRCSetupTests: XCTestCase {
     /// Every symlink test above uses a stub state, so the live `readState` —
     /// the code that decides what those states ARE — had no coverage at all
     /// (review finding M3). This one builds a real temp tree.
+    /// A dotfiles `~/.zshrc` links into a repo. The live reader never reads
+    /// through it, so the row must still learn it is a symlink, holding the
+    /// block or not, rather than lose that to "could not read".
+    func testTheLiveReaderReportsASymlinkedRCFileAsSymlinked() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lvx-rc-\(UUID().uuidString)")
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("zshrc")
+        try Data("\(ClaudeShellRCSetup.snippet(for: .zsh))\n".utf8).write(to: target)
+        try FileManager.default.createSymbolicLink(
+            at: home.appendingPathComponent(".zshrc"), withDestinationURL: target
+        )
+
+        let writer = ClaudeShellRCWriter(
+            fileSystem: LiveClaudeShellRCFileSystem(relativePath: ".zshrc", homeDirectoryURL: home)
+        )
+        XCTAssertEqual(
+            writer.reading(shell: .zsh),
+            ClaudeShellRCWriter.Reading(block: nil, isSymlinked: true)
+        )
+    }
+
     func testTheLiveReaderSeesASymlinkedINTERMEDIATEDirectory() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("lvx-rc-\(UUID().uuidString)")

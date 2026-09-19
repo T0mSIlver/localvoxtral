@@ -3016,15 +3016,12 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     /// manual steps instead.
     @MainActor
     func testASymlinkedRCFileOffersTheManualStepsInsteadOfButtons() {
-        let current = ClaudeShellRCSetup.snippet(for: .zsh)
+        // Shaped like the live reader's states: it never reads through a
+        // link, so a symlinked file that exists comes back with no data.
         let cases: [(ClaudeShellRCState, ClaudeShellSetupStatus.RCState, Bool)] = [
             (ClaudeShellRCState(fileExists: false, directoryIsSymlink: true), .notApplied, true),
-            (ClaudeShellRCState(fileExists: true, fileIsSymlink: true, data: Data("x\n".utf8)), .notApplied, true),
-            (ClaudeShellRCState(
-                fileExists: true, fileIsSymlink: true,
-                data: Data(current.replacingOccurrences(of: "# Publishes", with: "# Exports").utf8)
-            ), .outdated, true),
-            (ClaudeShellRCState(fileExists: true, fileIsSymlink: true, data: Data(current.utf8)), .applied, false),
+            (ClaudeShellRCState(fileExists: true, fileIsSymlink: true, data: nil), .unknown, true),
+            (ClaudeShellRCState(fileExists: true, directoryIsSymlink: true, data: nil), .unknown, true),
         ]
         for (state, rc, manual) in cases {
             let model = shellSetupModel(fileSystem: StubRCFileSystem(state: state))

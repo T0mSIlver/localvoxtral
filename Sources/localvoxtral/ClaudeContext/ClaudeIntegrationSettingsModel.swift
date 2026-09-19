@@ -216,11 +216,10 @@ public struct ClaudeShellSetupStatus: Sendable, Equatable {
     /// Remove is offered only for a clean block the writer will take out.
     public var offersRemove: Bool { !isSymlinked && (rc == .applied || rc == .outdated) }
 
-    /// A symlinked rc file whose block is missing or older: the one case the
-    /// row points at the manual steps instead of a button.
-    public var offersManualSteps: Bool {
-        isSymlinked && (rc == .notApplied || rc == .outdated)
-    }
+    /// A symlinked rc file not known to hold this build's block: the one
+    /// case the row points at the manual steps instead of a button. The
+    /// app never reads through the link, so its content is usually unknown.
+    public var offersManualSteps: Bool { isSymlinked && rc != .applied }
 
     public var crossingSentence: String {
         switch crossing {
