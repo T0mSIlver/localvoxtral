@@ -553,6 +553,9 @@ public final class ClaudeIntegrationSettingsModel {
     /// The local panel-row action's one-line outcome. Set only after the
     /// action runs; cleared when a new local panel offer is requested.
     public private(set) var localHerdrPanelResult: String?
+    /// What this Mac's herdr config holds, refreshed with the rest of the
+    /// pane and after the local panel action.
+    public private(set) var localHerdrPanelStatus: ClaudeRemoteEnrollmentService.LocalHerdrPanelStatus = .unknown
     /// The plain-ssh join's setup step, refreshed with the rest of the pane.
     var shellSetupStatus = ClaudeShellSetupStatus()
 
@@ -1456,7 +1459,26 @@ public final class ClaudeIntegrationSettingsModel {
         refreshOpencodeStatus()
         isHerdrDetected = herdrBinaryAvailable() || herdrPresenceReport()
         hasEnabledHerdrMachine = hasEnabledHerdrMachineReport()
+        localHerdrPanelStatus = enrollmentService.localHerdrPanelStatus()
         refreshHerdrPaneHostLabels()
+    }
+
+    /// The panel row's one line: the last action's outcome, else what the
+    /// config holds. Nil when there is nothing to say before Set up….
+    public var localHerdrPanelSentence: String? {
+        if let localHerdrPanelResult { return localHerdrPanelResult }
+        switch localHerdrPanelStatus {
+        case .notAdded: return nil
+        case .added: return "Added."
+        case .customized: return "Your herdr config sets its own agents rows."
+        case .unknown: return "Could not read your herdr config."
+        }
+    }
+
+    /// Set up… is offered only where it would write: never over the row
+    /// already there, never over agents rows the user wrote (it refuses).
+    public var offersLocalHerdrPanelSetup: Bool {
+        localHerdrPanelStatus == .notAdded || localHerdrPanelStatus == .unknown
     }
 
     /// Maps the reporting host ids onto enrolled-host labels. An id with no
@@ -1948,6 +1970,7 @@ public final class ClaudeIntegrationSettingsModel {
             localHerdrPanelResult = attempt.steps.first?.message
                 ?? ClaudeRemoteEnrollmentService.localHerdrPanelReloadStatus
         }
+        localHerdrPanelStatus = service.localHerdrPanelStatus()
     }
 
     private func performSetupRun(_ confirmation: EnrollmentConfirmation) async {

@@ -2303,6 +2303,32 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         }
     }
 
+    func testLocalHerdrPanelStatusMatchesWhatSetUpWouldDo() {
+        func status(_ content: String?, symlink: Bool = false) -> ClaudeRemoteEnrollmentService.LocalHerdrPanelStatus {
+            ClaudeRemoteEnrollmentService(
+                localHerdrConfigFileSystem: MemoryLocalHerdrConfigFileSystem(
+                    state: ClaudeLocalHerdrConfigState(
+                        directoryExists: content != nil,
+                        configData: content.map { Data($0.utf8) },
+                        configPermissions: content == nil ? nil : 0o644,
+                        configIsSymlink: symlink
+                    )
+                )
+            ).localHerdrPanelStatus()
+        }
+        let snippet = ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet
+        XCTAssertEqual(status(nil), .notAdded)
+        XCTAssertEqual(status("[keys]\nprefix = \"ctrl-b\"\n"), .notAdded)
+        XCTAssertEqual(status("[keys]\nprefix = \"ctrl-b\"\n\n\(snippet)\n"), .added)
+        XCTAssertEqual(
+            status(snippet.replacingOccurrences(of: "\n", with: "\r\n") + "\r\n"), .added,
+            "a CRLF file holding the row still holds it"
+        )
+        XCTAssertEqual(status("[ui.sidebar.agents]\nrows = [[\"agent\"]]\n"), .customized)
+        XCTAssertEqual(status(snippet, symlink: true), .unknown)
+        XCTAssertEqual(ClaudeRemoteEnrollmentService().localHerdrPanelStatus(), .unknown)
+    }
+
     func testLocalHerdrPanelConfigurationAppendsTheRowOnce() throws {
         let fileSystem = MemoryLocalHerdrConfigFileSystem(
             state: ClaudeLocalHerdrConfigState(

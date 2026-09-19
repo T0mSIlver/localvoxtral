@@ -934,6 +934,45 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         )
         XCTAssertEqual(model.herdrPanelStatus, .ok)
         XCTAssertEqual(fileSystem.writes.count, 1)
+        // The row is there now: pressing Set up… again would only refuse.
+        XCTAssertEqual(model.localHerdrPanelStatus, .added)
+        XCTAssertFalse(model.offersLocalHerdrPanelSetup)
+        XCTAssertEqual(
+            model.localHerdrPanelSentence,
+            ClaudeRemoteEnrollmentService.localHerdrPanelReloadStatus
+        )
+    }
+
+    func testLocalHerdrPanelRowFollowsTheConfigAtRefresh() async {
+        func refreshedModel(_ content: String?) async -> ClaudeIntegrationSettingsModel {
+            let fileSystem = LocalPanelMemoryFileSystem(
+                state: ClaudeLocalHerdrConfigState(
+                    directoryExists: true,
+                    configData: content.map { Data($0.utf8) },
+                    configPermissions: content == nil ? nil : 0o644
+                )
+            )
+            let model = makeModel(
+                registry: nil,
+                listener: nil,
+                enrollmentService: ClaudeRemoteEnrollmentService(localHerdrConfigFileSystem: fileSystem),
+                hasEnabledHerdrMachineReport: { true }
+            )
+            await model.refreshIntegrationsStatuses()
+            return model
+        }
+
+        let absent = await refreshedModel(nil)
+        XCTAssertTrue(absent.offersLocalHerdrPanelSetup)
+        XCTAssertNil(absent.localHerdrPanelSentence)
+
+        let added = await refreshedModel(ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet + "\n")
+        XCTAssertFalse(added.offersLocalHerdrPanelSetup)
+        XCTAssertEqual(added.localHerdrPanelSentence, "Added.")
+
+        let customized = await refreshedModel("[ui.sidebar.agents]\nrows = [[\"agent\"]]\n")
+        XCTAssertFalse(customized.offersLocalHerdrPanelSetup)
+        XCTAssertEqual(customized.localHerdrPanelSentence, "Your herdr config sets its own agents rows.")
     }
 
     func testLocalHerdrPanelOfferRefusesACustomizedConfig() async throws {

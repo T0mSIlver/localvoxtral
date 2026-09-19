@@ -1342,6 +1342,37 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         }
     }
 
+    /// What `configureLocalHerdrPanel` would find in this Mac's herdr config.
+    public enum LocalHerdrPanelStatus: Sendable, Equatable {
+        /// No agents table and no `rows` key: Set up… appends the row.
+        case notAdded
+        /// The row block is there exactly as Set up… writes it.
+        case added
+        /// Agents rows the user wrote: Set up… would refuse, so the row
+        /// points at the manual placement instead.
+        case customized
+        /// Unreadable, a symlink, not UTF-8, or editing not configured.
+        case unknown
+    }
+
+    /// Read-only: the same checks `configureLocalHerdrPanel` makes before it
+    /// writes, so the row can tell whether pressing Set up… would do anything.
+    public func localHerdrPanelStatus() -> LocalHerdrPanelStatus {
+        guard let localHerdrConfigFileSystem,
+              let state = try? localHerdrConfigFileSystem.readState(),
+              !state.configIsSymlink
+        else { return .unknown }
+        guard let data = state.configData else { return .notAdded }
+        guard let content = String(data: data, encoding: .utf8) else { return .unknown }
+        // `split(whereSeparator: \.isNewline)` below treats CRLF as one
+        // break; match the block the same way.
+        if content.replacingOccurrences(of: "\r\n", with: "\n")
+            .contains(Self.herdrPanelConfigSnippet) {
+            return .added
+        }
+        return Self.localHerdrPanelConfigIsCustomized(content) ? .customized : .notAdded
+    }
+
     /// Appends the agents-panel row block to the LOCAL herdr config — the
     /// config a federated herdr 0.9 client renders its agents panel from
     /// (`ClientShellConfig::from_config` reads `config.ui.sidebar.agents` on
