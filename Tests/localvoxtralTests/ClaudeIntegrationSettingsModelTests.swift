@@ -2293,6 +2293,10 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         model.refreshHosts()
         XCTAssertFalse(model.hosts[0].pluginNeedsUpdate)
         XCTAssertEqual(model.hosts[0].statusText, "Revoked")
+        XCTAssertFalse(
+            model.hosts[0].offersUpdate,
+            "the run carries no token, so it cannot bring a revoked host back"
+        )
     }
 
     /// The run's read-back already PROVED the installed version, so the
@@ -2311,7 +2315,10 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         )
         let listener = StubListener(hosts: registry)
         listener.isListening = true
-        let model = setupFlowModel(registry: registry, listener: listener, service: service)
+        let rcFS = StubRCFileSystem(state: ClaudeShellRCState())
+        let model = setupFlowModel(
+            registry: registry, listener: listener, service: service, rcFileSystem: rcFS
+        )
         model.enrollLabel = "buildhost"
         model.enrollSSHAlias = "builder"
         await model.enroll()
@@ -2341,10 +2348,16 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             "plugin and SSH block both proven current: another run would change nothing"
         )
 
-        // A stale SSH block brings the button back even with a current plugin.
+        // Either local block going missing brings the button back even with a
+        // current plugin: the run would rewrite it.
+        let sshConfig = sshFS.configText
         sshFS.configText = ""
         model.refreshHosts()
-        XCTAssertTrue(model.hosts[0].offersUpdate)
+        XCTAssertTrue(model.hosts[0].offersUpdate, "stale SSH block")
+        sshFS.configText = sshConfig
+        rcFS.state = ClaudeShellRCState()
+        model.refreshHosts()
+        XCTAssertTrue(model.hosts[0].offersUpdate, "missing shell startup block")
         XCTAssertEqual(
             registry.host(id: hostID)?.reportedPluginVersion,
             .version(ClaudeRemoteEnrollmentService.remotePluginVersion)

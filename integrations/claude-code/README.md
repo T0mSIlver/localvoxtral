@@ -584,8 +584,9 @@ file contents. Its **Details** link opens the complete command reference in
 The list in that row shows each enrolled host, when it was last seen,
 and gives you **Update Plugin…**, **Rotate Token**, **Revoke** and **Remove**.
 **Update Plugin…** hides once the host has reported the app's plugin version
-since launch and this Mac's SSH config block for it is current, since the run
-would change nothing.
+since launch and this Mac's SSH config and shell startup blocks are in place,
+since the run would change nothing it can check from here. It also hides on a
+revoked host, which **Rotate Token** brings back.
 
 The consent sentence names every local file and the SSH alias the flow may
 touch. Nothing runs or is written before **Set Up**. The app runs remote work
@@ -809,8 +810,8 @@ ssh builder "claude plugin install localvoxtral-remote@localvoxtral --config 'po
 
 Order matters: `plugin update` installs whatever the local marketplace clone
 currently offers, so refreshing the clone first is what makes it an update at
-all. In the app, each host in **Settings → Remote hosts** has an **Update
-Plugin…** button. Its consent sentence names the local files and enrolled SSH
+all. In the app, a host in **Settings → Remote hosts** has an **Update
+Plugin…** button unless it is revoked or already current (see above). Its consent sentence names the local files and enrolled SSH
 alias, and **Set Up** runs the same six-step flow as enrollment. The display name
 is never used as a substitute for the alias. A host enrolled before aliases
 were recorded must be re-enrolled before the app can update it.
