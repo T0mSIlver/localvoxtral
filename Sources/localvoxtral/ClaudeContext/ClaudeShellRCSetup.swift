@@ -122,6 +122,19 @@ public enum ClaudeShellRCSetup {
         return false
     }
 
+    /// Is our block in this text exactly once, and exactly this snippet?
+    ///
+    /// Line terminators aside: `apply` writes the file's own, so a CRLF file
+    /// holding this build's block is current. Two copies are not current even
+    /// when both match, because `apply` would still collapse them.
+    public static func containsCurrentBlock(_ existing: String, snippet: String) -> Bool {
+        let lines = splitLines(existing)
+        guard case .present(let ranges) = locateBlock(in: lines), ranges.count == 1 else {
+            return false
+        }
+        return Array(lines[ranges[0]]) == splitLines(snippet)
+    }
+
     /// Does this text carry an unpaired begin marker?
     public static func hasDamagedBlock(_ existing: String) -> Bool {
         locateBlock(in: splitLines(existing)) == .damaged
@@ -332,14 +345,61 @@ public struct ClaudeShellRCWriter: Sendable {
     /// Is the block present right now? Nil when the file cannot be read at all,
     /// which the UI reports as unknown rather than as absent.
     public func isApplied() -> Bool? {
+        statusText()?.text.map(ClaudeShellRCSetup.containsBlock)
+    }
+
+    public enum BlockState: Sendable, Equatable {
+        case absent
+        /// This build's text for the shell, exactly once.
+        case current
+        /// A block `apply` would rewrite: older text, or several copies.
+        case outdated
+    }
+
+    public struct Reading: Sendable, Equatable {
+        /// Nil when the file cannot be read. A symlinked file is never read
+        /// through, so its block is always nil.
+        public var block: BlockState?
+        /// The file or a directory on the way to it is a symlink: every
+        /// write refuses.
+        public var isSymlinked: Bool
+    }
+
+    /// Absent, current or outdated from ONE read of the file, so a save
+    /// landing between two reads cannot mix their answers.
+    public func reading(shell: ClaudeShellKind) -> Reading {
+        guard let read = statusText() else { return Reading(block: nil, isSymlinked: false) }
+        let block = read.text.map { text -> BlockState in
+            if ClaudeShellRCSetup.containsCurrentBlock(
+                text, snippet: ClaudeShellRCSetup.snippet(for: shell)
+            ) { return .current }
+            return ClaudeShellRCSetup.containsBlock(text) ? .outdated : .absent
+        }
+        return Reading(block: block, isSymlinked: read.isSymlinked)
+    }
+
+    /// Nil exactly when `isApplied()` is nil.
+    public func blockState(shell: ClaudeShellKind) -> BlockState? {
+        reading(shell: shell).block
+    }
+
+    /// Is the block present AND this build's text for `shell`?
+    public func isCurrent(shell: ClaudeShellKind) -> Bool? {
+        blockState(shell: shell).map { $0 == .current }
+    }
+
+    /// The rc file's text for a status read: "" when it does not exist, nil
+    /// text when it cannot be read. Nil overall when no state could be read.
+    private func statusText() -> (text: String?, isSymlinked: Bool)? {
         guard let fileSystem, let state = try? fileSystem.readState() else { return nil }
+        let isSymlinked = state.fileIsSymlink || state.directoryIsSymlink
         guard let data = state.data, let text = String(data: data, encoding: .utf8) else {
-            return state.fileExists ? nil : false
+            return (state.fileExists ? nil : "", isSymlinked)
         }
         // Damaged markers are not "applied": the writer will refuse, and the
         // row must not offer Remove as though there were a clean block.
-        if ClaudeShellRCSetup.hasDamagedBlock(text) { return nil }
-        return ClaudeShellRCSetup.containsBlock(text)
+        if ClaudeShellRCSetup.hasDamagedBlock(text) { return (nil, isSymlinked) }
+        return (text, isSymlinked)
     }
 
     public func apply(shell: ClaudeShellKind) throws {

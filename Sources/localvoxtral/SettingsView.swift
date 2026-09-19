@@ -1918,6 +1918,10 @@ private struct ClaudeShellSetupRow: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
     @State private var isShowingShellSetup = false
 
+    private static let manualStepsURL = URL(
+        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/claude-code/README.md#1-the-tty-echo-works-through-jump-hosts-and-controlmaster"
+    )!
+
     var body: some View {
         SettingsGroupRow {
             shellSetup
@@ -1965,15 +1969,24 @@ private struct ClaudeShellSetupRow: View {
 
             Spacer(minLength: 8)
 
-            if model.shellSetupStatus.rc == .applied {
+            // The buttons follow the rc file: no setup button while this
+            // build's block is in it, no Remove when there is no clean block.
+            if model.shellSetupStatus.offersRemove {
                 Button("Remove") { Task { await model.removeShellSetup() } }
                     .controlSize(.small)
                     .accessibilityIdentifier("claude.remote.shellSetup.remove")
             }
-            Button("Set up…") { isShowingShellSetup = true }
-                .controlSize(.small)
-                .disabled(!model.canApplyShellSetup)
-                .accessibilityIdentifier("claude.remote.shellSetup.setUp")
+            if let title = model.shellSetupStatus.setupButtonTitle {
+                Button(title) { isShowingShellSetup = true }
+                    .controlSize(.small)
+                    .disabled(!model.canApplyShellSetup)
+                    .accessibilityIdentifier("claude.remote.shellSetup.setUp")
+            }
+            if model.shellSetupStatus.offersManualSteps {
+                Link("Details", destination: Self.manualStepsURL)
+                    .font(.caption)
+                    .accessibilityIdentifier("claude.remote.shellSetup.details")
+            }
         }
     }
 }

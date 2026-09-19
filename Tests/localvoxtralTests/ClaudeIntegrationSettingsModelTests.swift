@@ -2934,8 +2934,12 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     private final class StubRCFileSystem: ClaudeShellRCFileSystem, @unchecked Sendable {
         var state: ClaudeShellRCState
         var writes = 0
+        var reads = 0
         init(state: ClaudeShellRCState) { self.state = state }
-        func readState() throws -> ClaudeShellRCState { state }
+        func readState() throws -> ClaudeShellRCState {
+            reads += 1
+            return state
+        }
         func createDirectory(permissions: UInt16) throws {}
         func atomicWrite(_ data: Data, permissions: UInt16) throws {
             writes += 1
@@ -2987,6 +2991,76 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             model.shellSetupStatus.crossingSentence,
             "Open a new terminal window for it to take effect."
         )
+    }
+
+    func testShellSetupButtonsFollowTheRCState() {
+        // This build's block gets no setup button, since writing it again
+        // changes nothing; an older one gets Update…; no clean block, no Remove.
+        let cases: [(ClaudeShellSetupStatus.RCState, String?, Bool)] = [
+            (.unsupportedShell, "Set up…", false),
+            (.notApplied, "Set up…", false),
+            (.applied, nil, true),
+            (.outdated, "Update…", true),
+            (.unknown, "Set up…", false),
+        ]
+        for (rc, title, remove) in cases {
+            let status = ClaudeShellSetupStatus(rc: rc)
+            XCTAssertEqual(status.setupButtonTitle, title, "\(rc)")
+            XCTAssertEqual(status.offersRemove, remove, "\(rc)")
+            XCTAssertFalse(status.offersManualSteps, "\(rc)")
+        }
+    }
+
+    /// Every write refuses a symlinked rc file (or directory), so the row
+    /// offers no button that writes; a missing or older block points at the
+    /// manual steps instead.
+    @MainActor
+    func testASymlinkedRCFileOffersTheManualStepsInsteadOfButtons() {
+        // Shaped like the live reader's states: it never reads through a
+        // link, so a symlinked file that exists comes back with no data.
+        let cases: [(ClaudeShellRCState, ClaudeShellSetupStatus.RCState, Bool)] = [
+            (ClaudeShellRCState(fileExists: false, directoryIsSymlink: true), .notApplied, true),
+            (ClaudeShellRCState(fileExists: true, fileIsSymlink: true, data: nil), .unknown, true),
+            (ClaudeShellRCState(fileExists: true, directoryIsSymlink: true, data: nil), .unknown, true),
+        ]
+        for (state, rc, manual) in cases {
+            let model = shellSetupModel(fileSystem: StubRCFileSystem(state: state))
+            model.refreshShellSetupStatus()
+            XCTAssertEqual(model.shellSetupStatus.rc, rc, "\(state)")
+            XCTAssertTrue(model.shellSetupStatus.isSymlinked)
+            XCTAssertNil(model.shellSetupStatus.setupButtonTitle, "\(state)")
+            XCTAssertFalse(model.shellSetupStatus.offersRemove, "\(state)")
+            XCTAssertEqual(model.shellSetupStatus.offersManualSteps, manual, "\(state)")
+        }
+    }
+
+    /// One read per refresh, so a save between two reads cannot mix answers.
+    @MainActor
+    func testShellSetupStatusReadsTheRCFileOnce() {
+        let fileSystem = StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true, data: Data("\(ClaudeShellRCSetup.snippet(for: .zsh))\n".utf8)
+        ))
+        let model = shellSetupModel(fileSystem: fileSystem)
+        model.refreshShellSetupStatus()
+        XCTAssertEqual(fileSystem.reads, 1)
+        XCTAssertEqual(model.shellSetupStatus.rc, .applied)
+    }
+
+    @MainActor
+    func testAnOlderShellBlockReadsOutdatedAndSetupRewritesIt() async {
+        let older = ClaudeShellRCSetup.snippet(for: .zsh)
+            .replacingOccurrences(of: "# Publishes", with: "# Exports")
+        let fileSystem = StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true, data: Data("export EDITOR=vim\n\n\(older)\n".utf8), permissions: 0o644
+        ))
+        let model = shellSetupModel(fileSystem: fileSystem)
+        model.refreshShellSetupStatus()
+        XCTAssertEqual(model.shellSetupStatus.rc, .outdated)
+        XCTAssertEqual(model.shellSetupStatus.rcSentence, "Update available.")
+
+        await model.applyShellSetup()
+        XCTAssertEqual(model.shellSetupStatus.rc, .applied)
+        XCTAssertNil(model.shellSetupStatus.setupButtonTitle)
     }
 
     @MainActor
@@ -3177,6 +3251,35 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertTrue(confirmation.preview.contains("Remote host:"))
         await model.confirmEnrollmentAction()
         return (model, hostID, sshFS, recorder)
+    }
+
+    /// The run's shell step skipped any file that had a block, so a block an
+    /// older app wrote was never replaced. It skips only a current block.
+    @MainActor
+    func testSetupRunRewritesAnOlderShellBlockAndSkipsACurrentOne() async throws {
+        let older = ClaudeShellRCSetup.snippet(for: .zsh)
+            .replacingOccurrences(of: "# Publishes", with: "# Exports")
+        let olderFS = StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true, data: Data("\(older)\n".utf8), permissions: 0o644
+        ))
+        let (olderRun, _, _, _) = try await enrollAndRunSetup(rcFileSystem: olderFS)
+        XCTAssertEqual(
+            try XCTUnwrap(olderRun.setupRun).items[1].state,
+            .done("The shell startup block is applied.")
+        )
+        XCTAssertEqual(olderFS.writes, 1, "the older block is replaced")
+
+        let currentFS = StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true,
+            data: Data("\(ClaudeShellRCSetup.snippet(for: .zsh))\n".utf8),
+            permissions: 0o644
+        ))
+        let (currentRun, _, _, _) = try await enrollAndRunSetup(rcFileSystem: currentFS)
+        XCTAssertEqual(
+            try XCTUnwrap(currentRun.setupRun).items[1].state,
+            .done("The shell startup block is already applied.")
+        )
+        XCTAssertEqual(currentFS.writes, 0)
     }
 
     @MainActor

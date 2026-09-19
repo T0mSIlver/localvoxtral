@@ -148,7 +148,11 @@ public struct ClaudeShellSetupStatus: Sendable, Equatable {
         /// The login shell is not one this app writes for.
         case unsupportedShell
         case notApplied
+        /// This build's block is in the rc file.
         case applied
+        /// A block is there, but not this build's text: an older app wrote
+        /// it, or it was edited by hand.
+        case outdated
         /// The rc file could not be read, or is a symlink we will not write
         /// through.
         case unknown
@@ -164,6 +168,10 @@ public struct ClaudeShellSetupStatus: Sendable, Equatable {
     }
 
     public var rc: RCState
+    /// The rc file or its directory is a symlink. Every write refuses (an
+    /// atomic write would replace the link), so the row offers no button
+    /// that writes, only the manual steps.
+    public var isSymlinked: Bool
     public var crossing: CrossingState
     /// The rc file this app would write, relative to `$HOME` — shown so the
     /// user knows what they are being asked to let us edit.
@@ -171,10 +179,12 @@ public struct ClaudeShellSetupStatus: Sendable, Equatable {
 
     public init(
         rc: RCState = .unknown,
+        isSymlinked: Bool = false,
         crossing: CrossingState = .noSessions,
         relativeRCPath: String? = nil
     ) {
         self.rc = rc
+        self.isSymlinked = isSymlinked
         self.crossing = crossing
         self.relativeRCPath = relativeRCPath
     }
@@ -182,13 +192,34 @@ public struct ClaudeShellSetupStatus: Sendable, Equatable {
     /// One short sentence, per the pane's copy rule. Never restates the label,
     /// never a path or a host.
     public var rcSentence: String {
+        if offersManualSteps { return "Your shell startup file is a symlink; edit it by hand." }
         switch rc {
         case .unsupportedShell: return "Your login shell is not one this can set up."
         case .notApplied: return "Not set up."
         case .applied: return "Set up."
+        case .outdated: return "Update available."
         case .unknown: return "Could not read your shell startup file."
         }
     }
+
+    /// The row's setup button, or nil when this build's block is already in
+    /// the rc file: writing it again changes nothing.
+    public var setupButtonTitle: String? {
+        if isSymlinked { return nil }
+        switch rc {
+        case .unsupportedShell, .notApplied, .unknown: return "Set up…"
+        case .outdated: return "Update…"
+        case .applied: return nil
+        }
+    }
+
+    /// Remove is offered only for a clean block the writer will take out.
+    public var offersRemove: Bool { !isSymlinked && (rc == .applied || rc == .outdated) }
+
+    /// A symlinked rc file not known to hold this build's block: the one
+    /// case the row points at the manual steps instead of a button. The
+    /// app never reads through the link, so its content is usually unknown.
+    public var offersManualSteps: Bool { isSymlinked && rc != .applied }
 
     public var crossingSentence: String {
         switch crossing {
@@ -1349,14 +1380,17 @@ public final class ClaudeIntegrationSettingsModel {
             return
         }
         let writer = shellRCWriter(shell)
+        let reading = writer?.reading(shell: shell)
         let rc: ClaudeShellSetupStatus.RCState
-        switch writer?.isApplied() {
-        case .some(true): rc = .applied
-        case .some(false): rc = .notApplied
-        case .none: rc = .unknown
+        switch reading?.block {
+        case .current?: rc = .applied
+        case .outdated?: rc = .outdated
+        case .absent?: rc = .notApplied
+        case nil: rc = .unknown
         }
         shellSetupStatus = ClaudeShellSetupStatus(
             rc: rc,
+            isSymlinked: reading?.isSymlinked ?? false,
             crossing: liveLocalTTYReport(),
             relativeRCPath: ClaudeShellRCSetup.relativeRCPath(for: shell) { relative in
                 FileManager.default.fileExists(
@@ -1983,7 +2017,8 @@ public final class ClaudeIntegrationSettingsModel {
 
         markSetup(.shellStartup, .running)
         if let shell = loginShell(), let writer = shellRCWriter(shell) {
-            if writer.isApplied() == true {
+            // Current, not merely present: an older block is rewritten here.
+            if writer.isCurrent(shell: shell) == true {
                 markSetup(.shellStartup, .done("The shell startup block is already applied."))
             } else {
                 let shellFailure = await performAsync { try writer.apply(shell: shell) }

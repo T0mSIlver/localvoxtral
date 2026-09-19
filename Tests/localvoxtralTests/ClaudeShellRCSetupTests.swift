@@ -390,6 +390,41 @@ final class ClaudeShellRCSetupTests: XCTestCase {
         XCTAssertEqual(writer.isApplied(), false)
     }
 
+    func testIsCurrentTellsAnOlderBlockFromThisBuildsBlock() throws {
+        let current = ClaudeShellRCSetup.snippet(for: .zsh)
+        let older = current.replacingOccurrences(of: "# Publishes", with: "# Exports")
+        XCTAssertNotEqual(older, current)
+        let fileSystem = StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true, data: Data("export EDITOR=vim\n\n\(older)\n".utf8),
+            permissions: 0o644
+        ))
+        let writer = ClaudeShellRCWriter(fileSystem: fileSystem)
+        XCTAssertEqual(writer.isApplied(), true)
+        XCTAssertEqual(writer.isCurrent(shell: .zsh), false, "an older block needs the rewrite")
+
+        try writer.apply(shell: .zsh)
+        fileSystem.state.data = fileSystem.written?.data
+        XCTAssertEqual(writer.isCurrent(shell: .zsh), true)
+        XCTAssertEqual(writer.isCurrent(shell: .fish), false, "another shell's block is not current")
+
+        // CRLF is still current: apply writes the file's own terminator.
+        let crlf = current.replacingOccurrences(of: "\n", with: "\r\n") + "\r\n"
+        fileSystem.state.data = Data(crlf.utf8)
+        XCTAssertEqual(writer.isCurrent(shell: .zsh), true)
+
+        // Two matching copies are not current: apply would still collapse them.
+        fileSystem.state.data = Data("\(current)\n\(current)\n".utf8)
+        XCTAssertEqual(writer.isCurrent(shell: .zsh), false)
+
+        XCTAssertEqual(writer.blockState(shell: .zsh), .outdated)
+
+        fileSystem.state.data = Data("export EDITOR=vim\n".utf8)
+        XCTAssertEqual(writer.isCurrent(shell: .zsh), false)
+        XCTAssertEqual(writer.blockState(shell: .zsh), .absent)
+        fileSystem.state = ClaudeShellRCState(fileExists: true, data: nil, permissions: nil)
+        XCTAssertNil(writer.isCurrent(shell: .zsh))
+    }
+
     func testAnEXISTINGButUNREADABLEFileIsRefusedRatherThanTreatedAsEmpty() {
         // `~/.zshrc` mode 000, or root-owned. Mapping that to "" made a
         // confirmed setup overwrite it with snippet-only bytes — total content
@@ -422,6 +457,30 @@ final class ClaudeShellRCSetupTests: XCTestCase {
     /// Every symlink test above uses a stub state, so the live `readState` —
     /// the code that decides what those states ARE — had no coverage at all
     /// (review finding M3). This one builds a real temp tree.
+    /// A dotfiles `~/.zshrc` links into a repo. The live reader never reads
+    /// through it, so the row must still learn it is a symlink, holding the
+    /// block or not, rather than lose that to "could not read".
+    func testTheLiveReaderReportsASymlinkedRCFileAsSymlinked() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lvx-rc-\(UUID().uuidString)")
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("zshrc")
+        try Data("\(ClaudeShellRCSetup.snippet(for: .zsh))\n".utf8).write(to: target)
+        try FileManager.default.createSymbolicLink(
+            at: home.appendingPathComponent(".zshrc"), withDestinationURL: target
+        )
+
+        let writer = ClaudeShellRCWriter(
+            fileSystem: LiveClaudeShellRCFileSystem(relativePath: ".zshrc", homeDirectoryURL: home)
+        )
+        XCTAssertEqual(
+            writer.reading(shell: .zsh),
+            ClaudeShellRCWriter.Reading(block: nil, isSymlinked: true)
+        )
+    }
+
     func testTheLiveReaderSeesASymlinkedINTERMEDIATEDirectory() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("lvx-rc-\(UUID().uuidString)")

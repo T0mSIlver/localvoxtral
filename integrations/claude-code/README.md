@@ -140,14 +140,17 @@ There are two ways it can identify your window, tried in that order.
 
 **The app can do this for you.** Settings → Remote hosts → Plain SSH →
 **Set Up…** next to "Terminal setup". It
-shows one consent sentence naming the shell file, links here for details, is
-idempotent (a second run replaces rather than duplicates), and has a **Remove**. The row
+shows one consent sentence naming the shell file, links here for details, and
+has a **Remove**. Once this app's block is in the file, the row offers only
+**Remove**; a block an older app wrote brings back **Update…**, which replaces it
+rather than adding a second copy. The row
 also reports whether a remote session has actually arrived carrying the value,
 which is the half you cannot see from the file.
 
 It refuses to write through a symlink: if your `~/.zshrc` is a link into a
 dotfiles repo, an atomic write would replace the link and detach your setup, so
-it tells you and you paste the block yourself.
+the row says so and links here instead of offering a button, and you paste the
+block yourself.
 
 The manual alternative — add this to your shell's rc file **on your Mac**:
 
