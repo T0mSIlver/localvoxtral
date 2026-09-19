@@ -404,12 +404,18 @@ final class ClaudePluginManifestTests: XCTestCase {
     /// stdout/stderr are captured and discarded (Claude Code parses stdout, so
     /// the shim's own paths must stay silent — not asserted here, but kept off
     /// the test's console).
-    private func runShim(_ shim: URL, hookBin: String, event: String) throws -> (exitCode: Int32, stdout: String) {
+    private func runShim(
+        _ shim: URL,
+        hookBin: String?,
+        event: String,
+        extraEnvironment: [String: String] = [:]
+    ) throws -> (exitCode: Int32, stdout: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = [shim.path, event]
         var environment = ProcessInfo.processInfo.environment
         environment["LOCALVOXTRAL_CLAUDE_HOOK_BIN"] = hookBin
+        environment.merge(extraEnvironment) { _, new in new }
         process.environment = environment
         process.standardInput = FileHandle.nullDevice
         let output = Pipe()
@@ -419,6 +425,70 @@ final class ClaudePluginManifestTests: XCTestCase {
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+    }
+
+    func testShimPrefersTheAppLinkOverAStaleInstallTimePin() throws {
+        // The pin records where the app was at install time; an older copy
+        // left there must not win over the link the running app maintains.
+        let temporary = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let home = temporary.appendingPathComponent("home")
+        let marker = temporary.appendingPathComponent("ran")
+        let current = try writeExecutable(
+            "#!/bin/sh\nprintf current > \(marker.path)\n", named: "current", in: temporary
+        )
+        let stale = try writeExecutable(
+            "#!/bin/sh\nprintf stale > \(marker.path)\n", named: "stale", in: temporary
+        )
+        let pin = [
+            "HOME": home.path,
+            "CLAUDE_PLUGIN_OPTION_"
+                + ClaudePluginInstallService.publisherPathConfigKey.uppercased(): stale.path,
+        ]
+        let shim = pluginRoot.appendingPathComponent("hooks/publish.sh")
+        let link = ClaudePublisherPointer.defaultURL(home: home)
+
+        try ClaudePublisherPointer.refresh(publisher: current, linkURL: link)
+        XCTAssertEqual(try runShim(shim, hookBin: nil, event: "Stop", extraEnvironment: pin).exitCode, 0)
+        XCTAssertEqual(try String(contentsOf: marker, encoding: .utf8), "current")
+
+        // A link whose app is gone falls through to the pin.
+        try FileManager.default.removeItem(at: current)
+        XCTAssertEqual(try runShim(shim, hookBin: nil, event: "Stop", extraEnvironment: pin).exitCode, 0)
+        XCTAssertEqual(try String(contentsOf: marker, encoding: .utf8), "stale")
+    }
+
+    func testShimLinkPathMatchesTheAppsLink() throws {
+        let source = try String(
+            contentsOf: pluginRoot.appendingPathComponent("hooks/publish.sh"), encoding: .utf8
+        )
+        XCTAssertTrue(
+            source.contains("\"${HOME:-}/\(ClaudePublisherPointer.homeRelativePath)\""),
+            "the shim must read the link where the app writes it"
+        )
+    }
+
+    func testPublisherLinkRefreshIsIdempotentAndRepoints() throws {
+        let temporary = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let link = ClaudePublisherPointer.defaultURL(home: temporary)
+        let first = temporary.appendingPathComponent("a")
+        let second = temporary.appendingPathComponent("b")
+
+        XCTAssertEqual(try ClaudePublisherPointer.refresh(publisher: first, linkURL: link), .updated(previous: nil))
+        XCTAssertEqual(try ClaudePublisherPointer.refresh(publisher: first, linkURL: link), .unchanged)
+        XCTAssertEqual(
+            try ClaudePublisherPointer.refresh(publisher: second, linkURL: link),
+            .updated(previous: first.path)
+        )
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: link.path), second.path
+        )
+        // No staging links left behind.
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: link.deletingLastPathComponent().path),
+            ["publisher"]
+        )
     }
 
     func testShimRunsPublisherAsAChildSoExecFailureStillFailsOpen() throws {

@@ -11,9 +11,10 @@ import Foundation
 ///    is the user's, Claude Code owns its schema, and a third-party app editing
 ///    it is how you corrupt someone's setup during an unrelated upgrade. The
 ///    CLI is the supported interface; if it is absent, we do nothing and say so.
-/// 2. **Only on explicit request.** Nothing here runs at launch or on a timer.
-///    Installing a plugin into the user's Claude Code is their decision, made
-///    per call from UI or API.
+/// 2. **Installing is the user's decision.** Only an explicit request installs
+///    the plugin. The one call made without a click is the launch-time update
+///    of a plugin the user already installed and that is older than the
+///    bundled one (`ClaudeIntegrationSettingsModel.updateOutdatedPluginAtLaunch`).
 public struct ClaudePluginInstallService: Sendable {
     public enum Action: Sendable, Equatable {
         /// Register the bundled marketplace directory.

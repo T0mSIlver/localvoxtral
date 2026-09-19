@@ -1700,8 +1700,10 @@ private extension SettingsView {
 
 /// Install/update the LOCAL Claude Code plugin.
 ///
-/// One explicit action, never anything at launch: putting a plugin into someone
-/// else's Claude Code is their decision. The result is one short line next to
+/// Installing is one explicit action: putting a plugin into someone else's
+/// Claude Code is their decision. An installed plugin is updated at launch
+/// (`updateOutdatedPluginAtLaunch`), so Update shows here only when that
+/// failed. The result is one short line next to
 /// the label; the CLI's actual output goes to an alert and the log (owner
 /// rule: no long text in the pane).
 private struct ClaudePluginInstallRow: View {

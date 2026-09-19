@@ -849,6 +849,35 @@ public final class ClaudeIntegrationSettingsModel {
         await runPluginAction("Removed.") { try $0.uninstallPlugin() }
     }
 
+    /// Bring an installed plugin up to the bundled version, once per launch.
+    ///
+    /// The user chose to install the plugin; keeping it at the version this
+    /// app ships is part of that choice, so it needs no click. A plugin that
+    /// is not installed stays that way. A failure is logged and left to the
+    /// row, which still offers Update: an alert nobody asked for at launch
+    /// would be worse than a row that says what happened.
+    public func updateOutdatedPluginAtLaunch() async {
+        await refreshLocalPluginStatus()
+        guard case .updateAvailable(let installed, let bundled) = localPluginStatus,
+              !isPerformingPluginAction
+        else { return }
+        isPerformingPluginAction = true
+        defer { isPerformingPluginAction = false }
+
+        Log.claudeContext.info(
+            "Updating the Claude Code plugin from \(installed, privacy: .public) to \(bundled, privacy: .public)"
+        )
+        let service = pluginService()
+        if let failure = await performAsync({ try service.updatePlugin() }) {
+            Log.claudeContext.error(
+                "Claude plugin update at launch failed: \(failure.describedError, privacy: .public)"
+            )
+        } else {
+            Log.claudeContext.info("Claude Code plugin updated to \(bundled, privacy: .public)")
+        }
+        await refreshLocalPluginStatus()
+    }
+
     private func runPluginAction(
         _ successCopy: String,
         _ body: @escaping @Sendable (any ClaudePluginInstalling) throws -> Void
