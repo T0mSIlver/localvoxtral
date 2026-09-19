@@ -445,10 +445,10 @@ public final class ClaudeIntegrationSettingsModel {
         /// must be re-enrolled before the app can safely address it.
         public var sshHostAlias: String?
         public var commands: [String]
-        /// This host's regenerated ssh-config block, when the local one does
-        /// not already forward the port these commands are about to store on
-        /// the remote — nil when it already matches and there is nothing to
-        /// write.
+        /// This host's regenerated ssh-config block, when the local one did
+        /// not match it when the panel opened; nil when it did. The run
+        /// regenerates a nil one and checks the file again before writing,
+        /// since the block can change while the panel is open.
         ///
         /// The two are ONE migration and the review that caught this was right
         /// to call it a blocker: storing `port=285xx` in the plugin while
@@ -2049,7 +2049,10 @@ public final class ClaudeIntegrationSettingsModel {
             else { return }
             hostID = requestedHostID
             alias = presentationAlias
+            // Current when the panel opened is not current now: regenerate, and
+            // let the fresh read below decide whether to write.
             snippet = presentation.sshConfigSnippet
+                ?? registry?.host(id: requestedHostID).flatMap(expectedSSHConfigSnippet(for:))
             token = nil
         default:
             return
@@ -2300,8 +2303,12 @@ public final class ClaudeIntegrationSettingsModel {
         // Copied out of self before the detached hop, like `service`: the
         // closure is @Sendable and must not capture the main-actor model.
         let port = remoteForwardPort
-        let snippet = presentation.sshConfigSnippet
         let hostID = presentation.hostID
+        // Same as the setup run: regenerate a snippet that was current when
+        // the panel opened, and write only what the file does not already hold.
+        let snippet = (presentation.sshConfigSnippet
+            ?? registry?.host(id: hostID).flatMap(expectedSSHConfigSnippet(for:)))
+            .flatMap { service.sshConfigBlockIsCurrent(snippet: $0, hostID: hostID) == true ? nil : $0 }
         // ORDER IS THE SAFETY PROPERTY. The local block is rewritten first, and
         // the remote is touched only if that succeeded. Reverse them and a
         // refused local write (symlinked config, untrusted ~/.ssh) leaves the

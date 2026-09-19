@@ -698,9 +698,9 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// false "stale" costs one identical write, while a false "current" leaves a
     /// dead tunnel that `Update Plugin…` then skips.
     ///
-    /// Whitespace between fields and around a line does not count, since
-    /// OpenSSH ignores it; comment lines inside the block do not count either,
-    /// so a commented-out directive is a missing one.
+    /// Read the way OpenSSH reads it: keyword case, field spacing and the
+    /// optional `=` after the keyword do not count, and neither do blank or
+    /// comment lines, so a commented-out directive is a missing one.
     public func sshConfigBlockIsCurrent(snippet: String, hostID: String) -> Bool? {
         guard let sshConfigFileSystem else { return nil }
         guard let state = try? sshConfigFileSystem.readState(),
@@ -724,14 +724,19 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             })
     }
 
-    /// A block's lines as OpenSSH reads them: fields split on any horizontal
-    /// whitespace, blank and comment lines dropped.
-    static func directives<Lines: Sequence>(_ lines: Lines) -> [[Substring]]
+    /// A block's lines as OpenSSH reads them: the keyword lowercased and
+    /// split from its arguments by whitespace or one `=`, arguments split on
+    /// any horizontal whitespace, blank and comment lines dropped.
+    static func directives<Lines: Sequence>(_ lines: Lines) -> [[String]]
     where Lines.Element == String {
         lines.compactMap { line in
-            let fields = line.split(whereSeparator: \.isWhitespace)
-            guard let first = fields.first, !first.hasPrefix("#") else { return nil }
-            return fields
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return nil }
+            let keywordEnd = trimmed.firstIndex { $0.isWhitespace || $0 == "=" } ?? trimmed.endIndex
+            var rest = trimmed[keywordEnd...].drop { $0.isWhitespace }
+            if rest.first == "=" { rest = rest.dropFirst().drop { $0.isWhitespace } }
+            return [trimmed[..<keywordEnd].lowercased()]
+                + rest.split(whereSeparator: \.isWhitespace).map(String.init)
         }
     }
 

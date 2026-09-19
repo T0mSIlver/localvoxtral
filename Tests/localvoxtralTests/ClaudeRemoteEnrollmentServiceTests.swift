@@ -562,6 +562,16 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             )),
             true, "blank and comment lines do not change what ssh reads"
         )
+        XCTAssertEqual(
+            isCurrent(expected
+                .replacingOccurrences(of: "ExitOnForwardFailure no", with: "exitonforwardfailure=no")
+                .replacingOccurrences(of: "SendEnv LC_LVX_TTY", with: "SENDENV = LC_LVX_TTY")),
+            true, "OpenSSH keywords are case-insensitive and may take an ="
+        )
+        XCTAssertEqual(
+            isCurrent(expected.replacingOccurrences(of: "LC_LVX_TTY", with: "lc_lvx_tty")),
+            false, "argument case still counts"
+        )
     }
 
     func testForwardStateIgnoresARemoteForwardOutsideThisHostsBlock() throws {
