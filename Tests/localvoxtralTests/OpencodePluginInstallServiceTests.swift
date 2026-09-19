@@ -79,6 +79,55 @@ final class OpencodePluginInstallServiceTests: XCTestCase {
         )
     }
 
+    func testRowButtonsFollowTheStatus() {
+        // A current plugin gets no setup button, since pressing it would
+        // copy the same bytes, and a missing one gets no Remove.
+        let cases: [(OpencodePluginInstallService.Status, String?, Bool)] = [
+            (.notInstalled, "Set up…", false),
+            (.installedUnlisted, "Set up…", true),
+            (.listedMissing, "Set up…", true),
+            (.updateAvailable, "Update…", true),
+            (.installed, nil, true),
+            (.unknown, "Set up…", true),
+        ]
+        for (status, title, remove) in cases {
+            XCTAssertEqual(
+                OpencodePluginInstallService.setupButtonTitle(for: status), title, "\(status)"
+            )
+            XCTAssertEqual(
+                OpencodePluginInstallService.offersRemove(for: status), remove, "\(status)"
+            )
+        }
+    }
+
+    func testAMissingFileStillListedInTUIIsNotNotInstalled() throws {
+        // The file was deleted by hand; the entry left in tui.json is ours to
+        // clean up, so the row must keep Remove.
+        let listed = try tuiJSON(["plugin": [OpencodePluginInstallService.tuiPluginEntry]])
+        let (missing, fs) = service(state: OpencodePluginState(
+            pluginFileExists: false, tuiFileExists: true, tuiData: listed
+        ))
+        XCTAssertEqual(missing.status(), .listedMissing)
+        XCTAssertTrue(OpencodePluginInstallService.offersRemove(for: missing.status()))
+        try missing.remove()
+        XCTAssertEqual(fs.deletedTUI, true, "remove drops the stale entry")
+
+        let (other, _) = service(state: OpencodePluginState(
+            pluginFileExists: false, tuiFileExists: true, tuiData: try tuiJSON(["plugin": ["x.js"]])
+        ))
+        XCTAssertEqual(other.status(), .notInstalled)
+
+        let (malformed, _) = service(state: OpencodePluginState(
+            pluginFileExists: false, tuiFileExists: true, tuiData: Data("garbage{".utf8)
+        ))
+        XCTAssertEqual(malformed.status(), .unknown)
+
+        let (unreadable, _) = service(state: OpencodePluginState(
+            pluginFileExists: false, tuiFileExists: true, tuiData: nil
+        ))
+        XCTAssertEqual(unreadable.status(), .unknown)
+    }
+
     func testUnreadablePluginFileIsUnknown() {
         let (service, _) = service(state: OpencodePluginState(
             pluginFileExists: true, pluginData: nil

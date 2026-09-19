@@ -29,7 +29,7 @@ enum IntegrationsSidebarStatus {
     static func opencodeDot(status: OpencodePluginInstallService.Status) -> SettingsStatusDot {
         switch status {
         case .installed, .updateAvailable: return .green
-        case .notInstalled, .installedUnlisted: return .yellow
+        case .notInstalled, .installedUnlisted, .listedMissing: return .yellow
         case .unknown: return .grey
         }
     }
