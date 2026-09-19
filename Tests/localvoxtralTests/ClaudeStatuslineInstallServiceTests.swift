@@ -117,7 +117,10 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
             (.otherCopy, "Update…", true),
             (.stalePath, "Update…", true),
             (.edited, nil, false),
-            (.foreign, nil, false),
+            (.foreign, "Combine…", false),
+            (.combined, nil, true),
+            (.combinedOutdated, "Update…", true),
+            (.combinedBroken, nil, false),
             (.unknown, nil, false),
         ]
         for (status, title, remove) in cases {

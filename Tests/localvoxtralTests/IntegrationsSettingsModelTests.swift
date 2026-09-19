@@ -271,6 +271,35 @@ final class IntegrationsSettingsModelTests: XCTestCase {
         )
     }
 
+    /// The setup button on a foreign status line is Combine, and it combines;
+    /// Remove then restores the user's command.
+    @MainActor
+    func testCombineFromTheRowAndRemoveRestores() async throws {
+        let hook = "/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook --statusline"
+        let settings = CombineMemoryFS(data: Data(#"{"statusLine":{"type":"command","command":"~/mine.sh"}}"#.utf8))
+        let script = CombineMemoryFS(data: nil)
+        let model = makeModel(
+            statusline: ClaudeStatuslineInstallService(
+                fileSystem: settings, scriptFileSystem: script, isExecutableFile: { _ in true }
+            ),
+            statuslineHookCommand: { hook }
+        )
+        model.refreshStatuslineStatus()
+        XCTAssertEqual(model.statuslineStatus, .foreign)
+
+        await model.applyStatuslineSetup()
+        XCTAssertEqual(model.statuslineResult, "Combined.")
+        XCTAssertEqual(model.statuslineStatus, .combined)
+        XCTAssertEqual(model.statuslineSentence, "Combined with your status line.")
+        XCTAssertNil(model.alert)
+
+        await model.removeStatusline()
+        XCTAssertEqual(model.statuslineStatus, .foreign)
+        let restored = try JSONSerialization.jsonObject(with: try XCTUnwrap(settings.data)) as? [String: Any]
+        XCTAssertEqual((restored?["statusLine"] as? [String: Any])?["command"] as? String, "~/mine.sh")
+        XCTAssertNil(script.data)
+    }
+
     @MainActor
     func testStatuslineApplyAndRemoveRefreshTheRow() async {
         let fs = StubModelStatuslineFS(state: ClaudeStatuslineState(fileExists: false))
@@ -609,4 +638,18 @@ private final class StubModelOpencodeFS: OpencodePluginFileSystem, @unchecked Se
     }
     func deletePlugin() throws { deletedPlugin = true }
     func deleteTUI() throws { deletedTUI = true }
+}
+
+/// Remembers writes, so the row's status follows its own actions.
+private final class CombineMemoryFS: ClaudeStatuslineFileSystem, @unchecked Sendable {
+    var data: Data?
+
+    init(data: Data?) { self.data = data }
+
+    func readState() throws -> ClaudeStatuslineState {
+        ClaudeStatuslineState(fileExists: data != nil, data: data)
+    }
+    func createDirectory(permissions: UInt16) throws {}
+    func atomicWrite(_ data: Data, permissions: UInt16) throws { self.data = data }
+    func deleteFile() throws { data = nil }
 }

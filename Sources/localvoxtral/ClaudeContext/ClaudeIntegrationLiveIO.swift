@@ -92,22 +92,29 @@ enum ClaudeIntegrationLiveIO {
 
 /// `~/.claude/settings.json`, live.
 struct LiveClaudeStatuslineFileSystem: ClaudeStatuslineFileSystem {
-    static let relativePath = ".claude/settings.json"
+    static let settingsRelativePath = ".claude/settings.json"
 
     private let homeURL: URL
+    private let relativePath: String
     private let fileURL: URL
     private let directoryURL: URL
 
-    init(homeDirectoryURL: URL = FileManager.default.homeDirectoryForCurrentUser) {
+    /// `relativePath` defaults to the settings file; Combine's script uses
+    /// the same discipline at `ClaudeStatuslineCombine.scriptRelativePath`.
+    init(
+        relativePath: String = Self.settingsRelativePath,
+        homeDirectoryURL: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) {
         homeURL = homeDirectoryURL
-        fileURL = homeDirectoryURL.appendingPathComponent(Self.relativePath, isDirectory: false)
+        self.relativePath = relativePath
+        fileURL = homeDirectoryURL.appendingPathComponent(relativePath, isDirectory: false)
         directoryURL = fileURL.deletingLastPathComponent()
     }
 
     func readState() throws -> ClaudeStatuslineState {
         let leaf = ClaudeIntegrationLiveIO.readLeaf(at: fileURL)
         let intermediateIsSymlink = LiveClaudeShellRCFileSystem.anyComponentIsSymlink(
-            under: homeURL, relativePath: Self.relativePath
+            under: homeURL, relativePath: relativePath
         )
         return ClaudeStatuslineState(
             fileExists: leaf.exists,

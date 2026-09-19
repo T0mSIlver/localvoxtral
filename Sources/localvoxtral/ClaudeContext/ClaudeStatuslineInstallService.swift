@@ -37,19 +37,37 @@ public struct ClaudeStatuslineInstallService: Sendable {
 
     public static let consentSentence =
         "localvoxtral will edit ~/.claude/settings.json on this Mac."
+    public static let combineConsentSentence =
+        "localvoxtral will write ~/.claude/localvoxtral-statusline.sh and point "
+        + "~/.claude/settings.json at it on this Mac."
+    public static let combinedUpdateConsentSentence =
+        "localvoxtral will rewrite ~/.claude/localvoxtral-statusline.sh on this Mac."
+
+    /// The consent sentence for the row's setup button in `status`.
+    public static func consentSentence(for status: Status) -> String {
+        switch status {
+        case .foreign: return combineConsentSentence
+        case .combinedOutdated: return combinedUpdateConsentSentence
+        default: return consentSentence
+        }
+    }
 
     private let fileSystem: (any ClaudeStatuslineFileSystem)?
+    /// `~/.claude/localvoxtral-statusline.sh`, the script Combine writes.
+    private let scriptFileSystem: (any ClaudeStatuslineFileSystem)?
     /// Whether an invoked path resolves to an existing executable. Injected
     /// so tests pin stale-path behaviour without touching the filesystem.
     private let isExecutableFile: @Sendable (String) -> Bool
 
     public init(
         fileSystem: (any ClaudeStatuslineFileSystem)? = nil,
+        scriptFileSystem: (any ClaudeStatuslineFileSystem)? = nil,
         isExecutableFile: @escaping @Sendable (String) -> Bool = {
             FileManager.default.isExecutableFile(atPath: $0)
         }
     ) {
         self.fileSystem = fileSystem
+        self.scriptFileSystem = scriptFileSystem
         self.isExecutableFile = isExecutableFile
     }
 
@@ -71,9 +89,19 @@ public struct ClaudeStatuslineInstallService: Sendable {
         /// Ours, edited by the user (extra flags, a pipe). Destructive ops
         /// refuse: deletion cannot be undone from our side.
         case edited
-        /// A `statusLine` that is not ours. No Install button, ever — only a
-        /// docs link. Never overwritten.
+        /// A `statusLine` that is not ours. Never overwritten; offers Combine,
+        /// which wraps it in a script that also runs our indicator.
         case foreign
+        /// Combined: the entry runs our script, which runs the user's command
+        /// and this copy's indicator. Offers Remove, which restores the
+        /// user's command.
+        case combined
+        /// Combined, but the script calls another copy of the app. Offers
+        /// Update, which rewrites the script.
+        case combinedOutdated
+        /// The entry runs our script, but the script is missing or was
+        /// edited, so the user's command cannot be read back. No button.
+        case combinedBroken
         /// The file exists but cannot be read or parsed. Reported, not
         /// treated as absent: an unparseable file must never be replaced
         /// with a clean one.
@@ -89,6 +117,9 @@ public struct ClaudeStatuslineInstallService: Sendable {
         case .otherCopy: return "Points at another copy of localvoxtral."
         case .edited: return "Edited in settings.json; remove it there."
         case .foreign: return "Your own status line is configured."
+        case .combined: return "Combined with your status line."
+        case .combinedOutdated: return "Combined; points at another copy of localvoxtral."
+        case .combinedBroken: return "The combined script is missing or edited."
         case .unknown: return "Could not read your Claude settings."
         }
     }
@@ -104,6 +135,8 @@ public struct ClaudeStatuslineInstallService: Sendable {
             return state.fileExists ? .unknown : .notConfigured
         }
         let derived = Self.deriveStatus(settingsData: data)
+        let current = currentHookCommand.flatMap { Self.shellWords($0).first }
+        if derived == .combined { return combinedStatus(currentHookPath: current) }
         guard derived == .installed else { return derived }
         // "Installed." only when the configured path resolves: an entry
         // pointing at a moved/deleted app must surface, not claim health.
@@ -114,7 +147,6 @@ public struct ClaudeStatuslineInstallService: Sendable {
             Self.isCanonical(command: command)
         else { return derived }
         let argv = Self.shellWords(command)
-        let current = currentHookCommand.flatMap { Self.shellWords($0).first }
         guard let invoked = argv.first, invoked.contains("/") else {
             // A bare name resolves through Claude Code's PATH, which this app
             // cannot see. Not known to be this copy, so Update… stays.
@@ -127,22 +159,40 @@ public struct ClaudeStatuslineInstallService: Sendable {
         return Self.samePath(invoked, current) ? .installed : .otherCopy
     }
 
+    private func combinedStatus(currentHookPath: String?) -> Status {
+        guard let text = readScript(), let parsed = ClaudeStatuslineCombine.parse(text) else {
+            return .combinedBroken
+        }
+        guard let currentHookPath else { return .combined }
+        return Self.samePath(parsed.hookPath, currentHookPath) ? .combined : .combinedOutdated
+    }
+
+    /// The script's text, or nil when it is absent, unreadable, or a symlink.
+    private func readScript() -> String? {
+        guard let scriptFileSystem,
+              let state = try? scriptFileSystem.readState(),
+              !state.fileIsSymlink, !state.directoryIsSymlink,
+              let data = state.data
+        else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     /// The row's setup button, or nil: none while the entry is this app's
-    /// (writing it again changes nothing), and none over a status line we
-    /// will not overwrite.
+    /// (writing it again changes nothing), and none where we cannot write.
     public static func setupButtonTitle(for status: Status) -> String? {
         switch status {
         case .notConfigured: return "Set up…"
-        case .stalePath, .otherCopy: return "Update…"
-        case .installed, .edited, .foreign, .unknown: return nil
+        case .stalePath, .otherCopy, .combinedOutdated: return "Update…"
+        case .foreign: return "Combine…"
+        case .installed, .combined, .combinedBroken, .edited, .unknown: return nil
         }
     }
 
     /// Remove is offered only for an entry that is ours, unedited.
     public static func offersRemove(for status: Status) -> Bool {
         switch status {
-        case .installed, .stalePath, .otherCopy: return true
-        case .notConfigured, .edited, .foreign, .unknown: return false
+        case .installed, .stalePath, .otherCopy, .combined, .combinedOutdated: return true
+        case .notConfigured, .edited, .foreign, .combinedBroken, .unknown: return false
         }
     }
 
@@ -175,6 +225,9 @@ public struct ClaudeStatuslineInstallService: Sendable {
             let settings = json as? [String: Any]
         else { return .unknown }
         guard let entry = settings[settingsKey] else { return .notConfigured }
+        if statuslineCommand(from: entry) == ClaudeStatuslineCombine.settingsCommand {
+            return .combined
+        }
         guard
             let command = statuslineCommand(from: entry),
             isOurs(command: command)
@@ -367,7 +420,108 @@ public struct ClaudeStatuslineInstallService: Sendable {
         }
     }
 
+    // MARK: - Combine
+
+    /// Wrap the user's own status line in our script and point the entry at
+    /// it. Script first: if the settings write then fails, a stray script
+    /// runs nothing.
+    public func combine(hookCommand: String) throws {
+        guard let hookPath = Self.shellWords(hookCommand).first else {
+            throw ClaudeStatuslineError.refused
+        }
+        guard let fileSystem, let scriptFileSystem else { throw ClaudeStatuslineError.notConfigured }
+        let settings = try Self.readSettings(fileSystem)
+        guard
+            let entry = settings[Self.settingsKey],
+            let original = Self.statuslineCommand(from: entry),
+            original != ClaudeStatuslineCombine.settingsCommand,
+            !Self.isOurs(command: original)
+        else { throw ClaudeStatuslineError.refused }
+        try writeScript(
+            ClaudeStatuslineCombine.script(original: original, hookPath: hookPath),
+            to: scriptFileSystem
+        )
+        try write { _ in
+            .rewrite(try Self.settingsData(settings, command: ClaudeStatuslineCombine.settingsCommand))
+        }
+    }
+
+    /// Point a combined script at this copy of the app, keeping the user's
+    /// command.
+    public func updateCombined(hookCommand: String) throws {
+        guard let hookPath = Self.shellWords(hookCommand).first else {
+            throw ClaudeStatuslineError.refused
+        }
+        guard let scriptFileSystem else { throw ClaudeStatuslineError.notConfigured }
+        guard let parsed = readScript().flatMap(ClaudeStatuslineCombine.parse) else {
+            throw ClaudeStatuslineError.refused
+        }
+        try writeScript(
+            ClaudeStatuslineCombine.script(original: parsed.original, hookPath: hookPath),
+            to: scriptFileSystem
+        )
+    }
+
+    /// Put the user's command back in the entry, then delete the script.
+    /// Refuses when the script cannot be read back: the command lives only
+    /// there.
+    private func removeCombined() throws {
+        guard let fileSystem, let scriptFileSystem else { throw ClaudeStatuslineError.notConfigured }
+        guard let parsed = readScript().flatMap(ClaudeStatuslineCombine.parse) else {
+            throw ClaudeStatuslineError.refused
+        }
+        let settings = try Self.readSettings(fileSystem)
+        try write { _ in .rewrite(try Self.settingsData(settings, command: parsed.original)) }
+        try scriptFileSystem.deleteFile()
+        Log.claudeContext.info("Claude status line combine removed")
+    }
+
+    /// The settings file's JSON object, refusing what `write` refuses.
+    private static func readSettings(_ fileSystem: any ClaudeStatuslineFileSystem) throws -> [String: Any] {
+        let state = try fileSystem.readState()
+        guard !state.fileIsSymlink, !state.directoryIsSymlink else { throw ClaudeStatuslineError.isSymlink }
+        guard let data = state.data else {
+            throw state.fileExists ? ClaudeStatuslineError.unreadable : ClaudeStatuslineError.refused
+        }
+        guard let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ClaudeStatuslineError.refused
+        }
+        return settings
+    }
+
+    /// `settings` with the entry's command replaced, every other key kept.
+    private static func settingsData(_ settings: [String: Any], command: String) throws -> Data {
+        var settings = settings
+        var entry = (settings[settingsKey] as? [String: Any]) ?? [:]
+        entry[commandTypeKey] = commandType
+        entry[commandKey] = command
+        settings[settingsKey] = entry
+        guard let data = renderSettings(settings) else { throw ClaudeStatuslineError.refused }
+        return data
+    }
+
+    /// Write the script, owner-only and executable. Never over a symlink, and
+    /// never over a file this app did not write.
+    private func writeScript(_ text: String, to scriptFileSystem: any ClaudeStatuslineFileSystem) throws {
+        let state = try scriptFileSystem.readState()
+        guard !state.fileIsSymlink, !state.directoryIsSymlink else { throw ClaudeStatuslineError.isSymlink }
+        if state.fileExists {
+            guard let data = state.data,
+                  String(data: data, encoding: .utf8).flatMap(ClaudeStatuslineCombine.parse) != nil
+            else { throw ClaudeStatuslineError.refused }
+        }
+        if !state.directoryExists { try scriptFileSystem.createDirectory(permissions: 0o700) }
+        try scriptFileSystem.atomicWrite(Data(text.utf8), permissions: 0o700)
+        Log.claudeContext.info("Claude status line combine script written")
+    }
+
     public func remove() throws {
+        if let fileSystem,
+           let data = try? fileSystem.readState().data,
+           Self.deriveStatus(settingsData: data) == .combined {
+            try removeCombined()
+            return
+        }
         try write { existing in
             guard let existing else { return .rewrite(nil) }
             guard let removal = Self.removalSettingsData(existing: existing) else {
