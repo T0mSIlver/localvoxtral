@@ -2304,10 +2304,11 @@ public final class ClaudeIntegrationSettingsModel {
         // closure is @Sendable and must not capture the main-actor model.
         let port = remoteForwardPort
         let hostID = presentation.hostID
-        // Same as the setup run: regenerate a snippet that was current when
-        // the panel opened, and write only what the file does not already hold.
-        let snippet = (presentation.sshConfigSnippet
-            ?? registry?.host(id: hostID).flatMap(expectedSSHConfigSnippet(for:)))
+        // Only the block this path's confirmation disclosed, and only when the
+        // file does not already hold it. Unlike the setup run, whose consent
+        // names ~/.ssh/config either way, this one may have promised no local
+        // edit at all, so it never regenerates one.
+        let snippet = presentation.sshConfigSnippet
             .flatMap { service.sshConfigBlockIsCurrent(snippet: $0, hostID: hostID) == true ? nil : $0 }
         // ORDER IS THE SAFETY PROPERTY. The local block is rewritten first, and
         // the remote is touched only if that succeeded. Reverse them and a
