@@ -1313,9 +1313,7 @@ private struct TextProcessingSettingsPane: View {
                     }
 
                     SettingsFieldRow(
-                        title: "Spoken clipboard paste",
-                        help:
-                            "Say \"paste clipboard\" to insert your clipboard as a code block on commit."
+                        title: "Say \"paste clipboard\" to paste clipboard"
                     ) {
                         Toggle("", isOn: $settings.clipboardPayloadMacroEnabled)
                             .labelsHidden()
@@ -2524,7 +2522,7 @@ private struct SpeakerTermsField: View {
     @State private var draft = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 14) {
             if !terms.isEmpty {
                 SpeakerTermsFlow(spacing: 6) {
                     ForEach(terms, id: \.self) { term in
