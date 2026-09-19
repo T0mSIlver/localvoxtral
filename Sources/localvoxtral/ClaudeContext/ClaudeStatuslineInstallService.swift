@@ -58,9 +58,13 @@ public struct ClaudeStatuslineInstallService: Sendable {
     public enum Status: Sendable, Equatable {
         /// No `statusLine` key at all. The only state that offers Install.
         case notConfigured
-        /// Our command is the `statusLine` and its path resolves. Offers
-        /// Update/Remove.
+        /// Our command, pointing at THIS copy of the app. Offers Remove only:
+        /// Update would write the same command back.
         case installed
+        /// Our command, pointing at another copy of the app that still runs
+        /// (an old install, a `try-pr` build in /tmp). Offers Update, which
+        /// points it at this copy.
+        case otherCopy
         /// Our command, but its path no longer resolves to an executable
         /// (the app moved). Offers Update, which rewrites the path.
         case stalePath
@@ -82,13 +86,17 @@ public struct ClaudeStatuslineInstallService: Sendable {
         case .notConfigured: return "Not installed."
         case .installed: return "Installed."
         case .stalePath: return "The installed path moved; update the status line."
+        case .otherCopy: return "Points at another copy of localvoxtral."
         case .edited: return "Edited in settings.json; remove it there."
         case .foreign: return "Your own status line is configured."
         case .unknown: return "Could not read your Claude settings."
         }
     }
 
-    public func status() -> Status {
+    /// - Parameter currentHookCommand: the command this copy of the app
+    ///   writes. Nil when it cannot tell, and then any runnable entry of ours
+    ///   reads as installed.
+    public func status(currentHookCommand: String? = nil) -> Status {
         guard let fileSystem, let state = try? fileSystem.readState() else { return .unknown }
         guard let data = state.data else {
             // Absent file: nothing configured. An EXISTING but unreadable
@@ -107,7 +115,23 @@ public struct ClaudeStatuslineInstallService: Sendable {
         else { return derived }
         let argv = Self.shellWords(command)
         guard let invoked = argv.first, invoked.contains("/") else { return .installed }
-        return isExecutableFile(invoked) ? .installed : .stalePath
+        guard isExecutableFile(invoked) else { return .stalePath }
+        // A runnable path is not proof it is this app: a moved app leaves the
+        // old copy behind more often than not.
+        guard let current = currentHookCommand.flatMap({ Self.shellWords($0).first }) else {
+            return .installed
+        }
+        return Self.samePath(invoked, current) ? .installed : .otherCopy
+    }
+
+    /// Whether two paths name the same file, through symlinks and `..`
+    /// (`/Applications` is a symlink on some setups; a dev build prints its
+    /// path through one).
+    static func samePath(_ a: String, _ b: String) -> Bool {
+        func canonical(_ path: String) -> String {
+            URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
+        }
+        return canonical(a) == canonical(b)
     }
 
     /// The configured command string when the file holds a command-shaped

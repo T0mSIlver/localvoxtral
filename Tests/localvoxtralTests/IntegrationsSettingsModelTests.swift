@@ -250,6 +250,11 @@ final class IntegrationsSettingsModelTests: XCTestCase {
                 fileExists: true,
                 data: Data("{\"statusLine\":{\"type\":\"command\",\"command\":\"mine\"}}".utf8)
             ), .foreign),
+            // Another copy of the app that still runs: not this install.
+            (ClaudeStatuslineState(
+                fileExists: true,
+                data: Data("{\"statusLine\":{\"type\":\"command\",\"command\":\"\(hook.replacingOccurrences(of: "/Applications/", with: "/tmp/try-pr/"))\"}}".utf8)
+            ), .otherCopy),
         ] {
             let model = makeModel(
                 statusline: ClaudeStatuslineInstallService(

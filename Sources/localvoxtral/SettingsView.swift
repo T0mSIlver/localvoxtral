@@ -1798,7 +1798,13 @@ private struct ClaudeStatuslineRow: View {
                     Button("Set up…") { isShowingSetup = true }
                         .disabled(!model.canApplyStatuslineSetup)
                         .accessibilityIdentifier("integrations.claude.statusline.install")
-                case .installed, .stalePath:
+                case .installed:
+                    // Pointing at this copy: Update… would write the same
+                    // command back.
+                    Button("Remove") { Task { await model.removeStatusline() } }
+                        .disabled(model.isPerformingStatuslineAction)
+                        .accessibilityIdentifier("integrations.claude.statusline.remove")
+                case .stalePath, .otherCopy:
                     Button("Update…") { isShowingSetup = true }
                         .disabled(
                             model.isPerformingStatuslineAction || !model.canApplyStatuslineSetup

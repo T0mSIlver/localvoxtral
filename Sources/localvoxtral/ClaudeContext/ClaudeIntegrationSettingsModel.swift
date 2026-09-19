@@ -1549,7 +1549,7 @@ public final class ClaudeIntegrationSettingsModel {
             statuslineStatus = .unknown
             return
         }
-        statuslineStatus = service.status()
+        statuslineStatus = service.status(currentHookCommand: statuslineHookCommand())
     }
 
     /// Exact generated JSON retained for service tests. Settings never renders
