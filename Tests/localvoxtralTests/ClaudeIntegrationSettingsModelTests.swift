@@ -992,6 +992,23 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertEqual(symlinked.localHerdrPanelStatus, .unknown)
         XCTAssertFalse(symlinked.offersLocalHerdrPanelSetup)
         XCTAssertEqual(symlinked.localHerdrPanelSentence, "Could not read your herdr config.")
+
+        let notUTF8 = makeModel(
+            registry: nil,
+            listener: nil,
+            enrollmentService: ClaudeRemoteEnrollmentService(
+                localHerdrConfigFileSystem: LocalPanelMemoryFileSystem(
+                    state: ClaudeLocalHerdrConfigState(
+                        directoryExists: true, configData: Data([0xFF, 0xFE, 0x00]),
+                        configPermissions: 0o644
+                    )
+                )
+            ),
+            hasEnabledHerdrMachineReport: { true }
+        )
+        await notUTF8.refreshIntegrationsStatuses()
+        XCTAssertEqual(notUTF8.localHerdrPanelStatus, .unknown)
+        XCTAssertFalse(notUTF8.offersLocalHerdrPanelSetup)
     }
 
     /// The success line belongs to the row it wrote. Once the config no
