@@ -5,9 +5,10 @@ import Foundation
 ///
 /// Unlike the plugin itself, a status line has no CLI: Claude Code owns
 /// `~/.claude/settings.json` and its schema, so this service edits exactly
-/// one key (`statusLine`) and nothing else — and never overwrites a status
-/// line it did not write. A foreign `statusLine` is reported, not replaced;
-/// the README shows how to call our hook from the user's own script instead.
+/// one key (`statusLine`) and nothing else. It never overwrites a status line
+/// it did not write: Combine points a foreign entry at a script that runs the
+/// user's command and ours, keeps their command in that script, and Remove
+/// writes it back.
 ///
 /// File discipline mirrors `ClaudeShellRCWriter`: write only on explicit
 /// consent, refuse symlinks at every path component,
@@ -92,6 +93,9 @@ public struct ClaudeStatuslineInstallService: Sendable {
         /// A `statusLine` that is not ours. Never overwritten; offers Combine,
         /// which wraps it in a script that also runs our indicator.
         case foreign
+        /// A foreign entry Combine cannot wrap: not a command, or a file this
+        /// app did not write already sits where the script goes. Docs link only.
+        case foreignNotCombinable
         /// Combined: the entry runs our script, which runs the user's command
         /// and this copy's indicator. Offers Remove, which restores the
         /// user's command.
@@ -116,7 +120,7 @@ public struct ClaudeStatuslineInstallService: Sendable {
         case .stalePath: return "The installed path moved; update the status line."
         case .otherCopy: return "Points at another copy of localvoxtral."
         case .edited: return "Edited in settings.json; remove it there."
-        case .foreign: return "Your own status line is configured."
+        case .foreign, .foreignNotCombinable: return "Your own status line is configured."
         case .combined: return "Combined with your status line."
         case .combinedOutdated: return "Combined; points at another copy of localvoxtral."
         case .combinedBroken: return "The combined script is missing or edited."
@@ -137,6 +141,7 @@ public struct ClaudeStatuslineInstallService: Sendable {
         let derived = Self.deriveStatus(settingsData: data)
         let current = currentHookCommand.flatMap { Self.shellWords($0).first }
         if derived == .combined { return combinedStatus(currentHookPath: current) }
+        if derived == .foreign { return combinable(settingsData: data) ? .foreign : .foreignNotCombinable }
         guard derived == .installed else { return derived }
         // "Installed." only when the configured path resolves: an entry
         // pointing at a moved/deleted app must surface, not claim health.
@@ -160,21 +165,39 @@ public struct ClaudeStatuslineInstallService: Sendable {
     }
 
     private func combinedStatus(currentHookPath: String?) -> Status {
-        guard let text = readScript(), let parsed = ClaudeStatuslineCombine.parse(text) else {
+        guard let script = readScript(), let parsed = ClaudeStatuslineCombine.parse(script.text) else {
             return .combinedBroken
         }
+        // Claude Code runs the script directly, so without its execute bit it
+        // prints nothing. Update rewrites it at 0700.
+        if let permissions = script.permissions, permissions & 0o100 == 0 { return .combinedOutdated }
         guard let currentHookPath else { return .combined }
         return Self.samePath(parsed.hookPath, currentHookPath) ? .combined : .combinedOutdated
     }
 
-    /// The script's text, or nil when it is absent, unreadable, or a symlink.
-    private func readScript() -> String? {
+    /// Whether Combine would succeed: the entry is a command, and no file
+    /// this app did not write sits where the script goes.
+    private func combinable(settingsData: Data) -> Bool {
+        guard let command = Self.deriveCommand(settingsData: settingsData),
+              command != ClaudeStatuslineCombine.settingsCommand,
+              !Self.isOurs(command: command)
+        else { return false }
+        guard let scriptFileSystem, let state = try? scriptFileSystem.readState() else { return false }
+        if state.fileIsSymlink || state.directoryIsSymlink { return false }
+        guard state.fileExists else { return true }
+        return readScript().flatMap { ClaudeStatuslineCombine.parse($0.text) } != nil
+    }
+
+    /// The script's text and mode, or nil when it is absent, unreadable, or
+    /// a symlink.
+    private func readScript() -> (text: String, permissions: UInt16?)? {
         guard let scriptFileSystem,
               let state = try? scriptFileSystem.readState(),
               !state.fileIsSymlink, !state.directoryIsSymlink,
-              let data = state.data
+              let data = state.data,
+              let text = String(data: data, encoding: .utf8)
         else { return nil }
-        return String(data: data, encoding: .utf8)
+        return (text, state.permissions)
     }
 
     /// The row's setup button, or nil: none while the entry is this app's
@@ -184,7 +207,8 @@ public struct ClaudeStatuslineInstallService: Sendable {
         case .notConfigured: return "Set up…"
         case .stalePath, .otherCopy, .combinedOutdated: return "Update…"
         case .foreign: return "Combine…"
-        case .installed, .combined, .combinedBroken, .edited, .unknown: return nil
+        case .installed, .combined, .combinedBroken, .foreignNotCombinable, .edited, .unknown:
+            return nil
         }
     }
 
@@ -192,7 +216,8 @@ public struct ClaudeStatuslineInstallService: Sendable {
     public static func offersRemove(for status: Status) -> Bool {
         switch status {
         case .installed, .stalePath, .otherCopy, .combined, .combinedOutdated: return true
-        case .notConfigured, .edited, .foreign, .combinedBroken, .unknown: return false
+        case .notConfigured, .edited, .foreign, .foreignNotCombinable, .combinedBroken, .unknown:
+            return false
         }
     }
 
@@ -453,7 +478,7 @@ public struct ClaudeStatuslineInstallService: Sendable {
             throw ClaudeStatuslineError.refused
         }
         guard let scriptFileSystem else { throw ClaudeStatuslineError.notConfigured }
-        guard let parsed = readScript().flatMap(ClaudeStatuslineCombine.parse) else {
+        guard let parsed = readScript().flatMap({ ClaudeStatuslineCombine.parse($0.text) }) else {
             throw ClaudeStatuslineError.refused
         }
         try writeScript(
@@ -467,7 +492,7 @@ public struct ClaudeStatuslineInstallService: Sendable {
     /// there.
     private func removeCombined() throws {
         guard let fileSystem, let scriptFileSystem else { throw ClaudeStatuslineError.notConfigured }
-        guard let parsed = readScript().flatMap(ClaudeStatuslineCombine.parse) else {
+        guard let parsed = readScript().flatMap({ ClaudeStatuslineCombine.parse($0.text) }) else {
             throw ClaudeStatuslineError.refused
         }
         let settings = try Self.readSettings(fileSystem)

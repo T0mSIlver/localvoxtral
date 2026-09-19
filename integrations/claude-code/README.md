@@ -324,8 +324,9 @@ That file is yours and Claude Code owns its schema; the CLI is the
 supported interface, and a third-party app editing it is how setups get
 corrupted during an unrelated upgrade. The one exception lives one row down
 in Settings: the opt-in status-line installer writes exactly the
-`statusLine` key after a one-sentence consent, and never over a
-status line you wrote yourself (see above).
+`statusLine` key after a one-sentence consent. Over a status line you wrote
+yourself it writes only through **Combine…**, which keeps your command and
+puts it back on **Remove** (see above).
 
 If you prefer to run the commands yourself, these are the same ones the button
 runs. The only difference is `--config publisher_path=…`: the app knows where

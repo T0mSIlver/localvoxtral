@@ -259,6 +259,8 @@ final class IntegrationsSettingsModelTests: XCTestCase {
             let model = makeModel(
                 statusline: ClaudeStatuslineInstallService(
                     fileSystem: StubModelStatuslineFS(state: state),
+                    // No script yet, as in production before Combine.
+                    scriptFileSystem: StubModelStatuslineFS(state: ClaudeStatuslineState(fileExists: false)),
                     isExecutableFile: { _ in true }
                 ),
                 statuslineHookCommand: { hook }

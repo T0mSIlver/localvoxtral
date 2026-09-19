@@ -1806,7 +1806,7 @@ private struct ClaudeStatuslineRow: View {
                         .disabled(model.isPerformingStatuslineAction)
                         .accessibilityIdentifier("integrations.claude.statusline.remove")
                 }
-                if status == .edited || status == .combinedBroken {
+                if status == .edited || status == .combinedBroken || status == .foreignNotCombinable {
                     Link("How to combine status lines", destination: Self.docsURL)
                 }
 

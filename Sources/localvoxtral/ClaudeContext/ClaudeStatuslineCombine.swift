@@ -48,11 +48,18 @@ public enum ClaudeStatuslineCombine {
     /// exactly what `script(original:hookPath:)` produces for them.
     public static func parse(_ text: String) -> (original: String, hookPath: String)? {
         guard
-            let original = value(after: originalPrefix, in: text),
-            let hookPath = value(after: hookPrefix, in: text),
+            let original = value(after: originalPrefix, until: hookPrefix, in: text),
+            let hookPath = value(after: hookPrefix, until: "input=", in: text),
             script(original: original, hookPath: hookPath) == text
         else { return nil }
         return (original, hookPath)
+    }
+
+    /// `path` as one shell word: bare when it needs no quoting, single-quoted
+    /// otherwise, so an app under `~/My Apps` still runs.
+    public static func shellWord(_ path: String) -> String {
+        let safe = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-+")
+        return !path.isEmpty && path.allSatisfy(safe.contains) ? path : shellQuote(path)
     }
 
     /// One POSIX single-quoted word: `'` becomes `'\''`.
@@ -60,10 +67,15 @@ public enum ClaudeStatuslineCombine {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    private static func value(after prefix: String, in text: String) -> String? {
-        guard let line = text.components(separatedBy: "\n").first(where: { $0.hasPrefix(prefix) })
+    /// The quoted value after `prefix` at the start of a line, up to the next
+    /// line that starts with `terminator`. A quoted value may span lines (a
+    /// user's command can hold newlines), so this never stops at the first
+    /// newline.
+    private static func value(after prefix: String, until terminator: String, in text: String) -> String? {
+        guard let start = text.range(of: "\n" + prefix),
+              let end = text.range(of: "\n" + terminator, range: start.upperBound..<text.endIndex)
         else { return nil }
-        let words = ClaudeStatuslineInstallService.shellWords(String(line.dropFirst(prefix.count)))
+        let words = ClaudeStatuslineInstallService.shellWords(String(text[start.upperBound..<end.lowerBound]))
         return words.count == 1 ? words[0] : nil
     }
 }

@@ -154,6 +154,71 @@ final class ClaudeStatuslineCombineTests: XCTestCase {
         XCTAssertEqual(settingsFS.data, before, "settings untouched when the script refuses")
     }
 
+    /// A command may hold newlines; the script keeps them, and Remove still
+    /// finds the whole command.
+    func testAMultilineCommandSurvivesCombineAndRemove() throws {
+        let multiline = "input=$(cat)\necho \"$input\" | jq -r .model.display_name"
+        let settingsFS = MemoryStatuslineFS(data: try settings(["type": "command", "command": multiline]))
+        let scriptFS = MemoryStatuslineFS(data: nil)
+        let service = service(settings: settingsFS, script: scriptFS)
+        try service.combine(hookCommand: Self.hookCommand)
+        XCTAssertEqual(service.status(currentHookCommand: Self.hookCommand), .combined)
+        try service.remove()
+        XCTAssertEqual(try entry(of: settingsFS.data)["command"] as? String, multiline)
+    }
+
+    /// An app under a folder with a space: the settings command quotes the
+    /// path, and the script tests the whole path, not its first word.
+    func testAnAppPathWithASpaceStaysOneWord() throws {
+        let path = "/Users/me/My Apps/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook"
+        let quoted = ClaudeStatuslineCombine.shellWord(path) + " --statusline"
+        XCTAssertEqual(quoted, "'\(path)' --statusline")
+        XCTAssertEqual(ClaudeStatuslineCombine.shellWord(Self.hook), Self.hook, "no quotes when none are needed")
+
+        let settingsFS = MemoryStatuslineFS(data: try settings(["type": "command", "command": Self.original]))
+        let scriptFS = MemoryStatuslineFS(data: nil)
+        let service = service(settings: settingsFS, script: scriptFS)
+        try service.combine(hookCommand: quoted)
+        let text = String(decoding: try XCTUnwrap(scriptFS.data), as: UTF8.self)
+        XCTAssertEqual(ClaudeStatuslineCombine.parse(text)?.hookPath, path)
+        XCTAssertEqual(service.status(currentHookCommand: quoted), .combined)
+        XCTAssertEqual(
+            service.status(currentHookCommand: "/Users/me/My --statusline"), .combinedOutdated,
+            "a truncated path is another copy, not this one"
+        )
+    }
+
+    /// Claude Code runs the script directly: without its execute bit it
+    /// prints nothing, and Update puts the bit back.
+    func testAScriptWithoutItsExecuteBitIsOutdated() throws {
+        let settingsFS = MemoryStatuslineFS(data: try settings(["type": "command", "command": Self.original]))
+        let scriptFS = MemoryStatuslineFS(data: nil)
+        let service = service(settings: settingsFS, script: scriptFS)
+        try service.combine(hookCommand: Self.hookCommand)
+        scriptFS.permissions = 0o600
+        XCTAssertEqual(service.status(currentHookCommand: Self.hookCommand), .combinedOutdated)
+        try service.updateCombined(hookCommand: Self.hookCommand)
+        XCTAssertEqual(scriptFS.permissions, 0o700)
+        XCTAssertEqual(service.status(currentHookCommand: Self.hookCommand), .combined)
+    }
+
+    /// Combine is offered only where it would work.
+    func testCombineIsNotOfferedWhereItWouldFail() throws {
+        let notACommand = service(
+            settings: MemoryStatuslineFS(data: try settings(["type": "text", "text": "hi"])),
+            script: MemoryStatuslineFS(data: nil)
+        )
+        XCTAssertEqual(notACommand.status(currentHookCommand: Self.hookCommand), .foreignNotCombinable)
+
+        let occupied = service(
+            settings: MemoryStatuslineFS(data: try settings(["type": "command", "command": Self.original])),
+            script: MemoryStatuslineFS(data: Data("#!/bin/sh\necho theirs\n".utf8))
+        )
+        XCTAssertEqual(occupied.status(currentHookCommand: Self.hookCommand), .foreignNotCombinable)
+        XCTAssertNil(ClaudeStatuslineInstallService.setupButtonTitle(for: .foreignNotCombinable))
+        XCTAssertFalse(ClaudeStatuslineInstallService.offersRemove(for: .foreignNotCombinable))
+    }
+
     func testCombineRefusesWithoutAUserCommand() throws {
         for data in [nil, try settings(["type": "command", "command": Self.hookCommand])] {
             let settingsFS = MemoryStatuslineFS(data: data)
