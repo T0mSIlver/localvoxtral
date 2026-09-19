@@ -113,6 +113,14 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
     }
 
+    /// The block this build writes for `host` behind `sandbox-vpn`.
+    private func expectedBlock(remoteForwardPort: UInt16 = 28_542) -> String {
+        ClaudeRemoteEnrollmentService.sshConfigSnippet(
+            host: host, sshHostAlias: "sandbox-vpn", listenerPort: 8473,
+            remoteForwardPort: remoteForwardPort
+        )
+    }
+
     private func plan(alias: String = "builder") throws -> ClaudeRemoteEnrollmentService.SetupPlan {
         try ClaudeRemoteEnrollmentService.plan(host: host, sshHostAlias: alias, token: token)
     }
@@ -330,13 +338,17 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             state: ClaudeRemoteRemoteConfigStateFixture.state(configText: legacy)
         )
         let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: filesystem)
-        XCTAssertEqual(service.sshConfigBlockIsCurrent(port: 8473, hostID: host.id), true)
+        let legacyBlock = try plan().sshConfigSnippet
+        XCTAssertEqual(service.sshConfigBlockIsCurrent(snippet: legacyBlock, hostID: host.id), true)
+        let allocated = ClaudeRemoteEnrollmentService.sshConfigSnippet(
+            host: host, sshHostAlias: "builder", listenerPort: 8473, remoteForwardPort: 28511
+        )
         XCTAssertEqual(
-            service.sshConfigBlockIsCurrent(port: 28511, hostID: host.id), false,
+            service.sshConfigBlockIsCurrent(snippet: allocated, hostID: host.id), false,
             "a legacy block does not forward the allocated port, and saying it does is the split brain"
         )
         XCTAssertEqual(
-            service.sshConfigBlockIsCurrent(port: 28511, hostID: "hunknown"), false,
+            service.sshConfigBlockIsCurrent(snippet: allocated, hostID: "hunknown"), false,
             "no block at all is not a match either"
         )
     }
@@ -385,8 +397,8 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
     }
 
-    /// The pinned `sshConfigForwardsPort` behaviour is unchanged by the
-    /// refactor that added the state read — including its two different nils.
+    /// The block check keeps its cannot-tell semantics: no config file yet is
+    /// nil, not false.
     func testTheBooleanForwardCheckKeepsItsCannotTellSemantics() throws {
         let empty = ClaudeRemoteEnrollmentService(
             sshConfigFileSystem: MemorySSHConfigFileSystem(
@@ -396,7 +408,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             )
         )
         XCTAssertNil(
-            empty.sshConfigForwardsPort(28511, hostID: host.id),
+            empty.sshConfigBlockIsCurrent(snippet: expectedBlock(), hostID: host.id),
             "no config file yet is cannot-tell, and cannot-tell must regenerate"
         )
     }
@@ -443,7 +455,9 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     func testForwardStateIsUnknownWithoutAFilesystemSeamAndNeverGuessesTrue() throws {
         // nil means cannot tell. Callers must regenerate on nil; a `true` here
         // would let the plugin be pointed at a port nothing forwards.
-        XCTAssertNil(ClaudeRemoteEnrollmentService().sshConfigBlockIsCurrent(port: 28511, hostID: host.id))
+        XCTAssertNil(
+            ClaudeRemoteEnrollmentService().sshConfigBlockIsCurrent(snippet: expectedBlock(), hostID: host.id)
+        )
     }
 
     func testABlockWithTheRIGHTPortButNoSendEnvIsNOTCurrent() throws {
@@ -464,7 +478,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
         let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: filesystem)
         XCTAssertEqual(
-            service.sshConfigBlockIsCurrent(port: 28_542, hostID: host.id), false,
+            service.sshConfigBlockIsCurrent(snippet: expectedBlock(), hostID: host.id), false,
             "the port matches and the block is still stale"
         )
     }
@@ -475,6 +489,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             ClaudeRemoteEnrollmentService.blockBegin(hostID: host.id),
             "Host sandbox-vpn",
             "    RemoteForward 28542 127.0.0.1:8473",
+            "    ExitOnForwardFailure no",
             "    # SendEnv LC_LVX_TTY",
             ClaudeRemoteEnrollmentService.blockEnd(hostID: host.id),
         ].joined(separator: "\n")
@@ -483,7 +498,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
         let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: filesystem)
         XCTAssertEqual(
-            service.sshConfigBlockIsCurrent(port: 28_542, hostID: host.id), false
+            service.sshConfigBlockIsCurrent(snippet: expectedBlock(), hostID: host.id), false
         )
     }
 
@@ -492,6 +507,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             ClaudeRemoteEnrollmentService.blockBegin(hostID: host.id),
             "Host sandbox-vpn",
             "\tRemoteForward\t28542\t127.0.0.1:8473",
+            "  ExitOnForwardFailure    no",
             "    SendEnv   LC_LVX_TTY",
             ClaudeRemoteEnrollmentService.blockEnd(hostID: host.id),
         ].joined(separator: "\n")
@@ -501,9 +517,50 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: filesystem)
 
         XCTAssertEqual(
-            service.sshConfigBlockIsCurrent(port: 28_542, hostID: host.id),
+            service.sshConfigBlockIsCurrent(snippet: expectedBlock(), hostID: host.id),
             true,
             "OpenSSH accepts any horizontal whitespace between directive fields"
+        )
+    }
+
+    /// Port and `SendEnv` right, the rest wrong: each of these is a dead or
+    /// misrouted tunnel that a port-and-SendEnv check called current, so the
+    /// update run skipped the rewrite and the row hid its button.
+    func testABlockIsCurrentOnlyWhenEveryDirectiveMatches() throws {
+        let expected = expectedBlock()
+        func isCurrent(_ block: String) -> Bool? {
+            ClaudeRemoteEnrollmentService(
+                sshConfigFileSystem: MemorySSHConfigFileSystem(
+                    state: ClaudeRemoteRemoteConfigStateFixture.state(
+                        configText: "Host other\n    User me\n\n\(block)\n"
+                    )
+                )
+            ).sshConfigBlockIsCurrent(snippet: expected, hostID: host.id)
+        }
+        XCTAssertEqual(isCurrent(expected), true)
+        XCTAssertEqual(
+            isCurrent(expected.replacingOccurrences(of: "127.0.0.1:8473", with: "127.0.0.1:9999")),
+            false, "the forward reaches the wrong local port"
+        )
+        XCTAssertEqual(
+            isCurrent(expected.replacingOccurrences(of: "Host sandbox-vpn", with: "Host builder")),
+            false, "the block names another alias"
+        )
+        XCTAssertEqual(
+            isCurrent(expected.replacingOccurrences(of: "    ExitOnForwardFailure no\n", with: "")),
+            false, "a directive is missing"
+        )
+        XCTAssertEqual(
+            isCurrent(expected.replacingOccurrences(
+                of: "    SendEnv LC_LVX_TTY", with: "    SendEnv LC_LVX_TTY\n    User root"
+            )),
+            false, "a directive was added"
+        )
+        XCTAssertEqual(
+            isCurrent(expected.replacingOccurrences(
+                of: "    SendEnv LC_LVX_TTY", with: "    SendEnv LC_LVX_TTY\n\n    # a note"
+            )),
+            true, "blank and comment lines do not change what ssh reads"
         )
     }
 
@@ -515,7 +572,12 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             state: ClaudeRemoteRemoteConfigStateFixture.state(configText: foreign)
         )
         let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: filesystem)
-        XCTAssertEqual(service.sshConfigBlockIsCurrent(port: 28511, hostID: host.id), false)
+        XCTAssertEqual(
+            service.sshConfigBlockIsCurrent(
+                snippet: expectedBlock(remoteForwardPort: 28511), hostID: host.id
+            ),
+            false
+        )
     }
 
     func testTheUpdatePathMigratesAnAlreadyEnrolledHostToTheAllocatedPort() throws {
@@ -866,7 +928,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
 
     /// The owner rule this change exists for: nothing the user copies carries
     /// commentary. The two BEGIN/END lines are the only exception, and they are
-    /// functional — `applySSHConfigSnippet` and `sshConfigForwardsPort` both
+    /// functional — `applySSHConfigSnippet` and `sshConfigBlockIsCurrent` both
     /// find the block by them.
     func testNothingInThePlanCarriesACommentExceptTheTwoDelimiters() throws {
         let plan = try allocatedPlan()

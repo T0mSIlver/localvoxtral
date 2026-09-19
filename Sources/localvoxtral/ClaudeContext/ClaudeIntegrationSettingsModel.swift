@@ -1049,9 +1049,9 @@ public final class ClaudeIntegrationSettingsModel {
                         reported: host.reportedPluginVersion,
                         expected: ClaudeRemoteEnrollmentService.remotePluginVersion
                     )
-                    || enrollmentService.sshConfigBlockIsCurrent(
-                        port: remoteForwardPort, hostID: host.id
-                    ) != true
+                    || expectedSSHConfigSnippet(for: host).flatMap {
+                        enrollmentService.sshConfigBlockIsCurrent(snippet: $0, hostID: host.id)
+                    } != true
                     || !shellStepSettled
                 )
             )
@@ -1683,7 +1683,9 @@ public final class ClaudeIntegrationSettingsModel {
         // assuming a stale block is current is a silently dead host.
         let alreadyCurrent =
             registry?.host(id: hostID).flatMap { host in
-                enrollmentService.sshConfigBlockIsCurrent(port: remoteForwardPort, hostID: host.id)
+                expectedSSHConfigSnippet(for: host).flatMap {
+                    enrollmentService.sshConfigBlockIsCurrent(snippet: $0, hostID: host.id)
+                }
             } ?? false
         let snippet: String? = alreadyCurrent ? nil : registry?.host(id: hostID).map { host in
             ClaudeRemoteEnrollmentService.sshConfigSnippet(
@@ -1707,6 +1709,20 @@ public final class ClaudeIntegrationSettingsModel {
     /// Exactly what `performPluginUpdate` will do, retained as a test seam.
     static func updatePreview(for presentation: PluginUpdatePresentation) -> String {
         presentation.applicationText
+    }
+
+    /// The ssh-config block this build writes for `host`, or nil when it has
+    /// no valid alias to write it for.
+    private func expectedSSHConfigSnippet(for host: ClaudeRemoteHost) -> String? {
+        guard let alias = host.sshHostAlias,
+              ClaudeRemoteEnrollmentService.isValidHostAlias(alias)
+        else { return nil }
+        return ClaudeRemoteEnrollmentService.sshConfigSnippet(
+            host: host,
+            sshHostAlias: alias,
+            listenerPort: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port,
+            remoteForwardPort: remoteForwardPort
+        )
     }
 
     /// Stands in for an alias we were never told. It is not a valid target and
@@ -2050,9 +2066,10 @@ public final class ClaudeIntegrationSettingsModel {
 
         let service = enrollmentService
         let port = remoteForwardPort
-        let snippetToApply = service.sshConfigBlockIsCurrent(port: port, hostID: hostID) == true
-            ? nil
-            : snippet
+        // Skip the write only when the file already holds this exact block.
+        let snippetToApply = snippet.flatMap {
+            service.sshConfigBlockIsCurrent(snippet: $0, hostID: hostID) == true ? nil : $0
+        }
 
         markSetup(.sshConfig, .running)
         let sshAttempt = await performEnrollmentAsync {
