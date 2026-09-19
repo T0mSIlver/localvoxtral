@@ -908,7 +908,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         """
         alert.addButton(withTitle: "Update (Keep Backups)")
         alert.addButton(withTitle: "Keep Mine")
-        alert.addButton(withTitle: "Show Files…")
+        // No ellipsis: it reveals the files in Finder, with no dialog to
+        // fill in. The macOS rule, which the app's buttons follow: "…" only
+        // when pressing asks for more input or a confirmation first.
+        alert.addButton(withTitle: "Show Files")
 
         decision: while true {
             switch alert.runModal() {
