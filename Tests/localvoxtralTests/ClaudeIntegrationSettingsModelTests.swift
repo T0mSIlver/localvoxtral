@@ -2934,8 +2934,12 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     private final class StubRCFileSystem: ClaudeShellRCFileSystem, @unchecked Sendable {
         var state: ClaudeShellRCState
         var writes = 0
+        var reads = 0
         init(state: ClaudeShellRCState) { self.state = state }
-        func readState() throws -> ClaudeShellRCState { state }
+        func readState() throws -> ClaudeShellRCState {
+            reads += 1
+            return state
+        }
         func createDirectory(permissions: UInt16) throws {}
         func atomicWrite(_ data: Data, permissions: UInt16) throws {
             writes += 1
@@ -3003,7 +3007,46 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             let status = ClaudeShellSetupStatus(rc: rc)
             XCTAssertEqual(status.setupButtonTitle, title, "\(rc)")
             XCTAssertEqual(status.offersRemove, remove, "\(rc)")
+            XCTAssertFalse(status.offersManualSteps, "\(rc)")
         }
+    }
+
+    /// Every write refuses a symlinked rc file (or directory), so the row
+    /// offers no button that writes; a missing or older block points at the
+    /// manual steps instead.
+    @MainActor
+    func testASymlinkedRCFileOffersTheManualStepsInsteadOfButtons() {
+        let current = ClaudeShellRCSetup.snippet(for: .zsh)
+        let cases: [(ClaudeShellRCState, ClaudeShellSetupStatus.RCState, Bool)] = [
+            (ClaudeShellRCState(fileExists: false, directoryIsSymlink: true), .notApplied, true),
+            (ClaudeShellRCState(fileExists: true, fileIsSymlink: true, data: Data("x\n".utf8)), .notApplied, true),
+            (ClaudeShellRCState(
+                fileExists: true, fileIsSymlink: true,
+                data: Data(current.replacingOccurrences(of: "# Publishes", with: "# Exports").utf8)
+            ), .outdated, true),
+            (ClaudeShellRCState(fileExists: true, fileIsSymlink: true, data: Data(current.utf8)), .applied, false),
+        ]
+        for (state, rc, manual) in cases {
+            let model = shellSetupModel(fileSystem: StubRCFileSystem(state: state))
+            model.refreshShellSetupStatus()
+            XCTAssertEqual(model.shellSetupStatus.rc, rc, "\(state)")
+            XCTAssertTrue(model.shellSetupStatus.isSymlinked)
+            XCTAssertNil(model.shellSetupStatus.setupButtonTitle, "\(state)")
+            XCTAssertFalse(model.shellSetupStatus.offersRemove, "\(state)")
+            XCTAssertEqual(model.shellSetupStatus.offersManualSteps, manual, "\(state)")
+        }
+    }
+
+    /// One read per refresh, so a save between two reads cannot mix answers.
+    @MainActor
+    func testShellSetupStatusReadsTheRCFileOnce() {
+        let fileSystem = StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true, data: Data("\(ClaudeShellRCSetup.snippet(for: .zsh))\n".utf8)
+        ))
+        let model = shellSetupModel(fileSystem: fileSystem)
+        model.refreshShellSetupStatus()
+        XCTAssertEqual(fileSystem.reads, 1)
+        XCTAssertEqual(model.shellSetupStatus.rc, .applied)
     }
 
     @MainActor

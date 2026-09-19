@@ -149,7 +149,8 @@ which is the half you cannot see from the file.
 
 It refuses to write through a symlink: if your `~/.zshrc` is a link into a
 dotfiles repo, an atomic write would replace the link and detach your setup, so
-it tells you and you paste the block yourself.
+the row says so and links here instead of offering a button, and you paste the
+block yourself.
 
 The manual alternative — add this to your shell's rc file **on your Mac**:
 

@@ -168,6 +168,10 @@ public struct ClaudeShellSetupStatus: Sendable, Equatable {
     }
 
     public var rc: RCState
+    /// The rc file or its directory is a symlink. Every write refuses (an
+    /// atomic write would replace the link), so the row offers no button
+    /// that writes, only the manual steps.
+    public var isSymlinked: Bool
     public var crossing: CrossingState
     /// The rc file this app would write, relative to `$HOME` — shown so the
     /// user knows what they are being asked to let us edit.
@@ -175,10 +179,12 @@ public struct ClaudeShellSetupStatus: Sendable, Equatable {
 
     public init(
         rc: RCState = .unknown,
+        isSymlinked: Bool = false,
         crossing: CrossingState = .noSessions,
         relativeRCPath: String? = nil
     ) {
         self.rc = rc
+        self.isSymlinked = isSymlinked
         self.crossing = crossing
         self.relativeRCPath = relativeRCPath
     }
@@ -186,6 +192,7 @@ public struct ClaudeShellSetupStatus: Sendable, Equatable {
     /// One short sentence, per the pane's copy rule. Never restates the label,
     /// never a path or a host.
     public var rcSentence: String {
+        if offersManualSteps { return "Your shell startup file is a symlink; edit it by hand." }
         switch rc {
         case .unsupportedShell: return "Your login shell is not one this can set up."
         case .notApplied: return "Not set up."
@@ -198,6 +205,7 @@ public struct ClaudeShellSetupStatus: Sendable, Equatable {
     /// The row's setup button, or nil when this build's block is already in
     /// the rc file: writing it again changes nothing.
     public var setupButtonTitle: String? {
+        if isSymlinked { return nil }
         switch rc {
         case .unsupportedShell, .notApplied, .unknown: return "Set up…"
         case .outdated: return "Update…"
@@ -206,7 +214,13 @@ public struct ClaudeShellSetupStatus: Sendable, Equatable {
     }
 
     /// Remove is offered only for a clean block the writer will take out.
-    public var offersRemove: Bool { rc == .applied || rc == .outdated }
+    public var offersRemove: Bool { !isSymlinked && (rc == .applied || rc == .outdated) }
+
+    /// A symlinked rc file whose block is missing or older: the one case the
+    /// row points at the manual steps instead of a button.
+    public var offersManualSteps: Bool {
+        isSymlinked && (rc == .notApplied || rc == .outdated)
+    }
 
     public var crossingSentence: String {
         switch crossing {
@@ -1367,8 +1381,9 @@ public final class ClaudeIntegrationSettingsModel {
             return
         }
         let writer = shellRCWriter(shell)
+        let reading = writer?.reading(shell: shell)
         let rc: ClaudeShellSetupStatus.RCState
-        switch writer?.blockState(shell: shell) {
+        switch reading?.block {
         case .current?: rc = .applied
         case .outdated?: rc = .outdated
         case .absent?: rc = .notApplied
@@ -1376,6 +1391,7 @@ public final class ClaudeIntegrationSettingsModel {
         }
         shellSetupStatus = ClaudeShellSetupStatus(
             rc: rc,
+            isSymlinked: reading?.isSymlinked ?? false,
             crossing: liveLocalTTYReport(),
             relativeRCPath: ClaudeShellRCSetup.relativeRCPath(for: shell) { relative in
                 FileManager.default.fileExists(

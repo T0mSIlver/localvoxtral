@@ -1918,6 +1918,10 @@ private struct ClaudeShellSetupRow: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
     @State private var isShowingShellSetup = false
 
+    private static let manualStepsURL = URL(
+        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/claude-code/README.md#1-the-tty-echo-works-through-jump-hosts-and-controlmaster"
+    )!
+
     var body: some View {
         SettingsGroupRow {
             shellSetup
@@ -1977,6 +1981,11 @@ private struct ClaudeShellSetupRow: View {
                     .controlSize(.small)
                     .disabled(!model.canApplyShellSetup)
                     .accessibilityIdentifier("claude.remote.shellSetup.setUp")
+            }
+            if model.shellSetupStatus.offersManualSteps {
+                Link("Details", destination: Self.manualStepsURL)
+                    .font(.caption)
+                    .accessibilityIdentifier("claude.remote.shellSetup.details")
             }
         }
     }

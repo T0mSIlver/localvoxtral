@@ -345,7 +345,7 @@ public struct ClaudeShellRCWriter: Sendable {
     /// Is the block present right now? Nil when the file cannot be read at all,
     /// which the UI reports as unknown rather than as absent.
     public func isApplied() -> Bool? {
-        statusText().map(ClaudeShellRCSetup.containsBlock)
+        statusText().map { ClaudeShellRCSetup.containsBlock($0.text) }
     }
 
     public enum BlockState: Sendable, Equatable {
@@ -356,16 +356,31 @@ public struct ClaudeShellRCWriter: Sendable {
         case outdated
     }
 
+    public struct Reading: Sendable, Equatable {
+        public var block: BlockState
+        /// The file or its directory is a symlink: every write refuses.
+        public var isSymlinked: Bool
+    }
+
     /// Absent, current or outdated from ONE read of the file, so a save
     /// landing between two reads cannot mix their answers. Nil exactly when
     /// `isApplied()` is nil.
-    public func blockState(shell: ClaudeShellKind) -> BlockState? {
-        statusText().map { text in
+    public func reading(shell: ClaudeShellKind) -> Reading? {
+        statusText().map { read in
+            let block: BlockState
             if ClaudeShellRCSetup.containsCurrentBlock(
-                text, snippet: ClaudeShellRCSetup.snippet(for: shell)
-            ) { return .current }
-            return ClaudeShellRCSetup.containsBlock(text) ? .outdated : .absent
+                read.text, snippet: ClaudeShellRCSetup.snippet(for: shell)
+            ) {
+                block = .current
+            } else {
+                block = ClaudeShellRCSetup.containsBlock(read.text) ? .outdated : .absent
+            }
+            return Reading(block: block, isSymlinked: read.isSymlinked)
         }
+    }
+
+    public func blockState(shell: ClaudeShellKind) -> BlockState? {
+        reading(shell: shell)?.block
     }
 
     /// Is the block present AND this build's text for `shell`?
@@ -375,15 +390,16 @@ public struct ClaudeShellRCWriter: Sendable {
 
     /// The rc file's text for a status read: "" when it does not exist, nil
     /// when it cannot be read.
-    private func statusText() -> String? {
+    private func statusText() -> (text: String, isSymlinked: Bool)? {
         guard let fileSystem, let state = try? fileSystem.readState() else { return nil }
+        let isSymlinked = state.fileIsSymlink || state.directoryIsSymlink
         guard let data = state.data, let text = String(data: data, encoding: .utf8) else {
-            return state.fileExists ? nil : ""
+            return state.fileExists ? nil : ("", isSymlinked)
         }
         // Damaged markers are not "applied": the writer will refuse, and the
         // row must not offer Remove as though there were a clean block.
         if ClaudeShellRCSetup.hasDamagedBlock(text) { return nil }
-        return text
+        return (text, isSymlinked)
     }
 
     public func apply(shell: ClaudeShellKind) throws {
