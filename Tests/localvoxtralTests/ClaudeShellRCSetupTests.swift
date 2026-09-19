@@ -416,8 +416,11 @@ final class ClaudeShellRCSetupTests: XCTestCase {
         fileSystem.state.data = Data("\(current)\n\(current)\n".utf8)
         XCTAssertEqual(writer.isCurrent(shell: .zsh), false)
 
+        XCTAssertEqual(writer.blockState(shell: .zsh), .outdated)
+
         fileSystem.state.data = Data("export EDITOR=vim\n".utf8)
         XCTAssertEqual(writer.isCurrent(shell: .zsh), false)
+        XCTAssertEqual(writer.blockState(shell: .zsh), .absent)
         fileSystem.state = ClaudeShellRCState(fileExists: true, data: nil, permissions: nil)
         XCTAssertNil(writer.isCurrent(shell: .zsh))
     }

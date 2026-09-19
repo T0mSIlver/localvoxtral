@@ -348,13 +348,29 @@ public struct ClaudeShellRCWriter: Sendable {
         statusText().map(ClaudeShellRCSetup.containsBlock)
     }
 
-    /// Is the block present AND this build's text for `shell`? False for an
-    /// older block, which `apply` would rewrite. Nil exactly when
+    public enum BlockState: Sendable, Equatable {
+        case absent
+        /// This build's text for the shell, exactly once.
+        case current
+        /// A block `apply` would rewrite: older text, or several copies.
+        case outdated
+    }
+
+    /// Absent, current or outdated from ONE read of the file, so a save
+    /// landing between two reads cannot mix their answers. Nil exactly when
     /// `isApplied()` is nil.
-    public func isCurrent(shell: ClaudeShellKind) -> Bool? {
-        statusText().map {
-            ClaudeShellRCSetup.containsCurrentBlock($0, snippet: ClaudeShellRCSetup.snippet(for: shell))
+    public func blockState(shell: ClaudeShellKind) -> BlockState? {
+        statusText().map { text in
+            if ClaudeShellRCSetup.containsCurrentBlock(
+                text, snippet: ClaudeShellRCSetup.snippet(for: shell)
+            ) { return .current }
+            return ClaudeShellRCSetup.containsBlock(text) ? .outdated : .absent
         }
+    }
+
+    /// Is the block present AND this build's text for `shell`?
+    public func isCurrent(shell: ClaudeShellKind) -> Bool? {
+        blockState(shell: shell).map { $0 == .current }
     }
 
     /// The rc file's text for a status read: "" when it does not exist, nil

@@ -1368,10 +1368,11 @@ public final class ClaudeIntegrationSettingsModel {
         }
         let writer = shellRCWriter(shell)
         let rc: ClaudeShellSetupStatus.RCState
-        switch writer?.isApplied() {
-        case .some(true): rc = writer?.isCurrent(shell: shell) == true ? .applied : .outdated
-        case .some(false): rc = .notApplied
-        case .none: rc = .unknown
+        switch writer?.blockState(shell: shell) {
+        case .current?: rc = .applied
+        case .outdated?: rc = .outdated
+        case .absent?: rc = .notApplied
+        case nil: rc = .unknown
         }
         shellSetupStatus = ClaudeShellSetupStatus(
             rc: rc,
