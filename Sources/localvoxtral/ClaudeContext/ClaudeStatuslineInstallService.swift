@@ -108,20 +108,42 @@ public struct ClaudeStatuslineInstallService: Sendable {
         // "Installed." only when the configured path resolves: an entry
         // pointing at a moved/deleted app must surface, not claim health.
         // Bare names (no "/") cannot be checked against the filesystem here;
-        // they report installed and resolve via PATH at runtime.
+        // they resolve via PATH at runtime (see below).
         guard
             let command = Self.deriveCommand(settingsData: data),
             Self.isCanonical(command: command)
         else { return derived }
         let argv = Self.shellWords(command)
-        guard let invoked = argv.first, invoked.contains("/") else { return .installed }
+        let current = currentHookCommand.flatMap { Self.shellWords($0).first }
+        guard let invoked = argv.first, invoked.contains("/") else {
+            // A bare name resolves through Claude Code's PATH, which this app
+            // cannot see. Not known to be this copy, so Update… stays.
+            return current == nil ? .installed : .otherCopy
+        }
         guard isExecutableFile(invoked) else { return .stalePath }
         // A runnable path is not proof it is this app: a moved app leaves the
         // old copy behind more often than not.
-        guard let current = currentHookCommand.flatMap({ Self.shellWords($0).first }) else {
-            return .installed
-        }
+        guard let current else { return .installed }
         return Self.samePath(invoked, current) ? .installed : .otherCopy
+    }
+
+    /// The row's setup button, or nil: none while the entry is this app's
+    /// (writing it again changes nothing), and none over a status line we
+    /// will not overwrite.
+    public static func setupButtonTitle(for status: Status) -> String? {
+        switch status {
+        case .notConfigured: return "Set up…"
+        case .stalePath, .otherCopy: return "Update…"
+        case .installed, .edited, .foreign, .unknown: return nil
+        }
+    }
+
+    /// Remove is offered only for an entry that is ours, unedited.
+    public static func offersRemove(for status: Status) -> Bool {
+        switch status {
+        case .installed, .stalePath, .otherCopy: return true
+        case .notConfigured, .edited, .foreign, .unknown: return false
+        }
     }
 
     /// Whether two paths name the same file, through symlinks and `..`
