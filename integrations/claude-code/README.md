@@ -583,6 +583,9 @@ file contents. Its **Details** link opens the complete command reference in
 [docs/remote-claude-context.md](../../docs/remote-claude-context.md#how-enrollment-works).
 The list in that row shows each enrolled host, when it was last seen,
 and gives you **Update Plugin…**, **Rotate Token**, **Revoke** and **Remove**.
+**Update Plugin…** hides once the host has reported the app's plugin version
+since launch and this Mac's SSH config block for it is current, since the run
+would change nothing.
 
 The consent sentence names every local file and the SSH alias the flow may
 touch. Nothing runs or is written before **Set Up**. The app runs remote work

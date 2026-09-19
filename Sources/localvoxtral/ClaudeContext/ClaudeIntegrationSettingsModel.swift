@@ -285,6 +285,12 @@ public final class ClaudeIntegrationSettingsModel {
         /// state. The record is monotone, so an old session's headerless hook
         /// cannot re-flag a host whose update a read-back already proved.
         public var pluginNeedsUpdate: Bool = false
+        /// Whether the row offers Update Plugin…. Hidden only when the update
+        /// run would change nothing: the host reported this build's plugin
+        /// (or newer) this app session AND this Mac's SSH config block for it
+        /// is current. A host not heard from yet, or a block that cannot be
+        /// read, keeps the button, since neither is known to be current.
+        public var offersUpdate: Bool = true
     }
 
     /// The one fixed sentence the row's status position shows while
@@ -315,6 +321,17 @@ public final class ClaudeIntegrationSettingsModel {
         case .version(let version):
             return ClaudeRemotePluginVersionCodec.isVersion(version, olderThan: expected)
         }
+    }
+
+    /// Whether a host REPORTED this build's plugin version or a newer one.
+    /// Not the negation of `pluginNeedsUpdate`: a host never heard from is
+    /// neither outdated (no hint without evidence) nor current.
+    static func pluginIsCurrent(
+        reported: ClaudeRemotePluginVersionReport?,
+        expected: String
+    ) -> Bool {
+        guard case .version(let version)? = reported else { return false }
+        return !ClaudeRemotePluginVersionCodec.isVersion(version, olderThan: expected)
     }
 
     /// "Last context: 2 min ago", from a clock the caller supplies.
@@ -1016,7 +1033,15 @@ public final class ClaudeIntegrationSettingsModel {
                 pluginNeedsUpdate: !host.isRevoked && Self.pluginNeedsUpdate(
                     reported: host.reportedPluginVersion,
                     expected: ClaudeRemoteEnrollmentService.remotePluginVersion
-                )
+                ),
+                offersUpdate: host.isRevoked
+                    || !Self.pluginIsCurrent(
+                        reported: host.reportedPluginVersion,
+                        expected: ClaudeRemoteEnrollmentService.remotePluginVersion
+                    )
+                    || enrollmentService.sshConfigBlockIsCurrent(
+                        port: remoteForwardPort, hostID: host.id
+                    ) != true
             )
         }
         herdrMachines = Self.herdrMachineSection(

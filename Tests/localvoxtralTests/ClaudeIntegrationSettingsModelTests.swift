@@ -2233,6 +2233,15 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         ))
     }
 
+    func testPluginIsCurrentNeedsAReportedVersion() {
+        let expected = ClaudeRemoteEnrollmentService.remotePluginVersion
+        XCTAssertFalse(ClaudeIntegrationSettingsModel.pluginIsCurrent(reported: nil, expected: expected))
+        XCTAssertFalse(ClaudeIntegrationSettingsModel.pluginIsCurrent(reported: .headerAbsent, expected: expected))
+        XCTAssertFalse(ClaudeIntegrationSettingsModel.pluginIsCurrent(reported: .version("1.9.0"), expected: expected))
+        XCTAssertTrue(ClaudeIntegrationSettingsModel.pluginIsCurrent(reported: .version(expected), expected: expected))
+        XCTAssertTrue(ClaudeIntegrationSettingsModel.pluginIsCurrent(reported: .version("99.0.0"), expected: expected))
+    }
+
     func testVersionComparisonIsNumericPerComponent() {
         // The comparison itself lives in ClaudeRemotePluginVersionTests now
         // (one implementation, shared with the registry's monotone record);
@@ -2250,6 +2259,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         await model.enroll()
         let hostID = try XCTUnwrap(model.hosts.first?.id)
         XCTAssertFalse(model.hosts[0].pluginNeedsUpdate, "never heard means no hint")
+        XCTAssertTrue(model.hosts[0].offersUpdate, "never heard is not known current either")
 
         registry.notePluginVersion(hostID: hostID, .headerAbsent)
         model.refreshHosts()
@@ -2262,6 +2272,10 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         registry.notePluginVersion(hostID: hostID, .version("99.0.0"))
         model.refreshHosts()
         XCTAssertFalse(model.hosts[0].pluginNeedsUpdate, "a newer host is not outdated")
+        XCTAssertTrue(
+            model.hosts[0].offersUpdate,
+            "this model cannot read ~/.ssh/config, so the block is not known current"
+        )
     }
 
     /// A revoked host cannot authenticate and cannot update; its row must keep
@@ -2322,6 +2336,15 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             model.hosts[0].pluginNeedsUpdate,
             "the verified read-back must clear the indicator on the run itself"
         )
+        XCTAssertFalse(
+            model.hosts[0].offersUpdate,
+            "plugin and SSH block both proven current: another run would change nothing"
+        )
+
+        // A stale SSH block brings the button back even with a current plugin.
+        sshFS.configText = ""
+        model.refreshHosts()
+        XCTAssertTrue(model.hosts[0].offersUpdate)
         XCTAssertEqual(
             registry.host(id: hostID)?.reportedPluginVersion,
             .version(ClaudeRemoteEnrollmentService.remotePluginVersion)
