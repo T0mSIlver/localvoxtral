@@ -157,7 +157,9 @@ final class ClaudeStatuslineCombineTests: XCTestCase {
     /// A command may hold newlines; the script keeps them, and Remove still
     /// finds the whole command.
     func testAMultilineCommandSurvivesCombineAndRemove() throws {
-        let multiline = "input=$(cat)\necho \"$input\" | jq -r .model.display_name"
+        // Holds a line starting `hook=` and one starting `input=`, the two
+        // assignments the script itself writes.
+        let multiline = "input=$(cat)\nhook=x\necho \"$input\" | jq -r .model.display_name"
         let settingsFS = MemoryStatuslineFS(data: try settings(["type": "command", "command": multiline]))
         let scriptFS = MemoryStatuslineFS(data: nil)
         let service = service(settings: settingsFS, script: scriptFS)
@@ -174,6 +176,15 @@ final class ClaudeStatuslineCombineTests: XCTestCase {
         let quoted = ClaudeStatuslineCombine.shellWord(path) + " --statusline"
         XCTAssertEqual(quoted, "'\(path)' --statusline")
         XCTAssertEqual(ClaudeStatuslineCombine.shellWord(Self.hook), Self.hook, "no quotes when none are needed")
+        let quotes = #"/Users/me/Tom's "apps"/localvoxtral-claude-hook"#
+        XCTAssertEqual(
+            ClaudeStatuslineInstallService.shellWords(ClaudeStatuslineCombine.shellWord(quotes) + " --statusline"),
+            [quotes, "--statusline"], "both quote kinds survive as one word"
+        )
+        XCTAssertEqual(
+            ClaudeStatuslineCombine.parse(ClaudeStatuslineCombine.script(original: "x", hookPath: quotes))?.hookPath,
+            quotes
+        )
 
         let settingsFS = MemoryStatuslineFS(data: try settings(["type": "command", "command": Self.original]))
         let scriptFS = MemoryStatuslineFS(data: nil)

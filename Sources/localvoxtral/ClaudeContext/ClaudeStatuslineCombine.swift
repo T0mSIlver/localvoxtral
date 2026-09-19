@@ -48,11 +48,10 @@ public enum ClaudeStatuslineCombine {
     /// exactly what `script(original:hookPath:)` produces for them.
     public static func parse(_ text: String) -> (original: String, hookPath: String)? {
         guard
-            let original = value(after: originalPrefix, until: hookPrefix, in: text),
-            let hookPath = value(after: hookPrefix, until: "input=", in: text),
-            script(original: original, hookPath: hookPath) == text
+            let parsed = assignments(in: text),
+            script(original: parsed.original, hookPath: parsed.hookPath) == text
         else { return nil }
-        return (original, hookPath)
+        return parsed
     }
 
     /// `path` as one shell word: bare when it needs no quoting, single-quoted
@@ -67,15 +66,42 @@ public enum ClaudeStatuslineCombine {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    /// The quoted value after `prefix` at the start of a line, up to the next
-    /// line that starts with `terminator`. A quoted value may span lines (a
-    /// user's command can hold newlines), so this never stops at the first
-    /// newline.
-    private static func value(after prefix: String, until terminator: String, in text: String) -> String? {
-        guard let start = text.range(of: "\n" + prefix),
-              let end = text.range(of: "\n" + terminator, range: start.upperBound..<text.endIndex)
+    /// The value `shellQuote` wrote, read quote by quote from `index`: a run
+    /// of `'…'` pieces joined by `\'`, ending at the newline after the last
+    /// closing quote. Newlines inside the quotes belong to the value (a
+    /// user's command can hold them, even a line starting `hook=`). Returns
+    /// the value and the index just past that newline.
+    private static func quotedValue(
+        in text: String, from start: String.Index
+    ) -> (value: String, next: String.Index)? {
+        var index = start
+        var value = ""
+        while true {
+            guard index < text.endIndex, text[index] == "'" else { return nil }
+            index = text.index(after: index)
+            guard let close = text[index...].firstIndex(of: "'") else { return nil }
+            value += text[index..<close]
+            index = text.index(after: close)
+            if text[index...].hasPrefix("\\'") {
+                value += "'"
+                index = text.index(index, offsetBy: 2)
+                continue
+            }
+            guard index < text.endIndex, text[index] == "\n" else { return nil }
+            return (value, text.index(after: index))
+        }
+    }
+
+    /// The two assignments, read in order: the hook line must start right
+    /// where the user's command ends.
+    private static func assignments(in text: String) -> (original: String, hookPath: String)? {
+        guard let start = text.range(of: "\n" + originalPrefix),
+              let original = quotedValue(in: text, from: start.upperBound),
+              text[original.next...].hasPrefix(hookPrefix),
+              let hook = quotedValue(
+                  in: text, from: text.index(original.next, offsetBy: hookPrefix.count)
+              )
         else { return nil }
-        let words = ClaudeStatuslineInstallService.shellWords(String(text[start.upperBound..<end.lowerBound]))
-        return words.count == 1 ? words[0] : nil
+        return (original.value, hook.value)
     }
 }

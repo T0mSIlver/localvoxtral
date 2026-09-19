@@ -100,8 +100,8 @@ public struct ClaudeStatuslineInstallService: Sendable {
         /// and this copy's indicator. Offers Remove, which restores the
         /// user's command.
         case combined
-        /// Combined, but the script calls another copy of the app. Offers
-        /// Update, which rewrites the script.
+        /// Combined, but the script calls another copy of the app or lost
+        /// its execute bit. Offers Update, which rewrites the script.
         case combinedOutdated
         /// The entry runs our script, but the script is missing or was
         /// edited, so the user's command cannot be read back. No button.
@@ -120,9 +120,10 @@ public struct ClaudeStatuslineInstallService: Sendable {
         case .stalePath: return "The installed path moved; update the status line."
         case .otherCopy: return "Points at another copy of localvoxtral."
         case .edited: return "Edited in settings.json; remove it there."
-        case .foreign, .foreignNotCombinable: return "Your own status line is configured."
+        case .foreign: return "Your own status line is configured."
+        case .foreignNotCombinable: return "Your own status line; combine it by hand."
         case .combined: return "Combined with your status line."
-        case .combinedOutdated: return "Combined; points at another copy of localvoxtral."
+        case .combinedOutdated: return "Combined; the script needs an update."
         case .combinedBroken: return "The combined script is missing or edited."
         case .unknown: return "Could not read your Claude settings."
         }
