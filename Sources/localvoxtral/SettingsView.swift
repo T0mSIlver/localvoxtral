@@ -1716,17 +1716,30 @@ private struct ClaudePluginInstallRow: View {
             statusAccessibilityIdentifier: "integrations.claude.plugin.status"
         ) {
             HStack(spacing: 8) {
-                Button("Install or update") {
-                    Task { await model.updatePlugin() }
+                // The buttons follow the listing: no install button while the
+                // installed plugin is current, no Remove when nothing is
+                // installed.
+                if let action = model.localPluginStatus.primaryAction {
+                    Button(action.title) {
+                        Task {
+                            if action == .install {
+                                await model.installPlugin()
+                            } else {
+                                await model.updatePlugin()
+                            }
+                        }
+                    }
+                    .disabled(model.isPerformingPluginAction)
+                    .accessibilityIdentifier("integrations.claude.plugin.install")
                 }
-                .disabled(model.isPerformingPluginAction)
-                .accessibilityIdentifier("integrations.claude.plugin.install")
 
-                Button("Remove") {
-                    Task { await model.uninstallPlugin() }
+                if model.localPluginStatus.offersRemove {
+                    Button("Remove") {
+                        Task { await model.uninstallPlugin() }
+                    }
+                    .disabled(model.isPerformingPluginAction)
+                    .accessibilityIdentifier("integrations.claude.plugin.remove")
                 }
-                .disabled(model.isPerformingPluginAction)
-                .accessibilityIdentifier("integrations.claude.plugin.remove")
 
                 if model.isPerformingPluginAction {
                     ProgressView().controlSize(.small)

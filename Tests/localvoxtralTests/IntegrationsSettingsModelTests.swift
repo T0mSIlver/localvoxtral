@@ -166,6 +166,24 @@ final class IntegrationsSettingsModelTests: XCTestCase {
         XCTAssertEqual(model.localPluginStatus, .installed(version: nil))
     }
 
+    func testPluginRowButtonsFollowTheStatus() {
+        // A current plugin gets no install button, since pressing it would
+        // reinstall the same files, and a missing one gets no Remove.
+        let cases: [(ClaudePluginStatus, ClaudePluginStatus.PrimaryAction?, Bool)] = [
+            (.notInstalled, .install, false),
+            (.updateAvailable(installed: "1.0.0", bundled: "1.1.0"), .update, true),
+            (.installed(version: "1.0.0"), nil, true),
+            (.installed(version: nil), .installOrUpdate, true),
+            (.unknown, .installOrUpdate, true),
+        ]
+        for (status, action, remove) in cases {
+            XCTAssertEqual(status.primaryAction, action, "\(status)")
+            XCTAssertEqual(status.offersRemove, remove, "\(status)")
+        }
+        XCTAssertEqual(ClaudePluginStatus.PrimaryAction.install.title, "Install")
+        XCTAssertEqual(ClaudePluginStatus.PrimaryAction.update.title, "Update")
+    }
+
     // MARK: - Status line row
 
     @MainActor

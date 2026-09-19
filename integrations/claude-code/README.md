@@ -300,8 +300,10 @@ nothing to migrate, and you can drop
 
 ## Install / update / uninstall
 
-The app way: **Settings → Claude Code → Plugin → Install or update**. That button registers the bundled marketplace
-and installs the plugin, then reports one short line. Nothing is installed until
+The app way: **Settings → Claude Code → Plugin → Install** (or **Update** when
+the app ships a newer plugin than the installed one; no button while it is
+current). That button registers the bundled marketplace and installs the
+plugin, then reports one short line. Nothing is installed until
 you press it — the app never touches your Claude Code setup at launch or on a
 timer.
 
