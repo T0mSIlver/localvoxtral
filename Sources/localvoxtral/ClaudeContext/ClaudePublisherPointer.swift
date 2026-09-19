@@ -23,6 +23,8 @@ public enum ClaudePublisherPointer {
         home.appendingPathComponent(homeRelativePath)
     }
 
+    static let stagingPrefix = ".publisher-"
+
     public enum Outcome: Sendable, Equatable {
         /// The link already named this publisher.
         case unchanged
@@ -43,12 +45,16 @@ public enum ClaudePublisherPointer {
         let previous = try? fileManager.destinationOfSymbolicLink(atPath: linkURL.path)
         if previous == publisher.path { return .unchanged }
 
-        try fileManager.createDirectory(
-            at: linkURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        let staging = linkURL.deletingLastPathComponent()
-            .appendingPathComponent(".publisher-\(UUID().uuidString)")
+        let directory = linkURL.deletingLastPathComponent()
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        // Staging links a crash left between create and rename. A second app
+        // launching at the same instant could lose its in-flight one; its
+        // rename then fails and logs, and its next launch repairs the link.
+        for name in (try? fileManager.contentsOfDirectory(atPath: directory.path)) ?? []
+        where name.hasPrefix(stagingPrefix) {
+            try? fileManager.removeItem(at: directory.appendingPathComponent(name))
+        }
+        let staging = directory.appendingPathComponent("\(stagingPrefix)\(UUID().uuidString)")
         try fileManager.createSymbolicLink(
             atPath: staging.path,
             withDestinationPath: publisher.path

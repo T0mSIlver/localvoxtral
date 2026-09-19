@@ -475,6 +475,14 @@ final class ClaudePluginManifestTests: XCTestCase {
         let first = temporary.appendingPathComponent("a")
         let second = temporary.appendingPathComponent("b")
 
+        // A staging link a crashed refresh left behind is swept.
+        try FileManager.default.createDirectory(
+            at: link.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            at: link.deletingLastPathComponent().appendingPathComponent(".publisher-orphan"),
+            withDestinationURL: first
+        )
         XCTAssertEqual(try ClaudePublisherPointer.refresh(publisher: first, linkURL: link), .updated(previous: nil))
         XCTAssertEqual(try ClaudePublisherPointer.refresh(publisher: first, linkURL: link), .unchanged)
         XCTAssertEqual(

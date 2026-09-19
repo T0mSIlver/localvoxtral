@@ -626,18 +626,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Binds the remote (SSH) hook listener, but only for a user who has
-    /// actually enrolled a host.
-    ///
-    /// "No enrollment ⇒ no open port" is the point: everyone else's Mac gets
-    /// exactly what it had before, with nothing listening on 8473. The host
-    /// registry was loaded during app initialization so session restore could
-    /// filter remote entries before the broker starts.
-    ///
-    /// Failure is non-fatal and loud, matching the local broker. The coordinator
-    /// — not this method — owns the bind/unbind decision from here on, so
-    /// enrolling the first host in Settings binds the port immediately and
-    /// revoking the last one closes it. There is no relaunch step.
     /// Keeps an installed local Claude Code plugin working without a click:
     /// repoints the publisher link at this app, wherever it now lives, and
     /// updates a plugin older than the one bundled. Never installs a plugin
@@ -668,6 +656,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { await settings.updateOutdatedPluginAtLaunch() }
     }
 
+    /// Binds the remote (SSH) hook listener, but only for a user who has
+    /// actually enrolled a host.
+    ///
+    /// "No enrollment ⇒ no open port" is the point: everyone else's Mac gets
+    /// exactly what it had before, with nothing listening on 8473. The host
+    /// registry was loaded during app initialization so session restore could
+    /// filter remote entries before the broker starts.
+    ///
+    /// Failure is non-fatal and loud, matching the local broker. The coordinator
+    /// — not this method — owns the bind/unbind decision from here on, so
+    /// enrolling the first host in Settings binds the port immediately and
+    /// revoking the last one closes it. There is no relaunch step.
     private func startClaudeRemoteListener() {
         let registry = claudeRemoteHosts
 

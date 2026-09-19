@@ -190,6 +190,20 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
         XCTAssertEqual(runner.argumentLists.last, ["plugin", "install", "localvoxtral@localvoxtral"])
     }
 
+    func testLaunchUpdateUpdatesInPlaceAndNeverUninstalls() throws {
+        // Unattended, so it must not risk the uninstall-then-failed-install
+        // state the Update button can reach: that leaves no plugin at all and
+        // no alert to say so. `plugin update` takes no `--config`; the
+        // publisher link covers a moved app instead.
+        let runner = RecordingRunner()
+        try makeService(runner: runner, publisherURL: URL(fileURLWithPath: "/A/hook"))
+            .updateInstalledPlugin()
+        XCTAssertEqual(runner.argumentLists, [
+            ["plugin", "marketplace", "add", marketplace.path],
+            ["plugin", "update", "localvoxtral@localvoxtral"],
+        ])
+    }
+
     func testUninstallRemovesPluginThenMarketplace() throws {
         let runner = RecordingRunner()
         try makeService(runner: runner).uninstallPlugin()

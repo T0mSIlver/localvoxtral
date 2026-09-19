@@ -550,7 +550,8 @@ private final class RecordingPluginService: ClaudePluginInstalling, Sendable {
     }
 
     func installPlugin() throws { calls.withLock { $0.append("install") } }
-    func updatePlugin() throws {
+    func updatePlugin() throws { calls.withLock { $0.append("reinstall") } }
+    func updateInstalledPlugin() throws {
         calls.withLock { $0.append("update") }
         if fails { throw Failure() }
         onUpdate()
@@ -561,6 +562,7 @@ private final class RecordingPluginService: ClaudePluginInstalling, Sendable {
 private final class StubListPluginService: ClaudePluginInstalling, @unchecked Sendable {
     func installPlugin() throws {}
     func updatePlugin() throws {}
+    func updateInstalledPlugin() throws {}
     func uninstallPlugin() throws {}
     func pluginListOutput() throws -> String? { nil }
 }

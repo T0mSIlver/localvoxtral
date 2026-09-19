@@ -17,6 +17,8 @@ import Darwin
 public protocol ClaudePluginInstalling: Sendable {
     func installPlugin() throws
     func updatePlugin() throws
+    /// Update an installed plugin in place, never uninstalling it.
+    func updateInstalledPlugin() throws
     func uninstallPlugin() throws
     /// stdout of `claude plugin list`, or nil when the listing is unavailable.
     /// Default nil so test doubles that only exercise install paths keep
@@ -853,8 +855,9 @@ public final class ClaudeIntegrationSettingsModel {
     ///
     /// The user chose to install the plugin; keeping it at the version this
     /// app ships is part of that choice, so it needs no click. A plugin that
-    /// is not installed stays that way. A failure is logged and left to the
-    /// row, which still offers Update: an alert nobody asked for at launch
+    /// is not installed stays that way. The update never uninstalls, so a
+    /// failure leaves the old plugin working; it is logged and left to the
+    /// row, which still offers Update. An alert nobody asked for at launch
     /// would be worse than a row that says what happened.
     public func updateOutdatedPluginAtLaunch() async {
         await refreshLocalPluginStatus()
@@ -868,7 +871,7 @@ public final class ClaudeIntegrationSettingsModel {
             "Updating the Claude Code plugin from \(installed, privacy: .public) to \(bundled, privacy: .public)"
         )
         let service = pluginService()
-        if let failure = await performAsync({ try service.updatePlugin() }) {
+        if let failure = await performAsync({ try service.updateInstalledPlugin() }) {
             Log.claudeContext.error(
                 "Claude plugin update at launch failed: \(failure.describedError, privacy: .public)"
             )

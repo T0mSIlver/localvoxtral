@@ -305,9 +305,11 @@ registers the bundled marketplace and installs the plugin, then reports one
 short line. Nothing is installed until you press it.
 
 Once installed, the plugin keeps itself current without a click. At launch the
-app updates an installed plugin that is older than the one it ships, and
-repoints `~/Library/Application Support/localvoxtral/claude/publisher` at its
-own publisher binary. The shim tries that link before the install-time
+app runs `claude plugin update` on an installed plugin that is older than the
+one it ships. That command never uninstalls, so a failed update leaves the old
+plugin working. The app also repoints
+`~/Library/Application Support/localvoxtral/claude/publisher` at its own
+publisher binary. The shim tries that link before the install-time
 `publisher_path`, so moving the app needs no reinstall. The row shows
 **Update** only when that launch-time update failed, and no install button
 while the plugin is current.

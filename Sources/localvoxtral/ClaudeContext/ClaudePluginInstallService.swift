@@ -21,6 +21,9 @@ public struct ClaudePluginInstallService: Sendable {
         case addMarketplace
         /// Install the plugin from the registered marketplace.
         case install
+        /// Update the installed plugin in place from the registered
+        /// marketplace. Keeps its userConfig; accepts no `--config`.
+        case update
         /// Remove the plugin.
         case uninstall
         /// Deregister the marketplace.
@@ -165,6 +168,8 @@ public struct ClaudePluginInstallService: Sendable {
             return ["plugin", "marketplace", "add", marketplacePath]
         case .install:
             return ["plugin", "install", pluginReference] + configArguments(publisherPath: publisherPath)
+        case .update:
+            return ["plugin", "update", pluginReference]
         case .uninstall:
             return ["plugin", "uninstall", pluginReference]
         case .removeMarketplace:
@@ -238,6 +243,19 @@ public struct ClaudePluginInstallService: Sendable {
         try perform(.addMarketplace)
         _ = try? perform(.uninstall)
         try perform(.install)
+    }
+
+    /// The unattended update at launch: refresh the marketplace, then
+    /// `claude plugin update`.
+    ///
+    /// Never uninstalls, so a failure leaves the old plugin installed and
+    /// working. Claude Code keeps the old version's files for sessions
+    /// already running, and the saved `publisher_path` carries over. That pin
+    /// is not refreshed, which is why the shim tries the app's publisher link
+    /// (`ClaudePublisherPointer`) first.
+    public func updateInstalledPlugin() throws {
+        try perform(.addMarketplace)
+        try perform(.update)
     }
 }
 

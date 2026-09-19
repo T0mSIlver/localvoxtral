@@ -30,6 +30,7 @@ private final class StubPluginService: ClaudePluginInstalling {
 
     func installPlugin() throws { try record("install") }
     func updatePlugin() throws { try record("update") }
+    func updateInstalledPlugin() throws { try record("updateInstalled") }
     func uninstallPlugin() throws { try record("uninstall") }
 }
 
