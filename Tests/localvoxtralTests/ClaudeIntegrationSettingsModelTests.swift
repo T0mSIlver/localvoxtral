@@ -934,6 +934,110 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         )
         XCTAssertEqual(model.herdrPanelStatus, .ok)
         XCTAssertEqual(fileSystem.writes.count, 1)
+        // The row is there now: pressing Set up… again would only refuse.
+        XCTAssertEqual(model.localHerdrPanelStatus, .added)
+        XCTAssertFalse(model.offersLocalHerdrPanelSetup)
+        XCTAssertEqual(
+            model.localHerdrPanelSentence,
+            ClaudeRemoteEnrollmentService.localHerdrPanelReloadStatus
+        )
+    }
+
+    func testLocalHerdrPanelRowFollowsTheConfigAtRefresh() async {
+        func refreshedModel(_ content: String?) async -> ClaudeIntegrationSettingsModel {
+            let fileSystem = LocalPanelMemoryFileSystem(
+                state: ClaudeLocalHerdrConfigState(
+                    directoryExists: true,
+                    configData: content.map { Data($0.utf8) },
+                    configPermissions: content == nil ? nil : 0o644
+                )
+            )
+            let model = makeModel(
+                registry: nil,
+                listener: nil,
+                enrollmentService: ClaudeRemoteEnrollmentService(localHerdrConfigFileSystem: fileSystem),
+                hasEnabledHerdrMachineReport: { true }
+            )
+            await model.refreshIntegrationsStatuses()
+            return model
+        }
+
+        let absent = await refreshedModel(nil)
+        XCTAssertTrue(absent.offersLocalHerdrPanelSetup)
+        XCTAssertNil(absent.localHerdrPanelSentence)
+
+        let added = await refreshedModel(ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet + "\n")
+        XCTAssertFalse(added.offersLocalHerdrPanelSetup)
+        XCTAssertEqual(added.localHerdrPanelSentence, "Added.")
+
+        let customized = await refreshedModel("[ui.sidebar.agents]\nrows = [[\"agent\"]]\n")
+        XCTAssertFalse(customized.offersLocalHerdrPanelSetup)
+        XCTAssertEqual(customized.localHerdrPanelSentence, "Your herdr config sets its own agents rows.")
+
+        // Set up… would refuse an unreadable config, so it is not offered.
+        let symlinked = makeModel(
+            registry: nil,
+            listener: nil,
+            enrollmentService: ClaudeRemoteEnrollmentService(
+                localHerdrConfigFileSystem: LocalPanelMemoryFileSystem(
+                    state: ClaudeLocalHerdrConfigState(
+                        directoryExists: true, configData: nil, configPermissions: nil,
+                        configIsSymlink: true
+                    )
+                )
+            ),
+            hasEnabledHerdrMachineReport: { true }
+        )
+        await symlinked.refreshIntegrationsStatuses()
+        XCTAssertEqual(symlinked.localHerdrPanelStatus, .unknown)
+        XCTAssertFalse(symlinked.offersLocalHerdrPanelSetup)
+        XCTAssertEqual(symlinked.localHerdrPanelSentence, "Could not read your herdr config.")
+
+        let notUTF8 = makeModel(
+            registry: nil,
+            listener: nil,
+            enrollmentService: ClaudeRemoteEnrollmentService(
+                localHerdrConfigFileSystem: LocalPanelMemoryFileSystem(
+                    state: ClaudeLocalHerdrConfigState(
+                        directoryExists: true, configData: Data([0xFF, 0xFE, 0x00]),
+                        configPermissions: 0o644
+                    )
+                )
+            ),
+            hasEnabledHerdrMachineReport: { true }
+        )
+        await notUTF8.refreshIntegrationsStatuses()
+        XCTAssertEqual(notUTF8.localHerdrPanelStatus, .unknown)
+        XCTAssertFalse(notUTF8.offersLocalHerdrPanelSetup)
+    }
+
+    /// The success line belongs to the row it wrote. Once the config no
+    /// longer holds it, the sentence follows the config, not the old result.
+    func testLocalHerdrPanelResultGivesWayWhenTheRowIsGone() async throws {
+        let fileSystem = LocalPanelMemoryFileSystem(
+            state: ClaudeLocalHerdrConfigState(
+                directoryExists: true, configData: nil, configPermissions: nil
+            )
+        )
+        let model = makeModel(
+            registry: nil,
+            listener: nil,
+            enrollmentService: ClaudeRemoteEnrollmentService(localHerdrConfigFileSystem: fileSystem),
+            hasEnabledHerdrMachineReport: { true }
+        )
+        await model.refreshIntegrationsStatuses()
+        model.requestLocalHerdrPanelConfiguration()
+        await model.confirmEnrollmentAction()
+        XCTAssertEqual(model.localHerdrPanelSentence, ClaudeRemoteEnrollmentService.localHerdrPanelReloadStatus)
+
+        fileSystem.state.configData = nil
+        await model.refreshIntegrationsStatuses()
+        XCTAssertTrue(model.offersLocalHerdrPanelSetup)
+        XCTAssertNil(model.localHerdrPanelSentence)
+
+        fileSystem.state.configData = Data("[ui.sidebar.agents]\nrows = [[\"agent\"]]\n".utf8)
+        await model.refreshIntegrationsStatuses()
+        XCTAssertEqual(model.localHerdrPanelSentence, "Your herdr config sets its own agents rows.")
     }
 
     func testLocalHerdrPanelOfferRefusesACustomizedConfig() async throws {

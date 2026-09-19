@@ -6,7 +6,10 @@ import SwiftUI
 /// from an enrolled host's config. This row appears only when the live
 /// machine catalog has an enabled machine, stays inside the herdr pane's Saved
 /// machines group, and never renders generated TOML: consent names the file
-/// in one sentence, with Details pointing at the docs.
+/// in one sentence, with Details pointing at the docs. Set up… shows only
+/// where it would write: a config that already has the row gets a status
+/// line; agents rows the user wrote, or a config that cannot be read, get a
+/// status line and Details for the manual placement.
 struct ClaudeHerdrLocalPanelSettingsRow: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
     @State private var isShowingSetup = false
@@ -20,16 +23,21 @@ struct ClaudeHerdrLocalPanelSettingsRow: View {
             SettingsFieldRow(
                 title: "Panel row",
                 help: "Adds the mic-indicator row to ~/.config/herdr/config.toml.",
-                status: model.localHerdrPanelResult,
+                status: model.localHerdrPanelSentence,
                 statusAccessibilityIdentifier: "integrations.claude.localHerdrPanel.status"
             ) {
-                Button("Set up…") {
-                    model.requestLocalHerdrPanelConfiguration()
-                    isShowingSetup = model.enrollmentConfirmation?.action == .configureLocalHerdrPanel
+                if model.offersLocalHerdrPanelSetup {
+                    Button("Set up…") {
+                        model.requestLocalHerdrPanelConfiguration()
+                        isShowingSetup = model.enrollmentConfirmation?.action == .configureLocalHerdrPanel
+                    }
+                    .controlSize(.small)
+                    .disabled(model.isEnrollmentBusy)
+                    .accessibilityIdentifier("integrations.claude.localHerdrPanel.setUp")
+                } else if model.localHerdrPanelStatus != .added {
+                    Link("Details", destination: Self.documentationURL)
+                        .font(.caption)
                 }
-                .controlSize(.small)
-                .disabled(model.isEnrollmentBusy)
-                .accessibilityIdentifier("integrations.claude.localHerdrPanel.setUp")
             }
             .sheet(isPresented: $isShowingSetup) {
                 ClaudeLocalHerdrPanelSetupSheet(model: model) { isShowingSetup = false }

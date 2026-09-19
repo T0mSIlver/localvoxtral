@@ -2303,6 +2303,32 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         }
     }
 
+    func testLocalHerdrPanelStatusMatchesWhatSetUpWouldDo() {
+        func status(_ content: String?, symlink: Bool = false) -> ClaudeRemoteEnrollmentService.LocalHerdrPanelStatus {
+            ClaudeRemoteEnrollmentService(
+                localHerdrConfigFileSystem: MemoryLocalHerdrConfigFileSystem(
+                    state: ClaudeLocalHerdrConfigState(
+                        directoryExists: content != nil,
+                        configData: content.map { Data($0.utf8) },
+                        configPermissions: content == nil ? nil : 0o644,
+                        configIsSymlink: symlink
+                    )
+                )
+            ).localHerdrPanelStatus()
+        }
+        let snippet = ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet
+        XCTAssertEqual(status(nil), .notAdded)
+        XCTAssertEqual(status("[keys]\nprefix = \"ctrl-b\"\n"), .notAdded)
+        XCTAssertEqual(status("[keys]\nprefix = \"ctrl-b\"\n\n\(snippet)\n"), .added)
+        XCTAssertEqual(
+            status(snippet.replacingOccurrences(of: "\n", with: "\r\n") + "\r\n"), .added,
+            "a CRLF file holding the row still holds it"
+        )
+        XCTAssertEqual(status("[ui.sidebar.agents]\nrows = [[\"agent\"]]\n"), .customized)
+        XCTAssertEqual(status(snippet, symlink: true), .unknown)
+        XCTAssertEqual(ClaudeRemoteEnrollmentService().localHerdrPanelStatus(), .unknown)
+    }
+
     func testLocalHerdrPanelConfigurationAppendsTheRowOnce() throws {
         let fileSystem = MemoryLocalHerdrConfigFileSystem(
             state: ClaudeLocalHerdrConfigState(
@@ -2470,6 +2496,32 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             )
         )
         XCTAssertEqual(try Data(contentsOf: victim), Data("victim".utf8))
+    }
+
+    func testLiveLocalHerdrConfigReportsAnUnreadableFileAsUnknownNotAbsent() throws {
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let fileSystem = LiveClaudeLocalHerdrConfigFileSystem(homeDirectoryURL: home)
+        try fileSystem.createConfigDirectory(permissions: 0o755)
+        try fileSystem.atomicWriteConfig(
+            Data("[ui]\n".utf8), permissions: 0o644, expectedConfigPresent: false
+        )
+        let configPath = home.appendingPathComponent(".config/herdr/config.toml").path
+        // Restore the mode so the temporary tree can be removed.
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: 0o644)], ofItemAtPath: configPath
+            )
+        }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o000)], ofItemAtPath: configPath
+        )
+        XCTAssertThrowsError(try fileSystem.readState(), "an unreadable file is not an absent one")
+        XCTAssertEqual(
+            ClaudeRemoteEnrollmentService(localHerdrConfigFileSystem: fileSystem)
+                .localHerdrPanelStatus(),
+            .unknown
+        )
     }
 
     func testLiveLocalHerdrConfigIgnoresANonDirectoryHerdrDev() throws {
