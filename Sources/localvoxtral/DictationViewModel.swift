@@ -396,6 +396,29 @@ final class DictationViewModel {
     @ObservationIgnored
     var sessionStore: DictationSessionStore?
     @ObservationIgnored
+    private var storedTermSuggestions: SpeakerTermSuggestionModel?
+    /// Built on first use (Settings opening the About-you group); reads the
+    /// store and the service at call time, so a test's replacements are seen.
+    var termSuggestions: SpeakerTermSuggestionModel {
+        if let storedTermSuggestions { return storedTermSuggestions }
+        let model = SpeakerTermSuggestionModel(
+            settings: settings,
+            recentTexts: { [weak self] in
+                await self?.sessionStore?.recentFinalTexts(
+                    limit: SpeakerTermSuggestions.maxDictations
+                ) ?? []
+            },
+            service: { [weak self] in self?.llmPolishingService ?? LLMPolishingService() },
+            unavailableReason: { [weak self] in
+                self?.settings.polishingBackendMode == .managedLocal
+                    ? "Needs a hosted polishing model."
+                    : nil
+            }
+        )
+        storedTermSuggestions = model
+        return model
+    }
+    @ObservationIgnored
     let overlayBufferCoordinator: OverlayBufferSessionCoordinating
     @ObservationIgnored
     var preResolvedOverlayAnchor: OverlayAnchor?

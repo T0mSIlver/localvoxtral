@@ -78,6 +78,37 @@ there is not.
   sections ride in it. The About-you text and terms are user-typed
   and go to ANY polishing endpoint, like the replacement dictionary.
 
+- **Suggested terms: the model judges what a name is; the app guarantees the
+  rest.** No capitalization or dictionary heuristic decides name-vs-word
+  (owner ruling 2026-09-18: German capitalizes every noun). The app's own
+  guarantees hold whatever the model returns: nothing is added without a
+  click, and `SpeakerTermSuggestions.filtered` drops anything already a term
+  or ever dismissed, compared by a key that ignores case, spacing and
+  punctuation. `ranked` only REORDERS, by counting in how many dictations a
+  candidate literally occurs — it must never drop, because a spelling the
+  model recovered from misrecognitions ("Qwen" from Coin/Kuen) occurs in no
+  text. Measured on the owner's history: GLM 5.3 returns a clean list; Mistral
+  Medium lists everything it saw, which the ranking makes usable. The request
+  is user-initiated and the row names the model the dictations go to; it may
+  include dictations made while a different endpoint was configured.
+  On a hosted model the request asks for `reasoning_effort: "high"` while a
+  polish keeps the model's lowest level: at polish effort Mistral Medium
+  returned ~70 items including "Coin 3.6" and "Kuen"; at high it returned 11
+  clean terms with "Qwen" recovered (170 s; GLM 5.3: 69 s — hence the 420 s
+  timeout). `high` needs no per-model table: `/v1/models` reports only whether
+  a model reasons, and `high` is the one level every reasoning model accepted
+  (GLM low/high/max, Mistral none/high). Self-hosted shapes are untouched.
+  The button is unavailable on the BUNDLED helper ("Needs a hosted polishing
+  model."): measured on the owner's Mac 2026-09-19, the 4B took 177 s on 133
+  dictations, listed the polish mistakes it was told to leave out (OpenShift,
+  Cohere, `toolInput`, Coin, Kuen) and ended in a repetition loop, all while
+  holding the helper's single generation slot against every polish; batches
+  of ten returned nothing. On a hosted or external endpoint a run continues in
+  the background while the user dictates. The request is ONE user message
+  with no system message: an external server may be another polishd, which
+  checkpoints every message but the last, and its two prompt-cache slots
+  belong to the dictation profiles.
+
 - **Claude Code context reaches the prompt only through a positive join.**
   The joined session's repository (status, uncommitted diffs, contents
   of files the agent just touched) and its prior user prompt are attached as

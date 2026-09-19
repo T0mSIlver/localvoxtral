@@ -19,17 +19,29 @@ struct LLMPolishingRequest: Sendable {
     /// prompt-prefix warmup sets 1 so the throwaway generation costs a
     /// single token.
     let maxTokens: Int?
+    /// Nil for a polish, which the user is waiting on. The term-suggestion
+    /// request reads weeks of dictations in one go and is started from
+    /// Settings, so it may take longer than a polish is allowed to.
+    let timeoutSeconds: TimeInterval?
+    /// False for a polish, which has to be fast. True asks a hosted reasoning
+    /// model to think before answering (`MistralReasoningEffort.high`);
+    /// self-hosted shapes ignore it and keep their configured behaviour.
+    let prefersDeepReasoning: Bool
 
     init(
         inputText: String,
         systemPrompt: String,
         userPrompts: [String],
-        maxTokens: Int? = nil
+        maxTokens: Int? = nil,
+        timeoutSeconds: TimeInterval? = nil,
+        prefersDeepReasoning: Bool = false
     ) {
         self.inputText = inputText
         self.systemPrompt = systemPrompt
         self.userPrompts = userPrompts
         self.maxTokens = maxTokens
+        self.timeoutSeconds = timeoutSeconds
+        self.prefersDeepReasoning = prefersDeepReasoning
     }
 }
 
@@ -445,7 +457,7 @@ struct LLMPolishingService: LLMPolishingServicing {
         if configuration.passthroughExtraParameters, configuration.requestShape != .mistral {
             urlRequest.setValue("true", forHTTPHeaderField: "x-bf-passthrough-extra-params")
         }
-        urlRequest.timeoutInterval = Self.requestTimeoutInterval
+        urlRequest.timeoutInterval = request.timeoutSeconds ?? Self.requestTimeoutInterval
         urlRequest.httpBody = try requestBody(
             request: request,
             configuration: configuration
@@ -457,7 +469,14 @@ struct LLMPolishingService: LLMPolishingServicing {
         request: LLMPolishingRequest,
         configuration: LLMPolishingConfiguration
     ) throws -> Data {
-        let messages = [["role": "system", "content": request.systemPrompt]]
+        // An empty system prompt sends no system message. polishd checkpoints
+        // every message but the last as a prompt-cache prefix, and its two
+        // slots belong to the two dictation profiles: a one-message request
+        // (term suggestions) has no prefix, so it cannot evict them.
+        let systemMessages = request.systemPrompt.isEmpty
+            ? []
+            : [["role": "system", "content": request.systemPrompt]]
+        let messages = systemMessages
             + request.userPrompts.map { ["role": "user", "content": $0] }
         var body: [String: Any] = [
             "model": configuration.model,
@@ -484,9 +503,10 @@ struct LLMPolishingService: LLMPolishingServicing {
             // is an extension some self-hosted server invented; sending one
             // costs the whole request (422), so the Mistral shape stops here
             // with only the fields the schema names.
-            let effort =
+            let polishEffort =
                 configuration.mistralReasoningEffort
                 ?? MistralReasoningEffort.forModel(configuration.model)
+            let effort = request.prefersDeepReasoning ? polishEffort.deepened : polishEffort
             if let wireValue = effort.wireValue {
                 body["reasoning_effort"] = wireValue
             }

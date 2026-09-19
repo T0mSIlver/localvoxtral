@@ -84,4 +84,26 @@ final class DictationSessionStore {
             }
         }
     }
+
+    /// The text each recent dictation ended up as (polished when there was a
+    /// polish, raw otherwise), newest first.
+    func recentFinalTexts(limit: Int) async -> [String] {
+        let container = modelContainer
+        return await Task.detached {
+            var descriptor = FetchDescriptor<DictationSessionRecord>(
+                sortBy: [SortDescriptor(\.startedAt, order: .reverse)]
+            )
+            descriptor.fetchLimit = limit
+            do {
+                return try ModelContext(container).fetch(descriptor).map {
+                    $0.polishedText ?? $0.rawText
+                }
+            } catch {
+                Log.persistence.error(
+                    "Failed to fetch dictation history: \(error.localizedDescription, privacy: .public)"
+                )
+                return []
+            }
+        }.value
+    }
 }

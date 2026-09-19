@@ -62,14 +62,23 @@ Open **Settings** from the menu bar popover:
   overlay's font size and how many lines it shows before scrolling
 - **Text Processing** — **About you**: a few lines on your work in your own
   words, plus a list of the names and terms you say often, spelled the way
-  they should appear ("Qwen", "Claude Code", "vLLM"). You never list how they
-  get misheard; the polisher works that out, and the casing of a multi-word or
-  mixed-case term is fixed even in Live Auto-Paste with no polishing. Then the
-  LLM Polishing switch, the agent prompt profile and spoken clipboard paste.
-  **Advanced** holds the legacy replacement dictionary (fixed
-  `replace_with`/`matches` rewrites, useful for Live Auto-Paste without
-  polishing; the polisher no longer sees it, and its spellings were imported
-  into your terms once) and the prompt
+  they should appear ("Qwen", "Claude Code", "vLLM"). Both are sent to the
+  polishing model with every dictation, whichever endpoint you chose. You
+  never list how a name gets misheard; the polisher works that out, and the
+  casing of a multi-word or mixed-case term is fixed even in Live Auto-Paste
+  with no polishing.
+  **Suggest terms** sends your recent dictations to the polishing model you
+  chose and shows the names it finds as dashed tags: + adds one, × refuses it
+  for good (**Advanced → Dismissed suggestions → Forget** undoes that). One
+  run reads up to 120 dictations at high reasoning effort, so it uses API
+  credits and can take a few minutes; it keeps running in the background
+  while you dictate. It needs a hosted polishing model (Mistral API or your
+  own server); the bundled local model cannot do it.
+  Then the LLM Polishing switch, the agent prompt profile and spoken
+  clipboard paste. **Advanced** holds the legacy replacement dictionary
+  (fixed `replace_with`/`matches` rewrites from `replacement_dictionary.toml`,
+  useful for Live Auto-Paste without polishing; the polisher no longer sees
+  it, and its spellings were imported into your terms once) and the prompt
   files
 - **Context** — what the polisher may see (repo vocabulary, clipboard, the
   agent's screen and session); each toggle's help is one line naming what

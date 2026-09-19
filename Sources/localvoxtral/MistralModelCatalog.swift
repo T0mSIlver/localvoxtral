@@ -31,12 +31,19 @@ enum MistralReasoningEffort: String, Sendable {
     /// The field is not sent: a model without reasoning rejects it outright
     /// ("reasoning_effort is not enabled for this model").
     case omitted
+    /// For work nobody is waiting on (term suggestions). `/v1/models` only
+    /// says WHETHER a model reasons, not which levels it takes, but `"high"`
+    /// is the one value every reasoning model accepted (live API, 2026-09-19:
+    /// GLM takes low/high/max, Mistral's own models none/high) — one below
+    /// the top on GLM, the top elsewhere, and no per-model table.
+    case high
 
     var wireValue: String? {
         switch self {
         case .off: return "none"
         case .low: return "low"
         case .omitted: return nil
+        case .high: return "high"
         }
     }
 
@@ -51,6 +58,12 @@ enum MistralReasoningEffort: String, Sendable {
         }
         return MistralModelCatalog.isGLM(modelID) ? .low : .off
     }
+}
+
+extension MistralReasoningEffort {
+    /// The effort for a request that asked to think hard: `high` wherever the
+    /// polish effort says the model reasons at all.
+    var deepened: Self { self == .omitted ? .omitted : .high }
 }
 
 /// One row of a Mistral model picker. `tag` is what Settings stores: empty for
