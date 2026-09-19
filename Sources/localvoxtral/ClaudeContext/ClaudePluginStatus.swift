@@ -32,6 +32,38 @@ public enum ClaudePluginStatus: Sendable, Equatable {
         }
     }
 
+    /// The row's install button, named for what pressing it would do.
+    public enum PrimaryAction: Sendable, Equatable {
+        case install
+        case update
+        /// The state is unreadable, so the button claims neither.
+        case installOrUpdate
+
+        public var title: String {
+            switch self {
+            case .install: return "Install"
+            case .update: return "Update"
+            case .installOrUpdate: return "Install or update"
+            }
+        }
+    }
+
+    /// The install button to show, or nil when the installed plugin is at
+    /// least the bundled version: reinstalling the same files changes nothing.
+    /// An installed plugin whose version the listing could not name is not
+    /// known to be current, so it keeps the button.
+    public var primaryAction: PrimaryAction? {
+        switch self {
+        case .unknown: return .installOrUpdate
+        case .notInstalled: return .install
+        case .updateAvailable: return .update
+        case .installed(let version): return version == nil ? .installOrUpdate : nil
+        }
+    }
+
+    /// Remove is offered unless the listing says there is nothing to remove.
+    public var offersRemove: Bool { self != .notInstalled }
+
     /// Derive the status from a `claude plugin list --json` capture.
     ///
     /// - Parameters:

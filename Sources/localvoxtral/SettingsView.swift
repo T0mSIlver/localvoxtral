@@ -1724,8 +1724,10 @@ private extension SettingsView {
 
 /// Install/update the LOCAL Claude Code plugin.
 ///
-/// One explicit action, never anything at launch: putting a plugin into someone
-/// else's Claude Code is their decision. The result is one short line next to
+/// Installing is one explicit action: putting a plugin into someone else's
+/// Claude Code is their decision. An installed plugin is updated at launch
+/// (`updateOutdatedPluginAtLaunch`), so Update shows here only when that
+/// failed. The result is one short line next to
 /// the label; the CLI's actual output goes to an alert and the log (owner
 /// rule: no long text in the pane).
 private struct ClaudePluginInstallRow: View {
@@ -1740,17 +1742,30 @@ private struct ClaudePluginInstallRow: View {
             statusAccessibilityIdentifier: "integrations.claude.plugin.status"
         ) {
             HStack(spacing: 8) {
-                Button("Install or update") {
-                    Task { await model.updatePlugin() }
+                // The buttons follow the listing: no install button while the
+                // installed plugin is current, no Remove when nothing is
+                // installed.
+                if let action = model.localPluginStatus.primaryAction {
+                    Button(action.title) {
+                        Task {
+                            if action == .install {
+                                await model.installPlugin()
+                            } else {
+                                await model.updatePlugin()
+                            }
+                        }
+                    }
+                    .disabled(model.isPerformingPluginAction)
+                    .accessibilityIdentifier("integrations.claude.plugin.install")
                 }
-                .disabled(model.isPerformingPluginAction)
-                .accessibilityIdentifier("integrations.claude.plugin.install")
 
-                Button("Remove") {
-                    Task { await model.uninstallPlugin() }
+                if model.localPluginStatus.offersRemove {
+                    Button("Remove") {
+                        Task { await model.uninstallPlugin() }
+                    }
+                    .disabled(model.isPerformingPluginAction)
+                    .accessibilityIdentifier("integrations.claude.plugin.remove")
                 }
-                .disabled(model.isPerformingPluginAction)
-                .accessibilityIdentifier("integrations.claude.plugin.remove")
 
                 if model.isPerformingPluginAction {
                     ProgressView().controlSize(.small)

@@ -197,6 +197,7 @@ final class CmuxPasswordSettingsRowTests: XCTestCase {
     private struct InertPluginService: ClaudePluginInstalling {
         func installPlugin() throws {}
         func updatePlugin() throws {}
+        func updateInstalledPlugin() throws {}
         func uninstallPlugin() throws {}
     }
 

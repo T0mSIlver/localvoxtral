@@ -269,6 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         startClaudeContextBroker()
         startClaudeRemoteListener()
+        maintainLocalClaudePlugin()
         #if LOCALVOXTRAL_DOGFOOD
         // After the broker, because the control service's `surface probe` uses
         // the resolver the broker installs on the view model.
@@ -623,6 +624,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 "Claude context broker failed to start: \(String(describing: error), privacy: .public)"
             )
         }
+    }
+
+    /// Keeps an installed local Claude Code plugin working without a click:
+    /// repoints the publisher link at this app, wherever it now lives, and
+    /// updates a plugin older than the one bundled. Never installs a plugin
+    /// that is not there.
+    ///
+    /// CI launches of the packaged app on the owner's Mac are skipped: they
+    /// run a temporary copy, and pointing the owner's plugin at it would leave
+    /// the link dangling once the run deletes it.
+    private func maintainLocalClaudePlugin() {
+        guard !StartupPermissionSuppression.loginKeychainIsDisabled() else {
+            Log.claudeContext.info("Claude plugin maintenance skipped for a CI launch")
+            return
+        }
+        if let publisher = ClaudePluginAssets.publisherURL() {
+            do {
+                if case .updated(let previous) = try ClaudePublisherPointer.refresh(publisher: publisher) {
+                    Log.claudeContext.info(
+                        "Claude publisher link now names \(publisher.path, privacy: .public) (was \(previous ?? "absent", privacy: .public))"
+                    )
+                }
+            } catch {
+                Log.claudeContext.error(
+                    "Claude publisher link refresh failed: \(String(describing: error), privacy: .public)"
+                )
+            }
+        }
+        guard let settings = viewModel.claudeIntegrationSettings else { return }
+        Task { await settings.updateOutdatedPluginAtLaunch() }
     }
 
     /// Binds the remote (SSH) hook listener, but only for a user who has

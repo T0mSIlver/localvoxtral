@@ -22,14 +22,17 @@ EVENT="${1:-Unknown}"
 # Candidate order, most specific first:
 #   1. LOCALVOXTRAL_CLAUDE_HOOK_BIN — explicit env override; also the seam for
 #      remote/SSH setups where the publisher lives somewhere non-standard.
-#   2. CLAUDE_PLUGIN_OPTION_PUBLISHER_PATH — the `publisher_path` userConfig
-#      that ClaudePluginInstallService sets at install time. This is what makes
-#      the plugin work for an app in ~/Applications, a dev build, or a mounted
-#      volume, rather than only the two guesses below.
-#   3. the usual bundle locations.
-#   4. PATH (Linux/remote builds of the publisher).
+#   2. the link the app repoints at its own publisher on every launch
+#      (ClaudePublisherPointer). It follows the app when it moves, which the
+#      install-time pin below cannot.
+#   3. CLAUDE_PLUGIN_OPTION_PUBLISHER_PATH — the `publisher_path` userConfig
+#      that ClaudePluginInstallService sets at install time, for an app that
+#      has not launched since this plugin version was installed.
+#   4. the usual bundle locations.
+#   5. PATH (Linux/remote builds of the publisher).
 for candidate in \
   "${LOCALVOXTRAL_CLAUDE_HOOK_BIN:-}" \
+  "${HOME:-}/Library/Application Support/localvoxtral/claude/publisher" \
   "${CLAUDE_PLUGIN_OPTION_PUBLISHER_PATH:-}" \
   "/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook" \
   "${HOME:-}/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook"

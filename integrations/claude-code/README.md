@@ -300,10 +300,19 @@ nothing to migrate, and you can drop
 
 ## Install / update / uninstall
 
-The app way: **Settings → Claude Code → Plugin → Install or update**. That button registers the bundled marketplace
-and installs the plugin, then reports one short line. Nothing is installed until
-you press it — the app never touches your Claude Code setup at launch or on a
-timer.
+The app way: **Settings → Claude Code → Plugin → Install**. That button
+registers the bundled marketplace and installs the plugin, then reports one
+short line. Nothing is installed until you press it.
+
+Once installed, the plugin keeps itself current without a click. At launch the
+app runs `claude plugin update` on an installed plugin that is older than the
+one it ships. That command never uninstalls, so a failed update leaves the old
+plugin working. The app also repoints
+`~/Library/Application Support/localvoxtral/claude/publisher` at its own
+publisher binary. The shim tries that link before the install-time
+`publisher_path`, so moving the app needs no reinstall. The row shows
+**Update** only when that launch-time update failed, and no install button
+while the plugin is current.
 
 Everything it does goes through Claude Code's own plugin CLI.
 
@@ -405,7 +414,9 @@ In `~/.claude/settings.json`:
 ```
 
 (Adjust the path for `~/Applications` or a dev build — it is the same binary
-`publisher_path` points at.) If you already have a status line, keep it and
+`publisher_path` points at.) Unlike the plugin, the status line does not follow
+the app when it moves: the path is saved in your settings, so after a move
+Settings shows **Update…** on the Status line row. If you already have a status line, keep it and
 append ours: buffer stdin once and feed both, e.g.
 
 ```sh
@@ -458,7 +469,8 @@ Every field is length-capped at both ends. Hook content is never logged.
 
 | Setting | Purpose |
 |---|---|
-| `publisher_path` (plugin userConfig) | Absolute path to the publisher. localvoxtral sets this for you at install time, which is how the plugin finds an app in `~/Applications`, on a mounted volume, or in a dev build. The shim reads it as `CLAUDE_PLUGIN_OPTION_PUBLISHER_PATH`. |
+| `~/Library/Application Support/localvoxtral/claude/publisher` | Link to the publisher, repointed by the app on every launch. The shim tries it right after `LOCALVOXTRAL_CLAUDE_HOOK_BIN`. |
+| `publisher_path` (plugin userConfig) | Absolute path to the publisher. localvoxtral sets this for you at install time; the shim uses it when the link above is missing or dangling. The shim reads it as `CLAUDE_PLUGIN_OPTION_PUBLISHER_PATH`. |
 | `LOCALVOXTRAL_CLAUDE_SOCKET` | Socket path. Defaults to `~/Library/Application Support/localvoxtral/run/claude-context.sock` (macOS) or `$XDG_RUNTIME_DIR/localvoxtral/claude-context.sock` (Linux). |
 | `LOCALVOXTRAL_CLAUDE_HOOK_BIN` | Path to the publisher; overrides everything else. |
 

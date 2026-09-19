@@ -15,6 +15,7 @@ private final class MemoryStore: ClaudeRemoteHostStoreIO {
 private final class StubPluginService: ClaudePluginInstalling {
     func installPlugin() throws {}
     func updatePlugin() throws {}
+    func updateInstalledPlugin() throws {}
     func uninstallPlugin() throws {}
 }
 

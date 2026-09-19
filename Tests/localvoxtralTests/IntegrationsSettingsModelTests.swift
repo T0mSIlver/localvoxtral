@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import XCTest
 
 @testable import localvoxtral
@@ -48,6 +49,7 @@ final class IntegrationsSettingsModelTests: XCTestCase {
     private func makeModel(
         fetchPluginListOutput: @escaping @Sendable () async -> String? = { nil },
         bundledPluginVersion: String? = nil,
+        pluginService: any ClaudePluginInstalling = StubListPluginService(),
         statusline: ClaudeStatuslineInstallService? = nil,
         statuslineHookCommand: (@Sendable () -> String?)? = nil,
         opencode: OpencodePluginInstallService? = nil,
@@ -57,7 +59,7 @@ final class IntegrationsSettingsModelTests: XCTestCase {
         ClaudeIntegrationSettingsModel(
             registry: nil,
             listener: nil,
-            pluginService: { StubListPluginService() },
+            pluginService: { pluginService },
             // Synchronous: the production default hops to a detached task,
             // which would make every assertion below a race.
             performAsync: { body in
@@ -164,6 +166,73 @@ final class IntegrationsSettingsModelTests: XCTestCase {
         )
         await model.refreshIntegrationsStatuses()
         XCTAssertEqual(model.localPluginStatus, .installed(version: nil))
+    }
+
+    func testPluginRowButtonsFollowTheStatus() {
+        // A current plugin gets no install button, since pressing it would
+        // reinstall the same files, and a missing one gets no Remove.
+        let cases: [(ClaudePluginStatus, ClaudePluginStatus.PrimaryAction?, Bool)] = [
+            (.notInstalled, .install, false),
+            (.updateAvailable(installed: "1.0.0", bundled: "1.1.0"), .update, true),
+            (.installed(version: "1.0.0"), nil, true),
+            (.installed(version: nil), .installOrUpdate, true),
+            (.unknown, .installOrUpdate, true),
+        ]
+        for (status, action, remove) in cases {
+            XCTAssertEqual(status.primaryAction, action, "\(status)")
+            XCTAssertEqual(status.offersRemove, remove, "\(status)")
+        }
+        XCTAssertEqual(ClaudePluginStatus.PrimaryAction.install.title, "Install")
+        XCTAssertEqual(ClaudePluginStatus.PrimaryAction.update.title, "Update")
+    }
+
+    @MainActor
+    func testLaunchUpdatesAnOutdatedPluginAndNothingElse() async {
+        let listing = Mutex("1.0.0")
+        let service = RecordingPluginService { listing.withLock { $0 = "1.1.0" } }
+        let model = makeModel(
+            fetchPluginListOutput: {
+                let version = listing.withLock { $0 }
+                return "[{\"id\":\"localvoxtral@localvoxtral\",\"version\":\"\(version)\",\"scope\":\"user\",\"enabled\":true}]"
+            },
+            bundledPluginVersion: "1.1.0",
+            pluginService: service
+        )
+        await model.updateOutdatedPluginAtLaunch()
+        XCTAssertEqual(service.calls.withLock { $0 }, ["update"])
+        XCTAssertEqual(model.localPluginStatus, .installed(version: "1.1.0"))
+
+        // Current now: a second launch touches nothing.
+        await model.updateOutdatedPluginAtLaunch()
+        XCTAssertEqual(service.calls.withLock { $0 }, ["update"])
+    }
+
+    @MainActor
+    func testLaunchNeverInstallsAMissingPlugin() async {
+        for listing in [String?.none, "[]"] {
+            let service = RecordingPluginService()
+            let model = makeModel(
+                fetchPluginListOutput: { listing },
+                bundledPluginVersion: "1.1.0",
+                pluginService: service
+            )
+            await model.updateOutdatedPluginAtLaunch()
+            XCTAssertEqual(service.calls.withLock { $0 }, [], "\(String(describing: listing))")
+        }
+    }
+
+    @MainActor
+    func testFailedLaunchUpdateRaisesNoAlertAndKeepsTheButton() async {
+        let service = RecordingPluginService(fails: true)
+        let model = makeModel(
+            fetchPluginListOutput: { "[{\"id\":\"localvoxtral@localvoxtral\",\"version\":\"1.0.0\",\"scope\":\"user\",\"enabled\":true}]" },
+            bundledPluginVersion: "1.1.0",
+            pluginService: service
+        )
+        await model.updateOutdatedPluginAtLaunch()
+        XCTAssertEqual(service.calls.withLock { $0 }, ["update"])
+        XCTAssertNil(model.alert)
+        XCTAssertEqual(model.localPluginStatus.primaryAction, .update)
     }
 
     // MARK: - Status line row
@@ -469,9 +538,31 @@ private final class ProbeInvocationCatcher: @unchecked Sendable {
 // MARK: - Doubles
 
 /// `ClaudePluginInstalling` stub that also answers the list probe.
+private final class RecordingPluginService: ClaudePluginInstalling, Sendable {
+    struct Failure: Error {}
+    let calls = Mutex<[String]>([])
+    private let fails: Bool
+    private let onUpdate: @Sendable () -> Void
+
+    init(fails: Bool = false, onUpdate: @escaping @Sendable () -> Void = {}) {
+        self.fails = fails
+        self.onUpdate = onUpdate
+    }
+
+    func installPlugin() throws { calls.withLock { $0.append("install") } }
+    func updatePlugin() throws { calls.withLock { $0.append("reinstall") } }
+    func updateInstalledPlugin() throws {
+        calls.withLock { $0.append("update") }
+        if fails { throw Failure() }
+        onUpdate()
+    }
+    func uninstallPlugin() throws { calls.withLock { $0.append("uninstall") } }
+}
+
 private final class StubListPluginService: ClaudePluginInstalling, @unchecked Sendable {
     func installPlugin() throws {}
     func updatePlugin() throws {}
+    func updateInstalledPlugin() throws {}
     func uninstallPlugin() throws {}
     func pluginListOutput() throws -> String? { nil }
 }

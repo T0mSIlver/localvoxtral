@@ -11,15 +11,19 @@ import Foundation
 ///    is the user's, Claude Code owns its schema, and a third-party app editing
 ///    it is how you corrupt someone's setup during an unrelated upgrade. The
 ///    CLI is the supported interface; if it is absent, we do nothing and say so.
-/// 2. **Only on explicit request.** Nothing here runs at launch or on a timer.
-///    Installing a plugin into the user's Claude Code is their decision, made
-///    per call from UI or API.
+/// 2. **Installing is the user's decision.** Only an explicit request installs
+///    the plugin. The one call made without a click is the launch-time update
+///    of a plugin the user already installed and that is older than the
+///    bundled one (`ClaudeIntegrationSettingsModel.updateOutdatedPluginAtLaunch`).
 public struct ClaudePluginInstallService: Sendable {
     public enum Action: Sendable, Equatable {
         /// Register the bundled marketplace directory.
         case addMarketplace
         /// Install the plugin from the registered marketplace.
         case install
+        /// Update the installed plugin in place from the registered
+        /// marketplace. Keeps its userConfig; accepts no `--config`.
+        case update
         /// Remove the plugin.
         case uninstall
         /// Deregister the marketplace.
@@ -164,6 +168,8 @@ public struct ClaudePluginInstallService: Sendable {
             return ["plugin", "marketplace", "add", marketplacePath]
         case .install:
             return ["plugin", "install", pluginReference] + configArguments(publisherPath: publisherPath)
+        case .update:
+            return ["plugin", "update", pluginReference]
         case .uninstall:
             return ["plugin", "uninstall", pluginReference]
         case .removeMarketplace:
@@ -237,6 +243,19 @@ public struct ClaudePluginInstallService: Sendable {
         try perform(.addMarketplace)
         _ = try? perform(.uninstall)
         try perform(.install)
+    }
+
+    /// The unattended update at launch: refresh the marketplace, then
+    /// `claude plugin update`.
+    ///
+    /// Never uninstalls, so a failure leaves the old plugin installed and
+    /// working. Claude Code keeps the old version's files for sessions
+    /// already running, and the saved `publisher_path` carries over. That pin
+    /// is not refreshed, which is why the shim tries the app's publisher link
+    /// (`ClaudePublisherPointer`) first.
+    public func updateInstalledPlugin() throws {
+        try perform(.addMarketplace)
+        try perform(.update)
     }
 }
 
