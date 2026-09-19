@@ -2299,6 +2299,44 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         )
     }
 
+    /// The block was current when the update panel opened, so the panel
+    /// carries no snippet. A block that goes stale before Update Host is
+    /// confirmed must still be rewritten by the run.
+    @MainActor
+    func testTheUpdateRunRewritesABlockThatWentStaleAfterThePanelOpened() async throws {
+        let registry = try makeRegistry()
+        let sshFS = StubSSHConfigFileSystem()
+        let service = ClaudeRemoteEnrollmentService(
+            runner: setupFlowRunner(script: SetupFlowScript(), recorder: SetupFlowRecorder()),
+            sshConfigFileSystem: sshFS
+        )
+        let listener = StubListener(hosts: registry)
+        listener.isListening = true
+        let model = setupFlowModel(registry: registry, listener: listener, service: service)
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let hostID = try XCTUnwrap(model.hosts.first?.id)
+        let expectedBlock = try XCTUnwrap(model.presentedPlan).plan.sshConfigSnippet
+        let current = ClaudeRemoteEnrollmentService.applySSHConfigSnippet(
+            to: "", snippet: expectedBlock, hostID: hostID
+        )
+        sshFS.configText = current
+        model.dismissPlan()
+
+        model.requestPluginUpdate(hostID: hostID)
+        XCTAssertNil(model.presentedPluginUpdate?.sshConfigSnippet, "current when the panel opened")
+
+        // Edited while the panel is open: the forward now reaches the wrong port.
+        let stale = current.replacingOccurrences(of: "127.0.0.1:", with: "127.0.0.1:1")
+        XCTAssertNotEqual(stale, current)
+        sshFS.configText = stale
+        model.requestHostUpdateRun()
+        await model.confirmEnrollmentAction()
+
+        XCTAssertEqual(sshFS.configText, current, "the run rewrote the block it found stale")
+    }
+
     /// The run's read-back already PROVED the installed version, so the
     /// indicator clears on the run — not at the host's next hook, which may be
     /// hours away while the user is staring at the row.

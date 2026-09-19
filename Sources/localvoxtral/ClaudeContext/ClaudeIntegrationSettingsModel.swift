@@ -445,10 +445,10 @@ public final class ClaudeIntegrationSettingsModel {
         /// must be re-enrolled before the app can safely address it.
         public var sshHostAlias: String?
         public var commands: [String]
-        /// This host's regenerated ssh-config block, when the local one does
-        /// not already forward the port these commands are about to store on
-        /// the remote — nil when it already matches and there is nothing to
-        /// write.
+        /// This host's regenerated ssh-config block, when the local one did
+        /// not match it when the panel opened; nil when it did. The run
+        /// regenerates a nil one and checks the file again before writing,
+        /// since the block can change while the panel is open.
         ///
         /// The two are ONE migration and the review that caught this was right
         /// to call it a blocker: storing `port=285xx` in the plugin while
@@ -1049,9 +1049,9 @@ public final class ClaudeIntegrationSettingsModel {
                         reported: host.reportedPluginVersion,
                         expected: ClaudeRemoteEnrollmentService.remotePluginVersion
                     )
-                    || enrollmentService.sshConfigBlockIsCurrent(
-                        port: remoteForwardPort, hostID: host.id
-                    ) != true
+                    || expectedSSHConfigSnippet(for: host).flatMap {
+                        enrollmentService.sshConfigBlockIsCurrent(snippet: $0, hostID: host.id)
+                    } != true
                     || !shellStepSettled
                 )
             )
@@ -1683,7 +1683,9 @@ public final class ClaudeIntegrationSettingsModel {
         // assuming a stale block is current is a silently dead host.
         let alreadyCurrent =
             registry?.host(id: hostID).flatMap { host in
-                enrollmentService.sshConfigBlockIsCurrent(port: remoteForwardPort, hostID: host.id)
+                expectedSSHConfigSnippet(for: host).flatMap {
+                    enrollmentService.sshConfigBlockIsCurrent(snippet: $0, hostID: host.id)
+                }
             } ?? false
         let snippet: String? = alreadyCurrent ? nil : registry?.host(id: hostID).map { host in
             ClaudeRemoteEnrollmentService.sshConfigSnippet(
@@ -1707,6 +1709,20 @@ public final class ClaudeIntegrationSettingsModel {
     /// Exactly what `performPluginUpdate` will do, retained as a test seam.
     static func updatePreview(for presentation: PluginUpdatePresentation) -> String {
         presentation.applicationText
+    }
+
+    /// The ssh-config block this build writes for `host`, or nil when it has
+    /// no valid alias to write it for.
+    private func expectedSSHConfigSnippet(for host: ClaudeRemoteHost) -> String? {
+        guard let alias = host.sshHostAlias,
+              ClaudeRemoteEnrollmentService.isValidHostAlias(alias)
+        else { return nil }
+        return ClaudeRemoteEnrollmentService.sshConfigSnippet(
+            host: host,
+            sshHostAlias: alias,
+            listenerPort: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port,
+            remoteForwardPort: remoteForwardPort
+        )
     }
 
     /// Stands in for an alias we were never told. It is not a valid target and
@@ -2033,7 +2049,10 @@ public final class ClaudeIntegrationSettingsModel {
             else { return }
             hostID = requestedHostID
             alias = presentationAlias
+            // Current when the panel opened is not current now: regenerate, and
+            // let the fresh read below decide whether to write.
             snippet = presentation.sshConfigSnippet
+                ?? registry?.host(id: requestedHostID).flatMap(expectedSSHConfigSnippet(for:))
             token = nil
         default:
             return
@@ -2050,9 +2069,10 @@ public final class ClaudeIntegrationSettingsModel {
 
         let service = enrollmentService
         let port = remoteForwardPort
-        let snippetToApply = service.sshConfigBlockIsCurrent(port: port, hostID: hostID) == true
-            ? nil
-            : snippet
+        // Skip the write only when the file already holds this exact block.
+        let snippetToApply = snippet.flatMap {
+            service.sshConfigBlockIsCurrent(snippet: $0, hostID: hostID) == true ? nil : $0
+        }
 
         markSetup(.sshConfig, .running)
         let sshAttempt = await performEnrollmentAsync {
@@ -2283,8 +2303,13 @@ public final class ClaudeIntegrationSettingsModel {
         // Copied out of self before the detached hop, like `service`: the
         // closure is @Sendable and must not capture the main-actor model.
         let port = remoteForwardPort
-        let snippet = presentation.sshConfigSnippet
         let hostID = presentation.hostID
+        // Only the block this path's confirmation disclosed, and only when the
+        // file does not already hold it. Unlike the setup run, whose consent
+        // names ~/.ssh/config either way, this one may have promised no local
+        // edit at all, so it never regenerates one.
+        let snippet = presentation.sshConfigSnippet
+            .flatMap { service.sshConfigBlockIsCurrent(snippet: $0, hostID: hostID) == true ? nil : $0 }
         // ORDER IS THE SAFETY PROPERTY. The local block is rewritten first, and
         // the remote is touched only if that succeeded. Reverse them and a
         // refused local write (symlinked config, untrusted ~/.ssh) leaves the

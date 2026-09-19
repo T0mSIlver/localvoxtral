@@ -681,22 +681,27 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         }
     }
 
-    /// Is this host's marked block CURRENT — everything this build would write
-    /// into it, not merely the port?
+    /// Is this host's marked block exactly `snippet`, the block this build
+    /// would write for it?
     ///
-    /// `nil` means "cannot tell" — no filesystem seam, or a config we refuse to
-    /// read. Callers must treat nil as "not known to match" and regenerate,
-    /// never as "fine": assuming a block is current is exactly how a plugin
-    /// gets a port this Mac does not forward.
+    /// `nil` means "cannot tell": no filesystem seam, or a config we refuse
+    /// to read. Callers must treat nil as "not known to match" and
+    /// regenerate, never as "fine": assuming a block is current is exactly
+    /// how a plugin gets a port this Mac does not forward.
     ///
-    /// It checked the `RemoteForward` port ALONE until 2026-09-06, and that was
-    /// a silent no-op on the one migration that mattered: a host enrolled
-    /// before `SendEnv LC_LVX_TTY` existed already forwards the right port, so
-    /// `Update Plugin…` skipped the local rewrite entirely and the plain-ssh
-    /// join never got the line the release notes told the user that button
-    /// would add (review finding B1). Anything the block must contain belongs
-    /// in this list, or shipping it reaches only new enrollments.
-    public func sshConfigBlockIsCurrent(port: UInt16, hostID: String) -> Bool? {
+    /// The whole block, compared directive by directive. It checked the
+    /// `RemoteForward` port alone until 2026-09-06, which skipped the rewrite
+    /// that should have added `SendEnv LC_LVX_TTY` (review finding B1), and
+    /// then the port plus `SendEnv` until 2026-09-19, which still called a
+    /// block current when its forward pointed at the wrong local port or its
+    /// `Host` line named another alias. The rewrite is idempotent, so a
+    /// false "stale" costs one identical write, while a false "current" leaves a
+    /// dead tunnel that `Update Plugin…` then skips.
+    ///
+    /// Read the way OpenSSH reads it: keyword case, field spacing and the
+    /// optional `=` after the keyword do not count, and neither do blank or
+    /// comment lines, so a commented-out directive is a missing one.
+    public func sshConfigBlockIsCurrent(snippet: String, hostID: String) -> Bool? {
         guard let sshConfigFileSystem else { return nil }
         guard let state = try? sshConfigFileSystem.readState(),
               let data = state.configData,
@@ -705,30 +710,34 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         let begin = Self.blockBegin(hostID: hostID)
         let end = Self.blockEnd(hostID: hostID)
         let lines = text.components(separatedBy: "\n")
+        // Found the way `applySSHConfigSnippet` finds it, so "current" and
+        // "the block a rewrite would replace" are always the same block.
         guard let beginIndex = lines.firstIndex(where: {
             $0.trimmingCharacters(in: .whitespaces) == begin
         }), let endIndex = lines[beginIndex...].firstIndex(where: {
             $0.trimmingCharacters(in: .whitespaces) == end
         }) else { return false }
-        let block = lines[beginIndex...endIndex]
-        let forwardsPort = block.contains { line in
-            let fields = line.split(whereSeparator: \.isWhitespace)
-            guard fields.count >= 2, fields[0] == "RemoteForward" else { return false }
-            return fields[1] == "\(port)"
-        }
-        let sendsLocalTTY = block.contains { line in
-            let fields = line.split(whereSeparator: \.isWhitespace)
-            return fields.count >= 2 && fields[0] == "SendEnv" && fields[1] == "LC_LVX_TTY"
-        }
-        return forwardsPort && sendsLocalTTY
+        return Self.directives(lines[(beginIndex + 1)..<endIndex])
+            == Self.directives(snippet.components(separatedBy: "\n").filter {
+                let trimmed = $0.trimmingCharacters(in: .whitespaces)
+                return trimmed != begin && trimmed != end
+            })
     }
 
-    /// Port-only spelling of `sshConfigBlockIsCurrent`, kept so its
-    /// cannot-tell semantics stay pinned. It delegates rather than checking
-    /// the port alone, so no future caller can gate a rewrite on the port and
-    /// re-ship the silent SendEnv no-op (review finding B1).
-    public func sshConfigForwardsPort(_ port: UInt16, hostID: String) -> Bool? {
-        sshConfigBlockIsCurrent(port: port, hostID: hostID)
+    /// A block's lines as OpenSSH reads them: the keyword lowercased and
+    /// split from its arguments by whitespace or one `=`, arguments split on
+    /// any horizontal whitespace, blank and comment lines dropped.
+    static func directives<Lines: Sequence>(_ lines: Lines) -> [[String]]
+    where Lines.Element == String {
+        lines.compactMap { line in
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return nil }
+            let keywordEnd = trimmed.firstIndex { $0.isWhitespace || $0 == "=" } ?? trimmed.endIndex
+            var rest = trimmed[keywordEnd...].drop { $0.isWhitespace }
+            if rest.first == "=" { rest = rest.dropFirst().drop { $0.isWhitespace } }
+            return [trimmed[..<keywordEnd].lowercased()]
+                + rest.split(whereSeparator: \.isWhitespace).map(String.init)
+        }
     }
 
     /// What this host's block currently forwards, as three distinguishable
