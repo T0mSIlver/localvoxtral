@@ -79,6 +79,26 @@ final class OpencodePluginInstallServiceTests: XCTestCase {
         )
     }
 
+    func testRowButtonsFollowTheStatus() {
+        // A current plugin gets no setup button, since pressing it would
+        // copy the same bytes, and a missing one gets no Remove.
+        let cases: [(OpencodePluginInstallService.Status, String?, Bool)] = [
+            (.notInstalled, "Set up…", false),
+            (.installedUnlisted, "Set up…", true),
+            (.updateAvailable, "Update…", true),
+            (.installed, nil, true),
+            (.unknown, "Set up…", true),
+        ]
+        for (status, title, remove) in cases {
+            XCTAssertEqual(
+                OpencodePluginInstallService.setupButtonTitle(for: status), title, "\(status)"
+            )
+            XCTAssertEqual(
+                OpencodePluginInstallService.offersRemove(for: status), remove, "\(status)"
+            )
+        }
+    }
+
     func testUnreadablePluginFileIsUnknown() {
         let (service, _) = service(state: OpencodePluginState(
             pluginFileExists: true, pluginData: nil

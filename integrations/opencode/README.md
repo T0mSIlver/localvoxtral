@@ -17,7 +17,9 @@ Set Up…**. A one-sentence consent names both files, and **Details** opens this
 command reference. The app copies its bundled `localvoxtral.js` into opencode's
 global plugin directory and lists it in `~/.config/opencode/tui.json` —
 creating that file when it is absent, preserving everything else in it when
-it is present. **Remove** reverses both. Nothing is written until you press
+it is present. **Remove** reverses both. Once the installed plugin matches
+the app's copy, the row offers only **Remove**; an app update that ships a new
+plugin brings back **Update…**. Nothing is written until you press
 the button, and a `tui.json` whose `plugin` entry has an unexpected shape is
 left untouched rather than reshaped.
 

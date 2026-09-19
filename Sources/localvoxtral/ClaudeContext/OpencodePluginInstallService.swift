@@ -57,7 +57,7 @@ public struct OpencodePluginInstallService: Sendable {
         /// The file is there but `tui.json` does not list it: content flows,
         /// panes stay undeclared, joins stay impossible.
         case installedUnlisted
-        /// File copied and listed. Offers Remove (and re-Install).
+        /// File copied, listed, and matching this build. Offers Remove only.
         case installed
         /// Copied and listed, but the bytes differ from what this build
         /// ships: re-pressing Install refreshes them.
@@ -65,6 +65,23 @@ public struct OpencodePluginInstallService: Sendable {
         /// A file exists but cannot be read, or `tui.json` is unparseable.
         /// Reported, never treated as absent.
         case unknown
+    }
+
+    /// The row's setup button, named for what pressing it would do, or nil
+    /// when the installed plugin matches this build: re-copying the same
+    /// bytes changes nothing. An unlisted or unreadable install keeps the
+    /// button, since setup is what repairs it.
+    public static func setupButtonTitle(for status: Status) -> String? {
+        switch status {
+        case .notInstalled, .installedUnlisted, .unknown: return "Set up…"
+        case .updateAvailable: return "Update…"
+        case .installed: return nil
+        }
+    }
+
+    /// Remove is offered unless there is no plugin file to remove.
+    public static func offersRemove(for status: Status) -> Bool {
+        status != .notInstalled
     }
 
     /// The row's one status sentence. Never restates the label.

@@ -1827,7 +1827,8 @@ private struct ClaudeStatuslineRow: View {
 
 /// Install/remove the opencode plugin.
 ///
-/// Installation is confirmed in a consent sheet because it writes both the
+/// The buttons follow `OpencodePluginInstallService.Status`, so the row never
+/// offers a setup that would change nothing. Installation is confirmed in a consent sheet because it writes both the
 /// plugin and the user's `tui.json`. Failures report one short line here and
 /// the detail in an alert (owner rule).
 private struct OpencodePluginRow: View {
@@ -1842,17 +1843,26 @@ private struct OpencodePluginRow: View {
             statusAccessibilityIdentifier: "integrations.opencode.status"
         ) {
             HStack(spacing: 8) {
-                Button(model.opencodeStatus == .notInstalled ? "Set up…" : "Update…") {
-                    isShowingSetup = true
+                // The buttons follow the status: no setup button while the
+                // installed plugin is current, no Remove when nothing is
+                // installed.
+                if let title = OpencodePluginInstallService.setupButtonTitle(
+                    for: model.opencodeStatus
+                ) {
+                    Button(title) {
+                        isShowingSetup = true
+                    }
+                    .disabled(model.isPerformingOpencodeAction)
+                    .accessibilityIdentifier("integrations.opencode.install")
                 }
-                .disabled(model.isPerformingOpencodeAction)
-                .accessibilityIdentifier("integrations.opencode.install")
 
-                Button("Remove") {
-                    Task { await model.removeOpencodePlugin() }
+                if OpencodePluginInstallService.offersRemove(for: model.opencodeStatus) {
+                    Button("Remove") {
+                        Task { await model.removeOpencodePlugin() }
+                    }
+                    .disabled(model.isPerformingOpencodeAction)
+                    .accessibilityIdentifier("integrations.opencode.remove")
                 }
-                .disabled(model.isPerformingOpencodeAction)
-                .accessibilityIdentifier("integrations.opencode.remove")
 
                 if model.isPerformingOpencodeAction {
                     ProgressView().controlSize(.small)
