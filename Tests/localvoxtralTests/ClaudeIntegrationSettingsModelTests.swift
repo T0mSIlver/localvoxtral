@@ -2989,6 +2989,40 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         )
     }
 
+    func testShellSetupButtonsFollowTheRCState() {
+        // This build's block gets no setup button, since writing it again
+        // changes nothing; an older one gets Update…; no clean block, no Remove.
+        let cases: [(ClaudeShellSetupStatus.RCState, String?, Bool)] = [
+            (.unsupportedShell, "Set up…", false),
+            (.notApplied, "Set up…", false),
+            (.applied, nil, true),
+            (.outdated, "Update…", true),
+            (.unknown, "Set up…", false),
+        ]
+        for (rc, title, remove) in cases {
+            let status = ClaudeShellSetupStatus(rc: rc)
+            XCTAssertEqual(status.setupButtonTitle, title, "\(rc)")
+            XCTAssertEqual(status.offersRemove, remove, "\(rc)")
+        }
+    }
+
+    @MainActor
+    func testAnOlderShellBlockReadsOutdatedAndSetupRewritesIt() async {
+        let older = ClaudeShellRCSetup.snippet(for: .zsh)
+            .replacingOccurrences(of: "# Publishes", with: "# Exports")
+        let fileSystem = StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true, data: Data("export EDITOR=vim\n\n\(older)\n".utf8), permissions: 0o644
+        ))
+        let model = shellSetupModel(fileSystem: fileSystem)
+        model.refreshShellSetupStatus()
+        XCTAssertEqual(model.shellSetupStatus.rc, .outdated)
+        XCTAssertEqual(model.shellSetupStatus.rcSentence, "Update available.")
+
+        await model.applyShellSetup()
+        XCTAssertEqual(model.shellSetupStatus.rc, .applied)
+        XCTAssertNil(model.shellSetupStatus.setupButtonTitle)
+    }
+
     @MainActor
     func testApplyingTheShellSetupWritesTheBlockAndTheStatusFollows() async {
         let fileSystem = StubRCFileSystem(state: ClaudeShellRCState(

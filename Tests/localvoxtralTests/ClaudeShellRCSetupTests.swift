@@ -390,6 +390,38 @@ final class ClaudeShellRCSetupTests: XCTestCase {
         XCTAssertEqual(writer.isApplied(), false)
     }
 
+    func testIsCurrentTellsAnOlderBlockFromThisBuildsBlock() throws {
+        let current = ClaudeShellRCSetup.snippet(for: .zsh)
+        let older = current.replacingOccurrences(of: "# Publishes", with: "# Exports")
+        XCTAssertNotEqual(older, current)
+        let fileSystem = StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true, data: Data("export EDITOR=vim\n\n\(older)\n".utf8),
+            permissions: 0o644
+        ))
+        let writer = ClaudeShellRCWriter(fileSystem: fileSystem)
+        XCTAssertEqual(writer.isApplied(), true)
+        XCTAssertEqual(writer.isCurrent(shell: .zsh), false, "an older block needs the rewrite")
+
+        try writer.apply(shell: .zsh)
+        fileSystem.state.data = fileSystem.written?.data
+        XCTAssertEqual(writer.isCurrent(shell: .zsh), true)
+        XCTAssertEqual(writer.isCurrent(shell: .fish), false, "another shell's block is not current")
+
+        // CRLF is still current: apply writes the file's own terminator.
+        let crlf = current.replacingOccurrences(of: "\n", with: "\r\n") + "\r\n"
+        fileSystem.state.data = Data(crlf.utf8)
+        XCTAssertEqual(writer.isCurrent(shell: .zsh), true)
+
+        // Two matching copies are not current: apply would still collapse them.
+        fileSystem.state.data = Data("\(current)\n\(current)\n".utf8)
+        XCTAssertEqual(writer.isCurrent(shell: .zsh), false)
+
+        fileSystem.state.data = Data("export EDITOR=vim\n".utf8)
+        XCTAssertEqual(writer.isCurrent(shell: .zsh), false)
+        fileSystem.state = ClaudeShellRCState(fileExists: true, data: nil, permissions: nil)
+        XCTAssertNil(writer.isCurrent(shell: .zsh))
+    }
+
     func testAnEXISTINGButUNREADABLEFileIsRefusedRatherThanTreatedAsEmpty() {
         // `~/.zshrc` mode 000, or root-owned. Mapping that to "" made a
         // confirmed setup overwrite it with snippet-only bytes — total content

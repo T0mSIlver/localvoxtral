@@ -148,7 +148,11 @@ public struct ClaudeShellSetupStatus: Sendable, Equatable {
         /// The login shell is not one this app writes for.
         case unsupportedShell
         case notApplied
+        /// This build's block is in the rc file.
         case applied
+        /// A block is there, but not this build's text: an older app wrote
+        /// it, or it was edited by hand.
+        case outdated
         /// The rc file could not be read, or is a symlink we will not write
         /// through.
         case unknown
@@ -186,9 +190,23 @@ public struct ClaudeShellSetupStatus: Sendable, Equatable {
         case .unsupportedShell: return "Your login shell is not one this can set up."
         case .notApplied: return "Not set up."
         case .applied: return "Set up."
+        case .outdated: return "Update available."
         case .unknown: return "Could not read your shell startup file."
         }
     }
+
+    /// The row's setup button, or nil when this build's block is already in
+    /// the rc file: writing it again changes nothing.
+    public var setupButtonTitle: String? {
+        switch rc {
+        case .unsupportedShell, .notApplied, .unknown: return "Set up…"
+        case .outdated: return "Update…"
+        case .applied: return nil
+        }
+    }
+
+    /// Remove is offered only for a clean block the writer will take out.
+    public var offersRemove: Bool { rc == .applied || rc == .outdated }
 
     public var crossingSentence: String {
         switch crossing {
@@ -1351,7 +1369,7 @@ public final class ClaudeIntegrationSettingsModel {
         let writer = shellRCWriter(shell)
         let rc: ClaudeShellSetupStatus.RCState
         switch writer?.isApplied() {
-        case .some(true): rc = .applied
+        case .some(true): rc = writer?.isCurrent(shell: shell) == true ? .applied : .outdated
         case .some(false): rc = .notApplied
         case .none: rc = .unknown
         }
@@ -1983,7 +2001,8 @@ public final class ClaudeIntegrationSettingsModel {
 
         markSetup(.shellStartup, .running)
         if let shell = loginShell(), let writer = shellRCWriter(shell) {
-            if writer.isApplied() == true {
+            // Current, not merely present: an older block is rewritten here.
+            if writer.isCurrent(shell: shell) == true {
                 markSetup(.shellStartup, .done("The shell startup block is already applied."))
             } else {
                 let shellFailure = await performAsync { try writer.apply(shell: shell) }

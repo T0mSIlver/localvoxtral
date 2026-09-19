@@ -122,6 +122,19 @@ public enum ClaudeShellRCSetup {
         return false
     }
 
+    /// Is our block in this text exactly once, and exactly this snippet?
+    ///
+    /// Line terminators aside: `apply` writes the file's own, so a CRLF file
+    /// holding this build's block is current. Two copies are not current even
+    /// when both match, because `apply` would still collapse them.
+    public static func containsCurrentBlock(_ existing: String, snippet: String) -> Bool {
+        let lines = splitLines(existing)
+        guard case .present(let ranges) = locateBlock(in: lines), ranges.count == 1 else {
+            return false
+        }
+        return Array(lines[ranges[0]]) == splitLines(snippet)
+    }
+
     /// Does this text carry an unpaired begin marker?
     public static func hasDamagedBlock(_ existing: String) -> Bool {
         locateBlock(in: splitLines(existing)) == .damaged
@@ -332,14 +345,29 @@ public struct ClaudeShellRCWriter: Sendable {
     /// Is the block present right now? Nil when the file cannot be read at all,
     /// which the UI reports as unknown rather than as absent.
     public func isApplied() -> Bool? {
+        statusText().map(ClaudeShellRCSetup.containsBlock)
+    }
+
+    /// Is the block present AND this build's text for `shell`? False for an
+    /// older block, which `apply` would rewrite. Nil exactly when
+    /// `isApplied()` is nil.
+    public func isCurrent(shell: ClaudeShellKind) -> Bool? {
+        statusText().map {
+            ClaudeShellRCSetup.containsCurrentBlock($0, snippet: ClaudeShellRCSetup.snippet(for: shell))
+        }
+    }
+
+    /// The rc file's text for a status read: "" when it does not exist, nil
+    /// when it cannot be read.
+    private func statusText() -> String? {
         guard let fileSystem, let state = try? fileSystem.readState() else { return nil }
         guard let data = state.data, let text = String(data: data, encoding: .utf8) else {
-            return state.fileExists ? nil : false
+            return state.fileExists ? nil : ""
         }
         // Damaged markers are not "applied": the writer will refuse, and the
         // row must not offer Remove as though there were a clean block.
         if ClaudeShellRCSetup.hasDamagedBlock(text) { return nil }
-        return ClaudeShellRCSetup.containsBlock(text)
+        return text
     }
 
     public func apply(shell: ClaudeShellKind) throws {

@@ -1965,15 +1965,19 @@ private struct ClaudeShellSetupRow: View {
 
             Spacer(minLength: 8)
 
-            if model.shellSetupStatus.rc == .applied {
+            // The buttons follow the rc file: no setup button while this
+            // build's block is in it, no Remove when there is no clean block.
+            if model.shellSetupStatus.offersRemove {
                 Button("Remove") { Task { await model.removeShellSetup() } }
                     .controlSize(.small)
                     .accessibilityIdentifier("claude.remote.shellSetup.remove")
             }
-            Button("Set up…") { isShowingShellSetup = true }
-                .controlSize(.small)
-                .disabled(!model.canApplyShellSetup)
-                .accessibilityIdentifier("claude.remote.shellSetup.setUp")
+            if let title = model.shellSetupStatus.setupButtonTitle {
+                Button(title) { isShowingShellSetup = true }
+                    .controlSize(.small)
+                    .disabled(!model.canApplyShellSetup)
+                    .accessibilityIdentifier("claude.remote.shellSetup.setUp")
+            }
         }
     }
 }
