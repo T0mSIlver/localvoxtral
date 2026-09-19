@@ -412,7 +412,9 @@ In `~/.claude/settings.json`:
 ```
 
 (Adjust the path for `~/Applications` or a dev build — it is the same binary
-`publisher_path` points at.) If you already have a status line, keep it and
+`publisher_path` points at.) Unlike the plugin, the status line does not follow
+the app when it moves: the path is saved in your settings, so after a move
+Settings shows **Update…** on the Status line row. If you already have a status line, keep it and
 append ours: buffer stdin once and feed both, e.g.
 
 ```sh
