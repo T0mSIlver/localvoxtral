@@ -20,7 +20,8 @@ consent sentence names both files. The app copies its bundled `publish.sh` to
 creating that file when it is absent and writing only between its two markers.
 **Remove** deletes the block, the blank line before it and the script. The app
 refuses to write when `~/.vibe` or either file is a symlink, when `hooks.toml`
-has an unpaired marker or a marker inside a multi-line string, when a hook
+has an unpaired marker, a marker inside a multi-line string or a string left
+open, when it defines `hooks` as a plain array or table, when a hook
 named `localvoxtral-files` or `localvoxtral-turn` exists outside the block,
 when a key follows the block before the next table header, or when the file
 changed while the app was editing it. The row then reads "hooks.toml needs a
@@ -38,8 +39,10 @@ cp publish.sh ~/.vibe/localvoxtral/publish.sh
 
 2. Append the block in `hooks.toml` to `~/.vibe/hooks.toml`, creating the file
    if it does not exist. The block is two `[[hooks]]` tables between
-   `# >>> localvoxtral >>>` and `# <<< localvoxtral <<<`, so it is valid at the
-   end of any existing file.
+   `# >>> localvoxtral >>>` and `# <<< localvoxtral <<<`. It is valid at the end
+   of a file whose hooks are `[[hooks]]` tables too. If yours are written as
+   `hooks = [...]` or under `[hooks]`, rewrite them as `[[hooks]]` tables first:
+   TOML cannot mix the two.
 
 Vibe reads `hooks.toml` when a session starts. Sessions already running keep
 their old hooks.

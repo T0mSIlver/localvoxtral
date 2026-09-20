@@ -204,11 +204,11 @@ final class VibeHooksInstallServiceTests: XCTestCase {
             ("symlinked shim", VibeHooksState(shimFileExists: true, shimFileIsSymlink: true), .isSymlink),
             ("symlinked shim dir", VibeHooksState(shimDirIsSymlink: true), .isSymlink),
             ("unreadable hooks.toml", VibeHooksState(hooksFileExists: true, hooksData: nil), .unreadable),
-            ("non-UTF-8", VibeHooksState(hooksFileExists: true, hooksData: Data([0xFF])), .refused),
+            ("non-UTF-8", VibeHooksState(hooksFileExists: true, hooksData: Data([0xFF])), .refused(.notUTF8)),
             (
                 "unpaired marker",
                 VibeHooksState(hooksFileExists: true, hooksData: Data("# >>> localvoxtral >>>\n".utf8)),
-                .refused
+                .refused(.unpairedMarkers)
             ),
             (
                 "our hook name outside the block",
@@ -216,7 +216,7 @@ final class VibeHooksInstallServiceTests: XCTestCase {
                     hooksFileExists: true,
                     hooksData: Data("[[hooks]]\nname = \"localvoxtral-turn\"\ntype = \"post_agent\"\n".utf8)
                 ),
-                .refused
+                .refused(.conflictingHookName)
             ),
             (
                 "our hook name under a quoted key, literal string",
@@ -224,7 +224,33 @@ final class VibeHooksInstallServiceTests: XCTestCase {
                     hooksFileExists: true,
                     hooksData: Data("[[hooks]]\n\"name\" = 'localvoxtral-files'\n".utf8)
                 ),
-                .refused
+                .refused(.conflictingHookName)
+            ),
+            (
+                "a multi-line name could spell ours on its next line",
+                VibeHooksState(
+                    hooksFileExists: true,
+                    hooksData: Data("[[hooks]]\nname = \"\"\"\nlocalvoxtral-turn\"\"\"\n".utf8)
+                ),
+                .refused(.conflictingHookName)
+            ),
+            (
+                "hooks as a plain array: appending [[hooks]] would break the whole file",
+                VibeHooksState(
+                    hooksFileExists: true,
+                    hooksData: Data("hooks = [ { name = \"mine\", type = \"pre_tool\", command = \"guard.py\" } ]\n".utf8)
+                ),
+                .refused(.hooksIsNotAnArrayOfTables)
+            ),
+            (
+                "hooks as a plain table",
+                VibeHooksState(hooksFileExists: true, hooksData: Data("[hooks]\nname = \"mine\"\n".utf8)),
+                .refused(.hooksIsNotAnArrayOfTables)
+            ),
+            (
+                "a string left open at the end would swallow the block",
+                VibeHooksState(hooksFileExists: true, hooksData: Data("note = \"\"\"\nnever closed\n".utf8)),
+                .refused(.unclosedString)
             ),
             (
                 "markers inside a multi-line string are the user's data",
@@ -234,12 +260,12 @@ final class VibeHooksInstallServiceTests: XCTestCase {
                         "note = \"\"\"\n# >>> localvoxtral >>>\nuser data\n# <<< localvoxtral <<<\n\"\"\"\n".utf8
                     )
                 ),
-                .refused
+                .refused(.unclosedString)
             ),
             (
                 "a key right after the block belongs to our last table",
                 VibeHooksState(hooksFileExists: true, hooksData: Data((Self.block + "custom = 2\n").utf8)),
-                .refused
+                .refused(.keyAfterBlock)
             ),
         ]
         for (label, state, expected) in cases {
@@ -305,6 +331,25 @@ final class VibeHooksInstallServiceTests: XCTestCase {
         XCTAssertEqual(removeFS.operations, [])
     }
 
+    func testEveryRefusalTellsTheUserWhichFixApplies() {
+        // The alert shows `String(describing:)`, so that has to be a sentence.
+        let refusals: [VibeHooksInstallService.Refusal] = [
+            .notUTF8, .unpairedMarkers, .unclosedString, .conflictingHookName, .keyAfterBlock,
+            .hooksIsNotAnArrayOfTables,
+        ]
+        let sentences = refusals.map { String(describing: VibeHooksInstallService.ServiceError.refused($0)) }
+        XCTAssertEqual(Set(sentences).count, refusals.count)
+        for sentence in sentences + [String(describing: VibeHooksInstallService.ServiceError.changedOnDisk)] {
+            XCTAssertTrue(sentence.contains("hooks.toml"), sentence)
+            XCTAssertTrue(sentence.hasSuffix("."), sentence)
+        }
+    }
+
+    func testAStaticHooksValueShowsAsAConflictNotAsInstalled() {
+        let existing = "hooks = []\n" + Self.block
+        XCTAssertEqual(service(state: installed(hooks: existing)).0.status(), .conflictingHooks)
+    }
+
     func testInstallNeedsBothBundledFilesAndAWellFormedBlock() {
         for (shim, block) in [(nil, Self.block), (Self.shim, nil), (Self.shim, "[[hooks]]\nname = \"x\"\n")]
             as [(Data?, String?)] {
@@ -351,7 +396,7 @@ final class VibeHooksInstallServiceTests: XCTestCase {
     func testRemoveRefusesUnpairedMarkersAndKeepsTheShim() {
         let (service, fs) = service(state: installed(hooks: "# >>> localvoxtral >>>\n[[hooks]]\n"))
         XCTAssertThrowsError(try service.remove()) { error in
-            XCTAssertEqual(error as? VibeHooksInstallService.ServiceError, .refused)
+            XCTAssertEqual(error as? VibeHooksInstallService.ServiceError, .refused(.unpairedMarkers))
         }
         XCTAssertEqual(fs.operations, [])
     }

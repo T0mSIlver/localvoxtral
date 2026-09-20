@@ -8,7 +8,8 @@ import Foundation
 /// block goes through `MarkedTextBlock`: replaced in place when present,
 /// appended otherwise, refused when the markers do not pair. A `[[hooks]]`
 /// header opens a new table wherever it appears, so an appended block is
-/// valid after any existing content. The shim is a fixed path this app owns.
+/// valid after any content EXCEPT a `hooks` defined as a plain array or
+/// table, which is refused. The shim is a fixed path this app owns.
 ///
 /// File discipline is `OpencodePluginInstallService`'s: write only on explicit
 /// consent, refuse symlinks at every path component, refuse unreadable files,
@@ -106,11 +107,10 @@ public struct VibeHooksInstallService: Sendable {
         } else {
             hooksText = ""
         }
-        if Self.block.hasDamagedBlock(hooksText) || Self.markerIsInsideMultilineString(hooksText) {
-            return .unknown
-        }
-        if Self.declaresOurHookOutsideBlock(hooksText) || Self.keyFollowsBlock(hooksText) {
-            return .conflictingHooks
+        switch Self.refusal(for: hooksText) {
+        case .unpairedMarkers, .unclosedString, .notUTF8: return .unknown
+        case .conflictingHookName, .keyAfterBlock, .hooksIsNotAnArrayOfTables: return .conflictingHooks
+        case nil: break
         }
         let hasBlock = Self.block.containsBlock(hooksText)
 
@@ -131,17 +131,63 @@ public struct VibeHooksInstallService: Sendable {
 
     // MARK: - Mutations (consent-gated by the caller)
 
-    public enum ServiceError: Error, Equatable {
+    public enum ServiceError: Error, Equatable, CustomStringConvertible {
+        /// The sentence the alert shows: the model keeps `String(describing:)`.
+        public var description: String {
+            switch self {
+            case .notConfigured: return "Editing Vibe's files is not available in this build."
+            case .bundledFilesUnavailable: return "This build's Vibe hook files are missing."
+            case .isSymlink:
+                return "~/.vibe, or a file this app writes under it, is a symlink. See the README for "
+                    + "the manual install."
+            case .unreadable: return "A file under ~/.vibe could not be read."
+            case .refused(let refusal): return refusal.sentence
+            case .changedOnDisk:
+                return "~/.vibe/hooks.toml changed while this was running. Nothing was written; try again."
+            }
+        }
+
         case notConfigured
         case bundledFilesUnavailable
         case isSymlink
         case unreadable
-        /// Unpaired markers, a marker inside a multi-line string, a non-UTF-8
-        /// file, a hook of ours declared outside the block, or a key right
-        /// after the block.
-        case refused
+        /// `hooks.toml` is in a shape this app will not write into.
+        case refused(Refusal)
         /// `hooks.toml` or the shim changed between reading and writing.
         case changedOnDisk
+    }
+
+    /// Why `hooks.toml` was left alone. Each case is a different fix for the
+    /// user, so each has its own sentence.
+    public enum Refusal: Sendable, Equatable {
+        case notUTF8
+        case unpairedMarkers
+        case unclosedString
+        case conflictingHookName
+        case keyAfterBlock
+        case hooksIsNotAnArrayOfTables
+
+        public var sentence: String {
+            switch self {
+            case .notUTF8:
+                return "~/.vibe/hooks.toml is not UTF-8 text."
+            case .unpairedMarkers:
+                return "~/.vibe/hooks.toml has a localvoxtral marker line without its pair. Delete the "
+                    + "leftover marker, or the whole block, and try again."
+            case .unclosedString:
+                return "~/.vibe/hooks.toml has a multi-line string that is not closed, or that contains "
+                    + "a localvoxtral marker line."
+            case .conflictingHookName:
+                return "~/.vibe/hooks.toml already has a hook named localvoxtral-files or "
+                    + "localvoxtral-turn outside the localvoxtral block. Vibe keeps one hook per name."
+            case .keyAfterBlock:
+                return "~/.vibe/hooks.toml has a key right after the localvoxtral block. It belongs to "
+                    + "the block's last hook; move it above the block or under its own [[hooks]] table."
+            case .hooksIsNotAnArrayOfTables:
+                return "~/.vibe/hooks.toml defines hooks as `hooks = [...]` or `[hooks]`. TOML cannot add "
+                    + "[[hooks]] tables to that. Rewrite those hooks as [[hooks]] tables first."
+            }
+        }
     }
 
     public func install() throws {
@@ -153,9 +199,7 @@ public struct VibeHooksInstallService: Sendable {
         try Self.refuseUnsafe(state)
 
         let existing = try Self.hooksText(in: state)
-        guard let updated = Self.hooksByInstalling(snippet: snippet, into: existing) else {
-            throw ServiceError.refused
-        }
+        let updated = try Self.hooksByInstalling(snippet: snippet, into: existing)
         try Self.refuseIfChanged(since: state, fileSystem)
         if !state.shimDirExists {
             try fileSystem.createShimDirectory(permissions: 0o700)
@@ -176,9 +220,13 @@ public struct VibeHooksInstallService: Sendable {
 
         if state.hooksFileExists {
             let existing = try Self.hooksText(in: state)
-            guard !Self.markerIsInsideMultilineString(existing), !Self.keyFollowsBlock(existing),
-                  let remaining = Self.block.remove(from: existing)
-            else { throw ServiceError.refused }
+            let blocking: [Refusal] = [.unpairedMarkers, .unclosedString, .keyAfterBlock]
+            if let refusal = Self.refusal(for: existing), blocking.contains(refusal) {
+                throw ServiceError.refused(refusal)
+            }
+            guard let remaining = Self.block.remove(from: existing) else {
+                throw ServiceError.refused(.unpairedMarkers)
+            }
             try Self.refuseIfChanged(since: state, fileSystem)
             if remaining != existing {
                 if remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -200,16 +248,26 @@ public struct VibeHooksInstallService: Sendable {
 
     // MARK: - Pure text rules
 
-    /// `hooks.toml` text with this build's block in it, or nil to refuse.
-    static func hooksByInstalling(snippet: String, into existing: String) -> String? {
-        guard !markerIsInsideMultilineString(existing),
-              !declaresOurHookOutsideBlock(existing),
-              !keyFollowsBlock(existing)
-        else { return nil }
-        return block.apply(to: existing, snippet: snippet)
+    /// `hooks.toml` text with this build's block in it.
+    static func hooksByInstalling(snippet: String, into existing: String) throws -> String {
+        if let refusal = refusal(for: existing) { throw ServiceError.refused(refusal) }
+        guard let updated = block.apply(to: existing, snippet: snippet) else {
+            throw ServiceError.refused(.unpairedMarkers)
+        }
+        return updated
     }
 
-    /// These three checks read TOML line by line instead of parsing it: the
+    /// The first reason not to write into this text, or nil.
+    static func refusal(for existing: String) -> Refusal? {
+        if block.hasDamagedBlock(existing) { return .unpairedMarkers }
+        if hasUnclosedOrMarkedMultilineString(existing) { return .unclosedString }
+        if definesHooksStatically(existing) { return .hooksIsNotAnArrayOfTables }
+        if declaresOurHookOutsideBlock(existing) { return .conflictingHookName }
+        if keyFollowsBlock(existing) { return .keyAfterBlock }
+        return nil
+    }
+
+    /// These checks read TOML line by line instead of parsing it: the
     /// app has no TOML parser, and each check only has to be right about the
     /// few shapes that make a marker-based edit unsafe. Each errs toward
     /// refusing.
@@ -222,6 +280,9 @@ public struct VibeHooksInstallService: Sendable {
         guard let outside = block.remove(from: existing) else { return true }
         return block.splitLines(outside).contains { line in
             guard let (key, value) = keyValue(in: line), key == "name" else { return false }
+            // A multi-line value could spell one of our names on its next
+            // line; this scan cannot tell, so it counts as a conflict.
+            if value.hasPrefix("\"\"\"") || value.hasPrefix("'''") { return true }
             return hookNames.contains { value.hasPrefix("\"\($0)\"") || value.hasPrefix("'\($0)'") }
         }
     }
@@ -242,11 +303,12 @@ public struct VibeHooksInstallService: Sendable {
         }
     }
 
-    /// Does a marker line sit inside a TOML multi-line string? Then it is the
-    /// user's data, not a delimiter. Counted as an odd number of `"""` or
-    /// `'''` delimiters before the line; a file this cannot classify is
-    /// refused, which is the safe direction.
-    static func markerIsInsideMultilineString(_ existing: String) -> Bool {
+    /// Does a marker line sit inside a TOML multi-line string, or is a string
+    /// still open at the end of the file? A marker inside a string is the
+    /// user's data, not a delimiter, and a block appended after an unclosed
+    /// string lands INSIDE it. Counted as an odd number of `"""` or `'''`
+    /// delimiters; a file this cannot classify is refused.
+    static func hasUnclosedOrMarkedMultilineString(_ existing: String) -> Bool {
         var openBasic = false
         var openLiteral = false
         for line in block.splitLines(existing) {
@@ -258,7 +320,22 @@ public struct VibeHooksInstallService: Sendable {
             if !openLiteral, line.components(separatedBy: "\"\"\"").count % 2 == 0 { openBasic.toggle() }
             if !openBasic, line.components(separatedBy: "'''").count % 2 == 0 { openLiteral.toggle() }
         }
-        return false
+        return openBasic || openLiteral
+    }
+
+    /// Is `hooks` defined as a plain value (`hooks = [...]`) or a plain table
+    /// (`[hooks]`)? TOML forbids extending either with `[[hooks]]` tables, so
+    /// appending our block would make the WHOLE file unparseable and stop
+    /// every hook the user has (GLM review, 2026-09-20).
+    static func definesHooksStatically(_ existing: String) -> Bool {
+        block.splitLines(existing).contains { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if let (key, _) = keyValue(in: line), key == "hooks" { return true }
+            guard trimmed.hasPrefix("["), !trimmed.hasPrefix("[[") else { return false }
+            let header = trimmed.dropFirst().prefix { $0 != "]" }.trimmingCharacters(in: .whitespaces)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            return header == "hooks"
+        }
     }
 
     /// `key = value` of one line, the key unquoted. Nil for anything else.
@@ -307,7 +384,7 @@ public struct VibeHooksInstallService: Sendable {
 
     private static func hooksText(in state: VibeHooksState) throws -> String {
         guard let data = state.hooksData else { return "" }
-        guard let text = String(data: data, encoding: .utf8) else { throw ServiceError.refused }
+        guard let text = String(data: data, encoding: .utf8) else { throw ServiceError.refused(.notUTF8) }
         return text
     }
 
