@@ -741,8 +741,10 @@ of which moves a trust boundary:
   session and left a finished one silent for two minutes (field report
   2026-09-20). One bound worth knowing: nothing refreshes the lease *during* a
   single verb, so a verb that runs longer than the window can have "done"
-  spoken under it — every verb's own budget is well inside the default
-  (`dictate hold` caps at 30 s, `launch` and `term open` at 20 s).
+  spoken under it. Every verb's own budget is well inside the default
+  (`dictate hold` caps at 30 s, `launch` and `term open` at 20 s); the
+  exception is the first GUI verb after a gate reinstall, which also compiles
+  the helper.
 
   `state` reports `takeover.leased` (will the next click warn?) and
   `remaining_seconds` (if the gate stops now, when is "done" spoken?) — asking

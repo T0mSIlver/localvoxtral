@@ -722,6 +722,12 @@ announce_takeover() {
 # have already retired the previous announcer without arming its replacement,
 # and the burst would end in silence.
 #
+# Nothing refreshes the lease DURING a verb — only at its start and its exit —
+# so a verb that runs longer than the window can have "done" spoken under it.
+# Every verb's own budget is well inside the default (`dictate hold` caps at
+# 30 s, `launch` and `term open` at 20 s); the first GUI verb after a reinstall,
+# which also compiles the helper, is the one that can exceed it.
+#
 # The loop terminates because every iteration after the first needs a STRICTLY
 # newer `since` than the one it slept on, and the last sleep is bounded by the
 # window. That also makes it correct under a frozen clock (the suite's
