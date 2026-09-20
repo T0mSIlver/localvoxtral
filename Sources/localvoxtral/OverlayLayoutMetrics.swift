@@ -70,6 +70,31 @@ struct OverlayLayoutMetrics: Equatable {
     /// Width available to text: panel width minus horizontal padding.
     var textMeasurementWidth: CGFloat { panelWidth - Self.contentPadding * 2 }
 
+    /// Width of `text` in the body font, as AppKit measures it.
+    ///
+    /// Used by `OverlayStableLineWrapper` to place line breaks. Widths — unlike
+    /// the line heights `OverlayTextMeasurer` exists for — agree closely
+    /// between AppKit and SwiftUI for the same font, and the wrapper holds a
+    /// safety margin back for what is left.
+    func bodyTextWidth(of text: String) -> CGFloat {
+        (text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: bodyFontSize)]).width
+    }
+
+    /// Room a word still being streamed needs to start a line mid-way through
+    /// it. Ten lowercase letters: long enough to cover the great majority of
+    /// words, short enough that the ragged right edge it costs stays subtle.
+    var liveWordReserveWidth: CGFloat { bodyTextWidth(of: "abcdefghij") }
+
+    /// A wrapper that breaks lines at this width — see
+    /// `OverlayStableLineWrapper` for why the overlay wraps its own text.
+    func makeStableLineWrapper() -> OverlayStableLineWrapper {
+        OverlayStableLineWrapper(
+            availableWidth: textMeasurementWidth,
+            reserveWidth: liveWordReserveWidth,
+            widthOf: bodyTextWidth(of:)
+        )
+    }
+
     var bodyLineHeight: CGFloat {
         let font = NSFont.systemFont(ofSize: bodyFontSize)
         return ceil(font.ascender - font.descender + font.leading)
