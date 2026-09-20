@@ -24,8 +24,18 @@ struct DockIconWindowRegistrar: NSViewRepresentable {
 }
 
 /// Registration follows whether the window is ON SCREEN, which is not the same
-/// as `isVisible`: a minimized window still belongs in the Dock, and a hidden
-/// regular app keeps its tile, so `isMiniaturized` counts as on screen too.
+/// as `isVisible`: a minimized window still belongs in the Dock, so
+/// `isMiniaturized` counts as on screen too.
+///
+/// Hiding the app (Cmd-H, which the main menu this feature adds puts in front
+/// of the user) is the other case `isVisible` gets wrong, and the dangerous
+/// one: AppKit hides an app by ordering its windows out, so every window reads
+/// not-on-screen while the app is hidden. Dropping to `.accessory` there would
+/// take away the Dock tile and the Cmd-Tab entry at the exact moment the user
+/// needs them to come back. So registration is FROZEN while the app is hidden
+/// and resynced on unhide. The build host cannot reproduce this — `NSApp.hide`
+/// leaves `isVisible` true without a window server — hence the `appIsHidden`
+/// seam.
 ///
 /// The view stays attached to its window across a close/reopen — SwiftUI keeps
 /// the scene's window and content view and merely orders it out — so
@@ -34,14 +44,19 @@ struct DockIconWindowRegistrar: NSViewRepresentable {
 /// observations below covered it (hand-check on the PR #362 build, macOS 26).
 final class DockIconWindowRegistrarView: NSView {
     private let policy: DockIconPolicy
+    private let appIsHidden: @MainActor () -> Bool
     /// The window this view observes, held for as long as the view is in it —
     /// separately from whether that window is currently registered, which is
     /// what closing and reopening toggles.
     private weak var observedWindow: NSWindow?
     private var isRegistered = false
 
-    init(policy: DockIconPolicy) {
+    init(
+        policy: DockIconPolicy,
+        appIsHidden: @escaping @MainActor () -> Bool = { NSApp?.isHidden ?? false }
+    ) {
         self.policy = policy
+        self.appIsHidden = appIsHidden
         super.init(frame: .zero)
     }
 
@@ -87,6 +102,13 @@ final class DockIconWindowRegistrarView: NSView {
             name: NSWindow.willCloseNotification,
             object: window
         )
+        // Application-wide, so it carries no window to match on.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowStateChanged(_:)),
+            name: NSApplication.didUnhideNotification,
+            object: nil
+        )
         refreshRegistration()
     }
 
@@ -106,6 +128,9 @@ final class DockIconWindowRegistrarView: NSView {
 
     func refreshRegistration() {
         guard let observedWindow else { return }
+        // A hidden app's windows are ordered out, so every one of them would
+        // read not-on-screen. Keep whatever the state was until unhide.
+        guard !appIsHidden() else { return }
         setRegistered(Self.isOnScreen(observedWindow))
     }
 
@@ -129,6 +154,11 @@ final class DockIconWindowRegistrarView: NSView {
         setRegistered(false)
         guard let observedWindow else { return }
         NotificationCenter.default.removeObserver(self, name: nil, object: observedWindow)
+        NotificationCenter.default.removeObserver(
+            self,
+            name: NSApplication.didUnhideNotification,
+            object: nil
+        )
         self.observedWindow = nil
     }
 }

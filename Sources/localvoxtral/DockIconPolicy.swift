@@ -18,9 +18,9 @@ import AppKit
 /// their probes to the window named "Settings". Registration keeps the two
 /// apart.
 ///
-/// Registration is tied to the window's LIFETIME, not to `isVisible`: a
-/// minimized or app-hidden window still belongs in the Dock, and a regular app
-/// keeps its tile while hidden.
+/// A window counts while it is ON SCREEN, which `DockIconWindowRegistrar`
+/// defines — minimized and app-hidden windows included, because both still
+/// belong in the Dock.
 ///
 /// Every AppKit call goes through `apply`, so the decision runs in tests
 /// without an `NSApplication`.
@@ -28,20 +28,23 @@ import AppKit
 final class DockIconPolicy {
     private var openWindows: Set<ObjectIdentifier> = []
     private var appliedPolicy: NSApplication.ActivationPolicy
-    private let apply: @MainActor (NSApplication.ActivationPolicy) -> Void
+    /// Returns whether the process actually took the policy. A refusal leaves
+    /// this object's belief untouched, so the next window registration tries
+    /// again instead of skipping the call as redundant.
+    private let apply: @MainActor (NSApplication.ActivationPolicy) -> Bool
 
     /// - Parameter initialPolicy: what the process already is, so the first
     ///   window that opens is the first thing that calls `apply`. A menu-bar
     ///   app launches `.accessory`.
     init(
         initialPolicy: NSApplication.ActivationPolicy = .accessory,
-        apply: @escaping @MainActor (NSApplication.ActivationPolicy) -> Void
+        apply: @escaping @MainActor (NSApplication.ActivationPolicy) -> Bool
     ) {
         appliedPolicy = initialPolicy
         self.apply = apply
     }
 
-    /// The policy this object last asked for.
+    /// The policy the process last accepted.
     var currentPolicy: NSApplication.ActivationPolicy { appliedPolicy }
 
     /// Registering the same window twice is a no-op, so a view that is moved
@@ -60,7 +63,7 @@ final class DockIconPolicy {
         let desired: NSApplication.ActivationPolicy =
             openWindows.isEmpty ? .accessory : .regular
         guard desired != appliedPolicy else { return }
+        guard apply(desired) else { return }
         appliedPolicy = desired
-        apply(desired)
     }
 }

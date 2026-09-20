@@ -953,19 +953,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Moves the process between menu-bar-only and Dock-and-app-switcher.
+    /// Moves the process between menu-bar-only and Dock-and-app-switcher, and
+    /// reports whether it took.
     ///
     /// Going `.regular` gives the process a Dock tile, an app switcher entry
     /// and a main menu, but does not by itself bring it forward — without the
     /// activation the window it was opened for can end up behind whatever was
     /// frontmost. `activate` is a no-op when the app is already active, which
     /// it usually is, since the window that triggered this was just opened.
-    private static func applyActivationPolicy(_ policy: NSApplication.ActivationPolicy) {
+    private static func applyActivationPolicy(_ policy: NSApplication.ActivationPolicy) -> Bool {
         guard NSApp.setActivationPolicy(policy) else {
             Log.diagnostics.error(
                 "Activation policy change to \(String(describing: policy), privacy: .public) was refused."
             )
-            return
+            return false
         }
         // One line per transition, not per window: the transitions are the
         // whole behavior, and this is the only place an outside observer can
@@ -976,6 +977,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if policy == .regular {
             NSApp.activate(ignoringOtherApps: true)
         }
+        return true
     }
 
     private func presentOnboarding() {

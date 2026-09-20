@@ -34,6 +34,7 @@ final class DockIconWindowRegistrarTests: XCTestCase {
         applied = []
         return DockIconPolicy(initialPolicy: .accessory) { [weak self] policy in
             self?.applied.append(policy)
+            return true
         }
     }
 
@@ -201,5 +202,67 @@ final class DockIconWindowRegistrarTests: XCTestCase {
         window.close()
 
         XCTAssertFalse(DockIconWindowRegistrarView.isOnScreen(window))
+    }
+
+    /// Hiding the app orders its windows out, so every window reads
+    /// not-on-screen — but a hidden regular app keeps its Dock tile and its
+    /// Cmd-Tab entry, which is how the user comes back. Dropping to
+    /// `.accessory` here would strand them in the menu bar.
+    ///
+    /// `NSApp.hide` is inert on the build host (no window server leaves
+    /// `isVisible` true), so the hidden state is injected and the window is
+    /// closed to reproduce what hiding does to `isVisible`.
+    func testHidingTheAppKeepsTheDockIcon() {
+        let policy = makePolicy()
+        let window = makeWindow()
+        var hidden = false
+        let registrar = DockIconWindowRegistrarView(policy: policy, appIsHidden: { hidden })
+        window.contentView?.addSubview(registrar)
+        XCTAssertEqual(policy.currentPolicy, .regular)
+
+        hidden = true
+        window.orderOut(nil)
+        registrar.refreshRegistration()
+        NotificationCenter.default.post(name: NSWindow.didUpdateNotification, object: window)
+
+        XCTAssertEqual(policy.currentPolicy, .regular, "a hidden app keeps its Dock tile")
+        XCTAssertEqual(applied, [.regular])
+    }
+
+    /// Unhiding resyncs, so a window that was closed while the app was hidden
+    /// does not leave a Dock icon behind once it comes back.
+    func testUnhidingResyncsFromTheWindow() {
+        let policy = makePolicy()
+        let window = makeWindow()
+        var hidden = false
+        let registrar = DockIconWindowRegistrarView(policy: policy, appIsHidden: { hidden })
+        window.contentView?.addSubview(registrar)
+
+        hidden = true
+        window.orderOut(nil)
+        registrar.refreshRegistration()
+        XCTAssertEqual(policy.currentPolicy, .regular)
+
+        hidden = false
+        NotificationCenter.default.post(name: NSApplication.didUnhideNotification, object: NSApp)
+
+        XCTAssertEqual(policy.currentPolicy, .accessory)
+        XCTAssertEqual(applied, [.regular, .accessory])
+    }
+
+    /// Closing is an explicit event, not a reading of the window, so it still
+    /// takes the Dock icon away while the app is hidden.
+    func testClosingAWindowWhileHiddenStillHidesTheDockIcon() {
+        let policy = makePolicy()
+        let window = makeWindow()
+        var hidden = false
+        let registrar = DockIconWindowRegistrarView(policy: policy, appIsHidden: { hidden })
+        window.contentView?.addSubview(registrar)
+
+        hidden = true
+        window.close()
+
+        XCTAssertEqual(policy.currentPolicy, .accessory)
+        XCTAssertEqual(applied, [.regular, .accessory])
     }
 }

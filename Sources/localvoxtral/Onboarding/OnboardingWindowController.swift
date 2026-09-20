@@ -57,6 +57,14 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
     }
 
+    #if DEBUG
+    /// Dismissal as the wizard itself performs it, for tests that need the
+    /// window gone without driving the SwiftUI flow that calls it.
+    func debugCloseWindowForTesting() {
+        closeWindow()
+    }
+    #endif
+
     private func closeWindow() {
         // `close()` posts `windowWillClose` (where completion + teardown happen)
         // without routing through `windowShouldClose`, so programmatic dismissal

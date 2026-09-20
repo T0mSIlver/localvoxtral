@@ -16,6 +16,7 @@ final class DockIconPolicyTests: XCTestCase {
         applied = []
         return DockIconPolicy(initialPolicy: .accessory) { [weak self] policy in
             self?.applied.append(policy)
+            return true
         }
     }
 
@@ -101,5 +102,27 @@ final class DockIconPolicyTests: XCTestCase {
 
         XCTAssertEqual(policy.currentPolicy, .accessory)
         XCTAssertEqual(applied, [.regular, .accessory])
+    }
+
+    /// A refused `setActivationPolicy` must not be recorded as applied: the
+    /// process is still `.accessory`, so the next window has to try again
+    /// rather than skip the call as redundant.
+    func testARefusedPolicyChangeIsRetriedByTheNextWindow() {
+        var accept = false
+        var attempts: [NSApplication.ActivationPolicy] = []
+        let policy = DockIconPolicy(initialPolicy: .accessory) { requested in
+            attempts.append(requested)
+            return accept
+        }
+
+        policy.addWindow(settingsID)
+        XCTAssertEqual(attempts, [.regular])
+        XCTAssertEqual(policy.currentPolicy, .accessory, "the process refused, so nothing changed")
+
+        accept = true
+        policy.addWindow(onboardingID)
+
+        XCTAssertEqual(attempts, [.regular, .regular], "the second window tries again")
+        XCTAssertEqual(policy.currentPolicy, .regular)
     }
 }
