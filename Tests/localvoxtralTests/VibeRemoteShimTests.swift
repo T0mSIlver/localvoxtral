@@ -49,6 +49,7 @@ final class VibeRemoteShimTests: XCTestCase {
         #!/bin/sh
         n=$(($(ls "$FAKE_CURL_DIR" | grep -c '^argv-') + 1))
         printf '%s\\n' "$@" >"$FAKE_CURL_DIR/argv-$n"
+        env >"$FAKE_CURL_DIR/env-$n"
         while [ "$#" -gt 0 ]; do
           case "$1" in
           --header) case "$2" in @*) cp "${2#@}" "$FAKE_CURL_DIR/header-$n" ;; esac; shift ;;
@@ -99,6 +100,9 @@ final class VibeRemoteShimTests: XCTestCase {
             "XDG_RUNTIME_DIR": root.appendingPathComponent("run").path,
             "LOCALVOXTRAL_VIBE_REMOTE_DIR": remoteDir.path,
             "FAKE_CURL_DIR": captureDir.path,
+            // Off unless a test is about it: the watcher outlives the hook by
+            // design, and here it would wait on the test runner itself.
+            "LOCALVOXTRAL_VIBE_WATCHER": "off",
         ]
         environment.merge(extra) { $1 }
 
@@ -268,6 +272,19 @@ final class VibeRemoteShimTests: XCTestCase {
         XCTAssertFalse(code.contains("echo \"$TOKEN"), "same for an external echo")
     }
 
+    func testAnInheritedExportedTOKENNeverReachesAChildsEnvironment() throws {
+        // A shell exports what it imported from its environment. Vibe started
+        // with TOKEN exported must not make curl (or compact.py) inherit the
+        // host's bearer token through that name.
+        _ = try runShim(payload(event: "post_agent"), environment: ["TOKEN": "inherited-and-exported"])
+        XCTAssertEqual(dialCount, 2)
+        for index in 1...2 {
+            let environment = try captured("env", index)
+            XCTAssertFalse(environment.contains(Self.token), "the token is in curl's environment")
+            XCTAssertFalse(environment.contains("TOKEN="), environment)
+        }
+    }
+
     func testAMissingOrDamagedTokenSendsNothingAndSaysNothing() throws {
         for damaged in [nil, "", "has space", "line1\r\nX-Lvx-Agent: claude", String(repeating: "a", count: 200)] {
             let file = remoteDir.appendingPathComponent("token")
@@ -321,6 +338,67 @@ final class VibeRemoteShimTests: XCTestCase {
         XCTAssertEqual(run.exitCode, 0)
         XCTAssertEqual(run.output, Data())
         XCTAssertEqual(dialCount, 0)
+    }
+
+    // MARK: - The exit watcher
+
+    func testWhenVibeExitsTheWatcherTellsTheMacTheSessionEnded() throws {
+        // A fake Vibe built the way the real one runs hooks: a Python process
+        // that starts the hook in a NEW SESSION and then exits. The watcher is
+        // a real background process, so there is no clock to inject: the
+        // driver below starts the fake Vibe, and then waits (bounded) for the
+        // third request to be captured. This test only waits for the driver.
+        let payloadFile = root.appendingPathComponent("payload.json")
+        try payload(event: "post_agent").write(to: payloadFile)
+        let driver = """
+        import os, subprocess, sys, time
+        shim, payload, capture = sys.argv[1:4]
+        fake_vibe = "import subprocess, sys; subprocess.run(['/bin/sh', sys.argv[1]], stdin=open(sys.argv[2], 'rb'), start_new_session=True)"
+        subprocess.run([sys.executable, "-c", fake_vibe, shim, payload], check=True)
+        for _ in range(400):
+            if os.path.exists(os.path.join(capture, "body-3")):
+                sys.exit(0)
+            time.sleep(0.05)
+        sys.exit(3)
+        """
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.arguments = [
+            "-c", driver, remoteDir.appendingPathComponent("post.sh").path, payloadFile.path, captureDir.path,
+        ]
+        process.environment = [
+            "HOME": root.path,
+            "PATH": "\(stubDir.path):/usr/bin:/bin",
+            "XDG_RUNTIME_DIR": root.appendingPathComponent("run").path,
+            "LOCALVOXTRAL_VIBE_REMOTE_DIR": remoteDir.path,
+            "FAKE_CURL_DIR": captureDir.path,
+            "LOCALVOXTRAL_VIBE_WATCH_INTERVAL": "0.1",
+        ]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0, "3 means no SessionEnd within 20 s of Vibe exiting")
+
+        XCTAssertTrue(try captured("argv", 3).hasSuffix("http://127.0.0.1:18473/v1/hook/SessionEnd\n"))
+        XCTAssertEqual(
+            try captured("body", 3), #"{"hook_event_name":"SessionEnd","session_id":"7f4aefdf"}"# + "\n"
+        )
+        XCTAssertEqual(ClaudeRemoteAgentCodec.agent(in: try request(3).headers), .vibe)
+        XCTAssertFalse(try captured("argv", 3).contains(Self.token))
+    }
+
+    func testTheWatcherIsOnePerSessionAndCanBeTurnedOff() throws {
+        let source = try String(contentsOf: remoteDir.appendingPathComponent("post.sh"), encoding: .utf8)
+        XCTAssertTrue(source.contains(#"mkdir "$LOCK" 2>/dev/null || exit 0"#), "the lock is the atomic mkdir")
+        XCTAssertTrue(source.contains(") </dev/null >/dev/null 2>&1 &"), "Vibe waits for the hook's pipes to close")
+
+        _ = try runShim(payload(event: "post_agent")) // harness default: off
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("run/localvoxtral/vibe-watch").path
+        ))
     }
 
     // MARK: - The hooks block

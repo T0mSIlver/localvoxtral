@@ -22,6 +22,13 @@
 # and reaches curl through a private header file (`--header @file`, curl >=
 # 7.55). compact.py never sees it.
 set -u
+# The token lives in a shell variable, and a shell EXPORTS a variable it
+# imported from its environment, or any assignment under an inherited
+# `allexport`. A Vibe started with TOKEN already exported would otherwise hand
+# this host's bearer token to every child's environment, compact.py and curl
+# included. Drop both before the name is ever assigned.
+set +a
+unset TOKEN PORT
 
 fail_open() {
   cat >/dev/null 2>&1
@@ -110,42 +117,74 @@ if [ -n "$STAMP_DIR" ] && [ -n "$NOW" ] && [ "$HOOK_EVENT" != "post_agent" ] \
 fi
 
 # --- Python ------------------------------------------------------------------
-# Vibe is a Python program, so an interpreter exists wherever this hook runs.
-# The one Vibe uses is named by the shebang of its launcher script (uv and pipx
-# both write an absolute path there); `python3` on PATH is the fallback. The
-# shebang is read with the shell's own `read`, and only an absolute path to an
-# executable is accepted.
+# Vibe is a Python program, so an interpreter exists wherever this hook runs,
+# and the right one is the one RUNNING Vibe: the executable of this hook's
+# parent, or of that parent's parent when the parent is the `sh -c` Vibe
+# spawned the command through. `command -v vibe` would be a guess — another
+# install earlier on PATH is a different interpreter. Linux names the
+# executable in /proc/<pid>/exe; macOS in `ps -o comm=`. The shebang of the
+# `vibe` on PATH and then `python3` are the fallbacks for a host where neither
+# answers. Whatever the source, only an absolute path to an executable whose
+# NAME is exactly a Python (`python`, `python3`, `python3.N`) is run, and it is
+# run isolated (`-I`: no PYTHON* variables, no user site, no cwd on the path).
+is_python() {
+  case "$1" in /*) ;; *) return 1 ;; esac
+  case "${1##*/}" in
+  python | python3 | python3.[0-9] | python3.[0-9][0-9]) [ -x "$1" ] ;;
+  *) return 1 ;;
+  esac
+}
+exe_of() {
+  _exe="$(readlink "/proc/$1/exe" 2>/dev/null)" || _exe=""
+  [ -n "$_exe" ] || _exe="$(ps -o comm= -p "$1" 2>/dev/null)" || _exe=""
+  echo "$_exe"
+}
 PY=""
-VIBE_BIN="$(command -v vibe 2>/dev/null)" || VIBE_BIN=""
-if [ -n "$VIBE_BIN" ] && [ -r "$VIBE_BIN" ]; then
-  IFS= read -r SHEBANG <"$VIBE_BIN" 2>/dev/null || SHEBANG=""
-  case "$SHEBANG" in
-  '#!/'*)
+GRANDPARENT="$(ps -o ppid= -p "$PPID" 2>/dev/null | tr -d '[:space:]')" || GRANDPARENT=""
+case "$GRANDPARENT" in "" | *[!0-9]*) GRANDPARENT="" ;; esac
+for _pid in "$PPID" $GRANDPARENT; do
+  CANDIDATE="$(exe_of "$_pid")"
+  if is_python "$CANDIDATE"; then
+    PY="$CANDIDATE"
+    break
+  fi
+done
+if [ -z "$PY" ]; then
+  VIBE_BIN="$(command -v vibe 2>/dev/null)" || VIBE_BIN=""
+  if [ -n "$VIBE_BIN" ] && [ -r "$VIBE_BIN" ]; then
+    IFS= read -r SHEBANG <"$VIBE_BIN" 2>/dev/null || SHEBANG=""
     CANDIDATE="${SHEBANG#\#!}"
     CANDIDATE="${CANDIDATE%% *}"
-    case "$CANDIDATE" in
-    */python*) [ -x "$CANDIDATE" ] && PY="$CANDIDATE" ;;
-    esac
-    ;;
-  esac
+    is_python "$CANDIDATE" && PY="$CANDIDATE"
+  fi
 fi
-[ -n "$PY" ] || PY="$(command -v python3 2>/dev/null)" || PY=""
+if [ -z "$PY" ]; then
+  CANDIDATE="$(command -v python3 2>/dev/null)" || CANDIDATE=""
+  is_python "$CANDIDATE" && PY="$CANDIDATE"
+fi
 [ -n "$PY" ] || exit 0
 
+# Time budget, inside Vibe's five-second hook timeout: compact.py spends at
+# most 0.25 s on the session log and 0.5 s on one `ps`, and each of the two
+# requests below is capped at one second.
+#
 # $PPID is Vibe, or the `sh -c` Vibe spawned this command through. compact.py
 # tells the two apart and writes the answer to $WORK/agent-pid.
-"$PY" "$DIR/compact.py" "$WORK" "$PPID" <"$WORK/payload" >/dev/null 2>&1 || exit 0
+"$PY" -I "$DIR/compact.py" "$WORK" "$PPID" <"$WORK/payload" >/dev/null 2>&1 || exit 0
 [ -r "$WORK/plan" ] || exit 0
 
 # --- Request headers ---------------------------------------------------------
 # Heredoc through a redirected `cat`, NOT printf/echo: an external printf would
 # put the token into an argv. The hooks version is a constant of this file; the
 # Mac uses it to tell when this host's hooks are older than the app's.
-cat 2>/dev/null >"$WORK/header" <<HEADERS || exit 0
-Authorization: Bearer $TOKEN
+write_header() {
+  cat 2>/dev/null >"$1" <<HEADERS
+Authorization: Bearer $2
 X-Lvx-Agent: vibe
 X-Lvx-Vibe-Hooks-Version: 1.0.0
 HEADERS
+}
+write_header "$WORK/header" "$TOKEN" || exit 0
 
 # Allowlisted environment labels, under the same whitelist charset and length
 # cap as the Claude Code shim (enumerated characters, LC_ALL=C, 200 bytes).
@@ -223,5 +262,98 @@ while IFS=' ' read -r INDEX NAME; do
     break
   fi
   [ -z "$STAMP_DIR" ] || rm -f "$STAMP" 2>/dev/null || :
+  [ "$STATUS" = "200" ] && DELIVERED=1
 done <"$WORK/plan"
+
+# --- Exit watcher ------------------------------------------------------------
+# Vibe has no session-end hook, and the Mac cannot probe a pid on this machine.
+# Without help a finished Vibe session would stay joinable there until its
+# four-hour TTL, on the very terminal the user starts the next one in. So the
+# first hook of a session that reaches the Mac leaves ONE small background
+# shell behind: it waits for the Vibe process to exit and then posts
+# `SessionEnd`. `mkdir` of a per-session lock makes it one per session; a lock
+# whose watcher is gone (reboot, kill) is replaced. It holds no file
+# descriptor of this hook — Vibe waits for the hook's pipes to close — reads
+# the token again when it sends, since it may have been replaced by then, and
+# gives up after five tries a minute apart. The process START TIME is compared
+# as well as the pid, which a long-lived host reuses.
+# `LOCALVOXTRAL_VIBE_WATCHER=off` in Vibe's environment turns it off, for
+# anyone who does not want a background process; sessions then end by TTL.
+[ "${LOCALVOXTRAL_VIBE_WATCHER:-on}" != "off" ] || exit 0
+[ -n "${DELIVERED:-}" ] && [ -n "$STAMP_DIR" ] && [ -n "$AGENT_PID" ] || exit 0
+SESSION_ID=""
+if [ -r "$WORK/session-id" ]; then
+  IFS= read -r SESSION_ID <"$WORK/session-id" 2>/dev/null || :
+fi
+case "$SESSION_ID" in
+"" | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-]*) exit 0 ;;
+esac
+[ "${#SESSION_ID}" -le 64 ] || exit 0
+
+WATCH_DIR="$STAMP_DIR/vibe-watch"
+LOCK="$WATCH_DIR/$SESSION_ID"
+{ mkdir -p "$WATCH_DIR" && chmod 700 "$STAMP_DIR" "$WATCH_DIR"; } 2>/dev/null || exit 0
+if [ -d "$LOCK" ]; then
+  WATCHER=""
+  IFS= read -r WATCHER <"$LOCK/pid" 2>/dev/null || :
+  case "$WATCHER" in "" | *[!0-9]*) WATCHER="" ;; esac
+  if [ -n "$WATCHER" ] && kill -0 "$WATCHER" 2>/dev/null; then exit 0; fi
+  rm -rf "$LOCK" 2>/dev/null || exit 0
+fi
+mkdir "$LOCK" 2>/dev/null || exit 0
+STARTED="$(ps -o lstart= -p "$AGENT_PID" 2>/dev/null)" || STARTED=""
+if [ -z "$STARTED" ]; then
+  rmdir "$LOCK" 2>/dev/null
+  exit 0
+fi
+
+send_session_end() {
+  _work="$(mktemp -d 2>/dev/null)" || return 1
+  unset TOKEN
+  TOKEN=""
+  IFS= read -r TOKEN <"$DIR/token" 2>/dev/null || :
+  case "$TOKEN" in
+  "" | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-]*)
+    rm -rf "$_work"
+    return 0 # no usable token: the hooks were removed, nothing left to say
+    ;;
+  esac
+  write_header "$_work/header" "$TOKEN" || { rm -rf "$_work"; return 1; }
+  cat >"$_work/body" 2>/dev/null <<BODY
+{"hook_event_name":"SessionEnd","session_id":"$SESSION_ID"}
+BODY
+  _status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+    --max-time 2 --request POST \
+    --header 'Content-Type: application/json' \
+    --header @"$_work/header" \
+    --data-binary @"$_work/body" \
+    "http://127.0.0.1:$PORT/v1/hook/SessionEnd" 2>/dev/null)" || _status=""
+  rm -rf "$_work"
+  [ -n "$_status" ] && [ "$_status" != "000" ]
+}
+
+# Seconds between liveness checks. The override exists for the test suite.
+WATCH_INTERVAL="${LOCALVOXTRAL_VIBE_WATCH_INTERVAL:-2}"
+case "$WATCH_INTERVAL" in "" | *[!0123456789.]* | ??????*) WATCH_INTERVAL=2 ;; esac
+
+(
+  trap '' HUP
+  _checks=0
+  while kill -0 "$AGENT_PID" 2>/dev/null; do
+    sleep "$WATCH_INTERVAL"
+    _checks=$((_checks + 1))
+    if [ "$_checks" -ge 15 ]; then
+      _checks=0
+      [ "$(ps -o lstart= -p "$AGENT_PID" 2>/dev/null)" = "$STARTED" ] || break
+    fi
+  done
+  _tries=0
+  until send_session_end; do
+    _tries=$((_tries + 1))
+    [ "$_tries" -lt 5 ] || break
+    sleep 60
+  done
+  rm -rf "$LOCK"
+) </dev/null >/dev/null 2>&1 &
+echo "$!" >"$LOCK/pid" 2>/dev/null || :
 exit 0

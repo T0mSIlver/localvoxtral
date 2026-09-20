@@ -1208,6 +1208,51 @@ extension ClaudeRemoteContextListenerTests {
         XCTAssertEqual(environment.herdrPaneID, "w1:p2")
     }
 
+    func testAVibeRequestSaysNothingAboutTheClaudePlugin() throws {
+        try startListener()
+        _ = try send(hookRequest(token: token, extraHeaders: ["X-Lvx-Agent: vibe"]))
+        XCTAssertNil(
+            hosts.host(id: hostID)?.reportedPluginVersion,
+            "a missing plugin header on a Vibe request must not read as a pre-1.10.0 Claude plugin"
+        )
+        _ = try send(hookRequest(token: token, extraHeaders: ["X-Lvx-Plugin-Version: 1.11.0"]))
+        XCTAssertEqual(hosts.host(id: hostID)?.reportedPluginVersion, .version("1.11.0"))
+    }
+
+    func testAVibeSessionEndFromTheHostsWatcherEvictsTheSession() throws {
+        try startListener()
+        _ = try send(hookRequest(event: "Stop", token: token, extraHeaders: ["X-Lvx-Agent: vibe"]))
+        XCTAssertEqual(sessions.liveSessions().count, 1)
+        _ = try send(hookRequest(
+            event: "SessionEnd", token: token, payload: ["session_id": "s-1"],
+            extraHeaders: ["X-Lvx-Agent: vibe"]
+        ))
+        XCTAssertTrue(sessions.liveSessions().isEmpty)
+    }
+
+    func testANewVibeSessionOnTheSameSurfaceSupersedesTheOneTheWatcherMissed() throws {
+        try startListener()
+        let surface = ["X-Lvx-Agent: vibe", "X-Lvx-Env-Ssh-Tty: /dev/pts/4",
+                       "X-Lvx-Env-Ssh-Connection: 10.0.0.2,50000,10.0.0.9,22"]
+        func stop(_ id: String, _ headers: [String]) throws {
+            _ = try send(hookRequest(event: "Stop", token: token, payload: ["session_id": id], extraHeaders: headers))
+        }
+        try stop("old", surface)
+        try stop("elsewhere", ["X-Lvx-Agent: vibe", "X-Lvx-Env-Ssh-Tty: /dev/pts/9",
+                                "X-Lvx-Env-Ssh-Connection: 10.0.0.2,50001,10.0.0.9,22"])
+        try stop("claude-here", Array(surface.dropFirst()))
+        try stop("new", surface)
+
+        XCTAssertEqual(
+            Set(sessions.liveSessions().map(\.sessionID)),
+            ["vibe:remote:\(hostID!):new", "vibe:remote:\(hostID!):elsewhere", "remote:\(hostID!):claude-here"],
+            "only the older VIBE session on THAT surface goes"
+        )
+        // A later hook of the surviving session evicts nothing.
+        try stop("new", surface)
+        XCTAssertEqual(sessions.liveSessions().count, 3)
+    }
+
     func testAClaudeRequestKeepsItsSessionHandles() throws {
         try startListener()
         _ = try send(hookRequest(token: token, extraHeaders: [

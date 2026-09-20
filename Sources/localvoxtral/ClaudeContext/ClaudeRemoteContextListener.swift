@@ -504,6 +504,11 @@ public final class ClaudeRemoteContextListener: Sendable {
         // update. Never logged, never in a response body; it only selects a
         // fixed UI string.
         let pluginVersionReport = ClaudeRemotePluginVersionCodec.report(in: request.headers)
+        // A Vibe request says nothing about the Claude Code plugin: recording
+        // its missing plugin header would read as a pre-1.10.0 plugin and
+        // raise "Plugin update available" on a host that may not have the
+        // plugin at all.
+        let reportsClaudePlugin = ClaudeRemoteAgentCodec.agent(in: request.headers) == .claude
 
         guard ClaudeRemoteHTTPCodec.eventName(inPath: request.path) != nil else {
             respond(fd: fd, status: 404)
@@ -533,7 +538,7 @@ public final class ClaudeRemoteContextListener: Sendable {
             // This is an ACCEPTED outcome — the host is noted alive here, and
             // its plugin report lands with it.
             hosts.noteActivity(hostID: host.id)
-            hosts.notePluginVersion(hostID: host.id, pluginVersionReport)
+            if reportsClaudePlugin { hosts.notePluginVersion(hostID: host.id, pluginVersionReport) }
             respond(
                 fd: fd,
                 status: 200,
@@ -564,7 +569,7 @@ public final class ClaudeRemoteContextListener: Sendable {
         // take persistLock → state, so neither may run inside the
         // `withAuthenticatedHost` body above.
         hosts.noteActivity(hostID: host.id)
-        hosts.notePluginVersion(hostID: host.id, pluginVersionReport)
+        if reportsClaudePlugin { hosts.notePluginVersion(hostID: host.id, pluginVersionReport) }
         if let socketPath = prepared.environment?.herdrSocketPath {
             onRemoteHerdrActivity(host.id, socketPath)
         }

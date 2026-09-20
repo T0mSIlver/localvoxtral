@@ -234,6 +234,7 @@ public final class ClaudeSessionRegistry: Sendable {
                 break
             }
 
+            let isNewSession = state.sessions[record.sessionID] == nil
             var snapshot: ClaudeSessionSnapshot
             if let existing = state.sessions[record.sessionID] {
                 snapshot = existing
@@ -282,6 +283,7 @@ public final class ClaudeSessionRegistry: Sendable {
             }
 
             state.sessions[record.sessionID] = snapshot
+            if isNewSession { supersedeRemoteVibeSessionsLocked(&state, by: snapshot) }
             enforceCapLocked(&state, keeping: record.sessionID)
             return snapshot
         }
@@ -782,6 +784,49 @@ public final class ClaudeSessionRegistry: Sendable {
             return true
         }
         return true
+    }
+
+    /// A NEW remote Vibe session evicts an older one from the same host that
+    /// reports the same terminal surface.
+    ///
+    /// Vibe has no session-end event and a remote pid cannot be probed, so the
+    /// host's exit watcher (`integrations/vibe/remote/post.sh`) is what ends a
+    /// remote Vibe session. This is the backstop for the watcher failing (the
+    /// tunnel was down when Vibe exited, the host rebooted): a surface shows
+    /// one foreground Vibe at a time, so a new session id reporting from that
+    /// surface means the old one is no longer what the user sees. Without it
+    /// the two would both match the surface and every join there would abstain
+    /// until the TTL. Same host only, by origin channel, so one host cannot
+    /// evict another's sessions. It does NOT cover the window before the new
+    /// session's first hook; nothing on this side can.
+    private func supersedeRemoteVibeSessionsLocked(_ state: inout State, by snapshot: ClaudeSessionSnapshot) {
+        guard snapshot.agent == .vibe, case .remote = snapshot.origin,
+              let surface = Self.remoteSurfaceKey(snapshot.remoteEnvironment)
+        else { return }
+        for (sessionID, other) in state.sessions
+        where sessionID != snapshot.sessionID && other.agent == .vibe && other.origin == snapshot.origin
+            && Self.remoteSurfaceKey(other.remoteEnvironment) == surface {
+            removeLocked(&state, sessionID: sessionID)
+        }
+    }
+
+    /// What names one terminal surface on a remote host, from the labels its
+    /// shim sent: a multiplexer pane when there is one (its ssh labels belong
+    /// to whichever connection started the server), else the ssh tty together
+    /// with the connection it lives on. Nil when neither is complete.
+    static func remoteSurfaceKey(_ environment: ClaudeRemoteSessionEnvironment?) -> String? {
+        guard let environment else { return nil }
+        if let pane = environment.herdrPaneID, let socket = environment.herdrSocketPath {
+            return "herdr\u{0}\(socket)\u{0}\(pane)"
+        }
+        if let pane = environment.tmuxPane, let server = environment.tmux {
+            return "tmux\u{0}\(server)\u{0}\(pane)"
+        }
+        guard environment.cmuxSurfaceID == nil, environment.screenSession == nil,
+              environment.zellijSession == nil,
+              let tty = environment.sshTTY, let connection = environment.sshConnection
+        else { return nil }
+        return "ssh\u{0}\(connection)\u{0}\(tty)"
     }
 
     private func pruneLocked(_ state: inout State, now: Date) {

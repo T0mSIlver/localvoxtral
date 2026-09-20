@@ -1329,9 +1329,34 @@ there is not.
   `~/.vibe/localvoxtral/remote/` (owner decision, same exposure as the Claude
   plugin's token in `~/.claude`: any process running as that user can read
   it), is read into a shell variable, reaches curl through a header file, and
-  is never exported, so `compact.py` cannot see it. The shim prints nothing on
-  any path, because Vibe reports hook output as a failure; there is no stdout
-  gate because there is no stdout.
+  is never exported, so `compact.py` cannot see it: the shim runs `set +a` and
+  `unset TOKEN` before the first assignment, because a shell exports a
+  variable it imported from its environment (Codex review, 2026-09-20). The
+  shim prints nothing on any path, because Vibe reports hook output as a
+  failure; there is no stdout gate because there is no stdout. The interpreter
+  is the one RUNNING Vibe (`/proc/<pid>/exe`, or `ps -o comm=` on macOS, of the
+  hook's parent or grandparent), accepted only as an absolute path whose name
+  is exactly a Python, and run with `-I`; the `vibe` launcher's shebang and
+  `python3` are fallbacks under the same check.
+  **A remote Vibe session ends because the host says so.** Vibe has no
+  session-end hook and a remote pid cannot be probed, so without help a
+  finished session would stay joinable for the four-hour TTL on the very
+  terminal the next one starts in — the normal exit path, not the abnormal one
+  the Claude Code residual describes (Codex review, 2026-09-20). The first hook
+  of a session that reaches the Mac therefore leaves one background shell on
+  the host (`post.sh`, "Exit watcher"): one per session by an atomic `mkdir`
+  lock, holding none of the hook's descriptors (Vibe waits for them to close),
+  comparing the Vibe process's start time as well as its pid, re-reading the
+  token when it fires, posting `SessionEnd`, and giving up after five tries a
+  minute apart. `LOCALVOXTRAL_VIBE_WATCHER=off` disables it. The Mac-side
+  backstop is `supersedeRemoteVibeSessionsLocked`: a NEW remote Vibe session
+  evicts an older one from the same host reporting the same surface (herdr or
+  tmux pane, else ssh tty plus connection), since a surface shows one
+  foreground Vibe at a time and two candidates would make every join there
+  abstain. RESIDUAL, stated plainly: when the watcher's `SessionEnd` never
+  arrives (the tunnel was down for all five tries, the host rebooted) and no
+  new session has hooked yet, the dead session is still the surface's only
+  candidate until its TTL. Nothing on the Mac can close that window.
 - **A refused `RemoteForward` bind is not a diagnosis, and only a nonce
   round-trip may upgrade it to one.** OpenSSH's `remote port forwarding failed`
   says a port is held, never by whom, and the two holders want opposite things

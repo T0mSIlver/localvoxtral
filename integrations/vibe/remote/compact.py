@@ -35,6 +35,7 @@ TRANSCRIPT_NAME = "messages.jsonl"
 TRANSCRIPT_DEADLINE_SECONDS = 0.25
 USER_ROLE_MARKERS = (b'"role": "user"', b'"role":"user"')
 ANCESTOR_HOPS = 4
+PS_TIMEOUT_SECONDS = 0.5
 
 
 def truncate_utf8(text, limit):
@@ -56,7 +57,19 @@ def read_tail(path):
         length = min(info.st_size, TAIL_BYTES)
         if length <= 0:
             return b""
-        return os.pread(fd, length, info.st_size - length)
+        # A read may return short, and a short read of a tail window is its
+        # OLDER end: the scan below would then publish a stale prompt. Fill the
+        # window or give the prompt up.
+        start = info.st_size - length
+        chunks = []
+        filled = 0
+        while filled < length:
+            chunk = os.pread(fd, length - filled, start + filled)
+            if not chunk:
+                return b""
+            chunks.append(chunk)
+            filled += len(chunk)
+        return b"".join(chunks)
     finally:
         os.close(fd)
 
@@ -122,21 +135,33 @@ def absolute_file_path(tool_input, cwd):
     return path if path.startswith("/") else None
 
 
-def process_facts(pid):
-    """(parent pid, has a controlling terminal) from ps, or None."""
+def process_table():
+    """{pid: (parent pid, has a controlling terminal)} from ONE ps call.
+
+    One call under one short timeout, because this script runs inside a hook
+    Vibe kills after five seconds: post.sh still has two one-second requests to
+    make after it.
+    """
+    table = {}
     try:
         output = subprocess.run(
-            ["ps", "-o", "ppid=,tty=", "-p", str(pid)],
+            ["ps", "-ax", "-o", "pid=,ppid=,tty="],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            timeout=1,
+            timeout=PS_TIMEOUT_SECONDS,
             check=False,
-        ).stdout.decode("ascii", "ignore").split()
-        if len(output) < 2:
-            return None
-        return int(output[0]), output[1] not in ("?", "??", "-")
+        ).stdout.decode("ascii", "ignore")
     except Exception:
-        return None
+        return table
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        try:
+            table[int(fields[0])] = (int(fields[1]), fields[2] not in ("?", "??", "-"))
+        except ValueError:
+            continue
+    return table
 
 
 def vibe_pid(start):
@@ -147,13 +172,14 @@ def vibe_pid(start):
     one of the hook's own: same session as us, no terminal.
     """
     own_session = os.getsid(0)
+    table = process_table()
     current = start
     for _ in range(ANCESTOR_HOPS):
         try:
             session = os.getsid(current)
         except OSError:
             return current
-        facts = process_facts(current)
+        facts = table.get(current)
         if session != own_session or facts is None or facts[1] or facts[0] <= 1:
             return current
         current = facts[0]
@@ -222,6 +248,12 @@ def main():
         return
     with open(os.path.join(workdir, "agent-pid"), "w") as handle:
         handle.write("%d\n" % vibe_pid(start_pid))
+    # For post.sh's exit watcher: the id goes into a file NAME and a JSON body
+    # there, so it is only handed over when it is plainly safe for both.
+    session_id = events[0][1]["session_id"]
+    if len(session_id) <= 64 and all(c.isascii() and (c.isalnum() or c == "-") for c in session_id):
+        with open(os.path.join(workdir, "session-id"), "w") as handle:
+            handle.write(session_id + "\n")
     plan = []
     for index, (name, body) in enumerate(events, start=1):
         with open(os.path.join(workdir, "event-%d.json" % index), "w", encoding="utf-8") as handle:
