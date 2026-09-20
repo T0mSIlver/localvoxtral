@@ -604,6 +604,11 @@ public final class ClaudeIntegrationSettingsModel {
     /// Short outcome of the last opencode action, e.g. "Installed.".
     public private(set) var opencodeResult: String?
     public private(set) var isPerformingOpencodeAction = false
+    /// The Mistral Vibe hooks' state, refreshed with the rest of the pane.
+    public private(set) var vibeStatus: VibeHooksInstallService.Status = .unknown
+    /// Short outcome of the last Vibe action, e.g. "Installed.".
+    public private(set) var vibeResult: String?
+    public private(set) var isPerformingVibeAction = false
     /// Whether the herdr row is shown at all. Refreshed with the rest of the
     /// pane; hidden until something reports herdr.
     public private(set) var isHerdrDetected = false
@@ -688,6 +693,9 @@ public final class ClaudeIntegrationSettingsModel {
     /// Copies the bundled opencode plugin and edits `tui.json`. Nil disables
     /// the row's actions.
     private let opencodeService: @Sendable () -> OpencodePluginInstallService?
+    /// Copies the bundled Vibe shim and edits `~/.vibe/hooks.toml`. Nil
+    /// disables the row's actions.
+    private let vibeService: @Sendable () -> VibeHooksInstallService?
     /// Whether a herdr binary is on this Mac's PATH. Synchronous and fast,
     /// so the row's visibility is reserved at construction instead of
     /// popping in after the first async refresh.
@@ -814,6 +822,7 @@ public final class ClaudeIntegrationSettingsModel {
         statuslineService: @escaping @Sendable () -> ClaudeStatuslineInstallService? = { nil },
         statuslineHookCommand: @escaping @Sendable () -> String? = { nil },
         opencodeService: @escaping @Sendable () -> OpencodePluginInstallService? = { nil },
+        vibeService: @escaping @Sendable () -> VibeHooksInstallService? = { nil },
         herdrBinaryAvailable: @escaping @Sendable () -> Bool = { false },
         herdrPresenceReport: @escaping @Sendable () -> Bool = { false },
         herdrPaneReportingHostIDs: @escaping @Sendable () -> [String] = { [] },
@@ -832,6 +841,7 @@ public final class ClaudeIntegrationSettingsModel {
         self.statuslineService = statuslineService
         self.statuslineHookCommand = statuslineHookCommand
         self.opencodeService = opencodeService
+        self.vibeService = vibeService
         self.herdrBinaryAvailable = herdrBinaryAvailable
         self.herdrPresenceReport = herdrPresenceReport
         self.herdrPaneReportingHostIDs = herdrPaneReportingHostIDs
@@ -1068,6 +1078,28 @@ public final class ClaudeIntegrationSettingsModel {
             Log.claudeContext.info("Claude Code plugin updated to \(bundled, privacy: .public)")
         }
         await refreshLocalPluginStatus()
+    }
+
+    /// The Vibe counterpart of `updateOutdatedPluginAtLaunch`, under the same
+    /// rule: only an install the user already made, and only when BOTH halves
+    /// are present and one differs from this build. A partial or unreadable
+    /// install is a state the user has to look at, so it waits for Set up.
+    public func updateOutdatedVibeHooksAtLaunch() async {
+        guard let service = vibeService(), !isPerformingVibeAction else { return }
+        refreshVibeStatus()
+        guard vibeStatus == .updateAvailable else { return }
+        isPerformingVibeAction = true
+        defer { isPerformingVibeAction = false }
+
+        Log.claudeContext.info("Updating the Mistral Vibe hooks to this build's")
+        if let failure = await performAsync({ try service.install() }) {
+            Log.claudeContext.error(
+                "Vibe hooks update at launch failed: \(failure.describedError, privacy: .public)"
+            )
+        } else {
+            Log.claudeContext.info("Mistral Vibe hooks updated")
+        }
+        refreshVibeStatus()
     }
 
     private func runPluginAction(
@@ -1630,6 +1662,7 @@ public final class ClaudeIntegrationSettingsModel {
         )
         refreshStatuslineStatus()
         refreshOpencodeStatus()
+        refreshVibeStatus()
         isHerdrDetected = herdrBinaryAvailable() || herdrPresenceReport()
         hasEnabledHerdrMachine = hasEnabledHerdrMachineReport()
         localHerdrPanelStatus = enrollmentService.localHerdrPanelStatus()
@@ -1806,6 +1839,57 @@ public final class ClaudeIntegrationSettingsModel {
             opencodeResult = "Removed."
         }
         refreshOpencodeStatus()
+    }
+
+    // MARK: Mistral Vibe hooks
+
+    /// The row's one status sentence.
+    public var vibeSentence: String {
+        VibeHooksInstallService.sentence(for: vibeStatus)
+    }
+
+    public func refreshVibeStatus() {
+        guard let service = vibeService() else {
+            vibeStatus = .unknown
+            return
+        }
+        vibeStatus = service.status()
+    }
+
+    public func installVibeHooks() async {
+        guard let service = vibeService(), !isPerformingVibeAction else { return }
+        isPerformingVibeAction = true
+        vibeResult = nil
+        defer { isPerformingVibeAction = false }
+        let failure = await performAsync { try service.install() }
+        if let failure {
+            alert = DetailAlert(
+                title: "Could not install the Mistral Vibe hooks",
+                detail: failure.describedError
+            )
+            vibeResult = "Could not install."
+        } else {
+            vibeResult = "Installed."
+        }
+        refreshVibeStatus()
+    }
+
+    public func removeVibeHooks() async {
+        guard let service = vibeService(), !isPerformingVibeAction else { return }
+        isPerformingVibeAction = true
+        vibeResult = nil
+        defer { isPerformingVibeAction = false }
+        let failure = await performAsync { try service.remove() }
+        if let failure {
+            alert = DetailAlert(
+                title: "Could not remove the Mistral Vibe hooks",
+                detail: failure.describedError
+            )
+            vibeResult = "Could not remove."
+        } else {
+            vibeResult = "Removed."
+        }
+        refreshVibeStatus()
     }
 
     public func requestPluginUpdate(hostID: String) {

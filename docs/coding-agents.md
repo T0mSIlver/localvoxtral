@@ -181,3 +181,9 @@ fields and the threat model.
 An [opencode plugin](../integrations/opencode/README.md) exists too, installed
 from **Settings → opencode** (copy plus the `tui.json`
 entry, both reversible from the same row).
+
+[Mistral Vibe hooks](../integrations/vibe/README.md) install from
+**Settings → Mistral Vibe**: a hook script under `~/.vibe/localvoxtral/` and
+a marked block in `~/.vibe/hooks.toml`, both removed by the same row. Vibe has
+no session-start hook, so localvoxtral learns about a Vibe session at its
+first file read or edit, or when its first turn ends.

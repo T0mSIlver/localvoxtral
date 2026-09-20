@@ -34,7 +34,7 @@ extension TerminalAppDescriptor {
 /// tints it black, white, or the selected-row color. Sources, all reduced to
 /// one fill:
 ///
-/// - Simple Icons (CC0): Claude, opencode, Ghostty, iTerm2, Warp, WezTerm,
+/// - Simple Icons (CC0): Claude, opencode, Mistral AI (the Vibe row), Ghostty, iTerm2, Warp, WezTerm,
 ///   Alacritty, Hyper.
 /// - The projects' own repositories: herdr (`assets/logo.svg`; its ram bleeds
 ///   off the square, so it is knocked out of a rounded tile rather than

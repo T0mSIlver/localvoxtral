@@ -295,6 +295,18 @@ if [[ ! -f "$OPENCODE_PLUGIN_SOURCE" ]]; then
 fi
 cp "$OPENCODE_PLUGIN_SOURCE" "$APP_DIR/Contents/Resources/opencode-localvoxtral.js"
 
+# The Mistral Vibe hook shim and its hooks.toml block, same rule again: copied
+# from the repo, resolved by ClaudePluginAssets.vibeFileURL.
+VIBE_HOOKS_SOURCE="$ROOT_DIR/integrations/vibe"
+for vibe_file in publish.sh hooks.toml; do
+  if [[ ! -f "$VIBE_HOOKS_SOURCE/$vibe_file" ]]; then
+    echo "Vibe hook file missing at $VIBE_HOOKS_SOURCE/$vibe_file"
+    exit 1
+  fi
+done
+mkdir -p "$APP_DIR/Contents/Resources/vibe-hooks"
+cp "$VIBE_HOOKS_SOURCE/publish.sh" "$VIBE_HOOKS_SOURCE/hooks.toml" "$APP_DIR/Contents/Resources/vibe-hooks/"
+
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"

@@ -14,6 +14,17 @@ entry there states what the session log read is limited to.
 
 ## Install
 
+In localvoxtral, open **Settings → Mistral Vibe → Hooks → Set up…**. One
+consent sentence names both files. The app copies its bundled `publish.sh` to
+`~/.vibe/localvoxtral/` and adds the marked block to `~/.vibe/hooks.toml`,
+creating that file when it is absent and leaving every other line of it alone.
+**Remove** reverses both. The app refuses to write when `~/.vibe` or either
+file is a symlink, when `hooks.toml` has an unpaired marker, or when a hook
+named `localvoxtral-…` exists outside the block. After an app update, the next
+launch refreshes an existing install.
+
+The same install by hand:
+
 1. Copy the shim:
 
 ```sh

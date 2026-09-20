@@ -30,10 +30,12 @@ contributes to a dictation, plus how the app learns about the session.
 | Claude Code **Remote Control** (claude.ai/code tab in Chrome, Brave, Safari) | focused tab's `session_…` URL matched to `CLAUDE_CODE_BRIDGE_SESSION_ID` | **none, by design** (see below) | local session only | yes | local hook or remote HTTP; tab URL over AppleScript | asked only under the repo setting; Firefox has no AppleScript tab URL |
 | Claude Code in **Claude Desktop**'s Code tab (sessions on this Mac or on an ssh host) | the focused session's web view address (`claude.ai/epitaxy/local_…`, read over Accessibility) matched to `CLAUDE_CODE_HOST_SESSION_ID` | **none, by design** (see below) | local session only | yes | local hook or remote HTTP | asked only under the repo setting; remote hosts need plugin ≥ 1.11.0; both ids are undocumented desktop internals |
 | **opencode**, local | tty via the plugin's focus declarations (45 s TTL, pid-checked); herdr pane join works unchanged | herdr `pane.read` in a herdr pane, else the terminal's route | yes | prompt, cwd, touched paths | opencode JS plugin over the local socket | no statusline; no remote path; inside cmux never joins |
+| **Mistral Vibe**, local | tty: the Vibe process's terminal, found from the hook by walking out of the detached session Vibe starts hooks in; herdr and cmux pane joins work unchanged | the terminal's route, as for Claude Code | yes | prompt (last user message of the session log), cwd, touched paths | `~/.vibe/hooks.toml` command hooks over the local socket | a session is known only from its first file-tool call or the end of its first turn; no session-end event; no statusline; no remote path yet |
 
 Statusline / connection indicator: the local `--statusline` query for local
 Claude Code sessions; the remote plugin's hook-status stamp for enrolled
-hosts; nothing for opencode.
+hosts; nothing for opencode or Mistral Vibe (Vibe has no status line to
+extend).
 
 **Settings → Terminals shows this matrix per machine**: one pane per terminal
 app, with the row's status dot and the capabilities spelled out as Dictation /
@@ -87,8 +89,9 @@ refused, because the command line cannot prove what the window displays.
 
 | What | Why |
 |---|---|
-| **codex CLI** | nothing wired; the wire knows two agents, Claude Code and opencode |
-| **Remote opencode** | the remote path types every record as Claude Code |
+| **codex CLI** | nothing wired; the wire knows three agents: Claude Code, opencode and Mistral Vibe |
+| **Remote opencode, remote Mistral Vibe** | the remote path types every record as Claude Code |
+| **Vibe in VS Code or another ACP client, `vibe -p`** | the hooks publish, but there is no terminal pane to join |
 | **kitty, WezTerm, Alacritty, Warp, Hyper, Tabby, Rio** | dictation and insertion only; no per-pane tty or screen route with transport-derived trust (WezTerm is next on the [roadmap](roadmap.md)) |
 | **VS Code, Cursor, VSCodium** | insertion only; explicitly excluded from screen reads by a pinned test |
 | **Firefox** for Remote Control | no AppleScript surface for the focused tab's URL |

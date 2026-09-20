@@ -177,6 +177,39 @@ public enum ClaudePluginAssets {
         return nil
     }
 
+    // MARK: Mistral Vibe
+
+    /// Repo-relative home of the Vibe integration: the hook shim, the
+    /// `hooks.toml` block, and their README.
+    public static let vibeRepositoryRelativePath = "integrations/vibe"
+    public static let vibeShimFileName = "publish.sh"
+    public static let vibeHooksBlockFileName = "hooks.toml"
+    /// Directory inside `Contents/Resources`, as copied there by
+    /// `package_app.sh`.
+    public static let vibePackagedDirectoryName = "vibe-hooks"
+
+    /// One bundled Vibe file, resolved like `opencodePluginURL`: the app's
+    /// resource bundle, the app bundle's `Contents/Resources`, then the repo
+    /// checkout (dev/test).
+    public static func vibeFileURL(
+        named fileName: String,
+        resourcesURL: URL? = Bundle.main.resourceURL,
+        bundleResourcesURL: URL? = nil
+    ) -> URL? {
+        let bundleResourcesURL = bundleResourcesURL ?? Bundle.localvoxtralResources.resourceURL
+        let sourceFile = ClaudePluginAssets.assetsSourceFile
+        let candidates = [
+            bundleResourcesURL?.appendingPathComponent(vibePackagedDirectoryName),
+            resourcesURL?.appendingPathComponent(vibePackagedDirectoryName),
+            repositoryRootURL(sourceFile: sourceFile)?.appendingPathComponent(vibeRepositoryRelativePath),
+        ]
+        for directory in candidates {
+            guard let candidate = directory?.appendingPathComponent(fileName) else { continue }
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        }
+        return nil
+    }
+
     /// Name of the publisher binary, as packaged and as the shim looks for it.
     public static let publisherExecutableName = "localvoxtral-claude-hook"
 

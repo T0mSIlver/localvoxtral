@@ -358,6 +358,8 @@ final class SettingsTabTests: XCTestCase {
         XCTAssertEqual(SettingsTab.integrationsClaude.rawValue, "integrations.claude")
         XCTAssertEqual(SettingsTab.integrationsOpencode.title, "opencode")
         XCTAssertEqual(SettingsTab.integrationsOpencode.rawValue, "integrations.opencode")
+        XCTAssertEqual(SettingsTab.integrationsVibe.title, "Mistral Vibe")
+        XCTAssertEqual(SettingsTab.integrationsVibe.rawValue, "integrations.vibe")
         XCTAssertEqual(SettingsTab.integrationsHerdr.title, "herdr")
         XCTAssertEqual(SettingsTab.integrationsHerdr.rawValue, "integrations.herdr")
         XCTAssertEqual(SettingsTab.integrationsRemote.title, "Remote hosts")
@@ -423,8 +425,8 @@ final class SettingsTabTests: XCTestCase {
         XCTAssertEqual(
             SettingsTab.integrationsSidebarItems,
             [
-                .integrationsClaude, .integrationsOpencode, .integrationsHerdr,
-                .integrationsRemote,
+                .integrationsClaude, .integrationsOpencode, .integrationsVibe,
+                .integrationsHerdr, .integrationsRemote,
             ]
         )
         // Join-capable terminals first, then the dictation-only list — the
@@ -447,7 +449,7 @@ final class SettingsTabTests: XCTestCase {
             [
                 "general", "endpoints", "dictation", "textProcessing", "about",
                 "integrations.context", "integrations.claude", "integrations.opencode",
-                "integrations.herdr", "integrations.remote",
+                "integrations.vibe", "integrations.herdr", "integrations.remote",
                 "terminals.ghostty", "terminals.iterm2", "terminals.apple-terminal",
                 "terminals.cmux", "terminals.warp", "terminals.wezterm", "terminals.kitty",
                 "terminals.alacritty", "terminals.hyper", "terminals.tabby", "terminals.rio",

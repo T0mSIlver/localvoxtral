@@ -683,6 +683,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await settings.repairMarketplaceRegistrationAtLaunch()
             await settings.updateOutdatedPluginAtLaunch()
         }
+        Task { await settings.updateOutdatedVibeHooksAtLaunch() }
     }
 
     /// Binds the remote (SSH) hook listener, but only for a user who has
@@ -851,6 +852,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         return try? Data(contentsOf: url)
                     },
                     fileSystem: LiveOpencodePluginFileSystem()
+                )
+            },
+            vibeService: {
+                VibeHooksInstallService(
+                    bundledShimData: {
+                        ClaudePluginAssets.vibeFileURL(named: ClaudePluginAssets.vibeShimFileName)
+                            .flatMap { try? Data(contentsOf: $0) }
+                    },
+                    bundledHooksBlock: {
+                        ClaudePluginAssets.vibeFileURL(named: ClaudePluginAssets.vibeHooksBlockFileName)
+                            .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+                    },
+                    fileSystem: LiveVibeHooksFileSystem()
                 )
             },
             // A binary on this Mac: a synchronous PATH scan, decided at model
