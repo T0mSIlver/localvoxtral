@@ -49,6 +49,31 @@ final class ClaudeContextGroundingMergeTests: XCTestCase {
         XCTAssertTrue(merged.all.isEmpty)
     }
 
+    /// What the app remembers is not exempt either: when a live source reads
+    /// today's span as another term, neither is written. A memory that could
+    /// overrule the repo in front of the speaker would keep a renamed file
+    /// alive for months.
+    func testLearnedTermConflictingWithTodaysRepositoryAbstains() {
+        let merged = PolishContextGrounding.merge([
+            candidate(.repository, [(exact: "AuthSession.swift", heard: ["auth session swift"])]),
+            candidate(.learned, [(exact: "AuthSessions.swift", heard: ["auth session swift"])]),
+        ])
+        XCTAssertTrue(merged.all.isEmpty)
+    }
+
+    /// The memory agreeing with a live source is corroboration, and the live
+    /// source keeps the attribution: the prompt section a term renders under
+    /// has to say where it was seen, not where it was remembered.
+    func testLearnedTermAgreeingWithTheRepositoryRendersUnderTheRepository() {
+        let merged = PolishContextGrounding.merge([
+            candidate(.repository, [(exact: "polishd", heard: ["polish d"])]),
+            candidate(.learned, [(exact: "polishd", heard: ["polish d"])]),
+        ])
+        XCTAssertEqual(merged.all.count, 1)
+        XCTAssertEqual(merged.entries(from: .repository).count, 1)
+        XCTAssertTrue(merged.entries(from: .learned).isEmpty)
+    }
+
     // MARK: - Agreement
 
     /// The joined session and the repository agreeing corroborate: one entry.

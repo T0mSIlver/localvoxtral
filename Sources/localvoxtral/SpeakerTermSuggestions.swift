@@ -148,6 +148,13 @@ enum SpeakerTermSuggestions {
     }
 }
 
+/// The Suggestions row, fed by two producers with one rule between them.
+///
+/// The app offers what it has already watched polishing fix in the user's
+/// projects (`LearnedTerms`), for free, as soon as the pane opens. The button
+/// asks a hosted model to read the dictation history for names the grounding
+/// sources never saw. Either way a suggestion is never added without a click,
+/// and a refused one never comes back.
 @MainActor
 @Observable
 final class SpeakerTermSuggestionModel {
@@ -166,6 +173,10 @@ final class SpeakerTermSuggestionModel {
 
     private let settings: SettingsStore
     private let recentTexts: @MainActor () async -> [String]
+    /// Terms the app has watched polishing fix, strongest evidence first.
+    /// Offered with no model call and no API credits — the evidence is
+    /// already on this machine.
+    private let learnedTerms: @MainActor () -> [String]
     private let service: @MainActor () -> any LLMPolishingServicing
     /// Why the button cannot be used right now, or nil. Measured on the
     /// owner's history (2026-09-19): the bundled 4B took 177 s, listed the
@@ -179,15 +190,36 @@ final class SpeakerTermSuggestionModel {
     init(
         settings: SettingsStore,
         recentTexts: @escaping @MainActor () async -> [String],
+        learnedTerms: @escaping @MainActor () -> [String] = { [] },
         service: @escaping @MainActor () -> any LLMPolishingServicing,
         unavailableReason: @escaping @MainActor () -> String? = { nil },
         now: @escaping @MainActor () -> Date = { Date() }
     ) {
         self.settings = settings
         self.recentTexts = recentTexts
+        self.learnedTerms = learnedTerms
         self.service = service
         self.unavailableReasonProvider = unavailableReason
         self.now = now
+    }
+
+    /// Chips the app can offer for free: terms it has already watched the
+    /// polishing model fix, confirmed across dictations. Called when the pane
+    /// appears, so the list is there before anyone presses a button.
+    ///
+    /// Additive — a suggestion already on screen stays, and one the user has
+    /// added or refused never comes back.
+    func refreshLearnedSuggestions() {
+        guard phase != .loading else { return }
+        let shown = Set(suggestions.map(SpeakerTermSuggestions.key))
+        let learned = SpeakerTermSuggestions.filtered(
+            learnedTerms(),
+            terms: settings.polishSpeakerTerms,
+            dismissed: settings.polishDismissedTermSuggestions
+        ).filter { !shown.contains(SpeakerTermSuggestions.key($0)) }
+        guard !learned.isEmpty else { return }
+        suggestions = Array((suggestions + learned).prefix(SpeakerTermSuggestions.maxShown))
+        if phase == .nothingFound { phase = .idle }
     }
 
     /// The button's action. The model owns the task so a dictation can stop it.
@@ -242,14 +274,20 @@ final class SpeakerTermSuggestionModel {
             )
             // Stopped while waiting: the row already went back to its button.
             guard phase == .loading, !Task.isCancelled else { return }
-            suggestions = Array(SpeakerTermSuggestions.ranked(
+            let found = SpeakerTermSuggestions.ranked(
                 SpeakerTermSuggestions.filtered(
                     SpeakerTermSuggestions.parse(result.polishedText),
                     terms: settings.polishSpeakerTerms,
                     dismissed: settings.polishDismissedTermSuggestions
                 ),
                 texts: texts
-            ).prefix(SpeakerTermSuggestions.maxShown))
+            )
+            // What the run found comes first — it is what the user waited
+            // minutes for — but unacted learned chips are not thrown away
+            // behind it.
+            let foundKeys = Set(found.map(SpeakerTermSuggestions.key))
+            let kept = suggestions.filter { !foundKeys.contains(SpeakerTermSuggestions.key($0)) }
+            suggestions = Array((found + kept).prefix(SpeakerTermSuggestions.maxShown))
             phase = suggestions.isEmpty ? .nothingFound : .idle
             Log.polishing.info("Term suggestions received: \(self.suggestions.count, privacy: .public)")
         } catch {

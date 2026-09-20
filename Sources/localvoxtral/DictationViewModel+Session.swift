@@ -985,6 +985,19 @@ extension DictationViewModel {
                     }
                     let screenVocabularyOutcome = screenPreparation.grounding
 
+                    // What earlier dictations in this project taught. No
+                    // harvest and no I/O beyond resolving the project: the
+                    // terms are already in memory, and matching them is the
+                    // same matcher every other source runs.
+                    let learnedProject = LearnedTermProjectResolver.resolve(
+                        repositoryRoot: repositoryRootBox.value,
+                        workspace: capturedClaudeJoin?.snapshot.workspace
+                    )
+                    let learnedVocabularyOutcome = self.learnedTermGrounding(
+                        project: learnedProject,
+                        transcript: workingText
+                    )
+
                     guard !Task.isCancelled else { return }
 
                     // Sources matched independently; the merge is what resolves
@@ -1050,9 +1063,17 @@ extension DictationViewModel {
                             phoneticEntries: clipboardVocabularyOutcome.phoneticEntries,
                             verificationEntries: clipboardVocabularyOutcome.verificationCandidates
                         ),
+                        PolishContextGrounding.Candidate(
+                            source: .learned,
+                            entries: learnedVocabularyOutcome.entries,
+                            isFallbackOnly: learnedVocabularyOutcome.isFallbackOnly,
+                            phoneticEntries: learnedVocabularyOutcome.phoneticEntries,
+                            verificationEntries: learnedVocabularyOutcome.verificationCandidates
+                        ),
                     ], maxVerificationPairs: RepoVocabularyMatcher.nominationCap(
                         forTranscript: workingText
                     ))
+                    let learnedVocabularyEntries = merged.entries(from: .learned)
                     let repoVocabularyEntries = merged.entries(from: .repository)
                     let clipboardVocabularyEntries = merged.entries(from: .clipboard)
                     let screenVocabularyEntries = merged.entries(from: .terminal)
@@ -1128,6 +1149,21 @@ extension DictationViewModel {
                         )
                     }
 
+                    if !learnedVocabularyEntries.isEmpty, templateCarriesDictionarySlot {
+                        replacementDictionarySection =
+                            RepoVocabularyMatcher.appendedPromptSection(
+                                base: replacementDictionarySection,
+                                entries: learnedVocabularyEntries,
+                                header: RepoVocabularyMatcher.learnedVocabularyHeader
+                            )
+                    }
+                    if !learnedVocabularyEntries.isEmpty {
+                        // Counts only — the terms are the speaker's own words.
+                        Log.polishing.info(
+                            "Learned vocabulary attached: learned-vocab:\(learnedVocabularyEntries.count, privacy: .public)"
+                        )
+                    }
+
                     // Render from the MERGED pairs only: a span the merge
                     // pre-applied or abstained-and-dropped must not reappear.
                     // These remain untrusted suggestions for the model to
@@ -1150,13 +1186,7 @@ extension DictationViewModel {
                     // and nowhere else: a span the merge abstained on is not
                     // evidence of a spelling, and a verification pair is a
                     // question put to the model, not an answer.
-                    self.recordLearnedTerms(
-                        merged: merged,
-                        project: LearnedTermProjectResolver.resolve(
-                            repositoryRoot: repositoryRootBox.value,
-                            workspace: capturedClaudeJoin?.snapshot.workspace
-                        )
-                    )
+                    self.recordLearnedTerms(merged: merged, project: learnedProject)
 
                     // Exact repo/clipboard bytes and their ASR spans have
                     // already been selected by the deterministic matcher. Put
@@ -1889,6 +1919,51 @@ extension DictationViewModel {
     /// "Polishing…". Vocabulary is best-effort; the commit is not.
     static let repoVocabularyPipelineDeadline: Duration = .seconds(3)
 
+    /// What this project's earlier dictations already taught, matched against
+    /// the transcript by the same matcher every live source runs.
+    ///
+    /// No gate beyond polishing itself: a term the speaker has said three
+    /// times in this project is their vocabulary, and it travels with the
+    /// request the way the hand-written Names and terms list does (owner
+    /// ruling, 2026-09-20 — `docs/agent/invariants.md`).
+    ///
+    /// Synchronous on the commit path because it is bounded: at most
+    /// `LearnedTerms.maxTermsPerProject` terms to index, against a repo
+    /// harvest of thousands.
+    func learnedTermGrounding(
+        project: LearnedTermProjectResolver.Identity,
+        transcript: String
+    ) -> RepoVocabularyMatcher.GroundingOutcome {
+        guard let learnedTermStore else { return .empty }
+        let terms = learnedTermStore.confirmedTerms(projectKey: project.key)
+        guard !terms.isEmpty else { return .empty }
+        return RepoVocabularyMatcher.groundedCandidates(
+            transcript: transcript,
+            vocabulary: RepoVocabulary(terms: terms, branch: nil)
+        )
+    }
+
+    /// Folds one dictation's resolved spellings into the learned terms.
+    ///
+    /// Cheap enough for the commit path: an in-memory merge. The file write is
+    /// the store's own background work.
+    /// A nil `project` means the app could not establish which project this
+    /// dictation belongs to, and nothing is learned from it — see
+    /// `LearnedTermProjectResolver.resolve`.
+    func recordLearnedTerms(
+        merged: PolishContextGrounding.Merged,
+        project: LearnedTermProjectResolver.Identity?
+    ) {
+        guard let learnedTermStore, let project else { return }
+        let observations = PolishContextSource.allCases.flatMap { source in
+            merged.entries(from: source).map {
+                LearnedTermObservation(term: $0.replaceWith, source: source)
+            }
+        }
+        guard !observations.isEmpty else { return }
+        learnedTermStore.record(observations, project: project)
+    }
+
     /// Opt-in repo-vocabulary grounding: harvests file names / path components /
     /// the branch from the git repo in the focused terminal and returns the
     /// transcript-relevant ones as replacement entries — but ONLY when the
@@ -1910,27 +1985,7 @@ extension DictationViewModel {
     /// Returns nil (silent skip) when off, remote, no trustworthy terminal
     /// repo signal, no transcript-relevant match, deadline expiry, or in-flight
     /// skip.
-    /// Folds one dictation's resolved spellings into the learned terms.
     ///
-    /// Cheap enough for the commit path: an in-memory merge, with the file
-    /// write left to the store's own background queue.
-    /// A nil `project` means the app could not establish which project this
-    /// dictation belongs to, and nothing is learned from it — see
-    /// `LearnedTermProjectResolver.resolve`.
-    func recordLearnedTerms(
-        merged: PolishContextGrounding.Merged,
-        project: LearnedTermProjectResolver.Identity?
-    ) {
-        guard let learnedTermStore, let project else { return }
-        let observations = PolishContextSource.allCases.flatMap { source in
-            merged.entries(from: source).map {
-                LearnedTermObservation(term: $0.replaceWith, source: source)
-            }
-        }
-        guard !observations.isEmpty else { return }
-        learnedTermStore.record(observations, project: project)
-    }
-
     /// - Parameter repositoryRoot: filled with the git root the pipeline
     ///   resolved, when it gets that far. The caller owns the box and reads it
     ///   after this returns; a late write from an abandoned pipeline is

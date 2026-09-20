@@ -17,6 +17,14 @@ enum PolishContextSource: String, CaseIterable, Sendable, Hashable {
     case terminal
     case claude
     case clipboard
+    /// What earlier dictations in this project taught (`LearnedTerms`).
+    ///
+    /// LAST, and that is the whole design: every other source saw the repo,
+    /// the screen or the session as they are right now, while this one is
+    /// remembering. On a span they read differently, the live reading wins.
+    /// It renders nothing and always demands zero characters — a remembered
+    /// term is vocabulary, never an excerpt.
+    case learned
 
     /// Position in the fixed allocation order (declaration order).
     var allocationRank: Int {

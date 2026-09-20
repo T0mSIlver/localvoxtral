@@ -11,7 +11,8 @@ final class LearnedTermWiringTests: XCTestCase {
 
     private func makeViewModel(
         outcome: RepoVocabularyMatcher.GroundingOutcome?,
-        repositoryRoot: String? = nil
+        repositoryRoot: String? = nil,
+        service: any LLMPolishingServicing = IdentityPolishingService()
     ) -> (DictationViewModel, LearnedTermStore) {
         let settings = makeSettings()
         settings.llmPolishingEnabled = true
@@ -33,7 +34,7 @@ final class LearnedTermWiringTests: XCTestCase {
             promptTemplates: template,
             agentPromptTemplates: template
         )
-        viewModel.llmPolishingService = IdentityPolishingService()
+        viewModel.llmPolishingService = service
         viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
         viewModel.debugRepoVocabularyEntriesOverride = { _ in outcome }
         viewModel.debugRepoVocabularyRootOverride = repositoryRoot
@@ -139,6 +140,67 @@ final class LearnedTermWiringTests: XCTestCase {
         )
     }
 
+    // MARK: - Reading the memory back
+
+    /// The point of the whole feature: a spelling confirmed in this project
+    /// corrects a later dictation with no repo, screen or session hit at all.
+    func testConfirmedTermGroundsALaterDictationWithNoLiveSource() async {
+        let recording = RecordingPolishingService()
+        let (viewModel, store) = makeViewModel(outcome: nil, service: recording)
+        for _ in 0..<3 {
+            store.record(
+                [LearnedTermObservation(term: "useAuth.ts", source: .repository)],
+                project: LearnedTermProjectResolver.shared
+            )
+        }
+
+        await commit(viewModel, text: "open useauth.ts please")
+
+        let request = await recording.request
+        XCTAssertEqual(
+            request?.inputText, "open useAuth.ts please",
+            "the remembered spelling is placed before the model call, like any other source"
+        )
+    }
+
+    /// Below the bar, nothing is used: two sightings can be the same mistake
+    /// twice, and a mistake that grounds is a mistake that spreads.
+    func testUnconfirmedTermDoesNotGroundADictation() async {
+        let recording = RecordingPolishingService()
+        let (viewModel, store) = makeViewModel(outcome: nil, service: recording)
+        for _ in 0..<2 {
+            store.record(
+                [LearnedTermObservation(term: "useAuth.ts", source: .repository)],
+                project: LearnedTermProjectResolver.shared
+            )
+        }
+
+        await commit(viewModel, text: "open useauth.ts please")
+
+        let request = await recording.request
+        XCTAssertEqual(request?.inputText, "open useauth.ts please")
+    }
+
+    /// Matching the memory refreshes the term without claiming to be where the
+    /// spelling came from — otherwise every project's provenance would decay
+    /// into "learned".
+    func testGroundingFromMemoryRefreshesWithoutRewritingProvenance() async {
+        let (viewModel, store) = makeViewModel(outcome: nil)
+        for _ in 0..<3 {
+            store.record(
+                [LearnedTermObservation(term: "useAuth.ts", source: .repository)],
+                project: LearnedTermProjectResolver.shared
+            )
+        }
+
+        await commit(viewModel, text: "open useauth.ts please")
+
+        let stored = store.snapshot()
+            .confirmed(projectKey: LearnedTermProjectResolver.shared.key).first
+        XCTAssertEqual(stored?.dictations, 4)
+        XCTAssertEqual(stored?.sources, ["repository"])
+    }
+
     // MARK: - Helpers
 
     private func waitUntilStoppedSessionCompletes(_ viewModel: DictationViewModel) async {
@@ -208,6 +270,24 @@ private final class MockAppConfigStore: AppConfigServing {
     }
 
     func loadTerminalAppBundleIDs() -> [String] { [] }
+}
+
+/// Keeps the request the session built, which is where a grounding decision
+/// becomes observable.
+private actor RecordingPolishingService: LLMPolishingServicing {
+    private(set) var request: LLMPolishingRequest?
+
+    func polish(
+        request: LLMPolishingRequest,
+        configuration _: LLMPolishingConfiguration
+    ) async throws -> LLMPolishingResult {
+        self.request = request
+        return LLMPolishingResult(
+            rawText: request.inputText,
+            polishedText: request.inputText,
+            durationSeconds: 0.01
+        )
+    }
 }
 
 /// Returns the input unchanged: what the model does with the prompt is not
