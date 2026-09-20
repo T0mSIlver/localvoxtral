@@ -744,16 +744,6 @@ extension DictationViewModel {
                     closeRemoteHerdrForwards()
                 }
 
-                // Which project this dictation will teach. The title is read
-                // HERE, beside the screen decision, for the same reason: it
-                // must describe the window the speaker was looking at, not
-                // whichever one is focused once the vocabulary pipeline has
-                // had its two seconds.
-                let capturedProjectWindowTitle = learnedTermWindowTitle(
-                    join: capturedClaudeJoin,
-                    targetBundleID: capturedTargetBundleID
-                )
-
                 // Repo vocabulary rides in the `{{replacement_dictionary}}`
                 // slot; a user template without that placeholder (removing it is
                 // explicitly supported) silently drops the section in
@@ -819,11 +809,18 @@ extension DictationViewModel {
                     // request is byte-identical to the no-vocabulary path.
                     var replacementDictionarySection = replacementDictionaryPrompt
                     var repoVocabularyOutcome = RepoVocabularyMatcher.GroundingOutcome.empty
+                    // The git root that pipeline resolves is also the
+                    // learned-terms project key. Scoped to THIS commit: an
+                    // abandoned pipeline that reports a root after its
+                    // deadline writes into a box nobody reads again, instead
+                    // of attributing a later dictation to the wrong project.
+                    let repositoryRootBox = RepoVocabularyRootBox()
                     if (templateCarriesDictionarySlot || needsRepoGroundingForConflictSafety),
                        let endpointURL = polishingConfig?.endpointURL,
                        let outcome = await self.repoVocabularyGroundingIfEnabled(
                            endpointURL: endpointURL,
-                           transcript: workingText
+                           transcript: workingText,
+                           repositoryRoot: repositoryRootBox
                        )
                     {
                         repoVocabularyOutcome = outcome
@@ -1155,8 +1152,10 @@ extension DictationViewModel {
                     // question put to the model, not an answer.
                     self.recordLearnedTerms(
                         merged: merged,
-                        join: capturedClaudeJoin,
-                        windowTitle: capturedProjectWindowTitle
+                        project: LearnedTermProjectResolver.resolve(
+                            repositoryRoot: repositoryRootBox.value,
+                            workspace: capturedClaudeJoin?.snapshot.workspace
+                        )
                     )
 
                     // Exact repo/clipboard bytes and their ASR spans have
@@ -1911,34 +1910,13 @@ extension DictationViewModel {
     /// Returns nil (silent skip) when off, remote, no trustworthy terminal
     /// repo signal, no transcript-relevant match, deadline expiry, or in-flight
     /// skip.
-    /// The focused terminal's window title, for the learned-terms project key
-    /// alone.
-    ///
-    /// Skipped when the joined session already names a workspace, which is the
-    /// better signal, and for every non-terminal target: an editor or a browser
-    /// title is not a working directory, and treating one as a path is how the
-    /// vocabulary feature once indexed the wrong repo.
-    func learnedTermWindowTitle(
-        join: ClaudeSessionJoin?,
-        targetBundleID: String?
-    ) -> String? {
-        guard join?.snapshot.workspace == nil else { return nil }
-        guard let pid = overlayBufferCoordinator.commitTargetAppPID else { return nil }
-        guard let targetBundleID,
-              TerminalTargetDetector.isTerminalLikeBundleID(targetBundleID)
-                  || settings.userTerminalAppBundleIDs.contains(targetBundleID)
-        else { return nil }
-        return TerminalWorkingDirectoryResolver.windowTitle(forApplicationPID: pid)
-    }
-
     /// Folds one dictation's resolved spellings into the learned terms.
     ///
-    /// Cheap enough for the commit path: a bounded walk for the git root, then
-    /// an in-memory merge. The file write is the store's own background work.
+    /// Cheap enough for the commit path: an in-memory merge, with the file
+    /// write left to the store's own background queue.
     func recordLearnedTerms(
         merged: PolishContextGrounding.Merged,
-        join: ClaudeSessionJoin?,
-        windowTitle: String?
+        project: LearnedTermProjectResolver.Identity
     ) {
         guard let learnedTermStore else { return }
         let observations = PolishContextSource.allCases.flatMap { source in
@@ -1947,18 +1925,17 @@ extension DictationViewModel {
             }
         }
         guard !observations.isEmpty else { return }
-        learnedTermStore.record(
-            observations,
-            project: LearnedTermProjectResolver.resolve(
-                workspace: join?.snapshot.workspace,
-                windowTitle: windowTitle
-            )
-        )
+        learnedTermStore.record(observations, project: project)
     }
 
+    /// - Parameter repositoryRoot: filled with the git root the pipeline
+    ///   resolved, when it gets that far. The caller owns the box and reads it
+    ///   after this returns; a late write from an abandoned pipeline is
+    ///   therefore discarded rather than carried into the next dictation.
     func repoVocabularyGroundingIfEnabled(
         endpointURL: URL,
-        transcript: String
+        transcript: String,
+        repositoryRoot: RepoVocabularyRootBox? = nil
     ) async -> RepoVocabularyMatcher.GroundingOutcome? {
         guard settings.repoVocabularyEnabled else { return nil }
         guard PolishContextClipboardReader.isPermittedContextEndpoint(
@@ -1977,7 +1954,9 @@ extension DictationViewModel {
             Log.polishing.info("Repo vocabulary skipped: a previous pipeline is still in flight")
             return nil
         }
-        guard let pipelineTask = makeRepoVocabularyPipelineTask(transcript: transcript) else {
+        guard let pipelineTask = makeRepoVocabularyPipelineTask(
+            transcript: transcript, repositoryRoot: repositoryRoot
+        ) else {
             repoVocabularyPipelineInFlight.release()
             return nil
         }
@@ -2045,7 +2024,8 @@ extension DictationViewModel {
     /// race above stays readable and the DEBUG pipeline seam replaces exactly
     /// the detached section (keeping the race in play for deadline tests).
     private func makeRepoVocabularyPipelineTask(
-        transcript: String
+        transcript: String,
+        repositoryRoot: RepoVocabularyRootBox? = nil
     ) -> Task<RepoVocabularyMatcher.GroundingOutcome?, Never>? {
         #if DEBUG
         if let override = debugRepoVocabularyPipelineOverride {
@@ -2078,7 +2058,8 @@ extension DictationViewModel {
                 forWindowTitle: title,
                 terminalApplicationPID: processFallbackPID,
                 transcript: transcript,
-                cache: cache
+                cache: cache,
+                rootSink: { root in repositoryRoot?.set(root) }
             )
         }
     }
@@ -2748,6 +2729,21 @@ extension DictationViewModel {
             commitBufferText: currentOverlayCommitText()
         )
     }
+}
+
+/// One-slot handoff for the git root the repo-vocabulary pipeline resolves,
+/// off the main actor, on its way to the vocabulary index.
+///
+/// A class because `Mutex` is noncopyable and this crosses a detached task.
+/// One is created per commit: an abandoned pipeline that reports its root
+/// after the deadline writes into a box nobody will read again, rather than
+/// attributing the next dictation's terms to the wrong project.
+final class RepoVocabularyRootBox: @unchecked Sendable {
+    private let root = Mutex<String?>(nil)
+
+    var value: String? { root.withLock { $0 } }
+
+    func set(_ newValue: String) { root.withLock { $0 = newValue } }
 }
 
 /// Winner of the repo-vocabulary race in `repoVocabularyGroundingIfEnabled`:

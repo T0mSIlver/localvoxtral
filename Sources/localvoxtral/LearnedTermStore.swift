@@ -49,10 +49,18 @@ final class LearnedTermStore: @unchecked Sendable {
 
     // MARK: Reading
 
+    /// The lock is never held across the file read: a first caller that has to
+    /// load must not park every other thread on a disk it might be waiting for
+    /// (review, 2026-09-20). Two threads racing the first load both read; the
+    /// first to finish wins and the other discards its copy, which costs one
+    /// redundant read at most once per launch.
     func snapshot() -> LearnedTerms {
-        state.withLock { state in
-            if state.terms == nil { state.terms = load() }
-            return state.terms ?? LearnedTerms()
+        if let cached = state.withLock({ $0.terms }) { return cached }
+        let loaded = load()
+        return state.withLock { state in
+            if let cached = state.terms { return cached }
+            state.terms = loaded
+            return loaded
         }
     }
 
@@ -78,17 +86,22 @@ final class LearnedTermStore: @unchecked Sendable {
     func record(_ observations: [LearnedTermObservation], project: LearnedTermProjectResolver.Identity) {
         guard !observations.isEmpty else { return }
         let moment = now()
+        let loaded = snapshot()
         let updated: LearnedTerms = state.withLock { state in
-            if state.terms == nil { state.terms = load() }
-            var terms = state.terms ?? LearnedTerms()
+            var terms = state.terms ?? loaded
             terms.record(observations, project: project, now: moment)
             state.terms = terms
+            // Enqueued INSIDE the lock so the queue receives the snapshots in
+            // the order they were produced. Enqueuing after the release lets
+            // two records hand the serial queue an older state after a newer
+            // one and leave the file behind the memory (review, 2026-09-20).
+            // Safe: nothing on the write queue takes this lock.
+            persist(terms)
             return terms
         }
         Log.polishing.info(
             "Learned terms recorded: \(observations.count, privacy: .public) in project \(project.key == LearnedTermProjectResolver.shared.key ? "shared" : "keyed", privacy: .public), \(updated.termCount, privacy: .public) kept"
         )
-        persist(updated)
         onChange?()
     }
 

@@ -1261,6 +1261,21 @@ final class RepoVocabularyIndexerEndToEndTests: XCTestCase {
         )
         XCTAssertEqual(titleEntries?.entries.first?.replaceWith, "useAuth.ts")
 
+        // The resolved root is reported to the caller, which is how a
+        // dictation's learned terms are attributed to a project without the
+        // commit path walking the filesystem a second time.
+        let reportedRoot = RepoVocabularyRootBox()
+        _ = await RepoVocabularyService.entries(
+            forWindowTitle: "user@mac: \(repo.path) — zsh",
+            transcript: "open use auth dot t s please",
+            cache: RepoVocabularyCache(),
+            rootSink: { root in reportedRoot.set(root) }
+        )
+        XCTAssertEqual(
+            reportedRoot.value.map { URL(fileURLWithPath: $0).standardizedFileURL.path },
+            URL(fileURLWithPath: repo.path).standardizedFileURL.path
+        )
+
         // A usable focused-window title disambiguates the focused tab and must
         // stay tier 1 even when descendant inspection would fail closed.
         let titlePreferredEntries = await RepoVocabularyService.entries(
