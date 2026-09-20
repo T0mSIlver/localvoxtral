@@ -181,6 +181,39 @@ enum LLMPolishEvalSupport {
             input: "then run `git rebase -i` to squash the commits .",
             mustContain: ["`git rebase -i`"]
         ),
+        // Style discipline (2026-09-20). The polisher must not restyle speech
+        // into assistant prose. Measured on 35 dogfood captures of the owner's
+        // own dictations through zai-glm-5-3: the polisher inserted an em dash
+        // in 10 of them and a semicolon in 3, and nothing else on the AI-tell
+        // list moved (no added connectives, bold, curly quotes, synonym
+        // upgrades, or length growth). The two marks below are therefore the
+        // whole rule, and these cases are what score it. Inputs are shaped
+        // after real captures. Added colons are deliberately NOT scored: the
+        // ones the model added read correctly and the owner wants them
+        // (2026-09-20 ruling).
+        //
+        // Cases start here (printed, not asserted) and promote to
+        // `requiredCases` only under the usual two-server-state rule.
+        LLMPolishEvalCase(
+            id: "style-no-em-dash-added",
+            input: "and center everything on the page the search box the actual LLM answer",
+            mustContain: ["center everything on the page"],
+            mustNotContain: ["\u{2014}", "\u{2013}"]
+        ),
+        // An em dash already in the transcript must be replaced, not kept.
+        LLMPolishEvalCase(
+            id: "style-em-dash-in-input-replaced",
+            input: "I like the plan \u{2014} the timeline is the problem.",
+            mustContain: ["the timeline is the problem"],
+            mustNotContain: ["\u{2014}", "\u{2013}"]
+        ),
+        // Two statements running together get a period, never a semicolon.
+        LLMPolishEvalCase(
+            id: "style-no-semicolon-added",
+            input: "being built twice because of an error in their API is unacceptable we won't build that",
+            mustContain: ["we won't build that"],
+            mustNotContain: [";"]
+        ),
     ]
 
     /// Print-only technical-dictation cases for model differentiation.
@@ -422,6 +455,21 @@ enum LLMPolishEvalSupport {
             id: "agent-fr-flag",
             input: "lance le script avec dash dash verbose",
             mustContain: ["--verbose"]
+        ),
+        // Style discipline in the agent profile (2026-09-20) — same rules as
+        // the standard corpus' `style-*` cases. A dictated prompt for another
+        // agent must keep the speaker's punctuation, not acquire dashes.
+        LLMPolishEvalCase(
+            id: "agent-style-no-em-dash-added",
+            input: "add a retry loop around the fetch call three attempts should be enough for now",
+            mustContain: ["retry loop"],
+            mustNotContain: ["\u{2014}", "\u{2013}"]
+        ),
+        LLMPolishEvalCase(
+            id: "agent-style-em-dash-in-input-replaced",
+            input: "run the migration first \u{2014} the schema changed yesterday",
+            mustContain: ["the schema changed"],
+            mustNotContain: ["\u{2014}", "\u{2013}"]
         ),
     ]
 

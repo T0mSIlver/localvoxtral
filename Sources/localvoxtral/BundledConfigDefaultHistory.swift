@@ -17,6 +17,8 @@ import Foundation
 enum BundledConfigDefaultHistory {
     static let knownDefaultHashes: [String: Set<String>] = [
         "llm_system_prompt.toml": [
+            // 2026-09-20 no added em dash or semicolon
+            "407ac73b0ce6a60d968002abedd75a49217a4d660cb221852d2c0fab0b46ece9",
             // 2026-07-12 prompt trim (#126)
             "6255e385bcc265e7948b9b9be263fac5a193510dfcd7385d544ec9889547cef6",
             // 2026-07-07 punctuation-spacing focus (#80)
@@ -33,6 +35,8 @@ enum BundledConfigDefaultHistory {
             "43ededf94739fe2a1d5ccfb7c99bcefc438afc30737c974cd9d284826bbbb771",
         ],
         "llm_system_prompt_agent.toml": [
+            // 2026-09-20 no added em dash or semicolon
+            "6a1902b9cbe186cb3c764695738f5e67991c8081126ce6cb26686b459f922a2c",
             // 2026-07-14 human agent-dictation calibration
             "9b6e268a52459c911b4094839e5a4efe38b7348cef53781d8d12905ac6a845ba",
             // 2026-07-12 prompt trim (#126)

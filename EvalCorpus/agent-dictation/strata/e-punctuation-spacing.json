@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "stratum": "punctuation-spacing-migration",
-  "description": "Direct migration of LLMPolishEvalSupport.requiredCases + knownHardCases (punctuation spacing EN/FR plus the three token-protection cases). spokenForm is the ORIGINAL polish input byte-for-byte (it carries ASR-artifact spacing TTS cannot speak), so this stratum runs pipeline polish-only. The validation suite byte-matches every case against the Swift originals.",
+  "description": "Direct migration of LLMPolishEvalSupport.requiredCases + knownHardCases (punctuation spacing EN/FR, the three token-protection cases, and the three style cases holding the polisher to the punctuation the speaker dictated). spokenForm is the ORIGINAL polish input byte-for-byte (it carries ASR-artifact spacing TTS cannot speak), so this stratum runs pipeline polish-only. The validation suite byte-matches every case against the Swift originals.",
   "pipeline": "polish-only",
   "cases": [
     {
@@ -204,6 +204,42 @@
       "status": {"tokens": "known-hard"},
       "notes": "Migrated known-hard token protection: backticked command survives intact.",
       "source": {"migratedFrom": "LLMPolishEvalSupport.knownHardCases", "originalId": "en-backtick-command-survives"}
+    },
+    {
+      "id": "e-en-style-no-em-dash-added",
+      "lang": "en",
+      "spokenForm": "and center everything on the page the search box the actual LLM answer",
+      "intendedText": "And center everything on the page, the search box, the actual LLM answer.",
+      "requiredTokens": ["center everything on the page"],
+      "forbiddenSubstrings": ["\u2014", "\u2013"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "Migrated known-hard style: a dictated aside is joined with a comma, never a dash the speaker did not say.",
+      "source": {"migratedFrom": "LLMPolishEvalSupport.knownHardCases", "originalId": "style-no-em-dash-added"}
+    },
+    {
+      "id": "e-en-style-em-dash-in-input-replaced",
+      "lang": "en",
+      "spokenForm": "I like the plan \u2014 the timeline is the problem.",
+      "intendedText": "I like the plan, the timeline is the problem.",
+      "requiredTokens": ["the timeline is the problem"],
+      "forbiddenSubstrings": ["\u2014", "\u2013"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "Migrated known-hard style: an em dash already in the transcript is replaced, not kept.",
+      "source": {"migratedFrom": "LLMPolishEvalSupport.knownHardCases", "originalId": "style-em-dash-in-input-replaced"}
+    },
+    {
+      "id": "e-en-style-no-semicolon-added",
+      "lang": "en",
+      "spokenForm": "being built twice because of an error in their API is unacceptable we won't build that",
+      "intendedText": "Being built twice because of an error in their API is unacceptable. We won't build that.",
+      "requiredTokens": ["we won't build that"],
+      "forbiddenSubstrings": [";"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "Migrated known-hard style: two statements running together get a period, never a semicolon.",
+      "source": {"migratedFrom": "LLMPolishEvalSupport.knownHardCases", "originalId": "style-no-semicolon-added"}
     }
   ]
 }
