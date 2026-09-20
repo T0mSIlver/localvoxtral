@@ -52,6 +52,11 @@ final class DictationOverlayController {
     /// constant width), so setting changes apply to the next dictation.
     private let metricsProvider: @MainActor () -> OverlayLayoutMetrics
     private var metricsLock = OverlaySessionMetricsLock()
+    /// Writes the buffer's line breaks itself so streamed text never re-wraps
+    /// (`OverlayStableLineWrapper`). Built from the session's locked metrics on
+    /// first render — the wrapper's widths assume the panel width that lock
+    /// guarantees — and dropped on hide, along with the breaks it remembers.
+    private var lineWrapper: OverlayStableLineWrapper?
 
     /// Locked placement state for the current session. Set on first render,
     /// cleared on hide. Prevents the panel from flipping between above/below
@@ -138,9 +143,13 @@ final class DictationOverlayController {
         }
 
         let metrics = metricsLock.metrics(current: metricsProvider)
+        var wrapper = lineWrapper ?? metrics.makeStableLineWrapper()
+        let bufferText = wrapper.wrapped(snapshot.bufferText)
+        lineWrapper = wrapper
+
         hostingView.rootView = DictationOverlayView(
             phase: snapshot.phase,
-            text: snapshot.bufferText,
+            text: bufferText,
             errorMessage: snapshot.errorMessage,
             secureInputActive: snapshot.secureInputActive,
             metrics: metrics,
@@ -149,7 +158,7 @@ final class DictationOverlayController {
         )
 
         let contentHeight = metrics.contentHeight(
-            text: snapshot.bufferText,
+            text: bufferText,
             errorMessage: snapshot.errorMessage
         )
         let size = CGSize(
@@ -168,6 +177,7 @@ final class DictationOverlayController {
     }
 
     func hide() {
+        lineWrapper = nil
         lockedPlacement = nil
         lockedOriginX = nil
         metricsLock.unlock()

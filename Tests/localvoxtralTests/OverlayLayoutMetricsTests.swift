@@ -258,6 +258,39 @@ final class OverlayLayoutMetricsTests: XCTestCase {
                 "error row clips its last line at font size \(size)")
         }
     }
+
+    // MARK: - Self-wrapped lines must survive the text engine
+
+    /// `OverlayStableLineWrapper` sums word widths measured by AppKit, while
+    /// SwiftUI draws the result. If a line it built came out wider than SwiftUI
+    /// allows, SwiftUI would wrap it again and move the word this whole
+    /// mechanism exists to hold still — so every line it emits must render as
+    /// exactly one line, at every supported font size.
+    func testSelfWrappedLinesRenderAsOneLineEach() {
+        let transcript = String(
+            repeating:
+                "the overlay buffer holds a wrapped transcript of whatever was just dictated ",
+            count: 3)
+
+        for fontSize in [
+            OverlayLayoutMetrics.minimumBodyFontSize,
+            OverlayLayoutMetrics.defaultBodyFontSize,
+            OverlayLayoutMetrics.maximumBodyFontSize,
+        ] {
+            let metrics = OverlayLayoutMetrics(bodyFontSize: fontSize)
+            var wrapper = metrics.makeStableLineWrapper()
+            let wrapped = wrapper.wrapped(transcript)
+            let lineCount = wrapped.split(separator: "\n").count
+            XCTAssertGreaterThan(lineCount, 1, "the sample must actually wrap at \(fontSize)pt")
+
+            let placeholder = Array(repeating: "Xg", count: lineCount).joined(separator: "\n")
+            XCTAssertEqual(
+                metrics.unclampedBodyTextHeight(for: wrapped),
+                metrics.unclampedBodyTextHeight(for: placeholder),
+                "SwiftUI re-wrapped a line at \(fontSize)pt: \(wrapped)"
+            )
+        }
+    }
 }
 
 // MARK: - Scroll-to-bottom reaches the real bottom (field report 2026-09-18)
