@@ -395,6 +395,13 @@ final class DictationViewModel {
     let backendManager: any ManagedBackendManaging
     @ObservationIgnored
     var sessionStore: DictationSessionStore?
+    /// The spellings this machine has watched the polish pipeline resolve,
+    /// per project. Nil without runtime services (tests), so a unit test never
+    /// writes the user's file.
+    @ObservationIgnored
+    var learnedTermStore: LearnedTermStore?
+    /// Bumped on every learned-terms write so the Settings row re-reads it.
+    private(set) var learnedTermRevision = 0
     @ObservationIgnored
     private var storedTermSuggestions: SpeakerTermSuggestionModel?
     /// Built on first use (Settings opening the About-you group); reads the
@@ -841,6 +848,12 @@ final class DictationViewModel {
         textInsertion.refreshAccessibilityTrustState()
         if startRuntimeServices {
             sessionStore = DictationSessionStore()
+            learnedTermStore = LearnedTermStore(
+                fileURL: LearnedTermStore.defaultFileURL(),
+                onChange: { [weak self] in
+                    Task { @MainActor in self?.learnedTermRevision += 1 }
+                }
+            )
             installMistralUsageLedger(
                 MistralUsageLedger(fileURL: MistralUsageLedger.defaultFileURL()) {
                     [weak self] in

@@ -744,6 +744,16 @@ extension DictationViewModel {
                     closeRemoteHerdrForwards()
                 }
 
+                // Which project this dictation will teach. The title is read
+                // HERE, beside the screen decision, for the same reason: it
+                // must describe the window the speaker was looking at, not
+                // whichever one is focused once the vocabulary pipeline has
+                // had its two seconds.
+                let capturedProjectWindowTitle = learnedTermWindowTitle(
+                    join: capturedClaudeJoin,
+                    targetBundleID: capturedTargetBundleID
+                )
+
                 // Repo vocabulary rides in the `{{replacement_dictionary}}`
                 // slot; a user template without that placeholder (removing it is
                 // explicitly supported) silently drops the section in
@@ -1137,6 +1147,17 @@ extension DictationViewModel {
                     }
 
                     guard !Task.isCancelled else { return }
+
+                    // What this dictation taught, remembered for the next one
+                    // in the same project. Recorded from the MERGED entries
+                    // and nowhere else: a span the merge abstained on is not
+                    // evidence of a spelling, and a verification pair is a
+                    // question put to the model, not an answer.
+                    self.recordLearnedTerms(
+                        merged: merged,
+                        join: capturedClaudeJoin,
+                        windowTitle: capturedProjectWindowTitle
+                    )
 
                     // Exact repo/clipboard bytes and their ASR spans have
                     // already been selected by the deterministic matcher. Put
@@ -1890,6 +1911,51 @@ extension DictationViewModel {
     /// Returns nil (silent skip) when off, remote, no trustworthy terminal
     /// repo signal, no transcript-relevant match, deadline expiry, or in-flight
     /// skip.
+    /// The focused terminal's window title, for the learned-terms project key
+    /// alone.
+    ///
+    /// Skipped when the joined session already names a workspace, which is the
+    /// better signal, and for every non-terminal target: an editor or a browser
+    /// title is not a working directory, and treating one as a path is how the
+    /// vocabulary feature once indexed the wrong repo.
+    func learnedTermWindowTitle(
+        join: ClaudeSessionJoin?,
+        targetBundleID: String?
+    ) -> String? {
+        guard join?.snapshot.workspace == nil else { return nil }
+        guard let pid = overlayBufferCoordinator.commitTargetAppPID else { return nil }
+        guard let targetBundleID,
+              TerminalTargetDetector.isTerminalLikeBundleID(targetBundleID)
+                  || settings.userTerminalAppBundleIDs.contains(targetBundleID)
+        else { return nil }
+        return TerminalWorkingDirectoryResolver.windowTitle(forApplicationPID: pid)
+    }
+
+    /// Folds one dictation's resolved spellings into the learned terms.
+    ///
+    /// Cheap enough for the commit path: a bounded walk for the git root, then
+    /// an in-memory merge. The file write is the store's own background work.
+    func recordLearnedTerms(
+        merged: PolishContextGrounding.Merged,
+        join: ClaudeSessionJoin?,
+        windowTitle: String?
+    ) {
+        guard let learnedTermStore else { return }
+        let observations = PolishContextSource.allCases.flatMap { source in
+            merged.entries(from: source).map {
+                LearnedTermObservation(term: $0.replaceWith, source: source)
+            }
+        }
+        guard !observations.isEmpty else { return }
+        learnedTermStore.record(
+            observations,
+            project: LearnedTermProjectResolver.resolve(
+                workspace: join?.snapshot.workspace,
+                windowTitle: windowTitle
+            )
+        )
+    }
+
     func repoVocabularyGroundingIfEnabled(
         endpointURL: URL,
         transcript: String

@@ -1209,6 +1209,23 @@ private struct TextProcessingSettingsPane: View {
         settings.isOverlayBufferSessionReachable
     }
 
+    /// Reading `learnedTermRevision` is what re-renders the row after a
+    /// dictation: the store is a plain class, so nothing else observes it.
+    private var learnedTermCount: Int {
+        _ = viewModel.learnedTermRevision
+        return viewModel.learnedTermStore?.summary().terms ?? 0
+    }
+
+    private var learnedTermStatus: String {
+        _ = viewModel.learnedTermRevision
+        guard let summary = viewModel.learnedTermStore?.summary(), summary.terms > 0 else {
+            return "0"
+        }
+        return summary.projects > 1
+            ? "\(summary.terms) in \(summary.projects) projects"
+            : "\(summary.terms)"
+    }
+
     private var llmPolishingEnabledBinding: Binding<Bool> {
         Binding(
             get: { settings.llmPolishingEnabled },
@@ -1332,6 +1349,17 @@ private struct TextProcessingSettingsPane: View {
                         settings.polishDismissedTermSuggestions = []
                     }
                     .disabled(settings.polishDismissedTermSuggestions.isEmpty)
+                }
+
+                SettingsFieldRow(
+                    title: "Learned terms",
+                    help: "Spellings the app has watched polishing fix, kept per project.",
+                    status: learnedTermStatus
+                ) {
+                    Button("Forget") {
+                        viewModel.learnedTermStore?.forgetAll()
+                    }
+                    .disabled(learnedTermCount == 0)
                 }
 
                 SettingsFieldRow(
