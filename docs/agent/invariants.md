@@ -1305,6 +1305,33 @@ there is not.
   `hookParentPID` is a String on purpose: a pid in another host's namespace is
   not a number this process may probe, only a label to compare against another
   label.
+- **A remote request names its agent in a header, and the header buys nothing
+  but a namespace.** A remote host runs no publisher of ours, so the agent
+  cannot ride inside the record the way it does locally: the Vibe shim
+  (`integrations/vibe/remote/`) sends `X-Lvx-Agent: vibe` beside a body in
+  Claude Code's hook shape. `ClaudeRemoteAgentCodec` reads absent as Claude
+  Code (every plugin shipped before the header is one) and REFUSES a value it
+  does not know, opencode included, rather than filing a newer shim's agent
+  under Claude Code's join rules. The header is a claim by an authenticated
+  host about its own sessions: the origin stays `.remote` and the id stays
+  scoped under the host whose token authenticated the request, with the agent
+  prefix in front (`vibe:remote:<host>:<id>`) only so two agents on one host
+  cannot share a key. For any agent but Claude Code the listener drops the two
+  Claude-allocated handles (`bridgeSessionID`, `desktopSessionID`) on arrival,
+  whatever the shim sent, for the reason the local publisher withholds them.
+  On the host, Vibe's payload never crosses the tunnel as Vibe wrote it: a
+  `post_tool` payload embeds whole files, so `compact.py` (standard-library
+  Python, run on the interpreter Vibe itself uses, owner decision 2026-09-20)
+  reduces it to the fields the Mac keeps plus the same short excerpts a remote
+  Claude Code session sends, and reads the prior prompt under the same rules as
+  `VibeTranscriptPrompt`. The two implementations are a pair: change one,
+  change the other. The token lives in a 0600 file under
+  `~/.vibe/localvoxtral/remote/` (owner decision, same exposure as the Claude
+  plugin's token in `~/.claude`: any process running as that user can read
+  it), is read into a shell variable, reaches curl through a header file, and
+  is never exported, so `compact.py` cannot see it. The shim prints nothing on
+  any path, because Vibe reports hook output as a failure; there is no stdout
+  gate because there is no stdout.
 - **A refused `RemoteForward` bind is not a diagnosis, and only a nonce
   round-trip may upgrade it to one.** OpenSSH's `remote port forwarding failed`
   says a port is held, never by whom, and the two holders want opposite things

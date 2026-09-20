@@ -608,11 +608,22 @@ public final class ClaudeRemoteContextListener: Sendable {
             return nil
         }
 
+        // Which agent the shim speaks for. Absent is Claude Code; an agent
+        // this build does not know is refused, never filed under another's
+        // rules (`ClaudeRemoteAgentCodec`).
+        guard let agent = ClaudeRemoteAgentCodec.agent(in: request.headers) else {
+            Log.claudeContext.error("Rejected remote record: unknown agent header")
+            return nil
+        }
+
         // The two lines that define this listener's trust model. The session id
         // is namespaced under the host whose TOKEN authenticated the request —
         // not under anything the payload said — and the origin is `.remote`
-        // unconditionally. Neither is derived from content.
+        // unconditionally. Neither is derived from content. The agent prefix
+        // the registry adds in front (`vibe:remote:<host>:<id>`) only keeps two
+        // agents on ONE host from sharing a key.
         var record = payload.record
+        record.agent = agent
         record.sessionID = ClaudeRemoteSessionScope.scopedSessionID(
             hostID: host.id,
             sessionID: record.sessionID
@@ -628,8 +639,9 @@ public final class ClaudeRemoteContextListener: Sendable {
         // never in `process`. Re-validated here against the same charset and
         // caps the shim applies; the shim's own validation is a courtesy from a
         // machine we do not control.
-        let environment = ClaudeRemoteEnvironmentCodec.environment(
-            in: request.headers, limits: limits.environment
+        let environment = ClaudeRemoteAgentCodec.environment(
+            ClaudeRemoteEnvironmentCodec.environment(in: request.headers, limits: limits.environment),
+            for: agent
         )
         // Count only. The values name panes, sockets and TTYs on the user's
         // other machine; the log is not the place for them, and a count is what
