@@ -210,7 +210,6 @@ final class SpeakerTermSuggestionModel {
     /// Additive — a suggestion already on screen stays, and one the user has
     /// added or refused never comes back.
     func refreshLearnedSuggestions() {
-        guard phase != .loading else { return }
         let shown = Set(suggestions.map(SpeakerTermSuggestions.key))
         let learned = SpeakerTermSuggestions.filtered(
             learnedTerms(),
@@ -219,6 +218,9 @@ final class SpeakerTermSuggestionModel {
         ).filter { !shown.contains(SpeakerTermSuggestions.key($0)) }
         guard !learned.isEmpty else { return }
         suggestions = Array((suggestions + learned).prefix(SpeakerTermSuggestions.maxShown))
+        // Never while a run is in flight: `.loading` is the row's progress
+        // state, and dropping out of it would hide the Stop button and the
+        // clock from a user whose request is still running.
         if phase == .nothingFound { phase = .idle }
     }
 
@@ -289,6 +291,11 @@ final class SpeakerTermSuggestionModel {
             let kept = suggestions.filter { !foundKeys.contains(SpeakerTermSuggestions.key($0)) }
             suggestions = Array((found + kept).prefix(SpeakerTermSuggestions.maxShown))
             phase = suggestions.isEmpty ? .nothingFound : .idle
+            // A run that started before the pane had refreshed, or that ran
+            // for minutes while dictation taught the app new terms, must not
+            // leave the free chips out (review, 2026-09-20). Runs AFTER the
+            // phase leaves `.loading`, which is what lets it fill.
+            refreshLearnedSuggestions()
             Log.polishing.info("Term suggestions received: \(self.suggestions.count, privacy: .public)")
         } catch {
             guard phase == .loading else { return }

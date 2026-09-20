@@ -58,7 +58,11 @@ there is not.
 
 - **Learned terms leave the Mac whatever the context toggles say now.**
   A spelling the cross-source merge pre-applied is recorded per project
-  (`LearnedTerms`, `LearnedTermProjectResolver`), and once three separate
+  (`LearnedTerms`, `LearnedTermProjectResolver` — the project key is the git
+  root the vocabulary pipeline already resolved off the main actor, widened
+  to contain a joined session's directory; the commit path never walks the
+  filesystem for it, and it inherits that pipeline's title parsing, ssh
+  titles included), and once three separate
   dictations have resolved it, it grounds later ones and rides in the prompt
   under its own header — with no endpoint check and no re-check of the
   setting that first produced it. Owner ruling, 2026-09-20: a name the

@@ -246,6 +246,20 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         XCTAssertEqual(model.suggestions, ["Voxtral"])
     }
 
+    /// A run takes minutes, and the pane may never have been refreshed before
+    /// it started. Its completion is the app's next chance to show the free
+    /// chips, so it takes it.
+    func testHostedRunFillsInLearnedChipsItNeverShowed() async {
+        let settings = makeSettings()
+        let service = Service()
+        service.reply = .success(#"["Qwen"]"#)
+        let model = makeModel(settings: settings, service: service, learned: ["Voxtral"])
+
+        await model.suggest()
+
+        XCTAssertEqual(model.suggestions, ["Qwen", "Voxtral"])
+    }
+
     /// A hosted run costs minutes, so its findings lead — but the free chips
     /// the user has not acted on are not thrown away behind them.
     func testHostedRunLeadsAndKeepsUnactedLearnedChips() async {
