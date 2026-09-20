@@ -194,17 +194,44 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         /// Values added to the child process environment. Used by the
         /// SendEnv probe so its nonce never appears in argv or stdin.
         public var environment: [String: String]
+        /// How much the runner will carry for this invocation. The default is
+        /// what every enrollment script needs and no more; an invocation that
+        /// moves FILES (the Vibe hooks setup) asks for a larger one by name.
+        public var budget: Budget
+
+        public struct Budget: Sendable, Equatable {
+            public var standardInputBytes: Int
+            public var outputBytes: Int
+            /// How much of the output reaches `RunResult.message`. The default
+            /// is a diagnostic-sized prefix; a caller that PARSES the output
+            /// needs all of it.
+            public var messageCharacters: Int
+
+            public init(standardInputBytes: Int, outputBytes: Int, messageCharacters: Int) {
+                self.standardInputBytes = standardInputBytes
+                self.outputBytes = outputBytes
+                self.messageCharacters = messageCharacters
+            }
+
+            public static let standard = Budget(
+                standardInputBytes: 8 * 1024,
+                outputBytes: ClaudeRemoteEnrollmentService.maxCapturedOutputBytes,
+                messageCharacters: 2_000
+            )
+        }
 
         public init(
             argv: [String],
             standardInput: Data,
             timeout: TimeInterval,
-            environment: [String: String] = [:]
+            environment: [String: String] = [:],
+            budget: Budget = .standard
         ) {
             self.argv = argv
             self.standardInput = standardInput
             self.timeout = timeout
             self.environment = environment
+            self.budget = budget
         }
     }
 

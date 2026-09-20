@@ -486,6 +486,14 @@ extension ClaudeRemoteEnrollmentService {
 
     /// Runs `ssh` with stdin preloaded before launch, so the token-bearing
     /// script is never written after a child could close its pipe.
+    ///
+    /// A script larger than the pipe buffer cannot be preloaded (the write
+    /// would block with no child to drain it), so an invocation whose budget
+    /// allows one is fed from a writer thread AFTER launch instead: raw
+    /// `write(2)` on a descriptor with `F_SETNOSIGPIPE`, so a child that
+    /// closes its end early costs an `EPIPE` the thread swallows, never a
+    /// signal or the `FileHandle` exception this repo bans. The loop below
+    /// owns the timeout either way; killing the child ends the writer.
     static func processRunner(
         sshExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/ssh")
     ) -> Runner {
@@ -495,12 +503,14 @@ extension ClaudeRemoteEnrollmentService {
             // write would block forever with no timeout running yet. Scripts
             // here are a few hundred bytes — refuse loudly long before the
             // buffer, rather than deadlock, if a future plan grows one.
-            guard invocation.standardInput.count <= 8 * 1024 else {
+            let budget = invocation.budget
+            guard invocation.standardInput.count <= budget.standardInputBytes else {
                 throw RunnerFailure.outputTooLarge(
-                    capBytes: 8 * 1024,
-                    message: "generated setup script exceeds the stdin preload budget"
+                    capBytes: budget.standardInputBytes,
+                    message: "generated setup script exceeds its stdin budget"
                 )
             }
+            let preloads = invocation.standardInput.count <= Invocation.Budget.standard.standardInputBytes
             let process = Process()
             process.executableURL = sshExecutableURL
             process.arguments = Array(invocation.argv.dropFirst())
@@ -513,8 +523,10 @@ extension ClaudeRemoteEnrollmentService {
 
             let input = Pipe()
             process.standardInput = input
-            try input.fileHandleForWriting.write(contentsOf: invocation.standardInput)
-            try input.fileHandleForWriting.close()
+            if preloads {
+                try input.fileHandleForWriting.write(contentsOf: invocation.standardInput)
+                try input.fileHandleForWriting.close()
+            }
 
             let output = Pipe()
             process.standardOutput = output
@@ -522,6 +534,28 @@ extension ClaudeRemoteEnrollmentService {
             let exited = DispatchSemaphore(value: 0)
             process.terminationHandler = { _ in exited.signal() }
             try process.run()
+            if !preloads {
+                // Our copy of the read end: left open, a child that exits early
+                // would never turn the writer's next write into EPIPE.
+                try? input.fileHandleForReading.close()
+                let writer = input.fileHandleForWriting
+                let script = invocation.standardInput
+                Thread {
+                    let descriptor = writer.fileDescriptor
+                    _ = fcntl(descriptor, F_SETNOSIGPIPE, 1)
+                    script.withUnsafeBytes { raw in
+                        guard let base = raw.baseAddress else { return }
+                        var offset = 0
+                        while offset < raw.count {
+                            let written = Darwin.write(descriptor, base.advanced(by: offset), raw.count - offset)
+                            if written < 0, errno == EINTR { continue }
+                            if written <= 0 { return } // EPIPE: the child is gone.
+                            offset += written
+                        }
+                    }
+                    try? writer.close()
+                }.start()
+            }
 
             func waitForExit(_ window: TimeInterval) -> Bool {
                 exited.wait(timeout: .now() + max(window, 0)) == .success
@@ -564,7 +598,7 @@ extension ClaudeRemoteEnrollmentService {
                 let chunk = POSIXPipeRead.nextChunk(fromDescriptor: descriptor)
                 if chunk.isEmpty { break }
                 collected.append(chunk)
-                if collected.count > maxCapturedOutputBytes {
+                if collected.count > budget.outputBytes {
                     outputTooLarge = true
                     break
                 }
@@ -574,7 +608,7 @@ extension ClaudeRemoteEnrollmentService {
                !waitForExit(deadline.timeIntervalSinceNow) {
                 timedOut = true
             }
-            let message = String(decoding: collected.prefix(maxCapturedOutputBytes), as: UTF8.self)
+            let message = String(decoding: collected.prefix(budget.outputBytes), as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
 
             if timedOut {
@@ -584,13 +618,13 @@ extension ClaudeRemoteEnrollmentService {
             if outputTooLarge {
                 stopChild()
                 throw RunnerFailure.outputTooLarge(
-                    capBytes: maxCapturedOutputBytes,
+                    capBytes: budget.outputBytes,
                     message: message
                 )
             }
             return RunResult(
                 exitCode: process.terminationStatus,
-                message: String(message.prefix(2_000))
+                message: String(message.prefix(budget.messageCharacters))
             )
         }
     }

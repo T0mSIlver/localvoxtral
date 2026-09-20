@@ -2265,18 +2265,23 @@ private struct ClaudeRemoteHostsRows: View {
                                     .pluginUpdateProminence(needsUpdate: host.pluginNeedsUpdate)
                                     .disabled(model.isEnrollmentBusy)
                             }
+                            // Not while a Vibe hooks run is in flight: the registry
+                            // refuses to commit a credential across a rotation
+                            // anyway, and offering the race helps nobody.
                             Button("Rotate token") { Task { await model.rotate(hostID: host.id) } }
                                 .controlSize(.small)
+                                .disabled(model.isPerformingVibeHostAction)
                             if !host.isRevoked {
                                 Button("Revoke") { Task { await model.revoke(hostID: host.id) } }
                                     .controlSize(.small)
+                                    .disabled(model.isPerformingVibeHostAction)
                             }
                             Button("Remove") { Task { await model.remove(hostID: host.id) } }
                                 .controlSize(.small)
                                 // Removing the row an action is reporting into is
                                 // handled (the late-result guard drops the outcome),
                                 // but offering it mid-run is still offering a race.
-                                .disabled(model.isEnrollmentBusy)
+                                .disabled(model.isEnrollmentBusy || model.isPerformingVibeHostAction)
                         }
                     }
 

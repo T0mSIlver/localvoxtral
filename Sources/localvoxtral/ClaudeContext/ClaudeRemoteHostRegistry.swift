@@ -455,6 +455,9 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         case tooManyHosts(limit: Int)
         /// An extra credential was requested for a revoked host.
         case hostRevoked(String)
+        /// The host's token was rotated between preparing an extra credential
+        /// and committing it.
+        case hostCredentialChanged(String)
         /// The id allocator failed to produce an unused id. Effectively
         /// impossible; reported rather than looped on forever.
         case idAllocationFailed
@@ -716,8 +719,9 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     public func issueCredential(
         hostID: String, purpose: ClaudeRemoteCredentialPurpose
     ) throws -> String {
-        let pending = prepareCredential(purpose: purpose)
+        let pending = try prepareCredential(hostID: hostID, purpose: purpose)
         try commitCredential(pending, hostID: hostID)
+        try retireOtherCredentials(hostID: hostID, keeping: pending)
         return pending.token
     }
 
@@ -730,12 +734,33 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         public let token: String
         let purpose: ClaudeRemoteCredentialPurpose
         let salt: String
+        /// The host's own credential as it was when this one was prepared. A
+        /// rotation replaces it, and a credential prepared BEFORE a rotation
+        /// must not be committed after it: the rotation answered a suspected
+        /// leak, and this token was already on its way to the host by then.
+        let hostGeneration: String
     }
 
-    public func prepareCredential(purpose: ClaudeRemoteCredentialPurpose) -> PendingCredential {
-        PendingCredential(token: makeToken(), purpose: purpose, salt: makeToken())
+    public func prepareCredential(
+        hostID: String, purpose: ClaudeRemoteCredentialPurpose
+    ) throws -> PendingCredential {
+        guard let host = state.withLock({ hosts in hosts.first { $0.id == hostID } }) else {
+            throw StoreError.unknownHost(hostID)
+        }
+        guard host.revokedAt == nil else { throw StoreError.hostRevoked(hostID) }
+        let generation = host.tokenSalt + ":" + host.tokenHash
+        return PendingCredential(
+            token: makeToken(), purpose: purpose, salt: makeToken(), hostGeneration: generation
+        )
     }
 
+    /// Trust `pending` IN ADDITION to the purpose's current credential.
+    ///
+    /// Both stay valid until `retireOtherCredentials`, because the caller is
+    /// about to replace the token file on the host and cannot know whether
+    /// that write landed if the connection dies: with only the old one
+    /// trusted a landed write locks the host out, with only the new one a
+    /// failed write does. At most one previous credential is kept.
     public func commitCredential(_ pending: PendingCredential, hostID: String) throws {
         let token = pending.token
         let salt = pending.salt
@@ -746,7 +771,13 @@ public final class ClaudeRemoteHostRegistry: Sendable {
                 throw StoreError.unknownHost(hostID)
             }
             guard hosts[index].revokedAt == nil else { throw StoreError.hostRevoked(hostID) }
-            var credentials = (hosts[index].extraCredentials ?? []).filter { $0.purpose != purpose }
+            guard hosts[index].tokenSalt + ":" + hosts[index].tokenHash == pending.hostGeneration else {
+                throw StoreError.hostCredentialChanged(hostID)
+            }
+            var credentials = hosts[index].extraCredentials ?? []
+            let previous = credentials.filter { $0.purpose == purpose }.max { $0.createdAt < $1.createdAt }
+            credentials.removeAll { $0.purpose == purpose }
+            if let previous { credentials.append(previous) }
             credentials.append(StoredCredential(
                 purpose: purpose,
                 tokenSalt: salt,
@@ -761,7 +792,20 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         )
     }
 
-    /// Drop this host's extra credential for `purpose`. The token stops
+    /// The host has `pending`'s token now: drop the purpose's other credential.
+    public func retireOtherCredentials(hostID: String, keeping pending: PendingCredential) throws {
+        let kept = ClaudeRemoteTokenDigest.hash(token: pending.token, salt: pending.salt)
+        try transact { hosts in
+            guard let index = hosts.firstIndex(where: { $0.id == hostID }) else {
+                throw StoreError.unknownHost(hostID)
+            }
+            hosts[index].extraCredentials?.removeAll {
+                $0.purpose == pending.purpose && $0.tokenHash != kept
+            }
+        }
+    }
+
+    /// Drop this host's extra credentials for `purpose`. The tokens stop
     /// working the instant this returns.
     public func removeCredential(hostID: String, purpose: ClaudeRemoteCredentialPurpose) throws {
         try transact { hosts in

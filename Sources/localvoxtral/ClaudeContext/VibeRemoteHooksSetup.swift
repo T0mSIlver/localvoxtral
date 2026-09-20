@@ -71,6 +71,14 @@ extension ClaudeRemoteEnrollmentService {
         var refusal: String?
     }
 
+    /// These runs move FILES: the scripts go out on stdin (about 25 KiB, plus a
+    /// `hooks.toml` of up to 256 KiB), and the probe brings that file back as
+    /// base64, all of which the parser needs. The standard budget (8 KiB in,
+    /// 2,000 characters back) would refuse the first and truncate the second.
+    static let vibeRunnerBudget = Invocation.Budget(
+        standardInputBytes: 512 * 1024, outputBytes: 512 * 1024, messageCharacters: 512 * 1024
+    )
+
     static let vibeProbeFrameBegin = "LVX_VIBE_PROBE_BEGIN"
     static let vibeProbeFrameEnd = "LVX_VIBE_PROBE_END"
     static let vibeHooksMaxBytes = 256 * 1024
@@ -130,8 +138,9 @@ extension ClaudeRemoteEnrollmentService {
                 guard value.count <= 32, value.unicodeScalars.allSatisfy(allowed.contains) else { return nil }
                 probe.hooksChecksum = value
             case "hooks":
-                guard value.utf8.count <= vibeHooksMaxBytes * 2,
-                      let data = Data(base64Encoded: value),
+                // Bounded before AND after decoding: base64 is 4/3 of the file.
+                guard value.utf8.count <= vibeHooksMaxBytes * 4 / 3 + 4,
+                      let data = Data(base64Encoded: value), data.count <= vibeHooksMaxBytes,
                       let text = String(data: data, encoding: .utf8)
                 else { return nil }
                 probe.hooksText = text
@@ -183,14 +192,26 @@ extension ClaudeRemoteEnrollmentService {
         """
     }
 
-    /// Install or update. `token` is a credential minted for this run; the
-    /// caller commits it to the host registry only after this returns.
+    /// Install or update, in an order chosen so that a run dying at ANY point
+    /// leaves a working install working:
+    ///
+    /// 1. write everything but the token (scripts, port, `hooks.toml`) — the
+    ///    host's current token file keeps authenticating meanwhile;
+    /// 2. read the host back and check the version and the block;
+    /// 3. `beforeTokenActivation`, where the caller makes the registry trust
+    ///    `token` IN ADDITION to the current one;
+    /// 4. write the token file, a script of a few lines.
+    ///
+    /// The caller retires the old credential only after this returns. If step
+    /// 4's connection dies, both tokens are trusted, so the host works whether
+    /// or not the write landed.
     public func setUpRemoteVibeHooks(
         sshHostAlias: String,
         token: String,
         remoteForwardPort: UInt16,
         files: VibeRemoteHooksFiles,
-        timeout: TimeInterval = defaultRemoteSetupTimeout
+        timeout: TimeInterval = defaultRemoteSetupTimeout,
+        beforeTokenActivation: () throws -> Void = {}
     ) throws -> VibeHooksOutcome {
         guard let expected = files.version,
               let snippet = VibeHooksBlockEditor.remote.snippet(fromBundled: files.hooksBlock)
@@ -218,7 +239,6 @@ extension ClaudeRemoteEnrollmentService {
         script += "mkdir -p \"$D\"\nchmod 700 \"$HOME/.vibe/localvoxtral\" \"$D\"\n"
         script += Self.writeFileScript(path: "$D/post.sh", content: files.postScript, mode: "700", seed: "POST")
         script += Self.writeFileScript(path: "$D/compact.py", content: files.compactScript, mode: "600", seed: "COMPACT")
-        script += Self.writeFileScript(path: "$D/token", content: token, mode: "600", seed: "TOKEN")
         script += Self.writeFileScript(path: "$D/port", content: String(remoteForwardPort), mode: "600", seed: "PORT")
         if updated != probe.hooksText {
             // A new file is ours to create at 0600; an existing one keeps its mode.
@@ -231,12 +251,19 @@ extension ClaudeRemoteEnrollmentService {
         guard after.installedVersion == expected,
               VibeHooksBlockEditor.remote.reading(of: after.hooksText ?? "", snippet: snippet) == .current
         else {
+            // Nothing the host said goes into this sentence.
             throw vibeFailure(
                 "verify Vibe hooks", 43,
-                "The host reports Vibe hooks version \(after.installedVersion ?? "none") after setup, not \(expected).",
-                token
+                "The host did not report Vibe hooks version \(expected) after setup.", token
             )
         }
+
+        try beforeTokenActivation()
+        var activation = "set -eu\numask 077\nD=\"\(Self.vibeRemoteDirectory)\"\n"
+        activation += "for p in \"$HOME/.vibe\" \"$HOME/.vibe/localvoxtral\" \"$D\" \"$D/token\"; do\n"
+        activation += "  [ ! -L \"$p\" ] || exit 46\ndone\n"
+        activation += Self.writeFileScript(path: "$D/token", content: token, mode: "600", seed: "TOKEN")
+        try runVibe(activation, sshHostAlias: sshHostAlias, command: "activate Vibe hooks", token: token, timeout: timeout)
         return probe.installedVersion == nil ? .installed : .updated
     }
 
@@ -290,6 +317,11 @@ extension ClaudeRemoteEnrollmentService {
             default:
                 throw VibeHostActionError(description: "The Vibe hooks action could not run.")
             }
+        } catch ClaudeRemoteHostRegistry.StoreError.hostCredentialChanged {
+            throw VibeHostActionError(
+                description: "This host's token was rotated while the setup ran, so the new Vibe "
+                    + "credential was not activated. Run the Vibe hooks setup again."
+            )
         }
     }
 
@@ -326,7 +358,8 @@ extension ClaudeRemoteEnrollmentService {
             result = try runner(Invocation(
                 argv: ["ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--", sshHostAlias, "/bin/sh", "-s"],
                 standardInput: Data(script.utf8),
-                timeout: max(timeout, 0)
+                timeout: max(timeout, 0),
+                budget: Self.vibeRunnerBudget
             ))
         } catch {
             throw sanitizedRunnerError(error, command: command)

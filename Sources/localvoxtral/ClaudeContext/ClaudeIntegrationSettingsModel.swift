@@ -1491,6 +1491,7 @@ public final class ClaudeIntegrationSettingsModel {
     /// Issue a new token for an existing host and show it once.
     public func rotate(hostID: String) async {
         guard let registry else { return }
+        vibeHostResults[hostID] = nil
         do {
             let enrollment = try registry.rotateToken(hostID: hostID)
             // The alias the user enrolled with, or nothing. The label is NOT a
@@ -1554,6 +1555,7 @@ public final class ClaudeIntegrationSettingsModel {
 
     public func revoke(hostID: String) async {
         guard let registry else { return }
+        vibeHostResults[hostID] = nil
         do {
             try registry.revoke(hostID: hostID)
             refreshHosts()
@@ -1575,6 +1577,7 @@ public final class ClaudeIntegrationSettingsModel {
     /// the sheet and docs always offered them.
     public func remove(hostID: String) async {
         guard let registry else { return }
+        vibeHostResults[hostID] = nil
         let isLastHost = registry.hosts().allSatisfy { $0.id == hostID }
         var manualNotes: [String] = []
 
@@ -1934,16 +1937,20 @@ public final class ClaudeIntegrationSettingsModel {
         isPerformingVibeHostAction = true
         defer { isPerformingVibeHostAction = false }
 
-        let pending = registry.prepareCredential(purpose: .vibe)
+        vibeHostResults[request.hostID] = nil
         let service = enrollmentService
         let port = remoteForwardPort
         let failure = await performAsync {
             try ClaudeRemoteEnrollmentService.describingVibeFailures {
+                // Bound to the host's token as it is NOW: a Rotate token
+                // pressed while ssh runs makes the commit below refuse.
+                let pending = try registry.prepareCredential(hostID: request.hostID, purpose: .vibe)
                 _ = try service.setUpRemoteVibeHooks(
                     sshHostAlias: request.sshHostAlias, token: pending.token,
-                    remoteForwardPort: port, files: files
+                    remoteForwardPort: port, files: files,
+                    beforeTokenActivation: { try registry.commitCredential(pending, hostID: request.hostID) }
                 )
-                try registry.commitCredential(pending, hostID: request.hostID)
+                try registry.retireOtherCredentials(hostID: request.hostID, keeping: pending)
             }
         }
         finishVibeHostAction(
@@ -1952,9 +1959,11 @@ public final class ClaudeIntegrationSettingsModel {
         )
     }
 
-    /// Take the hooks off the host, then drop the credential. If the host
-    /// cannot be reached the credential stays: Revoke or Rotate token is how a
-    /// token is killed without the host's help.
+    /// Withdraw the credential FIRST, then clean the host up. The other order
+    /// lets a host that is down, or that refuses the command, keep a valid
+    /// token for as long as it likes. If the cleanup then fails, the files
+    /// left on the host hold a token that no longer authenticates; the alert
+    /// says they are still there.
     public func removeVibeHooks(hostID: String) async {
         guard let registry, let host = registry.host(id: hostID), let alias = host.sshHostAlias,
               !isPerformingVibeHostAction
@@ -1962,16 +1971,26 @@ public final class ClaudeIntegrationSettingsModel {
         isPerformingVibeHostAction = true
         defer { isPerformingVibeHostAction = false }
 
+        vibeHostResults[hostID] = nil
         let service = enrollmentService
+        if let failure = await performAsync({
+            try registry.removeCredential(hostID: hostID, purpose: .vibe)
+        }) {
+            finishVibeHostAction(
+                hostID: hostID, failure: failure,
+                title: "Could not remove the Vibe hooks", failed: "Could not remove.", done: ""
+            )
+            return
+        }
         let failure = await performAsync {
             try ClaudeRemoteEnrollmentService.describingVibeFailures {
                 _ = try service.removeRemoteVibeHooks(sshHostAlias: alias)
-                try registry.removeCredential(hostID: hostID, purpose: .vibe)
             }
         }
         finishVibeHostAction(
             hostID: hostID, failure: failure,
-            title: "Could not remove the Vibe hooks", failed: "Could not remove.", done: "Removed."
+            title: "The Vibe hook files are still on the host",
+            failed: "Withdrawn. Host files remain.", done: "Removed."
         )
     }
 
@@ -3176,6 +3195,8 @@ public final class ClaudeIntegrationSettingsModel {
             return "The host list was written by a newer version of localvoxtral."
         case .hostRevoked:
             return "This host is revoked. Rotate its token first."
+        case .hostCredentialChanged:
+            return "This host's token was rotated during setup. Run the Vibe hooks setup again."
         case .unknownHost, .idAllocationFailed, .none:
             return String(describing: error)
         }
