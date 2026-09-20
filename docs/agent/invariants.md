@@ -56,6 +56,33 @@ there is not.
   used by clipboard vocabulary and by focused unit coverage; do not infer that
   it runs at commit.
 
+- **Learned terms leave the Mac whatever the context toggles say now.**
+  A spelling the cross-source merge pre-applied is recorded per project
+  (`LearnedTerms`, `LearnedTermProjectResolver` — the project key is the git
+  root the vocabulary pipeline already resolved off the main actor, widened
+  to contain a joined session's directory; the commit path never walks the
+  filesystem for it, and it inherits that pipeline's title parsing, ssh
+  titles included), and once three separate
+  dictations have resolved it, it grounds later ones and rides in the prompt
+  under its own header — with no endpoint check and no re-check of the
+  setting that first produced it. Owner ruling, 2026-09-20: a name the
+  speaker keeps saying is their vocabulary, exactly like a name typed into
+  Names and terms, which has always been sent to whatever endpoint is
+  configured. What the app owes in exchange is stated here rather than
+  enforced by a gate: each term keeps the sources that proposed it, so a
+  later setting can drop what one source taught; nothing below the
+  three-dictation bar is ever sent; a remembered term never outranks a live
+  source (`.learned` is LAST in `PolishContextSource`, so a contested span
+  abstains); terms decay at 90 days; and Text processing → Advanced →
+  Learned terms → Forget drops the file. Verification candidates are never
+  recorded — they are questions put to the model, not answers. A dictation
+  whose project cannot be established teaches nothing at all, which is not
+  the same as one with no project: the latter teaches the shared bucket,
+  and filing the former there would put one repo's spellings where every
+  project-less dictation reads them. Known limit of the bar: it counts
+  dictations, not independent evidence, so one stale clipboard read across
+  three dictations is three confirmations.
+
 - **"About you" is the only place the model is told to infer a misheard name.**
   `LLMPromptTemplates.withSpeakerProfile` appends the user's own text to the
   SYSTEM prompt (stable, so it stays inside the prefix polishd checkpoints —

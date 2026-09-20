@@ -50,6 +50,7 @@ PATTERNS=(
   '*PolishContextPreparation*'                       # matching + selection over the retained buffer
   '*ClipboardPayloadMacro*'                          # spoken paste-clipboard macro placeholders
   '*RepoVocabulary*'                                 # repo vocabulary hints fed to the polisher
+  '*LearnedTerm*'                                    # what earlier dictations taught, fed back into the prompt
   # phonetic grounding tier: feeds what gets pre-applied/suggested
   '*DoubleMetaphone*'
   '*ClaudeRepoCollector*'                            # what repository content is harvested for the prompt

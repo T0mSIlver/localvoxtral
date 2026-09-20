@@ -415,6 +415,9 @@ final class DictationViewModel {
                     limit: SpeakerTermSuggestions.maxDictations
                 ) ?? []
             },
+            learnedTerms: { [weak self] in
+                self?.learnedTermStore?.snapshot().confirmedEverywhere().map(\.term) ?? []
+            },
             service: { [weak self] in self?.llmPolishingService ?? LLMPolishingService() },
             unavailableReason: { [weak self] in
                 self?.settings.polishingBackendMode == .managedLocal

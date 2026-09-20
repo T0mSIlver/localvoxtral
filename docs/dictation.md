@@ -74,6 +74,12 @@ Open **Settings** from the menu bar popover:
   credits and can take a few minutes; it keeps running in the background
   while you dictate. It needs a hosted polishing model (Mistral API or your
   own server); the bundled local model cannot do it.
+  The app also learns terms by itself: when polishing fixes a mangled name
+  against your repo, your screen or your agent's session, it remembers the
+  spelling for that project, and after three dictations it starts correcting
+  the name on its own — including in dictations where nothing on screen
+  mentions it. Those terms are offered as tags in **Suggestions** too, with
+  no API credits. **Advanced → Learned terms** counts them and forgets them.
   Then the LLM Polishing switch, the agent prompt profile and spoken
   clipboard paste. **Advanced** holds the legacy replacement dictionary
   (fixed `replace_with`/`matches` rewrites from `replacement_dictionary.toml`,

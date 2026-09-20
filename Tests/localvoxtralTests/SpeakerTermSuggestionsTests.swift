@@ -191,11 +191,102 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
     }
 
     private func makeModel(
-        settings: SettingsStore, service: Service, texts: [String] = ["a text", "another"]
+        settings: SettingsStore,
+        service: Service,
+        texts: [String] = ["a text", "another"],
+        learned: [String] = []
     ) -> SpeakerTermSuggestionModel {
         SpeakerTermSuggestionModel(
-            settings: settings, recentTexts: { texts }, service: { service }
+            settings: settings,
+            recentTexts: { texts },
+            learnedTerms: { learned },
+            service: { service }
         )
+    }
+
+    // MARK: - Learned chips
+
+    /// The free half of the row: what the app has watched polishing fix is
+    /// offered without a model call, and still only added by a click.
+    func testLearnedTermsAreOfferedWithoutAskingAModel() {
+        let settings = makeSettings()
+        let service = Service()
+        let model = makeModel(settings: settings, service: service, learned: ["Voxtral", "polishd"])
+
+        model.refreshLearnedSuggestions()
+
+        XCTAssertEqual(model.suggestions, ["Voxtral", "polishd"])
+        XCTAssertEqual(settings.polishSpeakerTerms, [])
+        XCTAssertTrue(service.requests.isEmpty, "no request, no API credits")
+    }
+
+    func testLearnedTermAlreadyKnownOrRefusedIsNotOffered() {
+        let settings = makeSettings()
+        settings.polishSpeakerTerms = ["Voxtral"]
+        settings.dismissTermSuggestion("polishd")
+        let model = makeModel(
+            settings: settings, service: Service(), learned: ["Voxtral", "polishd", "Ghostty"]
+        )
+
+        model.refreshLearnedSuggestions()
+
+        XCTAssertEqual(model.suggestions, ["Ghostty"])
+    }
+
+    /// Re-opening the pane must not resurrect a chip the user just refused,
+    /// and must not duplicate one already on screen.
+    func testRefreshingIsAdditiveAndSkipsWhatIsShown() {
+        let settings = makeSettings()
+        let model = makeModel(settings: settings, service: Service(), learned: ["Voxtral", "polishd"])
+
+        model.refreshLearnedSuggestions()
+        model.dismiss("polishd")
+        model.refreshLearnedSuggestions()
+
+        XCTAssertEqual(model.suggestions, ["Voxtral"])
+    }
+
+    /// A run takes minutes, and the pane may never have been refreshed before
+    /// it started. Its completion is the app's next chance to show the free
+    /// chips, so it takes it.
+    func testHostedRunFillsInLearnedChipsItNeverShowed() async {
+        let settings = makeSettings()
+        let service = Service()
+        service.reply = .success(#"["Qwen"]"#)
+        let model = makeModel(settings: settings, service: service, learned: ["Voxtral"])
+
+        await model.suggest()
+
+        XCTAssertEqual(model.suggestions, ["Qwen", "Voxtral"])
+    }
+
+    /// A chip on screen that the user added to their list while the run was
+    /// going must not come back as a suggestion when the run lands.
+    func testChipAddedDuringARunIsNotReofferedWhenItEnds() async {
+        let settings = makeSettings()
+        let service = Service()
+        service.reply = .success(#"["Qwen"]"#)
+        let model = makeModel(settings: settings, service: service, learned: ["Voxtral"])
+        model.refreshLearnedSuggestions()
+
+        settings.polishSpeakerTerms = ["Voxtral"]
+        await model.suggest()
+
+        XCTAssertEqual(model.suggestions, ["Qwen"])
+    }
+
+    /// A hosted run costs minutes, so its findings lead — but the free chips
+    /// the user has not acted on are not thrown away behind them.
+    func testHostedRunLeadsAndKeepsUnactedLearnedChips() async {
+        let settings = makeSettings()
+        let service = Service()
+        service.reply = .success(#"["Qwen"]"#)
+        let model = makeModel(settings: settings, service: service, learned: ["Voxtral"])
+
+        model.refreshLearnedSuggestions()
+        await model.suggest()
+
+        XCTAssertEqual(model.suggestions, ["Qwen", "Voxtral"])
     }
 
     func testNothingIsAddedWithoutAClick() async {

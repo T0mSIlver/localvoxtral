@@ -148,6 +148,13 @@ enum SpeakerTermSuggestions {
     }
 }
 
+/// The Suggestions row, fed by two producers with one rule between them.
+///
+/// The app offers what it has already watched polishing fix in the user's
+/// projects (`LearnedTerms`), for free, as soon as the pane opens. The button
+/// asks a hosted model to read the dictation history for names the grounding
+/// sources never saw. Either way a suggestion is never added without a click,
+/// and a refused one never comes back.
 @MainActor
 @Observable
 final class SpeakerTermSuggestionModel {
@@ -166,6 +173,10 @@ final class SpeakerTermSuggestionModel {
 
     private let settings: SettingsStore
     private let recentTexts: @MainActor () async -> [String]
+    /// Terms the app has watched polishing fix, strongest evidence first.
+    /// Offered with no model call and no API credits — the evidence is
+    /// already on this machine.
+    private let learnedTerms: @MainActor () -> [String]
     private let service: @MainActor () -> any LLMPolishingServicing
     /// Why the button cannot be used right now, or nil. Measured on the
     /// owner's history (2026-09-19): the bundled 4B took 177 s, listed the
@@ -179,15 +190,38 @@ final class SpeakerTermSuggestionModel {
     init(
         settings: SettingsStore,
         recentTexts: @escaping @MainActor () async -> [String],
+        learnedTerms: @escaping @MainActor () -> [String] = { [] },
         service: @escaping @MainActor () -> any LLMPolishingServicing,
         unavailableReason: @escaping @MainActor () -> String? = { nil },
         now: @escaping @MainActor () -> Date = { Date() }
     ) {
         self.settings = settings
         self.recentTexts = recentTexts
+        self.learnedTerms = learnedTerms
         self.service = service
         self.unavailableReasonProvider = unavailableReason
         self.now = now
+    }
+
+    /// Chips the app can offer for free: terms it has already watched the
+    /// polishing model fix, confirmed across dictations. Called when the pane
+    /// appears, so the list is there before anyone presses a button.
+    ///
+    /// Additive — a suggestion already on screen stays, and one the user has
+    /// added or refused never comes back.
+    func refreshLearnedSuggestions() {
+        let shown = Set(suggestions.map(SpeakerTermSuggestions.key))
+        let learned = SpeakerTermSuggestions.filtered(
+            learnedTerms(),
+            terms: settings.polishSpeakerTerms,
+            dismissed: settings.polishDismissedTermSuggestions
+        ).filter { !shown.contains(SpeakerTermSuggestions.key($0)) }
+        guard !learned.isEmpty else { return }
+        suggestions = Array((suggestions + learned).prefix(SpeakerTermSuggestions.maxShown))
+        // Never while a run is in flight: `.loading` is the row's progress
+        // state, and dropping out of it would hide the Stop button and the
+        // clock from a user whose request is still running.
+        if phase == .nothingFound { phase = .idle }
     }
 
     /// The button's action. The model owns the task so a dictation can stop it.
@@ -242,15 +276,33 @@ final class SpeakerTermSuggestionModel {
             )
             // Stopped while waiting: the row already went back to its button.
             guard phase == .loading, !Task.isCancelled else { return }
-            suggestions = Array(SpeakerTermSuggestions.ranked(
+            let found = SpeakerTermSuggestions.ranked(
                 SpeakerTermSuggestions.filtered(
                     SpeakerTermSuggestions.parse(result.polishedText),
                     terms: settings.polishSpeakerTerms,
                     dismissed: settings.polishDismissedTermSuggestions
                 ),
                 texts: texts
-            ).prefix(SpeakerTermSuggestions.maxShown))
+            )
+            // What the run found leads — it is what the user waited minutes for
+            // — and the chips already on screen keep their place behind it, as
+            // far as the row's twelve allow. Both sides go back through
+            // `filtered`: a chip shown before the run may have been added or
+            // refused while it ran, and that filter is the only thing making
+            // "never again" true (review, 2026-09-20).
+            suggestions = Array(
+                SpeakerTermSuggestions.filtered(
+                    found + suggestions,
+                    terms: settings.polishSpeakerTerms,
+                    dismissed: settings.polishDismissedTermSuggestions
+                ).prefix(SpeakerTermSuggestions.maxShown)
+            )
             phase = suggestions.isEmpty ? .nothingFound : .idle
+            // A run that started before the pane had refreshed, or that ran
+            // for minutes while dictation taught the app new terms, must not
+            // leave the free chips out (review, 2026-09-20). Runs AFTER the
+            // phase leaves `.loading`, which is what lets it fill.
+            refreshLearnedSuggestions()
             Log.polishing.info("Term suggestions received: \(self.suggestions.count, privacy: .public)")
         } catch {
             guard phase == .loading else { return }

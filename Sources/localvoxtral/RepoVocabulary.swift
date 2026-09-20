@@ -2193,6 +2193,15 @@ enum RepoVocabularyMatcher {
         + "speaker's open coding-agent session; use them to correct near-miss spellings "
         + "of the terms below, never to add new content):"
 
+    /// Header for entries the app remembers from this project's earlier
+    /// dictations (`LearnedTerms`). Same rendering, honest provenance: the
+    /// speaker has said these words before and something on their machine
+    /// spelled them this way at the time.
+    static let learnedVocabularyHeader =
+        "Learned vocabulary (exact spellings the speaker has used before in this "
+        + "project; use them to correct near-miss spellings of the terms below, never "
+        + "to add new content):"
+
     /// Header for the terms the sound-alike tiers nominated. The matcher only
     /// knows that something in the transcript sounds like one of them; whether
     /// the speaker meant it depends on the sentence, which is the model's call.
@@ -2201,7 +2210,8 @@ enum RepoVocabularyMatcher {
     /// five wrong insertions with pairs, three with this list, none without).
     static let verificationCandidatesHeader =
         "Terms from the speaker's current project, screen, clipboard or coding-agent "
-        + "session. The speaker may or may not have said any of them. Use one ONLY where the text contains a word or "
+        + "session, or ones they have used before in this project. "
+        + "The speaker may or may not have said any of them. Use one ONLY where the text contains a word or "
         + "phrase that sounds like it AND makes less sense than the term would in that "
         + "sentence; write it exactly as spelled here. Ordinary words that already make "
         + "sense stay as they are:"

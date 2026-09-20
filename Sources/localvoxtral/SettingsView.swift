@@ -2711,6 +2711,7 @@ private struct SpeakerTermSuggestionsView: View {
                 }
             }
         }
+        .onAppear { model.refreshLearnedSuggestions() }
     }
 }
 

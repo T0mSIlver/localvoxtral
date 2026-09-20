@@ -249,7 +249,13 @@ struct LearnedTerms: Codable, Equatable, Sendable {
                 spelling[key] = term
                 order.append(key)
             }
-            sources[key] = merging(sources[key] ?? [], [observation.source.rawValue])
+            // A match against the memory itself is a sighting, not a new
+            // provenance: it refreshes the counters without claiming the
+            // memory as the place the spelling came from.
+            sources[key] = merging(
+                sources[key] ?? [],
+                observation.source == .learned ? [] : [observation.source.rawValue]
+            )
         }
         return order.compactMap { key in
             guard let term = spelling[key] else { return nil }
