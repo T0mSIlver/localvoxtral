@@ -73,8 +73,9 @@ parsing.
   finished session.
 - Hooks fire for subagents too. The publisher drops any payload with a
   `parent_session_id`, so a subagent's files never count as yours.
-- `vibe -p`, the VS Code extension and other ACP clients have no terminal pane.
-  Their sessions publish, but nothing can join a dictation to them.
+- The VS Code extension and other ACP clients have no terminal pane. Their
+  sessions publish, but nothing can join a dictation to them. A `vibe -p` run
+  typed into a pane keeps that pane's terminal, so it joins while it runs.
 
 ## Why the shim looks the way it does
 

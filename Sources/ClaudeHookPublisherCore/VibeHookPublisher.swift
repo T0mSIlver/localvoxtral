@@ -88,6 +88,9 @@ extension ClaudeHookPublisher {
         return .published
     }
 
+    /// Stdin deadline for a Vibe payload, which embeds whole tool outputs.
+    public static let vibeStdinReadTimeout: TimeInterval = 2.0
+
     /// How far the walk climbs. Vibe spawns `sh -c <command>`, the command is
     /// the shim, and the shim hands us its own `$PPID`: one wrapper shell at
     /// most stands between that pid and Vibe. The bound is slack, not a guess

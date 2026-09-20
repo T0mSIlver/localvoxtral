@@ -1,6 +1,7 @@
 import ClaudeContextWire
 import Darwin
 import Foundation
+import Synchronization
 import XCTest
 @testable import ClaudeHookPublisherCore
 @testable import localvoxtral
@@ -398,6 +399,53 @@ final class VibeHookPublisherRunTests: XCTestCase {
 
     func testUnparseableAndSubagentPayloadsPublishNothing() {
         XCTAssertEqual(publisher().runVibe(stdin: Data("{}".utf8), vibe: vibe), .droppedUnparseable)
+    }
+}
+
+// MARK: - Stdin
+
+final class VibeStdinTests: XCTestCase {
+    /// A writer thread pushes `total` bytes and reports how many it got through
+    /// before the pipe closed under it.
+    private func read(total: Int, cap: Int, drains: Bool) -> (read: Int, written: Int) {
+        var descriptors: [Int32] = [-1, -1]
+        XCTAssertEqual(pipe(&descriptors), 0)
+        let (readEnd, writeEnd) = (descriptors[0], descriptors[1])
+        _ = fcntl(writeEnd, F_SETNOSIGPIPE, 1)
+        let written = Mutex(0)
+        let done = DispatchSemaphore(value: 0)
+        Thread {
+            let chunk = [UInt8](repeating: 0x78, count: 64 * 1024)
+            var sent = 0
+            while sent < total {
+                let count = write(writeEnd, chunk, min(chunk.count, total - sent))
+                if count <= 0 { break } // EPIPE: the reader left.
+                sent += count
+            }
+            close(writeEnd)
+            written.withLock { $0 = sent }
+            done.signal()
+        }.start()
+
+        let data = ClaudeHookPublisher.readBoundedStdin(
+            limits: ClaudeHookLimits(maxLineBytes: cap), descriptor: readEnd, timeout: 30, drainsExcess: drains
+        )
+        close(readEnd)
+        done.wait()
+        return (data.count, written.withLock { $0 })
+    }
+
+    func testAnOverCapVibePayloadIsDrainedSoTheWriterFinishes() {
+        let result = read(total: 1_000_000, cap: 100_000, drains: true)
+        XCTAssertEqual(result.written, 1_000_000, "Vibe's write must not break mid-payload")
+        XCTAssertGreaterThan(result.read, 100_000, "still over the cap, so it still fails to parse")
+        XCTAssertLessThan(result.read, 200_000, "and the excess is not kept")
+    }
+
+    func testWithoutDrainingTheWriterIsCutOff() {
+        // Claude Code's path, unchanged: stop at the cap and leave.
+        let result = read(total: 1_000_000, cap: 100_000, drains: false)
+        XCTAssertLessThan(result.written, 1_000_000)
     }
 }
 

@@ -52,8 +52,13 @@ if arguments.contains("--statusline") {
 // reports a hook's non-JSON stdout as a hook failure on the user's turn.
 if let index = arguments.firstIndex(of: "--agent"), index + 1 < arguments.count,
    arguments[index + 1] == "vibe" {
+    // A longer deadline than Claude Code's 0.25 s: that one was sized for a
+    // few kilobytes, and this pipe can carry megabytes. Still far inside the
+    // five seconds `hooks.toml` gives the hook.
     let payload = ClaudeHookPublisher.readBoundedStdin(
-        limits: ClaudeHookLimits(maxLineBytes: VibeHookInputParser.maxPayloadBytes)
+        limits: ClaudeHookLimits(maxLineBytes: VibeHookInputParser.maxPayloadBytes),
+        timeout: ClaudeHookPublisher.vibeStdinReadTimeout,
+        drainsExcess: true
     )
     ClaudeHookPublisher().runVibe(stdin: payload)
     exit(0)

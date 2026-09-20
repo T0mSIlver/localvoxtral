@@ -445,16 +445,23 @@ public struct ClaudeHookPublisher: Sendable {
     /// another inline hook phase, and being late is worse than being absent.
     public static let stdinReadTimeout: TimeInterval = 0.25
 
+    /// - Parameter drainsExcess: keep reading (and discarding) past the cap
+    ///   until EOF or the deadline. Off for Claude Code, whose payloads are
+    ///   small. On for Vibe: a `post_tool` payload embeds the tool's whole
+    ///   output, and exiting with megabytes still in the pipe breaks Vibe's
+    ///   write mid-payload. The result is still over the cap, so it still
+    ///   fails to parse; what changes is that the writer finishes.
     public static func readBoundedStdin(
         limits: ClaudeHookLimits = .default,
         descriptor: Int32 = 0,
         timeout: TimeInterval = stdinReadTimeout,
+        drainsExcess: Bool = false,
         uptimeNanos: @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
     ) -> Data {
         let deadline = uptimeNanos() &+ UInt64(max(0, timeout) * 1_000_000_000)
         var buffer = Data()
         var chunk = [UInt8](repeating: 0, count: 16 * 1024)
-        while buffer.count <= limits.maxLineBytes {
+        while drainsExcess || buffer.count <= limits.maxLineBytes {
             let current = uptimeNanos()
             guard current < deadline else { break }
             let remainingMillis = (deadline - current) / 1_000_000
@@ -467,7 +474,9 @@ public struct ClaudeHookPublisher: Sendable {
             let count = read(descriptor, &chunk, chunk.count)
             if count < 0, errno == EINTR { continue }
             if count <= 0 { break } // EOF, or an error we treat as EOF.
-            buffer.append(contentsOf: chunk[0..<count])
+            // Past the cap only the first excess chunk is kept, which is what
+            // makes the result unparseable; the rest is read and dropped.
+            if buffer.count <= limits.maxLineBytes { buffer.append(contentsOf: chunk[0..<count]) }
         }
         return buffer
     }
