@@ -123,6 +123,14 @@ struct localvoxtralApp: App {
             // strip over the sidebar (PR #310 hand-check), which AppKit flags
             // alone did not survive.
             .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+            // Puts the app in the Dock and the app switcher while this window
+            // is open, so it can be switched back to without going through the
+            // menu bar item.
+            .background {
+                DockIconWindowRegistrar(policy: appDelegate.dockIconPolicy)
+                    .frame(width: 0, height: 0)
+                    .accessibilityHidden(true)
+            }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 780, height: 560)
@@ -139,6 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let backendManager: BackendManager
     let viewModel: DictationViewModel
     let settingsNavigator = SettingsNavigator()
+    let dockIconPolicy = DockIconPolicy(apply: AppDelegate.applyActivationPolicy)
 
     private var onboardingController: OnboardingWindowController?
     private let appConfigStore = AppConfigStore()
@@ -944,6 +953,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Moves the process between menu-bar-only and Dock-and-app-switcher, and
+    /// reports whether it took.
+    ///
+    /// Going `.regular` gives the process a Dock tile, an app switcher entry
+    /// and a main menu, but does not by itself bring it forward — without the
+    /// activation the window it was opened for can end up behind whatever was
+    /// frontmost. `activate` is a no-op when the app is already active, which
+    /// it usually is, since the window that triggered this was just opened.
+    private static func applyActivationPolicy(_ policy: NSApplication.ActivationPolicy) -> Bool {
+        guard NSApp.setActivationPolicy(policy) else {
+            Log.diagnostics.error(
+                "Activation policy change to \(String(describing: policy), privacy: .public) was refused."
+            )
+            return false
+        }
+        // One line per transition, not per window: the transitions are the
+        // whole behavior, and this is the only place an outside observer can
+        // read which one the app believes it is in.
+        Log.diagnostics.notice(
+            "Activation policy is now \(policy == .regular ? "regular (Dock icon shown)" : "accessory (menu bar only)", privacy: .public)."
+        )
+        if policy == .regular {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        return true
+    }
+
     private func presentOnboarding() {
         if let onboardingController {
             onboardingController.present()
@@ -953,6 +989,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settings: settingsStore,
             viewModel: viewModel,
             backendManager: backendManager,
+            dockIconPolicy: dockIconPolicy,
             openEndpointsSettings: { [weak self] in self?.openEndpointsSettings() }
         )
         controller.onFinished = { [weak self] in
