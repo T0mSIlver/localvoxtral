@@ -1261,6 +1261,36 @@ final class RepoVocabularyIndexerEndToEndTests: XCTestCase {
         )
         XCTAssertEqual(titleEntries?.entries.first?.replaceWith, "useAuth.ts")
 
+        // The resolved root is reported to the caller, which is how a
+        // dictation's learned terms are attributed to a project without the
+        // commit path walking the filesystem a second time.
+        let reportedRoot = RepoVocabularyRootBox()
+        _ = await RepoVocabularyService.entries(
+            forWindowTitle: "user@mac: \(repo.path) — zsh",
+            transcript: "open use auth dot t s please",
+            cache: RepoVocabularyCache(),
+            rootSink: { root in reportedRoot.report(root) }
+        )
+        guard case .root(let reported) = reportedRoot.value else {
+            return XCTFail("the pipeline resolved a repo but reported \(reportedRoot.value)")
+        }
+        XCTAssertEqual(
+            URL(fileURLWithPath: reported).standardizedFileURL.path,
+            URL(fileURLWithPath: repo.path).standardizedFileURL.path
+        )
+
+        // Reporting nil is not the same as staying silent: a terminal that is
+        // not in a repository says so, which is what lets a dictation there be
+        // attributed to no project rather than to none we could name.
+        let noRepoRoot = RepoVocabularyRootBox()
+        _ = await RepoVocabularyService.entries(
+            forWindowTitle: "user@mac: \(FileManager.default.temporaryDirectory.path) — zsh",
+            transcript: "open use auth dot t s please",
+            cache: RepoVocabularyCache(),
+            rootSink: { root in noRepoRoot.report(root) }
+        )
+        XCTAssertEqual(noRepoRoot.value, .noRepository)
+
         // A usable focused-window title disambiguates the focused tab and must
         // stay tier 1 even when descendant inspection would fail closed.
         let titlePreferredEntries = await RepoVocabularyService.entries(

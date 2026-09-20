@@ -936,7 +936,8 @@ enum RepoVocabularyService {
         },
         workingDirectoryForPID: @Sendable (pid_t) -> String? = {
             TerminalDescendantProcessResolver.liveWorkingDirectory(forPID: $0)
-        }
+        },
+        rootSink: (@Sendable (String?) -> Void)? = nil
     ) async -> RepoVocabularyMatcher.GroundingOutcome? {
         var gitRoot: String?
         if let title,
@@ -972,6 +973,21 @@ enum RepoVocabularyService {
                 break
             }
         }
+
+        // Reported before the index and the match, and whatever they return:
+        // the caller uses it to attribute what the dictation LEARNS to a
+        // project, and a repo whose `ls-files` timed out is still the repo the
+        // speaker was working in. This is the only place a git root is
+        // resolved off the main actor, which is why the learned-terms project
+        // key is taken from here rather than walking the filesystem again on
+        // the commit path.
+        //
+        // Nil is reported too, and means something different from staying
+        // silent: the resolution ran and this is not a repository. The tier-2
+        // ambiguity exits above return BEFORE this line on purpose — several
+        // repos under one terminal is not "no repository", it is "we do not
+        // know", and the caller must be able to tell those apart.
+        rootSink?(gitRoot)
 
         guard let gitRoot else {
             // Shape is class-mapped (letters->a, digits->9), never content —

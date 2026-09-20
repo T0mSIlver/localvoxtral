@@ -395,6 +395,13 @@ final class DictationViewModel {
     let backendManager: any ManagedBackendManaging
     @ObservationIgnored
     var sessionStore: DictationSessionStore?
+    /// The spellings this machine has watched the polish pipeline resolve,
+    /// per project. Nil without runtime services (tests), so a unit test never
+    /// writes the user's file.
+    @ObservationIgnored
+    var learnedTermStore: LearnedTermStore?
+    /// Bumped on every learned-terms write so the Settings row re-reads it.
+    private(set) var learnedTermRevision = 0
     @ObservationIgnored
     private var storedTermSuggestions: SpeakerTermSuggestionModel?
     /// Built on first use (Settings opening the About-you group); reads the
@@ -626,6 +633,12 @@ final class DictationViewModel {
     @ObservationIgnored
     var debugRepoVocabularyEntriesOverride:
         (@MainActor (String) -> RepoVocabularyMatcher.GroundingOutcome?)?
+    /// Test seam: the git root the entries seam above reports, standing in for
+    /// what the real pipeline resolves. Nil means "ran, no repository", the
+    /// same as the live path — never "did not run", which only skipping the
+    /// pipeline produces.
+    @ObservationIgnored
+    var debugRepoVocabularyRootOverride: String?
     /// Test seam: replaces only the DETACHED vocabulary pipeline (AX title /
     /// process cwd + git index + match) while keeping the deadline race in
     /// play, so tests can inject a never-completing pipeline and prove the
@@ -841,6 +854,12 @@ final class DictationViewModel {
         textInsertion.refreshAccessibilityTrustState()
         if startRuntimeServices {
             sessionStore = DictationSessionStore()
+            learnedTermStore = LearnedTermStore(
+                fileURL: LearnedTermStore.defaultFileURL(),
+                onChange: { [weak self] in
+                    Task { @MainActor in self?.learnedTermRevision += 1 }
+                }
+            )
             installMistralUsageLedger(
                 MistralUsageLedger(fileURL: MistralUsageLedger.defaultFileURL()) {
                     [weak self] in
