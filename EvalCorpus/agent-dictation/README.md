@@ -27,7 +27,7 @@ fixtures/repo-<name>.json    repo specs the harness git-inits for
 
 The interactive recorder presents the 146 speech-running phrases, records
 mono 16-bit/16 kHz WAVs, offers optional playback, and saves progress after
-every accept. The 17 `polish-only` cases are text inputs and do not need
+every accept. The 20 `polish-only` cases are text inputs and do not need
 recordings.
 
 ```bash
