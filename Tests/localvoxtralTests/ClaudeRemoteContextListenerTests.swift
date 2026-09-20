@@ -1230,27 +1230,22 @@ extension ClaudeRemoteContextListenerTests {
         XCTAssertTrue(sessions.liveSessions().isEmpty)
     }
 
-    func testANewVibeSessionOnTheSameSurfaceSupersedesTheOneTheWatcherMissed() throws {
+    func testTwoVibeSessionsOnOneSurfaceBothStayAndTheJoinAbstains() throws {
+        // A watcher that failed leaves the old session beside the new one.
+        // Evicting the old one looked attractive and was wrong: suspend Vibe
+        // A, start B in the same pane, bring A back, and a dictation into A
+        // would join B. Two candidates make the join abstain, which is the
+        // safe failure.
         try startListener()
         let surface = ["X-Lvx-Agent: vibe", "X-Lvx-Env-Ssh-Tty: /dev/pts/4",
                        "X-Lvx-Env-Ssh-Connection: 10.0.0.2,50000,10.0.0.9,22"]
-        func stop(_ id: String, _ headers: [String]) throws {
-            _ = try send(hookRequest(event: "Stop", token: token, payload: ["session_id": id], extraHeaders: headers))
+        for id in ["old", "new"] {
+            _ = try send(hookRequest(event: "Stop", token: token, payload: ["session_id": id], extraHeaders: surface))
         }
-        try stop("old", surface)
-        try stop("elsewhere", ["X-Lvx-Agent: vibe", "X-Lvx-Env-Ssh-Tty: /dev/pts/9",
-                                "X-Lvx-Env-Ssh-Connection: 10.0.0.2,50001,10.0.0.9,22"])
-        try stop("claude-here", Array(surface.dropFirst()))
-        try stop("new", surface)
-
         XCTAssertEqual(
             Set(sessions.liveSessions().map(\.sessionID)),
-            ["vibe:remote:\(hostID!):new", "vibe:remote:\(hostID!):elsewhere", "remote:\(hostID!):claude-here"],
-            "only the older VIBE session on THAT surface goes"
+            ["vibe:remote:\(hostID!):old", "vibe:remote:\(hostID!):new"]
         )
-        // A later hook of the surviving session evicts nothing.
-        try stop("new", surface)
-        XCTAssertEqual(sessions.liveSessions().count, 3)
     }
 
     func testAClaudeRequestKeepsItsSessionHandles() throws {

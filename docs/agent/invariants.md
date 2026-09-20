@@ -1348,15 +1348,24 @@ there is not.
   lock, holding none of the hook's descriptors (Vibe waits for them to close),
   comparing the Vibe process's start time as well as its pid, re-reading the
   token when it fires, posting `SessionEnd`, and giving up after five tries a
-  minute apart. `LOCALVOXTRAL_VIBE_WATCHER=off` disables it. The Mac-side
-  backstop is `supersedeRemoteVibeSessionsLocked`: a NEW remote Vibe session
-  evicts an older one from the same host reporting the same surface (herdr or
-  tmux pane, else ssh tty plus connection), since a surface shows one
-  foreground Vibe at a time and two candidates would make every join there
-  abstain. RESIDUAL, stated plainly: when the watcher's `SessionEnd` never
-  arrives (the tunnel was down for all five tries, the host rebooted) and no
-  new session has hooked yet, the dead session is still the surface's only
-  candidate until its TTL. Nothing on the Mac can close that window.
+  minute apart. `LOCALVOXTRAL_VIBE_WATCHER=off` disables it. Three shapes it
+  handles on purpose (GLM review, 2026-09-20): a Vibe that is ALREADY gone when
+  the hook looks (Ctrl-C at the end of the turn) gets its `SessionEnd` at once
+  instead of no watcher; a session id reused by a new process (a resume)
+  replaces the old watcher, whose `SessionEnd` would otherwise evict the live
+  session; and when the host's `ps` gives `compact.py` no process table, no pid
+  is published and no watcher starts, because the only pid left is the `sh -c`
+  wrapper and watching it would end a LIVE session two seconds later.
+  There is deliberately NO Mac-side eviction of an older remote Vibe session by
+  a newer one on the same surface. It was built and removed the same day:
+  suspend Vibe A, start B in that pane, bring A back, and a dictation into A
+  joins B until A's next hook. Two live candidates on one surface make the
+  join abstain, and abstaining is the failure this file prefers everywhere.
+  RESIDUAL, stated plainly: when the watcher's `SessionEnd` never arrives (the
+  tunnel was down for all five tries, the host rebooted, the watcher is off),
+  the dead session stays the surface's candidate until its TTL: alone, it still
+  joins; beside a new session, the surface abstains. Nothing on the Mac can
+  tell a finished remote process from an idle one.
 - **A refused `RemoteForward` bind is not a diagnosis, and only a nonce
   round-trip may upgrade it to one.** OpenSSH's `remote port forwarding failed`
   says a port is held, never by whom, and the two holders want opposite things

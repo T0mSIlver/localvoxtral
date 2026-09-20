@@ -175,8 +175,8 @@ fi
 
 # --- Request headers ---------------------------------------------------------
 # Heredoc through a redirected `cat`, NOT printf/echo: an external printf would
-# put the token into an argv. The hooks version is a constant of this file; the
-# Mac uses it to tell when this host's hooks are older than the app's.
+# put the token into an argv. The hooks version is a constant of this file,
+# sent so the Mac can tell when this host's hooks are older than the app's.
 write_header() {
   cat 2>/dev/null >"$1" <<HEADERS
 Authorization: Bearer $2
@@ -293,19 +293,32 @@ esac
 WATCH_DIR="$STAMP_DIR/vibe-watch"
 LOCK="$WATCH_DIR/$SESSION_ID"
 { mkdir -p "$WATCH_DIR" && chmod 700 "$STAMP_DIR" "$WATCH_DIR"; } 2>/dev/null || exit 0
+# Locks whose watcher was killed (SIGKILL, a reboot under ~/.cache) are never
+# replaced, because a session id does not come back. Sweep the old ones.
+find "$WATCH_DIR"/* -prune -type d -mtime +2 -exec rm -rf {} + 2>/dev/null || :
 if [ -d "$LOCK" ]; then
   WATCHER=""
+  WATCHED=""
   IFS= read -r WATCHER <"$LOCK/pid" 2>/dev/null || :
+  IFS= read -r WATCHED <"$LOCK/agent" 2>/dev/null || :
   case "$WATCHER" in "" | *[!0-9]*) WATCHER="" ;; esac
-  if [ -n "$WATCHER" ] && kill -0 "$WATCHER" 2>/dev/null; then exit 0; fi
+  if [ -n "$WATCHER" ] && kill -0 "$WATCHER" 2>/dev/null; then
+    # Alive AND watching this Vibe process: nothing to do. Watching ANOTHER
+    # one means the session id was reused by a new process (a resume): its
+    # SessionEnd would evict the session that is live now, so it is stopped
+    # and replaced. A recycled pid that is not a watcher at all ignores TERM
+    # or dies of it; either way the lock below is ours again.
+    [ "$WATCHED" != "$AGENT_PID" ] || exit 0
+    kill "$WATCHER" 2>/dev/null || :
+  fi
   rm -rf "$LOCK" 2>/dev/null || exit 0
 fi
 mkdir "$LOCK" 2>/dev/null || exit 0
+echo "$AGENT_PID" >"$LOCK/agent" 2>/dev/null || :
+# Empty means Vibe is ALREADY gone (Ctrl-C at the end of the turn, a closed
+# pane): the Mac just learned of a session whose end nobody would announce.
+# The watcher below then skips its wait and reports the end at once.
 STARTED="$(ps -o lstart= -p "$AGENT_PID" 2>/dev/null)" || STARTED=""
-if [ -z "$STARTED" ]; then
-  rmdir "$LOCK" 2>/dev/null
-  exit 0
-fi
 
 send_session_end() {
   _work="$(mktemp -d 2>/dev/null)" || return 1
@@ -318,6 +331,13 @@ send_session_end() {
     return 0 # no usable token: the hooks were removed, nothing left to say
     ;;
   esac
+  # The port too: a Vibe session can outlive a change of the Mac's forward.
+  _port=""
+  IFS= read -r _port <"$DIR/port" 2>/dev/null || :
+  case "$_port" in
+  "" | *[!0-9]* | 0* | ??????*) _port="$PORT" ;;
+  *) if [ "$_port" -lt 1024 ] || [ "$_port" -gt 65535 ]; then _port="$PORT"; fi ;;
+  esac
   write_header "$_work/header" "$TOKEN" || { rm -rf "$_work"; return 1; }
   cat >"$_work/body" 2>/dev/null <<BODY
 {"hook_event_name":"SessionEnd","session_id":"$SESSION_ID"}
@@ -327,7 +347,7 @@ BODY
     --header 'Content-Type: application/json' \
     --header @"$_work/header" \
     --data-binary @"$_work/body" \
-    "http://127.0.0.1:$PORT/v1/hook/SessionEnd" 2>/dev/null)" || _status=""
+    "http://127.0.0.1:$_port/v1/hook/SessionEnd" 2>/dev/null)" || _status=""
   rm -rf "$_work"
   [ -n "$_status" ] && [ "$_status" != "000" ]
 }
@@ -339,7 +359,7 @@ case "$WATCH_INTERVAL" in "" | *[!0123456789.]* | ??????*) WATCH_INTERVAL=2 ;; e
 (
   trap '' HUP
   _checks=0
-  while kill -0 "$AGENT_PID" 2>/dev/null; do
+  while [ -n "$STARTED" ] && kill -0 "$AGENT_PID" 2>/dev/null; do
     sleep "$WATCH_INTERVAL"
     _checks=$((_checks + 1))
     if [ "$_checks" -ge 15 ]; then

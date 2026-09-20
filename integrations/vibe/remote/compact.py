@@ -173,6 +173,11 @@ def vibe_pid(start):
     """
     own_session = os.getsid(0)
     table = process_table()
+    # No table (no `ps`, or it timed out): `start` may be the `sh -c` wrapper,
+    # which exits with this hook. Publishing it would make post.sh's watcher
+    # report a LIVE session as ended two seconds from now. Better no pid.
+    if start not in table:
+        return None
     current = start
     for _ in range(ANCESTOR_HOPS):
         try:
@@ -246,8 +251,10 @@ def main():
     events = events_for(payload)
     if not events:
         return
-    with open(os.path.join(workdir, "agent-pid"), "w") as handle:
-        handle.write("%d\n" % vibe_pid(start_pid))
+    agent_pid = vibe_pid(start_pid)
+    if agent_pid is not None:
+        with open(os.path.join(workdir, "agent-pid"), "w") as handle:
+            handle.write("%d\n" % agent_pid)
     # For post.sh's exit watcher: the id goes into a file NAME and a JSON body
     # there, so it is only handed over when it is plainly safe for both.
     session_id = events[0][1]["session_id"]

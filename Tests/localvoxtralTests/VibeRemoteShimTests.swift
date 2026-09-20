@@ -1,4 +1,5 @@
 import ClaudeContextWire
+import Darwin
 import Foundation
 import XCTest
 
@@ -388,6 +389,97 @@ final class VibeRemoteShimTests: XCTestCase {
         )
         XCTAssertEqual(ClaudeRemoteAgentCodec.agent(in: try request(3).headers), .vibe)
         XCTAssertFalse(try captured("argv", 3).contains(Self.token))
+    }
+
+    /// Runs `driver` (Python) with the watcher on, and returns its exit code.
+    private func runWatcherDriver(_ driver: String, extraPath: String? = nil) throws -> Int32 {
+        let payloadFile = root.appendingPathComponent("payload.json")
+        try payload(event: "post_agent").write(to: payloadFile)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.arguments = [
+            "-c", driver, remoteDir.appendingPathComponent("post.sh").path, payloadFile.path, captureDir.path,
+        ]
+        process.environment = [
+            "HOME": root.path,
+            "PATH": "\(extraPath.map { $0 + ":" } ?? "")\(stubDir.path):/usr/bin:/bin",
+            "XDG_RUNTIME_DIR": root.appendingPathComponent("run").path,
+            "LOCALVOXTRAL_VIBE_REMOTE_DIR": remoteDir.path,
+            "FAKE_CURL_DIR": captureDir.path,
+            "LOCALVOXTRAL_VIBE_WATCH_INTERVAL": "0.1",
+        ]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus
+    }
+
+    func testAVibeThatIsAlreadyGoneGetsItsSessionEndAtOnce() throws {
+        // The hook outlives its Vibe: Ctrl-C at the end of a turn, a closed
+        // pane. The fake Vibe starts the hook detached and exits without
+        // waiting, and a slow stub curl keeps the hook busy past that exit.
+        let slow = root.appendingPathComponent("slow")
+        try FileManager.default.createDirectory(at: slow, withIntermediateDirectories: true)
+        let wrapper = "#!/bin/sh\nsleep 0.5\nexec \"\(stubDir.path)/curl\" \"$@\"\n"
+        try Data(wrapper.utf8).write(to: slow.appendingPathComponent("curl"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: slow.path + "/curl")
+        let driver = """
+        import os, subprocess, sys, time
+        shim, payload, capture = sys.argv[1:4]
+        fake_vibe = "import subprocess, sys; subprocess.Popen(['/bin/sh', sys.argv[1]], stdin=open(sys.argv[2], 'rb'), start_new_session=True)"
+        subprocess.run([sys.executable, "-c", fake_vibe, shim, payload], check=True)
+        for _ in range(400):
+            if os.path.exists(os.path.join(capture, "body-3")):
+                sys.exit(0)
+            time.sleep(0.05)
+        sys.exit(3)
+        """
+        XCTAssertEqual(try runWatcherDriver(driver, extraPath: slow.path), 0, "3 means no SessionEnd")
+        XCTAssertTrue(try captured("argv", 3).hasSuffix("/v1/hook/SessionEnd\n"))
+    }
+
+    func testWithoutAProcessTableNoPidIsPublishedAndNoWatcherStarts() throws {
+        // No usable `ps`: the only pid left is the `sh -c` wrapper, and a
+        // watcher on it would end a live session two seconds later.
+        let broken = root.appendingPathComponent("broken")
+        try FileManager.default.createDirectory(at: broken, withIntermediateDirectories: true)
+        try Data("#!/bin/sh\nexit 1\n".utf8).write(to: broken.appendingPathComponent("ps"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: broken.path + "/ps")
+        let run = try runShim(payload(event: "post_agent"), environment: [
+            "PATH": "\(broken.path):\(stubDir.path):/usr/bin:/bin",
+            "LOCALVOXTRAL_VIBE_WATCHER": "on",
+        ])
+        XCTAssertEqual(run.exitCode, 0)
+        XCTAssertEqual(dialCount, 2, "the records still go")
+        XCTAssertNil(try request(1).headers["x-lvx-env-hook-parent-pid"])
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("run/localvoxtral/vibe-watch").path
+        ))
+    }
+
+    func testAReusedSessionIdReplacesTheWatcherOfTheOldProcess() throws {
+        // A lock held by a live watcher of ANOTHER agent pid: stand-ins are a
+        // sleeping process as the old watcher and pid 1 as the old agent.
+        let lock = root.appendingPathComponent("run/localvoxtral/vibe-watch/7f4aefdf")
+        try FileManager.default.createDirectory(at: lock, withIntermediateDirectories: true)
+        let oldWatcher = Process()
+        oldWatcher.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        oldWatcher.arguments = ["600"]
+        try oldWatcher.run()
+        defer { if oldWatcher.isRunning { oldWatcher.terminate() } }
+        try Data("\(oldWatcher.processIdentifier)\n".utf8).write(to: lock.appendingPathComponent("pid"))
+        try Data("1\n".utf8).write(to: lock.appendingPathComponent("agent"))
+
+        _ = try runShim(payload(event: "post_agent"), environment: ["LOCALVOXTRAL_VIBE_WATCHER": "on"])
+        oldWatcher.waitUntilExit()
+        XCTAssertFalse(oldWatcher.isRunning, "its SessionEnd would have evicted the session that is live now")
+        let agent = try String(contentsOf: lock.appendingPathComponent("agent"), encoding: .utf8)
+        XCTAssertNotEqual(agent, "1\n", "the lock now names the process this hook belongs to")
+        // Stop the watcher this test started, which is waiting on the runner.
+        if let pid = Int32(try String(contentsOf: lock.appendingPathComponent("pid"), encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)) { kill(pid, SIGTERM) }
     }
 
     func testTheWatcherIsOnePerSessionAndCanBeTurnedOff() throws {
