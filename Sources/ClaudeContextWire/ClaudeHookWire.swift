@@ -37,14 +37,17 @@ public enum ClaudeHookWire {
 public enum ClaudeHookAgent: String, Sendable, Equatable, CaseIterable, Codable {
     case claude
     case opencode
+    /// Mistral Vibe CLI. Published by the same hook binary as Claude Code, from
+    /// Vibe's `hooks.toml` command hooks (`VibeHookInputParser`).
+    case vibe
 }
 
 /// Namespacing for per-agent session ids, mirroring `ClaudeRemoteSessionScope`.
 ///
-/// Two agents pick their own session ids and cannot coordinate — Claude Code
-/// uses bare UUIDs, opencode uses `ses_…` — so a bare id is a claim, not a
-/// key. Scoping opencode ids under a prefix no Claude-published UUID can carry
-/// makes cross-agent collision structurally impossible. Applied by the
+/// Agents pick their own session ids and cannot coordinate — Claude Code and
+/// Vibe both use bare UUIDs, opencode uses `ses_…` — so a bare id is a claim,
+/// not a key. Scoping every non-Claude id under a prefix no Claude-published
+/// UUID can carry makes cross-agent collision structurally impossible. Applied by the
 /// RECEIVER (`ClaudeSessionRegistry.ingest`), never trusted from the wire, so
 /// a publisher cannot pre-scope itself into another namespace being honest or
 /// otherwise — the registry recomputes the key from the agent tag every time.
@@ -54,14 +57,26 @@ public enum ClaudeAgentSessionScope {
     /// Distinct from `ClaudeRemoteSessionScope.prefix` ("remote:") — the two
     /// namespaces must never alias.
     public static let opencodePrefix = "opencode:"
+    public static let vibePrefix = "vibe:"
 
-    public static func scopedSessionID(agent: ClaudeHookAgent, sessionID: String) -> String {
+    /// The prefix the receiver adds for `agent`, nil for Claude Code's bare ids.
+    public static func prefix(for agent: ClaudeHookAgent) -> String? {
         switch agent {
         case .claude:
-            return sessionID
+            return nil
         case .opencode:
-            return opencodePrefix + sessionID
+            return opencodePrefix
+        case .vibe:
+            return vibePrefix
         }
+    }
+
+    /// Every prefix a non-Claude agent's scoped id carries. A bare Claude id
+    /// spelling one of these names a key that can never be its own.
+    public static let agentPrefixes: [String] = ClaudeHookAgent.allCases.compactMap(prefix(for:))
+
+    public static func scopedSessionID(agent: ClaudeHookAgent, sessionID: String) -> String {
+        (prefix(for: agent) ?? "") + sessionID
     }
 }
 

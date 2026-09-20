@@ -69,6 +69,10 @@ PATTERNS=(
   '*ClaudeHookPublisher*'                            # the identity metadata (tty/pid/herdr pane) joins key on
   'integrations/claude-code/*'                       # the plugin that publishes those hooks
   'integrations/opencode/*'                          # the opencode publisher: prompt extraction, cwd, file grounding
+  'integrations/vibe/*'                              # the Vibe hooks: which events publish, and through which shim
+  '*VibeHookInputParser*'                            # which Vibe hook fields become session state
+  '*VibeTranscriptPrompt*'                           # the prior prompt, read from Vibe's session log
+  '*VibeHookPublisher*'                              # the Vibe pid/tty the joins key on
   '*TerminalScreenContext*'                          # screen context source/policy feeding the prompt
   '*TerminalScreenAXReader*'                         # screen text sanitization/compaction: the excerpt's exact bytes
   '*TerminalScreenAppleScriptReader*'                # iTerm2/Terminal.app focused-pane contents: the excerpt's exact bytes

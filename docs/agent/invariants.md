@@ -1216,7 +1216,31 @@ there is not.
   - Lookups abstain rather than guess: no match, unknown, stale, or ambiguous
     means no context. There is deliberately no sole-session or cwd heuristic —
     it is wrong precisely when it matters.
-  - Transcripts are never scraped (the publisher drops `transcript_path`), and a
+  - **One session log is read, for one field.** Mistral Vibe (2.25) has three
+    hook types — `pre_tool`, `post_tool`, `post_agent` — and none carries the
+    user's prompt, so the Vibe mode of the publisher reads the LAST user
+    message from the `messages.jsonl` its hook payload names
+    (`VibeTranscriptPrompt`, owner decision 2026-09-20). It is the same datum
+    Claude Code hands over in `UserPromptSubmit`, and the read is bounded to
+    it: a regular file named `messages.jsonl` owned by this user, opened
+    `O_NOFOLLOW`; the last 512 KiB only; a line is used only when its `role` is
+    `user`, Vibe did not mark it `injected`, and its `content` is a string,
+    truncated to the wire's prompt limit. Assistant text, reasoning, tool calls
+    and tool results are never decoded past `role`, and the path never crosses
+    the socket (`testRecordsPutThePromptFirstAndNeverCarryTheTranscriptPath`).
+    Do not widen this read to another field or another agent: an agent whose
+    hooks carry the prompt has no reason to be read this way.
+    What the missing events cost: a Vibe session exists for us only from its
+    first file-tool call or the end of its first turn, so the first dictation
+    into a fresh session has no join; and with no session-end event a session
+    ends by pid liveness and TTL. Vibe starts hooks in a new session with no
+    controlling terminal, so the published pid and tty come from an ancestor
+    walk (`ClaudeHookPublisher.vibeAncestorPID`), and the two Claude-allocated
+    session handles are withheld from Vibe records — a Vibe started inside a
+    Claude Code session inherits them and would otherwise join that Claude
+    view.
+  - Apart from that, transcripts are never scraped (the Claude Code parser
+    drops `transcript_path`), and a
     LOCAL session never attaches hook-quoted tool excerpts: its files are
     readable directly and are the better source. A REMOTE session's bounded,
     sanitized excerpts DO attach (`ClaudeSessionContextText`, gated on the

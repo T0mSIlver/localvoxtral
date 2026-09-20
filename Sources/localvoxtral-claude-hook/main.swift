@@ -46,6 +46,19 @@ if arguments.contains("--statusline") {
     exit(0)
 }
 
+// Vibe mode: `localvoxtral-claude-hook --agent vibe`, run by the shim that
+// `~/.vibe/hooks.toml` names. Vibe's payload carries its own event name, so
+// there is no `--event`. Same contract as below: exit 0, print nothing — Vibe
+// reports a hook's non-JSON stdout as a hook failure on the user's turn.
+if let index = arguments.firstIndex(of: "--agent"), index + 1 < arguments.count,
+   arguments[index + 1] == "vibe" {
+    let payload = ClaudeHookPublisher.readBoundedStdin(
+        limits: ClaudeHookLimits(maxLineBytes: VibeHookInputParser.maxPayloadBytes)
+    )
+    ClaudeHookPublisher().runVibe(stdin: payload)
+    exit(0)
+}
+
 let event = parsedEvent(from: arguments)
 let stdin = ClaudeHookPublisher.readBoundedStdin()
 ClaudeHookPublisher().run(stdin: stdin, fallbackEvent: event)

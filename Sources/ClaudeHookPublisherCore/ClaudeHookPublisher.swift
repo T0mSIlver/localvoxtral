@@ -228,9 +228,18 @@ public struct ClaudeHookPublisher: Sendable {
     /// the thing this session lives in". None of them is content, and the list
     /// grows only for values that answer that question.
     func processInfo() -> ClaudeHookProcessInfo {
-        // ONE ppid resolution feeds both fields: the published claudePID and
+        processInfo(agentPID: environment.ppid(), claudeSessionHandles: true)
+    }
+
+    /// - Parameter claudeSessionHandles: whether the two Claude-allocated
+    ///   session ids are published. They name a CLAUDE session's browser tab or
+    ///   desktop view, and another agent started from inside a Claude Code
+    ///   session inherits them — publishing them there would let that agent's
+    ///   session join the Claude view it was launched from.
+    func processInfo(agentPID: Int32, claudeSessionHandles: Bool = false) -> ClaudeHookProcessInfo {
+        // ONE pid resolution feeds both fields: the published claudePID and
         // the tty's process-table fallback must describe the same process.
-        let claudePID = environment.ppid()
+        let claudePID = agentPID
         return ClaudeHookProcessInfo(
             hookPID: environment.pid(),
             claudePID: claudePID,
@@ -240,8 +249,8 @@ public struct ClaudeHookPublisher: Sendable {
             herdrSocketPath: nonEmptyVariable("HERDR_SOCKET_PATH"),
             cmuxSurfaceID: nonEmptyVariable("CMUX_SURFACE_ID"),
             cmuxSocketPath: nonEmptyVariable("CMUX_SOCKET_PATH"),
-            bridgeSessionID: nonEmptyVariable("CLAUDE_CODE_BRIDGE_SESSION_ID"),
-            desktopSessionID: nonEmptyVariable("CLAUDE_CODE_HOST_SESSION_ID")
+            bridgeSessionID: claudeSessionHandles ? nonEmptyVariable("CLAUDE_CODE_BRIDGE_SESSION_ID") : nil,
+            desktopSessionID: claudeSessionHandles ? nonEmptyVariable("CLAUDE_CODE_HOST_SESSION_ID") : nil
         )
     }
 

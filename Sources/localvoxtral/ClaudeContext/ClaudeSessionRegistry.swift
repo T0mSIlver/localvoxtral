@@ -183,7 +183,7 @@ public final class ClaudeSessionRegistry: Sendable {
         // outright closes the aliasing hole where a crafted `claude` record
         // literally named "opencode:X" would collide with opencode's raw "X".
         if origin.isLocalAuthenticated, record.agent == .claude,
-           record.sessionID.hasPrefix(ClaudeAgentSessionScope.opencodePrefix)
+           ClaudeAgentSessionScope.agentPrefixes.contains(where: record.sessionID.hasPrefix)
                || record.sessionID.hasPrefix(ClaudeRemoteSessionScope.prefix) {
             return nil
         }
@@ -1093,13 +1093,14 @@ public final class ClaudeSessionRegistry: Sendable {
 
     private static func hasValidNamespace(_ snapshot: ClaudeSessionSnapshot) -> Bool {
         var transportID = snapshot.sessionID
-        switch snapshot.agent {
-        case .claude:
-            guard !transportID.hasPrefix(ClaudeAgentSessionScope.opencodePrefix) else { return false }
-        case .opencode:
-            guard transportID.hasPrefix(ClaudeAgentSessionScope.opencodePrefix) else { return false }
-            transportID.removeFirst(ClaudeAgentSessionScope.opencodePrefix.count)
+        if let agentPrefix = ClaudeAgentSessionScope.prefix(for: snapshot.agent) {
+            guard transportID.hasPrefix(agentPrefix) else { return false }
+            transportID.removeFirst(agentPrefix.count)
             guard !transportID.isEmpty else { return false }
+        } else {
+            guard !ClaudeAgentSessionScope.agentPrefixes.contains(where: transportID.hasPrefix) else {
+                return false
+            }
         }
 
         switch snapshot.origin {
