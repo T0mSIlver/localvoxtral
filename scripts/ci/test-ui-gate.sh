@@ -850,8 +850,8 @@ grep -q "taking control in 3" "$TMP_DIR/say.log" \
   || fail "launch did not speak the takeover warning (owner rule)"
 grep -q "done" "$TMP_DIR/say.log" \
   || fail "launch did not announce completion (owner rule)"
-grep -q -- "-n $CLEAN_APP" "$TMP_DIR/open.log" \
-  || fail "launch did not open the validated bundle"
+grep -q -- "-n --env LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN=1 $CLEAN_APP" "$TMP_DIR/open.log" \
+  || fail "launch did not open the validated bundle with the keychain off: $(cat "$TMP_DIR/open.log")"
 pass "allowed: launch records identity, warns audibly, announces completion"
 
 # A second launch while one is recorded would orphan that pid and silently
@@ -1557,7 +1557,7 @@ grep -q "menudismiss 4242" "$TMP_DIR/swift.log" \
   || fail "menu dismiss spoke a takeover warning for a verb that steals nothing: $(cat "$TMP_DIR/say.log")"
 
 # A helper that refuses must not be reported as success.
-run_gate 'menu open' "${APP_ENV[@]}" STUB_MENU_FAIL=1
+run_gate 'menu open' "${APP_ENV[@]}" "${LEASE_HOLD[@]}" STUB_MENU_FAIL=1
 (( GATE_STATUS != 0 )) || fail "menu open reported success when the helper failed"
 [[ "$GATE_STDERR" == *"status menu did not open"* ]] \
   || fail "menu open's failure message is unhelpful: $GATE_STDERR"
@@ -3090,10 +3090,11 @@ echo "== 29. the takeover lease: one warning per burst, one done per burst =="
 # and its 3 s wait were paid on EVERY verb and "done" was spoken on every verb.
 # The rule is about the owner being surprised, and a burst surprises him once.
 # So the first GUI verb warns, waits and writes a lease; verbs inside the lease
-# window skip the warning and refresh it; "done" is spoken once, by a detached
-# announcer that only speaks if its nonce is still the one on file after a
-# lease window. The clock is the gate's now_epoch seam (NOW_EPOCH), so nothing
-# below waits out a real window.
+# window skip the warning and carry it forward; "done" is spoken once, by a
+# detached announcer that only speaks if its nonce is still the one on file
+# after a window in which NOTHING ran — and speaking it retires the lease, so
+# the next burst warns again. The clock is the gate's now_epoch seam
+# (NOW_EPOCH), so nothing below waits out a real window.
 
 LEASE_FILE="$FAKE_HOME/.localvoxtral-ui-gate/takeover.lease"
 LEASE_SECONDS=120
@@ -3102,10 +3103,20 @@ clear_state
 clear_conf
 write_app_state 4242
 
-# 1. The first GUI verb of a burst: warning, the 3 s wait, a lease, a "done".
+# `sleep` is instant here, so a burst that is not held open ends the moment it
+# starts: the announcer wakes, finds the gate quiet, speaks and retires the
+# lease. Every case below that is about a LIVE burst therefore holds the
+# announcers inside their window (the sleep stub's hold file, released in case
+# 7) and joins them by hand rather than through run_gate.
+LEASE_HOLD=(STUB_SLEEP_HOLD_SECONDS=120 STUB_SLEEP_HOLD_FILE="$TMP_DIR/release-announcers")
+rm -f "$TMP_DIR/release-announcers"
+SKIP_ANNOUNCER_WAIT=1
+
+# 1. The first GUI verb of a burst: warning, the 3 s wait, a lease, an armed
+# announcer — and no "done" while the burst is still open.
 : >"$TMP_DIR/say.log"
 : >"$TMP_DIR/sleep.log"
-run_gate 'ax click role=AXButton,title=General' "${APP_ENV[@]}"
+run_gate 'ax click role=AXButton,title=General' "${APP_ENV[@]}" "${LEASE_HOLD[@]}"
 (( GATE_STATUS == 0 )) || fail "lease: first ax click failed: $GATE_STDERR"
 grep -q "taking control in 3" "$TMP_DIR/say.log" \
   || fail "lease: the first GUI verb of a burst did not speak the takeover warning"
@@ -3115,15 +3126,18 @@ grep -qx "3" "$TMP_DIR/sleep.log" \
 lease_mode="$(file_mode "$LEASE_FILE")"
 [[ "$lease_mode" == "600" ]] || fail "lease: the lease file is mode '$lease_mode', not 0600"
 grep -qx "since=1000" "$LEASE_FILE" || fail "lease: the lease did not record the clock: $(cat "$LEASE_FILE")"
-grep -q "done" "$TMP_DIR/say.log" \
-  || fail "lease: the burst's done-announcer did not speak after the lease window"
-pass "the first GUI verb warns, waits, writes a 0600 lease, and done follows the window"
+grep -q '^announcer=' "$LEASE_FILE" \
+  || fail "lease: the warning armed no done-announcer: $(cat "$LEASE_FILE")"
+if grep -q "done" "$TMP_DIR/say.log"; then
+  fail "lease: done was spoken while the burst was still open"
+fi
+pass "the first GUI verb warns, waits, writes a 0600 lease and arms the burst's done"
 
 # 2. A GUI verb inside the window: no warning, no wait, a refreshed lease.
 : >"$TMP_DIR/say.log"
 : >"$TMP_DIR/sleep.log"
 NOW_EPOCH=1050
-run_gate 'key escape' "${APP_ENV[@]}"
+run_gate 'key escape' "${APP_ENV[@]}" "${LEASE_HOLD[@]}"
 (( GATE_STATUS == 0 )) || fail "lease: key inside the window failed: $GATE_STDERR"
 if grep -q "taking control" "$TMP_DIR/say.log"; then
   fail "lease: a GUI verb 50 s into a 120 s lease spoke the takeover warning again"
@@ -3138,7 +3152,7 @@ pass "a GUI verb inside the lease window skips the warning and the wait, and ref
 : >"$TMP_DIR/say.log"
 : >"$TMP_DIR/sleep.log"
 NOW_EPOCH=1170
-run_gate 'ax click role=AXButton,title=General' "${APP_ENV[@]}"
+run_gate 'ax click role=AXButton,title=General' "${APP_ENV[@]}" "${LEASE_HOLD[@]}"
 (( GATE_STATUS == 0 )) || fail "lease: ax click after expiry failed: $GATE_STDERR"
 grep -q "taking control in 3" "$TMP_DIR/say.log" \
   || fail "lease: a GUI verb after the lease expired did not warn again"
@@ -3150,7 +3164,7 @@ pass "a GUI verb after the lease window warns and waits again"
 # be looking at whatever it left behind — and still skips the warning.
 : >"$TMP_DIR/say.log"
 NOW_EPOCH=1180
-run_gate 'menu open' "${APP_ENV[@]}" STUB_MENU_FAIL=1
+run_gate 'menu open' "${APP_ENV[@]}" "${LEASE_HOLD[@]}" STUB_MENU_FAIL=1
 (( GATE_STATUS != 0 )) || fail "lease: menu open with a failing helper reported success"
 grep -q "failed" "$TMP_DIR/say.log" \
   || fail "lease: a failed verb inside the lease did not say failed"
@@ -3162,27 +3176,52 @@ pass "a failed verb inside the lease says failed immediately, without re-warning
 # 5. A clock that stepped back makes the lease worthless, not eternal.
 : >"$TMP_DIR/say.log"
 NOW_EPOCH=900
-run_gate 'key tab' "${APP_ENV[@]}"
+run_gate 'key tab' "${APP_ENV[@]}" "${LEASE_HOLD[@]}"
 (( GATE_STATUS == 0 )) || fail "lease: key with a stepped-back clock failed: $GATE_STDERR"
 grep -q "taking control in 3" "$TMP_DIR/say.log" \
   || fail "lease: a lease dated in the future was honoured"
 pass "a lease from the future is not a lease"
 
-# 6. Non-GUI verbs neither take nor extend the lease, and `state` reports it.
-NOW_EPOCH=2000
-run_gate 'ax dump all' "${APP_ENV[@]}"
+# 6. A read-only verb is still the gate working: it pushes the lease forward
+# without touching the nonce, so a burst that spends a minute on `shot` and
+# `ax dump` between two clicks stays ONE burst — one warning at the top, one
+# "done" at the end, silence in between. Measuring the lease from the last
+# focus-stealing verb instead announced "done" into the middle of a live
+# session (field report 2026-09-20).
+NOW_EPOCH=1000
+: >"$TMP_DIR/say.log"
+run_gate 'ax dump all' "${APP_ENV[@]}" "${LEASE_HOLD[@]}"
 (( GATE_STATUS == 0 )) || fail "lease: ax dump failed: $GATE_STDERR"
-grep -qx "since=900" "$LEASE_FILE" || fail "lease: a read-only verb touched the lease: $(cat "$LEASE_FILE")"
-STATE="$(state_json 'state with an expired lease' "${APP_ENV[@]}")"
+grep -qx "since=1000" "$LEASE_FILE" \
+  || fail "lease: a read-only verb did not carry the lease forward: $(cat "$LEASE_FILE")"
+[[ ! -s "$TMP_DIR/say.log" ]] \
+  || fail "lease: a read-only verb spoke: $(cat "$TMP_DIR/say.log")"
+NOW_EPOCH=1050
+run_gate 'key tab' "${APP_ENV[@]}" "${LEASE_HOLD[@]}"
+(( GATE_STATUS == 0 )) || fail "lease: key after a read-only verb failed: $GATE_STDERR"
+if grep -q "taking control" "$TMP_DIR/say.log"; then
+  fail "lease: a GUI verb 50 s after a read-only verb warned again — the burst was cut in two"
+fi
+pass "read-only verbs carry the burst forward: no second warning inside a working session"
+
+# 6b. And when the gate really does go quiet, the lease lapses: `state` says
+# so, and it says how long is left before "done" is spoken.
+NOW_EPOCH=1200
+STATE="$(state_json 'state with an expired lease' "${APP_ENV[@]}" "${LEASE_HOLD[@]}")"
 [[ "$(state_field "$STATE" 's["takeover"]["leased"]')" == "False" ]] \
-  || fail "state reported a live lease 1100 s after it was written: $STATE"
-NOW_EPOCH=930
-STATE="$(state_json 'state with a live lease' "${APP_ENV[@]}")"
+  || fail "state reported a live lease 150 s after the last verb: $STATE"
+NOW_EPOCH=1080
+run_gate 'key tab' "${APP_ENV[@]}" "${LEASE_HOLD[@]}"
+NOW_EPOCH=1110
+STATE="$(state_json 'state with a live lease' "${APP_ENV[@]}" "${LEASE_HOLD[@]}")"
 [[ "$(state_field "$STATE" 's["takeover"]["leased"]')" == "True" ]] \
   || fail "state did not report the live lease: $STATE"
-[[ "$(state_field "$STATE" 's["takeover"]["remaining_seconds"]')" == "90" ]] \
+# A full window, not 30 s less: `state` is a verb like any other, so asking
+# carried the lease forward too. The number answers "if the gate stops now,
+# when is done spoken", and `leased` answers "will my next click warn".
+[[ "$(state_field "$STATE" 's["takeover"]["remaining_seconds"]')" == "120" ]] \
   || fail "state did not report the lease's remaining seconds: $STATE"
-pass "read-only verbs leave the lease alone, and state reports whether the next click will warn"
+pass "a lease nothing refreshed lapses, and state reports what is left of a live one"
 
 # 7. "done" is spoken ONCE per burst: an announcer whose nonce was superseded
 # by a later verb wakes and says nothing. The `sleep 120` of the announcers is
@@ -3220,6 +3259,59 @@ done
 [[ "$(grep -c "done" "$TMP_DIR/say.log")" == "1" ]] \
   || fail "lease: expected exactly one done for a two-verb burst, say.log: $(cat "$TMP_DIR/say.log")"
 pass "done is spoken exactly once per burst: a superseded announcer stays silent"
+
+# 7b. Speaking "done" ENDS the takeover: the announcer retires its own lease,
+# so the next verb is a new burst and warns again. Without this the owner
+# hears "done" and then a click he was never warned about.
+[[ ! -e "$LEASE_FILE" ]] \
+  || fail "lease: the announcer spoke done and left the lease standing: $(cat "$LEASE_FILE")"
+: >"$TMP_DIR/say.log"
+NOW_EPOCH=3020
+run_gate 'ax click role=AXButton,title=General' "${APP_ENV[@]}"
+(( GATE_STATUS == 0 )) || fail "lease: the verb after done failed: $GATE_STDERR"
+grep -q "taking control in 3" "$TMP_DIR/say.log" \
+  || fail "lease: the first verb after a spoken done did not warn"
+pass "done retires the lease, so the burst after it warns again"
+
+# 7c. The announcement is armed when the takeover is ANNOUNCED, not when the
+# verb exits: an invocation killed mid-flight (a harness timeout, a dropped
+# link) has already retired the previous announcer, and arming at exit meant
+# the burst ended in silence with the lease standing. Here the gate is stopped
+# with SIGKILL while `launch` waits for the app to appear — no EXIT trap runs
+# — and the burst still announces itself.
+clear_state
+: >"$TMP_DIR/say.log"
+rm -f "$TMP_DIR/release-launch-wait"
+NOW_EPOCH=4000
+SKIP_ANNOUNCER_WAIT=1
+# 2>/dev/null: the kill below is the point of the case, and the shell's
+# "Killed" notice for it would read like a suite failure in the CI log.
+( run_gate "launch $CLEAN_APP" "${APP_ENV[@]}" LAUNCH_WAIT=30 \
+    STUB_SLEEP_HOLD_SECONDS=0.5 STUB_SLEEP_HOLD_FILE="$TMP_DIR/release-launch-wait" ) 2>/dev/null &
+killed_gate=""
+for (( i = 0; i < 1000; i++ )); do
+  killed_gate="$(pgrep -f "bash $GATE" 2>/dev/null | head -n 1 || true)"
+  [[ -n "$killed_gate" ]] && grep -q '^announcer=' "$LEASE_FILE" 2>/dev/null && break
+  killed_gate=""
+  /bin/sleep 0.01
+done
+[[ -n "$killed_gate" ]] \
+  || fail "lease: no gate process with an armed announcer appeared to kill"
+kill -9 "$killed_gate" 2>/dev/null || true
+wait
+: >"$TMP_DIR/release-launch-wait"
+[[ ! -e "$FAKE_HOME/.localvoxtral-ui-gate/app.state" ]] \
+  || fail "lease: the gate finished its launch — the kill did not land where the case needs it"
+for (( i = 0; i < 500; i++ )); do
+  grep -q "done" "$TMP_DIR/say.log" && break
+  /bin/sleep 0.01
+done
+grep -q "done" "$TMP_DIR/say.log" \
+  || fail "lease: a verb killed before its EXIT trap swallowed the burst's done: $(cat "$TMP_DIR/say.log")"
+unset SKIP_ANNOUNCER_WAIT
+clear_state
+write_app_state 4242
+pass "a verb killed before its EXIT trap still announces the end of the burst"
 
 # 8. Lease 0 is the v1 rule: warn on every verb, done on every verb, no file.
 clear_state
@@ -3546,19 +3638,37 @@ run_gate 'batch' "${APP_ENV[@]}" <<<$'\nax dump all\n\nkey escape\n'
 grep -q "lines=2$" <<<"$GATE_STDOUT" || fail "batch: blank lines were counted as verbs: $GATE_STDOUT"
 pass "batch is bounded in lines and bytes, and blank lines are spacers, not verbs"
 
-# 8. With the lease on, a batch of GUI verbs warns ONCE.
+# 8. With the lease on, a batch of GUI verbs warns ONCE — and says "done"
+# once, after the last line, not between them. The announcers are held inside
+# their window the way section 29 holds them: `sleep` is instant here, so an
+# unheld announcer would end the burst between two lines of the same batch.
 clear_state
 write_app_state 4242
 : >"$TMP_DIR/say.log"
+rm -f "$TMP_DIR/release-announcers"
 LEASE_SECONDS=120
 NOW_EPOCH=5000
-run_gate 'batch' "${APP_ENV[@]}" <<<$'ax click role=AXButton,title=General\nkey escape\nkey tab'
+SKIP_ANNOUNCER_WAIT=1
+run_gate 'batch' "${APP_ENV[@]}" \
+  STUB_SLEEP_HOLD_SECONDS=120 STUB_SLEEP_HOLD_FILE="$TMP_DIR/release-announcers" \
+  <<<$'ax click role=AXButton,title=General\nkey escape\nkey tab'
 (( GATE_STATUS == 0 )) || fail "batch: a leased GUI batch failed: $GATE_STDERR"
 [[ "$(grep -c "taking control" "$TMP_DIR/say.log")" == "1" ]] \
   || fail "batch: three GUI lines under a lease warned $(grep -c "taking control" "$TMP_DIR/say.log") times"
+if grep -q "done" "$TMP_DIR/say.log"; then
+  fail "batch: done was spoken between the lines of one batch: $(cat "$TMP_DIR/say.log")"
+fi
+: >"$TMP_DIR/release-announcers"
+unset SKIP_ANNOUNCER_WAIT
+for (( i = 0; i < 500; i++ )); do
+  grep -q "done" "$TMP_DIR/say.log" && break
+  /bin/sleep 0.01
+done
+[[ "$(grep -c "done" "$TMP_DIR/say.log")" == "1" ]] \
+  || fail "batch: expected one done after the batch, say.log: $(cat "$TMP_DIR/say.log")"
 LEASE_SECONDS=0
 unset NOW_EPOCH
-pass "a batch of GUI verbs under the lease speaks the warning once"
+pass "a batch of GUI verbs under the lease warns once, and says done once, after the last line"
 clear_state
 
 echo "== 32. ax find — the dump narrowed to a selector =="
@@ -3604,6 +3714,109 @@ grep -q 'ElementSelector(argv\[2\])' <<<"$AXFIND_BODY" \
 grep -q 'renderNode(' <<<"$AXFIND_BODY" \
   || fail "axfind does not render matches with the shared renderNode"
 pass "the helper's axfind shares the selector, walker and renderer with click and dump"
+
+echo "== 33. launch starts the app with the login keychain off =="
+
+# The app reads the API key its selected engine needs during startup, on the
+# main thread, and this app has no Team ID — so macOS partitions its keychain
+# items by the build's code-signing hash and a freshly installed artifact's
+# first read raises a MODAL prompt before the menu bar item exists. Nothing
+# this gate has can answer that dialog (it belongs to SecurityAgent), so an
+# unattended run stopped dead at it: securityd, 2026-09-20, `displaying
+# keychain prompt for …/localvoxtral.app(19562)` 11 s after the `launch`.
+#
+# So `launch` opens the bundle with the same opt-out every CI lane that opens
+# it already sets, and hands it whatever keys the machine-local secrets file
+# carries. `--keychain` opts back in.
+
+SECRETS_FILE="$FAKE_HOME/.localvoxtral-ui-gate.secrets"
+clear_state
+rm -f "$SECRETS_FILE"
+: >"$TMP_DIR/open.log"
+run_gate "launch $CLEAN_APP" "${APP_ENV[@]}" STUB_PGREP_PID=4242
+(( GATE_STATUS == 0 )) || fail "keychain: launch failed: $GATE_STDERR"
+grep -q -- "--env LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN=1" "$TMP_DIR/open.log" \
+  || fail "keychain: launch did not disable the login keychain: $(cat "$TMP_DIR/open.log")"
+[[ "$GATE_STDERR" == *"login keychain disabled for this launch; env keys: none"* ]] \
+  || fail "keychain: launch did not say what the app started with: $GATE_STDERR"
+grep -q "keychain=0" "$LOG_FILE" \
+  || fail "keychain: the log line does not record the keychain decision: $(log_tail)"
+pass "launch disables the login keychain, and says so"
+
+# --keychain is the way back to the real thing, for the run whose subject IS
+# the keychain path. The prompt is then the owner's to answer.
+clear_state
+: >"$TMP_DIR/open.log"
+run_gate "launch --keychain $CLEAN_APP" "${APP_ENV[@]}" STUB_PGREP_PID=4242
+(( GATE_STATUS == 0 )) || fail "keychain: launch --keychain failed: $GATE_STDERR"
+if grep -q -- "--env" "$TMP_DIR/open.log"; then
+  fail "keychain: launch --keychain still passed an environment: $(cat "$TMP_DIR/open.log")"
+fi
+grep -q -- "-n $CLEAN_APP" "$TMP_DIR/open.log" \
+  || fail "keychain: launch --keychain did not open the bundle: $(cat "$TMP_DIR/open.log")"
+grep -q "keychain=1" "$LOG_FILE" \
+  || fail "keychain: --keychain is not in the log line: $(log_tail)"
+pass "launch --keychain opts back in to the login keychain"
+
+# The secrets file: only the three names the app reads, only from a 0600 file
+# this account owns, and never a value in the log or on stderr.
+clear_state
+: >"$TMP_DIR/open.log"
+{
+  printf '# machine-local keys for the gate\n'
+  printf '\n'
+  printf 'MISTRAL_API_KEY=mk-test-0123456789\n'
+  printf 'AWS_SECRET_ACCESS_KEY=nope\n'
+  printf 'OPENAI_API_KEY=\n'
+} >"$SECRETS_FILE"
+chmod 600 "$SECRETS_FILE"
+run_gate "launch $CLEAN_APP" "${APP_ENV[@]}" STUB_PGREP_PID=4242
+(( GATE_STATUS == 0 )) || fail "keychain: launch with a secrets file failed: $GATE_STDERR"
+grep -q -- "--env MISTRAL_API_KEY=mk-test-0123456789" "$TMP_DIR/open.log" \
+  || fail "keychain: the allowed key did not reach the app: $(cat "$TMP_DIR/open.log")"
+if grep -q "AWS_SECRET_ACCESS_KEY" "$TMP_DIR/open.log"; then
+  fail "keychain: a name outside the allowlist reached the app: $(cat "$TMP_DIR/open.log")"
+fi
+if grep -q -- "--env OPENAI_API_KEY=" "$TMP_DIR/open.log"; then
+  fail "keychain: an empty value was passed as a key: $(cat "$TMP_DIR/open.log")"
+fi
+[[ "$GATE_STDERR" == *"env keys: MISTRAL_API_KEY"* ]] \
+  || fail "keychain: launch did not name the keys it passed: $GATE_STDERR"
+if grep -q "mk-test-0123456789" "$LOG_FILE"; then
+  fail "keychain: a key value was written to the gate log"
+fi
+if [[ "$GATE_STDERR" == *"mk-test-0123456789"* ]]; then
+  fail "keychain: a key value was printed on stderr"
+fi
+pass "the secrets file passes only allowlisted names, and never leaks a value"
+
+# A file anyone else can read is not a file that may hold API keys, and the
+# refusal says how to fix it rather than leaving an empty key field to explain.
+clear_state
+: >"$TMP_DIR/open.log"
+chmod 644 "$SECRETS_FILE"
+run_gate "launch $CLEAN_APP" "${APP_ENV[@]}" STUB_PGREP_PID=4242
+(( GATE_STATUS == 0 )) || fail "keychain: launch with a loose secrets file failed: $GATE_STDERR"
+if grep -q "MISTRAL_API_KEY" "$TMP_DIR/open.log"; then
+  fail "keychain: keys were read out of a group-readable file: $(cat "$TMP_DIR/open.log")"
+fi
+[[ "$GATE_STDERR" == *"must be mode 0600"* && "$GATE_STDERR" == *"chmod 600"* ]] \
+  || fail "keychain: the loose-permissions refusal does not say what to do: $GATE_STDERR"
+pass "a secrets file the rest of the machine can read is ignored, loudly"
+
+# --keychain means the login keychain, not the login keychain AND a file.
+clear_state
+: >"$TMP_DIR/open.log"
+chmod 600 "$SECRETS_FILE"
+run_gate "launch --keychain $CLEAN_APP" "${APP_ENV[@]}" STUB_PGREP_PID=4242
+(( GATE_STATUS == 0 )) || fail "keychain: launch --keychain with a secrets file failed: $GATE_STDERR"
+if grep -q "MISTRAL_API_KEY" "$TMP_DIR/open.log"; then
+  fail "keychain: --keychain still handed the app a key from the file: $(cat "$TMP_DIR/open.log")"
+fi
+pass "--keychain takes the keys from the keychain and nowhere else"
+
+rm -f "$SECRETS_FILE"
+clear_state
 
 echo "== 28. nothing here needs a bash newer than the Mac's /bin/bash 3.2 =="
 

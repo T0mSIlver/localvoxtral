@@ -580,7 +580,7 @@ full-screen capture anywhere in it:
 | verb | what it does |
 | --- | --- |
 | `state` | JSON: lock state, idle seconds, AC/battery, the Accessibility + Screen Recording preflight, whether an app under test is running, which terminals this gate opened — and a `setup` section that says which verbs will work before you try them (below) |
-| `launch [--dogfood] <artifact>` | launches a `.app` that is under an allowlisted root **and** has `CFBundleIdentifier com.localvoxtral.app`; records pid + start time + executable path; prints the pid. Refuses beside any running localvoxtral, including one this gate did not start |
+| `launch [--dogfood] [--keychain] <artifact>` | launches a `.app` that is under an allowlisted root **and** has `CFBundleIdentifier com.localvoxtral.app`; records pid + start time + executable path; prints the pid. Refuses beside any running localvoxtral, including one this gate did not start. Starts it with the login keychain off and the keys from `~/.localvoxtral-ui-gate.secrets`, so no modal prompt can block an unattended run — `--keychain` opts back in |
 | `shot [settings\|popover\|overlay\|window <n>]` | base64 PNG of ONE window, resolved from the window list filtered to that pid, refused if the resolved window's owner is anything else. stdout is pure base64; the `shot: window …` line is on **stderr**, so pipe straight into `base64 -d` — no `tail` |
 | `ax dump [all\|settings\|overlay\|window <n>]` | the AX element tree of that pid's windows, as JSON |
 | `ax find <selector>` | `ax dump` narrowed to the nodes the selector matches, each with its own (bounded) subtree — same grammar and validator as `ax click`, so what it prints is what `click` would press. Read-only, no warning |
@@ -635,10 +635,11 @@ Three refusals are load-bearing and are what the regression suite
   keyboard or raises a window in front of what the owner is doing. The
   warning is per **burst**, not per verb: the first GUI verb warns and waits
   as stated, then holds a takeover lease for `LV_UI_TAKEOVER_LEASE_SECONDS`
-  (120); GUI verbs inside the lease skip the warning and refresh it; "done"
-  is spoken once, a lease window after the burst's last verb; a failure is
-  spoken at once regardless. `LV_UI_TAKEOVER_LEASE_SECONDS=0` in the conf
-  restores warn-on-every-verb. Details under "Fast enough for click-by-click".
+  (45); verbs inside the lease skip the warning and carry it forward; "done"
+  is spoken once, a window after the gate's last verb **of any kind**, and
+  retires the lease so the next burst warns again; a failure is spoken at once
+  regardless. `LV_UI_TAKEOVER_LEASE_SECONDS=0` in the conf restores
+  warn-on-every-verb. Details under "Fast enough for click-by-click".
 
 ### One-time install (owner GUI session on the Mac)
 
@@ -723,17 +724,33 @@ of which moves a trust boundary:
 - **Takeover lease.** The warning + 3 s wait + spoken "done" were paid on
   every GUI verb. Now the first GUI verb of a burst does exactly that and
   writes `~/.localvoxtral-ui-gate/takeover.lease` (0600: a timestamp and a
-  nonce, nothing else); a GUI verb inside `LV_UI_TAKEOVER_LEASE_SECONDS` (120)
-  skips the warning and refreshes the lease. "done" is spoken once per burst
-  by a detached announcer: each GUI verb starts one that sleeps one lease
-  window, re-reads the lease, and speaks only if its own nonce is still the
-  one on file — earlier announcers wake to a foreign nonce and exit. Nothing
-  to track, nothing to kill, lifetime bounded by `sleep` itself; it is what
-  "cannot leave a stuck background process" reduces to. A failing verb says
-  "failed" immediately, lease or not. `state` reports
-  `takeover.leased`/`remaining_seconds` so a caller knows whether the next
-  click will warn. The lease is never cached in memory — every verb re-reads
-  the file and the clock — and the lock state is never cached at all.
+  nonce, nothing else); a verb inside `LV_UI_TAKEOVER_LEASE_SECONDS` (45)
+  skips the warning and carries the lease forward. "done" is spoken once per
+  burst by a detached announcer: a warning verb starts one, and it speaks only
+  if its own nonce is still the one on file after a window in which the gate
+  did nothing at all — earlier announcers wake to a foreign nonce and exit.
+  It is armed when the warning is spoken, not when the verb exits, so an
+  invocation killed mid-flight (a harness timeout, a dropped link) cannot take
+  the announcement with it. Speaking "done" retires the lease, so the next
+  verb warns again. A failing verb says "failed" immediately, lease or not.
+
+  Every verb counts, `shot` and `ax dump` as much as `ax click`: what the
+  owner hears is one warning at the top of a session, silence while it works,
+  and one "done" at the end. Measuring the window from the last
+  focus-stealing verb instead announced "done" into the middle of a live
+  session and left a finished one silent for two minutes (field report
+  2026-09-20). One bound worth knowing: nothing refreshes the lease *during* a
+  single verb, so a verb that runs longer than the window can have "done"
+  spoken under it. Every verb's own budget is well inside the default
+  (`dictate hold` caps at 30 s, `launch` and `term open` at 20 s); the
+  exception is the first GUI verb after a gate reinstall, which also compiles
+  the helper.
+
+  `state` reports `takeover.leased` (will the next click warn?) and
+  `remaining_seconds` (if the gate stops now, when is "done" spoken?) — asking
+  is itself a verb, so it carries the lease forward like any other. The lease
+  is never cached in memory — every verb re-reads the file and the clock —
+  and the lock state is never cached at all.
 - **Compiled helper.** The AX/CoreGraphics helper was `swift <file>` — about
   a second of interpreter start-up per call, and some verbs call it twice.
   It is now compiled once per revision of its source with `swiftc -O` into
@@ -1130,6 +1147,43 @@ dictation is in flight. Do quit the running app before `launch` — a second
 instance fights the first for the global hotkey and for the speechd/polishd
 ports 8471/8472.
 
+### API keys for a launched build (`~/.localvoxtral-ui-gate.secrets`)
+
+`launch` starts the app with the login keychain **off**
+(`LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN=1`, the same opt-out the CI lanes use).
+The reason is not tidiness: the app has no Team ID, so macOS partitions its
+keychain items by the build's code-signing hash, and a freshly installed
+artifact's first key read raises a modal prompt on the main thread before the
+menu bar item exists. No gate verb can answer that dialog — it belongs to
+SecurityAgent — so the run stops dead until the owner clicks Allow (securityd,
+2026-09-20: `displaying keychain prompt for …/localvoxtral.app(19562)`, 11 s
+after the `launch`).
+
+Keys handed to the app through its environment still apply, so a hosted-engine
+session is testable without the prompt. One `NAME=value` per line, `#`
+comments ignored, mode 0600, owned by the GUI account:
+
+```bash
+install -m 600 /dev/null ~/.localvoxtral-ui-gate.secrets
+printf 'MISTRAL_API_KEY=%s\n' "$KEY" >> ~/.localvoxtral-ui-gate.secrets
+```
+
+Only `MISTRAL_API_KEY`, `OPENAI_API_KEY` and `LLM_POLISHING_API_KEY` are
+passed; every other name is refused on stderr. Each `launch` says what it
+started the app with (`env keys: MISTRAL_API_KEY`, or `none`), because an
+empty key field three verbs later is otherwise indistinguishable from a broken
+settings pane. Values never reach the gate log.
+
+**What this costs:** the values are `open --env` arguments, so they are visible
+in `ps` to every process on the machine while that `open` runs — the
+build-gate account included. That is the trade the owner made on 2026-09-20 to
+keep hosted-engine dictation drivable unattended. Leave the file absent and
+the app simply starts with no keys.
+
+`launch --keychain <artifact>` opts back in to the real login keychain (and
+ignores the file) for the run whose subject *is* the keychain path; the prompt
+is then yours to answer.
+
 ### Machine-local config (`~/.localvoxtral-ui-gate.conf`, GUI account)
 
 Never committed; same trust argument as the build gate's conf (anyone who can
@@ -1141,6 +1195,8 @@ write it can already replace the gate script).
 # LV_UI_TERM_COMMAND_DIRS="$HOME/bin"   # where an allowlisted name is resolved
 # LV_UI_TERMINALS="ghostty iterm terminal"
 # LV_UI_WARN_SLEEP_SECONDS=3                              # 0 only if you are sitting there
+# LV_UI_TAKEOVER_LEASE_SECONDS=45       # quiet window before "done"; 0 = warn on every verb
+# LV_UI_SECRETS_FILE="$HOME/.localvoxtral-ui-gate.secrets"
 # LV_UI_SHOT_MAX_BYTES=8388608
 ```
 
