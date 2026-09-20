@@ -5,9 +5,13 @@ import SwiftUI
 /// terminal actions back to AppKit. For a menu-bar (LSUIElement) app there is no
 /// launch window scene, so the wizard is presented programmatically and the app
 /// is activated so it is visible.
+///
+/// The wizard is a real window the user can switch away from mid-setup, so it
+/// registers with `DockIconPolicy` for a Dock tile the same way Settings does.
 @MainActor
 final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private let model: OnboardingViewModel
+    private let dockIconPolicy: DockIconPolicy
     private var window: NSWindow?
 
     /// Invoked once the wizard window has closed (for any reason).
@@ -17,8 +21,10 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         settings: SettingsStore,
         viewModel: DictationViewModel,
         backendManager: any ManagedBackendManaging,
+        dockIconPolicy: DockIconPolicy,
         openEndpointsSettings: @escaping () -> Void
     ) {
+        self.dockIconPolicy = dockIconPolicy
         let driver = LiveOnboardingBootstrapDriver(backendManager: backendManager)
         model = OnboardingViewModel(settings: settings, viewModel: viewModel, driver: driver)
         super.init()
@@ -46,6 +52,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         window.center()
         self.window = window
 
+        dockIconPolicy.addWindow(ObjectIdentifier(window))
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }
@@ -62,6 +69,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         // onboarding (closing counts as "skip"); the user can re-run it from
         // Settings ▸ General.
         model.completeOnboarding()
+        if let window { dockIconPolicy.removeWindow(ObjectIdentifier(window)) }
         window?.delegate = nil
         window = nil
         onFinished?()
