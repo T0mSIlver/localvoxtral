@@ -87,6 +87,34 @@ final class OverlayStableLineWrapperTests: XCTestCase {
         )
     }
 
+    // MARK: - Text that is rewritten, not just appended to
+
+    /// The buffer is not append-only: a final transcript can reword the partial
+    /// it replaces, the replacement dictionary rewrites completed words to a
+    /// different length, and polishing replaces the whole text at stop. A break
+    /// remembered by offset would then land on a different word and hold a line
+    /// open there for the rest of the session.
+    func testRewrittenTextDropsBreaksFromTheChangedCharacterOn() {
+        var wrapper = makeWrapper(lineCharacters: 10, reserveCharacters: 3)
+        // Records a break for the word starting at offset 8 ("c").
+        XCTAssertEqual(wrapper.wrapped("aaa bbb c"), "aaa bbb\nc")
+
+        // A rewrite of the earlier text shifts everything after it, and offset
+        // 8 now starts "cc" — a word that fits where it is. Keeping the break
+        // would open a line under "bbbbb" for the rest of the session.
+        XCTAssertEqual(wrapper.wrapped("a bbbbb cc ddd"), "a bbbbb cc\nddd")
+    }
+
+    func testBreaksBeforeTheRewriteAreKept() {
+        var wrapper = makeWrapper(lineCharacters: 10, reserveCharacters: 3)
+        XCTAssertEqual(wrapper.wrapped("aaa bbb c"), "aaa bbb\nc")
+
+        // The change lands inside the word the break was recorded for, after
+        // the break itself — that word stays where the user last saw it, rather
+        // than every remembered break being thrown away on any edit.
+        XCTAssertEqual(wrapper.wrapped("aaa bbb ce "), "aaa bbb\nce")
+    }
+
     // MARK: - Words the stream has finished
 
     func testFinishedWordsWrapTightly() {
@@ -103,6 +131,15 @@ final class OverlayStableLineWrapperTests: XCTestCase {
         XCTAssertEqual(wrapper.wrapped("aaa bbb c."), "aaa bbb c.")
     }
 
+    /// The display path flattens newlines before they reach the wrapper, so
+    /// this pins the contract rather than a live case: a break in the text is a
+    /// break on screen, not separator width charged against the line.
+    func testNewlineInTheTextIsHonoredAsABreak() {
+        var wrapper = makeWrapper(lineCharacters: 10, reserveCharacters: 3)
+
+        XCTAssertEqual(wrapper.wrapped("aa\nbb cc "), "aa\nbb cc")
+    }
+
     func testWordLongerThanTheLineKeepsItsOwnLine() {
         var wrapper = makeWrapper(lineCharacters: 10, reserveCharacters: 3)
 
@@ -111,7 +148,7 @@ final class OverlayStableLineWrapperTests: XCTestCase {
         XCTAssertEqual(wrapper.wrapped("aaa bbbbbbbbbbbb"), "aaa\nbbbbbbbbbbbb")
     }
 
-    func testEmptyAndWhitespaceOnlyTextAreLeftAlone() {
+    func testEmptyTextStaysEmptyAndWhitespaceOnlyTextCollapses() {
         var wrapper = makeWrapper(lineCharacters: 10, reserveCharacters: 3)
 
         XCTAssertEqual(wrapper.wrapped(""), "")

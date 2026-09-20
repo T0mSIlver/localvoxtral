@@ -42,10 +42,17 @@ struct OverlayStableLineWrapper {
     private let safetyMargin: CGFloat
 
     /// Character offsets of words pushed onto their own line while incomplete.
-    /// Keyed by offset because the transcript grows at its end, so an offset
-    /// keeps pointing at the same word; a rewrite upstream can shift one, and a
-    /// stale offset that no longer starts a word is simply never consulted.
+    ///
+    /// Offsets hold only while the text grows at its end, and it does not
+    /// always: a final transcript can reword the partial it replaces, the
+    /// replacement dictionary rewrites completed words to a different length,
+    /// and polishing replaces the whole buffer at stop. Each of those shifts
+    /// everything after the edit, so a remembered offset would land on another
+    /// word and break the line there for the rest of the session. `wrapped`
+    /// therefore drops every offset from the first changed character onward —
+    /// see `retainedBreakOffsets`.
     private var forcedBreakOffsets: Set<Int> = []
+    private var previousCharacters: [Character] = []
     private var widthCache: [String: CGFloat] = [:]
 
     init(
@@ -63,6 +70,7 @@ struct OverlayStableLineWrapper {
     /// Ends the session: the next wrap starts with no remembered breaks.
     mutating func reset() {
         forcedBreakOffsets.removeAll()
+        previousCharacters.removeAll()
         widthCache.removeAll()
     }
 
@@ -70,6 +78,8 @@ struct OverlayStableLineWrapper {
     mutating func wrapped(_ text: String) -> String {
         let characters = Array(text)
         guard !characters.isEmpty else { return text }
+        forcedBreakOffsets = retainedBreakOffsets(forNew: characters)
+        previousCharacters = characters
 
         let lineWidth = max(availableWidth - safetyMargin, 1)
         // Only the last word can still be growing, and only when the text does
@@ -97,6 +107,7 @@ struct OverlayStableLineWrapper {
             guard !word.isEmpty else { break }  // trailing whitespace only
 
             let isLastWord = offset == characters.count
+            let separatorHasNewline = separator.contains(where: \.isNewline)
             let separatorWidth = line.isEmpty ? 0 : width(of: separator)
             let wordWidth = width(of: word)
 
@@ -107,7 +118,13 @@ struct OverlayStableLineWrapper {
             }
 
             let breaksHere: Bool
-            if forcedBreakOffsets.contains(wordStart) {
+            if separatorHasNewline {
+                // The display path flattens newlines before the text gets here,
+                // so this is a contract guard rather than a live case: a break
+                // in the text is honored as a break on screen, instead of being
+                // charged as separator width and wrapping the line early.
+                breaksHere = true
+            } else if forcedBreakOffsets.contains(wordStart) {
                 breaksHere = true
             } else if lineUsed + separatorWidth + wordWidth > lineWidth {
                 // A growing word that outran the room it started in has to move
@@ -139,6 +156,20 @@ struct OverlayStableLineWrapper {
 
         lines.append(line)
         return lines.joined(separator: "\n")
+    }
+
+    /// The remembered breaks that still point at the word they were recorded
+    /// for: everything before the first character that changed. Offsets from
+    /// there on refer to text that no longer exists in that place.
+    private func retainedBreakOffsets(forNew characters: [Character]) -> Set<Int> {
+        guard !forcedBreakOffsets.isEmpty else { return forcedBreakOffsets }
+        var commonPrefix = 0
+        let shared = min(characters.count, previousCharacters.count)
+        while commonPrefix < shared, characters[commonPrefix] == previousCharacters[commonPrefix] {
+            commonPrefix += 1
+        }
+        guard commonPrefix < previousCharacters.count else { return forcedBreakOffsets }
+        return forcedBreakOffsets.filter { $0 < commonPrefix }
     }
 
     private mutating func width(of text: String) -> CGFloat {
