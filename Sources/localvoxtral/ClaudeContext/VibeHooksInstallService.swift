@@ -26,10 +26,10 @@ public struct VibeHooksInstallService: Sendable {
         markerBegin: "# >>> localvoxtral >>>",
         markerEnd: "# <<< localvoxtral <<<"
     )
-    /// Hook names the block declares. Vibe deduplicates hooks by `name`, so a
-    /// hand-written hook with one of these names outside the block would
-    /// shadow or be shadowed by ours.
-    static let hookNamePrefix = "localvoxtral-"
+    /// The hook names the shipped block declares. Vibe deduplicates hooks by
+    /// exact `name`, so a hand-written hook with one of these names outside
+    /// the block would shadow or be shadowed by ours.
+    public static let hookNames: Set<String> = ["localvoxtral-files", "localvoxtral-turn"]
 
     private let bundledShimData: @Sendable () -> Data?
     private let bundledHooksBlock: @Sendable () -> String?
@@ -59,6 +59,11 @@ public struct VibeHooksInstallService: Sendable {
         case installed
         /// Both present, but the shim or the block differs from this build's.
         case updateAvailable
+        /// `hooks.toml` declares one of our hook names outside the block, or
+        /// puts a key right after it. Vibe would run one of the two hooks and
+        /// not say which, and removing the block would hand that key to
+        /// another hook. The user has to resolve it; nothing is written.
+        case conflictingHooks
         /// A file cannot be read, is not UTF-8, or carries unpaired markers.
         case unknown
     }
@@ -67,12 +72,14 @@ public struct VibeHooksInstallService: Sendable {
         switch status {
         case .notInstalled, .hooksWithoutShim, .shimWithoutHooks, .unknown: return "Set up…"
         case .updateAvailable: return "Update…"
-        case .installed: return nil
+        case .installed, .conflictingHooks: return nil
         }
     }
 
+    /// Not while `hooks.toml` conflicts: Remove would refuse for the same
+    /// reason Set up does.
     public static func offersRemove(for status: Status) -> Bool {
-        status != .notInstalled
+        status != .notInstalled && status != .conflictingHooks
     }
 
     public static func sentence(for status: Status) -> String {
@@ -82,6 +89,7 @@ public struct VibeHooksInstallService: Sendable {
         case .shimWithoutHooks: return "Installed, not listed in hooks.toml."
         case .installed: return "Installed."
         case .updateAvailable: return "Update available."
+        case .conflictingHooks: return "hooks.toml needs a manual fix."
         case .unknown: return "Could not read your Vibe config."
         }
     }
@@ -98,7 +106,12 @@ public struct VibeHooksInstallService: Sendable {
         } else {
             hooksText = ""
         }
-        if Self.block.hasDamagedBlock(hooksText) { return .unknown }
+        if Self.block.hasDamagedBlock(hooksText) || Self.markerIsInsideMultilineString(hooksText) {
+            return .unknown
+        }
+        if Self.declaresOurHookOutsideBlock(hooksText) || Self.keyFollowsBlock(hooksText) {
+            return .conflictingHooks
+        }
         let hasBlock = Self.block.containsBlock(hooksText)
 
         switch (state.shimFileExists, hasBlock) {
@@ -123,9 +136,12 @@ public struct VibeHooksInstallService: Sendable {
         case bundledFilesUnavailable
         case isSymlink
         case unreadable
-        /// Unpaired markers, a non-UTF-8 file, or a hook of ours declared
-        /// outside the block.
+        /// Unpaired markers, a marker inside a multi-line string, a non-UTF-8
+        /// file, a hook of ours declared outside the block, or a key right
+        /// after the block.
         case refused
+        /// `hooks.toml` or the shim changed between reading and writing.
+        case changedOnDisk
     }
 
     public func install() throws {
@@ -140,6 +156,7 @@ public struct VibeHooksInstallService: Sendable {
         guard let updated = Self.hooksByInstalling(snippet: snippet, into: existing) else {
             throw ServiceError.refused
         }
+        try Self.refuseIfChanged(since: state, fileSystem)
         if !state.shimDirExists {
             try fileSystem.createShimDirectory(permissions: 0o700)
         }
@@ -159,7 +176,10 @@ public struct VibeHooksInstallService: Sendable {
 
         if state.hooksFileExists {
             let existing = try Self.hooksText(in: state)
-            guard let remaining = Self.block.remove(from: existing) else { throw ServiceError.refused }
+            guard !Self.markerIsInsideMultilineString(existing), !Self.keyFollowsBlock(existing),
+                  let remaining = Self.block.remove(from: existing)
+            else { throw ServiceError.refused }
+            try Self.refuseIfChanged(since: state, fileSystem)
             if remaining != existing {
                 if remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     try fileSystem.deleteHooks()
@@ -182,21 +202,87 @@ public struct VibeHooksInstallService: Sendable {
 
     /// `hooks.toml` text with this build's block in it, or nil to refuse.
     static func hooksByInstalling(snippet: String, into existing: String) -> String? {
-        guard !declaresOurHookOutsideBlock(existing) else { return nil }
+        guard !markerIsInsideMultilineString(existing),
+              !declaresOurHookOutsideBlock(existing),
+              !keyFollowsBlock(existing)
+        else { return nil }
         return block.apply(to: existing, snippet: snippet)
     }
 
-    /// Does the text, with our block taken out, still declare a hook whose
-    /// name starts with our prefix? Unpaired markers count as "yes": there is
-    /// no telling what is outside a block that does not close.
+    /// These three checks read TOML line by line instead of parsing it: the
+    /// app has no TOML parser, and each check only has to be right about the
+    /// few shapes that make a marker-based edit unsafe. Each errs toward
+    /// refusing.
+
+    /// Does the text, with our block taken out, declare a hook with one of our
+    /// exact names? `name` may be written bare or quoted, and the value in
+    /// either TOML string style. Unpaired markers count as "yes": there is no
+    /// telling what is outside a block that does not close.
     static func declaresOurHookOutsideBlock(_ existing: String) -> Bool {
         guard let outside = block.remove(from: existing) else { return true }
         return block.splitLines(outside).contains { line in
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("name"), let equals = trimmed.firstIndex(of: "=") else { return false }
-            let value = trimmed[trimmed.index(after: equals)...].trimmingCharacters(in: .whitespaces)
-            return value.hasPrefix("\"" + hookNamePrefix) || value.hasPrefix("'" + hookNamePrefix)
+            guard let (key, value) = keyValue(in: line), key == "name" else { return false }
+            return hookNames.contains { value.hasPrefix("\"\($0)\"") || value.hasPrefix("'\($0)'") }
         }
+    }
+
+    /// Is the first meaningful line after a block a key rather than a table
+    /// header? Such a key belongs to OUR last `[[hooks]]` table; removing or
+    /// replacing the block would silently hand it to the table before.
+    static func keyFollowsBlock(_ existing: String) -> Bool {
+        let lines = block.splitLines(existing)
+        guard case .present(let ranges) = block.locateBlock(in: lines) else { return false }
+        return ranges.contains { range in
+            let next = lines[(range.upperBound + 1)...].first { line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                return !trimmed.isEmpty && !trimmed.hasPrefix("#")
+            }
+            guard let next else { return false }
+            return !next.trimmingCharacters(in: .whitespaces).hasPrefix("[")
+        }
+    }
+
+    /// Does a marker line sit inside a TOML multi-line string? Then it is the
+    /// user's data, not a delimiter. Counted as an odd number of `"""` or
+    /// `'''` delimiters before the line; a file this cannot classify is
+    /// refused, which is the safe direction.
+    static func markerIsInsideMultilineString(_ existing: String) -> Bool {
+        var openBasic = false
+        var openLiteral = false
+        for line in block.splitLines(existing) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed == block.markerBegin || trimmed == block.markerEnd {
+                if openBasic || openLiteral { return true }
+                continue
+            }
+            if !openLiteral, line.components(separatedBy: "\"\"\"").count % 2 == 0 { openBasic.toggle() }
+            if !openBasic, line.components(separatedBy: "'''").count % 2 == 0 { openLiteral.toggle() }
+        }
+        return false
+    }
+
+    /// `key = value` of one line, the key unquoted. Nil for anything else.
+    private static func keyValue(in line: String) -> (key: String, value: String)? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard let equals = trimmed.firstIndex(of: "="), !trimmed.hasPrefix("#") else { return nil }
+        let key = trimmed[..<equals].trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        let value = trimmed[trimmed.index(after: equals)...].trimmingCharacters(in: .whitespaces)
+        return (key, value)
+    }
+
+    /// Last look before writing. The edit was computed from `state`; if
+    /// `hooks.toml` or the shim changed since (an editor saved, Vibe wrote),
+    /// renaming our version over it would drop that change. This narrows the
+    /// read-modify-write window to the two calls below it and does not close
+    /// it: there is no lock an editor would honor.
+    private static func refuseIfChanged(
+        since state: VibeHooksState, _ fileSystem: any VibeHooksFileSystem
+    ) throws {
+        let current = try fileSystem.readState()
+        guard current.hooksData == state.hooksData, current.hooksFileExists == state.hooksFileExists,
+              current.shimData == state.shimData
+        else { throw ServiceError.changedOnDisk }
     }
 
     /// The bundled block without its trailing newline: `MarkedTextBlock`

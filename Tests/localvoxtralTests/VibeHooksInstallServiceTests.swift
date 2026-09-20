@@ -12,11 +12,22 @@ private final class StubVibeFS: VibeHooksFileSystem, @unchecked Sendable {
 
     init(state: VibeHooksState) { _state = state }
 
+    /// Applied to the state on the Nth `readState` call (1-based), to play an
+    /// editor saving between the service's read and its write.
+    var mutateOnRead: (call: Int, change: @Sendable (inout VibeHooksState) -> Void)?
+    private var reads = 0
+
     var state: VibeHooksState { lock.withLock { _state } }
     var operations: [String] { lock.withLock { _operations } }
     var hooksText: String? { state.hooksData.map { String(decoding: $0, as: UTF8.self) } }
 
-    func readState() throws -> VibeHooksState { state }
+    func readState() throws -> VibeHooksState {
+        lock.withLock {
+            reads += 1
+            if let mutateOnRead, mutateOnRead.call == reads { mutateOnRead.change(&_state) }
+            return _state
+        }
+    }
 
     func createShimDirectory(permissions: UInt16) throws {
         lock.withLock {
@@ -207,6 +218,29 @@ final class VibeHooksInstallServiceTests: XCTestCase {
                 ),
                 .refused
             ),
+            (
+                "our hook name under a quoted key, literal string",
+                VibeHooksState(
+                    hooksFileExists: true,
+                    hooksData: Data("[[hooks]]\n\"name\" = 'localvoxtral-files'\n".utf8)
+                ),
+                .refused
+            ),
+            (
+                "markers inside a multi-line string are the user's data",
+                VibeHooksState(
+                    hooksFileExists: true,
+                    hooksData: Data(
+                        "note = \"\"\"\n# >>> localvoxtral >>>\nuser data\n# <<< localvoxtral <<<\n\"\"\"\n".utf8
+                    )
+                ),
+                .refused
+            ),
+            (
+                "a key right after the block belongs to our last table",
+                VibeHooksState(hooksFileExists: true, hooksData: Data((Self.block + "custom = 2\n").utf8)),
+                .refused
+            ),
         ]
         for (label, state, expected) in cases {
             let (service, fs) = service(state: state)
@@ -215,6 +249,60 @@ final class VibeHooksInstallServiceTests: XCTestCase {
             }
             XCTAssertEqual(fs.operations, [], "\(label): nothing may be written")
         }
+    }
+
+    func testNamesThatMerelyLookLikeOursDoNotBlockAnInstall() throws {
+        // Vibe deduplicates by EXACT name, so these are the user's own.
+        let theirs = "namespace = \"localvoxtral-turn\"\n\n[[hooks]]\nname = \"localvoxtral-custom\"\n"
+            + "# name = \"localvoxtral-turn\"\n"
+        let (service, fs) = service(state: VibeHooksState(hooksFileExists: true, hooksData: Data(theirs.utf8)))
+        try service.install()
+        XCTAssertEqual(fs.hooksText, theirs + "\n" + Self.block)
+        XCTAssertEqual(service.status(), .installed)
+    }
+
+    func testAConflictIsReportedAndOffersNoButtonThatWouldRefuse() {
+        let duplicate = Self.block + "\n[[hooks]]\nname = \"localvoxtral-turn\"\ntype = \"post_agent\"\n"
+        XCTAssertEqual(service(state: installed(hooks: duplicate)).0.status(), .conflictingHooks)
+        XCTAssertEqual(
+            service(state: installed(hooks: Self.block + "custom = 2\n")).0.status(), .conflictingHooks
+        )
+        XCTAssertNil(VibeHooksInstallService.setupButtonTitle(for: .conflictingHooks))
+        XCTAssertFalse(VibeHooksInstallService.offersRemove(for: .conflictingHooks))
+        XCTAssertEqual(
+            VibeHooksInstallService.sentence(for: .conflictingHooks), "hooks.toml needs a manual fix."
+        )
+        // A comment or a new table after the block is fine.
+        let fine = Self.block + "\n# mine\n[[hooks]]\nname = \"after\"\n"
+        XCTAssertEqual(service(state: installed(hooks: fine)).0.status(), .installed)
+    }
+
+    func testTheShippedHookNamesAreTheOnesTheCollisionCheckKnows() throws {
+        let blockURL = try XCTUnwrap(
+            ClaudePluginAssets.vibeFileURL(named: ClaudePluginAssets.vibeHooksBlockFileName)
+        )
+        let names = try String(contentsOf: blockURL, encoding: .utf8)
+            .split(separator: "\n").filter { $0.hasPrefix("name = ") }
+            .map { $0.dropFirst("name = \"".count).dropLast() }.map(String.init)
+        XCTAssertEqual(Set(names), VibeHooksInstallService.hookNames)
+    }
+
+    func testAnEditThatLandsBetweenReadAndWriteIsNotOverwritten() {
+        let (installing, installFS) = service(state: VibeHooksState(
+            hooksFileExists: true, hooksData: Data(Self.userHooks.utf8)
+        ))
+        installFS.mutateOnRead = (2, { $0.hooksData = Data((Self.userHooks + "# saved just now\n").utf8) })
+        XCTAssertThrowsError(try installing.install()) { error in
+            XCTAssertEqual(error as? VibeHooksInstallService.ServiceError, .changedOnDisk)
+        }
+        XCTAssertEqual(installFS.operations, [])
+
+        let (removing, removeFS) = service(state: installed())
+        removeFS.mutateOnRead = (2, { $0.hooksData = Data((Self.block + "\n[[hooks]]\nname = \"new\"\n").utf8) })
+        XCTAssertThrowsError(try removing.remove()) { error in
+            XCTAssertEqual(error as? VibeHooksInstallService.ServiceError, .changedOnDisk)
+        }
+        XCTAssertEqual(removeFS.operations, [])
     }
 
     func testInstallNeedsBothBundledFilesAndAWellFormedBlock() {
@@ -290,6 +378,50 @@ final class VibeHooksInstallServiceTests: XCTestCase {
     }
 }
 
+// MARK: - Packaged lookup
+
+final class VibePackagedFilesTests: XCTestCase {
+    /// `vibeFileURL` falls back to the repo checkout, so a test that uses its
+    /// defaults cannot tell whether the PACKAGED locations resolve. These pass
+    /// fixture directories instead.
+    func testBothPackagedLocationsResolveBeforeTheCheckout() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("vibe-pkg-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        for location in ["bundle", "app"] {
+            let directory = root.appendingPathComponent(location)
+                .appendingPathComponent(ClaudePluginAssets.vibePackagedDirectoryName)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data(location.utf8).write(to: directory.appendingPathComponent("publish.sh"))
+        }
+        let empty = root.appendingPathComponent("empty")
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+
+        func resolved(resources: String, bundle: String) throws -> String {
+            let url = try XCTUnwrap(ClaudePluginAssets.vibeFileURL(
+                named: "publish.sh",
+                resourcesURL: root.appendingPathComponent(resources),
+                bundleResourcesURL: root.appendingPathComponent(bundle)
+            ))
+            return try String(contentsOf: url, encoding: .utf8)
+        }
+        XCTAssertEqual(try resolved(resources: "app", bundle: "bundle"), "bundle")
+        XCTAssertEqual(try resolved(resources: "app", bundle: "empty"), "app")
+    }
+
+    func testPackagingCopiesBothFilesWhereTheLookupReads() throws {
+        let script = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("scripts/package_app.sh"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(script.contains("Contents/Resources/\(ClaudePluginAssets.vibePackagedDirectoryName)/"))
+        for name in [ClaudePluginAssets.vibeShimFileName, ClaudePluginAssets.vibeHooksBlockFileName] {
+            XCTAssertTrue(script.contains("$VIBE_HOOKS_SOURCE/\(name)"), name)
+        }
+    }
+}
+
 // MARK: - Live file system
 
 final class LiveVibeHooksFileSystemTests: XCTestCase {
@@ -350,6 +482,7 @@ final class VibeSidebarStatusTests: XCTestCase {
         XCTAssertEqual(IntegrationsSidebarStatus.vibeDot(status: .installed), .green)
         XCTAssertEqual(IntegrationsSidebarStatus.vibeDot(status: .updateAvailable), .green)
         XCTAssertEqual(IntegrationsSidebarStatus.vibeDot(status: .hooksWithoutShim), .yellow)
+        XCTAssertEqual(IntegrationsSidebarStatus.vibeDot(status: .conflictingHooks), .yellow)
         XCTAssertEqual(IntegrationsSidebarStatus.vibeDot(status: .notInstalled), .yellow)
         XCTAssertEqual(IntegrationsSidebarStatus.vibeDot(status: .unknown), .grey)
     }

@@ -17,10 +17,14 @@ entry there states what the session log read is limited to.
 In localvoxtral, open **Settings → Mistral Vibe → Hooks → Set up…**. One
 consent sentence names both files. The app copies its bundled `publish.sh` to
 `~/.vibe/localvoxtral/` and adds the marked block to `~/.vibe/hooks.toml`,
-creating that file when it is absent and leaving every other line of it alone.
-**Remove** reverses both. The app refuses to write when `~/.vibe` or either
-file is a symlink, when `hooks.toml` has an unpaired marker, or when a hook
-named `localvoxtral-…` exists outside the block. After an app update, the next
+creating that file when it is absent and writing only between its two markers.
+**Remove** deletes the block, the blank line before it and the script. The app
+refuses to write when `~/.vibe` or either file is a symlink, when `hooks.toml`
+has an unpaired marker or a marker inside a multi-line string, when a hook
+named `localvoxtral-files` or `localvoxtral-turn` exists outside the block,
+when a key follows the block before the next table header, or when the file
+changed while the app was editing it. The row then reads "hooks.toml needs a
+manual fix." or reports the failure. After an app update, the next
 launch refreshes an existing install.
 
 The same install by hand:

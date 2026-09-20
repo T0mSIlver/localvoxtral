@@ -42,7 +42,7 @@ enum IntegrationsSidebarStatus {
     static func vibeDot(status: VibeHooksInstallService.Status) -> SettingsStatusDot {
         switch status {
         case .installed, .updateAvailable: return .green
-        case .notInstalled, .hooksWithoutShim, .shimWithoutHooks: return .yellow
+        case .notInstalled, .hooksWithoutShim, .shimWithoutHooks, .conflictingHooks: return .yellow
         case .unknown: return .grey
         }
     }
