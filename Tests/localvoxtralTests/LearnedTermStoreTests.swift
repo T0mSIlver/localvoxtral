@@ -29,6 +29,7 @@ final class LearnedTermStoreTests: XCTestCase {
         store.waitForPendingWrites()
 
         let reopened = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        reopened.waitForPendingWrites()
         XCTAssertEqual(reopened.confirmedTerms(projectKey: project.key), ["Voxtral"])
         XCTAssertEqual(reopened.summary().terms, 1)
         XCTAssertEqual(reopened.summary().projects, 1)
@@ -99,6 +100,7 @@ final class LearnedTermStoreTests: XCTestCase {
         let store = LearnedTermStore(fileURL: nil, now: { Self.start })
         store.record(observations("Voxtral", "polishd"), project: project)
         store.record(observations("Voxtral"), project: project)
+        store.waitForPendingWrites()
 
         XCTAssertTrue(store.confirmedTerms(projectKey: project.key).isEmpty)
         XCTAssertEqual(store.confirmedTerms(projectKey: project.key, minimumDictations: 2), ["Voxtral"])

@@ -633,6 +633,12 @@ final class DictationViewModel {
     @ObservationIgnored
     var debugRepoVocabularyEntriesOverride:
         (@MainActor (String) -> RepoVocabularyMatcher.GroundingOutcome?)?
+    /// Test seam: the git root the entries seam above reports, standing in for
+    /// what the real pipeline resolves. Nil means "ran, no repository", the
+    /// same as the live path — never "did not run", which only skipping the
+    /// pipeline produces.
+    @ObservationIgnored
+    var debugRepoVocabularyRootOverride: String?
     /// Test seam: replaces only the DETACHED vocabulary pipeline (AX title /
     /// process cwd + git index + match) while keeping the deadline race in
     /// play, so tests can inject a never-completing pipeline and prove the

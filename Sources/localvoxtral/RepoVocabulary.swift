@@ -937,7 +937,7 @@ enum RepoVocabularyService {
         workingDirectoryForPID: @Sendable (pid_t) -> String? = {
             TerminalDescendantProcessResolver.liveWorkingDirectory(forPID: $0)
         },
-        rootSink: (@Sendable (String) -> Void)? = nil
+        rootSink: (@Sendable (String?) -> Void)? = nil
     ) async -> RepoVocabularyMatcher.GroundingOutcome? {
         var gitRoot: String?
         if let title,
@@ -981,7 +981,13 @@ enum RepoVocabularyService {
         // resolved off the main actor, which is why the learned-terms project
         // key is taken from here rather than walking the filesystem again on
         // the commit path.
-        if let gitRoot { rootSink?(gitRoot) }
+        //
+        // Nil is reported too, and means something different from staying
+        // silent: the resolution ran and this is not a repository. The tier-2
+        // ambiguity exits above return BEFORE this line on purpose — several
+        // repos under one terminal is not "no repository", it is "we do not
+        // know", and the caller must be able to tell those apart.
+        rootSink?(gitRoot)
 
         guard let gitRoot else {
             // Shape is class-mapped (letters->a, digits->9), never content —

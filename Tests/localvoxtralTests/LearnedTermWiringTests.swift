@@ -10,7 +10,8 @@ final class LearnedTermWiringTests: XCTestCase {
     private static var retainedViewModels: [DictationViewModel] = []
 
     private func makeViewModel(
-        outcome: RepoVocabularyMatcher.GroundingOutcome?
+        outcome: RepoVocabularyMatcher.GroundingOutcome?,
+        repositoryRoot: String? = nil
     ) -> (DictationViewModel, LearnedTermStore) {
         let settings = makeSettings()
         settings.llmPolishingEnabled = true
@@ -35,6 +36,7 @@ final class LearnedTermWiringTests: XCTestCase {
         viewModel.llmPolishingService = IdentityPolishingService()
         viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
         viewModel.debugRepoVocabularyEntriesOverride = { _ in outcome }
+        viewModel.debugRepoVocabularyRootOverride = repositoryRoot
         let store = LearnedTermStore(fileURL: nil)
         viewModel.learnedTermStore = store
         Self.retainedViewModels.append(viewModel)
@@ -47,6 +49,7 @@ final class LearnedTermWiringTests: XCTestCase {
         viewModel.currentDictationEventText = text
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await waitUntilStoppedSessionCompletes(viewModel)
+        viewModel.learnedTermStore?.waitForPendingWrites()
     }
 
     /// A spelling the merge pre-applied is remembered, under the shared
@@ -86,6 +89,33 @@ final class LearnedTermWiringTests: XCTestCase {
         await commit(viewModel, text: "open use off please")
 
         XCTAssertEqual(store.snapshot().termCount, 0)
+    }
+
+    /// The repository the pipeline resolved is the project the dictation
+    /// teaches — not the shared bucket, which is for dictation with no project
+    /// at all.
+    func testTermIsRememberedUnderTheResolvedRepository() async {
+        let (viewModel, store) = makeViewModel(
+            outcome: RepoVocabularyMatcher.GroundingOutcome(
+                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["useauth.ts"])],
+                isFallbackOnly: false
+            ),
+            repositoryRoot: "/Users/t/work/localvoxtral"
+        )
+
+        await commit(viewModel, text: "open useauth.ts please")
+
+        XCTAssertEqual(
+            store.confirmedTerms(
+                projectKey: "/Users/t/work/localvoxtral", minimumDictations: 1
+            ),
+            ["useAuth.ts"]
+        )
+        XCTAssertTrue(
+            store.confirmedTerms(
+                projectKey: LearnedTermProjectResolver.shared.key, minimumDictations: 1
+            ).isEmpty
+        )
     }
 
     /// Two dictations of the same term are two confirmations, not one: the

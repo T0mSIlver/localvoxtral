@@ -1914,11 +1914,14 @@ extension DictationViewModel {
     ///
     /// Cheap enough for the commit path: an in-memory merge, with the file
     /// write left to the store's own background queue.
+    /// A nil `project` means the app could not establish which project this
+    /// dictation belongs to, and nothing is learned from it — see
+    /// `LearnedTermProjectResolver.resolve`.
     func recordLearnedTerms(
         merged: PolishContextGrounding.Merged,
-        project: LearnedTermProjectResolver.Identity
+        project: LearnedTermProjectResolver.Identity?
     ) {
-        guard let learnedTermStore else { return }
+        guard let learnedTermStore, let project else { return }
         let observations = PolishContextSource.allCases.flatMap { source in
             merged.entries(from: source).map {
                 LearnedTermObservation(term: $0.replaceWith, source: source)
@@ -1947,6 +1950,10 @@ extension DictationViewModel {
         }
         #if DEBUG
         if let override = debugRepoVocabularyEntriesOverride {
+            // The seam stands in for the whole pipeline, root report included:
+            // without this a test could never exercise a resolved project, and
+            // the box's meaning would differ between tests and production.
+            repositoryRoot?.report(debugRepoVocabularyRootOverride)
             return override(transcript)
         }
         #endif
@@ -2059,7 +2066,7 @@ extension DictationViewModel {
                 terminalApplicationPID: processFallbackPID,
                 transcript: transcript,
                 cache: cache,
-                rootSink: { root in repositoryRoot?.set(root) }
+                rootSink: { root in repositoryRoot?.report(root) }
             )
         }
     }
@@ -2739,11 +2746,15 @@ extension DictationViewModel {
 /// after the deadline writes into a box nobody will read again, rather than
 /// attributing the next dictation's terms to the wrong project.
 final class RepoVocabularyRootBox: @unchecked Sendable {
-    private let root = Mutex<String?>(nil)
+    private let outcome = Mutex(LearnedTermProjectResolver.RepositoryRoot.unknown)
 
-    var value: String? { root.withLock { $0 } }
+    var value: LearnedTermProjectResolver.RepositoryRoot { outcome.withLock { $0 } }
 
-    func set(_ newValue: String) { root.withLock { $0 = newValue } }
+    /// Nil means the pipeline resolved no repository, which is not the same as
+    /// never reporting — see `LearnedTermProjectResolver.RepositoryRoot`.
+    func report(_ root: String?) {
+        outcome.withLock { $0 = root.map { .root($0) } ?? .noRepository }
+    }
 }
 
 /// Winner of the repo-vocabulary race in `repoVocabularyGroundingIfEnabled`:
