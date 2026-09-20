@@ -116,12 +116,15 @@ set -euo pipefail
 # `quit` and `term close` do not warn: none of them takes the keyboard or
 # raises a window in front of what the owner is doing. The warning is spoken
 # once per BURST, not once per click: a takeover LEASE (announce_takeover)
-# lets the verbs that follow within LV_UI_TAKEOVER_LEASE_SECONDS skip the
-# warning, and "done" is spoken once, after the burst has gone quiet.
+# lets the verbs that follow it skip the warning, and "done" is spoken once,
+# LV_UI_TAKEOVER_LEASE_SECONDS after the gate's LAST verb of any kind — after
+# which the lease is retired and the next burst warns again. So the owner
+# hears one warning at the start and one "done" at the end, and silence in
+# between means the gate is still working.
 #
 # Verbs (each documented at its run_* function):
 #   state
-#   launch [--dogfood] <artifact>
+#   launch [--dogfood] [--keychain] <artifact>
 #   shot [settings|popover|overlay|window <n>]
 #   ax dump [settings|overlay|window <n>]
 #   ax find <selector>
@@ -238,12 +241,25 @@ LV_UI_WARN_SLEEP_SECONDS="${LV_UI_WARN_SLEEP_SECONDS:-3}"
 # click. Measured before this: `ax click` cost 13.5 s end to end, of which the
 # warning and its wait were 3 s on EVERY verb, followed by a spoken "done" on
 # every verb. So the first GUI verb of a burst warns and waits exactly as
-# before, then records a lease under the state dir; a GUI verb arriving while
-# the lease is live skips the warning and refreshes the lease; "done" is
-# spoken once, LV_UI_TAKEOVER_LEASE_SECONDS after the burst's last verb
-# (arm_done_announcer). A failed verb still says "failed" at once. 0 disables
-# the lease and restores warn-on-every-verb.
-LV_UI_TAKEOVER_LEASE_SECONDS="${LV_UI_TAKEOVER_LEASE_SECONDS:-120}"
+# before, then records a lease under the state dir; a verb arriving while the
+# lease is live skips the warning; "done" is spoken once, when the gate has
+# been QUIET for LV_UI_TAKEOVER_LEASE_SECONDS, and speaking it expires the
+# lease so the next burst warns again. A failed verb still says "failed" at
+# once. 0 disables the lease and restores warn-on-every-verb.
+#
+# Quiet means no verb of ANY kind, not "no verb that steals focus" (field
+# report 2026-09-20). Measuring it from the last focus-stealing verb made the
+# announcement say the opposite of the truth twice over: an agent that clicked
+# once and then spent five minutes on `shot` and `ax dump` got "done" spoken
+# into the middle of its session, and an agent that really had finished left
+# the owner with two minutes of silence to interpret. Both readings are "I
+# cannot tell whether anything is happening", which is the one thing this
+# announcement exists to answer.
+#
+# 45 s rather than the 120 s it shipped with, for the same reason: "done" is
+# only useful if it arrives while the owner still cares, and it is only
+# truthful if a verb after it warns again.
+LV_UI_TAKEOVER_LEASE_SECONDS="${LV_UI_TAKEOVER_LEASE_SECONDS:-45}"
 
 # `batch`'s bounds: how many lines and how many bytes one batch may carry.
 # Each line is still bounded by LV_UI_MAX_COMMAND_BYTES like a lone command.
@@ -291,6 +307,24 @@ LV_UI_LOG_SUBSYSTEM="${LV_UI_LOG_SUBSYSTEM:-com.localvoxtral}"
 # test the way every other verb does; this name is the fallback used when
 # there is no app under test, and the output says so when it is.
 LV_UI_LOG_PROCESS="${LV_UI_LOG_PROCESS:-localvoxtral}"
+
+# The API keys `launch` hands the app under test, because it starts that app
+# with the login keychain switched OFF (run_launch says why).
+#
+# One `NAME=value` per line, `#` comments and blanks ignored, and only the
+# three names the app reads from its environment. The file must be a regular
+# file owned by this account and readable by nobody else; anything else is
+# refused and said out loud, because a silent fallback here is an unexplained
+# "the key field is empty" three verbs later.
+#
+# WHAT THIS COSTS, stated plainly: the values are passed as `open --env`
+# arguments, so they are visible in `ps` output to every process on this
+# machine for as long as that `open` runs — including the build-gate account
+# that runs CI here. That is the trade the owner chose on 2026-09-20 to keep
+# hosted-engine dictation testable without a modal prompt; leave the file
+# absent and `launch` simply starts the app with no keys.
+LV_UI_SECRETS_FILE="${LV_UI_SECRETS_FILE:-$HOME/.localvoxtral-ui-gate.secrets}"
+LV_UI_SECRET_NAMES="MISTRAL_API_KEY OPENAI_API_KEY LLM_POLISHING_API_KEY"
 
 # `gate-log`'s bounds. This file is written BY this gate, one sanitised
 # printable line per invocation, so the cap is about transcript size and not
@@ -349,7 +383,7 @@ case "$LV_UI_LAUNCH_WAIT_SECONDS" in "" | *[!0-9]*) LV_UI_LAUNCH_WAIT_SECONDS=20
 case "$LV_UI_TERM_OPEN_TIMEOUT_SECONDS" in "" | *[!0-9]*) LV_UI_TERM_OPEN_TIMEOUT_SECONDS=20 ;; esac
 # Same treatment for the three knobs added with the lease and `batch`: each is
 # consumed by `$(( ))`, and a typo in the conf must not take the gate down.
-case "$LV_UI_TAKEOVER_LEASE_SECONDS" in "" | *[!0-9]*) LV_UI_TAKEOVER_LEASE_SECONDS=120 ;; esac
+case "$LV_UI_TAKEOVER_LEASE_SECONDS" in "" | *[!0-9]*) LV_UI_TAKEOVER_LEASE_SECONDS=45 ;; esac
 case "$LV_UI_BATCH_MAX_LINES" in "" | *[!0-9]*) LV_UI_BATCH_MAX_LINES=64 ;; esac
 case "$LV_UI_BATCH_MAX_BYTES" in "" | *[!0-9]*) LV_UI_BATCH_MAX_BYTES=16384 ;; esac
 
@@ -592,31 +626,58 @@ require_unlocked_screen() {
 # ---------------------------------------------------------------------------
 
 # The lease: `since=<epoch>` and `nonce=<token>` in a 0600 file under the
-# 0700 state dir. It is evidence that the owner was warned less than
-# LV_UI_TAKEOVER_LEASE_SECONDS ago and nothing more: no verb reads anything
-# else out of it, and forging it needs write access to the state dir, which is
-# the same trust as replacing this script. Never cached in memory across
-# invocations — every verb re-reads the file and the clock.
+# 0700 state dir. It is evidence that the owner was warned and that the
+# takeover he was warned about is still going, and nothing more: no verb reads
+# anything else out of it, and forging it needs write access to the state dir,
+# which is the same trust as replacing this script. Never cached in memory
+# across invocations — every verb re-reads the file and the clock.
+#
+# `since` is the START of the takeover only for the verb that warned. Every
+# verb after it — `shot` and `ax dump` as much as `ax click` — pushes `since`
+# forward to now, so the lease measures the gate's QUIET rather than the age of
+# the warning (see LV_UI_TAKEOVER_LEASE_SECONDS). A dead lease is never
+# refreshed, only replaced by a new warning: that is what stops a lease file
+# nobody retired from being revived hours later by a passing `state`, which
+# would let a click steal focus in silence.
 LEASE_FILE="$STATE_DIR/takeover.lease"
 LEASE_NONCE=""
 
-lease_is_live() {
-  (( LV_UI_TAKEOVER_LEASE_SECONDS > 0 )) || return 1
+lease_since() { # -> the epoch on file, or empty when there is no usable lease
+  local since
   [[ -f "$LEASE_FILE" ]] || return 1
-  local since now
   since="$(sed -n 's/^since=//p' "$LEASE_FILE" 2>/dev/null | head -n 1)"
   [[ "$since" =~ ^[0-9]+$ ]] || return 1
-  now="$(now_epoch)"
-  # A lease from the future (clock stepped back) is not evidence of anything.
-  (( now >= since && now - since < LV_UI_TAKEOVER_LEASE_SECONDS ))
+  printf '%s' "$since"
 }
 
-lease_remaining_seconds() { # -> 0 when there is no live lease
+lease_left_seconds() { # -> 0 when there is no live lease
   local since now
-  lease_is_live || { printf '0'; return; }
-  since="$(sed -n 's/^since=//p' "$LEASE_FILE" 2>/dev/null | head -n 1)"
+  (( LV_UI_TAKEOVER_LEASE_SECONDS > 0 )) || { printf '0'; return; }
+  since="$(lease_since)" || { printf '0'; return; }
   now="$(now_epoch)"
+  # A lease from the future (clock stepped back) is not evidence of anything.
+  (( now >= since && now - since < LV_UI_TAKEOVER_LEASE_SECONDS )) \
+    || { printf '0'; return; }
   printf '%s' "$(( LV_UI_TAKEOVER_LEASE_SECONDS - (now - since) ))"
+}
+
+lease_is_live() {
+  (( $(lease_left_seconds) > 0 ))
+}
+
+# Push a LIVE lease forward to now, keeping its nonce (the nonce decides which
+# done-announcer speaks, and a read-only verb has none of its own to install).
+# Called at the start of every invocation and again at its exit: the exit call
+# is what keeps a verb that ran for 20 s — `dictate hold`, a slow `ax click` —
+# from having "done" spoken while it is still working.
+refresh_lease() {
+  local staged
+  lease_is_live || return 0
+  staged="$LEASE_FILE.tmp.$$"
+  ( umask 077; sed "s/^since=.*/since=$(now_epoch)/" "$LEASE_FILE" >"$staged" ) 2>/dev/null \
+    || { rm -f "$staged"; return 0; }
+  chmod 0600 "$staged" 2>/dev/null || true
+  mv -f "$staged" "$LEASE_FILE" 2>/dev/null || rm -f "$staged"
 }
 
 # (Re)write the lease with a fresh nonce. The nonce is what retires an older
@@ -635,28 +696,40 @@ write_lease() {
 announce_takeover() {
   local what="$1"
   TAKEOVER_HELD=1
-  if lease_is_live; then
-    # Warned less than a lease ago: this is the same burst. Refresh and go.
-    write_lease
-    return 0
+  if ! lease_is_live; then
+    say "localvoxtral u i gate taking control in 3: $what" >/dev/null 2>&1 || true
+    sleep "$LV_UI_WARN_SLEEP_SECONDS" 2>/dev/null || true
   fi
-  say "localvoxtral u i gate taking control in 3: $what" >/dev/null 2>&1 || true
-  sleep "$LV_UI_WARN_SLEEP_SECONDS" 2>/dev/null || true
+  # Both paths, warned or leased: the new nonce retires the announcer of the
+  # verb before this one, so this verb has to install its replacement.
   write_lease
+  arm_done_announcer
 }
 
-# "done", once, after the burst has gone quiet.
+# "done", once, after the gate has gone quiet.
 #
-# The simplest shape that cannot leave anything stuck: a detached subshell
-# that sleeps one lease window, re-reads the lease, and speaks only if its own
-# nonce is still the one on file. Every GUI verb arms one of these and
-# rewrites the nonce, so the announcers of the verbs before it wake to a
-# foreign nonce and exit silently; the LAST verb's announcer is the one that
+# A detached subshell that waits out the quiet window, re-reads the lease, and
+# speaks only if its own nonce is still the one on file. Every warning verb
+# rewrites the nonce and arms one, so the announcers of the verbs before it
+# wake to a foreign nonce and exit silently; the LAST one is the one that
 # speaks. There is no pid to track and nothing to kill (a recycled pid would
-# make `kill` the hazard), no loop, and a lifetime bounded by `sleep` itself.
-# Detached from the SSH channel on all three descriptors so the session ends
-# when the verb does; HUP is ignored so a client that disconnects right after
-# cannot take the announcement with it.
+# make `kill` the hazard). Detached from the SSH channel on all three
+# descriptors so the session ends when the verb does; HUP is ignored so a
+# client that disconnects right after cannot take the announcement with it.
+#
+# Armed when the takeover is ANNOUNCED, not when the verb exits: a verb that
+# is killed mid-flight — a harness timeout, a dropped link — would otherwise
+# have already retired the previous announcer without arming its replacement,
+# and the burst would end in silence.
+#
+# The loop terminates because every iteration after the first needs a STRICTLY
+# newer `since` than the one it slept on, and the last sleep is bounded by the
+# window. That also makes it correct under a frozen clock (the suite's
+# `LV_UI_NOW_EPOCH`): nothing moved while it slept, so the gate is quiet.
+#
+# After speaking it retires its own lease, so the next verb warns again —
+# "done" and the next "taking control" are the same fact stated twice, and a
+# burst that follows a spoken "done" is a new burst by definition.
 #
 # `announcer=<pid>` is appended to the lease for the shell suite to wait on
 # and for nothing else — it is deliberately not read back by this script.
@@ -665,9 +738,25 @@ arm_done_announcer() {
   local nonce="$LEASE_NONCE" file="$LEASE_FILE" window="$LV_UI_TAKEOVER_LEASE_SECONDS"
   (
     trap '' HUP
-    sleep "$window" 2>/dev/null || true
+    local slept_on remaining seen
+    slept_on="$(lease_since)" || slept_on=""
+    while :; do
+      remaining="$(lease_left_seconds)"
+      (( remaining > 0 )) || break
+      sleep "$remaining" 2>/dev/null || true
+      [[ "$(sed -n 's/^nonce=//p' "$file" 2>/dev/null | head -n 1)" == "$nonce" ]] || exit 0
+      seen="$(lease_since)" || seen=""
+      [[ "$seen" != "$slept_on" ]] || break
+      slept_on="$seen"
+    done
     [[ "$(sed -n 's/^nonce=//p' "$file" 2>/dev/null | head -n 1)" == "$nonce" ]] || exit 0
     say "localvoxtral u i gate done" >/dev/null 2>&1 || true
+    # Only ever this announcer's own lease: a verb that armed a newer one in
+    # the meantime owns the file now, and removing it would cost that burst
+    # its suppressed warning.
+    if [[ "$(sed -n 's/^nonce=//p' "$file" 2>/dev/null | head -n 1)" == "$nonce" ]]; then
+      rm -f "$file"
+    fi
   ) </dev/null >/dev/null 2>&1 &
   printf 'announcer=%s\n' "$!" >>"$file" 2>/dev/null || true
   disown "$!" 2>/dev/null || true
@@ -676,16 +765,13 @@ arm_done_announcer() {
 announce_result() {
   (( TAKEOVER_HELD == 1 )) || return 0
   if (( ACTION_COMPLETED == 1 )); then
-    if (( LV_UI_TAKEOVER_LEASE_SECONDS > 0 )); then
-      arm_done_announcer
-    else
-      say "localvoxtral u i gate done" >/dev/null 2>&1 || true
-    fi
+    # With the lease on, the announcer armed at warning time owes the "done".
+    (( LV_UI_TAKEOVER_LEASE_SECONDS > 0 )) \
+      || say "localvoxtral u i gate done" >/dev/null 2>&1 || true
   else
     # Failure is said at once, lease or no lease — the owner may be looking
     # at whatever it left behind. The burst's "done" still follows.
     say "localvoxtral u i gate failed" >/dev/null 2>&1 || true
-    (( LV_UI_TAKEOVER_LEASE_SECONDS > 0 )) && arm_done_announcer
   fi
   return 0
 }
@@ -697,9 +783,15 @@ STATE_PROBE_DIR=""
 on_exit() {
   [[ -n "$SHOT_FILE" ]] && rm -f "$SHOT_FILE"
   [[ -n "$STATE_PROBE_DIR" ]] && rm -rf "$STATE_PROBE_DIR"
+  refresh_lease
   announce_result
 }
 trap on_exit EXIT
+
+# Every verb counts as activity, allowed or denied, GUI or not: this is where
+# a `shot` or a `gate-log` in the middle of a session keeps the burst — and so
+# the silence between the warning and "done" — from ending under it.
+refresh_lease
 
 # ---------------------------------------------------------------------------
 # Swift helper — every CoreGraphics/AX call lives here
@@ -2088,7 +2180,7 @@ run_state() {
   # Whether the NEXT GUI verb will speak the warning, so a caller can plan a
   # burst around it. Read from the lease file and the clock, never remembered.
   local lease_left
-  lease_left="$(lease_remaining_seconds)"
+  lease_left="$(lease_left_seconds)"
 
   printf '{"screen_lock":%s,"idle_seconds":%s,"power":%s,"tcc":{"accessibility":%s,"screen_recording":%s},"app":%s,"terminals":[%s],"takeover":{"leased":%s,"remaining_seconds":%s,"lease_seconds":%s},"setup":%s}\n' \
     "$(json_string "$lock")" "$idle" "$(json_string "$power")" \
@@ -2097,12 +2189,62 @@ run_state() {
     "$(setup_json "$socket_live")"
 }
 
-# launch [--dogfood] <artifact>
+# The `NAME=value` assignments `launch` passes to the app under test, one per
+# line, or nothing at all. Values never reach the log, stdout or stderr — only
+# the names do, because "which keys did this build start with" is a question
+# the next three verbs depend on and "was the file readable" is not worth a
+# hunt.
+launch_secret_assignments() {
+  local file="$LV_UI_SECRETS_FILE" mode owner line name value
+  [[ -e "$file" ]] || return 0
+  if [[ -L "$file" || ! -f "$file" ]]; then
+    printf 'localvoxtral ui gate: %s is not a regular file — IGNORED, the app starts with no API keys\n' \
+      "$file" >&2
+    return 0
+  fi
+  owner="$(stat -c %u "$file" 2>/dev/null || stat -f %u "$file" 2>/dev/null || true)"
+  if [[ -n "$owner" && "$owner" != "$(id -u)" ]]; then
+    printf 'localvoxtral ui gate: %s is not owned by this account — IGNORED, the app starts with no API keys\n' \
+      "$file" >&2
+    return 0
+  fi
+  mode="$(stat -c %a "$file" 2>/dev/null || stat -f %Lp "$file" 2>/dev/null || true)"
+  # Group or world readable is a file that should not be holding API keys at
+  # all, and this gate is not going to be the reason one does.
+  if [[ -z "$mode" ]] || (( 8#$mode & 8#077 )); then
+    printf 'localvoxtral ui gate: %s must be mode 0600 (it is %s) — IGNORED, the app starts with no API keys. Fix it with: chmod 600 %s\n' \
+      "$file" "${mode:-unreadable}" "$file" >&2
+    return 0
+  fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -n "$line" && "$line" != '#'* ]] || continue
+    name="${line%%=*}"
+    value="${line#*=}"
+    if ! list_contains "$name" "$LV_UI_SECRET_NAMES"; then
+      printf 'localvoxtral ui gate: %s carries a name this gate does not pass (%s); allowed: %s\n' \
+        "$file" "$(shown_command "$name")" "$LV_UI_SECRET_NAMES" >&2
+      continue
+    fi
+    # Same charset every other token on this gate must pass, minus the space:
+    # an API key is one printable run, and a value with a newline or a quote in
+    # it is a file that was edited wrong, not a key.
+    if [[ -z "$value" || "$value" != "${value//[^[:graph:]]/}" || ${#value} -gt 512 ]]; then
+      printf 'localvoxtral ui gate: %s has an unusable value for %s — skipped\n' "$file" "$name" >&2
+      continue
+    fi
+    printf '%s=%s\n' "$name" "$value"
+  done <"$file"
+}
+
+# launch [--dogfood] [--keychain] <artifact>
 run_launch() {
-  local dogfood=0 argument="" bundle stamp pid deadline foreign
+  local dogfood=0 keychain=0 argument="" bundle stamp pid deadline foreign
+  local -a launch_env=()
   while (( $# > 0 )); do
     case "$1" in
       --dogfood) dogfood=1 ;;
+      --keychain) keychain=1 ;;
       -*) deny "unknown launch flag" ;;
       *)
         [[ -z "$argument" ]] || deny "launch takes exactly one artifact"
@@ -2144,7 +2286,7 @@ run_launch() {
   fi
 
   require_unlocked_screen
-  log_command ALLOW "bundle=$bundle dogfood=$dogfood"
+  log_command ALLOW "bundle=$bundle dogfood=$dogfood keychain=$keychain"
   announce_takeover "launching localvoxtral under test"
 
   if (( dogfood == 1 )); then
@@ -2153,7 +2295,44 @@ run_launch() {
     defaults write com.localvoxtral.app debug.dogfood_capture_enabled -bool true >/dev/null 2>&1 || true
   fi
 
-  open -n "$bundle" || fail "open refused the bundle"
+  # The login keychain, OFF by default.
+  #
+  # The app reads the API key its selected engine needs during startup, on the
+  # main thread. This app has no Team ID, so macOS partitions its keychain
+  # items by the build's code-signing hash and the first read from a freshly
+  # installed artifact is an ACL mismatch, which securityd answers with a
+  # MODAL prompt — before the menu bar item exists. Nothing here can click it:
+  # the dialog belongs to SecurityAgent, and every verb this gate has is
+  # scoped to the pid it launched. So an unattended run used to stop dead at a
+  # dialog only the owner could answer (field report 2026-09-20, securityd:
+  # `displaying keychain prompt for …/localvoxtral.app(19562)` 11 s after the
+  # `launch` that armed it).
+  #
+  # LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN is the same opt-out every CI lane that
+  # opens this bundle already sets (StartupPermissionSuppression): the process
+  # gets an in-memory secret store and the keys read as unset — but keys handed
+  # to it through the ENVIRONMENT still apply, which is what the secrets file
+  # is for. `--keychain` opts back in when the real keychain path is the thing
+  # under test, and then the prompt is the owner's to answer.
+  #
+  # `open` hands the bundle to LaunchServices, which does not pass this
+  # shell's environment on: `--env` is the only channel (scripts/lib/launch-app.sh).
+  if (( keychain == 0 )); then
+    launch_env+=(--env LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN=1)
+    local secret names=""
+    while IFS= read -r secret; do
+      [[ -n "$secret" ]] || continue
+      launch_env+=(--env "$secret")
+      names="${names:+$names,}${secret%%=*}"
+    done < <(launch_secret_assignments)
+    # Which keys this build started with, every time: an empty key field three
+    # verbs later is otherwise indistinguishable from a broken settings pane.
+    printf 'localvoxtral ui gate: login keychain disabled for this launch; env keys: %s\n' \
+      "${names:-none}" >&2
+  fi
+
+  open -n "${launch_env[@]+"${launch_env[@]}"}" "$bundle" \
+    || fail "open refused the bundle"
 
   # `pgrep -f` matches its pattern as a PREFIX of the whole command line, and
   # this bundle ships localvoxtral-speechd, localvoxtral-polishd and
