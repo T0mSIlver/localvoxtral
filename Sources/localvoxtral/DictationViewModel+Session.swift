@@ -993,7 +993,7 @@ extension DictationViewModel {
                         repositoryRoot: repositoryRootBox.value,
                         workspace: capturedClaudeJoin?.snapshot.workspace
                     )
-                    let learnedVocabularyOutcome = self.learnedTermGrounding(
+                    let learnedVocabularyOutcome = await self.learnedTermGrounding(
                         project: learnedProject,
                         transcript: workingText
                     )
@@ -1927,20 +1927,26 @@ extension DictationViewModel {
     /// request the way the hand-written Names and terms list does (owner
     /// ruling, 2026-09-20 — `docs/agent/invariants.md`).
     ///
-    /// Synchronous on the commit path because it is bounded: at most
-    /// `LearnedTerms.maxTermsPerProject` terms to index, against a repo
-    /// harvest of thousands.
+    /// Reading the terms touches no disk (`LearnedTermStore.snapshot`), and the
+    /// index build and match move off the main actor like every other source's
+    /// (`PolishContextPreparation`) — bounded work, but the commit path is not
+    /// where bounded work belongs either.
+    ///
+    /// A nil `project` means the app could not establish one, so there is
+    /// nothing to read: see `LearnedTermProjectResolver.resolve`.
     func learnedTermGrounding(
-        project: LearnedTermProjectResolver.Identity,
+        project: LearnedTermProjectResolver.Identity?,
         transcript: String
-    ) -> RepoVocabularyMatcher.GroundingOutcome {
-        guard let learnedTermStore else { return .empty }
+    ) async -> RepoVocabularyMatcher.GroundingOutcome {
+        guard let learnedTermStore, let project else { return .empty }
         let terms = learnedTermStore.confirmedTerms(projectKey: project.key)
         guard !terms.isEmpty else { return .empty }
-        return RepoVocabularyMatcher.groundedCandidates(
-            transcript: transcript,
-            vocabulary: RepoVocabulary(terms: terms, branch: nil)
-        )
+        return await Task.detached(priority: .userInitiated) {
+            RepoVocabularyMatcher.groundedCandidates(
+                transcript: transcript,
+                vocabulary: RepoVocabulary(terms: terms, branch: nil)
+            )
+        }.value
     }
 
     /// Folds one dictation's resolved spellings into the learned terms.

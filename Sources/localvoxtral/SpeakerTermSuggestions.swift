@@ -284,12 +284,19 @@ final class SpeakerTermSuggestionModel {
                 ),
                 texts: texts
             )
-            // What the run found comes first — it is what the user waited
-            // minutes for — but unacted learned chips are not thrown away
-            // behind it.
-            let foundKeys = Set(found.map(SpeakerTermSuggestions.key))
-            let kept = suggestions.filter { !foundKeys.contains(SpeakerTermSuggestions.key($0)) }
-            suggestions = Array((found + kept).prefix(SpeakerTermSuggestions.maxShown))
+            // What the run found leads — it is what the user waited minutes for
+            // — and the chips already on screen keep their place behind it, as
+            // far as the row's twelve allow. Both sides go back through
+            // `filtered`: a chip shown before the run may have been added or
+            // refused while it ran, and that filter is the only thing making
+            // "never again" true (review, 2026-09-20).
+            suggestions = Array(
+                SpeakerTermSuggestions.filtered(
+                    found + suggestions,
+                    terms: settings.polishSpeakerTerms,
+                    dismissed: settings.polishDismissedTermSuggestions
+                ).prefix(SpeakerTermSuggestions.maxShown)
+            )
             phase = suggestions.isEmpty ? .nothingFound : .idle
             // A run that started before the pane had refreshed, or that ran
             // for minutes while dictation taught the app new terms, must not

@@ -2210,7 +2210,8 @@ enum RepoVocabularyMatcher {
     /// five wrong insertions with pairs, three with this list, none without).
     static let verificationCandidatesHeader =
         "Terms from the speaker's current project, screen, clipboard or coding-agent "
-        + "session. The speaker may or may not have said any of them. Use one ONLY where the text contains a word or "
+        + "session, or ones they have used before in this project. "
+        + "The speaker may or may not have said any of them. Use one ONLY where the text contains a word or "
         + "phrase that sounds like it AND makes less sense than the term would in that "
         + "sentence; write it exactly as spelled here. Ordinary words that already make "
         + "sense stay as they are:"

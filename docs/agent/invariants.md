@@ -75,7 +75,13 @@ there is not.
   source (`.learned` is LAST in `PolishContextSource`, so a contested span
   abstains); terms decay at 90 days; and Text processing → Advanced →
   Learned terms → Forget drops the file. Verification candidates are never
-  recorded — they are questions put to the model, not answers.
+  recorded — they are questions put to the model, not answers. A dictation
+  whose project cannot be established teaches nothing at all, which is not
+  the same as one with no project: the latter teaches the shared bucket,
+  and filing the former there would put one repo's spellings where every
+  project-less dictation reads them. Known limit of the bar: it counts
+  dictations, not independent evidence, so one stale clipboard read across
+  three dictations is three confirmations.
 
 - **"About you" is the only place the model is told to infer a misheard name.**
   `LLMPromptTemplates.withSpeakerProfile` appends the user's own text to the
