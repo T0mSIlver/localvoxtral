@@ -19,6 +19,10 @@ private final class FakeHost: @unchecked Sendable {
     var beforeScript: [Int: @Sendable () -> Void] = [:]
     /// Scripts that never reach the host: the connection died first.
     var droppedScripts: Set<Int> = []
+    /// A directory put first on the host's PATH, to shadow a tool.
+    var pathPrefix: String? {
+        didSet { try? writeFakeSSH() }
+    }
 
     init(vibeInstalled: Bool = true) throws {
         home = FileManager.default.temporaryDirectory.appendingPathComponent("vibe-host-\(UUID().uuidString)")
@@ -29,7 +33,12 @@ private final class FakeHost: @unchecked Sendable {
             try Data("#!/bin/sh\nexit 0\n".utf8).write(to: vibe)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: vibe.path)
         }
-        let ssh = "#!/bin/sh\nHOME='\(home.path)' PATH=/usr/bin:/bin exec /bin/sh -s\n"
+        try writeFakeSSH()
+    }
+
+    private func writeFakeSSH() throws {
+        let path = (pathPrefix.map { $0 + ":" } ?? "") + "/usr/bin:/bin"
+        let ssh = "#!/bin/sh\nHOME='\(home.path)' PATH='\(path)' exec /bin/sh -s\n"
         try Data(ssh.utf8).write(to: fakeSSH)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeSSH.path)
     }
@@ -370,7 +379,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
         vibe=found
         version=1.0.0
         version-ish=2.0.0
-        checksum=123:45
+        checksum=123:6
         hooks=\(Data("a = 1\n".utf8).base64EncodedString())
 
         LVX_VIBE_PROBE_END
@@ -379,12 +388,47 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
         let probe = ClaudeRemoteEnrollmentService.vibeProbe(inFramedOutput: output)
         XCTAssertEqual(probe?.vibeFound, true)
         XCTAssertEqual(probe?.installedVersion, "1.0.0")
-        XCTAssertEqual(probe?.hooksChecksum, "123:45")
+        XCTAssertEqual(probe?.hooksChecksum, "123:6")
         XCTAssertEqual(probe?.hooksText, "a = 1\n")
         XCTAssertNil(ClaudeRemoteEnrollmentService.vibeProbe(inFramedOutput: "no frame"))
         XCTAssertNil(ClaudeRemoteEnrollmentService.vibeProbe(
             inFramedOutput: "LVX_VIBE_PROBE_BEGIN\nchecksum=1; rm -rf /\nLVX_VIBE_PROBE_END"
         ), "a checksum is spliced into a script, so its alphabet is enforced")
+    }
+
+    func testAHostWithoutBase64CannotMakeTheMacBelieveTheFileIsEmpty() throws {
+        // `base64` is not POSIX. Without it the probe prints a valid checksum
+        // and an empty `hooks=`; read as an empty file, setup would replace
+        // the user's hooks.toml with our block alone and call it a success.
+        let empty = "LVX_VIBE_PROBE_BEGIN\nvibe=found\nchecksum=4038471504:118\nhooks=\nLVX_VIBE_PROBE_END"
+        XCTAssertNil(ClaudeRemoteEnrollmentService.vibeProbe(inFramedOutput: empty))
+        let truncated = "LVX_VIBE_PROBE_BEGIN\nchecksum=1:118\nhooks=\(Data("short".utf8).base64EncodedString())\nLVX_VIBE_PROBE_END"
+        XCTAssertNil(ClaudeRemoteEnrollmentService.vibeProbe(inFramedOutput: truncated))
+        let orphan = "LVX_VIBE_PROBE_BEGIN\nhooks=\(Data("x".utf8).base64EncodedString())\nLVX_VIBE_PROBE_END"
+        XCTAssertNil(ClaudeRemoteEnrollmentService.vibeProbe(inFramedOutput: orphan))
+
+        // End to end: a host whose base64 fails keeps its file, byte for byte.
+        let host = try FakeHost()
+        try host.write(Self.userHooks, to: ".vibe/hooks.toml")
+        try host.write("#!/bin/sh\nexit 127\n", to: "nobase64/base64", mode: 0o755)
+        host.pathPrefix = host.path("nobase64")
+        let failure = try XCTUnwrap(failure { _ = try self.setUp(host) })
+        XCTAssertEqual(failure.exitCode, 42)
+        XCTAssertEqual(host.text(".vibe/hooks.toml"), Self.userHooks)
+        XCTAssertNil(host.text(".vibe/localvoxtral/remote/post.sh"))
+    }
+
+    func testAPlantedTemporaryLinkIsRefusedNotWrittenThrough() throws {
+        let host = try FakeHost()
+        try host.write(Self.userHooks, to: ".vibe/hooks.toml")
+        try host.write("export PRECIOUS=1\n", to: ".profile")
+        try FileManager.default.createSymbolicLink(
+            atPath: host.path(".vibe/hooks.toml.lvx-tmp"), withDestinationPath: host.path(".profile")
+        )
+        let failure = try XCTUnwrap(failure { _ = try self.setUp(host) })
+        XCTAssertEqual(failure.exitCode, 46)
+        XCTAssertEqual(host.text(".profile"), "export PRECIOUS=1\n")
+        XCTAssertEqual(host.text(".vibe/hooks.toml"), Self.userHooks)
     }
 
     func testAHeredocDelimiterNeverEqualsALineOfTheContent() {

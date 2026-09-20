@@ -147,6 +147,18 @@ extension ClaudeRemoteEnrollmentService {
             default: continue
             }
         }
+        // `cksum` prints the byte count after the CRC, and the two lines come
+        // from different tools. A host without `base64` (it is not POSIX)
+        // prints a valid checksum and an EMPTY `hooks=`, which decodes to an
+        // empty file: the run would then replace the user's hooks.toml with
+        // our block alone and report success (GLM review, 2026-09-20). The
+        // decoded size has to be the size `cksum` counted, or nothing is read.
+        if probe.hooksChecksum != nil || probe.hooksText != nil {
+            guard let checksum = probe.hooksChecksum, let text = probe.hooksText,
+                  let size = checksum.split(separator: ":").dropFirst().first.flatMap({ Int($0) }),
+                  text.utf8.count == size
+            else { return nil }
+        }
         return probe
     }
 
@@ -164,9 +176,17 @@ extension ClaudeRemoteEnrollmentService {
     static func writeFileScript(path: String, content: String, mode: String, seed: String) -> String {
         let delimiter = heredocDelimiter(for: content, seed: seed)
         let body = content.hasSuffix("\n") ? content : content + "\n"
+        // The temporary name gets the same distrust as the final one: a link
+        // planted there would make `cat >` write THROUGH it into whatever it
+        // names (GLM review, 2026-09-20). Refuse a link, clear a leftover, and
+        // create with noclobber so a name that reappears fails the redirect.
         return """
+        [ ! -L "\(path).lvx-tmp" ] || exit 46
+        rm -f "\(path).lvx-tmp"
+        set -C
         cat >"\(path).lvx-tmp" <<'\(delimiter)'
         \(body)\(delimiter)
+        set +C
         chmod \(mode) "\(path).lvx-tmp"
         mv -f "\(path).lvx-tmp" "\(path)"
 

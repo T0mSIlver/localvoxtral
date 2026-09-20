@@ -362,6 +362,9 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         "localvoxtral: existing herdr agents/sidebar rows configuration; no changes made"
 
     let runner: Runner?
+    /// Whether remote actions can run at all. A row whose button could only
+    /// fail should not be drawn.
+    public var canExecuteRemotely: Bool { runner != nil }
     private let sshConfigFileSystem: (any ClaudeRemoteSSHConfigFileSystem)?
     /// The LOCAL herdr config writer, for the federated client's panel row.
     /// Nil (the default) disables `configureLocalHerdrPanel`, exactly as a nil

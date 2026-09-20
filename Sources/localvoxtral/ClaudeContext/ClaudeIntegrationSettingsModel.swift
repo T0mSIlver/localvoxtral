@@ -1250,8 +1250,9 @@ public final class ClaudeIntegrationSettingsModel {
             return writer.isApplied() == true
         }()
         let bundledVibeVersion = vibeRemoteFiles()?.version
-        // No ssh runner, no row: the buttons would have nothing to run.
-        let enrollmentIsExecutable = vibeRemoteFiles() != nil
+        // No ssh runner or no bundled files, no row: the buttons would have
+        // nothing to run or nothing to write.
+        let enrollmentIsExecutable = enrollmentService.canExecuteRemotely && bundledVibeVersion != nil
         hosts = enrolledHosts.map { host in
             let forwardState = forwards?.states[host.id]
             return HostRow(
