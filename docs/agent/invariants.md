@@ -1223,17 +1223,27 @@ there is not.
     (`VibeTranscriptPrompt`, owner decision 2026-09-20). It is the same datum
     Claude Code hands over in `UserPromptSubmit`, and the read is bounded to
     it: a regular file named `messages.jsonl` owned by this user, opened
-    `O_NOFOLLOW`; the last 512 KiB only; a line is used only when its `role` is
-    `user`, Vibe did not mark it `injected`, and its `content` is a string,
-    truncated to the wire's prompt limit. Assistant text, reasoning, tool calls
-    and tool results are never decoded past `role`, and the path never crosses
-    the socket (`testRecordsPutThePromptFirstAndNeverCarryTheTranscriptPath`).
+    `O_NOFOLLOW`; the last 512 KiB only, abandoned after 250 ms so a stalled
+    volume cannot run into Vibe's hook timeout; a line is used only when its
+    `role` is `user`, its `injected` field is PRESENT and `false`, and its
+    `content` is a string, truncated to the wire's prompt limit. A line that
+    does not contain Vibe's user-role marker is never parsed, nothing but the
+    chosen `content` string is kept, and the path never crosses the socket
+    (`testRecordsPutThePromptFirstAndNeverCarryTheTranscriptPath`). Schema
+    drift in the log therefore costs the prompt and nothing else.
     Do not widen this read to another field or another agent: an agent whose
     hooks carry the prompt has no reason to be read this way.
     What the missing events cost: a Vibe session exists for us only from its
     first file-tool call or the end of its first turn, so the first dictation
     into a fresh session has no join; and with no session-end event a session
-    ends by pid liveness and TTL. Vibe starts hooks in a new session with no
+    ends by liveness and TTL. Pid liveness alone is not enough for that: a
+    Vibe that exited leaves its shell on the same tty, and once any process
+    reused its pid the dead session would join that shell (Codex review,
+    2026-09-20). Vibe records therefore carry the process START TIME
+    (`agent_start_us`), and `ClaudeSessionRegistry.isFresh` requires the pid's
+    current start time to equal it, unreadable counting as a mismatch
+    (`testAReusedPidDoesNotKeepADeadVibeSessionJoinable`). Records without the
+    field, Claude Code's and opencode's today, keep pid-only liveness. Vibe starts hooks in a new session with no
     controlling terminal, so the published pid and tty come from an ancestor
     walk (`ClaudeHookPublisher.vibeAncestorPID`), and the two Claude-allocated
     session handles are withheld from Vibe records — a Vibe started inside a

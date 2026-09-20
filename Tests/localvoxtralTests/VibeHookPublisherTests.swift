@@ -61,6 +61,11 @@ final class VibeHookInputParserTests: XCTestCase {
         XCTAssertNil(VibeHookInputParser.parse(data: payload(event: "post_agent", parent: #""parent-1""#)))
     }
 
+    func testAPayloadWithoutTheParentFieldIsNotProvablyTopLevel() {
+        let data = Data(#"{"session_id":"s","cwd":"/r","hook_event_name":"post_agent"}"#.utf8)
+        XCTAssertNil(VibeHookInputParser.parse(data: data))
+    }
+
     func testPreToolAndUnknownEventsAreDropped() {
         XCTAssertNil(VibeHookInputParser.parse(data: payload(event: "pre_tool")))
         XCTAssertNil(VibeHookInputParser.parse(data: payload(event: "SessionStart")))
@@ -140,10 +145,43 @@ final class VibeTranscriptPromptTests: XCTestCase {
         XCTAssertEqual(VibeTranscriptPrompt.lastUserPrompt(atPath: path), "what the user typed")
     }
 
+    func testAUserLineWithoutTheInjectedFieldIsNotTrusted() throws {
+        // Schema drift must cost the prompt, never send Vibe-written text.
+        let path = try write([
+            #"{"role":"user","content":"older, marked","injected":false}"#,
+            #"{"role":"user","content":"newer, unmarked"}"#,
+        ])
+        XCTAssertEqual(VibeTranscriptPrompt.lastUserPrompt(atPath: path), "older, marked")
+    }
+
+    func testALineWithoutTheUserRoleMarkerIsNeverParsed() {
+        // Valid JSON whose role is spelled in a way Vibe does not write: if it
+        // were parsed it would qualify, so nil proves the prefilter ran first.
+        let spaced = Data(#"{"role" : "user", "content": "x", "injected": false}"#.utf8)
+        XCTAssertNil(VibeTranscriptPrompt.lastUserPrompt(inTail: spaced, limits: .default))
+        // A tool line QUOTING the marker is parsed and then refused by its role.
+        let quoting = Data(#"{"role": "tool", "content": "{\"role\": \"user\"}", "injected": false}"#.utf8)
+        XCTAssertNil(VibeTranscriptPrompt.lastUserPrompt(inTail: quoting, limits: .default))
+    }
+
+    func testAReadThatNeverReturnsIsAbandonedAtTheDeadline() {
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let prompt = VibeTranscriptPrompt.lastUserPrompt(atPath: "/stalled/messages.jsonl", deadline: 0.05) { _, _ in
+            release.wait()
+            return "too late"
+        }
+        XCTAssertNil(prompt)
+        XCTAssertEqual(
+            VibeTranscriptPrompt.lastUserPrompt(atPath: "/fast/messages.jsonl", deadline: 30) { _, _ in "in time" },
+            "in time"
+        )
+    }
+
     func testNonStringContentAndBrokenLinesAreSkipped() throws {
         let path = try write([
             #"{"role":"user","content":"kept","injected":false}"#,
-            #"{"role":"user","content":[{"type":"text","text":"multimodal"}]}"#,
+            #"{"role":"user","content":[{"type":"text","text":"multimodal"}],"injected":false}"#,
             #"{"role":"user","content":"cut mid-rec"#,
         ])
         XCTAssertEqual(VibeTranscriptPrompt.lastUserPrompt(atPath: path), "kept")
@@ -151,20 +189,20 @@ final class VibeTranscriptPromptTests: XCTestCase {
 
     func testThePromptIsTruncatedToTheWireLimit() throws {
         let long = String(repeating: "a", count: 20_000)
-        let path = try write([#"{"role":"user","content":"\#(long)"}"#])
+        let path = try write([#"{"role": "user", "content": "\#(long)", "injected": false}"#])
         let prompt = try XCTUnwrap(VibeTranscriptPrompt.lastUserPrompt(atPath: path))
         XCTAssertEqual(prompt.utf8.count, ClaudeHookLimits.default.maxPromptBytes)
     }
 
     func testOnlyTheTailWindowIsRead() throws {
         let filler = #"{"role":"tool","content":"\#(String(repeating: "z", count: 4096))"}"#
-        let lines = [#"{"role":"user","content":"too far back"}"#]
+        let lines = [#"{"role":"user","content":"too far back","injected":false}"#]
             + Array(repeating: filler, count: VibeTranscriptPrompt.tailBytes / 4096 + 8)
         XCTAssertNil(VibeTranscriptPrompt.lastUserPrompt(atPath: try write(lines)))
     }
 
     func testRefusesAnyOtherFileNameASymlinkAndARelativePath() throws {
-        let line = [#"{"role":"user","content":"prompt"}"#]
+        let line = [#"{"role":"user","content":"prompt","injected":false}"#]
         XCTAssertNil(VibeTranscriptPrompt.lastUserPrompt(atPath: try write(line, name: "notes.jsonl")))
 
         let real = try write(line, name: "real.jsonl")
@@ -248,7 +286,9 @@ final class VibeHookPublisherRunTests: XCTestCase {
         directory = URL(fileURLWithPath: "/tmp/lvx-\(UUID().uuidString.prefix(8))")
         registry = ClaudeSessionRegistry(
             now: { Date(timeIntervalSince1970: 5_000_000) },
-            isProcessAlive: { _ in true }
+            isProcessAlive: { _ in true },
+            // Pid 300 is a fixture; its start time is whatever `vibe` reports.
+            processStartMicros: { $0 == 300 ? 1_700_000_000_000_123 : nil }
         )
         broker = ClaudeContextBroker(socketPath: socketPath, registry: registry)
         try broker.start()
@@ -280,7 +320,7 @@ final class VibeHookPublisherRunTests: XCTestCase {
             ownSession: { 500 },
             processFacts: { pid in
                 pid == 500 ? .init(parent: 300, session: 500, hasTTY: false)
-                    : .init(parent: 1, session: 300, hasTTY: true)
+                    : .init(parent: 1, session: 300, hasTTY: true, startMicros: 1_700_000_000_000_123)
             },
             lastUserPrompt: { path, _ in path == "/t/messages.jsonl" ? "rename the wire enum" : nil }
         )
@@ -308,6 +348,7 @@ final class VibeHookPublisherRunTests: XCTestCase {
         XCTAssertEqual(snapshot.activity, .idle, "Stop lands after the prompt record")
         XCTAssertEqual(snapshot.process?.claudePID, 300, "Vibe, not the wrapper shell that exits with the hook")
         XCTAssertEqual(snapshot.process?.tty, "/dev/ttys042")
+        XCTAssertEqual(snapshot.process?.agentStartMicros, 1_700_000_000_000_123, "Vibe's, not the wrapper's")
     }
 
     func testAFileToolRecordsTheTouchAndKeepsTheTurnWorking() throws {
@@ -362,6 +403,18 @@ final class VibeHookPublisherRunTests: XCTestCase {
 
 // MARK: - Namespacing
 
+private final class StartTimeBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Int64?
+
+    init(_ value: Int64?) { stored = value }
+
+    var value: Int64? {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
+    }
+}
+
 final class VibeSessionScopeTests: XCTestCase {
     func testEveryNonClaudeAgentHasADistinctPrefix() {
         XCTAssertNil(ClaudeAgentSessionScope.prefix(for: .claude))
@@ -382,6 +435,42 @@ final class VibeSessionScopeTests: XCTestCase {
 
         let honest = ClaudeHookRecord(event: .stop, agent: .vibe, sessionID: "abc", timestamp: 1)
         XCTAssertEqual(registry.ingest(honest, origin: .localAuthenticated(peerUID: getuid()))?.sessionID, "vibe:abc")
+    }
+
+    func testAReusedPidDoesNotKeepADeadVibeSessionJoinable() {
+        // Vibe never sends a session end. Its pid being "alive" again after it
+        // exited must not be enough: the start time has to match too.
+        let currentStart = StartTimeBox(111)
+        let registry = ClaudeSessionRegistry(
+            now: { Date(timeIntervalSince1970: 5_000_000) },
+            isProcessAlive: { _ in true },
+            processStartMicros: { _ in currentStart.value }
+        )
+        var record = ClaudeHookRecord(event: .stop, agent: .vibe, sessionID: "abc", timestamp: 1)
+        record.process = ClaudeHookProcessInfo(
+            hookPID: 9, claudePID: 300, tty: "/dev/ttys042", agentStartMicros: 111
+        )
+        XCTAssertNotNil(registry.ingest(record, origin: .localAuthenticated(peerUID: getuid())))
+        XCTAssertNotNil(registry.snapshot(sessionID: "vibe:abc"))
+
+        currentStart.value = 222 // pid 300 now belongs to another process
+        XCTAssertNil(registry.snapshot(sessionID: "vibe:abc"))
+
+        _ = registry.ingest(record, origin: .localAuthenticated(peerUID: getuid()))
+        currentStart.value = nil // unreadable is not a match
+        XCTAssertNil(registry.snapshot(sessionID: "vibe:abc"))
+    }
+
+    func testARecordWithoutAStartTimeKeepsPidOnlyLiveness() {
+        let registry = ClaudeSessionRegistry(
+            now: { Date(timeIntervalSince1970: 5_000_000) },
+            isProcessAlive: { _ in true },
+            processStartMicros: { _ in nil }
+        )
+        var record = ClaudeHookRecord(event: .sessionStart, sessionID: "claude-1", timestamp: 1)
+        record.process = ClaudeHookProcessInfo(hookPID: 9, claudePID: 300)
+        _ = registry.ingest(record, origin: .localAuthenticated(peerUID: getuid()))
+        XCTAssertNotNil(registry.snapshot(sessionID: "claude-1"))
     }
 
     func testAVibeFocusDeclarationIsRefused() {
@@ -417,6 +506,38 @@ final class VibeIntegrationFilesTests: XCTestCase {
         for line in code {
             XCTAssertFalse(line.contains("echo") || line.contains("printf"), String(line))
             XCTAssertFalse(line.hasPrefix("exec ") || line.contains(" exec "), String(line))
+        }
+    }
+
+    func testTheHookCommandSucceedsSilentlyWhenTheShimIsGone() throws {
+        // The half-removed install: hooks.toml still names a script that is
+        // not there. Vibe shows a non-zero hook exit on every turn.
+        let block = try file("hooks.toml")
+        let commands = block.split(separator: "\n").filter { $0.hasPrefix("command = ") }
+        XCTAssertEqual(commands.count, 2)
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("vibe-nohome-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        for line in commands {
+            // TOML basic string: strip `command = "` and the closing quote, unescape `\"`.
+            let command = String(line.dropFirst(#"command = ""#.count).dropLast())
+                .replacingOccurrences(of: #"\""#, with: "\"")
+            let output = home.appendingPathComponent("out")
+            FileManager.default.createFile(atPath: output.path, contents: nil)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", command]
+            process.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin"]
+            process.standardInput = FileHandle.nullDevice
+            let sink = try FileHandle(forWritingTo: output)
+            process.standardOutput = sink
+            process.standardError = sink
+            try process.run()
+            process.waitUntilExit()
+            try sink.close()
+            XCTAssertEqual(process.terminationStatus, 0, command)
+            XCTAssertEqual(try Data(contentsOf: output), Data(), command)
         }
     }
 

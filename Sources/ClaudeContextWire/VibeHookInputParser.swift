@@ -46,9 +46,10 @@ public enum VibeHookInputParser {
 
         // A subagent's hooks fire with the parent's id in `parent_session_id`
         // (subagents inherit the hook configuration). Its activity is not the
-        // session the user is typing into, so it is dropped — and anything that
-        // is not provably top-level is dropped with it.
-        if let parent = payload["parent_session_id"], !(parent is NSNull) { return nil }
+        // session the user is typing into, so it is dropped. Vibe always writes
+        // the field, `null` at top level, so a payload WITHOUT it is not
+        // provably top-level and is dropped too.
+        guard payload["parent_session_id"] is NSNull else { return nil }
 
         let cwd = payload["cwd"] as? String
         let toolName = payload["tool_name"] as? String

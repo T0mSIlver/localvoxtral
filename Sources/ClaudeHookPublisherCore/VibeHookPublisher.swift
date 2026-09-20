@@ -19,11 +19,14 @@ extension ClaudeHookPublisher {
         public var parent: Int32
         public var session: Int32
         public var hasTTY: Bool
+        /// Microseconds since the epoch, nil when the kernel reports none.
+        public var startMicros: Int64?
 
-        public init(parent: Int32, session: Int32, hasTTY: Bool) {
+        public init(parent: Int32, session: Int32, hasTTY: Bool, startMicros: Int64? = nil) {
             self.parent = parent
             self.session = session
             self.hasTTY = hasTTY
+            self.startMicros = startMicros
         }
     }
 
@@ -39,7 +42,7 @@ extension ClaudeHookPublisher {
                 ClaudeHookPublisher.processFacts(forProcess: $0)
             },
             lastUserPrompt: @escaping @Sendable (String?, ClaudeHookLimits) -> String? = {
-                VibeTranscriptPrompt.lastUserPrompt(atPath: $0, limits: $1)
+                VibeTranscriptPrompt.lastUserPrompt(atPath: $0, limits: $1, deadline: 0.25)
             }
         ) {
             self.ownSession = ownSession
@@ -61,11 +64,17 @@ extension ClaudeHookPublisher {
             return .droppedNoSocketPath
         }
 
-        let process = processInfo(agentPID: Self.vibeAncestorPID(
+        let vibePID = Self.vibeAncestorPID(
             startingAt: environment.ppid(),
             ownSession: vibe.ownSession(),
             processFacts: vibe.processFacts
-        ))
+        )
+        // Vibe never says a session ended, so the app tells a live Vibe from a
+        // reused pid by this start time.
+        let process = processInfo(
+            agentPID: vibePID,
+            agentStartMicros: vibe.processFacts(vibePID)?.startMicros
+        )
         let prompt = vibe.lastUserPrompt(input.transcriptPath, limits)
         for var record in input.records(prompt: prompt, timestamp: environment.now(), limits: limits) {
             record.process = process
@@ -128,10 +137,13 @@ extension ClaudeHookPublisher {
               info.kp_proc.p_pid == pid
         else { return nil }
         let tdev = info.kp_eproc.e_tdev
+        let started = info.kp_proc.p_starttime
+        let startMicros = Int64(started.tv_sec) * 1_000_000 + Int64(started.tv_usec)
         return ProcessFacts(
             parent: info.kp_eproc.e_ppid,
             session: getsid(pid),
-            hasTTY: tdev != -1 && tdev != 0
+            hasTTY: tdev != -1 && tdev != 0,
+            startMicros: startMicros > 0 ? startMicros : nil
         )
         #else
         return nil

@@ -110,6 +110,7 @@ public final class ClaudeSessionRegistry: Sendable {
     private let limits: ClaudeRegistryLimits
     private let now: @Sendable () -> Date
     private let isProcessAlive: @Sendable (Int32) -> Bool
+    private let processStartMicros: @Sendable (Int32) -> Int64?
     private let bootIdentity: @Sendable () -> String?
     private let localPeerUID: @Sendable () -> UInt32
     private let persistenceWriter: ClaudeSessionStoreWriter?
@@ -125,12 +126,14 @@ public final class ClaudeSessionRegistry: Sendable {
         allowedRemoteChannels: Set<String> = [],
         now: @escaping @Sendable () -> Date = { Date() },
         isProcessAlive: @escaping @Sendable (Int32) -> Bool = ClaudeSessionRegistry.defaultLivenessProbe,
+        processStartMicros: @escaping @Sendable (Int32) -> Int64? = ClaudeSessionRegistry.defaultProcessStartMicros,
         bootIdentity: @escaping @Sendable () -> String? = ClaudeSessionRegistry.defaultBootIdentity,
         localPeerUID: @escaping @Sendable () -> UInt32 = ClaudeSessionRegistry.defaultLocalPeerUID
     ) {
         self.limits = limits
         self.now = now
         self.isProcessAlive = isProcessAlive
+        self.processStartMicros = processStartMicros
         self.bootIdentity = bootIdentity
         self.localPeerUID = localPeerUID
         persistenceWriter = store.map(ClaudeSessionStoreWriter.init)
@@ -767,7 +770,16 @@ public final class ClaudeSessionRegistry: Sendable {
         // session's pid names a process on another machine, where it could
         // collide with an unrelated local one. Those rely on TTL alone.
         if snapshot.origin.isLocalAuthenticated, let pid = snapshot.process?.claudePID {
-            return isProcessAlive(pid)
+            guard isProcessAlive(pid) else { return false }
+            // A record that carries the agent's start time is held to it: a
+            // pid is reused, and an agent with no session-end event (Vibe)
+            // would otherwise stay joinable on its old tty for the whole TTL
+            // once ANY process took its pid. An unreadable start time is not a
+            // match.
+            if let recorded = snapshot.process?.agentStartMicros {
+                return processStartMicros(pid) == recorded
+            }
+            return true
         }
         return true
     }
@@ -1137,6 +1149,27 @@ public final class ClaudeSessionRegistry: Sendable {
         guard pid > 0 else { return false }
         if kill(pid, 0) == 0 { return true }
         return errno == EPERM
+    }
+
+    /// Start time of `pid` from the process table, in microseconds since the
+    /// epoch — the same read the hook publisher makes
+    /// (`ClaudeHookPublisher.processFacts`), so the two compare exactly.
+    public static let defaultProcessStartMicros: @Sendable (Int32) -> Int64? = { pid in
+        #if canImport(Darwin)
+        guard pid > 0 else { return nil }
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, UInt32(mib.count), &info, &size, nil, 0) == 0,
+              size > 0,
+              info.kp_proc.p_pid == pid
+        else { return nil }
+        let started = info.kp_proc.p_starttime
+        let micros = Int64(started.tv_sec) * 1_000_000 + Int64(started.tv_usec)
+        return micros > 0 ? micros : nil
+        #else
+        return nil
+        #endif
     }
 
     public static let defaultBootIdentity: @Sendable () -> String? = {

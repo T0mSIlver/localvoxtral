@@ -204,6 +204,13 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
     /// desktop app shows that session in, which is what the desktop join arm
     /// compares it against.
     public var desktopSessionID: String?
+    /// When the process behind `claudePID` started, in microseconds since the
+    /// epoch, from the kernel's process table. A pid is reused; a pid together
+    /// with its start time is not. Published by agents that have no
+    /// session-end event (Vibe), where pid liveness alone would let a reused
+    /// pid keep a dead session joinable for the whole TTL. Absent on records
+    /// that predate it, and then liveness is the pid alone.
+    public var agentStartMicros: Int64?
 
     public init(
         hookPID: Int32,
@@ -215,7 +222,8 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
         cmuxSurfaceID: String? = nil,
         cmuxSocketPath: String? = nil,
         bridgeSessionID: String? = nil,
-        desktopSessionID: String? = nil
+        desktopSessionID: String? = nil,
+        agentStartMicros: Int64? = nil
     ) {
         self.hookPID = hookPID
         self.claudePID = claudePID
@@ -227,6 +235,7 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
         self.cmuxSocketPath = cmuxSocketPath
         self.bridgeSessionID = bridgeSessionID
         self.desktopSessionID = desktopSessionID
+        self.agentStartMicros = agentStartMicros
     }
 
     enum CodingKeys: String, CodingKey {
@@ -240,6 +249,7 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
         case cmuxSocketPath = "cmux_socket_path"
         case bridgeSessionID = "bridge_session_id"
         case desktopSessionID = "desktop_session_id"
+        case agentStartMicros = "agent_start_us"
     }
 }
 
