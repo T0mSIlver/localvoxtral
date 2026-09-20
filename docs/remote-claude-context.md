@@ -316,6 +316,42 @@ remote host can do; it does not protect the host from itself.
 
 ---
 
+## Mistral Vibe on an enrolled host
+
+An enrolled host can report its Mistral Vibe sessions too, over the same tunnel.
+Each host row in **Settings → Remote hosts** has a **Vibe hooks** line with
+**Set up…**, **Update…** and **Remove**. It appears for a host that has an SSH
+alias on file and is not revoked.
+
+Set up runs three `ssh -o BatchMode=yes -o ClearAllForwardings=yes -- <alias>
+/bin/sh -s` commands, each with its script on stdin:
+
+1. Read the host: whether `vibe` is on the non-interactive PATH (with
+   `~/.local/bin` added), the installed hooks version, and `~/.vibe/hooks.toml`
+   (base64, at most 256 KiB) with its `cksum`.
+2. Write `~/.vibe/localvoxtral/remote/` at mode 0700 with `post.sh`,
+   `compact.py`, `token` and `port` (0600), and put a marked block of two
+   `[[hooks]]` tables into `~/.vibe/hooks.toml`. The new `hooks.toml` text is
+   computed on this Mac by the same rules as the local install, and the script
+   writes it only if the file's `cksum` is still the one step 1 saw.
+3. Read the host again and compare the version and the block.
+
+The run refuses, and writes nothing, when a path under `~/.vibe` is a symlink,
+when `hooks.toml` has an unpaired marker, a marker inside a multi-line string, a
+hook named `localvoxtral-remote-files` or `localvoxtral-remote-turn` outside the
+block, or a key right after the block, and when the file changed during the run.
+
+The token is a second credential for the same host, minted for this run. The
+app keeps only a hash of the host's first token, which went into the Claude
+Code plugin's config, so Vibe cannot reuse it. The new one is trusted only after
+step 2 succeeded, authenticates as the same host, and dies with **Rotate token**
+and **Revoke** like the first. It sits in `~/.vibe/localvoxtral/remote/token`,
+readable by any process running as you on that host, which is the exposure the
+Claude Code plugin's token already has in `~/.claude`.
+
+What runs on the host, what it sends and what it never sends is in the
+[Vibe hooks README](../integrations/vibe/README.md#on-an-ssh-host).
+
 ## Why `ExitOnForwardFailure` stays `no`
 
 `ExitOnForwardFailure yes` tells `ssh` to refuse the whole session if a

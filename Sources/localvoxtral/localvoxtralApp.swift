@@ -867,6 +867,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     fileSystem: LiveVibeHooksFileSystem()
                 )
             },
+            vibeRemoteFiles: { VibeRemoteHooksFiles.bundled() },
             // A binary on this Mac: a synchronous PATH scan, decided at model
             // construction so the row paints on first paint.
             herdrBinaryAvailable: {

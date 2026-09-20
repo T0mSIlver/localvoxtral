@@ -334,7 +334,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     static let herdrPanelExistingConfigMarker =
         "localvoxtral: existing herdr agents/sidebar rows configuration; no changes made"
 
-    private let runner: Runner?
+    let runner: Runner?
     private let sshConfigFileSystem: (any ClaudeRemoteSSHConfigFileSystem)?
     /// The LOCAL herdr config writer, for the federated client's panel row.
     /// Nil (the default) disables `configureLocalHerdrPanel`, exactly as a nil
@@ -1184,7 +1184,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         )
     }
 
-    private func sanitizedRunnerError(_ error: Error, command: String) -> ServiceError {
+    func sanitizedRunnerError(_ error: Error, command: String) -> ServiceError {
         if let failure = error as? RunnerFailure {
             switch failure {
             case .timedOut(let seconds, _):

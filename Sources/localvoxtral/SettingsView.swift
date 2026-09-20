@@ -2164,6 +2164,13 @@ private struct ClaudeRemoteHostsRows: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
 
     var body: some View {
+        rows.sheet(item: $model.vibeHostSetupRequest) { request in
+            VibeHostSetupSheet(model: model, request: request)
+        }
+    }
+
+    @ViewBuilder
+    private var rows: some View {
         if !model.isRemoteAvailable {
             SettingsGroupRow {
                 SettingsInlineMessage(
@@ -2276,6 +2283,7 @@ private struct ClaudeRemoteHostsRows: View {
                     hostSetupStatus(host.setupStatusText)
 
                     persistentForwardRow(for: host)
+                    vibeHooksRow(for: host)
                     pluginUpdatePanel(for: host)
                 }
             }
@@ -2291,6 +2299,44 @@ private struct ClaudeRemoteHostsRows: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+        }
+    }
+
+    /// Mistral Vibe on this host, INSIDE the host's row like the tunnel switch
+    /// below it: it belongs to a host, and a pane's groups stay constant. The
+    /// buttons follow the state, so none is offered that would change nothing.
+    /// Hidden for a host with no alias on file or a revoked one.
+    @ViewBuilder
+    private func vibeHooksRow(
+        for host: ClaudeIntegrationSettingsModel.HostRow
+    ) -> some View {
+        if let state = host.vibeHooks {
+            HStack(spacing: 8) {
+                Text("Vibe hooks")
+                    .font(.caption)
+                Text(host.vibeHooksResult ?? state.sentence)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .accessibilityIdentifier("claude.remote.host.\(host.id).vibe.status")
+                Spacer(minLength: 8)
+                if let title = state.setupButtonTitle {
+                    Button(title) { model.requestVibeHooksSetup(hostID: host.id) }
+                        .controlSize(.small)
+                        .fixedSize()
+                        .disabled(model.isPerformingVibeHostAction || model.isEnrollmentBusy)
+                        .accessibilityIdentifier("claude.remote.host.\(host.id).vibe.install")
+                }
+                if state.offersRemove {
+                    Button("Remove") { Task { await model.removeVibeHooks(hostID: host.id) } }
+                        .controlSize(.small)
+                        .disabled(model.isPerformingVibeHostAction || model.isEnrollmentBusy)
+                        .accessibilityIdentifier("claude.remote.host.\(host.id).vibe.remove")
+                }
+                if model.isPerformingVibeHostAction {
+                    ProgressView().controlSize(.small)
+                }
+            }
         }
     }
 
@@ -3441,6 +3487,40 @@ private struct OpencodePluginSetupSheet: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .accessibilityIdentifier("integrations.opencodeSheet.apply")
+            }
+        }
+        .padding(16)
+        .frame(width: 460)
+    }
+}
+
+/// Consent for writing the Mistral Vibe hooks onto an enrolled ssh host.
+private struct VibeHostSetupSheet: View {
+    @Bindable var model: ClaudeIntegrationSettingsModel
+    let request: ClaudeIntegrationSettingsModel.VibeHostSetupRequest
+
+    private static let documentationURL = URL(
+        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/vibe/README.md#on-an-ssh-host"
+    )!
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Mistral Vibe hooks")
+                .font(.headline)
+            Text(request.consentSentence)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            Link("Details", destination: Self.documentationURL)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { model.vibeHostSetupRequest = nil }
+                    .accessibilityIdentifier("claude.remote.vibeSheet.cancel")
+                Button("Set Up") {
+                    Task { await model.confirmVibeHooksSetup() }
+                }
+                .keyboardShortcut(.defaultAction)
+                .accessibilityIdentifier("claude.remote.vibeSheet.apply")
             }
         }
         .padding(16)

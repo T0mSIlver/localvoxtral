@@ -1366,6 +1366,33 @@ there is not.
   the dead session stays the surface's candidate until its TTL: alone, it still
   joins; beside a new session, the surface abstains. Nothing on the Mac can
   tell a finished remote process from an idle one.
+- **A host may hold one extra credential per purpose, and it buys no extra
+  trust.** The app keeps only a HASH of a host's token; the plaintext went into
+  the Claude Code plugin's config at enrollment and is gone. The Vibe hooks on
+  that host therefore get their own (`ClaudeRemoteCredentialPurpose.vibe`,
+  owner decision 2026-09-20, chosen over rotating the one token because a
+  rotation cuts off the host's running Claude Code sessions). It authenticates
+  AS THE HOST: same id, same session namespace, same origin channel. The
+  purpose is a label for the row and for replacing the right one, never a
+  permission, because both tokens sit under one user on one machine and there
+  is no boundary between them to enforce. Every stored hash is still compared
+  on every request with no short-circuit, `rotateToken` and `revoke` clear the
+  extras (both answer a suspected leak, and the extras sat next to the leaked
+  one), and a revoked host is refused a new one. A credential is two-phase
+  (`prepareCredential`, then `commitCredential`): the token has to reach the
+  host before the store trusts it, or a failed ssh run would replace a working
+  credential with one the host never received.
+  Host setup (`setUpRemoteVibeHooks`) follows the enrollment rules — BatchMode
+  ssh, script on stdin, token in no argv on this Mac, fixed error strings — with
+  one difference worth knowing: it EDITS A USER FILE on the host,
+  `~/.vibe/hooks.toml`. The edit is computed on the Mac by
+  `VibeHooksBlockEditor`, the same rules as the local install, not
+  reimplemented in awk. So the probe reads the file back (base64, 256 KiB cap)
+  and its `cksum`, and the write happens only if the `cksum` still matches.
+  Those bytes are text to splice and nothing else: they never reach a log, an
+  alert, or a verdict string, and the checksum is held to `[0-9:]` before it
+  is spliced into a script. Each file is written through a quoted
+  here-document whose delimiter is checked against every line of the content.
 - **A refused `RemoteForward` bind is not a diagnosis, and only a nonce
   round-trip may upgrade it to one.** OpenSSH's `remote port forwarding failed`
   says a port is held, never by whom, and the two holders want opposite things

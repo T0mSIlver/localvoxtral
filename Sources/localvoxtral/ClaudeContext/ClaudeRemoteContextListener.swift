@@ -504,11 +504,11 @@ public final class ClaudeRemoteContextListener: Sendable {
         // update. Never logged, never in a response body; it only selects a
         // fixed UI string.
         let pluginVersionReport = ClaudeRemotePluginVersionCodec.report(in: request.headers)
-        // A Vibe request says nothing about the Claude Code plugin: recording
-        // its missing plugin header would read as a pre-1.10.0 plugin and
-        // raise "Plugin update available" on a host that may not have the
-        // plugin at all.
-        let reportsClaudePlugin = ClaudeRemoteAgentCodec.agent(in: request.headers) == .claude
+        // The Vibe shim's own version, under the same recording rule. A Vibe
+        // request carries no Claude plugin version, and its absence says
+        // nothing about that plugin, so the two reports never mix.
+        let requestAgent = ClaudeRemoteAgentCodec.agent(in: request.headers)
+        let vibeHooksVersion = VibeRemoteHooksVersionCodec.version(in: request.headers)
 
         guard ClaudeRemoteHTTPCodec.eventName(inPath: request.path) != nil else {
             respond(fd: fd, status: 404)
@@ -538,7 +538,7 @@ public final class ClaudeRemoteContextListener: Sendable {
             // This is an ACCEPTED outcome — the host is noted alive here, and
             // its plugin report lands with it.
             hosts.noteActivity(hostID: host.id)
-            if reportsClaudePlugin { hosts.notePluginVersion(hostID: host.id, pluginVersionReport) }
+            noteVersions(hostID: host.id, agent: requestAgent, plugin: pluginVersionReport, vibe: vibeHooksVersion)
             respond(
                 fd: fd,
                 status: 200,
@@ -569,7 +569,7 @@ public final class ClaudeRemoteContextListener: Sendable {
         // take persistLock → state, so neither may run inside the
         // `withAuthenticatedHost` body above.
         hosts.noteActivity(hostID: host.id)
-        if reportsClaudePlugin { hosts.notePluginVersion(hostID: host.id, pluginVersionReport) }
+        noteVersions(hostID: host.id, agent: requestAgent, plugin: pluginVersionReport, vibe: vibeHooksVersion)
         if let socketPath = prepared.environment?.herdrSocketPath {
             onRemoteHerdrActivity(host.id, socketPath)
         }
@@ -579,6 +579,20 @@ public final class ClaudeRemoteContextListener: Sendable {
             body: ClaudeRemoteHTTPCodec.hookResponseBody,
             sessionStatus: commitIngestStatus
         )
+    }
+
+    /// A Vibe request says nothing about the Claude Code plugin: recording its
+    /// missing plugin header would read as a pre-1.10.0 plugin and raise
+    /// "Plugin update available" on a host that may not have the plugin at all.
+    /// An agent this build does not know records nothing under either name.
+    private func noteVersions(
+        hostID: String, agent: ClaudeHookAgent?, plugin: ClaudeRemotePluginVersionReport, vibe: String?
+    ) {
+        switch agent {
+        case .claude: hosts.notePluginVersion(hostID: hostID, plugin)
+        case .vibe: if let vibe { hosts.noteVibeHooksVersion(hostID: hostID, vibe) }
+        case .opencode, nil: break
+        }
     }
 
     private struct PreparedIngest {

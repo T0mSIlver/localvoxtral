@@ -50,3 +50,19 @@ public enum ClaudeRemoteAgentCodec {
         return environment.isEmpty ? nil : environment
     }
 }
+
+/// The version a remote Vibe shim reports about itself, from
+/// `X-Lvx-Vibe-Hooks-Version`. A header of its own rather than
+/// `X-Lvx-Plugin-Version`: that one is the Claude Code plugin's lineage, the
+/// app keeps the highest report per host, and a Vibe shim at 1.0.0 must not be
+/// read as a Claude plugin that needs updating. Same strict numeric shape.
+public enum VibeRemoteHooksVersionCodec {
+    public static let headerName = "X-Lvx-Vibe-Hooks-Version"
+
+    public static func version(in headers: [String: String]) -> String? {
+        guard let value = headers[headerName.lowercased()],
+              ClaudeRemotePluginVersionCodec.isAcceptableVersion(value)
+        else { return nil }
+        return value
+    }
+}

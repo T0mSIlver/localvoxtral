@@ -30,7 +30,8 @@ contributes to a dictation, plus how the app learns about the session.
 | Claude Code **Remote Control** (claude.ai/code tab in Chrome, Brave, Safari) | focused tab's `session_…` URL matched to `CLAUDE_CODE_BRIDGE_SESSION_ID` | **none, by design** (see below) | local session only | yes | local hook or remote HTTP; tab URL over AppleScript | asked only under the repo setting; Firefox has no AppleScript tab URL |
 | Claude Code in **Claude Desktop**'s Code tab (sessions on this Mac or on an ssh host) | the focused session's web view address (`claude.ai/epitaxy/local_…`, read over Accessibility) matched to `CLAUDE_CODE_HOST_SESSION_ID` | **none, by design** (see below) | local session only | yes | local hook or remote HTTP | asked only under the repo setting; remote hosts need plugin ≥ 1.11.0; both ids are undocumented desktop internals |
 | **opencode**, local | tty via the plugin's focus declarations (45 s TTL, pid-checked); herdr pane join works unchanged | herdr `pane.read` in a herdr pane, else the terminal's route | yes | prompt, cwd, touched paths | opencode JS plugin over the local socket | no statusline; no remote path; inside cmux never joins |
-| **Mistral Vibe**, local | tty: the Vibe process's terminal, found from the hook by walking out of the detached session Vibe starts hooks in; herdr and cmux pane joins work unchanged | the terminal's route, as for Claude Code | yes | prompt (last user message of the session log), cwd, touched paths | `~/.vibe/hooks.toml` command hooks over the local socket | a session is known only from its first file-tool call or the end of its first turn; no session-end event; no statusline; no remote path yet |
+| **Mistral Vibe**, local | tty: the Vibe process's terminal, found from the hook by walking out of the detached session Vibe starts hooks in; herdr and cmux pane joins work unchanged | the terminal's route, as for Claude Code | yes | prompt (last user message of the session log), cwd, touched paths | `~/.vibe/hooks.toml` command hooks over the local socket | a session is known only from its first file-tool call or the end of its first turn; no session-end event; no statusline |
+| **Mistral Vibe** on an **enrolled ssh host** | the remote arms Claude Code uses: local-tty echo, ssh connection, remote herdr pane | herdr `pane.read` in a herdr pane, else none | no | prompt, cwd, touched paths, plus bounded sanitized tool excerpts | `~/.vibe/hooks.toml` command hooks, a Python compactor and curl on the host, over the enrollment tunnel | set up per host in Settings → Remote hosts; the host needs Vibe, curl and the Python Vibe runs on; a background watcher on the host reports the session's end |
 
 Statusline / connection indicator: the local `--statusline` query for local
 Claude Code sessions; the remote plugin's hook-status stamp for enrolled
@@ -90,7 +91,7 @@ refused, because the command line cannot prove what the window displays.
 | What | Why |
 |---|---|
 | **codex CLI** | nothing wired; the wire knows three agents: Claude Code, opencode and Mistral Vibe |
-| **Remote opencode, remote Mistral Vibe** | the remote path types every record as Claude Code |
+| **Remote opencode** | the remote listener accepts Claude Code and Mistral Vibe only |
 | **Vibe in VS Code or another ACP client, `vibe -p`** | the hooks publish, but there is no terminal pane to join |
 | **kitty, WezTerm, Alacritty, Warp, Hyper, Tabby, Rio** | dictation and insertion only; no per-pane tty or screen route with transport-derived trust (WezTerm is next on the [roadmap](roadmap.md)) |
 | **VS Code, Cursor, VSCodium** | insertion only; explicitly excluded from screen reads by a pinned test |
