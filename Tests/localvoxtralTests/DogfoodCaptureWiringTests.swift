@@ -682,7 +682,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
             overlayBufferCoordinator: overlayCoordinator,
             startRuntimeServices: false
         )
-        viewModel.appConfigStore = WiringMockAppConfigStore()
+        viewModel.appConfigStore = MockAppConfigStore()
         viewModel.llmPolishingService = SucceedingPolishingService()
         viewModel.dogfoodCaptureStore = DogfoodCaptureStore(directoryURL: captureDirectory)
         // Always injected, even for the tests that ignore it: the production
@@ -739,24 +739,6 @@ private actor SucceedingPolishingService: LLMPolishingServicing {
             polishedText: "polished output text",
             durationSeconds: 0.25
         )
-    }
-}
-
-private final class WiringMockAppConfigStore: AppConfigServing {
-    func configDirectoryURL() -> URL {
-        FileManager.default.temporaryDirectory
-    }
-
-    func loadReplacementDictionary() -> ReplacementDictionary {
-        ReplacementDictionary(entries: [])
-    }
-
-    func loadLLMPromptTemplates() -> LLMPromptTemplates {
-        LLMPromptTemplates(systemContent: "system", userContent: "{{input_text}}")
-    }
-
-    func loadTerminalAppBundleIDs() -> [String] {
-        []
     }
 }
 

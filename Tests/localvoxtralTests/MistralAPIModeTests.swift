@@ -175,7 +175,7 @@ final class MistralAPIModeTests: XCTestCase {
         // request would be billed for nothing.
         XCTAssertNotNil(settings.llmPolishingConfiguration, "precondition: config resolves")
         XCTAssertNil(
-            PolishPromptWarmup.plan(settings: settings, appConfigStore: MistralNoopConfigStore())
+            PolishPromptWarmup.plan(settings: settings, appConfigStore: MockAppConfigStore())
         )
     }
 
@@ -447,15 +447,6 @@ private final class FakeMistralAPIKeyVerifier: MistralAPIKeyVerifying {
         recorded.withLock { $0.append(apiKey) }
         return result
     }
-}
-
-private struct MistralNoopConfigStore: AppConfigServing {
-    func configDirectoryURL() -> URL { FileManager.default.temporaryDirectory }
-    func loadReplacementDictionary() -> ReplacementDictionary { ReplacementDictionary(entries: []) }
-    func loadLLMPromptTemplates() -> LLMPromptTemplates {
-        LLMPromptTemplates(systemContent: "system", userContent: "user {{input_text}}")
-    }
-    func loadTerminalAppBundleIDs() -> [String] { [] }
 }
 
 private final class FakeMistralModelLister: MistralModelListing {

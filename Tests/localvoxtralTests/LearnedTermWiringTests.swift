@@ -215,26 +215,6 @@ final class LearnedTermWiringTests: XCTestCase {
 
 }
 
-private final class MockAppConfigStore: AppConfigServing {
-    private let promptTemplates: LLMPromptTemplates
-    private let agentPromptTemplates: LLMPromptTemplates
-
-    init(promptTemplates: LLMPromptTemplates, agentPromptTemplates: LLMPromptTemplates) {
-        self.promptTemplates = promptTemplates
-        self.agentPromptTemplates = agentPromptTemplates
-    }
-
-    func configDirectoryURL() -> URL { FileManager.default.temporaryDirectory }
-    func loadReplacementDictionary() -> ReplacementDictionary { ReplacementDictionary(entries: []) }
-    func loadLLMPromptTemplates() -> LLMPromptTemplates { promptTemplates }
-
-    func loadLLMPromptTemplates(profile: PolishPromptProfile) -> LLMPromptTemplates {
-        profile == .agent ? agentPromptTemplates : promptTemplates
-    }
-
-    func loadTerminalAppBundleIDs() -> [String] { [] }
-}
-
 /// Keeps the request the session built, which is where a grounding decision
 /// becomes observable.
 private actor RecordingPolishingService: LLMPolishingServicing {

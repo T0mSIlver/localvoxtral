@@ -234,7 +234,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         }
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        viewModel.appConfigStore = TargetDetectorMockConfigStore(
+        viewModel.appConfigStore = MockAppConfigStore(
             terminalAppBundleIDs: [],
             configDirectory: configDir
         )
@@ -802,38 +802,9 @@ final class TerminalTargetDetectorTests: XCTestCase {
         viewModel.realtimeAPIClient.debugSkipSocketCreationForTesting()
         // Keep tests hermetic: capture reads the terminal-apps config through
         // the store, which must never touch the real config directory here.
-        viewModel.appConfigStore = TargetDetectorMockConfigStore(
+        viewModel.appConfigStore = MockAppConfigStore(
             terminalAppBundleIDs: terminalAppBundleIDs
         )
         return viewModel
-    }
-}
-
-private final class TargetDetectorMockConfigStore: AppConfigServing {
-    private let terminalAppBundleIDs: [String]
-    private let configDirectory: URL
-
-    init(
-        terminalAppBundleIDs: [String],
-        configDirectory: URL = FileManager.default.temporaryDirectory
-    ) {
-        self.terminalAppBundleIDs = terminalAppBundleIDs
-        self.configDirectory = configDirectory
-    }
-
-    func configDirectoryURL() -> URL {
-        configDirectory
-    }
-
-    func loadReplacementDictionary() -> ReplacementDictionary {
-        ReplacementDictionary(entries: [])
-    }
-
-    func loadLLMPromptTemplates() -> LLMPromptTemplates {
-        LLMPromptTemplates(systemContent: "system", userContent: "{{input_text}}")
-    }
-
-    func loadTerminalAppBundleIDs() -> [String] {
-        terminalAppBundleIDs
     }
 }

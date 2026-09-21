@@ -348,21 +348,3 @@ private actor RejectingPolishingService: LLMPolishingServicing {
         throw LLMPolishingError.requestFailed(statusCode: 401, body: Self.body)
     }
 }
-
-private final class MockAppConfigStore: AppConfigServing {
-    func configDirectoryURL() -> URL {
-        FileManager.default.temporaryDirectory
-    }
-
-    func loadReplacementDictionary() -> ReplacementDictionary {
-        ReplacementDictionary(entries: [])
-    }
-
-    func loadLLMPromptTemplates() -> LLMPromptTemplates {
-        LLMPromptTemplates(systemContent: "system", userContent: "{{input_text}}")
-    }
-
-    func loadTerminalAppBundleIDs() -> [String] {
-        []
-    }
-}

@@ -1656,7 +1656,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         // Keep tests hermetic: session start reads config (terminal apps,
         // replacement dictionary) through the store — never the real
         // config directory.
-        viewModel.appConfigStore = FailFastHermeticConfigStore()
+        viewModel.appConfigStore = MockAppConfigStore()
         return viewModel
     }
 
@@ -1699,24 +1699,6 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 }
 
 // MARK: - Test-only accessors and doubles
-
-private final class FailFastHermeticConfigStore: AppConfigServing {
-    func configDirectoryURL() -> URL {
-        FileManager.default.temporaryDirectory
-    }
-
-    func loadReplacementDictionary() -> ReplacementDictionary {
-        ReplacementDictionary(entries: [])
-    }
-
-    func loadLLMPromptTemplates() -> LLMPromptTemplates {
-        LLMPromptTemplates(systemContent: "system", userContent: "{{input_text}}")
-    }
-
-    func loadTerminalAppBundleIDs() -> [String] {
-        []
-    }
-}
 
 @MainActor
 private final class FakeManagedBackendManager: ManagedBackendManaging {

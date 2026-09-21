@@ -1141,39 +1141,3 @@ private actor NetworkFailingMockLLMPolishingService: LLMPolishingServicing {
 }
 
 private struct MockPolishingError: Error {}
-
-private final class MockAppConfigStore: AppConfigServing {
-    private let replacementDictionary: ReplacementDictionary
-    private let promptTemplates: LLMPromptTemplates
-    private(set) var loadReplacementDictionaryCallCount = 0
-    private(set) var loadLLMPromptTemplatesCallCount = 0
-
-    init(
-        replacementDictionary: ReplacementDictionary = ReplacementDictionary(entries: []),
-        promptTemplates: LLMPromptTemplates = LLMPromptTemplates(
-            systemContent: "system",
-            userContent: "{{input_text}}"
-        )
-    ) {
-        self.replacementDictionary = replacementDictionary
-        self.promptTemplates = promptTemplates
-    }
-
-    func configDirectoryURL() -> URL {
-        FileManager.default.temporaryDirectory
-    }
-
-    func loadReplacementDictionary() -> ReplacementDictionary {
-        loadReplacementDictionaryCallCount += 1
-        return replacementDictionary
-    }
-
-    func loadLLMPromptTemplates() -> LLMPromptTemplates {
-        loadLLMPromptTemplatesCallCount += 1
-        return promptTemplates
-    }
-
-    func loadTerminalAppBundleIDs() -> [String] {
-        []
-    }
-}

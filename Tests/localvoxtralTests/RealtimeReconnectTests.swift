@@ -521,7 +521,7 @@ final class RealtimeReconnectTests: XCTestCase {
         )
         // Session start reads config through the store — never the real config
         // directory.
-        viewModel.appConfigStore = ReconnectHermeticConfigStore()
+        viewModel.appConfigStore = MockAppConfigStore()
         // Any test reaching a session teardown arms the real connect-timeout
         // alert on a process-retained view model; suppress it or it fires
         // inside whatever test runs ~10 s later.
@@ -594,23 +594,5 @@ private final class FakeReconnectRealtimeClient: RealtimeClient, @unchecked Send
 
     func sendCommit(final: Bool) {
         state.withLock { $0.commits.append(final) }
-    }
-}
-
-private final class ReconnectHermeticConfigStore: AppConfigServing {
-    func configDirectoryURL() -> URL {
-        FileManager.default.temporaryDirectory
-    }
-
-    func loadReplacementDictionary() -> ReplacementDictionary {
-        ReplacementDictionary(entries: [])
-    }
-
-    func loadLLMPromptTemplates() -> LLMPromptTemplates {
-        LLMPromptTemplates(systemContent: "system", userContent: "{{input_text}}")
-    }
-
-    func loadTerminalAppBundleIDs() -> [String] {
-        []
     }
 }

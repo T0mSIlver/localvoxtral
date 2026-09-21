@@ -327,34 +327,4 @@ private final class Box<Value> {
     }
 }
 
-private final class MockAppConfigStore: AppConfigServing {
-    private let replacementDictionary: ReplacementDictionary
-    private let terminalAppBundleIDs: [String]
-    private(set) var loadReplacementDictionaryCallCount = 0
-
-    init(
-        replacementDictionary: ReplacementDictionary,
-        terminalAppBundleIDs: [String] = []
-    ) {
-        self.replacementDictionary = replacementDictionary
-        self.terminalAppBundleIDs = terminalAppBundleIDs
-    }
-
-    func configDirectoryURL() -> URL {
-        URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-    }
-
-    func loadReplacementDictionary() -> ReplacementDictionary {
-        loadReplacementDictionaryCallCount += 1
-        return replacementDictionary
-    }
-
-    func loadLLMPromptTemplates() -> LLMPromptTemplates {
-        LLMPromptTemplates(systemContent: "{{input_text}}", userContent: "{{input_text}}")
-    }
-
-    func loadTerminalAppBundleIDs() -> [String] {
-        terminalAppBundleIDs
-    }
-}
 #endif
