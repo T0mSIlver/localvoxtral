@@ -1210,9 +1210,9 @@ private struct DictationSettingsPane: View {
                 }
             }
         }
-        // A "Already used for …" message under one field is stale the moment
-        // the other slot moves, and nothing else clears it until that field is
-        // recorded again.
+        // A message under one field can be about the other slot holding the
+        // key, so moving that slot retires it. Nothing else clears a field's
+        // message until it is recorded into again.
         .onChange(of: settings.overlayBufferShortcut) { _, _ in
             livePasteValidationError = nil
         }
