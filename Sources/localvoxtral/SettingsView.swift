@@ -88,6 +88,9 @@ struct SettingsView: View {
                 selection: $navigator.selectedTab,
                 terminalApps: terminalAppsModel.terminalApps,
                 statusDot: sidebarDot,
+                badgeCount: { tab in
+                    tab.kind == .textProcessing ? viewModel.termSuggestions.badgeCount : 0
+                },
                 addTerminalApp: chooseAndAddTerminalApp,
                 addAppMessage: $addAppMessage
             )
@@ -1399,6 +1402,18 @@ private struct TextProcessingSettingsPane: View {
                     layout: .stacked
                 ) {
                     SpeakerTermSuggestionsView(model: viewModel.termSuggestions)
+                }
+
+                SettingsFieldRow(title: "Suggest by itself") {
+                    Picker("", selection: $settings.termSuggestionInterval) {
+                        ForEach(TermSuggestionInterval.allCases) { interval in
+                            Text(interval.displayName).tag(interval)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .disabled(viewModel.termSuggestions.unavailableReason != nil)
+                    .accessibilityIdentifier("settings.aboutYou.suggestInterval")
                 }
             }
 
@@ -2813,7 +2828,8 @@ private struct SpeakerTermSuggestionsView: View {
                 }
             }
         }
-        .onAppear { model.refreshLearnedSuggestions() }
+        .onAppear { model.paneAppeared() }
+        .onDisappear { model.paneDisappeared() }
     }
 }
 

@@ -36,6 +36,13 @@ extension DictationViewModel {
 
     private func handleConnectedEvent() {
         cancelConnectTimeout()
+        if isReconnectingRealtimeSession {
+            // The run's own poll notices the open socket and owns what happens
+            // next (status line, audio and commit tasks). Only the indicator
+            // turns green here, as early as the news arrives.
+            setRealtimeIndicatorConnected()
+            return
+        }
         if isConnectingRealtimeSession {
             if shouldCancelPushToTalkStartAfterConnect() {
                 abortConnectingSession()
@@ -64,32 +71,36 @@ extension DictationViewModel {
             return
         }
         guard isDictating else {
-            setRealtimeIndicatorIdle()
+            // A socket closing after the session already ended must not erase
+            // the red icon a failure just lit: an exhausted reconnect run
+            // closes its last half-open socket right after the teardown.
+            if realtimeSessionIndicatorState != .recentFailure {
+                setRealtimeIndicatorIdle()
+            }
             return
         }
-        commitTask?.cancel()
-        commitTask = nil
-        audioSendTask?.cancel()
-        audioSendTask = nil
-        healthMonitor.stop()
-        isAwaitingMicrophonePermission = false
-        stopSessionAudioCapture()
-        audioDucking.restoreAfterSession()
-        isDictating = false
-        escapeCancelHandler.stop()
-        finishStoppedSession(promotePendingSegment: true)
-        let message = "Connection lost. Dictation stopped."
-        statusText = message
-        lastError = message
-        logConnectionFailure(
-            message: message,
-            technicalDetails:
-                "Realtime websocket disconnected unexpectedly during active dictation."
-        )
-        markRecentConnectionFailureIndicator()
+        if isReconnectingRealtimeSession {
+            // This is the answer to the attempt in flight, not a fresh drop.
+            reconnectAttemptDidFail = true
+            return
+        }
+        if activeRealtimeClient.isConnected {
+            // A socket this session has already replaced, reporting its own
+            // close late. Events carry no connection identity, so the live
+            // client's own state is the only way to tell: it says the session
+            // is up, and a session that is up is neither torn down nor
+            // reconnected.
+            debugLog("ignoring a disconnect from a retired socket; the session's socket is up")
+            return
+        }
+        guard !beginRealtimeReconnectIfPossible() else { return }
+        endDictationAfterLostConnection()
     }
 
     private func handleStatusEvent(_ message: String) {
+        // "Reconnecting..." stands until the run ends, whatever a dying or a
+        // freshly opened socket has to say about its session in the meantime.
+        if isReconnectingRealtimeSession { return }
         if isConnectingRealtimeSession {
             statusText = "Connecting to realtime backend..."
             return
@@ -114,7 +125,7 @@ extension DictationViewModel {
     }
 
     private func handlePartialTranscriptEvent(_ delta: String) {
-        guard acceptsRealtimeEvents else { return }
+        guard acceptsRealtimeEvents, !isReconnectingRealtimeSession else { return }
         let processedDelta = preprocessIncomingTranscriptChunk(delta)
         guard !processedDelta.isEmpty else { return }
         if isFinalizingStop {
@@ -129,12 +140,18 @@ extension DictationViewModel {
                 lastError = accessibilityError
             }
         }
-        statusText = isFinalizingStop ? "Finalizing..." : "Transcribing..."
+        statusText = isFinalizingStop ? StatusStrings.finalizing : "Transcribing..."
         refreshOverlayBufferSession()
     }
 
+    // Both transcript handlers refuse anything that arrives while a reconnect
+    // run is in flight. Nothing legitimate can: the old socket is gone, and the
+    // new one is sent no audio until the run completes and restarts the send
+    // loop. What CAN arrive is a straggler the dying socket emitted after the
+    // run had already promoted the partial it belongs to — accepted, it would
+    // re-type text Live Auto-Paste has no way to un-type.
     private func handleFinalTranscriptEvent(_ text: String) {
-        guard acceptsRealtimeEvents else { return }
+        guard acceptsRealtimeEvents, !isReconnectingRealtimeSession else { return }
         let processedText = preprocessIncomingTranscriptChunk(text)
         if isFinalizingStop {
             realtimeFinalizationLastActivityAt = Date()
@@ -212,6 +229,15 @@ extension DictationViewModel {
             handleConnectFailure(reason: .socketError(message: message))
             return
         }
+        if isReconnectingRealtimeSession {
+            // The socket this attempt opened has already failed. Let the
+            // attempt give up now instead of waiting out its timeout.
+            reconnectAttemptDidFail = true
+            Log.backends.error(
+                "realtime reconnect attempt reported a socket error: \(message, privacy: .public)"
+            )
+            return
+        }
         if !acceptsRealtimeEvents {
             statusText = "Ready"
             return
@@ -261,7 +287,7 @@ extension DictationViewModel {
     // MARK: - Helpers
 
     /// Append a finalized segment to the running transcript.
-    private func appendToTranscript(_ segment: String) {
+    func appendToTranscript(_ segment: String) {
         if transcriptText.isEmpty {
             transcriptText = segment
         } else {

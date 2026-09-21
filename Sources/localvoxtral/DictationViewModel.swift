@@ -135,7 +135,13 @@ final class DictationViewModel {
         static let noNetworkConnection = "No network connection."
         static let microphoneAccessDenied = "Microphone access denied."
         static let finalizing = "Finalizing..."
+        static let reconnecting = "Reconnecting..."
     }
+
+    /// Where a dictation lands when the realtime socket is gone for good:
+    /// either the reconnect exhausted its attempts, or the drop was not
+    /// recoverable in the first place.
+    static let connectionLostMessage = "Connection lost. Dictation stopped."
 
     static let microphoneDisconnectedMessage = "Mic disconnected."
     private static let microphoneDeniedMessage =
@@ -481,9 +487,16 @@ final class DictationViewModel {
                     : nil
             }
         )
+        model.onRunFinished = { [weak self] outcome, countAtStart in
+            self?.termSuggestionCadence?.runFinished(outcome, countAtStart: countAtStart)
+        }
         storedTermSuggestions = model
         return model
     }
+    /// Nil without runtime services, so no unit test's saved dictation can
+    /// start a request.
+    @ObservationIgnored
+    var termSuggestionCadence: TermSuggestionCadence?
     @ObservationIgnored
     let overlayBufferCoordinator: OverlayBufferSessionCoordinating
     @ObservationIgnored
@@ -596,6 +609,29 @@ final class DictationViewModel {
     var connectTimeoutTask: Task<Void, Never>?
     @ObservationIgnored
     var isResolvingConnectTimeout = false
+    /// The connect snapshot THIS session opened with. A mid-session reconnect
+    /// (#380) replays exactly this: re-reading Settings would let a backend
+    /// mode flipped mid-dictation send the running session's audio — and its
+    /// bearer token — to a different server than the one it started on.
+    /// Cleared with the rest of the latched session metadata.
+    @ObservationIgnored
+    var sessionRealtimeConfiguration: RealtimeSessionConfiguration?
+    @ObservationIgnored
+    var reconnectTask: Task<Void, Never>?
+    /// True from an unexpected drop until the reconnect run behind it either
+    /// reconnects or exhausts its attempts. While set, the run owns the status
+    /// line and the outcome of every realtime event the dying socket emits.
+    @ObservationIgnored
+    var isReconnectingRealtimeSession = false
+    /// Bumped by every start and every cancel. A run compares it against the
+    /// value it was launched with, so a stop, a cancel or a newer session can
+    /// never be undone by an attempt that was already in flight.
+    @ObservationIgnored
+    var reconnectRunID = 0
+    /// Set when the socket a reconnect attempt just opened reports back a
+    /// failure, so the attempt gives up without waiting out its timeout.
+    @ObservationIgnored
+    var reconnectAttemptDidFail = false
     @ObservationIgnored
     var recentFailureResetTask: Task<Void, Never>?
     /// Set when a stop is itself a failure: the stop's finalization would
@@ -742,6 +778,12 @@ final class DictationViewModel {
     /// real session can observe Settings changing under it.
     @ObservationIgnored
     var debugBeforeConnectHookForTesting: (@MainActor () async -> Void)?
+    /// Test seam: the clock a mid-dictation reconnect run (#380) sleeps on.
+    /// Set it and a run started by a real `.disconnected` event advances only
+    /// when the test says so — the reconnect adds no wall-clock timer of its
+    /// own, and a test can land a stop inside an attempt.
+    @ObservationIgnored
+    var debugReconnectSleepOverride: (@MainActor (TimeInterval) async -> Void)?
     #endif
     @ObservationIgnored
     var debugMicrophoneAuthorizationStatusOverride: MicrophoneAuthorizationStatus?
@@ -941,8 +983,23 @@ final class DictationViewModel {
             learnedTermStore = LearnedTermStore(
                 fileURL: LearnedTermStore.defaultFileURL(),
                 onChange: { [weak self] in
-                    Task { @MainActor in self?.learnedTermRevision += 1 }
+                    Task { @MainActor in
+                        self?.learnedTermRevision += 1
+                        // What keeps the sidebar badge honest between two
+                        // openings of the pane; reads memory, never the disk.
+                        self?.termSuggestions.refreshLearnedSuggestions()
+                    }
                 }
+            )
+            termSuggestionCadence = TermSuggestionCadence(
+                settings: settings,
+                model: { [weak self] in self?.termSuggestions },
+                isDictationActive: { [weak self] in
+                    guard let self else { return false }
+                    return self.isDictating || self.isFinalizingStop
+                        || self.isConnectingRealtimeSession
+                },
+                launchedAt: Date()
             )
             installMistralUsageLedger(
                 MistralUsageLedger(fileURL: MistralUsageLedger.defaultFileURL()) {
@@ -999,6 +1056,7 @@ final class DictationViewModel {
         audioSendTask?.cancel()
         stopFinalizationTask?.cancel()
         connectTimeoutTask?.cancel()
+        reconnectTask?.cancel()
         recentFailureResetTask?.cancel()
         finalizationWatchdogTask?.cancel()
         startupPermissionTask?.cancel()
@@ -2312,6 +2370,9 @@ final class DictationViewModel {
         debugLog("stopDictation reason=\(reason)")
         hasActivePushToTalkShortcutSession = false
 
+        // Before anything else: a reconnect run still in flight must not be
+        // allowed to hand this session a socket after the user stopped it.
+        cancelRealtimeReconnect()
         polishAndCommitTask?.cancel()
         polishAndCommitTask = nil
         commitTask?.cancel()

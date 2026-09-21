@@ -110,6 +110,8 @@ struct SettingsSidebarView: View {
     /// The dot a row trails, or nil for rows without a status (the app's own
     /// panes, Context included, and Add app…).
     let statusDot: (SettingsTab) -> SettingsStatusDot?
+    /// Term suggestions waiting unseen (Text processing only); 0 draws nothing.
+    let badgeCount: (SettingsTab) -> Int
     /// Opens the application picker and adds the chosen app (Terminals →
     /// Add app…). Owned here because the row lives in the sidebar.
     let addTerminalApp: () -> Void
@@ -129,7 +131,8 @@ struct SettingsSidebarView: View {
                         SettingsSidebarRow(
                             tab: tab,
                             isSelected: selection == tab,
-                            dot: statusDot(tab)
+                            dot: statusDot(tab),
+                            badgeCount: badgeCount(tab)
                         ) {
                             selection = tab
                         }
@@ -141,7 +144,8 @@ struct SettingsSidebarView: View {
                         SettingsSidebarRow(
                             tab: tab,
                             isSelected: selection == tab,
-                            dot: statusDot(tab)
+                            dot: statusDot(tab),
+                            badgeCount: badgeCount(tab)
                         ) {
                             selection = tab
                         }
@@ -153,7 +157,8 @@ struct SettingsSidebarView: View {
                         SettingsSidebarRow(
                             tab: tab,
                             isSelected: selection == tab,
-                            dot: statusDot(tab)
+                            dot: statusDot(tab),
+                            badgeCount: badgeCount(tab)
                         ) {
                             selection = tab
                         }
@@ -206,6 +211,7 @@ private struct SettingsSidebarRow: View {
     let tab: SettingsTab
     let isSelected: Bool
     let dot: SettingsStatusDot?
+    let badgeCount: Int
     let action: () -> Void
 
     @State private var isHovering = false
@@ -235,6 +241,16 @@ private struct SettingsSidebarRow: View {
                     .lineLimit(1)
 
                 Spacer(minLength: 0)
+
+                if badgeCount > 0 {
+                    Text("\(badgeCount)")
+                        .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(labelStyle)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Color.primary.opacity(isSelected ? 0.2 : 0.1)))
+                        .accessibilityHidden(true)
+                }
 
                 if let dot {
                     Circle()
@@ -271,6 +287,7 @@ private struct SettingsSidebarRow: View {
         .onHover { isHovering = $0 }
         .animation(.easeInOut(duration: 0.12), value: isSelected)
         .accessibilityLabel(tab.title)
+        .accessibilityValue(badgeCount > 0 ? "\(badgeCount) suggestions" : "")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
         .accessibilityIdentifier(tab.accessibilityIdentifier)
     }

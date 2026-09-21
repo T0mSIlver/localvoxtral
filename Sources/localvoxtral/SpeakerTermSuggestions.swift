@@ -165,8 +165,34 @@ final class SpeakerTermSuggestionModel {
         case failed(String)
     }
 
-    private(set) var suggestions: [String] = []
+    /// How a run ended, for `TermSuggestionCadence`: only a run the model
+    /// answered counts as one.
+    enum RunOutcome: Equatable {
+        case completed
+        case failed
+        /// The Stop button.
+        case stopped
+        /// Refused before a request went out, or a stopped run's request
+        /// coming back after the fact.
+        case notRun
+    }
+
+    private(set) var suggestions: [String] = [] {
+        didSet {
+            let known = Set(oldValue.map(SpeakerTermSuggestions.key))
+            let grew = suggestions.contains { !known.contains(SpeakerTermSuggestions.key($0)) }
+            if grew, !isPaneVisible { hasUnseenSuggestions = true }
+        }
+    }
     private(set) var phase: Phase = .idle
+    /// Chips that landed while nobody was looking at the row. The sidebar
+    /// badge is how a background run says it found something.
+    private(set) var hasUnseenSuggestions = false
+    @ObservationIgnored private var isPaneVisible = false
+    /// Every finished run, the button's included. `countAtStart` is what
+    /// `startInBackground` was given, handed back so the cadence never has to
+    /// guess which run an outcome belongs to.
+    @ObservationIgnored var onRunFinished: (@MainActor (RunOutcome, _ countAtStart: Int?) -> Void)?
     /// What the running state shows: how much is being read, and since when.
     private(set) var readingCount = 0
     private(set) var startedAt: Date?
@@ -186,6 +212,9 @@ final class SpeakerTermSuggestionModel {
     private let unavailableReasonProvider: @MainActor () -> String?
     private let now: @MainActor () -> Date
     @ObservationIgnored private var task: Task<Void, Never>?
+    /// Which run owns `phase`. A stopped run whose request returns late must
+    /// not touch the row of the run that replaced it (review, 2026-09-21).
+    @ObservationIgnored private var runID = 0
 
     init(
         settings: SettingsStore,
@@ -224,10 +253,32 @@ final class SpeakerTermSuggestionModel {
         if phase == .nothingFound { phase = .idle }
     }
 
+    /// What the Text processing sidebar row shows: every chip waiting, from
+    /// the moment one lands unseen until the pane is opened.
+    var badgeCount: Int { hasUnseenSuggestions ? suggestions.count : 0 }
+
+    func paneAppeared() {
+        isPaneVisible = true
+        refreshLearnedSuggestions()
+        hasUnseenSuggestions = false
+    }
+
+    func paneDisappeared() {
+        isPaneVisible = false
+    }
+
     /// The button's action. The model owns the task so a dictation can stop it.
     func start() {
         guard phase != .loading else { return }
         task = Task { await suggest() }
+    }
+
+    /// A run nobody asked for (`TermSuggestionCadence`). Same request, same
+    /// row; what differs is that a failure or an empty answer leaves no
+    /// message behind for a user who never pressed anything.
+    func startInBackground(countAtStart: Int) {
+        guard phase != .loading else { return }
+        task = Task { await suggest(background: true, countAtStart: countAtStart) }
     }
 
     /// The Stop button.
@@ -235,22 +286,34 @@ final class SpeakerTermSuggestionModel {
         guard phase == .loading else { return }
         task?.cancel()
         task = nil
+        runID += 1
         phase = .idle
         Log.polishing.info("Term suggestions stopped by the user")
+        onRunFinished?(.stopped, nil)
     }
 
     var unavailableReason: String? { unavailableReasonProvider() }
 
-    func suggest() async {
-        guard phase != .loading else { return }
+    @discardableResult
+    func suggest(background: Bool = false, countAtStart: Int? = nil) async -> RunOutcome {
+        guard phase != .loading else { return .notRun }
+        let outcome = await run(background: background)
+        onRunFinished?(outcome, countAtStart)
+        return outcome
+    }
+
+    private func run(background: Bool) async -> RunOutcome {
         if let reason = unavailableReasonProvider() {
-            phase = .failed(reason)
-            return
+            phase = background ? .idle : .failed(reason)
+            return .notRun
         }
         guard let configuration = settings.llmPolishingConfiguration else {
-            phase = .failed("Set up a polishing model first.")
-            return
+            phase = background ? .idle : .failed("Set up a polishing model first.")
+            return .notRun
         }
+        runID += 1
+        let thisRun = runID
+        var ownsRow: Bool { runID == thisRun && phase == .loading && !Task.isCancelled }
         readingCount = 0
         startedAt = now()
         phase = .loading
@@ -260,10 +323,10 @@ final class SpeakerTermSuggestionModel {
             + SpeakerTermSuggestions.listSections(terms: terms, dismissed: dismissed)
                 .reduce(0) { $0 + $1.count }
         let texts = SpeakerTermSuggestions.selected(await recentTexts(), reserved: reserved)
-        guard phase == .loading else { return }
+        guard ownsRow else { return .notRun }
         guard !texts.isEmpty else {
-            phase = .failed("No dictations to read yet.")
-            return
+            phase = background ? .idle : .failed("No dictations to read yet.")
+            return .notRun
         }
         readingCount = texts.count
         Log.polishing.info("Term suggestions requested: \(texts.count, privacy: .public) dictations")
@@ -275,7 +338,7 @@ final class SpeakerTermSuggestionModel {
                 configuration: configuration
             )
             // Stopped while waiting: the row already went back to its button.
-            guard phase == .loading, !Task.isCancelled else { return }
+            guard ownsRow else { return .notRun }
             let found = SpeakerTermSuggestions.ranked(
                 SpeakerTermSuggestions.filtered(
                     SpeakerTermSuggestions.parse(result.polishedText),
@@ -297,19 +360,21 @@ final class SpeakerTermSuggestionModel {
                     dismissed: settings.polishDismissedTermSuggestions
                 ).prefix(SpeakerTermSuggestions.maxShown)
             )
-            phase = suggestions.isEmpty ? .nothingFound : .idle
+            phase = suggestions.isEmpty && !background ? .nothingFound : .idle
             // A run that started before the pane had refreshed, or that ran
             // for minutes while dictation taught the app new terms, must not
             // leave the free chips out (review, 2026-09-20). Runs AFTER the
             // phase leaves `.loading`, which is what lets it fill.
             refreshLearnedSuggestions()
             Log.polishing.info("Term suggestions received: \(self.suggestions.count, privacy: .public)")
+            return .completed
         } catch {
-            guard phase == .loading else { return }
-            phase = .failed("The polishing model did not answer.")
+            guard ownsRow else { return .notRun }
+            phase = background ? .idle : .failed("The polishing model did not answer.")
             Log.polishing.error(
                 "Term suggestions failed: \(error.localizedDescription, privacy: .public)"
             )
+            return .failed
         }
     }
 

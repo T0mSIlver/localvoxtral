@@ -23,6 +23,51 @@ there is not.
   `testPrePopulatedFieldTextCannotRescueTheTrailingSpace`). Single-component
   tokens naming an EXISTING absolute path (`/tmp `) abstain via a
   filesystem-existence seam; non-existing ones (`/compact`) stay commands.
+- **A mid-dictation reconnect resumes the session; it never replays it.**
+  When the realtime socket drops without the user asking
+  (`DictationViewModel+Reconnect.swift`, #380), the mic keeps recording and the
+  socket is retried on a bounded backoff. Four things hold that apart from a
+  session restart, and each is load-bearing:
+  (1) the run dials the endpoint/key/model snapshot latched at session start
+  (`sessionRealtimeConfiguration`), never a fresh read of Settings — a backend
+  mode flipped mid-dictation would otherwise carry this session's audio, and
+  its bearer token, to a server it never agreed to;
+  (2) it sends no commit, at any point — the reconnected backend holds no audio
+  buffer to commit;
+  (3) the partial in flight is promoted into the committed transcript at the
+  drop, so the reconnected backend — which starts with an empty transcript of
+  its own — can only produce text Live Auto-Paste has never typed. There are no
+  backspaces in the insertion path, so anything typed twice stays typed twice;
+  (4) every resume point re-checks `reconnectRunID`, which every stop, cancel
+  and abort bumps. A socket that opens a moment after the user stopped finds a
+  run that no longer owns the session and changes nothing.
+  The audio spoken into the gap is kept, not dropped: the run cancels the
+  send loop so the chunks pile up in `AudioChunkBuffer` and the restarted loop
+  replays them. That buffer's retention cap is sized above
+  `RealtimeReconnectPolicy.worstCaseDuration`, so a run that reconnects within
+  its retry cap loses nothing — past the cap the OLDEST audio goes first.
+  What IS lost either way is audio that was already sent when the socket died
+  but whose transcript never came back, and the words at the cut, which the new
+  session hears mid-utterance.
+- **A realtime event carries no connection identity, so the live client's own
+  state is the tiebreak.** `RealtimeEvent` says what happened, never which
+  socket it happened to, and the handler is shared by both clients and reached
+  through `DispatchQueue.main.async` — so a socket the session has already
+  retired can report its close, its error or even a transcript after the
+  session moved on. Three guards stand in for the missing identity, and all
+  three are load-bearing (Codex review of #415, each with a regression test):
+  a `.disconnected` is ignored when `activeRealtimeClient.isConnected` (the
+  live socket is up, so nothing is down to recover); transcript events are
+  refused outright while a reconnect run is in flight, because nothing
+  legitimate can arrive then and a straggler would re-type text Live Auto-Paste
+  cannot un-type; and cancelling a run closes the socket its attempt opened,
+  since cancelling the Swift task does not cancel a WebSocket left in
+  `connecting` — one that opens later would transmit the audio the stop flushed
+  into its pending queue and turn the menu bar icon green behind a session that
+  ended. The residual these do not cover: a transcript emitted by a retired
+  socket AFTER a run has already completed is still accepted. Closing that one
+  needs a connection generation stamped on every event, which is a change to
+  the enum and to both clients — tracked in issue #417, not bolted on here.
 - **Live Auto-Paste holds back the tail of the transcript.** Replacements are
   applied before typing (nothing is ever un-typed — there are no backspaces in
   the insertion path, and terminals can't support them: field bug 2026-07-06),
