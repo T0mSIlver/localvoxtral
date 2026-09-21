@@ -114,11 +114,29 @@ ablation workflows: `docs/agent/test-tiers.md`.
   (self-hosted, never for fork PRs, and for a DRAFT only when its body held
   `[mac-lanes]` when the run was created). Open PRs as drafts
   (`gh pr create --draft`), iterate on `build-test`, and `gh pr ready <n>`
-  once it is green: that starts `mac-lanes`. One Mac serves every agent, and
-  each push of a ready PR takes a slot. The marker is for a draft that needs
-  the signed `try-pr.sh` artifact or a live lane. A new lane goes in `build-test` unless
-  you can name what on the owner's Mac it needs — signing identity, STT
-  service, Metal, herdr fixture, GUI session. Never move fork-PR work to the self-hosted runner.
+  once it is green: that starts `mac-lanes`. The marker is for a draft that
+  needs the signed `try-pr.sh` artifact or a live lane. A new lane goes in
+  `build-test` unless you can name what on the owner's Mac it needs — signing
+  identity, STT service, Metal, herdr fixture, GUI session. Never move
+  fork-PR work to the self-hosted runner.
+- ONE Mac runs `mac-lanes` for every agent, one job at a time; in a burst the
+  queue, not the job, is what everyone waits for (#418). Spend it sparingly:
+  - Find the failure before you push: `remote-build.sh test --filter <Suite>`;
+    every `scripts/ci/test-*.sh` runs on Linux.
+  - Push a finished change, not each fix. A push to a ready PR cancels its
+    running Mac job and queues another.
+  - More than one push still to come on a ready PR: `gh pr ready <n> --undo`
+    first, `gh pr ready <n>` when done.
+  - In a stack, keep the upper layers draft until the one below is about to
+    merge; a rebase reruns every ready layer.
+  - A PR body that QUOTES a lane marker uses it. Name markers without their
+    brackets unless you mean them.
+  - Editing a PR body starts no run, so paste Proof after the run
+    (`gh api -X PATCH repos/<owner>/<repo>/pulls/<n> -F body=@file`;
+    `gh pr edit` fails on this repo).
+  - Red run: read its log before anything else. `gh run rerun <id> --failed`
+    reruns only the failed job, and a hosted `build-test` rerun costs the Mac
+    nothing. Never dispatch a ref that already has a run queued.
 - Docs-only diffs take a fast path (`scripts/ci/docs-only-filter.sh`,
   conservative allowlist; unknown paths fail open to the full run). Only
   `ci.yml` fast-paths, in both of its jobs; release and every other workflow

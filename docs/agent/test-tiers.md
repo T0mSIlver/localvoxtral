@@ -185,6 +185,14 @@ avoidable run costs far more than its own duration.
   cannot: `dogfood=true` for an instrumented artifact when the queued run
   carries no `[dogfood-package]` marker, or any other artifact-only input. A
   dispatch that would merely re-run the same lanes is never worth its slot.
+- **Drafts, and how a push is priced.** `mac-lanes` skips a draft, so the
+  cheap loop is: open as a draft, push as often as the hosted `build-test`
+  needs, `gh pr ready <n>` once. After that every push costs a Mac slot and
+  cancels the run in progress (11 % of the Mac's busy time went to runs that
+  were later cancelled, #418), so pull a PR back with `gh pr ready <n> --undo`
+  before a series of pushes; that also replaces its queued Mac job with a
+  skipped one. A draft and its ready run share one head SHA, which is why
+  `watch-checks.sh` reads the newest check run of each name.
 - Do not "just rerun" a red run to see if it is flaky before reading its log
   either — the flake signatures are enumerated in
   `docs/agent/field-debugging.md`, and a rerun is a full second run.
