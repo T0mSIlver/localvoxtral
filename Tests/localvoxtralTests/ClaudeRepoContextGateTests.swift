@@ -42,8 +42,6 @@ final class ClaudeRepoContextGateTests: XCTestCase {
     /// title fallback behind it.
     private static let surfaceTTY = "/dev/ttys003"
 
-    private static var retainedViewModels: [DictationViewModel] = []
-
     private let loopback = URL(string: "http://127.0.0.1:8472/v1/chat/completions")!
     private let remote = URL(string: "https://api.example.com/v1/chat/completions")!
     private let ghostty = TerminalScreenTarget(
@@ -62,7 +60,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         let viewModel = DictationViewModel(settings: settings, startRuntimeServices: false)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         return viewModel
     }
 

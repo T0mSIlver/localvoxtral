@@ -12,13 +12,6 @@ import XCTest
 /// it waits for.
 @MainActor
 final class DogfoodControlServiceTests: XCTestCase {
-    /// Any test that reaches `beginDictationSession` arms the REAL 10s
-    /// connect-timeout on a process-retained view model, and the alert it fires
-    /// SIGTRAPs whatever test is running ten seconds later (AGENTS, PR #66).
-    /// Every view model here therefore sets `isShowingConnectionFailureAlert`
-    /// and is retained for the process lifetime.
-    private static var retainedViewModels: [DictationViewModel] = []
-
     // MARK: - session start goes through the real trigger path
 
     func testSessionStartReportsARefusalRatherThanOverridingIt() async {
@@ -587,7 +580,7 @@ final class DogfoodControlServiceTests: XCTestCase {
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         let viewModel = DictationViewModel(settings: settings, startRuntimeServices: false)
         viewModel.isShowingConnectionFailureAlert = true
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         return viewModel
     }
 

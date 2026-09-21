@@ -546,10 +546,6 @@ final class PolishTokenGuardTests: XCTestCase {
 
 @MainActor
 final class DictationViewModelPolishTokenGuardTests: XCTestCase {
-    // DictationViewModel owns app-lifetime services; retain test instances for
-    // the process duration so teardown does not race service shutdown.
-    private static var retainedViewModels: [DictationViewModel] = []
-
     /// Standard dictation now trusts the model just like the agent profile: a
     /// model-authored flag rewrite is committed and persisted unchanged.
     func testStandardProfilePreservesModelChangedFlag() async {
@@ -2140,22 +2136,6 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {
-        let suiteName = "localvoxtral.DictationViewModelPolishTokenGuardTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-
-        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
-        settings.dictationOutputMode = outputMode
-        return settings
-    }
-
-    private func retainForTestProcessLifetime(_ viewModel: DictationViewModel) {
-        Self.retainedViewModels.append(viewModel)
-    }
 }
 
 /// Returns the input with `--force` rewritten to a mangled variant, as a small

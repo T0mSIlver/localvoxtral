@@ -5,10 +5,6 @@ import XCTest
 
 @MainActor
 final class DictationViewModelOverlayLifecycleTests: XCTestCase {
-    // DictationViewModel owns several app-lifetime services. Retain test instances
-    // for the process duration so teardown does not race service shutdown.
-    private static var retainedViewModels: [DictationViewModel] = []
-
     func testSessionOutputModeIsLatchedWhileSessionIsActive() {
         let settings = makeSettings(outputMode: .overlayBuffer)
         let overlayCoordinator = MockOverlayCoordinator()
@@ -1050,23 +1046,6 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(overlayCoordinator.resetCallCount, 0)
         XCTAssertEqual(overlayCoordinator.commitCallCount, 0)
         XCTAssertEqual(viewModel.currentDictationEventText, "hello")
-    }
-
-    private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {
-        let suiteName = "localvoxtral.DictationViewModelOverlayLifecycleTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-
-        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
-        settings.dictationOutputMode = outputMode
-        return settings
-    }
-
-    private func retainForTestProcessLifetime(_ viewModel: DictationViewModel) {
-        Self.retainedViewModels.append(viewModel)
     }
 
     private static func formattedTimeout(_ timeout: TimeInterval) -> String {

@@ -1907,13 +1907,9 @@ final class RemoteHerdrJoinTests: XCTestCase {
         addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         let viewModel = DictationViewModel(settings: settings, startRuntimeServices: false)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         return viewModel
     }
-
-    /// DictationViewModel owns app-lifetime services; retaining test instances
-    /// for the process duration keeps teardown from racing service shutdown.
-    private static var retainedViewModels: [DictationViewModel] = []
 
     func testAnAbortedConnectClosesTheTunnel() async throws {
         // The abort path never reaches stopped-session cleanup, so before this

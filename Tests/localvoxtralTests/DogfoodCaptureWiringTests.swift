@@ -10,10 +10,6 @@ import XCTest
 /// harness as the polish-failure diagnostics suite) and reads the record back.
 @MainActor
 final class DogfoodCaptureWiringTests: XCTestCase {
-    // DictationViewModel owns app-lifetime services; retain test instances for
-    // the process lifetime (mirrors the token-guard suite).
-    private static var retainedViewModels: [DictationViewModel] = []
-
     /// Armed build + armed runtime flag: a polished overlay commit writes
     /// exactly one record whose text stages, session facts, join abstention,
     /// and screen decision describe the dictation that just committed.
@@ -660,7 +656,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         editSignal: EditSignalHarness? = nil,
         commitOutcome: OverlayBufferCommitOutcome = .succeeded
     ) throws -> Harness {
-        let settings = makeSettings()
+        let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = true
         settings.polishingBackendMode = .managedLocal
         settings.dogfoodCaptureEnabled = dogfoodArmed
@@ -701,7 +697,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
             sleeper.fireAll()
         }
         viewModel.isShowingConnectionFailureAlert = true
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
@@ -722,17 +718,6 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         }
     }
 
-    private func makeSettings() -> SettingsStore {
-        let suiteName = "localvoxtral.DogfoodCaptureWiringTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
-        settings.dictationOutputMode = .overlayBuffer
-        return settings
-    }
 }
 
 /// A plain-text pasteboard with no concealed/transient markers.

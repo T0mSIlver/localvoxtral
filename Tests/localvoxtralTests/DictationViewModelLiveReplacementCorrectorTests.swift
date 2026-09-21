@@ -12,8 +12,6 @@ import XCTest
 /// replacement was deferred by the old guarded corrector and dropped at stop).
 @MainActor
 final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
-    private static var retainedViewModels: [DictationViewModel] = []
-
     override func tearDown() async throws {
         TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
         TerminalTargetDetector.debugFocusedElementProbeOverride = nil
@@ -285,7 +283,7 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
             startRuntimeServices: false
         )
         viewModel.appConfigStore = configStore ?? MockAppConfigStore(replacementDictionary: dictionary)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
 
         viewModel.textInsertion.debugConfigureInsertionHooks(
             unicodePoster: unicodePoster ?? { chunk in

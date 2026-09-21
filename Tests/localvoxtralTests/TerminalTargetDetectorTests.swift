@@ -6,10 +6,6 @@ import XCTest
 
 @MainActor
 final class TerminalTargetDetectorTests: XCTestCase {
-    // DictationViewModel owns app-lifetime services. Retain test instances for
-    // the process duration so teardown does not race service shutdown.
-    private static var retainedViewModels: [DictationViewModel] = []
-
     override func tearDown() async throws {
         TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
         TerminalTargetDetector.debugFocusedElementProbeOverride = nil
@@ -273,7 +269,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         let viewModel = makeViewModel(outputMode: .overlayBuffer)
         viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:1/realtime"
         viewModel.isShowingConnectionFailureAlert = true
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
 
         await viewModel.beginDictationSession(outputMode: .overlayBuffer)
         XCTAssertFalse(
@@ -360,7 +356,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         // Regression: session end must release the warning (mirrors the
         // websocketReceiveFailed clearing), not leave it in the popover.
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.lastError = DictationViewModel.secureKeyboardEntryWarningMessage
         viewModel.sessionOutputMode = .liveAutoPaste
         viewModel.isDictating = true
@@ -374,7 +370,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
     func testSessionEndKeepsUnrelatedErrors() {
         // The session-end clear is token-scoped: other errors must survive.
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.lastError = "mlx-lm failed to start."
         viewModel.sessionOutputMode = .liveAutoPaste
         viewModel.isDictating = true
@@ -455,7 +451,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
         let viewModel = makeViewModel(outputMode: .overlayBuffer)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.secureInputWarningSound = {}
         viewModel.captureSessionTargetVerdict()
         viewModel.applyPreCapturedSessionTargetVerdict()
@@ -485,7 +481,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.secureInputWarningSound = {}
         viewModel.captureSessionTargetVerdict()
         viewModel.applyPreCapturedSessionTargetVerdict()
@@ -508,7 +504,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         var soundPlays = 0
         viewModel.secureInputWarningSound = { soundPlays += 1 }
 
@@ -530,7 +526,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.secureInputWarningSound = {}
         await viewModel.beginDictationSession()
         XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
@@ -557,7 +553,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         // below just pin the early-exit failure surface it must still reach.
         _ = NSApplication.shared
         let viewModel = makeViewModel(outputMode: .overlayBuffer)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.settings.dictationBackendMode = .externalURL
         viewModel.settings.realtimeAPIEndpointURL = ""
         await viewModel.beginDictationSession()
@@ -593,7 +589,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.secureInputWarningSound = {}
         await viewModel.beginDictationSession()
         XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
@@ -623,7 +619,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
         let coordinator = MockOverlayCoordinator()
         let viewModel = makeViewModel(outputMode: .liveAutoPaste, coordinator: coordinator)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.secureInputWarningSound = {}
 
         await viewModel.beginDictationSession()
@@ -638,7 +634,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
         let viewModel = makeViewModel(outputMode: .overlayBuffer)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.secureInputWarningSound = {}
 
         await viewModel.beginDictationSession()
@@ -661,7 +657,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.secureInputWarningSound = {}
 
         viewModel.debugHandleModifierOnlyHoldStartForTesting()
@@ -688,7 +684,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         var soundPlays = 0
         viewModel.secureInputWarningSound = { soundPlays += 1 }
 
@@ -716,7 +712,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         var soundPlays = 0
         viewModel.secureInputWarningSound = { soundPlays += 1 }
 
@@ -736,7 +732,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         let coordinator = MockOverlayCoordinator()
         coordinator.commitOutcome = .copiedToClipboard(message: "copied")
         let viewModel = makeViewModel(outputMode: .overlayBuffer, coordinator: coordinator)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isDictating = true
 
@@ -760,7 +756,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         let coordinator = MockOverlayCoordinator()
         coordinator.commitOutcome = .failed(message: "nope")
         let viewModel = makeViewModel(outputMode: .overlayBuffer, coordinator: coordinator)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isDictating = true
 

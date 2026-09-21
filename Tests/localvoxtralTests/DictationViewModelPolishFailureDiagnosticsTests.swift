@@ -9,10 +9,6 @@ import XCTest
 /// sending debugging to a process that was never involved.
 @MainActor
 final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
-    // DictationViewModel owns app-lifetime services; retain test instances for
-    // the process lifetime (mirrors the token-guard suite).
-    private static var retainedViewModels: [DictationViewModel] = []
-
     /// Managed mode + a polish request that fails with a network error: the
     /// surfaced failure details must name the managed polishd endpoint (the
     /// one the request went to), never the external-URL setting.
@@ -310,23 +306,6 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
 
     // MARK: - Harness (mirrors the token-guard suite)
 
-    private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {
-        let suiteName =
-            "localvoxtral.DictationViewModelPolishFailureDiagnosticsTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-
-        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
-        settings.dictationOutputMode = outputMode
-        return settings
-    }
-
-    private func retainForTestProcessLifetime(_ viewModel: DictationViewModel) {
-        Self.retainedViewModels.append(viewModel)
-    }
 }
 
 /// Always fails like a client-side timeout, exercising the connection-failure

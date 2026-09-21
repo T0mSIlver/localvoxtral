@@ -7,10 +7,6 @@ import XCTest
 /// because device-change events were only acted on during dictation.
 @MainActor
 final class MicrophoneHotPlugTests: XCTestCase {
-    // DictationViewModel owns several app-lifetime services. Retain test instances
-    // for the process duration so teardown does not race service shutdown.
-    private static var retainedViewModels: [DictationViewModel] = []
-
     private let builtIn = MicrophoneInputDevice(
         id: "BuiltInMicrophoneDevice", name: "MacBook Pro Microphone", channelCount: 1)
     private let usb = MicrophoneInputDevice(
@@ -102,7 +98,7 @@ final class MicrophoneHotPlugTests: XCTestCase {
             overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: false
         )
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         return (viewModel, settings)
     }
 }

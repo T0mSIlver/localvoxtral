@@ -7,14 +7,12 @@ import XCTest
 /// nothing else.
 @MainActor
 final class LearnedTermWiringTests: XCTestCase {
-    private static var retainedViewModels: [DictationViewModel] = []
-
     private func makeViewModel(
         outcome: RepoVocabularyMatcher.GroundingOutcome?,
         repositoryRoot: String? = nil,
         service: any LLMPolishingServicing = IdentityPolishingService()
     ) -> (DictationViewModel, LearnedTermStore) {
-        let settings = makeSettings()
+        let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = true
         settings.agentPolishProfileEnabled = false
         settings.polishingBackendMode = .externalURL
@@ -40,7 +38,7 @@ final class LearnedTermWiringTests: XCTestCase {
         viewModel.debugRepoVocabularyRootOverride = repositoryRoot
         let store = LearnedTermStore(fileURL: nil)
         viewModel.learnedTermStore = store
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         return (viewModel, store)
     }
 
@@ -215,19 +213,6 @@ final class LearnedTermWiringTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func makeSettings() -> SettingsStore {
-        let suiteName = "localvoxtral.LearnedTermWiringTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-        let settings = SettingsStore(
-            defaults: defaults, environment: [:], secretStore: InMemorySecretStore()
-        )
-        settings.dictationOutputMode = .overlayBuffer
-        return settings
-    }
 }
 
 private final class MockAppConfigStore: AppConfigServing {

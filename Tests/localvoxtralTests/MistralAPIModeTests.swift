@@ -9,10 +9,6 @@ import XCTest
 /// setup / key-check seams the Engines pane and the wizard both drive.
 @MainActor
 final class MistralAPIModeTests: XCTestCase {
-    // DictationViewModel owns app-lifetime services; retain test instances for
-    // the process duration so teardown does not race service shutdown.
-    private static var retainedViewModels: [DictationViewModel] = []
-
     // MARK: - Active realtime client
 
     func testActiveRealtimeClientDefaultsToTheOpenAICompatibleClient() {
@@ -418,7 +414,7 @@ final class MistralAPIModeTests: XCTestCase {
             localNetworkPermissionPreflight: preflight,
             startRuntimeServices: false
         )
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         return (viewModel, settings, backendManager)
     }
 }

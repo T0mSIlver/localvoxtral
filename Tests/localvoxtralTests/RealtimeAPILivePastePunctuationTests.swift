@@ -18,10 +18,6 @@ import XCTest
 #if DEBUG
 @MainActor
 final class RealtimeAPILivePastePunctuationTests: XCTestCase {
-    // DictationViewModel owns app-lifetime services; retain instances for the
-    // process duration so teardown does not race service shutdown.
-    private static var retainedViewModels: [DictationViewModel] = []
-
     private var insertedChunks: [String] = []
 
     private func makeViewModel() -> DictationViewModel {
@@ -40,7 +36,7 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
             overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: false
         )
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
 
         // Configure the VM as an active Live Auto-Paste session so
         // `handle(event:)` accepts and routes transcript events.

@@ -5,10 +5,6 @@ import XCTest
 
 @MainActor
 final class DictationViewModelFailFastUXTests: XCTestCase {
-    // DictationViewModel owns several app-lifetime services. Retain test instances
-    // for the process duration so teardown does not race service shutdown.
-    private static var retainedViewModels: [DictationViewModel] = []
-
     // MARK: - Backend connection failure messaging
 
     func testSocketConnectionRefusedSurfacesRefusedStatusAndEndpoint() {
@@ -308,7 +304,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
     }
 
     func testStartupPermissionPromptsAreSkippedUntilOnboardingCompletes() {
-        let settings = makeSettings(outputMode: .overlayBuffer)
+        let settings = makeExternalBackendSettings(outputMode: .overlayBuffer)
         settings.onboardingCompleted = false
         let viewModel = DictationViewModel(
             settings: settings,
@@ -337,7 +333,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         // startup permission-prompt pass, or an untrusted responsible
         // process (the runner's bundled node after an auto-update) pops a
         // real TCC dialog on the runner's GUI session once per run.
-        let settings = makeSettings(outputMode: .overlayBuffer)
+        let settings = makeExternalBackendSettings(outputMode: .overlayBuffer)
         settings.onboardingCompleted = true
         let viewModel = DictationViewModel(
             settings: settings,
@@ -1650,7 +1646,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         outputMode: DictationOutputMode,
         backendManager: (any ManagedBackendManaging)? = nil
     ) -> DictationViewModel {
-        let settings = makeSettings(outputMode: outputMode)
+        let settings = makeExternalBackendSettings(outputMode: outputMode)
         let viewModel = DictationViewModel(
             settings: settings,
             backendManager: backendManager,
@@ -1664,14 +1660,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         return viewModel
     }
 
-    private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {
-        let suiteName = "localvoxtral.DictationViewModelFailFastUXTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
+    private func makeExternalBackendSettings(outputMode: DictationOutputMode) -> SettingsStore {
+        let settings = makeSettings()
         // These tests exercise connection-failure UX against a user-configured
         // external endpoint (a closed port). Pin external mode so that the
         // configured realtimeAPIEndpointURL is honored rather than overridden
@@ -1700,10 +1690,6 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
             }
             backendManager.emitStatus(spec: spec, status: status)
         }
-    }
-
-    private func retainForTestProcessLifetime(_ viewModel: DictationViewModel) {
-        Self.retainedViewModels.append(viewModel)
     }
 
     private static func formattedTimeout(_ timeout: TimeInterval) -> String {

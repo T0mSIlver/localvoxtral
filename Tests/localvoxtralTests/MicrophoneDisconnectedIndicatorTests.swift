@@ -7,10 +7,6 @@ import XCTest
 /// stop's own finalization, which otherwise resets the icon to idle.
 @MainActor
 final class MicrophoneDisconnectedIndicatorTests: XCTestCase {
-    // DictationViewModel owns several app-lifetime services. Retain test instances
-    // for the process duration so teardown does not race service shutdown.
-    private static var retainedViewModels: [DictationViewModel] = []
-
     func testUnpluggedMicTurnsIconRedThroughFinalization() {
         let viewModel = makeDictatingViewModel()
 
@@ -58,7 +54,7 @@ final class MicrophoneDisconnectedIndicatorTests: XCTestCase {
             overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: false
         )
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.sessionOutputMode = .liveAutoPaste
         viewModel.isDictating = true
         return viewModel

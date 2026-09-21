@@ -6,10 +6,6 @@ import XCTest
 /// adversarial review of the tap-vs-hold rework.
 @MainActor
 final class DictationViewModelModifierGestureTests: XCTestCase {
-    // DictationViewModel owns several app-lifetime services. Retain test instances
-    // for the process duration so teardown does not race service shutdown.
-    private static var retainedViewModels: [DictationViewModel] = []
-
     func testModifierTapTogglesOffEvenInPushToTalkShortcutMode() {
         // A tap has no release event: routing it through push-to-talk press
         // semantics set isPushToTalkShortcutHeld with nothing to ever clear
@@ -159,19 +155,6 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         )
     }
 
-    private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {
-        let suiteName = "localvoxtral.DictationViewModelModifierGestureTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-
-        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
-        settings.dictationOutputMode = outputMode
-        return settings
-    }
-
     private func makeViewModel(
         settings: SettingsStore,
         coordinator: MockOverlayCoordinator = MockOverlayCoordinator()
@@ -185,7 +168,7 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         // replacement dictionary) through the store — never the real
         // config directory.
         viewModel.appConfigStore = GestureTestHermeticConfigStore()
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         return viewModel
     }
 }

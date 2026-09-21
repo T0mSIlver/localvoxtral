@@ -16,10 +16,6 @@ import XCTest
 #if DEBUG
 @MainActor
 final class DictationViewModelDeltaLoggingTests: XCTestCase {
-    // DictationViewModel owns app-lifetime services; retain instances for the
-    // process duration so teardown does not race service shutdown.
-    private static var retainedViewModels: [DictationViewModel] = []
-
     private var captured: [DebugRealtimeDeltaLogRecord] = []
 
     /// Build a ViewModel whose delta-log sink captures every emission in
@@ -41,7 +37,7 @@ final class DictationViewModelDeltaLoggingTests: XCTestCase {
             overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: false
         )
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
 
         captured = []
         viewModel.debugConfigureDeltaLogSink { [weak self] record in

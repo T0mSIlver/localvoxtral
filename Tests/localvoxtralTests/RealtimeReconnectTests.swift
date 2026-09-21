@@ -12,10 +12,6 @@ import XCTest
 /// stop can be landed at an exact point inside an attempt.
 @MainActor
 final class RealtimeReconnectTests: XCTestCase {
-    // DictationViewModel owns app-lifetime services; retain test instances for
-    // the process duration so teardown does not race service shutdown.
-    private static var retainedViewModels: [DictationViewModel] = []
-
     // MARK: - Policy
 
     func testBackoffGrowsAndIsCapped() {
@@ -530,7 +526,7 @@ final class RealtimeReconnectTests: XCTestCase {
         // alert on a process-retained view model; suppress it or it fires
         // inside whatever test runs ~10 s later.
         viewModel.isShowingConnectionFailureAlert = true
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
 
         let client = FakeReconnectRealtimeClient()
         viewModel.activeRealtimeClient = client

@@ -9,8 +9,6 @@ import XCTest
 /// so each abort route gets its own test rather than trusting one funnel.
 @MainActor
 final class DictationViewModelAudioDuckingTests: XCTestCase {
-    private static var retainedViewModels: [DictationViewModel] = []
-
     private static let deviceA = "device-a"
     private static let original: Float = 0.8
     private static var duckTarget: Float {
@@ -133,7 +131,7 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
             overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: false
         )
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
 
         let volume = FakeOutputVolumeControl(volume: Self.original)
         // A pinned clock and a sleep that does not sleep: this suite asserts
