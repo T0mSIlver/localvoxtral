@@ -268,11 +268,13 @@ final class SettingsStore {
         static let autoCopyEnabled = "settings.auto_copy_enabled"
         static let audioDuckingEnabled = "settings.audio_ducking_enabled"
         static let audioDuckingFadeDuration = "settings.audio_ducking_fade_duration"
-        /// The volume a launch ducked away from, written at the duck and
-        /// cleared when the restore fade finishes. Present at startup only
-        /// when the previous launch died mid-session.
+        /// The device and volume a launch ducked away from, written at the
+        /// duck and cleared when a restore lands. Present at startup only when
+        /// the previous launch died mid-session. Both keys or neither.
         static let audioDuckingPendingRestoreVolume =
             "settings.audio_ducking_pending_restore_volume"
+        static let audioDuckingPendingRestoreDeviceUID =
+            "settings.audio_ducking_pending_restore_device_uid"
         static let selectedInputDeviceUID = "settings.selected_input_device_uid"
         static let selectedInputChannel = "settings.selected_input_channel"
         static let dictationShortcutEnabled = "settings.dictation_shortcut_enabled"
@@ -474,21 +476,28 @@ final class SettingsStore {
     static let audioDuckingFadeDurationRange: ClosedRange<Double> = 0.1...2.0
     static let defaultAudioDuckingFadeDuration: Double = 0.4
 
-    /// The volume to put back at the next launch when this one dies ducked.
-    /// Not surfaced in Settings — `AudioDuckingController` owns both ends.
-    var audioDuckingPendingRestoreVolume: Float? {
+    /// The device and volume to put back at the next launch when this one dies
+    /// ducked. Not surfaced in Settings — `AudioDuckingController` owns both
+    /// ends. The device is stored with the volume because a restore aimed at
+    /// whatever is default by then would push one device's level onto another.
+    var audioDuckingPendingRestore: OutputVolumeReading? {
         get {
-            guard defaults.object(forKey: Keys.audioDuckingPendingRestoreVolume) != nil else {
-                return nil
-            }
+            guard let deviceUID = defaults.string(
+                forKey: Keys.audioDuckingPendingRestoreDeviceUID), !deviceUID.isEmpty,
+                defaults.object(forKey: Keys.audioDuckingPendingRestoreVolume) != nil
+            else { return nil }
             let stored = defaults.double(forKey: Keys.audioDuckingPendingRestoreVolume)
             guard (0...1).contains(stored) else { return nil }
-            return Float(stored)
+            return OutputVolumeReading(deviceUID: deviceUID, volume: Float(stored))
         }
         set {
             if let newValue {
-                defaults.set(Double(newValue), forKey: Keys.audioDuckingPendingRestoreVolume)
+                defaults.set(
+                    newValue.deviceUID, forKey: Keys.audioDuckingPendingRestoreDeviceUID)
+                defaults.set(
+                    Double(newValue.volume), forKey: Keys.audioDuckingPendingRestoreVolume)
             } else {
+                defaults.removeObject(forKey: Keys.audioDuckingPendingRestoreDeviceUID)
                 defaults.removeObject(forKey: Keys.audioDuckingPendingRestoreVolume)
             }
         }

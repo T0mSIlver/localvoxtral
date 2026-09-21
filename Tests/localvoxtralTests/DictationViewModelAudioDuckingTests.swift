@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 
@@ -10,6 +11,7 @@ import XCTest
 final class DictationViewModelAudioDuckingTests: XCTestCase {
     private static var retainedViewModels: [DictationViewModel] = []
 
+    private static let deviceA = "device-a"
     private static let original: Float = 0.8
     private static var duckTarget: Float {
         original * AudioDuckingController.duckedFractionOfOriginal
@@ -21,7 +23,7 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
         viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
         await viewModel.audioDucking.debugFadeTask?.value
 
-        assertVolume(volume.currentVolume(), Self.original)
+        assertVolume(volume.volume(of: Self.deviceA), Self.original)
     }
 
     func testAnAbortedConnectRestoresTheVolume() async {
@@ -32,7 +34,7 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
         viewModel.abortConnectingSession()
         await viewModel.audioDucking.debugFadeTask?.value
 
-        assertVolume(volume.currentVolume(), Self.original)
+        assertVolume(volume.volume(of: Self.deviceA), Self.original)
     }
 
     func testASocketLostMidDictationRestoresTheVolume() async {
@@ -41,18 +43,39 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
         viewModel.handle(event: .disconnected)
         await viewModel.audioDucking.debugFadeTask?.value
 
-        assertVolume(volume.currentVolume(), Self.original)
+        assertVolume(volume.volume(of: Self.deviceA), Self.original)
         XCTAssertFalse(viewModel.isDictating)
     }
 
-    func testQuitRestoresTheVolumeInline() async {
-        // `willTerminate` gives one synchronous main-thread closure; a fade
-        // started there would never be driven.
+    func testQuitRestoresTheVolumeThroughTheRealObserver() async {
+        // Through the notification, not by calling the controller: the claim
+        // is that the app's own `willTerminate` wiring restores. And inline —
+        // the observer's synchronous return is the last execution the process
+        // guarantees, so the volume must be back when `post` returns.
         let (viewModel, volume) = await makeDuckedSession()
+        let center = NotificationCenter()
+        viewModel.debugRegisterLifecycleObservers(on: center)
 
-        viewModel.audioDucking.restoreImmediatelyForTermination()
+        center.post(name: NSApplication.willTerminateNotification, object: nil)
 
-        assertVolume(volume.currentVolume(), Self.original)
+        assertVolume(
+            volume.volume(of: Self.deviceA), Self.original,
+            "restored by the time the observer returned, with no await in between")
+    }
+
+    func testSystemSleepRestoresTheVolume() async {
+        // Also through the real observer. The Mac going to sleep with the
+        // volume down is the version of this a user finds the next morning.
+        let (viewModel, volume) = await makeDuckedSession()
+        let center = NotificationCenter()
+        viewModel.debugRegisterLifecycleObservers(on: center)
+
+        center.post(name: NSWorkspace.willSleepNotification, object: nil)
+        await Task.yield()
+        await viewModel.audioDucking.debugFadeTask?.value
+
+        assertVolume(volume.volume(of: Self.deviceA), Self.original)
+        XCTAssertFalse(viewModel.isDictating)
     }
 
     func testStopWithoutADuckLeavesTheVolumeAlone() async {
@@ -86,7 +109,7 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
         viewModel.isDictating = true
         viewModel.audioDucking.duckForSessionStart()
         await viewModel.audioDucking.debugFadeTask?.value
-        assertVolume(volume.currentVolume(), Self.duckTarget, "precondition: ducked")
+        assertVolume(volume.volume(of: Self.deviceA), Self.duckTarget, "precondition: ducked")
         volume.clearWrites()
         return (viewModel, volume)
     }
@@ -112,15 +135,19 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
         )
         Self.retainedViewModels.append(viewModel)
 
-        let volume = FakeOutputVolumeControl(currentVolume: Self.original)
+        let volume = FakeOutputVolumeControl(volume: Self.original)
+        // A pinned clock and a sleep that does not sleep: this suite asserts
+        // which paths restore, and must not read the wall clock to do it. The
+        // fade's shape is AudioDuckingControllerTests.
+        let pinnedNow = Date(timeIntervalSince1970: 1_000)
         viewModel.audioDucking = AudioDuckingController(
             volumeControl: volume,
             isEnabled: { settings.audioDuckingEnabled },
-            // Zero: this suite asserts that the restore happens at all, and on
-            // which paths. The fade's shape is AudioDuckingControllerTests.
             fadeDuration: { 0 },
-            interruptedDuckVolume: { settings.audioDuckingPendingRestoreVolume },
-            recordInterruptedDuckVolume: { settings.audioDuckingPendingRestoreVolume = $0 }
+            interruptedDuck: { settings.audioDuckingPendingRestore },
+            recordInterruptedDuck: { settings.audioDuckingPendingRestore = $0 },
+            now: { pinnedNow },
+            sleepFor: { _ in }
         )
         return (viewModel, volume)
     }

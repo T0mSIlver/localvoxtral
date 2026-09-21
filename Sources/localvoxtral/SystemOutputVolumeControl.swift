@@ -1,69 +1,75 @@
 import CoreAudio
 import Foundation
 
-/// Reads and writes the main output volume of whatever the system is playing
-/// through. A protocol so the ducking fade is unit-testable without moving the
-/// volume of the machine running the tests.
+/// An output device and its volume, taken together. The pair is the point: a
+/// duck is taken against ONE device, and the restore has to go back to that
+/// device rather than to whatever is default by the time the session ends.
+struct OutputVolumeReading: Equatable, Sendable {
+    let deviceUID: String
+    let volume: Float
+}
+
+/// Reads and writes the main output volume of a specific device. A protocol so
+/// the ducking fade is unit-testable without moving the volume of the machine
+/// running the tests.
 protocol SystemOutputVolumeControlling: Sendable {
-    /// Current output volume in 0...1, or nil when nothing answers — no output
-    /// device, or a device (HDMI, most digital outputs) whose volume the Mac
-    /// does not own. Ducking stays out of the way in that case rather than
-    /// guessing a level it could not restore.
-    func currentVolume() -> Float?
+    /// The device the system is playing through and its volume, or nil when
+    /// nothing answers — no output device, or a device (HDMI, most digital
+    /// outputs) whose volume the Mac does not own. Ducking stays out of the
+    /// way in that case rather than guessing a level it could not restore.
+    func readDefaultOutput() -> OutputVolumeReading?
+
+    /// That device's volume now, or nil when it is no longer connected.
+    func volume(forDeviceUID deviceUID: String) -> Float?
 
     /// Returns whether the write landed. A failure is reported, never assumed
     /// away: a silent one leaves the user quiet with no dictation running.
     @discardableResult
-    func setVolume(_ volume: Float) -> Bool
+    func setVolume(_ volume: Float, forDeviceUID deviceUID: String) -> Bool
 }
 
-/// The real control, over the default output device.
+/// The real control, over CoreAudio.
 ///
 /// `kAudioDevicePropertyVolumeScalar` on the main element is what the volume
-/// keys move, but plenty of devices (aggregates, some interfaces) expose no
-/// settable main element and only per-channel ones — hence the channel
-/// fallback. Deliberately not `AudioHardwareService…VirtualMainVolume`, which
-/// papers over the same distinction and is deprecated since macOS 12.
+/// keys move. A device that does not offer a settable main element — some
+/// aggregates and interfaces expose per-channel scalars only — is reported as
+/// having no volume at all, and left alone: ducking its channels together
+/// would flatten a stereo balance the user set, and restoring them would not
+/// give it back. Deliberately not `AudioHardwareService…VirtualMainVolume`,
+/// which papers over the same distinction and is deprecated since macOS 12.
 struct CoreAudioSystemOutputVolumeControl: SystemOutputVolumeControlling {
-    /// The stereo pair to fall back on when the main element is not settable.
-    private static let fallbackChannels: [AudioObjectPropertyElement] = [1, 2]
+    func readDefaultOutput() -> OutputVolumeReading? {
+        guard let deviceID = Self.defaultOutputDeviceID(),
+              let deviceUID = AudioDeviceManager.deviceUID(for: deviceID),
+              let volume = Self.readMainVolume(deviceID)
+        else { return nil }
+        return OutputVolumeReading(deviceUID: deviceUID, volume: volume)
+    }
 
-    func currentVolume() -> Float? {
-        guard let deviceID = Self.defaultOutputDeviceID() else { return nil }
-
-        if Self.isVolumeSettable(deviceID, element: kAudioObjectPropertyElementMain),
-           let main = Self.readVolume(deviceID, element: kAudioObjectPropertyElementMain)
-        {
-            return main
-        }
-
-        let channelVolumes = Self.fallbackChannels.compactMap { element -> Float? in
-            guard Self.isVolumeSettable(deviceID, element: element) else { return nil }
-            return Self.readVolume(deviceID, element: element)
-        }
-        guard !channelVolumes.isEmpty else { return nil }
-        return channelVolumes.reduce(0, +) / Float(channelVolumes.count)
+    func volume(forDeviceUID deviceUID: String) -> Float? {
+        guard let deviceID = Self.outputDeviceID(forUID: deviceUID) else { return nil }
+        return Self.readMainVolume(deviceID)
     }
 
     @discardableResult
-    func setVolume(_ volume: Float) -> Bool {
-        guard let deviceID = Self.defaultOutputDeviceID() else { return false }
-        let clamped = min(max(volume, 0), 1)
+    func setVolume(_ volume: Float, forDeviceUID deviceUID: String) -> Bool {
+        guard let deviceID = Self.outputDeviceID(forUID: deviceUID) else { return false }
+        guard Self.isMainVolumeSettable(deviceID) else { return false }
 
-        if Self.isVolumeSettable(deviceID, element: kAudioObjectPropertyElementMain) {
-            return Self.writeVolume(clamped, deviceID: deviceID, element: kAudioObjectPropertyElementMain)
-        }
-
-        // Every settable channel has to take the write, or the pair drifts
-        // apart and the restore leaves one side quiet.
-        let settable = Self.fallbackChannels.filter { Self.isVolumeSettable(deviceID, element: $0) }
-        guard !settable.isEmpty else { return false }
-        return settable.allSatisfy {
-            Self.writeVolume(clamped, deviceID: deviceID, element: $0)
-        }
+        var address = Self.mainVolumeAddress
+        var value = Float32(min(max(volume, 0), 1))
+        let status = AudioObjectSetPropertyData(
+            deviceID, &address, 0, nil, UInt32(MemoryLayout<Float32>.size), &value)
+        return status == noErr
     }
 
     // MARK: - CoreAudio
+
+    private static let mainVolumeAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyVolumeScalar,
+        mScope: kAudioDevicePropertyScopeOutput,
+        mElement: kAudioObjectPropertyElementMain
+    )
 
     private static func defaultOutputDeviceID() -> AudioObjectID? {
         var address = AudioObjectPropertyAddress(
@@ -81,53 +87,42 @@ struct CoreAudioSystemOutputVolumeControl: SystemOutputVolumeControlling {
         return deviceID
     }
 
-    private static func volumeAddress(element: AudioObjectPropertyElement)
-        -> AudioObjectPropertyAddress
-    {
-        AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyVolumeScalar,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: element
-        )
+    /// By UID rather than by "whatever is default now": a restore must reach
+    /// the device the duck was taken against even after the user switched
+    /// outputs mid-session.
+    private static func outputDeviceID(forUID deviceUID: String) -> AudioObjectID? {
+        AudioDeviceManager.allAudioDeviceIDs().first { candidate in
+            AudioDeviceManager.deviceUID(for: candidate) == deviceUID
+        }
     }
 
-    private static func isVolumeSettable(
-        _ deviceID: AudioObjectID, element: AudioObjectPropertyElement
-    ) -> Bool {
-        var address = volumeAddress(element: element)
+    /// Settable is part of the question, not a separate one: a level this app
+    /// can read but not write is a level it could never put back.
+    private static func isMainVolumeSettable(_ deviceID: AudioObjectID) -> Bool {
+        var address = mainVolumeAddress
         guard AudioObjectHasProperty(deviceID, &address) else { return false }
         var settable: DarwinBoolean = false
         let status = AudioObjectIsPropertySettable(deviceID, &address, &settable)
         return status == noErr && settable.boolValue
     }
 
-    private static func readVolume(
-        _ deviceID: AudioObjectID, element: AudioObjectPropertyElement
-    ) -> Float? {
-        var address = volumeAddress(element: element)
+    private static func readMainVolume(_ deviceID: AudioObjectID) -> Float? {
+        guard isMainVolumeSettable(deviceID) else { return nil }
+        var address = mainVolumeAddress
         var value: Float32 = 0
         var dataSize = UInt32(MemoryLayout<Float32>.size)
         let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, &value)
         guard status == noErr else { return nil }
         return value
     }
-
-    private static func writeVolume(
-        _ volume: Float, deviceID: AudioObjectID, element: AudioObjectPropertyElement
-    ) -> Bool {
-        var address = volumeAddress(element: element)
-        var value = Float32(volume)
-        let status = AudioObjectSetPropertyData(
-            deviceID, &address, 0, nil, UInt32(MemoryLayout<Float32>.size), &value)
-        return status == noErr
-    }
 }
 
-/// Answers "no readable volume" to everything, so a view model built without
+/// Answers "no output volume" to everything, so a view model built without
 /// runtime services (every unit test) cannot move the host's volume.
 struct UnavailableSystemOutputVolumeControl: SystemOutputVolumeControlling {
-    func currentVolume() -> Float? { nil }
+    func readDefaultOutput() -> OutputVolumeReading? { nil }
+    func volume(forDeviceUID deviceUID: String) -> Float? { nil }
 
     @discardableResult
-    func setVolume(_ volume: Float) -> Bool { false }
+    func setVolume(_ volume: Float, forDeviceUID deviceUID: String) -> Bool { false }
 }

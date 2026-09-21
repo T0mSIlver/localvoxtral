@@ -9,6 +9,8 @@ import XCTest
 /// real `Task.sleep` took.
 @MainActor
 final class AudioDuckingControllerTests: XCTestCase {
+    private static let deviceA = "device-a"
+    private static let deviceB = "device-b"
     private static let original: Float = 0.8
     /// What a duck from `original` must land on, every time.
     private static var duckTarget: Float {
@@ -54,7 +56,7 @@ final class AudioDuckingControllerTests: XCTestCase {
         assertEqual(writes.last, Self.original, "the user's volume comes back exactly")
         XCTAssertEqual(writes, writes.sorted(by: <), "a restore fade only ever goes up")
         XCTAssertNil(
-            harness.controller.debugStoredOriginalVolume,
+            harness.controller.debugDuckedOutput?.volume,
             "the stored original is released once the restore fade completes")
     }
 
@@ -109,7 +111,7 @@ final class AudioDuckingControllerTests: XCTestCase {
             harness.volume.writes.last, Self.duckTarget,
             "the second duck targets original × fraction, not a fraction of the mid-fade level")
         assertEqual(
-            harness.controller.debugStoredOriginalVolume, Self.original,
+            harness.controller.debugDuckedOutput?.volume, Self.original,
             "and the interrupted restore never released the stored original")
     }
 
@@ -120,13 +122,13 @@ final class AudioDuckingControllerTests: XCTestCase {
             harness.controller.duckForSessionStart()
             await harness.controller.debugFadeTask?.value
             assertEqual(
-                harness.volume.currentVolume(), Self.duckTarget,
+                harness.volume.volume(of: Self.deviceA), Self.duckTarget,
                 "cycle \(cycle) ducks to the same level as the first")
 
             harness.controller.restoreAfterSession()
             await harness.controller.debugFadeTask?.value
             assertEqual(
-                harness.volume.currentVolume(), Self.original,
+                harness.volume.volume(of: Self.deviceA), Self.original,
                 "cycle \(cycle) restores to the volume the user set")
         }
     }
@@ -140,7 +142,7 @@ final class AudioDuckingControllerTests: XCTestCase {
         await harness.controller.debugFadeTask?.value
 
         XCTAssertTrue(harness.volume.writes.isEmpty)
-        XCTAssertNil(harness.controller.debugStoredOriginalVolume)
+        XCTAssertNil(harness.controller.debugDuckedOutput?.volume)
     }
 
     func testTurningTheSettingOffMidSessionStillRestores() async {
@@ -153,7 +155,7 @@ final class AudioDuckingControllerTests: XCTestCase {
         await harness.controller.debugFadeTask?.value
 
         assertEqual(
-            harness.volume.currentVolume(), Self.original,
+            harness.volume.volume(of: Self.deviceA), Self.original,
             "the toggle gates ducking, never the restore of a duck already made")
     }
 
@@ -166,7 +168,7 @@ final class AudioDuckingControllerTests: XCTestCase {
         await harness.controller.debugFadeTask?.value
 
         XCTAssertTrue(harness.volume.writes.isEmpty)
-        XCTAssertNil(harness.controller.debugStoredOriginalVolume)
+        XCTAssertNil(harness.controller.debugDuckedOutput?.volume)
         harness.controller.restoreAfterSession()
         XCTAssertTrue(harness.volume.writes.isEmpty, "and nothing to restore either")
     }
@@ -183,7 +185,7 @@ final class AudioDuckingControllerTests: XCTestCase {
 
         XCTAssertEqual(harness.volume.writes.count, 1)
         assertEqual(harness.volume.writes.last, Self.original)
-        XCTAssertNil(harness.pendingRestoreVolume())
+        XCTAssertNil(harness.pendingRestore())
     }
 
     func testTerminationMidFadeStillLandsOnTheUserVolume() async {
@@ -195,22 +197,39 @@ final class AudioDuckingControllerTests: XCTestCase {
         harness.controller.duckForSessionStart()
         await harness.controller.debugFadeTask?.value
 
-        assertEqual(harness.volume.currentVolume(), Self.original)
-        XCTAssertNil(harness.controller.debugStoredOriginalVolume)
+        assertEqual(harness.volume.volume(of: Self.deviceA), Self.original)
+        XCTAssertNil(harness.controller.debugDuckedOutput?.volume)
     }
 
     func testALaunchThatDiedDuckedPutsTheVolumeBackAtTheNextStart() {
-        // The process is killed outright: nothing ran a restore, so the
-        // duck's stored volume is all the next launch has to go on.
-        let harness = makeHarness(fadeDuration: 0.4, pendingRestoreVolume: 0.65)
+        // The process is killed outright: nothing ran a restore, so the duck's
+        // stored device and volume are all the next launch has to go on.
+        let harness = makeHarness(
+            fadeDuration: 0.4,
+            pendingRestore: OutputVolumeReading(deviceUID: Self.deviceA, volume: 0.65))
 
         harness.controller.restoreInterruptedDuckFromPreviousLaunch()
 
         XCTAssertEqual(harness.volume.writes.count, 1)
         assertEqual(harness.volume.writes.last, 0.65)
         XCTAssertNil(
-            harness.pendingRestoreVolume(),
+            harness.pendingRestore(),
             "cleared, so a later launch does not fight a volume the user has since changed")
+    }
+
+    func testALaunchRecoveryHoldsWhileTheDuckedDeviceIsUnplugged() {
+        // Clearing here would lose the only record of what that device was
+        // set to, and the next launch with it plugged in could not put it back.
+        let harness = makeHarness(
+            fadeDuration: 0.4,
+            pendingRestore: OutputVolumeReading(deviceUID: Self.deviceB, volume: 0.65))
+
+        harness.controller.restoreInterruptedDuckFromPreviousLaunch()
+
+        XCTAssertTrue(harness.volume.writes.isEmpty, "nothing is written to the device that is there")
+        XCTAssertEqual(
+            harness.pendingRestore()?.deviceUID, Self.deviceB,
+            "the restore is held for the launch that sees the device again")
     }
 
     func testACleanRunLeavesNothingForTheNextLaunchToRestore() async {
@@ -219,13 +238,14 @@ final class AudioDuckingControllerTests: XCTestCase {
         harness.controller.duckForSessionStart()
         await harness.controller.debugFadeTask?.value
         assertEqual(
-            harness.pendingRestoreVolume(), Self.original,
+            harness.pendingRestore()?.volume, Self.original,
             "recorded at the duck, while the process is still alive to record it")
+        XCTAssertEqual(harness.pendingRestore()?.deviceUID, Self.deviceA)
 
         harness.controller.restoreAfterSession()
         await harness.controller.debugFadeTask?.value
 
-        XCTAssertNil(harness.pendingRestoreVolume())
+        XCTAssertNil(harness.pendingRestore())
     }
 
     func testRefusedVolumeWritesDoNotStallTheFade() async {
@@ -239,8 +259,89 @@ final class AudioDuckingControllerTests: XCTestCase {
             harness.volume.attemptedWrites, 11,
             "every step is still attempted; the failures are logged, not swallowed by a bail-out")
         assertEqual(
-            harness.controller.debugStoredOriginalVolume, Self.original,
+            harness.controller.debugDuckedOutput?.volume, Self.original,
             "and the volume to go back to is still known")
+    }
+
+    // MARK: - Failure paths that must not lose the way back
+
+    func testARefusedRestoreKeepsTheVolumeToGoBackTo() async {
+        // Releasing it here is what leaves a user ducked with nothing left in
+        // the app that knows better.
+        let harness = makeHarness(fadeDuration: 0.4)
+        harness.controller.duckForSessionStart()
+        await harness.controller.debugFadeTask?.value
+
+        harness.volume.refuseWrites = true
+        harness.controller.restoreAfterSession()
+        await harness.controller.debugFadeTask?.value
+
+        assertEqual(
+            harness.controller.debugDuckedOutput?.volume, Self.original,
+            "a later restore can still try")
+        assertEqual(
+            harness.pendingRestore()?.volume, Self.original,
+            "and so can the next launch, if this one dies first")
+
+        // Proof that holding it is what makes the retry work.
+        harness.volume.refuseWrites = false
+        harness.controller.restoreAfterSession()
+        await harness.controller.debugFadeTask?.value
+
+        assertEqual(harness.volume.volume(of: Self.deviceA), Self.original)
+        XCTAssertNil(harness.pendingRestore())
+    }
+
+    func testARefusedTerminationRestoreLeavesTheRecordForTheNextLaunch() async {
+        let harness = makeHarness(fadeDuration: 0.4)
+        harness.controller.duckForSessionStart()
+        await harness.controller.debugFadeTask?.value
+        harness.volume.refuseWrites = true
+
+        harness.controller.restoreImmediatelyForTermination()
+
+        assertEqual(
+            harness.pendingRestore()?.volume, Self.original,
+            "the process is ending; the record is all that can still put it back")
+    }
+
+    // MARK: - The device the duck was taken against
+
+    func testSwitchingOutputMidSessionLeavesTheNewDeviceAlone() async {
+        // Restoring "the default device" would push the old device's level
+        // onto the new one — on headphones plugged in mid-sentence, loudly.
+        let harness = makeHarness(fadeDuration: 0.4)
+        harness.controller.duckForSessionStart()
+        await harness.controller.debugFadeTask?.value
+
+        harness.volume.switchDefault(to: Self.deviceB, volume: 0.3)
+        harness.controller.restoreAfterSession()
+        await harness.controller.debugFadeTask?.value
+
+        assertEqual(
+            harness.volume.volume(of: Self.deviceA), Self.original,
+            "the device that was ducked is the device that is restored")
+        assertEqual(
+            harness.volume.volume(of: Self.deviceB), 0.3,
+            "the device the user switched to was never ours to touch")
+    }
+
+    func testUnpluggingTheDuckedDeviceAbandonsTheRestoreInsteadOfGuessing() async {
+        let harness = makeHarness(fadeDuration: 0.4)
+        harness.controller.duckForSessionStart()
+        await harness.controller.debugFadeTask?.value
+        harness.volume.clearWrites()
+
+        harness.volume.switchDefault(to: Self.deviceB, volume: 0.3)
+        harness.volume.disconnect(Self.deviceA)
+        harness.controller.restoreAfterSession()
+        await harness.controller.debugFadeTask?.value
+
+        XCTAssertTrue(
+            harness.volume.writes.isEmpty,
+            "the level left with the device; writing it anywhere else is the bug")
+        XCTAssertNil(harness.controller.debugDuckedOutput)
+        XCTAssertNil(harness.pendingRestore())
     }
 
     // MARK: - The real control
@@ -253,8 +354,8 @@ final class AudioDuckingControllerTests: XCTestCase {
         // cannot cover.
         let control = CoreAudioSystemOutputVolumeControl()
 
-        let first = control.currentVolume()
-        let second = control.currentVolume()
+        let first = control.readDefaultOutput()
+        let second = control.readDefaultOutput()
 
         XCTAssertEqual(
             first, second, "reading the output volume is not allowed to change it")
@@ -263,9 +364,13 @@ final class AudioDuckingControllerTests: XCTestCase {
             // answer, and it is what makes ducking stand aside there.
             return
         }
+        XCTAssertFalse(first.deviceUID.isEmpty, "a reading names the device it came from")
         XCTAssertTrue(
-            (0...1).contains(first),
-            "CoreAudio reported \(first), which is not a scalar volume")
+            (0...1).contains(first.volume),
+            "CoreAudio reported \(first.volume), which is not a scalar volume")
+        XCTAssertEqual(
+            control.volume(forDeviceUID: first.deviceUID), first.volume,
+            "the by-UID read a fade uses reaches the same device the default read named")
     }
 
     // MARK: - Harness
@@ -284,13 +389,13 @@ final class AudioDuckingControllerTests: XCTestCase {
         fadeDuration: TimeInterval,
         enabled: Bool = true,
         currentVolume: Float? = AudioDuckingControllerTests.original,
-        pendingRestoreVolume: Float? = nil
+        pendingRestore: OutputVolumeReading? = nil
     ) -> Harness {
         Harness(
             fadeDuration: fadeDuration,
             enabled: enabled,
             currentVolume: currentVolume,
-            pendingRestoreVolume: pendingRestoreVolume
+            pendingRestore: pendingRestore
         )
     }
 
@@ -300,7 +405,7 @@ final class AudioDuckingControllerTests: XCTestCase {
         private(set) var controller: AudioDuckingController!
         private var clock: Date
         private var enabled: Bool
-        private var pending: Float?
+        private var pending: OutputVolumeReading?
         private var sleepCount = 0
         private var interruptAtSleep: Int?
         private var interruption: ((AudioDuckingController) -> Void)?
@@ -313,25 +418,25 @@ final class AudioDuckingControllerTests: XCTestCase {
             fadeDuration: TimeInterval,
             enabled: Bool,
             currentVolume: Float?,
-            pendingRestoreVolume: Float?
+            pendingRestore: OutputVolumeReading?
         ) {
-            self.volume = FakeOutputVolumeControl(currentVolume: currentVolume)
+            self.volume = FakeOutputVolumeControl(volume: currentVolume)
             self.clock = Date(timeIntervalSince1970: 1_000)
             self.enabled = enabled
-            self.pending = pendingRestoreVolume
+            self.pending = pendingRestore
             self.controller = AudioDuckingController(
                 volumeControl: volume,
                 isEnabled: { [unowned self] in self.enabled },
                 fadeDuration: { fadeDuration },
-                interruptedDuckVolume: { [unowned self] in self.pending },
-                recordInterruptedDuckVolume: { [unowned self] in self.pending = $0 },
+                interruptedDuck: { [unowned self] in self.pending },
+                recordInterruptedDuck: { [unowned self] in self.pending = $0 },
                 now: { [unowned self] in self.clock },
                 sleepFor: { [unowned self] duration in self.advance(by: duration) }
             )
         }
 
         func setEnabled(_ value: Bool) { enabled = value }
-        func pendingRestoreVolume() -> Float? { pending }
+        func pendingRestore() -> OutputVolumeReading? { pending }
 
         /// Runs `body` from inside the Nth sleep of a fade — the one moment a
         /// second duck or restore can land on a loop that is mid-flight.
@@ -361,11 +466,12 @@ extension Duration {
     }
 }
 
-/// Records what the ducking fade writes, and can refuse writes the way a
-/// device that lost its volume property does.
+/// Records what the ducking fade writes, per device, and can refuse writes or
+/// make a device vanish the way an unplugged one does.
 final class FakeOutputVolumeControl: SystemOutputVolumeControlling, @unchecked Sendable {
     private struct State {
-        var current: Float?
+        var defaultDeviceUID: String
+        var volumes: [String: Float]
         var writes: [Float] = []
         var attemptedWrites = 0
         var refuseWrites = false
@@ -373,8 +479,14 @@ final class FakeOutputVolumeControl: SystemOutputVolumeControlling, @unchecked S
 
     private let state: Mutex<State>
 
-    init(currentVolume: Float?) {
-        state = Mutex(State(current: currentVolume))
+    /// A device whose volume the Mac does not own is simply absent from
+    /// `volumes`, which is how the real control reports it.
+    init(defaultDeviceUID: String = "device-a", volume: Float?) {
+        state = Mutex(
+            State(
+                defaultDeviceUID: defaultDeviceUID,
+                volumes: volume.map { [defaultDeviceUID: $0] } ?? [:]
+            ))
     }
 
     var writes: [Float] { state.withLock { $0.writes } }
@@ -392,14 +504,40 @@ final class FakeOutputVolumeControl: SystemOutputVolumeControlling, @unchecked S
         }
     }
 
-    func currentVolume() -> Float? { state.withLock { $0.current } }
+    /// The user switched outputs, or plugged in headphones.
+    func switchDefault(to deviceUID: String, volume: Float) {
+        state.withLock {
+            $0.defaultDeviceUID = deviceUID
+            $0.volumes[deviceUID] = volume
+        }
+    }
+
+    /// The device was unplugged: it answers nothing and takes no writes.
+    func disconnect(_ deviceUID: String) {
+        state.withLock { $0.volumes[deviceUID] = nil }
+    }
+
+    func volume(of deviceUID: String) -> Float? {
+        state.withLock { $0.volumes[deviceUID] }
+    }
+
+    func readDefaultOutput() -> OutputVolumeReading? {
+        state.withLock {
+            guard let volume = $0.volumes[$0.defaultDeviceUID] else { return nil }
+            return OutputVolumeReading(deviceUID: $0.defaultDeviceUID, volume: volume)
+        }
+    }
+
+    func volume(forDeviceUID deviceUID: String) -> Float? {
+        state.withLock { $0.volumes[deviceUID] }
+    }
 
     @discardableResult
-    func setVolume(_ volume: Float) -> Bool {
+    func setVolume(_ volume: Float, forDeviceUID deviceUID: String) -> Bool {
         state.withLock {
             $0.attemptedWrites += 1
-            guard !$0.refuseWrites else { return false }
-            $0.current = volume
+            guard !$0.refuseWrites, $0.volumes[deviceUID] != nil else { return false }
+            $0.volumes[deviceUID] = volume
             $0.writes.append(volume)
             return true
         }

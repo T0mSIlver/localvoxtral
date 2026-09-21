@@ -780,8 +780,8 @@ final class DictationViewModel {
                 : UnavailableSystemOutputVolumeControl(),
             isEnabled: { settings.audioDuckingEnabled },
             fadeDuration: { settings.audioDuckingFadeDuration },
-            interruptedDuckVolume: { settings.audioDuckingPendingRestoreVolume },
-            recordInterruptedDuckVolume: { settings.audioDuckingPendingRestoreVolume = $0 }
+            interruptedDuck: { settings.audioDuckingPendingRestore },
+            recordInterruptedDuck: { settings.audioDuckingPendingRestore = $0 }
         )
         if let overlayBufferCoordinator {
             self.overlayBufferCoordinator = overlayBufferCoordinator
