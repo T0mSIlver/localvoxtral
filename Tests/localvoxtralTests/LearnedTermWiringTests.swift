@@ -203,11 +203,24 @@ final class LearnedTermWiringTests: XCTestCase {
 
     // MARK: - Helpers
 
+    /// Waits for the commit the way the app signals it, not on a clock. The
+    /// 1 s poll this replaces gave up under load on the GitHub runner and the
+    /// assertions then read a half-finished commit: the dictation had not
+    /// folded into the memory yet, so a term counted 3 instead of 4 and a
+    /// remembered spelling had not been applied (#392).
     private func waitUntilStoppedSessionCompletes(_ viewModel: DictationViewModel) async {
-        let deadline = ContinuousClock.now + .seconds(1)
-        while viewModel.isCompletingStoppedSession, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
+        // Set synchronously by `finishStoppedSession`, cleared by the cleanup
+        // this waits for. No await between the check and the handler, so the
+        // completion cannot slip through in between.
+        guard viewModel.isCompletingStoppedSession else { return }
+
+        let resumed = OneShotResume()
+        await withCheckedContinuation { continuation in
+            viewModel.debugStoppedSessionCompletionHandler = {
+                resumed.resumeOnce(continuation)
+            }
         }
+        viewModel.debugStoppedSessionCompletionHandler = nil
     }
 
     private func makeSettings() -> SettingsStore {
@@ -302,5 +315,19 @@ private actor IdentityPolishingService: LLMPolishingServicing {
             polishedText: request.inputText,
             durationSeconds: 0.01
         )
+    }
+}
+
+/// Both stopped-session reset paths fire the completion hook, and a single
+/// commit can run more than one of them. Resuming a continuation twice is a
+/// crash, so the first one wins.
+@MainActor
+private final class OneShotResume {
+    private var hasResumed = false
+
+    func resumeOnce(_ continuation: CheckedContinuation<Void, Never>) {
+        guard !hasResumed else { return }
+        hasResumed = true
+        continuation.resume()
     }
 }

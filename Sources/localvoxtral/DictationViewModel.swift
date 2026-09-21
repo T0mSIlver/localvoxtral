@@ -642,6 +642,12 @@ final class DictationViewModel {
     /// pipeline produces.
     @ObservationIgnored
     var debugRepoVocabularyRootOverride: String?
+
+    /// Fired when a stopped session's cleanup has finished, so a test can wait
+    /// for the end of a commit instead of polling a wall clock. The 1 s poll
+    /// this replaces expired under CI load and failed the suite six different
+    /// ways (#392).
+    var debugStoppedSessionCompletionHandler: (() -> Void)?
     /// Test seam: replaces only the DETACHED vocabulary pipeline (AX title /
     /// process cwd + git index + match) while keeping the deadline race in
     /// play, so tests can inject a never-completing pipeline and prove the

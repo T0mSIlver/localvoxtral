@@ -597,6 +597,15 @@ extension DictationViewModel {
         }
     }
 
+    /// The one place a stopped session's cleanup is declared over. Both reset
+    /// paths go through it so the DEBUG completion hook cannot miss one.
+    private func markStoppedSessionCompleted() {
+        isCompletingStoppedSession = false
+        #if DEBUG
+        debugStoppedSessionCompletionHandler?()
+        #endif
+    }
+
     func finishStoppedSession(promotePendingSegment: Bool) {
         guard !isCompletingStoppedSession else {
             debugLog("finishStoppedSession ignored; cleanup already in progress")
@@ -1733,7 +1742,7 @@ extension DictationViewModel {
         wasCancelled = false
         isFinalizingStop = false
         isConnectingRealtimeSession = false
-        isCompletingStoppedSession = false
+        markStoppedSessionCompleted()
         realtimeFinalizationLastActivityAt = nil
         polishAndCommitTask = nil
         // Every stop funnels through here. The commit path has already
@@ -2288,7 +2297,7 @@ extension DictationViewModel {
         wasCancelled = false
         escapeCancelHandler.stop()
         isAwaitingMicrophonePermission = false
-        isCompletingStoppedSession = false
+        markStoppedSessionCompleted()
         polishAndCommitTask = nil
         clearLatchedSessionMetadata()
         stopMicrophoneIfInitialized()
