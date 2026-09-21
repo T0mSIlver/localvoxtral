@@ -82,24 +82,6 @@ struct SettingsView: View {
         )
     }
 
-    private var overlayBufferShortcutBinding: Binding<DictationShortcut?> {
-        Binding(
-            get: { settings.overlayBufferShortcut },
-            set: { newValue in
-                viewModel.updateOverlayBufferShortcut(newValue)
-            }
-        )
-    }
-
-    private var livePasteShortcutBinding: Binding<DictationShortcut?> {
-        Binding(
-            get: { settings.livePasteShortcut },
-            set: { newValue in
-                viewModel.updateLivePasteShortcut(newValue)
-            }
-        )
-    }
-
     var body: some View {
         HStack(spacing: 0) {
             SettingsSidebarView(
@@ -243,8 +225,6 @@ struct SettingsView: View {
                     settings: settings,
                     viewModel: viewModel,
                     dictationShortcutBinding: dictationShortcutBinding,
-                    overlayBufferShortcutBinding: overlayBufferShortcutBinding,
-                    livePasteShortcutBinding: livePasteShortcutBinding,
                     shortcutValidationError: $shortcutValidationError
                 )
             case .textProcessing:
@@ -971,8 +951,6 @@ private struct DictationSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
     let dictationShortcutBinding: Binding<DictationShortcut?>
-    let overlayBufferShortcutBinding: Binding<DictationShortcut?>
-    let livePasteShortcutBinding: Binding<DictationShortcut?>
     @Binding var shortcutValidationError: String?
 
     private var dictationOutputModeBinding: Binding<DictationOutputMode> {
@@ -992,6 +970,57 @@ private struct DictationSettingsPane: View {
     }
     @State private var overlayValidationError: String?
     @State private var livePasteValidationError: String?
+    @State private var pendingShortcutMove: PendingShortcutMove?
+
+    /// A recording that would take the other mode's key, held until the user
+    /// answers. Nothing is written while it sits here.
+    private struct PendingShortcutMove {
+        let target: DictationOutputMode
+        let takenFrom: DictationOutputMode
+        let shortcut: DictationShortcut
+    }
+
+    /// Every write to either slot goes through here, the recorder and the
+    /// Reset button alike. Reset writes the default shortcut without touching
+    /// the recorder, so routing it anywhere else is how the conflict this pane
+    /// exists to prevent gets back in.
+    private func assignOverlayBufferShortcut(_ shortcut: DictationShortcut?) {
+        apply(viewModel.requestOverlayBufferShortcut(shortcut), target: .overlayBuffer)
+    }
+
+    private func assignLivePasteShortcut(_ shortcut: DictationShortcut?) {
+        apply(viewModel.requestLivePasteShortcut(shortcut), target: .liveAutoPaste)
+    }
+
+    private func apply(
+        _ assignment: DictationViewModel.ShortcutAssignment,
+        target: DictationOutputMode
+    ) {
+        switch assignment {
+        case .applied:
+            pendingShortcutMove = nil
+        case .needsMoveConfirmation(let shortcut, let takenFrom):
+            pendingShortcutMove = PendingShortcutMove(
+                target: target,
+                takenFrom: takenFrom,
+                shortcut: shortcut
+            )
+        }
+    }
+
+    private var overlayBufferShortcutBinding: Binding<DictationShortcut?> {
+        Binding(
+            get: { settings.overlayBufferShortcut },
+            set: { assignOverlayBufferShortcut($0) }
+        )
+    }
+
+    private var livePasteShortcutBinding: Binding<DictationShortcut?> {
+        Binding(
+            get: { settings.livePasteShortcut },
+            set: { assignLivePasteShortcut($0) }
+        )
+    }
 
     var body: some View {
         SettingsPage(tab: .dictation) {
@@ -1073,7 +1102,7 @@ private struct DictationSettingsPane: View {
 
                             Button("Reset") {
                                 overlayValidationError = nil
-                                viewModel.updateOverlayBufferShortcut(
+                                assignOverlayBufferShortcut(
                                     SettingsStore.defaultDictationShortcut)
                             }
                             .disabled(
@@ -1109,7 +1138,7 @@ private struct DictationSettingsPane: View {
                             // shortcut rows keep identical heights and spacing.
                             Button("Clear") {
                                 livePasteValidationError = nil
-                                viewModel.updateLivePasteShortcut(nil)
+                                assignLivePasteShortcut(nil)
                             }
                             .disabled(settings.livePasteShortcut == nil)
                         }
@@ -1192,6 +1221,35 @@ private struct DictationSettingsPane: View {
                     }
                 }
             }
+        }
+        // Carbon refuses the same key twice on one target, so the second mode
+        // can only have it if the first gives it up. Asking beats the silent
+        // failure that came before: the recorder used to accept the key and
+        // registration then died, blaming whichever slot registered second.
+        .alert(
+            pendingShortcutMove.map {
+                "\(DictationShortcutFormatter.string(for: $0.shortcut)) is the \($0.takenFrom.displayName) shortcut"
+            } ?? "",
+            isPresented: Binding(
+                get: { pendingShortcutMove != nil },
+                set: { if !$0 { pendingShortcutMove = nil } }
+            ),
+            presenting: pendingShortcutMove
+        ) { move in
+            Button("Move") {
+                switch move.target {
+                case .overlayBuffer:
+                    viewModel.moveShortcutToOverlayBuffer(move.shortcut)
+                case .liveAutoPaste:
+                    viewModel.moveShortcutToLivePaste(move.shortcut)
+                }
+                pendingShortcutMove = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingShortcutMove = nil
+            }
+        } message: { move in
+            Text("Move it to \(move.target.displayName)? \(move.takenFrom.displayName) will have no shortcut.")
         }
     }
 }

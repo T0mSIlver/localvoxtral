@@ -1853,6 +1853,87 @@ final class DictationViewModel {
         }
     }
 
+    /// What recording a shortcut into one slot means once the other slot is
+    /// taken into account.
+    enum ShortcutAssignment: Equatable {
+        case applied
+        /// The key already triggers the other mode. Carbon refuses a second
+        /// registration of the same key on the same target, so the only way to
+        /// grant it here is to take it from there — the user's call, not ours.
+        /// The shortcut rides along so the caller raising the question has no
+        /// optional left to unwrap.
+        case needsMoveConfirmation(shortcut: DictationShortcut, from: DictationOutputMode)
+    }
+
+    /// Records into the Overlay Buffer slot, unless Live Auto-Paste already
+    /// holds the same key. Settings asks first and calls
+    /// `moveShortcutToOverlayBuffer` if the answer is yes; nothing changes in
+    /// the meantime, so a declined move leaves both slots as they were.
+    func requestOverlayBufferShortcut(_ shortcut: DictationShortcut?) -> ShortcutAssignment {
+        if let shortcut, settings.livePasteShortcut == shortcut.normalized {
+            return .needsMoveConfirmation(shortcut: shortcut.normalized, from: .liveAutoPaste)
+        }
+        updateOverlayBufferShortcut(shortcut)
+        return .applied
+    }
+
+    func requestLivePasteShortcut(_ shortcut: DictationShortcut?) -> ShortcutAssignment {
+        if let shortcut, settings.overlayBufferShortcut == shortcut.normalized {
+            return .needsMoveConfirmation(shortcut: shortcut.normalized, from: .overlayBuffer)
+        }
+        updateLivePasteShortcut(shortcut)
+        return .applied
+    }
+
+    /// Takes the key from Live Auto-Paste and gives it to Overlay Buffer, as
+    /// one change: both slots move before the single registration, and a
+    /// registration failure puts both back. Clearing first is what makes the
+    /// registration legal at all — the same key twice on one target is
+    /// `eventHotKeyExistsErr`.
+    func moveShortcutToOverlayBuffer(_ shortcut: DictationShortcut) {
+        let wasReachable = settings.isOverlayBufferSessionReachable
+        let restore = shortcutSlotRestorer()
+
+        settings.setLivePasteShortcut(nil)
+        settings.setOverlayBufferShortcut(shortcut)
+
+        finishShortcutMove(restore: restore)
+        handleOverlayReachabilityTransition(wasReachable: wasReachable)
+    }
+
+    func moveShortcutToLivePaste(_ shortcut: DictationShortcut) {
+        let wasReachable = settings.isOverlayBufferSessionReachable
+        let restore = shortcutSlotRestorer()
+
+        settings.setOverlayBufferShortcut(nil)
+        settings.setLivePasteShortcut(shortcut)
+
+        finishShortcutMove(restore: restore)
+        handleOverlayReachabilityTransition(wasReachable: wasReachable)
+    }
+
+    /// Captures both slots as they stand, and returns the closure that puts
+    /// them back. Verbatim, through `restoreShortcutSlots` rather than the
+    /// setters: a slot can be enabled while holding a value the validator
+    /// rejects, and restoring that through the setters would write the default
+    /// shortcut instead — installing a trigger the user never chose, and
+    /// flipping Overlay Buffer reachability into a polishd warmup.
+    private func shortcutSlotRestorer() -> () -> Void {
+        let snapshot = settings.shortcutSlotSnapshot
+        return { [settings] in settings.restoreShortcutSlots(snapshot) }
+    }
+
+    private func finishShortcutMove(restore: () -> Void) {
+        switch registerCurrentHotKeys() {
+        case .success:
+            clearHotKeyErrors()
+        case .failure(let reason):
+            restore()
+            _ = registerCurrentHotKeys()
+            applyHotKeyRegistrationFailure(reason)
+        }
+    }
+
     func updateOverlayBufferShortcut(_ shortcut: DictationShortcut?) {
         let previousShortcut = settings.overlayBufferShortcut
         let previousWasEnabled = settings.overlayBufferShortcutEnabled
