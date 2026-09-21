@@ -148,6 +148,10 @@ struct SettingsView: View {
             return IntegrationsSidebarStatus.opencodeDot(
                 status: viewModel.claudeIntegrationSettings?.opencodeStatus ?? .unknown
             )
+        case .integrationsVibe:
+            return IntegrationsSidebarStatus.vibeDot(
+                status: viewModel.claudeIntegrationSettings?.vibeStatus ?? .unknown
+            )
         case .integrationsHerdr:
             return IntegrationsSidebarStatus.herdrDot(
                 isDetected: viewModel.claudeIntegrationSettings?.isHerdrDetected ?? false
@@ -241,6 +245,8 @@ struct SettingsView: View {
                 ClaudeCodeSettingsPane(viewModel: viewModel)
             case .integrationsOpencode:
                 OpencodeSettingsPane(viewModel: viewModel)
+            case .integrationsVibe:
+                VibeSettingsPane(viewModel: viewModel)
             case .integrationsHerdr:
                 HerdrSettingsPane(viewModel: viewModel)
             case .integrationsRemote:
@@ -1622,6 +1628,24 @@ private struct OpencodeSettingsPane: View {
     }
 }
 
+private struct VibeSettingsPane: View {
+    let viewModel: DictationViewModel
+
+    private static let learnMoreURL = URL(
+        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/vibe/README.md"
+    )!
+
+    var body: some View {
+        SettingsPage(tab: .integrationsVibe) {
+            SettingsGroup(title: "Setup", learnMoreURL: Self.learnMoreURL) {
+                if let claude = viewModel.claudeIntegrationSettings {
+                    VibeHooksRow(model: claude)
+                }
+            }
+        }
+    }
+}
+
 /// Everything herdr: whether it is found, the hosts reporting a herdr pane,
 /// and herdr's saved machines — importable as remote hosts — with the local
 /// panel row federated clients need. herdr needs no setup of its own, so the
@@ -1987,6 +2011,50 @@ private struct OpencodePluginRow: View {
         }
         .sheet(isPresented: $isShowingSetup) {
             OpencodePluginSetupSheet(model: model) { isShowingSetup = false }
+        }
+    }
+}
+
+/// Install/remove the Mistral Vibe hooks.
+///
+/// Same shape as `OpencodePluginRow`: the buttons follow
+/// `VibeHooksInstallService.Status`, and setup is confirmed in a consent sheet
+/// because it edits the user's `hooks.toml`.
+private struct VibeHooksRow: View {
+    @Bindable var model: ClaudeIntegrationSettingsModel
+    @State private var isShowingSetup = false
+
+    var body: some View {
+        SettingsFieldRow(
+            title: "Hooks",
+            status: model.vibeResult ?? model.vibeSentence,
+            statusAccessibilityIdentifier: "integrations.vibe.status"
+        ) {
+            HStack(spacing: 8) {
+                if let title = VibeHooksInstallService.setupButtonTitle(for: model.vibeStatus) {
+                    Button(title) {
+                        isShowingSetup = true
+                    }
+                    .disabled(model.isPerformingVibeAction)
+                    .accessibilityIdentifier("integrations.vibe.install")
+                }
+
+                if VibeHooksInstallService.offersRemove(for: model.vibeStatus) {
+                    Button("Remove") {
+                        Task { await model.removeVibeHooks() }
+                    }
+                    .disabled(model.isPerformingVibeAction)
+                    .accessibilityIdentifier("integrations.vibe.remove")
+                }
+
+                if model.isPerformingVibeAction {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            .controlSize(.small)
+        }
+        .sheet(isPresented: $isShowingSetup) {
+            VibeHooksSetupSheet(model: model) { isShowingSetup = false }
         }
     }
 }
@@ -3389,6 +3457,43 @@ private struct OpencodePluginSetupSheet: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .accessibilityIdentifier("integrations.opencodeSheet.apply")
+            }
+        }
+        .padding(16)
+        .frame(width: 460)
+    }
+}
+
+/// Consent for the Mistral Vibe hook files.
+private struct VibeHooksSetupSheet: View {
+    @Bindable var model: ClaudeIntegrationSettingsModel
+    var dismiss: () -> Void
+
+    private static let documentationURL = URL(
+        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/vibe/README.md#install"
+    )!
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Mistral Vibe hooks")
+                .font(.headline)
+            Text(VibeHooksInstallService.consentSentence)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            Link("Details", destination: Self.documentationURL)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .accessibilityIdentifier("integrations.vibeSheet.cancel")
+                Button("Set Up") {
+                    Task {
+                        await model.installVibeHooks()
+                        dismiss()
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .accessibilityIdentifier("integrations.vibeSheet.apply")
             }
         }
         .padding(16)

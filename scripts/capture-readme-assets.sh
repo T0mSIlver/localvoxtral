@@ -12,7 +12,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/launch-app.sh"
 #   assets/settings-dictation.png          (Settings > Dictation)
 #   assets/settings-text-processing.png    (Settings > Text Processing)
 #   assets/settings-integrations-*.png     (Settings > Integrations section:
-#                                          Context, Claude Code, opencode, herdr)
+#                                          Context, Claude Code, opencode, Mistral Vibe,
+#                                          herdr)
 #   assets/settings-terminal-*.png         (Settings > Terminals section, one
 #                                          pane per terminal)
 #   assets/settings-enrollment.png         (the remote-SSH enrollment sheet)
@@ -50,15 +51,15 @@ PERSISTENT_DEFAULTS_BACKUP="${HOME}/.localvoxtral-capture-assets.pre.plist"
 PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN="${PERSISTENT_DEFAULTS_BACKUP}.had-domain"
 ASSETS_DIR="assets"
 # Display names, one per captured pane, in sidebar order. The Integrations
-# section (Claude Code, opencode, herdr, Remote hosts) and the Terminals
+# section (Claude Code, opencode, Mistral Vibe, herdr, Remote hosts) and the Terminals
 # section (one pane per terminal) replaced the single Integrations pane
 # (2026-09-07 owner decision).
-TAB_NAMES=("General" "Dictation" "Engines" "Text Processing" "Context" "Claude Code" "opencode" "herdr" "Remote hosts" "Ghostty" "iTerm2" "Terminal.app" "cmux" "Warp" "WezTerm" "kitty" "Alacritty" "Hyper" "Tabby" "Rio")
+TAB_NAMES=("General" "Dictation" "Engines" "Text Processing" "Context" "Claude Code" "opencode" "Mistral Vibe" "herdr" "Remote hosts" "Ghostty" "iTerm2" "Terminal.app" "cmux" "Warp" "WezTerm" "kitty" "Alacritty" "Hyper" "Tabby" "Rio")
 # SettingsTab raw values — the sidebar rows carry them as AXIdentifiers
 # (settings.tab.<raw>). SettingsTabTests pins both the raw values and the
 # identifier scheme.
-TAB_IDS=("general" "dictation" "endpoints" "textProcessing" "integrations.context" "integrations.claude" "integrations.opencode" "integrations.herdr" "integrations.remote" "terminals.ghostty" "terminals.iterm2" "terminals.apple-terminal" "terminals.cmux" "terminals.warp" "terminals.wezterm" "terminals.kitty" "terminals.alacritty" "terminals.hyper" "terminals.tabby" "terminals.rio")
-TAB_FILES=("settings-general.png" "settings-dictation.png" "settings-endpoints.png" "settings-text-processing.png" "settings-integrations-context.png" "settings-integrations-claude-code.png" "settings-integrations-opencode.png" "settings-integrations-herdr.png" "settings-integrations-remote-hosts.png" "settings-terminal-ghostty.png" "settings-terminal-iterm2.png" "settings-terminal-apple-terminal.png" "settings-terminal-cmux.png" "settings-terminal-warp.png" "settings-terminal-wezterm.png" "settings-terminal-kitty.png" "settings-terminal-alacritty.png" "settings-terminal-hyper.png" "settings-terminal-tabby.png" "settings-terminal-rio.png")
+TAB_IDS=("general" "dictation" "endpoints" "textProcessing" "integrations.context" "integrations.claude" "integrations.opencode" "integrations.vibe" "integrations.herdr" "integrations.remote" "terminals.ghostty" "terminals.iterm2" "terminals.apple-terminal" "terminals.cmux" "terminals.warp" "terminals.wezterm" "terminals.kitty" "terminals.alacritty" "terminals.hyper" "terminals.tabby" "terminals.rio")
+TAB_FILES=("settings-general.png" "settings-dictation.png" "settings-endpoints.png" "settings-text-processing.png" "settings-integrations-context.png" "settings-integrations-claude-code.png" "settings-integrations-opencode.png" "settings-integrations-vibe.png" "settings-integrations-herdr.png" "settings-integrations-remote-hosts.png" "settings-terminal-ghostty.png" "settings-terminal-iterm2.png" "settings-terminal-apple-terminal.png" "settings-terminal-cmux.png" "settings-terminal-warp.png" "settings-terminal-wezterm.png" "settings-terminal-kitty.png" "settings-terminal-alacritty.png" "settings-terminal-hyper.png" "settings-terminal-tabby.png" "settings-terminal-rio.png")
 # The three arrays are indexed together below; a mismatch would silently capture
 # one tab's window into another tab's file.
 if (( ${#TAB_NAMES[@]} != ${#TAB_IDS[@]} || ${#TAB_NAMES[@]} != ${#TAB_FILES[@]} )); then

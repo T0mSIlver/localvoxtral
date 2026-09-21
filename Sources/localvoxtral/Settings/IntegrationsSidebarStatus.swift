@@ -37,6 +37,16 @@ enum IntegrationsSidebarStatus {
         }
     }
 
+    /// The Mistral Vibe row, same shape as the opencode row: a half-installed
+    /// state is a pending setup step, an unreadable config is grey.
+    static func vibeDot(status: VibeHooksInstallService.Status) -> SettingsStatusDot {
+        switch status {
+        case .installed, .updateAvailable: return .green
+        case .notInstalled, .hooksWithoutShim, .shimWithoutHooks, .conflictingHooks: return .yellow
+        case .unknown: return .grey
+        }
+    }
+
     /// The herdr row: green when found — herdr needs no setup, and the owner
     /// decision pins that "found but no host reported a pane yet" is NOT
     /// yellow. Grey when absent.

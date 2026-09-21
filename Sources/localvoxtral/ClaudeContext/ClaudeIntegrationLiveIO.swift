@@ -237,6 +237,82 @@ struct LiveOpencodePluginFileSystem: OpencodePluginFileSystem {
     }
 }
 
+/// `~/.vibe/localvoxtral/publish.sh` + `~/.vibe/hooks.toml`, live.
+struct LiveVibeHooksFileSystem: VibeHooksFileSystem {
+    static let shimDirectoryRelativePath = ".vibe/localvoxtral"
+    static let shimRelativePath = "\(shimDirectoryRelativePath)/\(ClaudePluginAssets.vibeShimFileName)"
+    static let hooksRelativePath = ".vibe/hooks.toml"
+
+    private let homeURL: URL
+    private let shimURL: URL
+    private let shimDirectoryURL: URL
+    private let hooksURL: URL
+
+    init(homeDirectoryURL: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        homeURL = homeDirectoryURL
+        shimURL = homeDirectoryURL.appendingPathComponent(Self.shimRelativePath, isDirectory: false)
+        shimDirectoryURL = homeDirectoryURL.appendingPathComponent(
+            Self.shimDirectoryRelativePath, isDirectory: true
+        )
+        hooksURL = homeDirectoryURL.appendingPathComponent(Self.hooksRelativePath, isDirectory: false)
+    }
+
+    func readState() throws -> VibeHooksState {
+        let shimIntermediateIsSymlink = LiveClaudeShellRCFileSystem.anyComponentIsSymlink(
+            under: homeURL, relativePath: Self.shimRelativePath
+        )
+        let hooksIntermediateIsSymlink = LiveClaudeShellRCFileSystem.anyComponentIsSymlink(
+            under: homeURL, relativePath: Self.hooksRelativePath
+        )
+        let shimLeaf = ClaudeIntegrationLiveIO.readLeaf(at: shimURL)
+        let hooksLeaf = ClaudeIntegrationLiveIO.readLeaf(at: hooksURL)
+        return VibeHooksState(
+            shimFileExists: shimLeaf.exists,
+            shimFileIsSymlink: shimLeaf.isSymlink,
+            shimData: shimIntermediateIsSymlink ? nil : shimLeaf.data,
+            shimPermissions: shimIntermediateIsSymlink ? nil : shimLeaf.permissions,
+            shimDirExists: ClaudeSocketGuard.metadata(ofPath: shimDirectoryURL.path)?.isDirectory == true,
+            shimDirIsSymlink: shimIntermediateIsSymlink,
+            hooksFileExists: hooksLeaf.exists,
+            hooksFileIsSymlink: hooksLeaf.isSymlink,
+            hooksData: hooksIntermediateIsSymlink ? nil : hooksLeaf.data,
+            hooksPermissions: hooksIntermediateIsSymlink ? nil : hooksLeaf.permissions,
+            vibeDirIsSymlink: hooksIntermediateIsSymlink
+        )
+    }
+
+    func createShimDirectory(permissions: UInt16) throws {
+        try FileManager.default.createDirectory(
+            at: shimDirectoryURL,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: NSNumber(value: permissions)]
+        )
+    }
+
+    func atomicWriteShim(_ data: Data, permissions: UInt16) throws {
+        try ClaudeIntegrationLiveIO.atomicWrite(data, to: shimURL, permissions: permissions)
+    }
+
+    func atomicWriteHooks(_ data: Data, permissions: UInt16) throws {
+        try ClaudeIntegrationLiveIO.atomicWrite(data, to: hooksURL, permissions: permissions)
+    }
+
+    func deleteShim() throws {
+        if FileManager.default.fileExists(atPath: shimURL.path) {
+            try FileManager.default.removeItem(at: shimURL)
+        }
+        // `rmdir` only removes an empty directory, so a file the user put
+        // there keeps it.
+        _ = rmdir(shimDirectoryURL.path)
+    }
+
+    func deleteHooks() throws {
+        if FileManager.default.fileExists(atPath: hooksURL.path) {
+            try FileManager.default.removeItem(at: hooksURL)
+        }
+    }
+}
+
 /// Whether a `herdr` binary is reachable on this Mac.
 ///
 /// A GUI app's PATH is `/usr/bin:/bin:/usr/sbin:/sbin`, not the user's shell

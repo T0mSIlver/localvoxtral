@@ -17,6 +17,7 @@ extension SettingsTab {
         case .integrationsContext: return "Context"
         case .integrationsClaude: return "Claude Code"
         case .integrationsOpencode: return "opencode"
+        case .integrationsVibe: return "Mistral Vibe"
         case .integrationsHerdr: return "herdr"
         case .integrationsRemote: return "Remote hosts"
         case .terminal: return terminalApp?.displayName ?? "Terminal"
@@ -39,6 +40,7 @@ extension SettingsTab {
             return .tile(systemImage: "checklist", tint: Color(nsColor: .systemTeal))
         case .integrationsClaude: return .brandMark(resourceName: "BrandIcon-claude")
         case .integrationsOpencode: return .brandMark(resourceName: "BrandIcon-opencode")
+        case .integrationsVibe: return .brandMark(resourceName: "BrandIcon-vibe")
         case .integrationsHerdr: return .brandMark(resourceName: "BrandIcon-herdr")
         case .integrationsRemote: return .symbolMark(systemName: "network")
         case .terminal: return terminalApp?.sidebarIcon ?? .symbolMark(systemName: "terminal")

@@ -109,7 +109,7 @@ Open **Settings** from the menu bar popover:
 - **Integrations** — one pane per harness, each with a status dot: green
   means detected and set up, yellow means a setup step is pending, grey
   means not installed. **Claude Code** and **opencode** install their
-  plugins; **herdr** shows detection and herdr's saved machines;
+  plugins, **Mistral Vibe** its hooks; **herdr** shows detection and herdr's saved machines;
   **Remote hosts** enrolls SSH hosts for remote sessions
 - **Terminals** — one pane per terminal app (plus any you add), showing
   whether it is installed and what it supports: dictation everywhere, session
