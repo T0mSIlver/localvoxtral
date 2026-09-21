@@ -225,7 +225,10 @@ the microphone into a throwaway target window, once per scenario in
 phrase. Both checks run even when the other failed. The script exits 3 when
 the Mac could not run it (locked, no STT server, no Accessibility grant), which
 a scheduled slot reports as a warning and a dispatch or label reports as a
-failure. `e2e-dictation-log` is uploaded on every run.
+failure. `e2e-dictation-log` is uploaded on every run. The guard answers
+"already covered today" separately for the drill and for the dictation, so a
+red drill neither hides a missing dictation nor makes all three slots repeat
+one that passed.
 
 One-time runner TCC grants are required because the runner is a launchd agent
 inside the owner's GUI session:
