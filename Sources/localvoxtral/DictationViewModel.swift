@@ -1860,7 +1860,9 @@ final class DictationViewModel {
         /// The key already triggers the other mode. Carbon refuses a second
         /// registration of the same key on the same target, so the only way to
         /// grant it here is to take it from there — the user's call, not ours.
-        case needsMoveConfirmation(from: DictationOutputMode)
+        /// The shortcut rides along so the caller raising the question has no
+        /// optional left to unwrap.
+        case needsMoveConfirmation(shortcut: DictationShortcut, from: DictationOutputMode)
     }
 
     /// Records into the Overlay Buffer slot, unless Live Auto-Paste already
@@ -1869,7 +1871,7 @@ final class DictationViewModel {
     /// the meantime, so a declined move leaves both slots as they were.
     func requestOverlayBufferShortcut(_ shortcut: DictationShortcut?) -> ShortcutAssignment {
         if let shortcut, settings.livePasteShortcut == shortcut.normalized {
-            return .needsMoveConfirmation(from: .liveAutoPaste)
+            return .needsMoveConfirmation(shortcut: shortcut.normalized, from: .liveAutoPaste)
         }
         updateOverlayBufferShortcut(shortcut)
         return .applied
@@ -1877,7 +1879,7 @@ final class DictationViewModel {
 
     func requestLivePasteShortcut(_ shortcut: DictationShortcut?) -> ShortcutAssignment {
         if let shortcut, settings.overlayBufferShortcut == shortcut.normalized {
-            return .needsMoveConfirmation(from: .overlayBuffer)
+            return .needsMoveConfirmation(shortcut: shortcut.normalized, from: .overlayBuffer)
         }
         updateLivePasteShortcut(shortcut)
         return .applied
@@ -1911,21 +1913,14 @@ final class DictationViewModel {
     }
 
     /// Captures both slots as they stand, and returns the closure that puts
-    /// them back. `setOverlayBufferShortcut(nil)` means "disabled", so the
-    /// enabled flag has to be carried separately from the value.
+    /// them back. Verbatim, through `restoreShortcutSlots` rather than the
+    /// setters: a slot can be enabled while holding a value the validator
+    /// rejects, and restoring that through the setters would write the default
+    /// shortcut instead — installing a trigger the user never chose, and
+    /// flipping Overlay Buffer reachability into a polishd warmup.
     private func shortcutSlotRestorer() -> () -> Void {
-        let overlay = settings.overlayBufferShortcut
-        let overlayWasEnabled = settings.overlayBufferShortcutEnabled
-        let livePaste = settings.livePasteShortcut
-
-        return { [settings] in
-            if overlayWasEnabled {
-                settings.setOverlayBufferShortcut(overlay ?? SettingsStore.defaultDictationShortcut)
-            } else {
-                settings.setOverlayBufferShortcut(nil)
-            }
-            settings.setLivePasteShortcut(livePaste)
-        }
+        let snapshot = settings.shortcutSlotSnapshot
+        return { [settings] in settings.restoreShortcutSlots(snapshot) }
     }
 
     private func finishShortcutMove(restore: () -> Void) {

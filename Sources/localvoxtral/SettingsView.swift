@@ -974,49 +974,51 @@ private struct DictationSettingsPane: View {
 
     /// A recording that would take the other mode's key, held until the user
     /// answers. Nothing is written while it sits here.
-    private struct PendingShortcutMove: Identifiable {
+    private struct PendingShortcutMove {
         let target: DictationOutputMode
         let takenFrom: DictationOutputMode
         let shortcut: DictationShortcut
+    }
 
-        var id: String { "\(target.id)-\(shortcut.keyCode)-\(shortcut.carbonModifierFlags)" }
+    /// Every write to either slot goes through here, the recorder and the
+    /// Reset button alike. Reset writes the default shortcut without touching
+    /// the recorder, so routing it anywhere else is how the conflict this pane
+    /// exists to prevent gets back in.
+    private func assignOverlayBufferShortcut(_ shortcut: DictationShortcut?) {
+        apply(viewModel.requestOverlayBufferShortcut(shortcut), target: .overlayBuffer)
+    }
+
+    private func assignLivePasteShortcut(_ shortcut: DictationShortcut?) {
+        apply(viewModel.requestLivePasteShortcut(shortcut), target: .liveAutoPaste)
+    }
+
+    private func apply(
+        _ assignment: DictationViewModel.ShortcutAssignment,
+        target: DictationOutputMode
+    ) {
+        switch assignment {
+        case .applied:
+            pendingShortcutMove = nil
+        case .needsMoveConfirmation(let shortcut, let takenFrom):
+            pendingShortcutMove = PendingShortcutMove(
+                target: target,
+                takenFrom: takenFrom,
+                shortcut: shortcut
+            )
+        }
     }
 
     private var overlayBufferShortcutBinding: Binding<DictationShortcut?> {
         Binding(
             get: { settings.overlayBufferShortcut },
-            set: { newValue in
-                switch viewModel.requestOverlayBufferShortcut(newValue) {
-                case .applied:
-                    pendingShortcutMove = nil
-                case .needsMoveConfirmation(let takenFrom):
-                    guard let newValue else { return }
-                    pendingShortcutMove = PendingShortcutMove(
-                        target: .overlayBuffer,
-                        takenFrom: takenFrom,
-                        shortcut: newValue
-                    )
-                }
-            }
+            set: { assignOverlayBufferShortcut($0) }
         )
     }
 
     private var livePasteShortcutBinding: Binding<DictationShortcut?> {
         Binding(
             get: { settings.livePasteShortcut },
-            set: { newValue in
-                switch viewModel.requestLivePasteShortcut(newValue) {
-                case .applied:
-                    pendingShortcutMove = nil
-                case .needsMoveConfirmation(let takenFrom):
-                    guard let newValue else { return }
-                    pendingShortcutMove = PendingShortcutMove(
-                        target: .liveAutoPaste,
-                        takenFrom: takenFrom,
-                        shortcut: newValue
-                    )
-                }
-            }
+            set: { assignLivePasteShortcut($0) }
         )
     }
 
@@ -1100,7 +1102,7 @@ private struct DictationSettingsPane: View {
 
                             Button("Reset") {
                                 overlayValidationError = nil
-                                viewModel.updateOverlayBufferShortcut(
+                                assignOverlayBufferShortcut(
                                     SettingsStore.defaultDictationShortcut)
                             }
                             .disabled(
@@ -1136,7 +1138,7 @@ private struct DictationSettingsPane: View {
                             // shortcut rows keep identical heights and spacing.
                             Button("Clear") {
                                 livePasteValidationError = nil
-                                viewModel.updateLivePasteShortcut(nil)
+                                assignLivePasteShortcut(nil)
                             }
                             .disabled(settings.livePasteShortcut == nil)
                         }

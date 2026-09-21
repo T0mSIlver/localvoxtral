@@ -1723,6 +1723,44 @@ final class SettingsStore {
         return candidate
     }
 
+    /// Both shortcut slots exactly as stored, enabled flags included and a
+    /// value the validator rejects kept verbatim.
+    ///
+    /// The getters cannot express this: they return nil both for a disabled
+    /// slot and for a stored value that fails validation, and a caller that
+    /// means to put things back the way they were would restore the default
+    /// shortcut over the second case — installing a trigger the user never
+    /// chose. Anything that writes a slot speculatively takes a snapshot
+    /// first and restores it verbatim.
+    struct ShortcutSlotSnapshot: Equatable {
+        var overlayKeyCode: UInt32
+        var overlayCarbonModifierFlags: UInt32
+        var overlayEnabled: Bool
+        var livePasteKeyCode: UInt32
+        var livePasteCarbonModifierFlags: UInt32
+        var livePasteEnabled: Bool
+    }
+
+    var shortcutSlotSnapshot: ShortcutSlotSnapshot {
+        ShortcutSlotSnapshot(
+            overlayKeyCode: overlayBufferShortcutKeyCode,
+            overlayCarbonModifierFlags: overlayBufferShortcutCarbonModifierFlags,
+            overlayEnabled: overlayBufferShortcutEnabled,
+            livePasteKeyCode: livePasteShortcutKeyCode,
+            livePasteCarbonModifierFlags: livePasteShortcutCarbonModifierFlags,
+            livePasteEnabled: livePasteShortcutEnabled
+        )
+    }
+
+    func restoreShortcutSlots(_ snapshot: ShortcutSlotSnapshot) {
+        overlayBufferShortcutKeyCode = snapshot.overlayKeyCode
+        overlayBufferShortcutCarbonModifierFlags = snapshot.overlayCarbonModifierFlags
+        overlayBufferShortcutEnabled = snapshot.overlayEnabled
+        livePasteShortcutKeyCode = snapshot.livePasteKeyCode
+        livePasteShortcutCarbonModifierFlags = snapshot.livePasteCarbonModifierFlags
+        livePasteShortcutEnabled = snapshot.livePasteEnabled
+    }
+
     func setOverlayBufferShortcut(_ shortcut: DictationShortcut?) {
         guard let shortcut else {
             overlayBufferShortcutEnabled = false

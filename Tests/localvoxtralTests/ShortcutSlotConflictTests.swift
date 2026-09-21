@@ -25,7 +25,7 @@ final class ShortcutSlotConflictTests: XCTestCase {
 
         let outcome = viewModel.requestOverlayBufferShortcut(bareF13)
 
-        XCTAssertEqual(outcome, .needsMoveConfirmation(from: .liveAutoPaste))
+        XCTAssertEqual(outcome, .needsMoveConfirmation(shortcut: bareF13, from: .liveAutoPaste))
         XCTAssertEqual(
             viewModel.settings.overlayBufferShortcut, bareF14,
             "the question is asked before anything is written"
@@ -40,7 +40,7 @@ final class ShortcutSlotConflictTests: XCTestCase {
 
         let outcome = viewModel.requestLivePasteShortcut(bareF13)
 
-        XCTAssertEqual(outcome, .needsMoveConfirmation(from: .overlayBuffer))
+        XCTAssertEqual(outcome, .needsMoveConfirmation(shortcut: bareF13, from: .overlayBuffer))
         XCTAssertEqual(viewModel.settings.overlayBufferShortcut, bareF13)
         XCTAssertEqual(viewModel.settings.livePasteShortcut, bareF14)
     }
@@ -59,7 +59,8 @@ final class ShortcutSlotConflictTests: XCTestCase {
 
         XCTAssertEqual(
             viewModel.requestOverlayBufferShortcut(asRecorded),
-            .needsMoveConfirmation(from: .liveAutoPaste)
+            .needsMoveConfirmation(shortcut: bareF13, from: .liveAutoPaste),
+            "the fn bit is stripped before the question is asked, so the answer names the bare key"
         )
     }
 
@@ -108,6 +109,11 @@ final class ShortcutSlotConflictTests: XCTestCase {
             viewModel.settings.livePasteShortcut,
             "the key cannot be registered twice, so the slot it came from is cleared"
         )
+        XCTAssertEqual(
+            viewModel.debugCurrentHotKeyRegistrationKindForTesting,
+            .dual(overlay: true, livePaste: false),
+            "the move re-registers — settings alone would leave the old hotkey live"
+        )
     }
 
     func testConfirmedMoveTakesTheKeyFromOverlay() {
@@ -120,6 +126,10 @@ final class ShortcutSlotConflictTests: XCTestCase {
 
         XCTAssertEqual(viewModel.settings.livePasteShortcut, bareF13)
         XCTAssertNil(viewModel.settings.overlayBufferShortcut)
+        XCTAssertEqual(
+            viewModel.debugCurrentHotKeyRegistrationKindForTesting,
+            .dual(overlay: false, livePaste: true)
+        )
     }
 
     /// A move is one change. If the single registration that follows fails,
@@ -135,10 +145,84 @@ final class ShortcutSlotConflictTests: XCTestCase {
         viewModel.settings.setOverlayBufferShortcut(bareF14)
         viewModel.settings.setLivePasteShortcut(bareF13)
 
+        let unregisterCallsBefore = HotKeyManager.debugUnregisterCallCount
+
         viewModel.moveShortcutToOverlayBuffer(bareF13)
 
         XCTAssertEqual(viewModel.settings.overlayBufferShortcut, bareF14)
         XCTAssertEqual(viewModel.settings.livePasteShortcut, bareF13)
+        // Two registration passes: the one that failed, and the one that puts
+        // the old shortcuts back. Counted rather than read off the resulting
+        // registration kind, because the restore pass reaches REAL Carbon (the
+        // forced status is one-shot) and a test host is not an app, so what it
+        // returns is not ours to assert.
+        XCTAssertGreaterThanOrEqual(
+            HotKeyManager.debugUnregisterCallCount - unregisterCallsBefore, 2,
+            "the restore has to re-register, or the failed key stays live"
+        )
+    }
+
+    // MARK: - The Reset button
+
+    /// Reset writes the default shortcut without going through the recorder,
+    /// so it has to ask the same question. It is the one control that could
+    /// put the old silent-collision behaviour back.
+    func testResettingOverlayToADefaultLivePasteHoldsAsksFirst() {
+        let viewModel = makeViewModel()
+        viewModel.settings.setOverlayBufferShortcut(bareF13)
+        viewModel.settings.setLivePasteShortcut(SettingsStore.defaultDictationShortcut)
+
+        let outcome = viewModel.requestOverlayBufferShortcut(SettingsStore.defaultDictationShortcut)
+
+        XCTAssertEqual(
+            outcome,
+            .needsMoveConfirmation(
+                shortcut: SettingsStore.defaultDictationShortcut, from: .liveAutoPaste)
+        )
+        XCTAssertEqual(viewModel.settings.overlayBufferShortcut, bareF13)
+        XCTAssertEqual(
+            viewModel.settings.livePasteShortcut, SettingsStore.defaultDictationShortcut)
+    }
+
+    // MARK: - Restoring exactly what was there
+
+    /// A slot can be enabled while holding a value the validator rejects: the
+    /// migration stores key code 0 with the enabled flag defaulting to true.
+    /// Restoring that through the setters would write the default shortcut
+    /// instead, installing a trigger the user never chose — and, because
+    /// Overlay Buffer reachability would flip, starting managed polishd.
+    func testAFailedMoveRestoresAnEnabledButInvalidSlotVerbatim() {
+        HotKeyManager.debugResetOverridesForTesting()
+        HotKeyManager.debugForceHandlerInstallResultForTesting(true)
+        HotKeyManager.debugForceRegisterStatusForTesting(
+            hotKeyID: .overlay, status: OSStatus(eventHotKeyExistsErr))
+        defer { HotKeyManager.debugResetOverridesForTesting() }
+
+        let viewModel = makeViewModel()
+        viewModel.settings.restoreShortcutSlots(
+            SettingsStore.ShortcutSlotSnapshot(
+                overlayKeyCode: 0,
+                overlayCarbonModifierFlags: 0,
+                overlayEnabled: true,
+                livePasteKeyCode: UInt32(kVK_F13),
+                livePasteCarbonModifierFlags: 0,
+                livePasteEnabled: true
+            )
+        )
+        let before = viewModel.settings.shortcutSlotSnapshot
+        XCTAssertNil(viewModel.settings.overlayBufferShortcut, "stored, enabled, and invalid")
+        XCTAssertFalse(viewModel.settings.isOverlayBufferSessionReachable)
+
+        viewModel.moveShortcutToOverlayBuffer(bareF13)
+
+        XCTAssertEqual(
+            viewModel.settings.shortcutSlotSnapshot, before,
+            "both slots come back byte for byte, invalid value included"
+        )
+        XCTAssertFalse(
+            viewModel.settings.isOverlayBufferSessionReachable,
+            "a failed move must not make Overlay Buffer reachable — that starts polishd"
+        )
     }
 
     // MARK: - Helpers
