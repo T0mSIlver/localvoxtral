@@ -90,9 +90,6 @@ final class AgentDictationE2EEvalTests: XCTestCase {
     /// kernel-compilation time on top of model load.
     private static let helperReadyTimeout: TimeInterval = 300
     private static let asrTimeout: TimeInterval = 90
-    /// Per-case stop-commit deadline: live 4B inference, possibly behind a
-    /// profile-prefix prefill.
-    private static let polishCommitDeadline: Duration = .seconds(240)
 
     private var repoRoot: URL {
         URL(fileURLWithPath: #filePath)
@@ -555,12 +552,15 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         viewModel.currentDictationEventText = input
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        let deadline = ContinuousClock.now + Self.polishCommitDeadline
-        while viewModel.isCompletingStoppedSession, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(50))
-        }
+        // Read before the first suspension, while the value
+        // `finishStoppedSession` just stored is still there; the task clears
+        // it on its own way out. Live inference sets no bound worth guessing
+        // at — the polish client's own timeout is what ends a wedged
+        // request, and it reports itself below.
+        let commitTask = viewModel.polishAndCommitTask
+        await commitTask?.value
         guard !viewModel.isCompletingStoppedSession else {
-            throw EvalInfraError("polish stop-commit did not complete within \(Self.polishCommitDeadline)")
+            throw EvalInfraError("polish stop-commit did not complete")
         }
         if savedRecord?.status == DictationSessionStatus.llmFailed.rawValue {
             throw EvalInfraError(

@@ -575,7 +575,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.currentDictationEventText = "run --force now"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        await waitUntilStoppedSessionCompletes(viewModel)
+        await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(viewModel.currentDictationEventText, "run \u{2013} force now")
         XCTAssertEqual(
@@ -619,7 +619,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.currentDictationEventText = "run --force now"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        await waitUntilStoppedSessionCompletes(viewModel)
+        await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(viewModel.currentDictationEventText, "run immediately")
         XCTAssertEqual(overlayCoordinator.refreshCalls.last?.displayText, "run immediately")
@@ -657,7 +657,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.currentDictationEventText = "look at user session manager.swift."
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        await waitUntilStoppedSessionCompletes(viewModel)
+        await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(viewModel.currentDictationEventText, expected)
         XCTAssertEqual(overlayCoordinator.refreshCalls.last?.displayText, expected)
@@ -763,7 +763,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.currentDictationEventText = "fix the bug in the auth module"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        await waitUntilStoppedSessionCompletes(viewModel)
+        await awaitStoppedSessionCommit(viewModel)
         return savedRecord
     }
 
@@ -1028,7 +1028,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.currentDictationEventText = transcript
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        await waitUntilStoppedSessionCompletes(viewModel)
+        await awaitStoppedSessionCommit(viewModel)
         return viewModel
     }
 
@@ -1082,7 +1082,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.currentDictationEventText = "fix the user session manager"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        await waitUntilStoppedSessionCompletes(viewModel)
+        await awaitStoppedSessionCommit(viewModel)
         let request = await service.capturedRequest
         return (savedRecord, request)
     }
@@ -1372,7 +1372,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.currentDictationEventText = transcript
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        await waitUntilStoppedSessionCompletes(viewModel)
+        await awaitStoppedSessionCommit(viewModel)
         let request = await service.capturedRequest
         return ClipboardMacroSessionResult(
             record: savedRecord,
@@ -1546,7 +1546,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.currentDictationEventText = "fix this paste clipboard thanks"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        await waitUntilStoppedSessionCompletes(viewModel)
+        await awaitStoppedSessionCommit(viewModel)
 
         // The vocab seam ran, and by then BOTH clipboard reads had happened.
         XCTAssertEqual(contextReadsWhenVocabRan, 1)
@@ -1604,7 +1604,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.currentDictationEventText = "open useauth.ts and fix the import"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        await waitUntilStoppedSessionCompletes(viewModel)
+        await awaitStoppedSessionCommit(viewModel)
 
         let capturedRequest = await service.capturedRequest
         XCTAssertEqual(capturedRequest?.inputText, "open useAuth.ts and fix the import")
@@ -1657,7 +1657,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.currentDictationEventText = "look at user session manager.swift"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        await waitUntilStoppedSessionCompletes(viewModel)
+        await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(
             viewModel.currentDictationEventText,
@@ -1718,7 +1718,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.currentDictationEventText = "look at user session manager.swift"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        await waitUntilStoppedSessionCompletes(viewModel)
+        await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(
             viewModel.currentDictationEventText,
@@ -1785,7 +1785,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.currentDictationEventText = "open use auth dot t s and fix the import"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        await waitUntilStoppedSessionCompletes(viewModel)
+        await awaitStoppedSessionCommit(viewModel)
 
         // The commit completed despite the wedged pipeline...
         XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
@@ -1917,7 +1917,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.currentDictationEventText = "open use auth dot t s and fix the import"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        await waitUntilStoppedSessionCompletes(viewModel)
+        await awaitStoppedSessionCommit(viewModel)
         let request = await service.capturedRequest
         return (savedRecord, request)
     }
@@ -1974,7 +1974,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.currentDictationEventText = transcript
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        await waitUntilStoppedSessionCompletes(viewModel)
+        await awaitStoppedSessionCommit(viewModel)
         return (savedRecord, await service.capturedRequest)
     }
 
@@ -2140,11 +2140,31 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func waitUntilStoppedSessionCompletes(_ viewModel: DictationViewModel) async {
-        let deadline = ContinuousClock.now + .seconds(1)
-        while viewModel.isCompletingStoppedSession, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+    /// Returns when the stop-commit has actually finished, by awaiting the
+    /// commit's own task.
+    ///
+    /// Call it directly after `finishStoppedSession`, with no suspension in
+    /// between: the task is read while the value that call just stored is
+    /// still there, and the task clears it on its own way out. A stop that
+    /// commits synchronously (nothing to polish) leaves it nil and is already
+    /// over by the time it returns.
+    ///
+    /// The deadline poll this replaces returned whichever way it went, so a
+    /// loaded runner asserted on a session still in flight — a wrong value on
+    /// a rerun-green test (#392/#395/#398).
+    private func awaitStoppedSessionCommit(
+        _ viewModel: DictationViewModel,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let commitTask = viewModel.polishAndCommitTask
+        await commitTask?.value
+        XCTAssertFalse(
+            viewModel.isCompletingStoppedSession,
+            "the commit must be over before anything reads what it wrote",
+            file: file,
+            line: line
+        )
     }
 
     private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {

@@ -335,11 +335,13 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         viewModel.currentDictationEventText = "hello world"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
-
-        let firstCallDeadline = ContinuousClock.now + .seconds(1)
-        while await polishingService.callCount() < 1, ContinuousClock.now < firstCallDeadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+        // Held for the whole middle of this test: the duplicate calls below
+        // have to land while the first commit is demonstrably still open.
+        let commitTask = viewModel.polishAndCommitTask
+        // The service itself says when the request arrived. There is no task
+        // to await here — awaiting the commit is what the end of the test
+        // does, and that is exactly what must NOT have happened yet.
+        await polishingService.waitUntilFirstRequestArrives()
 
         let initialCallCount = await polishingService.callCount()
         XCTAssertEqual(initialCallCount, 1)
@@ -353,11 +355,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(overlayCoordinator.commitCallCount, 0)
 
         await polishingService.resumePendingRequest()
-
-        let finishDeadline = ContinuousClock.now + .seconds(1)
-        while viewModel.isCompletingStoppedSession, ContinuousClock.now < finishDeadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+        await commitTask?.value
 
         let finalCallCount = await polishingService.callCount()
         XCTAssertFalse(viewModel.isCompletingStoppedSession)
@@ -468,17 +466,6 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
     // MARK: - F6: polished badge flag + raw-transcript copy affordance
 
-    /// Shared completion wait for the F6 tests (poll-with-deadline, matching
-    /// the file's existing pattern). Known debt: the whole file's completion
-    /// waiting is wall-clock polling rather than an injected clock — new tests
-    /// at least share one helper instead of inlining more copies.
-    private func waitUntilStoppedSessionCompletes(_ viewModel: DictationViewModel) async {
-        let deadline = ContinuousClock.now + .seconds(1)
-        while viewModel.isCompletingStoppedSession, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
     func testPolishChangedCommitFlagsBadgeAndRetainsRawTranscript() async {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = true
@@ -501,7 +488,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
 
-        await waitUntilStoppedSessionCompletes(viewModel)
+        await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(viewModel.currentDictationEventText, "Hello world.")
         XCTAssertEqual(
@@ -540,7 +527,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
 
-        await waitUntilStoppedSessionCompletes(viewModel)
+        await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(overlayCoordinator.markPolishedCalls.last, false)
         XCTAssertNil(viewModel.lastPolishChangedRawTranscript)
@@ -605,13 +592,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
 
-        let deadline = ContinuousClock.now + .seconds(1)
-        while await polishingService.requestCount() < 1, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        while viewModel.isCompletingStoppedSession, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+        await awaitStoppedSessionCommit(viewModel)
 
         let request = await polishingService.lastRequest()
         XCTAssertEqual(request?.inputText, "PostgreSQL rocks")
@@ -656,13 +637,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
 
-        let deadline = ContinuousClock.now + .seconds(1)
-        while await polishingService.requestCount() < 1, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        while viewModel.isCompletingStoppedSession, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+        await awaitStoppedSessionCommit(viewModel)
 
         let request = await polishingService.lastRequest()
         XCTAssertEqual(configStore.loadReplacementDictionaryCallCount, 0)
@@ -697,10 +672,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
 
-        let deadline = ContinuousClock.now + .seconds(1)
-        while viewModel.isCompletingStoppedSession, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+        await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(viewModel.currentDictationEventText, "PostgreSQL")
         XCTAssertEqual(overlayCoordinator.refreshCalls.last?.displayText, "PostgreSQL")
@@ -742,10 +714,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
 
-        let deadline = ContinuousClock.now + .seconds(1)
-        while viewModel.isCompletingStoppedSession, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+        await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(viewModel.currentDictationEventText, "PostgreSQL")
         XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
@@ -1078,6 +1047,33 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(viewModel.currentDictationEventText, "hello")
     }
 
+    /// Returns when the stop-commit has actually finished, by awaiting the
+    /// commit's own task.
+    ///
+    /// Call it directly after `finishStoppedSession`, with no suspension in
+    /// between: the task is read while the value that call just stored is
+    /// still there, and the task clears it on its own way out. A stop that
+    /// commits synchronously (nothing to polish) leaves it nil and is already
+    /// over by the time it returns.
+    ///
+    /// The deadline poll this replaces returned whichever way it went, so a
+    /// loaded runner asserted on a session still in flight — a wrong value on
+    /// a rerun-green test (#392/#395/#398).
+    private func awaitStoppedSessionCommit(
+        _ viewModel: DictationViewModel,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let commitTask = viewModel.polishAndCommitTask
+        await commitTask?.value
+        XCTAssertFalse(
+            viewModel.isCompletingStoppedSession,
+            "the commit must be over before anything reads what it wrote",
+            file: file,
+            line: line
+        )
+    }
+
     private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {
         let suiteName = "localvoxtral.DictationViewModelOverlayLifecycleTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -1104,12 +1100,17 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 private actor BlockingMockLLMPolishingService: LLMPolishingServicing {
     private var requests = 0
     private var continuation: CheckedContinuation<Void, Never>?
+    private var arrivalWaiters: [CheckedContinuation<Void, Never>] = []
 
     func polish(
         request: LLMPolishingRequest,
         configuration _: LLMPolishingConfiguration
     ) async throws -> LLMPolishingResult {
         requests += 1
+        for waiter in arrivalWaiters {
+            waiter.resume()
+        }
+        arrivalWaiters.removeAll()
         await withCheckedContinuation { continuation in
             self.continuation = continuation
         }
@@ -1127,6 +1128,15 @@ private actor BlockingMockLLMPolishingService: LLMPolishingServicing {
     func resumePendingRequest() {
         continuation?.resume()
         continuation = nil
+    }
+
+    /// Returns once the commit has reached this service, so a test can assert
+    /// on a deliberately in-flight commit without a wall-clock poll. Returns
+    /// straight away if the request already arrived — on an actor, the count
+    /// and the waiter list cannot disagree.
+    func waitUntilFirstRequestArrives() async {
+        guard requests == 0 else { return }
+        await withCheckedContinuation { arrivalWaiters.append($0) }
     }
 }
 
@@ -1148,10 +1158,6 @@ private actor CapturingMockLLMPolishingService: LLMPolishingServicing {
             polishedText: resultText,
             durationSeconds: 0.01
         )
-    }
-
-    func requestCount() -> Int {
-        requests.count
     }
 
     func lastRequest() -> LLMPolishingRequest? {
