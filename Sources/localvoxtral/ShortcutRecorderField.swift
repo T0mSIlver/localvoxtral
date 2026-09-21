@@ -22,10 +22,14 @@ struct ShortcutRecorderField: NSViewRepresentable {
         control.allowsModifierFlagsOnlyShortcut = false
         control.allowsDeleteToClearShortcutAndEndRecording = true
         control.allowsEscapeToCancelRecording = true
+        // Bare keys reach `canRecord`, which is where the real rule lives:
+        // `DictationShortcutValidation` accepts a function key on its own and
+        // rejects every other unmodified key with a message. Leaving this
+        // false would make the control swallow F13 before we ever see it.
         control.set(
             allowedModifierFlags: CocoaModifierFlagsMask,
             requiredModifierFlags: [],
-            allowsEmptyModifierFlags: false
+            allowsEmptyModifierFlags: true
         )
         if let fixedWidth {
             control.widthAnchor.constraint(equalToConstant: fixedWidth).isActive = true

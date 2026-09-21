@@ -56,6 +56,19 @@ final class OnboardingTriggerSummaryTests: XCTestCase {
         XCTAssertEqual(DictationShortcutFormatter.string(for: shortcut), "⌃⌥A")
     }
 
+    func testFormatter_bareFunctionKeys_labelledF1ThroughF20() {
+        let expected: [(UInt32, String)] = [
+            (UInt32(kVK_F1), "F1"), (UInt32(kVK_F12), "F12"),
+            (UInt32(kVK_F13), "F13"), (UInt32(kVK_F17), "F17"),
+            (UInt32(kVK_F20), "F20"),
+        ]
+
+        for (keyCode, label) in expected {
+            let shortcut = DictationShortcut(keyCode: keyCode, carbonModifierFlags: 0)
+            XCTAssertEqual(DictationShortcutFormatter.string(for: shortcut), label)
+        }
+    }
+
     func testFormatter_unknownKeyCode_fallsBack() {
         let shortcut = DictationShortcut(keyCode: 9999, carbonModifierFlags: UInt32(cmdKey))
         XCTAssertEqual(DictationShortcutFormatter.string(for: shortcut), "⌘Key 9999")
