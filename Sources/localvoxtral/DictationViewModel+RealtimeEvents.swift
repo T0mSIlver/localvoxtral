@@ -73,7 +73,7 @@ extension DictationViewModel {
         audioSendTask = nil
         healthMonitor.stop()
         isAwaitingMicrophonePermission = false
-        microphone.stop()
+        stopSessionAudioCapture()
         isDictating = false
         escapeCancelHandler.stop()
         finishStoppedSession(promotePendingSegment: true)

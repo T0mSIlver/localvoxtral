@@ -185,6 +185,38 @@ Bounds worth knowing before touching it:
 - **Nothing can be injected.** No command carries a surface, a session or a
   join. Every verb observes real resolution.
 
+## Dictating from a file
+
+An instrumented build launched with `LOCALVOXTRAL_DOGFOOD_AUDIO_FILE` set to an
+absolute path dictates from that WAV in place of the microphone
+([`DogfoodAudioFileSource.swift`](../Sources/localvoxtral/Dogfood/DogfoodAudioFileSource.swift)).
+An end-to-end check needs the same words on every run with nobody at the
+machine, and a file needs neither a loudspeaker nor a microphone grant.
+
+```
+open --env LOCALVOXTRAL_DOGFOOD_AUDIO_FILE=/path/to/utterance.wav localvoxtral.app
+```
+
+The file must be mono 16-bit PCM at 16 kHz, the format
+`scripts/record-agent-eval.sh` writes. The app refuses any other format rather
+than resample it. Every dictation of that launch plays the file from its start
+at real-time pace, then sends silence until the dictation is stopped. The log
+line `dogfood audio file drained` (category `Dictation`) marks the end of the
+file.
+
+- **The path comes from the launch environment, never the control socket.**
+  Audio turns into keystrokes in the focused app, so a socket command carrying
+  it would break "nothing can be injected" above. Whoever sets the environment
+  already chose the binary.
+- **It never falls back to the microphone.** A missing or unusable file fails
+  that dictation's start with the reason in the popover and the log. The
+  microphone permission gate reports authorized, because no microphone is
+  used, and the capture health monitor stays off, because its recovery would
+  restart the microphone.
+- **`MicrophoneCaptureService` is not covered.** Device selection, format
+  conversion and capture recovery are bypassed. Everything after the capture
+  callback is the production path.
+
 ## What it deliberately does not do
 
 - **No uploader, ever.** Records are local files; adding an uploader would

@@ -34,6 +34,12 @@ final class DogfoodControlBuildBoundaryTests: XCTestCase {
         "dogfoodHandleModifierOnlyTap",
         "dogfoodNoteResolvedJoin",
         "control.sock",
+        // The file-backed audio source: audio that becomes keystrokes in the
+        // focused app must be as unreachable in a shipping build as the socket.
+        "DogfoodAudioFileSource",
+        "dogfoodAudioFile",
+        "DogfoodAudioFile",
+        "LOCALVOXTRAL_DOGFOOD_AUDIO_FILE",
     ]
 
     /// Every file whose entire contents are the control socket. Each must open
@@ -42,6 +48,8 @@ final class DogfoodControlBuildBoundaryTests: XCTestCase {
         "Sources/localvoxtral/Dogfood/DogfoodControlProtocol.swift",
         "Sources/localvoxtral/Dogfood/DogfoodControlService.swift",
         "Sources/localvoxtral/Dogfood/DogfoodControlSocket.swift",
+        "Sources/localvoxtral/Dogfood/DogfoodAudioFileSource.swift",
+        "Sources/localvoxtral/Dogfood/DictationViewModel+DogfoodAudioFile.swift",
     ]
 
     func testEveryControlSocketFileIsGatedFromItsFirstLine() throws {
