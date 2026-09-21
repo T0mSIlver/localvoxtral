@@ -23,7 +23,10 @@ permission.
 Live Auto-Paste; behavior follows the `Toggle` / `Push to Talk` setting. A
 shortcut needs at least one modifier, except for a function key: F1 to F20 can
 be recorded on their own, so a spare F13 to F20 on a full-size keyboard works
-as a dedicated dictation key.
+as a dedicated dictation key. F1 to F12 are accepted too, but macOS claims
+those presses for brightness and media unless **Use F1, F2, etc. keys as
+standard function keys** is on in System Settings — until it is, the app never
+sees them.
 
 **Escape** cancels an in-progress dictation.
 

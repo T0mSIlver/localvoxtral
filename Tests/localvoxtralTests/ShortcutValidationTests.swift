@@ -103,6 +103,34 @@ final class ShortcutValidationTests: XCTestCase {
         }
     }
 
+    func testValidation_stripsTheRecorderFunctionKeyBit() {
+        // ShortcutRecorder 3.4.0 (our pin, c86ce0f) returns
+        // `SRCocoaToCarbonFlags(flags) | NSFunctionKeyMask` from
+        // `carbonModifierFlags` for F1-F20, so a real bare F13 keypress
+        // reaches the validator carrying 0x800000 rather than 0. What makes
+        // it read as "no modifier" is `normalized` masking down to
+        // cmd/option/shift/control. Pinned here because widening that mask
+        // would reject every bare function key at the recorder while the rest
+        // of this suite stayed green.
+        let functionKeyBit: UInt32 = 1 << 23
+
+        let bareF13 = DictationShortcut(
+            keyCode: UInt32(kVK_F13),
+            carbonModifierFlags: functionKeyBit
+        ).normalized
+
+        XCTAssertEqual(bareF13.carbonModifierFlags, 0)
+        XCTAssertNil(DictationShortcutValidation.validationErrorMessage(for: bareF13))
+
+        let commandF13 = DictationShortcut(
+            keyCode: UInt32(kVK_F13),
+            carbonModifierFlags: UInt32(cmdKey) | functionKeyBit
+        ).normalized
+
+        XCTAssertEqual(commandF13.carbonModifierFlags, UInt32(cmdKey))
+        XCTAssertNil(DictationShortcutValidation.validationErrorMessage(for: commandF13))
+    }
+
     func testValidation_allowsModifiedFunctionKey() {
         let shortcut = DictationShortcut(
             keyCode: UInt32(kVK_F13),

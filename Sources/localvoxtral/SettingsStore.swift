@@ -157,6 +157,17 @@ enum DictationShortcutValidation {
     /// a function key has no typing role to swallow, and F13-F20 in particular
     /// are dedicated keys whose only plausible use is a trigger like this one.
     /// Letters, digits, punctuation, Space and Return still need a modifier.
+    ///
+    /// F1-F12 are included (#377 asks for the whole range) but only fire on a
+    /// keyboard that sends them as function keys: with macOS's default "Use
+    /// F1, F2, etc. keys as standard function keys" OFF, the system claims the
+    /// press for brightness or media and no app sees it. `docs/dictation.md`
+    /// carries that caveat, since a shortcut that registers and never fires
+    /// looks like a bug from the outside.
+    ///
+    /// What arrives here is already `normalized`: ShortcutRecorder reports
+    /// F1-F20 with `NSFunctionKeyMask` set, and the mask above is what turns
+    /// that into "no modifier" (`testValidation_stripsTheRecorderFunctionKeyBit`).
     static let functionKeyCodes: Set<UInt32> = [
         UInt32(kVK_F1), UInt32(kVK_F2), UInt32(kVK_F3), UInt32(kVK_F4),
         UInt32(kVK_F5), UInt32(kVK_F6), UInt32(kVK_F7), UInt32(kVK_F8),
