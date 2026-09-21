@@ -101,6 +101,51 @@ jobs:
           set -o pipefail
           ./scripts/ui-smoke.sh 2>&1 | tee logs/ui-smoke.log
 
+      - name: Package dogfood app bundle (dictates from a file)
+        # The e2e dictation check needs the instrumented build: only it can
+        # dictate from a WAV in place of the microphone (docs/dogfood-builds.md).
+        # Enablement is the step env, never the .dogfood-capture-enable marker
+        # file, for the reason ci.yml gives: this workspace is persistent.
+        # `!cancelled()` so a red smoke drill does not hide a dictation
+        # regression, or the other way round.
+        if: ${{ !cancelled() && (github.event_name != 'schedule' || steps.guard.outputs.run != 'false') }}
+        env:
+          LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
+          LOCALVOXTRAL_DOGFOOD: "1"
+        run: ./scripts/package_app.sh release
+
+      - name: Run e2e dictation
+        # The packaged app hears a WAV, dictates into a throwaway window, and
+        # the inserted text is scored (scripts/e2e-dictation.sh). Exit 3 means
+        # the Mac was not in a state to run it (locked, no STT server, no
+        # Accessibility grant): a scheduled slot reports that and stays green,
+        # like the guard's own skips, while a dispatch or a label is an operator
+        # asking for a result and goes red.
+        if: ${{ !cancelled() && (github.event_name != 'schedule' || steps.guard.outputs.run != 'false') }}
+        env:
+          LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN: "1"
+        run: |
+          mkdir -p logs
+          set +e
+          ./scripts/e2e-dictation.sh 2>&1 | tee logs/e2e-dictation.log
+          STATUS="${PIPESTATUS[0]}"
+          set -e
+          sed -n '/^E2E dictation summary:/,$p' logs/e2e-dictation.log >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$STATUS" == "3" && "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            echo "::warning::e2e dictation did not run: the Mac was not in a state to run it."
+            exit 0
+          fi
+          exit "$STATUS"
+
+      - name: Upload e2e dictation log
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-dictation-log
+          path: logs/e2e-dictation.log
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Upload UI smoke log
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
