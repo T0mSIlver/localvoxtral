@@ -201,7 +201,7 @@ final class SettingsTabTests: XCTestCase {
             XCTAssertTrue(
                 appSource.contains("\"\(needle)\""),
                 "ui-smoke.sh waits for \"\(needle)\", which is no longer a string literal under "
-                    + "Sources/localvoxtral — the copy was renamed; point the drill at the new text"
+                    + "Sources/localvoxtral. The copy was renamed, so point the drill at the new text."
             )
         }
     }
