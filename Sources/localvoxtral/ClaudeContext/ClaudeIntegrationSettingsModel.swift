@@ -2353,6 +2353,9 @@ public final class ClaudeIntegrationSettingsModel {
         setupManualInstructions = nil
         setupRun = RemoteHostSetupRun(hostID: hostID, startedAt: now())
         setupSummaries[hostID] = "Setup is running."
+        // Steps this run leaves to the user, for the row's sentence once the
+        // panel that explains them has closed.
+        var manualSteps: [RemoteHostSetupRun.Step] = []
         refreshHosts()
         defer { isPerformingEnrollmentAction = false }
 
@@ -2397,6 +2400,7 @@ public final class ClaudeIntegrationSettingsModel {
                 let shellFailure = await performAsync { try writer.apply(shell: shell) }
                 if let shellFailure {
                     setupManualInstructions = "Open Details for manual shell setup."
+                    manualSteps.append(.shellStartup)
                     markSetup(
                         .shellStartup,
                         .skipped("The shell startup file was left unchanged; see Details.")
@@ -2410,6 +2414,7 @@ public final class ClaudeIntegrationSettingsModel {
             }
         } else {
             setupManualInstructions = "Open Details for manual shell setup."
+            manualSteps.append(.shellStartup)
             markSetup(
                 .shellStartup,
                 .skipped("This login shell is not supported for automatic setup; configure it manually.")
@@ -2508,6 +2513,7 @@ public final class ClaudeIntegrationSettingsModel {
             markSetup(.remoteHerdr, .skipped("herdr is not installed on the remote host."))
         case "customized":
             setupManualInstructions = "The remote herdr table is customized; open Details to update it manually."
+            manualSteps.append(.remoteHerdr)
             markSetup(.remoteHerdr, .skipped("The existing herdr agents table was left unchanged."))
         default:
             markSetup(.remoteHerdr, .done("The remote herdr agents panel is configured."))
@@ -2516,7 +2522,17 @@ public final class ClaudeIntegrationSettingsModel {
         guard continueSetup(hostID: hostID) else { return }
 
         markSetup(.remoteVibe, .running)
-        if let registry, let files = vibeRemoteFiles() {
+        // Set up, and the host's own hooks (or the last run) reported this
+        // build's version: leave it alone. Running anyway would replace a
+        // working token under live Vibe sessions, and let a refusal that is
+        // only about ~/.vibe fail an update the user started for the plugin.
+        let vibeIsCurrent = registry?.host(id: hostID).map { host in
+            host.reportedVibeHooksVersion != nil
+                && VibeHostHooksState.derive(host: host, bundledVersion: vibeRemoteFiles()?.version) == .setUp
+        } ?? false
+        if vibeIsCurrent {
+            markSetup(.remoteVibe, .done("The Vibe hooks are already current."))
+        } else if let registry, let files = vibeRemoteFiles() {
             let found = Mutex(true)
             let vibeFailure = await performAsync {
                 try ClaudeRemoteEnrollmentService.describingVibeFailures {
@@ -2603,9 +2619,9 @@ public final class ClaudeIntegrationSettingsModel {
         )
         // A step the run left to the user outlives the panel in the row's
         // one sentence, since the panel is about to close.
-        setupSummaries[hostID] = setupManualInstructions == nil
+        setupSummaries[hostID] = manualSteps.isEmpty
             ? "Setup complete."
-            : "Setup complete. One step is manual; see Learn more."
+            : "Setup complete. Still manual: \(manualSteps.map(\.title).joined(separator: ", ")). See Learn more."
         // A finished update has nothing left to show, so its panel closes and
         // the row is one line again. A failed one stays open: its reason and
         // remedy are in the steps. `setupRun` is kept for the record.
@@ -2617,6 +2633,12 @@ public final class ClaudeIntegrationSettingsModel {
     /// Neither agent is on the host, so the run has installed nothing that
     /// could ever send context.
     private func failNoAgent(_ step: RemoteHostSetupRun.Step) {
+        // Not settled: the remedy is to install an agent and run this again,
+        // so the row has to keep offering the run.
+        if let hostID = setupRun?.hostID {
+            hostsWithoutVibe.remove(hostID)
+            hostsWithoutClaude.remove(hostID)
+        }
         failSetup(
             step,
             reason: "No supported agent was found on the remote host.",

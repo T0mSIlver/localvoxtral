@@ -1413,8 +1413,12 @@ there is not.
   (`claudeNotFound`, decided on exit 127 AND our PATH resolver's own sentence,
   never a bare 127): the plugin step is skipped and the final check drops its
   plugin half. A host with neither agent fails the run. A finished update
-  closes its panel, so a step the run left to the user is carried by the
-  row's one sentence. The row offers the run while the plugin OR the Vibe
+  closes its panel, so a step the run left to the user is NAMED by the
+  row's one sentence. The step is skipped as already current when the host is
+  set up and has reported this build's hooks version: running it anyway would
+  replace a working token under live Vibe sessions and let a refusal about
+  `~/.vibe` fail an update started for the plugin (GLM review, 2026-09-21). A
+  run that failed for want of any agent does not settle the row. The row offers the run while the plugin OR the Vibe
   hooks are outdated or unheard from. "This host has no Vibe" is remembered
   for the app session only, like the plugin version report, which is also how
   a Vibe installed later gets its hooks: the run is offered again after a
@@ -1550,7 +1554,7 @@ there is not.
   `lastSeenAt` is noted, never on first authentication alone, so a request
   the revocation re-check refuses cannot mutate a report that rotation would
   then preserve — never logged, and used only to
-  select the fixed "Plugin update available" string in Settings. The
+  select the fixed "Update available" string in Settings. The
   recorded value is the HIGHEST any of that host's hooks reported this app
   session and is never lowered, because Claude Code applies a plugin update
   only on session restart — after "Update Plugin…" the host's already-running

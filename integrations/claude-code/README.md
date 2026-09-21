@@ -568,8 +568,8 @@ plugin's own version, as a constant baked into `post.sh`. The app validates it
 to a strict numeric shape, records it for that host only once the request is
 fully accepted (the same points the "last seen" time is noted — a request the
 revocation re-check refuses records nothing), and uses it for exactly one
-thing: showing the fixed "Plugin
-update available" line (and a prominent **Update Host…** button) in Settings
+thing: showing the fixed "Update
+available" line (and a prominent **Update Host…** button) in Settings
 when the host's plugin is older than the app's. The record keeps the highest
 version any of the host's hooks reported this app session — Claude Code
 applies a plugin update only on session restart, so sessions that were already
@@ -603,17 +603,19 @@ and press **Enroll…**. The app issues a
 token, binds the listener immediately — there is no relaunch step — and opens a
 sheet whose **Set Up** does all of it in one consented flow, in order, each step
 self-verifying: the SSH config block on this Mac, the shell export block,
-the plugin install-or-update on the host, the `LC_LVX_TTY` crossing check, the
-herdr agents-panel row when herdr is installed, and the final Check Setup. It
+the plugin install-or-update on the host when Claude Code is there, the
+`LC_LVX_TTY` crossing check, the herdr agents-panel row when herdr is installed,
+the Mistral Vibe hooks when Vibe is there, and the final Check Setup. It
 stops at the first failure with the exact remedy. **Update Host…** in an
 enrolled host's row runs the same flow. The sheet shows no token, command, or
 file contents. Its **Details** link opens the complete command reference in
 [docs/remote-claude-context.md](../../docs/remote-claude-context.md#how-enrollment-works).
 The list in that row shows each enrolled host, when it was last seen,
 and gives you **Update Host…**, **Rotate Token**, **Revoke** and **Remove**.
-**Update Host…** hides once the host has reported the app's plugin version
-since launch and this Mac's SSH config and shell startup blocks are in place,
-since the run would change nothing it can check from here. It also hides on a
+**Update Host…** hides once the host has reported the app's plugin version and,
+where it has them, the app's Vibe hooks version since launch, and this Mac's SSH
+config and shell startup blocks are in place, since the run would change nothing
+it can check from here. A finished update closes its panel. It also hides on a
 revoked host, which **Rotate Token** brings back.
 
 The consent sentence names every local file and the SSH alias the flow may
@@ -839,8 +841,8 @@ ssh builder "claude plugin install localvoxtral-remote@localvoxtral --config 'po
 Order matters: `plugin update` installs whatever the local marketplace clone
 currently offers, so refreshing the clone first is what makes it an update at
 all. In the app, a host in **Settings → Remote hosts** has an **Update
-Plugin…** button unless it is revoked or already current (see above). Its consent sentence names the local files and enrolled SSH
-alias, and **Set Up** runs the same six-step flow as enrollment. The display name
+Host…** button unless it is revoked or already current (see above). Its consent sentence names the local files and enrolled SSH
+alias, and **Set Up** runs the same seven-step flow as enrollment. The display name
 is never used as a substitute for the alias. A host enrolled before aliases
 were recorded must be re-enrolled before the app can update it.
 Non-interactive SSH skips your login shell's

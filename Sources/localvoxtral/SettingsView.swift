@@ -2228,7 +2228,7 @@ private struct ClaudeRemoteHostsRows: View {
                             // rest of the section. A tunnel that quietly stopped
                             // delivering context is otherwise invisible here.
                             // An outdated plugin takes the position over: the
-                            // fixed "Plugin update available" sentence is the
+                            // fixed "Update available" sentence is the
                             // fact the user can act on from this row.
                             Text(
                                 host.pluginNeedsUpdate
