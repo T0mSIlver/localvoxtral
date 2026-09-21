@@ -85,6 +85,11 @@ Open **Settings** from the menu bar popover:
   credits and can take a few minutes; it keeps running in the background
   while you dictate. It needs a hosted polishing model (Mistral API or your
   own server); the bundled local model cannot do it.
+  With a hosted model the same run also starts by itself every 50 saved
+  dictations, so it spends API credits without a click: **Suggest by itself**
+  sets the pace (25, 50, 100 or 200) or **Never**. A number on the Text
+  Processing sidebar row says tags are waiting; nothing is added until you
+  press +.
   The app also learns terms by itself: when polishing fixes a mangled name
   against your repo, your screen or your agent's session, it remembers the
   spelling for that project, and after three dictations it starts correcting

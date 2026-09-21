@@ -2228,6 +2228,7 @@ extension DictationViewModel {
         )
         debugSavedSessionRecordSink?(record)
         sessionStore?.save(record)
+        termSuggestionCadence?.dictationSaved()
     }
 
     func replacementDictionaryForCurrentSession() -> ReplacementDictionary? {
