@@ -2,6 +2,9 @@ name: CI
 
 on:
   pull_request:
+    # The defaults plus `ready_for_review`: mac-lanes skips a draft (see its
+    # `if:`), so marking a PR ready has to start the run that was skipped.
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
   # Manual dispatch exists to produce artifacts on demand — today that means
@@ -440,9 +443,21 @@ jobs:
   # rather than serialising behind a `needs:`.
   #
   # NEVER runs for a fork PR — the whole point of the split above.
+  #
+  # Skips a DRAFT PR. This Mac runs one job at a time, and a PR branch gets a
+  # median of 2 and a p90 of 4 runs before it merges (#418), so every push of
+  # work in progress was a slot taken from a PR that was waiting to merge.
+  # build-test still runs on every push of a draft. A skipped job satisfies
+  # the required check, which is safe for one reason: GitHub does not merge a
+  # draft, and marking it ready fires `ready_for_review`, which runs this job
+  # on the current head. A draft that needs the signed artifact (try-pr.sh) or
+  # a live lane carries the literal [mac-lanes] in its PR BODY. The body and
+  # not the commit message, because a job-level `if:` sees only the event.
   mac-lanes:
     if: >-
-      github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       (!github.event.pull_request.draft || contains(github.event.pull_request.body, '[mac-lanes]')))
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 30
     steps:

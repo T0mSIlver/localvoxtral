@@ -108,6 +108,14 @@ run_has_artifact() {
   grep -qxF "$ARTIFACT" <<<"$names"
 }
 
+# A draft PR's run is green without mac-lanes, the job that builds the bundle
+# (ci.yml), so say that instead of letting `gh run download` fail on a name.
+if (( ! DOGFOOD )) && ! run_has_artifact "$RUN_ID"; then
+  echo "CI run $RUN_ID for '$TARGET' has no $ARTIFACT artifact: mac-lanes skips draft PRs." >&2
+  echo "Mark it ready (gh pr ready $TARGET), or put [mac-lanes] in its body and push again." >&2
+  exit 1
+fi
+
 if (( DOGFOOD )) && ! run_has_artifact "$RUN_ID"; then
   echo "No dogfood artifact on CI run $RUN_ID for '$TARGET' — the dogfood lane is opt-in"
   echo "([dogfood-package] in the PR body / head commit message, or a manual dispatch)."

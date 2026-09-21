@@ -110,7 +110,11 @@ ablation workflows: `docs/agent/test-tiers.md`.
 
 - CI is two parallel jobs, both required checks on main: `build-test`
   (tier 0, GitHub-hosted, EVERY event and contributor) and `mac-lanes`
-  (self-hosted, never for fork PRs). A new lane goes in `build-test` unless
+  (self-hosted, never for fork PRs, never for DRAFTS). Open PRs as drafts
+  (`gh pr create --draft`), iterate on `build-test`, and `gh pr ready <n>`
+  once it is green: that starts `mac-lanes`. One Mac serves every agent, and
+  each push of a ready PR takes a slot. `[mac-lanes]` in a draft's body opts
+  in (signed `try-pr.sh` artifact, live lanes). A new lane goes in `build-test` unless
   you can name what on the owner's Mac it needs — signing identity, STT
   service, Metal, herdr fixture, GUI session. Never move fork-PR work to the self-hosted runner.
 - Docs-only diffs take a fast path (`scripts/ci/docs-only-filter.sh`,

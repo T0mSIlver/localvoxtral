@@ -116,7 +116,11 @@ what it needs, not about cost:
   Anything that needs only a macOS toolchain: the pure-shell gate suites, the installer test, format
   lint, the unit suite, coverage. A fork PR gets ONLY this job, so it also
   packages/uploads/smokes an ad-hoc-signed bundle there.
-- **`mac-lanes`, the self-hosted Mac, same-repo PRs + pushes + dispatches** —
+- **`mac-lanes`, the self-hosted Mac, same-repo PRs that are NOT drafts +
+  pushes + dispatches** — a draft gets `build-test` only, and marking it ready
+  (`gh pr ready <n>`) starts the run. The literal `[mac-lanes]` in a draft's PR
+  body opts it back in, for a draft that needs the signed `try-pr.sh` artifact
+  or a live lane. What the job holds is
   anything that needs THAT machine: the `localvoxtral-dev` signing identity
   (an ad-hoc signature invalidates the owner's Accessibility grant on every
   `try-pr.sh` install), the launch-on-demand speechd STT service and the
