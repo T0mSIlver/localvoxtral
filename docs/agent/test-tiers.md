@@ -179,6 +179,36 @@ avoidable run costs far more than its own duration.
   either — the flake signatures are enumerated in
   `docs/agent/field-debugging.md`, and a rerun is a full second run.
 
+## Proving a change with the e2e dictation check
+
+`scripts/e2e-dictation.sh` is the one check where the packaged app hears audio
+and puts text into another app's window. Run it for any change to the session
+path between the capture callback and the focused app: `DictationViewModel`
+session start and stop, the realtime clients, transcript merging, text
+insertion, the overlay commit. A refactor of those files passes it before and
+after.
+
+No agent account can run it directly, since the build gate has no GUI session
+and the UI gate reaches only the app under test. The runner can:
+
+```bash
+gh run list --workflow ui-smoke.yml --branch <branch>   # nothing queued already?
+gh workflow run "UI Smoke" --ref <branch>
+./scripts/watch-checks.sh --run <run-id>
+gh run view <run-id> --log | grep -E "spoken:|inserted:|PASS:|FAIL:|NOT RUN:"
+```
+
+On a PR, the `needs-ui-smoke` label does the same. Paste the `spoken:` /
+`inserted:` / `PASS:` lines in the Proof section. The run takes the owner's
+keyboard for about a minute and says so out loud first, so dispatch it once per
+change, not once per commit. Exit 3 (`NOT RUN:`) means the Mac was locked, the
+STT test service was down or the app had no Accessibility grant, and nothing
+was measured.
+
+A new scenario is a file in `scripts/e2e/scenarios/` (`mode`, `phrase`,
+`min_word_accuracy`), not a new script. Polishing is off in every scenario so
+the score measures the app; model quality belongs to `eval-e2e`.
+
 ## The live herdr lane
 
 `HerdrIntegrationTests` (`remote-build.sh integration-herdr`) is the only

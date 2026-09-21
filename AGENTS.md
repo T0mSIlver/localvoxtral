@@ -75,6 +75,10 @@ This is a real app with daily users. Nothing ships on "it compiles".
   Known debt: session code arms wall-clock timers; new code must not add more.
 - UI-affecting changes: until the automated UI tier exists, state in the PR
   exactly what was verified by hand and how.
+- Session-path changes (view model start/stop, realtime clients, merging,
+  insertion, overlay commit): dispatch the e2e dictation check and paste its
+  lines — `docs/agent/test-tiers.md` "Proving a change with the e2e dictation
+  check". It is the only check where the packaged app dictates.
 
 ## Test tiers — the short version
 
