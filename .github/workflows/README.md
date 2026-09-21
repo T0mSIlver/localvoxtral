@@ -251,7 +251,14 @@ publishes the DMG. `WorkflowActionPinningTests` (tier 0) fails on any ref that
 is not a SHA, so a new lane must resolve one:
 
 ```bash
-gh api repos/actions/checkout/git/ref/tags/v4 --jq .object.sha
+git ls-remote https://github.com/actions/checkout \
+  'refs/tags/v4' 'refs/tags/v4^{}' | tail -1 | cut -f1
 ```
+
+Not `gh api …/git/ref/tags/<tag>`: on an ANNOTATED tag that returns the tag
+object's SHA, which is 40 hex characters the pin test accepts and Actions then
+refuses at run time, because it is not a commit. `ls-remote` prints the peeled
+`^{}` ref last when there is one, so the line above yields the commit for
+either kind of tag.
 
 `.github/dependabot.yml` bumps them monthly, grouped into a single PR.
