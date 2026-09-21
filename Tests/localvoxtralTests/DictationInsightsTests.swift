@@ -70,22 +70,47 @@ final class DictationInsightsTests: XCTestCase {
         XCTAssertEqual(insights.polishRan, 0, "a failed polish is not a wait the user got text for")
     }
 
-    func testPolishWaitsAreTheMedianAndTheNinetiethPercentileThatHappened() {
+    func testPolishWaitsAreTheMedianAndTheNinetiethPercentileThatHappened() throws {
         let waits = [0.5, 0.7, 0.9, 1.0, 1.1, 1.2, 1.4, 1.6, 2.0, 9.0]
         let insights = DictationInsights(
             entries: waits.map { entry("raw", polished: "Raw.", polishSeconds: $0) })
 
         XCTAssertEqual(insights.polishRan, 10)
         XCTAssertEqual(insights.polishChanged, 10)
-        XCTAssertEqual(insights.medianPolishSeconds, 1.1)
+        // Ten waits: the median is between the fifth and the sixth.
+        XCTAssertEqual(try XCTUnwrap(insights.medianPolishSeconds), 1.15, accuracy: 1e-9)
         XCTAssertEqual(insights.slowPolishSeconds, 2.0)
-        XCTAssertEqual(DictationInsights.percentile(0.5, of: [3]), 3)
+        XCTAssertEqual(DictationInsights.median(of: [1, 9]), 5)
+        XCTAssertEqual(DictationInsights.median(of: [1, 2, 9]), 2)
+        XCTAssertEqual(DictationInsights.percentile(0.9, of: [3]), 3)
+    }
+
+    /// With polishing off the replacement dictionary still rewrites the text,
+    /// and the record keeps the result where a polish would go.
+    func testAChangeNoModelMadeIsNotCountedAsPolishing() {
+        let byDictionary = entry("foo", polished: "bar")
+        let insights = DictationInsights(entries: [
+            byDictionary, byDictionary, byDictionary,
+            entry("kept as is", polishSeconds: 1),
+        ])
+
+        XCTAssertEqual(insights.polishRan, 1)
+        XCTAssertEqual(insights.polishChanged, 0, "or the pane reads 300% of 1 polished")
+        XCTAssertEqual(insights.recurringFixes, [])
+    }
+
+    func testTheClipboardMarkersPlaceholderIsNotAFix() {
+        let pasted = entry(
+            "summarize paste clipboard please",
+            polished: "Summarize \(ClipboardPayloadMacro.placeholder) please", polishSeconds: 1)
+        XCTAssertEqual(DictationInsights.fixes(in: pasted).map(\.written), [])
     }
 
     func testAFixCountsOncePerDictationAndShowsFromThreeDictations() {
         let qwen = entry(
-            "ask quen and then quen again", polished: "ask Qwen and then Qwen again")
-        let twice = entry("the clawd code docs", polished: "the Claude Code docs")
+            "ask quen and then quen again", polished: "ask Qwen and then Qwen again",
+            polishSeconds: 1)
+        let twice = entry("the clawd code docs", polished: "the Claude Code docs", polishSeconds: 1)
         let insights = DictationInsights(entries: [qwen, qwen, qwen, twice, twice])
 
         XCTAssertEqual(
@@ -95,7 +120,7 @@ final class DictationInsightsTests: XCTestCase {
 
     func testFixesSkipFillersPunctuationSentenceCapitalsAndRephrasing() {
         func fixes(_ raw: String, _ polished: String) -> [String] {
-            DictationInsights.fixes(in: entry(raw, polished: polished))
+            DictationInsights.fixes(in: entry(raw, polished: polished, polishSeconds: 1))
                 .map { "\($0.heard)>\($0.written)" }
         }
 

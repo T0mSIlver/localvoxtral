@@ -47,9 +47,10 @@ struct HistorySettingsPane: View {
             // Launch and each save apply the rule; a Mac left on for a month
             // without a dictation would otherwise list what it promised to drop.
             viewModel.applyDictationHistoryRetention()
-            if let filter = navigator?.historyFilterRequest {
-                model.filter = filter
-                navigator?.historyFilterRequest = nil
+            if let request = navigator?.historyRequest {
+                model.filter = request.filter
+                model.since = request.since
+                navigator?.historyRequest = nil
             }
         }
         // One reload per store write and per query edit. The short wait lets a

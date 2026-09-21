@@ -8,9 +8,14 @@ import SwiftUI
 @Observable
 final class SettingsNavigator {
     var selectedTab: SettingsTab = .general
-    /// A filter the History pane takes when it next appears, then clears:
-    /// how an Insights count opens the dictations it counted.
-    var historyFilterRequest: DictationHistoryQuery.Filter?
+    /// What the History pane shows when it next appears, then clears: how an
+    /// Insights count opens the dictations it counted, period included.
+    var historyRequest: HistoryRequest?
+
+    struct HistoryRequest: Equatable {
+        let filter: DictationHistoryQuery.Filter
+        let since: Date?
+    }
 }
 
 struct SettingsView: View {

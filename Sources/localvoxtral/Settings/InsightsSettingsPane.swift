@@ -9,6 +9,11 @@ struct InsightsSettingsPane: View {
     @AppStorage("dictationInsightsPeriod") private var periodRawValue =
         DictationInsightsPeriod.month.rawValue
     @State private var insights: DictationInsights?
+    /// The period `insights` was counted over. While it is not the selected
+    /// one the rows show no numbers, not the previous period's.
+    @State private var countedPeriod: DictationInsightsPeriod?
+    /// Where the counted period started, for the History rows Show opens.
+    @State private var countedSince: Date?
     /// LaunchServices is asked once per bundle id, not once per render.
     @State private var appNames: [String: String] = [:]
 
@@ -32,13 +37,23 @@ struct InsightsSettingsPane: View {
         )
     }
 
+    /// No count for the selected period yet. A zero would read as a fact.
+    private var isCounting: Bool {
+        fixedInsights == nil && countedPeriod != period.wrappedValue
+    }
+
+    private func count(_ value: Int) -> String {
+        isCounting ? "—" : value.formatted()
+    }
+
     private struct ReloadTrigger: Equatable {
         let revision: Int
         let period: String
     }
 
     var body: some View {
-        let shown = fixedInsights ?? insights ?? DictationInsights()
+        let counted = countedPeriod == period.wrappedValue ? insights : nil
+        let shown = fixedInsights ?? counted ?? DictationInsights()
         SettingsPage(tab: .insights) {
             activityGroup(shown)
             reliabilityGroup(shown)
@@ -46,6 +61,7 @@ struct InsightsSettingsPane: View {
             recurringFixesGroup(shown)
             appsGroup(shown)
         }
+        .onAppear { viewModel.applyDictationHistoryRetention() }
         .task(id: ReloadTrigger(
             revision: viewModel.dictationHistoryRevision, period: periodRawValue
         )) {
@@ -55,19 +71,30 @@ struct InsightsSettingsPane: View {
     }
 
     private func reload() async {
+        let period = period.wrappedValue
         guard let store = viewModel.sessionStore else {
             insights = DictationInsights()
+            countedPeriod = period
             return
         }
-        let entries = await store.entries(since: period.wrappedValue.start(now: Date()))
-        // A year of dictations is thousands of word diffs: not on the main actor.
-        let computed = await Task.detached { DictationInsights(entries: entries) }.value
+        let since = period.start(now: Date())
+        let entries = await store.entries(since: since)
+        // A year of dictations is thousands of word diffs: not on the main
+        // actor, and stopped when the pane closes or the period changes.
+        let counting = Task.detached { DictationInsights(entries: entries) }
+        let computed = await withTaskCancellationHandler {
+            await counting.value
+        } onCancel: {
+            counting.cancel()
+        }
         guard !Task.isCancelled else { return }
         for app in computed.topApps where appNames[app.bundleID] == nil {
             appNames[app.bundleID] =
                 DictationHistoryModel.installedAppName(bundleID: app.bundleID) ?? app.bundleID
         }
         insights = computed
+        countedPeriod = period
+        countedSince = since
     }
 
     // MARK: - Groups
@@ -85,8 +112,8 @@ struct InsightsSettingsPane: View {
                 .fixedSize()
                 .accessibilityIdentifier("insights.period")
             }
-            InsightRow(title: "Dictations", value: insights.dictations.formatted())
-            InsightRow(title: "Words", value: insights.words.formatted())
+            InsightRow(title: "Dictations", value: count(insights.dictations))
+            InsightRow(title: "Words", value: count(insights.words))
             InsightRow(
                 title: "Time dictating",
                 value: insights.dictations == 0
@@ -107,12 +134,12 @@ struct InsightsSettingsPane: View {
             InsightRow(
                 title: "Not inserted",
                 help: "The text never reached the app. History still has it.",
-                value: insights.notInserted.formatted(),
+                value: count(insights.notInserted),
                 action: insights.notInserted > 0 ? { showHistory(.notInserted) } : nil)
             InsightRow(
                 title: "Polish failed",
                 help: "The transcript went in unpolished.",
-                value: insights.polishFailed.formatted(),
+                value: count(insights.polishFailed),
                 action: insights.polishFailed > 0 ? { showHistory(.polishFailed) } : nil)
         }
     }
@@ -138,7 +165,10 @@ struct InsightsSettingsPane: View {
         SettingsGroup(title: "What polishing keeps fixing") {
             if insights.recurringFixes.isEmpty {
                 SettingsGroupRow {
-                    Text("Nothing in \(DictationInsights.recurringFixMinimumDictations) dictations or more.")
+                    Text(
+                        isCounting
+                            ? "—"
+                            : "Nothing in \(DictationInsights.recurringFixMinimumDictations) dictations or more.")
                         .foregroundStyle(.secondary)
                 }
             } else {
@@ -156,7 +186,7 @@ struct InsightsSettingsPane: View {
             if insights.topApps.isEmpty {
                 SettingsGroupRow {
                     // Live Auto-Paste records no target app.
-                    Text("No Overlay Buffer dictation yet.")
+                    Text(isCounting ? "—" : "No Overlay Buffer dictation yet.")
                         .foregroundStyle(.secondary)
                 }
             } else {
@@ -170,7 +200,7 @@ struct InsightsSettingsPane: View {
     }
 
     private func showHistory(_ filter: DictationHistoryQuery.Filter) {
-        navigator?.historyFilterRequest = filter
+        navigator?.historyRequest = .init(filter: filter, since: countedSince)
         navigator?.selectedTab = .history
     }
 

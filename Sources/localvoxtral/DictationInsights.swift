@@ -76,6 +76,8 @@ struct DictationInsights: Equatable, Sendable {
     var polishFailed = 0
     /// Dictations a polish request answered for, whether or not it changed them.
     var polishRan = 0
+    /// Of those, the ones it changed. A dictation only the replacement
+    /// dictionary changed is in neither count.
     var polishChanged = 0
     var medianPolishSeconds: Double?
     var slowPolishSeconds: Double?
@@ -102,6 +104,9 @@ struct DictationInsights: Equatable, Sendable {
         var appCounts: [String: Int] = [:]
 
         for entry in entries {
+            // The pane cancels a count it no longer wants; what is returned
+            // then is dropped unread.
+            if Task.isCancelled { break }
             dictations += 1
             words += TranscriptDiff.wordRanges(in: entry.finalText).count
             let elapsed = entry.finishedAt.timeIntervalSince(entry.startedAt)
@@ -109,14 +114,14 @@ struct DictationInsights: Equatable, Sendable {
             dictatingSeconds += min(max(0, elapsed), Self.maxDictationSeconds)
             if !entry.commitSucceeded { notInserted += 1 }
             if entry.status == .llmFailed { polishFailed += 1 }
-            if let seconds = entry.polishingDurationSeconds, entry.status != .llmFailed {
+            if entry.polishRan, let seconds = entry.polishingDurationSeconds {
                 polishRan += 1
                 polishSeconds.append(seconds)
             }
             if let bundleID = entry.targetAppBundleID, !bundleID.isEmpty {
                 appCounts[bundleID, default: 0] += 1
             }
-            if entry.polishChangedText {
+            if entry.polishRan, entry.textWasChanged {
                 polishChanged += 1
                 // A set: the same fix twice in one dictation is one dictation.
                 let fixes = Self.fixes(in: entry).map { FixKey(heard: $0.heard, written: $0.written) }
@@ -125,7 +130,7 @@ struct DictationInsights: Equatable, Sendable {
         }
 
         polishSeconds.sort()
-        medianPolishSeconds = Self.percentile(0.5, of: polishSeconds)
+        medianPolishSeconds = Self.median(of: polishSeconds)
         slowPolishSeconds = Self.percentile(0.9, of: polishSeconds)
         recurringFixes = fixDictations
             .filter { $0.value >= Self.recurringFixMinimumDictations }
@@ -135,6 +140,13 @@ struct DictationInsights: Equatable, Sendable {
         topApps = appCounts.map { AppCount(bundleID: $0.key, dictations: $0.value) }
             .sorted { ($0.dictations, $1.bundleID) > ($1.dictations, $0.bundleID) }
             .prefix(Self.maxApps).map { $0 }
+    }
+
+    static func median(of sorted: [Double]) -> Double? {
+        guard !sorted.isEmpty else { return nil }
+        let middle = sorted.count / 2
+        return sorted.count.isMultiple(of: 2)
+            ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
     }
 
     /// Nearest-rank, so the answer is always a wait that happened.
@@ -149,7 +161,7 @@ struct DictationInsights: Equatable, Sendable {
     /// (fillers), only added, only re-punctuated, or only capitalized because
     /// a sentence starts there.
     static func fixes(in entry: DictationHistoryEntry) -> [RecurringFix] {
-        guard let polished = entry.polishedText else { return [] }
+        guard entry.polishRan, let polished = entry.polishedText else { return [] }
         let raw = entry.rawText
         return TranscriptDiff.hunks(from: raw, to: polished).compactMap { hunk in
             guard (1...maxFixWords).contains(hunk.removed.count),
@@ -164,6 +176,11 @@ struct DictationInsights: Equatable, Sendable {
             let written = hunk.added.map { bare(polished[$0]) }.filter { !$0.isEmpty }
                 .joined(separator: " ")
             guard !heard.isEmpty, !written.isEmpty, heard != written else { return nil }
+            // The spoken clipboard marker is stored as its placeholder, never
+            // as the clipboard's content. That is the macro's work, not a fix.
+            guard !written.contains(bare(Substring(ClipboardPayloadMacro.placeholder))) else {
+                return nil
+            }
             if heard.lowercased() == written.lowercased() {
                 // Casing alone. Worth counting for a name ("claude code"),
                 // not for the first word of a sentence.
