@@ -387,30 +387,3 @@ private final class MockAppConfigStore: AppConfigServing {
         []
     }
 }
-
-@MainActor
-private final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitTargetAppPID: pid_t? = nil
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(
-            targetRect: CGRect(x: 0, y: 0, width: 100, height: 24),
-            source: .windowCenter
-        )
-    }
-
-    func startSession(preResolvedAnchor _: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
-    func beginFinalizing(displayBufferText _: String, commitBufferText _: String) {}
-    func refresh(displayBufferText _: String, commitBufferText _: String) {}
-
-    func commitIfNeeded(
-        using _: OverlayTextCommitting,
-        autoCopyEnabled _: Bool
-    ) -> OverlayBufferCommitOutcome {
-        .succeeded
-    }
-
-    func dismissAfterHold(minimumVisibility _: TimeInterval) {}
-    func reset() {}
-    func captureLiveCommitTargetAppPID() {}
-}

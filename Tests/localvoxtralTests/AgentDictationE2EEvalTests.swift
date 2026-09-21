@@ -497,7 +497,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         let service = EvalRecordingPolishingService(configuration: polishConfiguration)
         let viewModel = DictationViewModel(
             settings: settings,
-            overlayBufferCoordinator: EvalOverlayCoordinator(),
+            overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: false
         )
         viewModel.appConfigStore = configStore
@@ -1165,36 +1165,6 @@ private actor EvalRecordingPolishingService: LLMPolishingServicing {
         lastRawPolishedText = result.polishedText
         return result
     }
-}
-
-/// Overlay coordinator double: the commit itself (AX insertion / pasteboard)
-/// is out of scope for the eval — the scored artifact is the committed TEXT,
-/// read from the view model exactly like the token-guard suite does.
-@MainActor
-private final class EvalOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitTargetAppPID: pid_t? = nil
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(
-            targetRect: CGRect(x: 0, y: 0, width: 100, height: 24),
-            source: .windowCenter
-        )
-    }
-
-    func startSession(preResolvedAnchor _: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
-    func beginFinalizing(displayBufferText _: String, commitBufferText _: String) {}
-    func refresh(displayBufferText _: String, commitBufferText _: String) {}
-
-    func commitIfNeeded(
-        using _: OverlayTextCommitting,
-        autoCopyEnabled _: Bool
-    ) -> OverlayBufferCommitOutcome {
-        .succeeded
-    }
-
-    func dismissAfterHold(minimumVisibility _: TimeInterval) {}
-    func reset() {}
-    func captureLiveCommitTargetAppPID() {}
 }
 
 private struct EvalInfraError: Error, CustomStringConvertible {

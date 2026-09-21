@@ -520,7 +520,7 @@ final class RealtimeReconnectTests: XCTestCase {
 
         let viewModel = DictationViewModel(
             settings: settings,
-            overlayBufferCoordinator: ReconnectNoopOverlayCoordinator(),
+            overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: false
         )
         // Session start reads config through the store — never the real config
@@ -617,26 +617,4 @@ private final class ReconnectHermeticConfigStore: AppConfigServing {
     func loadTerminalAppBundleIDs() -> [String] {
         []
     }
-}
-
-@MainActor
-private final class ReconnectNoopOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitTargetAppPID: pid_t? = nil
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(targetRect: .zero, source: .windowCenter)
-    }
-    func startSession(preResolvedAnchor: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
-    func beginFinalizing(displayBufferText: String, commitBufferText: String) {}
-    func refresh(displayBufferText: String, commitBufferText: String) {}
-    @discardableResult
-    func commitIfNeeded(
-        using textCommitter: OverlayTextCommitting,
-        autoCopyEnabled: Bool
-    ) -> OverlayBufferCommitOutcome {
-        .succeeded
-    }
-    func dismissAfterHold(minimumVisibility: TimeInterval) {}
-    func reset() {}
-    func captureLiveCommitTargetAppPID() {}
 }

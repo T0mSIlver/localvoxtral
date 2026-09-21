@@ -679,7 +679,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
             try? FileManager.default.removeItem(at: base)
         }
 
-        let overlayCoordinator = WiringMockOverlayCoordinator()
+        let overlayCoordinator = MockOverlayCoordinator()
         overlayCoordinator.commitOutcome = commitOutcome
         let viewModel = DictationViewModel(
             settings: settings,
@@ -773,37 +773,6 @@ private final class WiringMockAppConfigStore: AppConfigServing {
     func loadTerminalAppBundleIDs() -> [String] {
         []
     }
-}
-
-@MainActor
-private final class WiringMockOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitTargetAppPID: pid_t? = nil
-    /// What `commitIfNeeded` reports — the seam for the failed / clipboard-
-    /// fallback arming tests.
-    var commitOutcome: OverlayBufferCommitOutcome = .succeeded
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(
-            targetRect: CGRect(x: 0, y: 0, width: 100, height: 24),
-            source: .windowCenter
-        )
-    }
-
-    func startSession(preResolvedAnchor _: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
-    func beginFinalizing(displayBufferText _: String, commitBufferText _: String) {}
-    func refresh(displayBufferText _: String, commitBufferText _: String) {}
-
-    func commitIfNeeded(
-        using _: OverlayTextCommitting,
-        autoCopyEnabled _: Bool
-    ) -> OverlayBufferCommitOutcome {
-        commitOutcome
-    }
-
-    func dismissAfterHold(minimumVisibility _: TimeInterval) {}
-    func reset() {}
-    func captureLiveCommitTargetAppPID() {}
-    func markPolished(_: Bool) {}
 }
 
 #endif

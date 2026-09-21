@@ -329,28 +329,6 @@ private final class Box<Value> {
     }
 }
 
-@MainActor
-private final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitOutcome: OverlayBufferCommitOutcome = .succeeded
-    var commitTargetAppPID: pid_t? = nil
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(targetRect: CGRect(x: 0, y: 0, width: 100, height: 24), source: .windowCenter)
-    }
-    func startSession(preResolvedAnchor: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
-    func beginFinalizing(displayBufferText: String, commitBufferText: String) {}
-    func refresh(displayBufferText: String, commitBufferText: String) {}
-    func commitIfNeeded(
-        using textCommitter: OverlayTextCommitting,
-        autoCopyEnabled: Bool
-    ) -> OverlayBufferCommitOutcome {
-        commitOutcome
-    }
-    func reset() {}
-    func dismissAfterHold(minimumVisibility: TimeInterval) {}
-    func captureLiveCommitTargetAppPID() {}
-}
-
 private final class MockAppConfigStore: AppConfigServing {
     private let replacementDictionary: ReplacementDictionary
     private let terminalAppBundleIDs: [String]

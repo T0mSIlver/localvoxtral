@@ -313,7 +313,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             backendManager: FakeManagedBackendManager(),
-            overlayBufferCoordinator: NoopOverlayCoordinator(),
+            overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: true
         )
 
@@ -342,7 +342,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             backendManager: FakeManagedBackendManager(),
-            overlayBufferCoordinator: NoopOverlayCoordinator(),
+            overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: true,
             suppressStartupPermissionPrompts: true
         )
@@ -1654,7 +1654,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             backendManager: backendManager,
-            overlayBufferCoordinator: NoopOverlayCoordinator(),
+            overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: false
         )
         // Keep tests hermetic: session start reads config (terminal apps,
@@ -1730,25 +1730,6 @@ private final class FailFastHermeticConfigStore: AppConfigServing {
     func loadTerminalAppBundleIDs() -> [String] {
         []
     }
-}
-
-@MainActor
-private final class NoopOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitTargetAppPID: pid_t? = nil
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(targetRect: .zero, source: .windowCenter)
-    }
-    func startSession(preResolvedAnchor: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
-    func beginFinalizing(displayBufferText: String, commitBufferText: String) {}
-    func refresh(displayBufferText: String, commitBufferText: String) {}
-    @discardableResult
-    func commitIfNeeded(using textCommitter: OverlayTextCommitting, autoCopyEnabled: Bool) -> OverlayBufferCommitOutcome {
-        .succeeded
-    }
-    func dismissAfterHold(minimumVisibility: TimeInterval) {}
-    func reset() {}
-    func captureLiveCommitTargetAppPID() {}
 }
 
 @MainActor

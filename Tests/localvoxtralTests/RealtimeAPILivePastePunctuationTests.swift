@@ -255,26 +255,4 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
     }
 }
 
-@MainActor
-private final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitOutcome: OverlayBufferCommitOutcome = .succeeded
-    var commitTargetAppPID: pid_t? = nil
-    var captureLiveCommitTargetAppPIDCallCount = 0
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(targetRect: CGRect(x: 0, y: 0, width: 100, height: 24), source: .windowCenter)
-    }
-    func startSession(preResolvedAnchor: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
-    func beginFinalizing(displayBufferText: String, commitBufferText: String) {}
-    func refresh(displayBufferText: String, commitBufferText: String) {}
-    func commitIfNeeded(
-        using textCommitter: OverlayTextCommitting,
-        autoCopyEnabled: Bool
-    ) -> OverlayBufferCommitOutcome { commitOutcome }
-    func dismissAfterHold(minimumVisibility: TimeInterval) {}
-    func reset() {}
-    func captureLiveCommitTargetAppPID() {
-        captureLiveCommitTargetAppPIDCallCount += 1
-    }
-}
 #endif

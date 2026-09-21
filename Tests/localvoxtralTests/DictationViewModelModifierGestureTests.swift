@@ -35,7 +35,7 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         // finalizes using sessionOutputMode; the tap's mode applies only when
         // it STARTS a session.
         let settings = makeSettings(outputMode: .liveAutoPaste)
-        let coordinator = GestureTestOverlayCoordinator()
+        let coordinator = MockOverlayCoordinator()
         let viewModel = makeViewModel(settings: settings, coordinator: coordinator)
 
         viewModel.sessionOutputMode = .liveAutoPaste
@@ -174,7 +174,7 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
 
     private func makeViewModel(
         settings: SettingsStore,
-        coordinator: GestureTestOverlayCoordinator = GestureTestOverlayCoordinator()
+        coordinator: MockOverlayCoordinator = MockOverlayCoordinator()
     ) -> DictationViewModel {
         let viewModel = DictationViewModel(
             settings: settings,
@@ -206,27 +206,4 @@ private final class GestureTestHermeticConfigStore: AppConfigServing {
     func loadTerminalAppBundleIDs() -> [String] {
         []
     }
-}
-
-@MainActor
-private final class GestureTestOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitTargetAppPID: pid_t? = nil
-    var commitCallCount = 0
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(targetRect: CGRect(x: 0, y: 0, width: 100, height: 24), source: .windowCenter)
-    }
-    func startSession(preResolvedAnchor: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
-    func beginFinalizing(displayBufferText: String, commitBufferText: String) {}
-    func refresh(displayBufferText: String, commitBufferText: String) {}
-    func commitIfNeeded(
-        using textCommitter: OverlayTextCommitting,
-        autoCopyEnabled: Bool
-    ) -> OverlayBufferCommitOutcome {
-        commitCallCount += 1
-        return .succeeded
-    }
-    func dismissAfterHold(minimumVisibility: TimeInterval) {}
-    func reset() {}
-    func captureLiveCommitTargetAppPID() {}
 }

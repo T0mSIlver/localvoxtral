@@ -38,7 +38,7 @@ final class OnboardingViewModelTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             backendManager: manager,
-            overlayBufferCoordinator: OnboardingNoopOverlayCoordinator(),
+            overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: false
         )
         // The wizard's key check must never reach api.mistral.ai from a test
@@ -433,27 +433,6 @@ final class OnboardingViewModelTests: XCTestCase {
         // completeOnboarding never closes on its own.
         XCTAssertEqual(closeCount(), 0)
     }
-}
-
-@MainActor
-private final class OnboardingNoopOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitTargetAppPID: pid_t? = nil
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(targetRect: .zero, source: .windowCenter)
-    }
-    func startSession(preResolvedAnchor: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
-    func beginFinalizing(displayBufferText: String, commitBufferText: String) {}
-    func refresh(displayBufferText: String, commitBufferText: String) {}
-    @discardableResult
-    func commitIfNeeded(
-        using textCommitter: OverlayTextCommitting, autoCopyEnabled: Bool
-    ) -> OverlayBufferCommitOutcome {
-        .succeeded
-    }
-    func dismissAfterHold(minimumVisibility: TimeInterval) {}
-    func reset() {}
-    func captureLiveCommitTargetAppPID() {}
 }
 
 /// Answers the wizard's key check without a socket.

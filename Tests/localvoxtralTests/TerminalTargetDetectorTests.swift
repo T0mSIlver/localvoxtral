@@ -621,7 +621,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
-        let coordinator = TargetDetectorNoopOverlayCoordinator()
+        let coordinator = MockOverlayCoordinator()
         let viewModel = makeViewModel(outputMode: .liveAutoPaste, coordinator: coordinator)
         Self.retainedViewModels.append(viewModel)
         viewModel.secureInputWarningSound = {}
@@ -733,7 +733,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         // Owner field feedback on #90: the overlay stayed on after ending the
         // session when text was in the buffer — the clipboard fallback is not
         // a real failure and must not keep its panel like one.
-        let coordinator = TargetDetectorNoopOverlayCoordinator()
+        let coordinator = MockOverlayCoordinator()
         coordinator.commitOutcome = .copiedToClipboard(message: "copied")
         let viewModel = makeViewModel(outputMode: .overlayBuffer, coordinator: coordinator)
         Self.retainedViewModels.append(viewModel)
@@ -757,7 +757,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
     func testFailedCommitOutcomeStillKeepsOverlayPanel() {
         // The generic failure contract is unchanged: the buffered text may
         // exist nowhere else, so the panel persists.
-        let coordinator = TargetDetectorNoopOverlayCoordinator()
+        let coordinator = MockOverlayCoordinator()
         coordinator.commitOutcome = .failed(message: "nope")
         let viewModel = makeViewModel(outputMode: .overlayBuffer, coordinator: coordinator)
         Self.retainedViewModels.append(viewModel)
@@ -775,7 +775,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
     private func makeViewModel(
         outputMode: DictationOutputMode,
         terminalAppBundleIDs: [String] = [],
-        coordinator: TargetDetectorNoopOverlayCoordinator = TargetDetectorNoopOverlayCoordinator()
+        coordinator: MockOverlayCoordinator = MockOverlayCoordinator()
     ) -> DictationViewModel {
         let suiteName = "localvoxtral.TerminalTargetDetectorTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -840,30 +840,4 @@ private final class TargetDetectorMockConfigStore: AppConfigServing {
     func loadTerminalAppBundleIDs() -> [String] {
         terminalAppBundleIDs
     }
-}
-
-@MainActor
-private final class TargetDetectorNoopOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitTargetAppPID: pid_t? = nil
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(targetRect: .zero, source: .windowCenter)
-    }
-    func startSession(preResolvedAnchor: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
-    func beginFinalizing(displayBufferText: String, commitBufferText: String) {}
-    func refresh(displayBufferText: String, commitBufferText: String) {}
-    var commitOutcome: OverlayBufferCommitOutcome = .succeeded
-    @discardableResult
-    func commitIfNeeded(
-        using textCommitter: OverlayTextCommitting, autoCopyEnabled: Bool
-    ) -> OverlayBufferCommitOutcome {
-        commitOutcome
-    }
-    private(set) var dismissHoldVisibilities: [TimeInterval] = []
-    func dismissAfterHold(minimumVisibility: TimeInterval) {
-        dismissHoldVisibilities.append(minimumVisibility)
-    }
-    private(set) var resetCallCount = 0
-    func reset() { resetCallCount += 1 }
-    func captureLiveCommitTargetAppPID() {}
 }
