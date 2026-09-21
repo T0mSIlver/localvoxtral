@@ -126,6 +126,39 @@ jobs:
           probe_model "polishd" "$polish_repo" "$polish_revision"
           exit 0
 
+      - name: Mistral Vibe hooks state (counts and booleans only)
+        run: |
+          # Field-debugging a Vibe session that never joins. This log is
+          # PUBLIC: print counts, yes/no, and version numbers, never a path
+          # under $HOME, a hook command, or a file's text.
+          set +e
+          yn() { if "$@" >/dev/null 2>&1; then echo yes; else echo no; fi; }
+          vibe_home="${VIBE_HOME:-$HOME/.vibe}"
+          hooks="$vibe_home/hooks.toml"
+          echo "hooks.toml present: $(yn test -f "$hooks")"
+          echo "localvoxtral block markers: $(grep -c '^# \(>>>\|<<<\) localvoxtral \(>>>\|<<<\)$' "$hooks" 2>/dev/null || echo 0)"
+          echo "[[hooks]] tables: $(grep -c '^\[\[hooks\]\]' "$hooks" 2>/dev/null || echo 0)"
+          echo "top-level 'hooks =' lines: $(grep -c '^hooks[[:space:]]*=' "$hooks" 2>/dev/null || echo 0)"
+          shim="$vibe_home/localvoxtral/publish.sh"
+          echo "publish.sh present: $(yn test -f "$shim")"
+          link="$HOME/Library/Application Support/localvoxtral/claude/publisher"
+          echo "publisher link present: $(yn test -L "$link")"
+          echo "publisher link target executable: $(yn test -x "$link")"
+          echo "publisher link target knows --agent: $(yn sh -c 'strings "$0" | grep -q -- "--agent"' "$link")"
+          echo "publisher link target inside a try-pr dir: $(yn sh -c 'readlink "$0" | grep -q "^/private/tmp/localvoxtral-try\."' "$link")"
+          vibe_bin="$(PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" command -v vibe)"
+          echo "vibe on PATH: $(yn test -n "$vibe_bin")"
+          [ -n "$vibe_bin" ] && echo "vibe version: $("$vibe_bin" --version 2>/dev/null | grep -o '[0-9][0-9.]*' | head -1)"
+          echo "--- running vibe processes (tty yes/no, age):"
+          ps -axo pid=,tty=,etime=,command= | awk '
+            $4 ~ /(^|\/)vibe$/ || ($4 ~ /python/ && $5 ~ /(^|\/)vibe$/) {
+              n++; printf "vibe process %d: tty=%s etime=%s\n", n, ($2 == "??" ? "no" : "yes"), $3
+            }
+            END { if (!n) print "none" }'
+          echo "--- broker socket:"
+          sock="$HOME/Library/Application Support/localvoxtral/run/claude-context.sock"
+          echo "socket present: $(yn test -S "$sock")"
+
       - name: Claude remote ssh config state (markers only)
         run: |
           # Field-debugging the enrollment insertion: report only what proves
