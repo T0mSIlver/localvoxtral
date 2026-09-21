@@ -228,9 +228,24 @@ public struct ClaudeHookPublisher: Sendable {
     /// the thing this session lives in". None of them is content, and the list
     /// grows only for values that answer that question.
     func processInfo() -> ClaudeHookProcessInfo {
-        // ONE ppid resolution feeds both fields: the published claudePID and
+        processInfo(agentPID: environment.ppid(), claudeSessionHandles: true)
+    }
+
+    /// - Parameter claudeSessionHandles: whether the two Claude-allocated
+    ///   session ids are published. They name a CLAUDE session's browser tab or
+    ///   desktop view, and another agent started from inside a Claude Code
+    ///   session inherits them — publishing them there would let that agent's
+    ///   session join the Claude view it was launched from.
+    /// - Parameter agentStartMicros: the agent process's start time, for an
+    ///   agent whose sessions end by liveness alone.
+    func processInfo(
+        agentPID: Int32,
+        claudeSessionHandles: Bool = false,
+        agentStartMicros: Int64? = nil
+    ) -> ClaudeHookProcessInfo {
+        // ONE pid resolution feeds both fields: the published claudePID and
         // the tty's process-table fallback must describe the same process.
-        let claudePID = environment.ppid()
+        let claudePID = agentPID
         return ClaudeHookProcessInfo(
             hookPID: environment.pid(),
             claudePID: claudePID,
@@ -240,8 +255,9 @@ public struct ClaudeHookPublisher: Sendable {
             herdrSocketPath: nonEmptyVariable("HERDR_SOCKET_PATH"),
             cmuxSurfaceID: nonEmptyVariable("CMUX_SURFACE_ID"),
             cmuxSocketPath: nonEmptyVariable("CMUX_SOCKET_PATH"),
-            bridgeSessionID: nonEmptyVariable("CLAUDE_CODE_BRIDGE_SESSION_ID"),
-            desktopSessionID: nonEmptyVariable("CLAUDE_CODE_HOST_SESSION_ID")
+            bridgeSessionID: claudeSessionHandles ? nonEmptyVariable("CLAUDE_CODE_BRIDGE_SESSION_ID") : nil,
+            desktopSessionID: claudeSessionHandles ? nonEmptyVariable("CLAUDE_CODE_HOST_SESSION_ID") : nil,
+            agentStartMicros: agentStartMicros
         )
     }
 
@@ -429,16 +445,23 @@ public struct ClaudeHookPublisher: Sendable {
     /// another inline hook phase, and being late is worse than being absent.
     public static let stdinReadTimeout: TimeInterval = 0.25
 
+    /// - Parameter drainsExcess: keep reading (and discarding) past the cap
+    ///   until EOF or the deadline. Off for Claude Code, whose payloads are
+    ///   small. On for Vibe: a `post_tool` payload embeds the tool's whole
+    ///   output, and exiting with megabytes still in the pipe breaks Vibe's
+    ///   write mid-payload. The result is still over the cap, so it still
+    ///   fails to parse; what changes is that the writer finishes.
     public static func readBoundedStdin(
         limits: ClaudeHookLimits = .default,
         descriptor: Int32 = 0,
         timeout: TimeInterval = stdinReadTimeout,
+        drainsExcess: Bool = false,
         uptimeNanos: @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
     ) -> Data {
         let deadline = uptimeNanos() &+ UInt64(max(0, timeout) * 1_000_000_000)
         var buffer = Data()
         var chunk = [UInt8](repeating: 0, count: 16 * 1024)
-        while buffer.count <= limits.maxLineBytes {
+        while drainsExcess || buffer.count <= limits.maxLineBytes {
             let current = uptimeNanos()
             guard current < deadline else { break }
             let remainingMillis = (deadline - current) / 1_000_000
@@ -451,7 +474,9 @@ public struct ClaudeHookPublisher: Sendable {
             let count = read(descriptor, &chunk, chunk.count)
             if count < 0, errno == EINTR { continue }
             if count <= 0 { break } // EOF, or an error we treat as EOF.
-            buffer.append(contentsOf: chunk[0..<count])
+            // Past the cap only the first excess chunk is kept, which is what
+            // makes the result unparseable; the rest is read and dropped.
+            if buffer.count <= limits.maxLineBytes { buffer.append(contentsOf: chunk[0..<count]) }
         }
         return buffer
     }

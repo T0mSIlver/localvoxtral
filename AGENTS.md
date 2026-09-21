@@ -157,8 +157,9 @@ ablation workflows: `docs/agent/test-tiers.md`.
 - **Touching either MLX helper**: `PolishHelper/AGENTS.md` /
   `SpeechHelper/AGENTS.md` (and `SpeechHelper/DEPENDENCY.md` for the pin).
 - **Eval corpus edits**: `EvalCorpus/agent-dictation/AGENTS.md` + its README.
-- **Claude Code / opencode plugin work**: `integrations/claude-code/AGENTS.md`,
-  `integrations/claude-code/README.md`, `integrations/opencode/README.md`.
+- **Claude Code / opencode / Vibe integration work**:
+  `integrations/claude-code/AGENTS.md`, `integrations/claude-code/README.md`,
+  `integrations/opencode/README.md`, `integrations/vibe/README.md`.
 - **Build-host / launchd / runner operations**: owner runbook
   `scripts/mac/README.md`. Per-workflow notes: `.github/workflows/README.md`.
 

@@ -6,7 +6,8 @@ import Foundation
 /// not a filter. Claude Code's hook payload carries plenty we deliberately drop:
 ///
 /// * `transcript_path` — dropped. We do not scrape transcript contents, so we
-///   do not carry the pointer either.
+///   do not carry the pointer either. (Vibe is the one documented exception,
+///   and it has its own parser: `VibeHookInputParser`.)
 /// * `tool_input` / `tool_response` bodies — dropped except for the specific
 ///   path-shaped keys below. File CONTENT (`Write.content`, `Edit.new_string`,
 ///   command strings, `Read` output) never crosses the socket.

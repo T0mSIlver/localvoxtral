@@ -1,0 +1,19 @@
+# >>> localvoxtral >>>
+# Dictation context for localvoxtral. Managed from Settings → Mistral Vibe;
+# edits inside this block are replaced on update. `2>/dev/null || :` keeps a
+# missing script from showing as a hook failure on every turn.
+[[hooks]]
+name = "localvoxtral-files"
+type = "post_tool"
+match = "re:^(read_file|write_file|edit)$"
+command = "sh \"$HOME/.vibe/localvoxtral/publish.sh\" 2>/dev/null || :"
+timeout = 5.0
+description = "Tell localvoxtral which files this session touched."
+
+[[hooks]]
+name = "localvoxtral-turn"
+type = "post_agent"
+command = "sh \"$HOME/.vibe/localvoxtral/publish.sh\" 2>/dev/null || :"
+timeout = 5.0
+description = "Tell localvoxtral a turn ended, with the prompt that started it."
+# <<< localvoxtral <<<
