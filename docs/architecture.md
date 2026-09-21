@@ -13,7 +13,9 @@ three files totaling ~2.3k lines — the main refactor target):
 Key subsystems:
 
 - Audio: `MicrophoneCaptureService` (raw CoreAudio AUHAL → 16kHz PCM16),
-  `AudioChunkBuffer` (Mutex), `AudioCaptureHealthMonitor` (device changes)
+  `AudioChunkBuffer` (Mutex), `AudioCaptureHealthMonitor` (device changes),
+  `AudioDuckingController` + `SystemOutputVolumeControl` (fades other audio
+  down for the session and back at every end path)
 - Realtime clients: `RealtimeClient` protocol; `RealtimeAPIWebSocketClient`
   (managed speechd / vLLM / any OpenAI-Realtime server) and
   `MistralRealtimeWebSocketClient` (Mistral API mode), both over

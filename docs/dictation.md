@@ -69,8 +69,17 @@ Open **Settings** from the menu bar popover:
   URL. Lower dictation step intervals show words sooner, while higher values
   use less compute.
 - **Dictation** — the trigger (single modifier key with tap/hold gestures, or
-  per-mode keyboard shortcuts), the menu-bar mode, copy on stop, and the
-  overlay's font size and how many lines it shows before scrolling
+  per-mode keyboard shortcuts), the menu-bar mode, copy on stop, ducking other
+  audio, and the overlay's font size and how many lines it shows before
+  scrolling. **Lower other audio while dictating**, on unless you turn it off,
+  drops music and calls to a fifth of your volume for as long as a session
+  runs, in both output modes, and fades back when it ends; **Fade** sets how
+  long each fade takes. It moves the volume of
+  the device you were listening to when the session started, and puts that
+  same device back even if you switched outputs meanwhile. An output whose
+  volume the Mac does not own — HDMI monitors, most digital outputs — is left
+  alone, and so is one that offers only per-channel volume, since ducking
+  those together would flatten a stereo balance you set.
 - **Text Processing** — **About you**: a few lines on your work in your own
   words, plus a list of the names and terms you say often, spelled the way
   they should appear ("Qwen", "Claude Code", "vLLM"). Both are sent to the

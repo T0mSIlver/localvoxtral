@@ -341,6 +341,12 @@ final class DictationViewModel {
         return MicrophoneCaptureService()
     }()
 
+    /// Ducks other audio for the length of a session. Assigned in `init` so
+    /// its volume control can be the real CoreAudio one only in the app;
+    /// `var` so a test can swap the whole controller.
+    @ObservationIgnored
+    var audioDucking: AudioDuckingController
+
     /// A failed/cancelled connection can end before audio capture ever starts.
     /// Do not instantiate the lazy CoreAudio service merely to stop it: doing
     /// so registers device listeners that an app-lifetime view model then owns.
@@ -851,6 +857,24 @@ final class DictationViewModel {
         self.suppressStartupPermissionPrompts = suppressStartupPermissionPrompts
         self.localNetworkPermissionPreflight =
             localNetworkPermissionPreflight ?? LocalNetworkPermissionPreflight()
+        // The real control only in the running app: a unit suite that reached
+        // it would move the volume of the Mac running the tests, and the build
+        // host is the owner's own machine. `startRuntimeServices` is the gate
+        // that ships; the XCTest check is a second one for the two suites that
+        // do pass true, and is DEBUG-only because the symbol is.
+        var ducksRealOutput = startRuntimeServices
+        #if DEBUG
+        ducksRealOutput = ducksRealOutput && !TerminalTargetDetector.isRunningUnderXCTest
+        #endif
+        self.audioDucking = AudioDuckingController(
+            volumeControl: ducksRealOutput
+                ? CoreAudioSystemOutputVolumeControl()
+                : UnavailableSystemOutputVolumeControl(),
+            isEnabled: { settings.audioDuckingEnabled },
+            fadeDuration: { settings.audioDuckingFadeDuration },
+            interruptedDuck: { settings.audioDuckingPendingRestore },
+            recordInterruptedDuck: { settings.audioDuckingPendingRestore = $0 }
+        )
         if let overlayBufferCoordinator {
             self.overlayBufferCoordinator = overlayBufferCoordinator
         } else {
@@ -888,6 +912,11 @@ final class DictationViewModel {
         mistralRealtimeClient.setEventHandler(realtimeEventHandler)
 
         if startRuntimeServices {
+            // A launch that died mid-session (crash, force quit) left the
+            // volume down with nothing running. Put it back before anything
+            // else starts.
+            audioDucking.restoreInterruptedDuckFromPreviousLaunch()
+
             microphone.onConfigurationChange = { [weak self] in
                 Task { @MainActor [weak self] in
                     self?.healthMonitor.handleConfigurationChange()
@@ -1037,6 +1066,7 @@ final class DictationViewModel {
         overlayBufferCoordinator.reset()
         healthMonitor.cancelTasks()
         escapeCancelHandler.stop()
+        audioDucking.restoreImmediatelyForTermination()
         if managesRuntimeServices {
             stopMicrophoneIfInitialized()
             networkMonitor.stop()
@@ -1093,6 +1123,9 @@ final class DictationViewModel {
                 // would keep no behavior block at all.
                 self.dogfoodEditSignalWatcher.flushForTermination()
                 #endif
+                // Inline, not in the Task below: a fade would not get to
+                // finish and the Task is not guaranteed to run at all.
+                self.audioDucking.restoreImmediatelyForTermination()
                 Task {
                     self.cancelManagedStartupTask()
                     if self.isDictating {
@@ -2350,6 +2383,7 @@ final class DictationViewModel {
         isAwaitingMicrophonePermission = false
 
         stopSessionAudioCapture()
+        audioDucking.restoreAfterSession()
         flushBufferedAudio()
         isDictating = false
         escapeCancelHandler.stop()

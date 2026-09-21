@@ -285,6 +285,15 @@ final class SettingsStore {
         static let dictationOutputMode = "settings.dictation_output_mode"
         static let dictationShortcutMode = "settings.dictation_shortcut_mode"
         static let autoCopyEnabled = "settings.auto_copy_enabled"
+        static let audioDuckingEnabled = "settings.audio_ducking_enabled"
+        static let audioDuckingFadeDuration = "settings.audio_ducking_fade_duration"
+        /// The device and volume a launch ducked away from, written at the
+        /// duck and cleared when a restore lands. Present at startup only when
+        /// the previous launch died mid-session. Both keys or neither.
+        static let audioDuckingPendingRestoreVolume =
+            "settings.audio_ducking_pending_restore_volume"
+        static let audioDuckingPendingRestoreDeviceUID =
+            "settings.audio_ducking_pending_restore_device_uid"
         static let selectedInputDeviceUID = "settings.selected_input_device_uid"
         static let selectedInputChannel = "settings.selected_input_channel"
         static let dictationShortcutEnabled = "settings.dictation_shortcut_enabled"
@@ -472,6 +481,50 @@ final class SettingsStore {
 
     var autoCopyEnabled: Bool {
         didSet { defaults.set(autoCopyEnabled, forKey: Keys.autoCopyEnabled) }
+    }
+
+    /// Lower other audio while dictating, and fade it back on stop. On by
+    /// default (owner ruling, 2026-09-21, after hand-testing it): dictating
+    /// over music is the common case, and the fade makes it unobtrusive
+    /// enough not to need discovering first.
+    var audioDuckingEnabled: Bool {
+        didSet { defaults.set(audioDuckingEnabled, forKey: Keys.audioDuckingEnabled) }
+    }
+
+    /// Seconds each ducking fade takes, in both directions
+    /// (`audioDuckingFadeDurationRange`).
+    var audioDuckingFadeDuration: Double {
+        didSet { defaults.set(audioDuckingFadeDuration, forKey: Keys.audioDuckingFadeDuration) }
+    }
+
+    static let audioDuckingFadeDurationRange: ClosedRange<Double> = 0.1...2.0
+    static let defaultAudioDuckingFadeDuration: Double = 0.4
+
+    /// The device and volume to put back at the next launch when this one dies
+    /// ducked. Not surfaced in Settings — `AudioDuckingController` owns both
+    /// ends. The device is stored with the volume because a restore aimed at
+    /// whatever is default by then would push one device's level onto another.
+    var audioDuckingPendingRestore: OutputVolumeReading? {
+        get {
+            guard let deviceUID = defaults.string(
+                forKey: Keys.audioDuckingPendingRestoreDeviceUID), !deviceUID.isEmpty,
+                defaults.object(forKey: Keys.audioDuckingPendingRestoreVolume) != nil
+            else { return nil }
+            let stored = defaults.double(forKey: Keys.audioDuckingPendingRestoreVolume)
+            guard (0...1).contains(stored) else { return nil }
+            return OutputVolumeReading(deviceUID: deviceUID, volume: Float(stored))
+        }
+        set {
+            if let newValue {
+                defaults.set(
+                    newValue.deviceUID, forKey: Keys.audioDuckingPendingRestoreDeviceUID)
+                defaults.set(
+                    Double(newValue.volume), forKey: Keys.audioDuckingPendingRestoreVolume)
+            } else {
+                defaults.removeObject(forKey: Keys.audioDuckingPendingRestoreDeviceUID)
+                defaults.removeObject(forKey: Keys.audioDuckingPendingRestoreVolume)
+            }
+        }
     }
 
     var dictationOutputMode: DictationOutputMode {
@@ -1142,6 +1195,15 @@ final class SettingsStore {
 
         autoCopyEnabled = Self.loadBool(
             defaults: defaults, key: Keys.autoCopyEnabled, fallback: false)
+        audioDuckingEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.audioDuckingEnabled, fallback: true)
+        let storedDuckingFade = defaults.object(forKey: Keys.audioDuckingFadeDuration) != nil
+            ? defaults.double(forKey: Keys.audioDuckingFadeDuration)
+            : Self.defaultAudioDuckingFadeDuration
+        audioDuckingFadeDuration = min(
+            max(storedDuckingFade, Self.audioDuckingFadeDurationRange.lowerBound),
+            Self.audioDuckingFadeDurationRange.upperBound
+        )
         if let storedOutputMode = defaults.string(forKey: Keys.dictationOutputMode),
             let parsedMode = DictationOutputMode(rawValue: storedOutputMode)
         {

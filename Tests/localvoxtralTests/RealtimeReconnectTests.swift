@@ -189,6 +189,73 @@ final class RealtimeReconnectTests: XCTestCase {
         XCTAssertEqual(viewModel.statusText, "Listening...")
     }
 
+    // MARK: - Audio ducking across the gap (#375 x #415)
+
+    func testAReconnectKeepsOtherAudioDucked() async {
+        // The whole point of reconnecting is that the user never notices the
+        // blip. Fading their music back up mid-sentence and down again would
+        // announce it louder than the dropout did.
+        let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
+        let volume = await duckedVolumeControl(for: viewModel)
+        volume.clearWrites()
+        viewModel.debugReconnectSleepOverride = { _ in client.setConnected(true) }
+
+        viewModel.handle(event: .disconnected)
+        XCTAssertTrue(viewModel.isReconnectingRealtimeSession)
+        await viewModel.reconnectTask?.value
+        await viewModel.audioDucking.debugFadeTask?.value
+
+        XCTAssertTrue(viewModel.isDictating, "precondition: the session survived")
+        XCTAssertTrue(
+            volume.writes.isEmpty,
+            "a session that keeps going keeps its duck — no volume moved across the gap")
+        XCTAssertNotNil(
+            viewModel.audioDucking.debugDuckedOutput,
+            "and the way back is still held for the eventual stop")
+    }
+
+    func testAnExhaustedReconnectRestoresOtherAudio() async throws {
+        // The end of the line. This is the teardown that must not leave the
+        // user at a fifth of their volume with no dictation running.
+        let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
+        let volume = await duckedVolumeControl(for: viewModel)
+        viewModel.debugReconnectSleepOverride = { [weak viewModel] _ in
+            guard let viewModel, client.connectCount > 0 else { return }
+            viewModel.handle(event: .error("WebSocket failed: refused"))
+        }
+
+        viewModel.handle(event: .disconnected)
+        await viewModel.reconnectTask?.value
+        await viewModel.audioDucking.debugFadeTask?.value
+
+        XCTAssertFalse(viewModel.isDictating, "precondition: the run gave up")
+        let restored = try XCTUnwrap(volume.volume(of: "device-a"))
+        XCTAssertEqual(
+            restored, 0.8, accuracy: 0.0001,
+            "the volume the user set comes back when the reconnect does not")
+    }
+
+    /// Swaps in a ducking controller over a fake output device and ducks it,
+    /// standing in for the duck a real session takes when capture starts.
+    /// Fades collapse to a single write: what is under test here is whether a
+    /// path restores, not the fade's shape.
+    private func duckedVolumeControl(
+        for viewModel: DictationViewModel
+    ) async -> FakeOutputVolumeControl {
+        let volume = FakeOutputVolumeControl(volume: 0.8)
+        let pinnedNow = Date(timeIntervalSince1970: 1_000)
+        viewModel.audioDucking = AudioDuckingController(
+            volumeControl: volume,
+            isEnabled: { true },
+            fadeDuration: { 0 },
+            now: { pinnedNow },
+            sleepFor: { _ in }
+        )
+        viewModel.audioDucking.duckForSessionStart()
+        await viewModel.audioDucking.debugFadeTask?.value
+        return volume
+    }
+
     // MARK: - Reconnect exhausts
 
     func testExhaustedReconnectLandsOnTodaysConnectionLostBehavior() async {

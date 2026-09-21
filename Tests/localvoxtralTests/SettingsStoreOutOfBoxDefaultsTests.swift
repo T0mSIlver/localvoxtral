@@ -43,6 +43,25 @@ final class SettingsStoreOutOfBoxDefaultsTests: XCTestCase {
         XCTAssertTrue(store.modifierOnlyHotKeyEnabled)
     }
 
+    func testAnyInstall_lowersOtherAudioWhileDictating() {
+        // On by default, fresh install or old (owner ruling, 2026-09-21): a
+        // plain fallback, not a seed, because the setting has never shipped
+        // off — no install anywhere has a stored `false` to be overridden.
+        XCTAssertTrue(makeStore().audioDuckingEnabled)
+
+        defaults.set(true, forKey: Self.onboardingKey)  // an existing install
+        XCTAssertTrue(makeStore().audioDuckingEnabled)
+    }
+
+    func testAnInstallThatTurnedDuckingOffKeepsItOff() {
+        let store = makeStore()
+        store.audioDuckingEnabled = false
+
+        XCTAssertFalse(
+            makeStore().audioDuckingEnabled,
+            "a written choice outranks the default on every later launch")
+    }
+
     func testFreshInstall_seedSurvivesOnceTheWizardIsDone() {
         // Completing the wizard persists onboarding as done, so this install
         // stops looking fresh. That is exactly when a fallback-based seed would

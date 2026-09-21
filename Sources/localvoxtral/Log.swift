@@ -28,6 +28,11 @@ enum Log {
     /// Keyboard Entry warnings (see `TerminalTargetDetector`).
     static let target = Logger(subsystem: subsystem, category: "Target")
     static let modifierKeys = Logger(subsystem: subsystem, category: "ModifierKeys")
+    /// Output-volume ducking around a dictation session
+    /// (`AudioDuckingController`): every duck, restore and refused volume
+    /// write. A volume failure is otherwise invisible — the user just ends up
+    /// quiet — and expensive to diagnose remotely.
+    static let ducking = Logger(subsystem: subsystem, category: "Ducking")
     static let diagnostics = Logger(subsystem: subsystem, category: "Diagnostics")
     /// Keychain access for the stored API keys (`KeychainSecretStore`) and the
     /// one-time migration out of UserDefaults. Logs operations, accounts and
