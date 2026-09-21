@@ -202,35 +202,56 @@ jobs:
         # pair of these steps went unnoticed for six weeks (#255) — and think
         # before adding another gate suite that re-execs a script per
         # assertion.
+        #
+        # Two things keep it short (#418). The suites run at the same time
+        # (scripts/ci/run-shell-suites.sh), so the step costs what its slowest
+        # one costs. And test-ui-gate.sh, about 60 % of the serial total, runs
+        # on a PR only when the diff touches a file it reads
+        # (scripts/ci/ui-gate-suite-filter.sh); every push to main and every
+        # dispatch runs it. The changed-file list is the fast-path step's, and
+        # a missing one fails open.
         run: |
-          ./scripts/ci/test-cleanup-stale-test-processes.sh
-          ./scripts/ci/test-build-gate-process-cleanup.sh
-          ./scripts/ci/test-build-gate-reap-command.sh
-          ./scripts/ci/test-build-gate-gc-command.sh
-          ./scripts/ci/test-remote-build-reap.sh
-          ./scripts/ci/test-remote-build-gc.sh
-          ./scripts/ci/test-run-supervised-command.sh
-          ./scripts/ci/test-ui-smoke-guard.sh
-          ./scripts/ci/test-ui-smoke-owner-app.sh
-          ./scripts/ci/test-ui-gate.sh
-          ./scripts/ci/test-runner-node-resign.sh
-          ./scripts/ci/test-launch-app-shim.sh
-          ./scripts/ci/test-word-accuracy.sh
-          ./scripts/ci/test-e2e-dictation-preconditions.sh
-          ./scripts/ci/test-ac-power-guard.sh
-          ./scripts/ci/test-llm-lane-filter.sh
-          ./scripts/ci/test-herdr-lane-filter.sh
-          ./scripts/ci/test-helper-lane-filter.sh
-          ./scripts/ci/test-stt-lane-filter.sh
-          ./scripts/ci/test-herdr-fixture-recovery.sh
-          ./scripts/ci/test-clean-stale-outputs.sh
-          ./scripts/ci/test-workflow-step-names.sh
-          ./scripts/ci/test-agents-guide-budget.sh
-          ./scripts/ci/test-resolve-release-notes.sh
-          ./scripts/ci/test-nightly-version.sh
-          ./scripts/ci/test-prune-nightly-releases.sh
-          ./scripts/ci/test-render-cask.sh
-          ./scripts/ci/test-watch-checks.sh
+          set -euo pipefail
+          UI_GATE_SUITE=""
+          DECISION="$(./scripts/ci/ui-gate-suite-filter.sh \
+            "$RUNNER_TEMP/ci-fast-path-changed-files.txt" "$GITHUB_EVENT_NAME")"
+          REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
+          if [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" == "true" ]]; then
+            UI_GATE_SUITE="./scripts/ci/test-ui-gate.sh"
+            echo "UI gate suite: RUNNING ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "UI gate suite: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          # $UI_GATE_SUITE unquoted on purpose: empty means no argument.
+          ./scripts/ci/run-shell-suites.sh $UI_GATE_SUITE \
+            ./scripts/ci/test-cleanup-stale-test-processes.sh \
+            ./scripts/ci/test-build-gate-process-cleanup.sh \
+            ./scripts/ci/test-build-gate-reap-command.sh \
+            ./scripts/ci/test-build-gate-gc-command.sh \
+            ./scripts/ci/test-remote-build-reap.sh \
+            ./scripts/ci/test-remote-build-gc.sh \
+            ./scripts/ci/test-run-supervised-command.sh \
+            ./scripts/ci/test-ui-smoke-guard.sh \
+            ./scripts/ci/test-ui-smoke-owner-app.sh \
+            ./scripts/ci/test-runner-node-resign.sh \
+            ./scripts/ci/test-launch-app-shim.sh \
+            ./scripts/ci/test-word-accuracy.sh \
+            ./scripts/ci/test-e2e-dictation-preconditions.sh \
+            ./scripts/ci/test-ac-power-guard.sh \
+            ./scripts/ci/test-llm-lane-filter.sh \
+            ./scripts/ci/test-herdr-lane-filter.sh \
+            ./scripts/ci/test-helper-lane-filter.sh \
+            ./scripts/ci/test-stt-lane-filter.sh \
+            ./scripts/ci/test-herdr-fixture-recovery.sh \
+            ./scripts/ci/test-clean-stale-outputs.sh \
+            ./scripts/ci/test-workflow-step-names.sh \
+            ./scripts/ci/test-agents-guide-budget.sh \
+            ./scripts/ci/test-resolve-release-notes.sh \
+            ./scripts/ci/test-nightly-version.sh \
+            ./scripts/ci/test-prune-nightly-releases.sh \
+            ./scripts/ci/test-render-cask.sh \
+            ./scripts/ci/test-watch-checks.sh \
+            ./scripts/ci/test-ui-gate-suite-filter.sh
 
       - name: Record hosted toolchain
         id: hosted_toolchain
