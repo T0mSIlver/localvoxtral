@@ -499,8 +499,11 @@ assert_tab "about" "About" "Diagnostics"
 # at launch), so the Engines pane renders endpoint configuration fields, not
 # the managed status rows. Managed-row AX coverage would need a second launch
 # that tolerates the eager spawn.
+# "Server URL" is the needle that proves external mode: the row renders in no
+# other mode, while the Mistral API group shows an "API key" row in all of
+# them. The pre-#278 needle ("Endpoint") named copy that no longer exists.
 select_tab "endpoints" "Engines" >/dev/null 2>&1 || true
-if pane_shows_text "settings.pane.endpoints" "Endpoint" 10 \
+if pane_shows_text "settings.pane.endpoints" "Server URL" 10 \
   && pane_shows_text "settings.pane.endpoints" "API key" 10; then
   record_pass "External-mode Engines pane shows endpoint configuration fields."
 else

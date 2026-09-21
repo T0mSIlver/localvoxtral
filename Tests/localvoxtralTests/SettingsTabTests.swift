@@ -158,6 +158,54 @@ final class SettingsTabTests: XCTestCase {
         }
     }
 
+    /// Every text the drill waits for must still be a string literal in the app
+    /// source. #278 renamed the Engines "Endpoint" rows to "Server URL" and the
+    /// drill kept waiting for "Endpoint"; the TCC preflight was red at the time,
+    /// so the stale needle surfaced two weeks later, on the owner's Mac.
+    func testDrillNeedlesAreStillAppCopy() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // SettingsTabTests.swift
+            .deletingLastPathComponent()  // localvoxtralTests
+            .deletingLastPathComponent()  // Tests
+        let uiSmoke = try String(
+            contentsOf: repoRoot.appendingPathComponent("scripts/ui-smoke.sh"),
+            encoding: .utf8
+        )
+
+        // `assert_tab "<id>" "<title>" "<needle>"` and, anywhere on a line,
+        // `pane_shows_text "settings.pane.<id>" "<needle>"`.
+        var tabNeedles = Set<String>()
+        var paneNeedles = Set<String>()
+        for line in uiSmoke.components(separatedBy: "\n") {
+            let parts = line.components(separatedBy: "\"")
+            if line.hasPrefix("assert_tab "), parts.count > 5 {
+                tabNeedles.insert(parts[5])
+            } else if let call = line.range(of: "pane_shows_text \"settings.pane.") {
+                let arguments = line[call.lowerBound...].components(separatedBy: "\"")
+                // assert_tab's own body passes "$expected_text" through.
+                if arguments.count > 3, !arguments[3].hasPrefix("$") { paneNeedles.insert(arguments[3]) }
+            }
+        }
+        XCTAssertFalse(tabNeedles.isEmpty, "no assert_tab needle parsed from ui-smoke.sh; teach the parser the new shape")
+        XCTAssertFalse(paneNeedles.isEmpty, "no pane_shows_text needle parsed from ui-smoke.sh; teach the parser the new shape")
+        let needles = tabNeedles.union(paneNeedles)
+
+        let sourcesRoot = repoRoot.appendingPathComponent("Sources/localvoxtral")
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: sourcesRoot, includingPropertiesForKeys: nil))
+        var appSource = ""
+        for case let file as URL in enumerator where file.pathExtension == "swift" {
+            appSource += try String(contentsOf: file, encoding: .utf8)
+        }
+
+        for needle in needles.sorted() {
+            XCTAssertTrue(
+                appSource.contains("\"\(needle)\""),
+                "ui-smoke.sh waits for \"\(needle)\", which is no longer a string literal under "
+                    + "Sources/localvoxtral — the copy was renamed; point the drill at the new text"
+            )
+        }
+    }
+
     /// `SettingsView.swift` source, for the copy/layout pins above. Read from
     /// the repo rather than inlined constants so the assertion runs against
     /// what actually ships.
