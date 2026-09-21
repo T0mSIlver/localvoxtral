@@ -194,6 +194,28 @@ means nothing on users' machines); proper distribution signing needs a
 Developer ID cert. Dispatch-only: pushing tags by hand no longer triggers a
 release.
 
+## `cask.yml`
+
+Pins the Homebrew tap,
+[T0mSIlver/homebrew-localvoxtral](https://github.com/T0mSIlver/homebrew-localvoxtral),
+to a stable release. `release.yml` calls it once a stable release is public;
+nightlies and rc builds never reach it, because `brew upgrade` follows the tap.
+It runs on a GitHub-hosted Mac, which has never had the app. In order: it
+requires a published stable release, hashes the published zip and checks it
+against the `.sha256` asset, renders the cask with `scripts/ci/render-cask.sh`,
+installs and zaps that cask from a throwaway local tap
+(`scripts/ci/verify-cask-install.sh`), pushes it with the
+`HOMEBREW_TAP_DEPLOY_KEY` secret (a write deploy key on the tap), and installs
+once more from the public tap. It refuses to move the tap to an older version.
+
+The cask's text lives in the renderer, not in the tap: edit it there, and the
+next release or dispatch carries it over. A run that goes red before the push
+leaves a good release and a tap on the previous version. Repair it with:
+
+```bash
+gh workflow run cask.yml -f tag=v0.9.0
+```
+
 ## `dmg-test.yml`
 
 Manual-dispatch harness on the self-hosted Mac runner that packages the app,

@@ -216,6 +216,7 @@ jobs:
           ./scripts/ci/test-resolve-release-notes.sh
           ./scripts/ci/test-nightly-version.sh
           ./scripts/ci/test-prune-nightly-releases.sh
+          ./scripts/ci/test-render-cask.sh
           ./scripts/ci/test-watch-checks.sh
 
       - name: Record hosted toolchain

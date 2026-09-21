@@ -34,7 +34,7 @@ Unlike tools that transcribe after you stop speaking, localvoxtral streams text 
 curl -fsSL https://raw.githubusercontent.com/T0mSIlver/localvoxtral/main/scripts/install.sh | bash
 ```
 
-Or download the latest `.dmg` from [Releases](https://github.com/T0mSIlver/localvoxtral/releases/latest). Requires an Apple Silicon Mac on macOS 15+. A first-launch wizard handles permissions and the engine download; if Gatekeeper complains about a hand-installed DMG, see the [install guide](docs/install.md).
+Or `brew install --cask T0mSIlver/localvoxtral/localvoxtral`, or download the latest `.dmg` from [Releases](https://github.com/T0mSIlver/localvoxtral/releases/latest). Requires an Apple Silicon Mac on macOS 15+. A first-launch wizard handles permissions and the engine download; if Gatekeeper complains about a hand-installed DMG, see the [install guide](docs/install.md).
 
 ## Features
 
