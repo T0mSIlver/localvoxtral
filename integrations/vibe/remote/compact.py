@@ -24,7 +24,19 @@ import subprocess
 import sys
 import threading
 
-TOOLS = {"read_file": "Read", "write_file": "Write", "edit": "Edit"}
+# Vibe has two hook runners, chosen per user by a server-side rollout. The
+# Unified Harness one group-qualifies its tools, names the path `path` on read
+# and write, and sends no session id, parent or transcript path at all
+# (VibeHookInputParser in the app's sources has the details).
+TOOLS = {
+    "read_file": "Read",
+    "write_file": "Write",
+    "edit": "Edit",
+    "file_system.read_file": "Read",
+    "file_system.write_file": "Write",
+    "file_system.search_replace": "Edit",
+}
+PATH_ARGUMENTS = ("file_path", "path")
 INPUT_EXCERPT_KEYS = ("new_string", "old_string", "content")
 EXCERPT_CHARS = 2048  # the Mac keeps 512 bytes of each; this only bounds the request
 MAX_PAYLOAD_BYTES = 8 * 1024 * 1024
@@ -124,8 +136,8 @@ def last_user_prompt_within_deadline(path):
 
 
 def absolute_file_path(tool_input, cwd):
-    raw = tool_input.get("file_path")
-    if not isinstance(raw, str) or not raw:
+    raw = next((tool_input[key] for key in PATH_ARGUMENTS if isinstance(tool_input.get(key), str)), None)
+    if not raw:
         return None
     if not raw.startswith("/"):
         if not isinstance(cwd, str) or not cwd.startswith("/"):
@@ -191,15 +203,61 @@ def vibe_pid(start):
     return current
 
 
-def events_for(payload):
+def process_start(pid):
+    """When `pid` started, as letters and digits, or None.
+
+    Only ever compared with itself: it makes a reused pid a different session.
+    """
+    try:
+        with open("/proc/%d/stat" % pid, "rb") as handle:
+            stat = handle.read(4096)
+        # The command name may hold spaces and parentheses; `starttime` is
+        # field 22, the 20th after the name.
+        return stat[stat.rindex(b")") + 2 :].split()[19].decode("ascii")
+    except Exception:
+        pass
+    try:
+        output = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=PS_TIMEOUT_SECONDS,
+            check=False,
+        ).stdout.decode("ascii", "ignore")
+    except Exception:
+        return None
+    return "".join(c for c in output if c.isalnum()) or None
+
+
+def process_session_id(agent_pid):
+    """The session id for a payload that carries none (the Unified Harness).
+
+    One interactive Vibe process shows one session in one pane, so the process
+    is the session. No pid or no start time means no id, and nothing is sent.
+    """
+    if agent_pid is None:
+        return None
+    start = process_start(agent_pid)
+    return "process-%d-%s" % (agent_pid, start) if start else None
+
+
+def is_unified(payload):
+    return "session_id" not in payload and "parent_session_id" not in payload
+
+
+def events_for(payload, process_id=None):
     kind = payload.get("hook_event_name")
     if kind not in ("post_tool", "post_agent"):
         return []
-    # Present and null means top level. A subagent carries its parent's id, and
-    # a payload without the field is not provably top level.
-    if "parent_session_id" not in payload or payload["parent_session_id"] is not None:
-        return []
-    session_id = payload.get("session_id")
+    if is_unified(payload):
+        session_id = process_id
+    else:
+        # Present and null means top level. A subagent carries its parent's id,
+        # and a payload with a session id and without the field is not provably
+        # top level.
+        if "parent_session_id" not in payload or payload["parent_session_id"] is not None:
+            return []
+        session_id = payload.get("session_id")
     if not isinstance(session_id, str) or not session_id or len(session_id.encode("utf-8")) > MAX_ID_BYTES:
         return []
     cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else None
@@ -248,10 +306,16 @@ def main():
     payload = json.loads(raw)
     if not isinstance(payload, dict):
         return
-    events = events_for(payload)
+    if is_unified(payload):
+        agent_pid = vibe_pid(start_pid)
+        events = events_for(payload, process_session_id(agent_pid))
+    else:
+        agent_pid = None
+        events = events_for(payload)
     if not events:
         return
-    agent_pid = vibe_pid(start_pid)
+    if agent_pid is None:
+        agent_pid = vibe_pid(start_pid)
     if agent_pid is not None:
         with open(os.path.join(workdir, "agent-pid"), "w") as handle:
             handle.write("%d\n" % agent_pid)

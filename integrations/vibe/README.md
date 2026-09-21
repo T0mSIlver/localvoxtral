@@ -97,13 +97,25 @@ integration uses two.
 
 | Vibe hook | When | Record sent |
 |---|---|---|
-| `post_tool` on `read_file`, `write_file`, `edit` | the tool ran | the file's path, marked read or edited |
+| `post_tool` on a file read, write or edit | the tool ran | the file's path, marked read or edited |
 | `post_agent` | a turn ended | the turn ended |
 
 Both also send the session id, the working directory, the Vibe process id and
 start time, its terminal device, and the herdr or cmux pane handle when there is one.
 
-No Vibe hook payload carries your prompt, so the publisher reads it from the
+Vibe has two hook runners and picks one per account through a server-side
+rollout. localvoxtral supports both. They differ in what a hook receives:
+
+| | Legacy runner | Unified Harness |
+|---|---|---|
+| File tools | `read_file`, `write_file`, `edit` | `file_system.read_file`, `file_system.write_file`, `file_system.search_replace` |
+| Session id | in the payload | none, so the session is named after the Vibe process (pid and start time) |
+| Session log path | in the payload | none, so no prompt is sent |
+| Subagent marker | `parent_session_id` | none |
+
+`vibe --legacy-harness` and `vibe --experimental-harness` choose a runner by hand.
+
+No Vibe hook payload carries your prompt. On the legacy runner the publisher reads it from the
 session's `messages.jsonl`, whose path Vibe passes to every hook. It reads the
 last 512 KiB of that file and keeps one thing: the newest message with role
 `user` and `injected: false`, cut to 8 KiB. It does not parse lines that lack
@@ -124,8 +136,11 @@ parsing.
   process exits or after the registry's idle timeout. The app compares the
   process start time as well as the pid, so a reused pid does not revive a
   finished session.
-- Hooks fire for subagents too. The publisher drops any payload with a
-  `parent_session_id`, so a subagent's files never count as yours.
+- Hooks fire for subagents too. On the legacy runner the publisher drops any
+  payload with a `parent_session_id`, so a subagent's files never count as
+  yours. The Unified Harness does not mark them, so there a subagent's files
+  count toward the session of the pane it runs in.
+- On the Unified Harness the session context has no prior prompt.
 - The VS Code extension and other ACP clients have no terminal pane. Their
   sessions publish, but nothing can join a dictation to them. A `vibe -p` run
   typed into a pane keeps that pane's terminal, so it joins while it runs.

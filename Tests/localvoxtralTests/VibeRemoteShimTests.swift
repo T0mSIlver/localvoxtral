@@ -161,7 +161,7 @@ final class VibeRemoteShimTests: XCTestCase {
             let request = try request(index)
             XCTAssertEqual(ClaudeRemoteAgentCodec.agent(in: request.headers), .vibe)
             XCTAssertEqual(request.headers["authorization"], "Bearer \(Self.token)")
-            XCTAssertEqual(request.headers["x-lvx-vibe-hooks-version"], "1.0.0")
+            XCTAssertEqual(request.headers["x-lvx-vibe-hooks-version"], "1.0.1")
         }
     }
 
@@ -438,6 +438,66 @@ final class VibeRemoteShimTests: XCTestCase {
         """
         XCTAssertEqual(try runWatcherDriver(driver, extraPath: slow.path), 0, "3 means no SessionEnd")
         XCTAssertTrue(try captured("argv", 3).hasSuffix("/v1/hook/SessionEnd\n"))
+    }
+
+    // MARK: - Unified Harness payloads
+
+    // As `_foreign_hooks.py` builds them in mistralai-vibe-local-harness 0.5.1:
+    // no session id, no parent, no transcript path, group-qualified tools.
+
+    func testAUnifiedTurnEndIsSentUnderAnIdNamedAfterTheVibeProcess() throws {
+        let run = try runShim(Data(#"{"cwd":"/srv/app","hook_event_name":"post_agent"}"#.utf8))
+        XCTAssertEqual(run.exitCode, 0)
+        XCTAssertEqual(run.output, Data())
+        XCTAssertEqual(dialCount, 1, "this runner names no session log, so there is no prompt record")
+
+        let first = try parsedBody(1, event: "Stop").record
+        XCTAssertEqual(first.event, .stop)
+        XCTAssertNotNil(
+            first.sessionID.range(of: "^process-[0-9]+-[A-Za-z0-9]+$", options: .regularExpression),
+            first.sessionID
+        )
+        XCTAssertEqual(ClaudeRemoteAgentCodec.agent(in: try request(1).headers), .vibe)
+
+        // The same process is the same session on its next hook.
+        _ = try runShim(Data(#"{"cwd":"/srv/app","hook_event_name":"post_agent"}"#.utf8))
+        XCTAssertEqual(try parsedBody(2, event: "Stop").record.sessionID, first.sessionID)
+    }
+
+    func testAUnifiedFileReadSendsThePathFromThePathArgument() throws {
+        let run = try runShim(Data("""
+        {"cwd":"/srv/app","hook_event_name":"post_tool","tool_name":"file_system.read_file",\
+        "tool_call_id":"c1","tool_input":{"path":"src/main.py","offset":0},"tool_status":"success",\
+        "tool_output":null,"tool_output_text":"whole file","tool_error":null,"duration_ms":0}
+        """.utf8))
+        XCTAssertEqual(run.exitCode, 0)
+        XCTAssertEqual(dialCount, 1)
+        XCTAssertFalse(try captured("body", 1).contains("whole file"), "the file never crosses")
+        XCTAssertEqual(
+            try parsedBody(1, event: "PostToolUse").record.files,
+            [ClaudeFileTouch(path: "/srv/app/src/main.py", kind: .read)]
+        )
+    }
+
+    func testAUnifiedPayloadWithoutAProcessTableSendsNothing() throws {
+        // No pid means no id to publish under, and a guess could land one
+        // pane's records on another's session.
+        let broken = root.appendingPathComponent("broken-unified")
+        try FileManager.default.createDirectory(at: broken, withIntermediateDirectories: true)
+        try Data("#!/bin/sh\nexit 1\n".utf8).write(to: broken.appendingPathComponent("ps"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: broken.path + "/ps")
+        let run = try runShim(Data(#"{"cwd":"/srv/app","hook_event_name":"post_agent"}"#.utf8), environment: [
+            "PATH": "\(broken.path):\(stubDir.path):/usr/bin:/bin",
+        ])
+        XCTAssertEqual(run.exitCode, 0)
+        XCTAssertEqual(run.output, Data())
+        XCTAssertEqual(dialCount, 0)
+    }
+
+    func testASessionIdWithoutTheParentFieldStillSendsNothing() throws {
+        let run = try runShim(Data(#"{"session_id":"s","cwd":"/srv/app","hook_event_name":"post_agent"}"#.utf8))
+        XCTAssertEqual(run.exitCode, 0)
+        XCTAssertEqual(dialCount, 0)
     }
 
     func testWithoutAProcessTableNoPidIsPublishedAndNoWatcherStarts() throws {

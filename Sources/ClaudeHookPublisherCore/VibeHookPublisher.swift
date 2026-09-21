@@ -71,12 +71,17 @@ extension ClaudeHookPublisher {
         )
         // Vibe never says a session ended, so the app tells a live Vibe from a
         // reused pid by this start time.
-        let process = processInfo(
-            agentPID: vibePID,
-            agentStartMicros: vibe.processFacts(vibePID)?.startMicros
-        )
+        let startMicros = vibe.processFacts(vibePID)?.startMicros
+        let process = processInfo(agentPID: vibePID, agentStartMicros: startMicros)
         let prompt = vibe.lastUserPrompt(input.transcriptPath, limits)
-        for var record in input.records(prompt: prompt, timestamp: environment.now(), limits: limits) {
+        let records = input.records(
+            prompt: prompt,
+            timestamp: environment.now(),
+            processSessionID: Self.vibeProcessSessionID(pid: vibePID, startMicros: startMicros),
+            limits: limits
+        )
+        guard !records.isEmpty else { return .droppedUnparseable }
+        for var record in records {
             record.process = process
             guard let line = ClaudeHookWireCodec.encodeLine(record, limits: limits) else {
                 return .droppedUnparseable
@@ -86,6 +91,17 @@ extension ClaudeHookPublisher {
             }
         }
         return .published
+    }
+
+    /// The session id for a payload that carries none (Vibe's Unified Harness).
+    ///
+    /// One interactive Vibe process shows one session in one pane, which is
+    /// the thing a join names, so the process is the session. The start time
+    /// is part of the id so a reused pid is a different session, and without
+    /// one there is no id: the registry could not tell the two apart either.
+    public static func vibeProcessSessionID(pid: Int32, startMicros: Int64?) -> String? {
+        guard pid > 1, let startMicros else { return nil }
+        return "process-\(pid)-\(startMicros)"
     }
 
     /// Stdin deadline for a Vibe payload, which embeds whole tool outputs.

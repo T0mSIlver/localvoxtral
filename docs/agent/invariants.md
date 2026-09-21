@@ -1233,6 +1233,23 @@ there is not.
     drift in the log therefore costs the prompt and nothing else.
     Do not widen this read to another field or another agent: an agent whose
     hooks carry the prompt has no reason to be read this way.
+    Vibe has TWO hook runners, chosen per account by a server-side rollout
+    (`vibe_cli_unified_harness_rollout`, cached in
+    `~/.vibe/experiment_eval_cache.json`), and the Unified Harness one sends
+    `cwd` and `hook_event_name` only: no session id, no parent, no log path,
+    and group-qualified tool names (`file_system.read_file`). Field failure
+    2026-09-21: the parser required `session_id`, so every hook of an owner on
+    the unified rollout was dropped with no log line and no Vibe session ever
+    joined, while the dev box that verified the stack was on the legacy
+    runner. Such a payload is published under an id made from the Vibe
+    process (`vibeProcessSessionID`: pid and start time, none without a start
+    time), because one interactive Vibe process shows one session in one pane
+    and the pane is what a join names. It costs the prompt, since no log is
+    named and the publisher does not search for one, and the subagent
+    filter, since nothing marks one: a subagent's file touches count toward
+    the session of the pane it runs in. A payload with a session id and WITHOUT
+    `parent_session_id` is neither shape and is still dropped. The remote shim
+    (`compact.py`) applies the same rules.
     What the missing events cost: a Vibe session exists for us only from its
     first file-tool call or the end of its first turn, so the first dictation
     into a fresh session has no join; and with no session-end event a session
