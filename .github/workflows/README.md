@@ -22,8 +22,10 @@ owner's machine), so on a fork it additionally packages, uploads and
 launch-smokes an ad-hoc-signed bundle. Same-repo runs skip those steps here
 because `mac-lanes` does them with the real signing identity.
 
-**`mac-lanes` — the self-hosted Mac, same-repo PRs / pushes to main /
-dispatches only.** Everything a hosted runner cannot supply: packaging and
+**`mac-lanes` — the self-hosted Mac, same-repo PRs that are not drafts /
+pushes to main / dispatches only.** A draft gets `build-test` alone; marking it
+ready starts `mac-lanes`, and `[mac-lanes]` in a draft's body opts it in. One
+Mac serves every agent, and work in progress was most of its queue (#418). Everything a hosted runner cannot supply: packaging and
 launch-smoking the bundle signed with the stable `localvoxtral-dev` identity
 (an ad-hoc signature would invalidate the owner's Accessibility grant on every
 `scripts/try-pr.sh` install), the installable `localvoxtral-app` artifact and
