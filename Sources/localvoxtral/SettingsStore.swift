@@ -483,8 +483,10 @@ final class SettingsStore {
         didSet { defaults.set(autoCopyEnabled, forKey: Keys.autoCopyEnabled) }
     }
 
-    /// Lower other audio while dictating, and fade it back on stop. Off by
-    /// default: it moves the system volume, which nobody should discover.
+    /// Lower other audio while dictating, and fade it back on stop. On by
+    /// default (owner ruling, 2026-09-21, after hand-testing it): dictating
+    /// over music is the common case, and the fade makes it unobtrusive
+    /// enough not to need discovering first.
     var audioDuckingEnabled: Bool {
         didSet { defaults.set(audioDuckingEnabled, forKey: Keys.audioDuckingEnabled) }
     }
@@ -1194,7 +1196,7 @@ final class SettingsStore {
         autoCopyEnabled = Self.loadBool(
             defaults: defaults, key: Keys.autoCopyEnabled, fallback: false)
         audioDuckingEnabled = Self.loadBool(
-            defaults: defaults, key: Keys.audioDuckingEnabled, fallback: false)
+            defaults: defaults, key: Keys.audioDuckingEnabled, fallback: true)
         let storedDuckingFade = defaults.object(forKey: Keys.audioDuckingFadeDuration) != nil
             ? defaults.double(forKey: Keys.audioDuckingFadeDuration)
             : Self.defaultAudioDuckingFadeDuration

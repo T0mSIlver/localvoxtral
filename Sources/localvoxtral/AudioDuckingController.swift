@@ -25,7 +25,7 @@ final class AudioDuckingController {
 
     /// The ducked level, as a fraction of the volume the user had set. Loud
     /// enough that a call or a track is still audible, quiet enough to dictate
-    /// over. Not a setting: the issue's one setting is the fade duration.
+    /// over. Not a setting: the one setting is the fade duration.
     static let duckedFractionOfOriginal: Float = 0.2
 
     /// One volume write per step while fading. 25 Hz is smooth to the ear and

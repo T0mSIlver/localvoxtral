@@ -1186,10 +1186,7 @@ private struct DictationSettingsPane: View {
                         .labelsHidden()
                 }
 
-                SettingsFieldRow(
-                    title: "Duck other audio",
-                    help: "Lowers music and calls while you dictate."
-                ) {
+                SettingsFieldRow(title: "Lower other audio while dictating") {
                     Toggle("", isOn: $settings.audioDuckingEnabled)
                         .labelsHidden()
                 }
