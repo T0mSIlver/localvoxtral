@@ -334,7 +334,7 @@ final class DictationViewModel {
 
     // Services — internal so extension files can access them.
     @ObservationIgnored
-    private var hasInitializedMicrophone = false
+    private(set) var hasInitializedMicrophone = false
     @ObservationIgnored
     lazy var microphone: MicrophoneCaptureService = {
         hasInitializedMicrophone = true
@@ -345,7 +345,48 @@ final class DictationViewModel {
     /// Do not instantiate the lazy CoreAudio service merely to stop it: doing
     /// so registers device listeners that an app-lifetime view model then owns.
     func stopMicrophoneIfInitialized() {
+        #if LOCALVOXTRAL_DOGFOOD
+        stopDogfoodAudioFileSource()
+        #endif
         guard hasInitializedMicrophone else { return }
+        microphone.stop()
+    }
+
+    /// False only in a dogfood build launched with an audio file to dictate
+    /// from: that session needs no microphone grant, and nothing may fall back
+    /// to the microphone behind its back.
+    var capturesFromMicrophone: Bool {
+        #if LOCALVOXTRAL_DOGFOOD
+        return dogfoodAudioFileURL == nil
+        #else
+        return true
+        #endif
+    }
+
+    /// Starts whatever feeds this session's audio.
+    func startSessionAudioCapture(
+        preferredDeviceID: String?,
+        chunkHandler: @escaping MicrophoneCaptureService.ChunkHandler
+    ) throws {
+        #if LOCALVOXTRAL_DOGFOOD
+        if let dogfoodAudioFileURL {
+            try startDogfoodAudioFileSource(dogfoodAudioFileURL, chunkHandler: chunkHandler)
+            return
+        }
+        #endif
+        try microphone.start(
+            preferredDeviceID: preferredDeviceID,
+            preferredInputChannel: selectedInputChannel,
+            chunkHandler: chunkHandler
+        )
+    }
+
+    /// Once this returns no further chunk reaches the session's handler.
+    func stopSessionAudioCapture() {
+        #if LOCALVOXTRAL_DOGFOOD
+        stopDogfoodAudioFileSource()
+        guard capturesFromMicrophone else { return }
+        #endif
         microphone.stop()
     }
 
@@ -390,6 +431,15 @@ final class DictationViewModel {
     /// the store: tests inject the clock and the event source.
     @ObservationIgnored
     var dogfoodEditSignalWatcher = DogfoodEditSignalWatcher()
+    /// The WAV this launch dictates from in place of the microphone, or nil.
+    /// `var` so tests name a file without touching the process environment.
+    @ObservationIgnored
+    var dogfoodAudioFileURL = DogfoodAudioFileSource.fileURL(
+        fromEnvironment: ProcessInfo.processInfo.environment)
+    @ObservationIgnored
+    var dogfoodAudioFileSleep: DogfoodAudioFileSource.Sleep = { try await Task.sleep(for: $0) }
+    @ObservationIgnored
+    var dogfoodAudioFileSource: DogfoodAudioFileSource?
     #endif
     /// Warms the managed polishing helper's prompt-prefix cache on every
     /// helper launch (see `PolishPromptWarmupCoordinator`). Created only when
@@ -966,9 +1016,7 @@ final class DictationViewModel {
         healthMonitor.cancelTasks()
         escapeCancelHandler.stop()
         if managesRuntimeServices {
-            if hasInitializedMicrophone {
-                microphone.stop()
-            }
+            stopMicrophoneIfInitialized()
             networkMonitor.stop()
             activeRealtimeClient.disconnect()
             hotKeyManager.unregister()
@@ -1118,6 +1166,7 @@ final class DictationViewModel {
 
     private func requestStartupMicrophonePermissionIfNeeded() async {
         guard !isAwaitingMicrophonePermission else { return }
+        guard capturesFromMicrophone else { return }
         guard microphone.authorizationStatus() == .notDetermined else { return }
 
         isAwaitingMicrophonePermission = true
@@ -2239,6 +2288,7 @@ final class DictationViewModel {
             return debugMicrophoneAuthorizationStatusOverride
         }
         #endif
+        guard capturesFromMicrophone else { return .authorized }
         // A mere status read (the onboarding/General permission rows) must
         // not force the lazy capture service into existence; but once the
         // service exists, ask it, so any injected replacement stays
@@ -2277,7 +2327,7 @@ final class DictationViewModel {
         healthMonitor.stop()
         isAwaitingMicrophonePermission = false
 
-        microphone.stop()
+        stopSessionAudioCapture()
         flushBufferedAudio()
         isDictating = false
         escapeCancelHandler.stop()

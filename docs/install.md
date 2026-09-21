@@ -4,6 +4,12 @@
 curl -fsSL https://raw.githubusercontent.com/T0mSIlver/localvoxtral/main/scripts/install.sh | bash
 ```
 
+Or with Homebrew, from our own tap:
+
+```bash
+brew install --cask T0mSIlver/localvoxtral/localvoxtral
+```
+
 Or download the latest `.dmg` from [Releases](https://github.com/T0mSIlver/localvoxtral/releases/latest).
 
 On first launch, a setup wizard walks you through the microphone and
@@ -18,7 +24,8 @@ You can re-run the wizard any time from Settings.
 ## Gatekeeper
 
 Releases are ad-hoc signed, not notarized yet (see the
-[roadmap](roadmap.md)). The installer script handles Gatekeeper for you. If
+[roadmap](roadmap.md)). The installer script and the Homebrew cask handle
+Gatekeeper for you. If
 you install the DMG by hand and macOS blocks or stalls the first launch
 ("damaged", **Open Anyway**, or a hang on macOS 26), clear the quarantine
 flag:
@@ -38,7 +45,8 @@ codesign --force --deep --sign - /Applications/localvoxtral.app
 
 ## Updating
 
-Run the installer script again, or download the newest `.dmg` and replace
+Run the installer script again, run `brew upgrade --cask localvoxtral` if you
+installed with Homebrew, or download the newest `.dmg` and replace
 `/Applications/localvoxtral.app` — settings and downloaded models are kept.
 When an update ships improved config defaults, files you haven't edited are
 refreshed automatically; files you have edited are never touched without
@@ -49,6 +57,22 @@ asking (see [Settings](dictation.md#settings)).
 > Accessibility grant after an update. If the dictation hotkey stops
 > working, toggle localvoxtral off and on in **System Settings → Privacy &
 > Security → Accessibility**.
+
+## Homebrew
+
+The cask follows stable releases only, so `brew upgrade` never moves you onto
+a nightly; nightlies come from the installer script (below). The tap is
+[T0mSIlver/homebrew-localvoxtral](https://github.com/T0mSIlver/homebrew-localvoxtral),
+and the release pipeline pins it to each stable release once that release is
+public. The cask is not in Homebrew's own repository, which requires a
+notarized app.
+
+`brew uninstall --cask --zap localvoxtral` also removes settings, downloaded
+engines and caches. It leaves two things that other apps can share: dictation
+history (`~/Library/Application Support/default.store`) and models in
+`~/.cache/huggingface`. Stored API keys stay in your login keychain.
+
+The cask was first written by [@achembarpu](https://github.com/achembarpu).
 
 ## Nightly channel
 

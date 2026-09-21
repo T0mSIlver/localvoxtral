@@ -42,7 +42,20 @@ for value in "" "0" "true"; do
 done
 
 # Every lane that opens the bundle must go through the shim.
-for script in scripts/ui-smoke.sh scripts/record-demo.sh scripts/capture-readme-assets.sh; do
+unset LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN
+LOCALVOXTRAL_DOGFOOD_AUDIO_FILE=/tmp/a.wav lv_open -n /tmp/localvoxtral.app
+[ "$(cat "$ARGV_LOG")" = "open --env LOCALVOXTRAL_DOGFOOD_AUDIO_FILE=/tmp/a.wav -n /tmp/localvoxtral.app" ] \
+  || fail "audio file was not forwarded: $(cat "$ARGV_LOG")"
+
+LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN=1 LOCALVOXTRAL_DOGFOOD_AUDIO_FILE=/tmp/a.wav lv_open /tmp/localvoxtral.app
+[ "$(cat "$ARGV_LOG")" = "open --env LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN=1 --env LOCALVOXTRAL_DOGFOOD_AUDIO_FILE=/tmp/a.wav /tmp/localvoxtral.app" ] \
+  || fail "both flags were not forwarded: $(cat "$ARGV_LOG")"
+
+LOCALVOXTRAL_DOGFOOD_AUDIO_FILE="" lv_open /tmp/localvoxtral.app
+[ "$(cat "$ARGV_LOG")" = "open /tmp/localvoxtral.app" ] \
+  || fail "an empty audio file was forwarded: $(cat "$ARGV_LOG")"
+
+for script in scripts/ui-smoke.sh scripts/e2e-dictation.sh scripts/record-demo.sh scripts/capture-readme-assets.sh; do
   if grep -nE '^[[:space:]]*open (-n )?"\$APP' "$ROOT_DIR/$script"; then
     fail "$script opens the app bundle directly; use lv_open"
   fi

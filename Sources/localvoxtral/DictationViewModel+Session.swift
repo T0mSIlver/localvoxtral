@@ -420,10 +420,7 @@ extension DictationViewModel {
         let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
         do {
             let chunkBuffer = audioChunkBuffer
-            try microphone.start(
-                preferredDeviceID: preferredInputID,
-                preferredInputChannel: selectedInputChannel
-            ) { chunk in
+            try startSessionAudioCapture(preferredDeviceID: preferredInputID) { chunk in
                 chunkBuffer.append(chunk)
             }
 
@@ -447,7 +444,11 @@ extension DictationViewModel {
                 overlayBufferCoordinator.reset()
                 configureLiveAutoPasteReplacementCorrectorForSession()
             }
-            healthMonitor.start(microphone: microphone, callbacks: makeHealthMonitorCallbacks())
+            // The monitor's recovery restarts the microphone, which would mix
+            // the room into a session that is fed from a file.
+            if capturesFromMicrophone {
+                healthMonitor.start(microphone: microphone, callbacks: makeHealthMonitorCallbacks())
+            }
         } catch {
             statusText = "Failed to start dictation."
             lastError = error.localizedDescription
@@ -455,7 +456,7 @@ extension DictationViewModel {
             isDictating = false
             escapeCancelHandler.stop()
             healthMonitor.stop()
-            microphone.stop()
+            stopSessionAudioCapture()
             activeRealtimeClient.disconnect()
             setRealtimeIndicatorIdle()
             Log.dictation.error("Failed to start microphone after realtime connect: \(error.localizedDescription, privacy: .public)")

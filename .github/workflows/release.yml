@@ -64,6 +64,10 @@ jobs:
     # cold, and observed releases ran 7-20 min. The unit gate has its own
     # 900 s supervisor, so a hang is caught long before this bound.
     timeout-minutes: 45
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      publish: ${{ steps.plan.outputs.publish }}
     steps:
       # Stable releases dispatch on main; X.Y.Z-rc.N prereleases may dispatch
       # on any branch (the Compute version step enforces this pairing), so a
@@ -522,3 +526,18 @@ jobs:
           {
             echo "Nightly pruning: deleted $(wc -l < "$RUNNER_TEMP/nightlies-to-delete.txt" | tr -d ' ') old nightly release(s), newest 7 kept"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Stable releases only: nightlies and rc builds are prereleases, and the tap
+  # is what `brew upgrade` follows. This job runs after the release is public,
+  # so a failure here leaves a good release and a stale tap; cask.yml's header
+  # has the one-line repair.
+  cask:
+    needs: release
+    if: needs.release.outputs.publish == 'true' && needs.release.outputs.prerelease == 'false'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/cask.yml
+    with:
+      tag: ${{ needs.release.outputs.tag }}
+    secrets:
+      HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
