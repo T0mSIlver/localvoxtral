@@ -207,6 +207,9 @@ final class SpeakerTermSuggestionModel {
     private let unavailableReasonProvider: @MainActor () -> String?
     private let now: @MainActor () -> Date
     @ObservationIgnored private var task: Task<Void, Never>?
+    /// Which run owns `phase`. A stopped run whose request returns late must
+    /// not touch the row of the run that replaced it (review, 2026-09-21).
+    @ObservationIgnored private var runID = 0
 
     init(
         settings: SettingsStore,
@@ -278,6 +281,7 @@ final class SpeakerTermSuggestionModel {
         guard phase == .loading else { return }
         task?.cancel()
         task = nil
+        runID += 1
         phase = .idle
         Log.polishing.info("Term suggestions stopped by the user")
     }
@@ -301,6 +305,9 @@ final class SpeakerTermSuggestionModel {
             phase = background ? .idle : .failed("Set up a polishing model first.")
             return .notRun
         }
+        runID += 1
+        let thisRun = runID
+        var ownsRow: Bool { runID == thisRun && phase == .loading && !Task.isCancelled }
         readingCount = 0
         startedAt = now()
         phase = .loading
@@ -310,7 +317,7 @@ final class SpeakerTermSuggestionModel {
             + SpeakerTermSuggestions.listSections(terms: terms, dismissed: dismissed)
                 .reduce(0) { $0 + $1.count }
         let texts = SpeakerTermSuggestions.selected(await recentTexts(), reserved: reserved)
-        guard phase == .loading else { return .notRun }
+        guard ownsRow else { return .notRun }
         guard !texts.isEmpty else {
             phase = background ? .idle : .failed("No dictations to read yet.")
             return .notRun
@@ -325,7 +332,7 @@ final class SpeakerTermSuggestionModel {
                 configuration: configuration
             )
             // Stopped while waiting: the row already went back to its button.
-            guard phase == .loading, !Task.isCancelled else { return .notRun }
+            guard ownsRow else { return .notRun }
             let found = SpeakerTermSuggestions.ranked(
                 SpeakerTermSuggestions.filtered(
                     SpeakerTermSuggestions.parse(result.polishedText),
@@ -356,7 +363,7 @@ final class SpeakerTermSuggestionModel {
             Log.polishing.info("Term suggestions received: \(self.suggestions.count, privacy: .public)")
             return .completed
         } catch {
-            guard phase == .loading else { return .notRun }
+            guard ownsRow else { return .notRun }
             phase = background ? .idle : .failed("The polishing model did not answer.")
             Log.polishing.error(
                 "Term suggestions failed: \(error.localizedDescription, privacy: .public)"

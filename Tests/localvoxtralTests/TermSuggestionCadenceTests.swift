@@ -171,7 +171,8 @@ final class TermSuggestionCadenceTests: XCTestCase {
         await runFinished(count: 1)
 
         XCTAssertEqual(finished, [.completed])
-        XCTAssertEqual(fixture.settings.termSuggestionDictationsSinceRun, 0)
+        // The 25 saved while the request was out were never read.
+        XCTAssertEqual(fixture.settings.termSuggestionDictationsSinceRun, 25)
         XCTAssertEqual(fixture.model.suggestions, ["Qwen"])
     }
 
@@ -201,6 +202,12 @@ final class TermSuggestionCadenceTests: XCTestCase {
         // Nobody pressed anything, so the row carries no failure text.
         XCTAssertEqual(fixture.model.phase, .idle)
 
+        // A relaunch does not forget the wait.
+        let relaunched = SettingsStore(
+            defaults: fixture.defaults, environment: [:], secretStore: InMemorySecretStore()
+        )
+        XCTAssertEqual(relaunched.termSuggestionRetryAt, 25 + TermSuggestionCadence.retryAfterFailure)
+
         save(TermSuggestionCadence.retryAfterFailure - 1, fixture)
         XCTAssertEqual(fixture.service.requestCount, 1)
 
@@ -219,6 +226,30 @@ final class TermSuggestionCadenceTests: XCTestCase {
         await runFinished(count: 1)
 
         XCTAssertEqual(fixture.settings.termSuggestionDictationsSinceRun, 0)
+    }
+
+    /// A stopped run whose request fails late must not put the row of the
+    /// run that replaced it back to idle: the next dictation would start a
+    /// third request beside it.
+    func testAStoppedRunReturningLateLeavesItsReplacementAlone() async {
+        let fixture = makeFixture()
+
+        save(25, fixture)
+        await fixture.service.requestArrived(count: 1)
+        fixture.model.stop()
+        fixture.model.start()
+        await fixture.service.requestArrived(count: 2)
+
+        fixture.service.answer(.failure(URLError(.timedOut)))
+        await runFinished(count: 1)
+
+        XCTAssertEqual(finished, [.notRun])
+        XCTAssertEqual(fixture.model.phase, .loading)
+        save(1, fixture)
+        XCTAssertEqual(fixture.service.requestCount, 2)
+
+        fixture.service.answer(.success("[]"))
+        await runFinished(count: 2)
     }
 
     // MARK: - Deferrals

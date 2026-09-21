@@ -305,6 +305,7 @@ final class SettingsStore {
         static let polishDismissedTermSuggestions = "settings.polish_dismissed_term_suggestions"
         static let termSuggestionInterval = "settings.term_suggestion_interval"
         static let termSuggestionDictationsSinceRun = "settings.term_suggestion_dictations_since_run"
+        static let termSuggestionRetryAt = "settings.term_suggestion_retry_at"
         static let clipboardPayloadMacroEnabled = "settings.clipboard_payload_macro_enabled"
         static let terminalScreenContextEnabled = "settings.terminal_screen_context_enabled"
         static let repoVocabularyEnabled = "settings.repo_vocabulary_enabled"
@@ -600,6 +601,13 @@ final class SettingsStore {
             defaults.set(
                 termSuggestionDictationsSinceRun, forKey: Keys.termSuggestionDictationsSinceRun)
         }
+    }
+
+    /// The counter value a failed background run waits for before the next
+    /// attempt; 0 when nothing failed. Persisted, or a relaunch would retry
+    /// at once against an API that is still down.
+    var termSuggestionRetryAt: Int {
+        didSet { defaults.set(termSuggestionRetryAt, forKey: Keys.termSuggestionRetryAt) }
     }
 
     func dismissTermSuggestion(_ term: String) {
@@ -1205,6 +1213,7 @@ final class SettingsStore {
         termSuggestionInterval =
             (defaults.object(forKey: Keys.termSuggestionInterval) as? Int)
             .flatMap(TermSuggestionInterval.init(rawValue:)) ?? .every50
+        termSuggestionRetryAt = max(0, defaults.integer(forKey: Keys.termSuggestionRetryAt))
         termSuggestionDictationsSinceRun = max(
             0, defaults.integer(forKey: Keys.termSuggestionDictationsSinceRun))
         polishSpeakerTerms = SpeakerTerms.sanitized(

@@ -22,9 +22,9 @@ final class TermSuggestionCadence {
     private let isDictationActive: @MainActor () -> Bool
     private let launchedAt: Date
     private let now: @MainActor () -> Date
-    /// Counter value the next attempt waits for after a failure. In memory:
-    /// a relaunch is a fair moment to try again.
-    private var retryAt = 0
+    /// The counter when the run in flight read the history. Dictations saved
+    /// while it waits for an answer were not read, so they stay counted.
+    private var countAtRunStart: Int?
 
     init(
         settings: SettingsStore,
@@ -50,7 +50,7 @@ final class TermSuggestionCadence {
     private func runIfDue() {
         let count = settings.termSuggestionDictationsSinceRun
         guard let interval = settings.termSuggestionInterval.dictations,
-              count >= interval, count >= retryAt
+              count >= interval, count >= settings.termSuggestionRetryAt
         else { return }
         guard let model = model() else { return }
         guard model.phase != .loading, model.unavailableReason == nil,
@@ -69,6 +69,7 @@ final class TermSuggestionCadence {
         Log.polishing.info(
             "Term suggestions starting by themselves after \(count, privacy: .public) dictations"
         )
+        countAtRunStart = count
         model.startInBackground()
     }
 
@@ -76,12 +77,15 @@ final class TermSuggestionCadence {
     /// runs count too: a user who just pressed it has nothing new to find
     /// fifty dictations early.
     func runFinished(_ outcome: SpeakerTermSuggestionModel.RunOutcome) {
+        let count = settings.termSuggestionDictationsSinceRun
+        let read = countAtRunStart ?? count
+        countAtRunStart = nil
         switch outcome {
         case .completed:
-            settings.termSuggestionDictationsSinceRun = 0
-            retryAt = 0
+            settings.termSuggestionDictationsSinceRun = max(0, count - read)
+            settings.termSuggestionRetryAt = 0
         case .failed:
-            retryAt = settings.termSuggestionDictationsSinceRun + Self.retryAfterFailure
+            settings.termSuggestionRetryAt = count + Self.retryAfterFailure
         case .notRun:
             break
         }
