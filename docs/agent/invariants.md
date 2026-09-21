@@ -1449,9 +1449,27 @@ there is not.
   ADDITION to the purpose's current one, at most two, until
   `retireOtherCredentials`: the token file is the LAST thing setup writes, and
   a connection that dies there leaves the app unable to know whether it
-  landed, so both must authenticate until it does know. And Remove withdraws
-  the credential FIRST and cleans the host up second, so a host that is down
-  or refuses the command cannot keep its authorization.
+  landed, so both must authenticate until it does know.
+  There is no per-harness control on a host row (owner ruling 2026-09-21: every
+  harness gets its own line or none does, and none is the choice). Vibe is the
+  `remoteVibe` step of the host's one setup run: it installs when the probe
+  finds `vibe`, reports `vibeNotFound` as a skipped step otherwise, and a
+  failure fails the run. Claude Code is optional the same way
+  (`claudeNotFound`, decided on exit 127 AND our PATH resolver's own sentence,
+  never a bare 127): the plugin step is skipped and the final check drops its
+  plugin half. A host with neither agent fails the run. A finished update
+  closes its panel, so a step the run left to the user is NAMED by the
+  row's one sentence. The step is skipped as already current when the host is
+  set up and has reported this build's hooks version: running it anyway would
+  replace a working token under live Vibe sessions and let a refusal about
+  `~/.vibe` fail an update started for the plugin (GLM review, 2026-09-21). A
+  run that failed for want of any agent does not settle the row. The row offers the run while the plugin OR the Vibe
+  hooks are outdated or unheard from. "This host has no Vibe" is remembered
+  for the app session only, like the plugin version report, which is also how
+  a Vibe installed later gets its hooks: the run is offered again after a
+  relaunch. Removing a host contacts nothing, so the hook files stay there
+  with a token that no longer authenticates, as the plugin does.
+  `removeRemoteVibeHooks` still exists and nothing in the app calls it.
   Host setup (`setUpRemoteVibeHooks`) follows the enrollment rules — BatchMode
   ssh, script on stdin, token in no argv on this Mac, fixed error strings — with
   one difference worth knowing: it EDITS A USER FILE on the host,
@@ -1534,7 +1552,7 @@ there is not.
 - **Remote enrollment execution is opt-in, consent-first, and keeps the token
   out of process arguments.** `ClaudeRemoteEnrollmentService` generates the
   idempotent ssh config block and remote scripts, but Settings never renders or
-  copies their text. Enrollment and host update expose only the six-step
+  copies their text. Enrollment and host update expose only the seven-step
   `RemoteHostSetupRun`, one consent sentence naming the local files and SSH
   alias, and a Details link to `docs/remote-claude-context.md`, where every
   command is listed. Local insertion replaces only the
@@ -1581,7 +1599,7 @@ there is not.
   `lastSeenAt` is noted, never on first authentication alone, so a request
   the revocation re-check refuses cannot mutate a report that rotation would
   then preserve — never logged, and used only to
-  select the fixed "Plugin update available" string in Settings. The
+  select the fixed "Update available" string in Settings. The
   recorded value is the HIGHEST any of that host's hooks reported this app
   session and is never lowered, because Claude Code applies a plugin update
   only on session restart — after "Update Plugin…" the host's already-running

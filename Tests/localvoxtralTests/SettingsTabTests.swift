@@ -333,17 +333,18 @@ final class SettingsTabTests: XCTestCase {
             statusModifiers.contains(".layoutPriority(1)"),
             "the status outranks the label when width runs out"
         )
-        // The rename's whole point (owner misread "Update…" as a truncated
-        // "Update Plugin…"): the longer label must be FIXED-SIZE so the row
+        // The owner misread a bare "Update…" as a truncated label, so the
+        // title names its object ("Update Host…": the run covers the plugin
+        // and the Vibe hooks). The longer label must be FIXED-SIZE so the row
         // squeezes the label instead of ever truncating the button.
         let updateButton = try XCTUnwrap(
-            source.range(of: "Button(\"Update Plugin…\") { model.requestPluginUpdate"),
+            source.range(of: "Button(\"Update Host…\") { model.requestPluginUpdate"),
             "the host-row update button moved or was renamed — update this test's anchor"
         )
         let buttonModifiers = source[updateButton.upperBound...].prefix(300)
         XCTAssertTrue(
             buttonModifiers.contains(".fixedSize()"),
-            "\"Update Plugin…\" must not truncate; the host label absorbs the squeeze"
+            "\"Update Host…\" must not truncate; the host label absorbs the squeeze"
         )
     }
 

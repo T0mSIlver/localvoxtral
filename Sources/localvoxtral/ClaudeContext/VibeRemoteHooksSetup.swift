@@ -58,6 +58,9 @@ extension ClaudeRemoteEnrollmentService {
         case installed
         case updated
         case removed
+        /// The host has no Vibe, so nothing was written. Not a failure: the
+        /// host's setup run installs what it finds.
+        case vibeNotFound
     }
 
     /// What the host looks like before a run. Internal to the flow; exposed
@@ -238,14 +241,7 @@ extension ClaudeRemoteEnrollmentService {
         else { throw vibeFailure("install Vibe hooks", 47, "This build's Vibe hook files are missing.", token) }
 
         let probe = try probeVibeHost(sshHostAlias: sshHostAlias, token: token, timeout: timeout)
-        guard probe.vibeFound else {
-            throw vibeFailure(
-                "install Vibe hooks", 127,
-                "Vibe was not found on the remote host. Install it there, or put it on the "
-                    + "non-interactive SSH PATH.",
-                token
-            )
-        }
+        guard probe.vibeFound else { return .vibeNotFound }
         guard let updated = try? VibeHooksBlockEditor.remote.hooksByInstalling(
             snippet: snippet, into: probe.hooksText ?? ""
         ) else {
@@ -340,7 +336,7 @@ extension ClaudeRemoteEnrollmentService {
         } catch ClaudeRemoteHostRegistry.StoreError.hostCredentialChanged {
             throw VibeHostActionError(
                 description: "This host's token was rotated while the setup ran, so the new Vibe "
-                    + "credential was not activated. Run the Vibe hooks setup again."
+                    + "credential was not activated. Run the host setup again."
             )
         }
     }

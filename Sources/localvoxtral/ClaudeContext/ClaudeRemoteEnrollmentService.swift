@@ -239,6 +239,9 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         case installed
         case updated
         case alreadyCurrent
+        /// The host has no Claude Code, so nothing was installed. Not a
+        /// failure: the host's setup run installs what it finds.
+        case claudeNotFound
     }
 
     public enum EnvironmentCrossingOutcome: Sendable, Equatable {
@@ -989,8 +992,15 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             }
         }
 
-        func installedVersion(command: String) throws -> String? {
-            let result = try run(Self.remotePluginListingScript, command: command)
+        // Both halves, as in `pluginCheck`: 127 is any "command not found",
+        // and the sentence is our own PATH resolver speaking.
+        let firstListing = try run(Self.remotePluginListingScript, command: "list remote plugins")
+        if firstListing.exitCode == 127, firstListing.message.contains("'claude' was not found") {
+            return .claudeNotFound
+        }
+
+        func installedVersion(command: String, listing: RunResult? = nil) throws -> String? {
+            let result = try listing ?? run(Self.remotePluginListingScript, command: command)
             guard result.succeeded else {
                 let message = result.exitCode == 127
                     ? "Claude CLI was not found on the remote host. "
@@ -1008,7 +1018,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             )
         }
 
-        let before = try installedVersion(command: "list remote plugins")
+        let before = try installedVersion(command: "list remote plugins", listing: firstListing)
 
         let mutation: String
         let outcome: PluginSetupOutcome
@@ -1651,6 +1661,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort,
         listenerIsBound: Bool,
         staleAllocatedPort: UInt16? = nil,
+        includesPluginCheck: Bool = true,
         timeout: TimeInterval = defaultVerificationTimeout
     ) throws -> [VerificationCheck] {
         Log.claudeContext.info("Claude remote verification requested")
@@ -1682,6 +1693,14 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                 listenerIsBound: listenerIsBound,
                 staleAllocatedPort: staleAllocatedPort
             )
+        }
+
+        // A host set up for another agent only has no plugin to look for.
+        guard includesPluginCheck else {
+            Log.claudeContext.info(
+                "Claude remote verification completed: tunnel=\(tunnel.passed, privacy: .public) plugin=not checked"
+            )
+            return [tunnel]
         }
 
         let plugin = runCheck(
