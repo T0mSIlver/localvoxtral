@@ -65,9 +65,9 @@ hosted polishing model when you have one.
 - Search covers the transcript and the polished text. The filter keeps the
   dictations that were **Not inserted** (the text never reached the app, so
   this list is the only copy) or whose polishing failed.
-- Click a row for the whole text. When polishing changed it, the transcript is
-  shown under it with the removed words marked, and **Copy Transcript** copies
-  the unpolished version.
+- Click a row for the whole text. When polishing or a replacement changed it,
+  the transcript is shown under it with the removed words marked, and
+  **Copy Transcript** copies the unchanged version.
 - **Delete** removes the dictation from the store. **Delete All…** removes
   every one.
 

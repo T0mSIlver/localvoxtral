@@ -17,6 +17,9 @@ final class DictationHistoryModel {
 
     var searchText = ""
     var filter = DictationHistoryQuery.Filter.all
+    /// Set when another pane opens History on the dictations it counted over
+    /// a period; the pane shows it as a row the user can clear.
+    var since: Date?
     /// The row showing its whole text, its transcript and its actions.
     var expandedEntryID: UUID?
 
@@ -43,7 +46,8 @@ final class DictationHistoryModel {
     }
 
     var isFiltering: Bool {
-        filter != .all || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        filter != .all || since != nil
+            || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     func reload() async {
@@ -59,6 +63,7 @@ final class DictationHistoryModel {
         var query = DictationHistoryQuery()
         query.searchText = searchText
         query.filter = filter
+        query.since = since
         if query != pagedQuery {
             pagedQuery = query
             limit = Self.pageSize
@@ -109,8 +114,10 @@ final class DictationHistoryModel {
     }
 
     /// How many dictations `retention` would delete if it applied at `now`.
-    func countDeleted(by retention: DictationHistoryRetention, now: Date) async -> Int {
-        guard let cutoff = retention.cutoff(now: now), let store = store() else { return 0 }
+    /// Nil when the store could not count them.
+    func countDeleted(by retention: DictationHistoryRetention, now: Date) async -> Int? {
+        guard let cutoff = retention.cutoff(now: now) else { return 0 }
+        guard let store = store() else { return 0 }
         return await store.count(olderThan: cutoff)
     }
 
@@ -165,6 +172,14 @@ enum DictationHistoryRowText {
             day.timeZone = calendar.timeZone
             return "\(date.formatted(day)) \(clock)"
         }
+    }
+
+    /// What changed the transcript, or nil when nothing did. "Polished" is
+    /// kept for a model; the replacement dictionary and the clipboard marker
+    /// change text with polishing off.
+    static func change(for entry: DictationHistoryEntry) -> String? {
+        guard entry.textWasChanged else { return nil }
+        return entry.polishRan ? "Polished" : "Edited"
     }
 
     /// What went wrong with the dictation, or nil when nothing did. One of

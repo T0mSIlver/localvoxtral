@@ -12,9 +12,14 @@ struct HistorySettingsPane: View {
     @State private var pendingRetention: PendingRetention?
     @State private var isConfirmingDeleteAll = false
 
+    /// Bumped by every pick in the retention menu. A count that comes back
+    /// for an older pick is dropped: two quick picks must end on the second.
+    @State private var retentionPick = 0
+
     private struct PendingRetention: Equatable {
         let retention: DictationHistoryRetention
-        let deletedCount: Int
+        /// Nil when the store could not count them.
+        let deletedCount: Int?
     }
 
     /// `model` is for a caller that needs the pane in a given state (a
@@ -35,12 +40,18 @@ struct HistorySettingsPane: View {
             storageGroup
             dictationsGroup
         }
+        .onAppear {
+            // Launch and each save apply the rule; a Mac left on for a month
+            // without a dictation would otherwise list what it promised to drop.
+            viewModel.applyDictationHistoryRetention()
+        }
         // One reload per store write and per query edit. The short wait lets a
         // burst of keystrokes cost one fetch; a store write reloads at once.
         .task(id: ReloadTrigger(
             revision: viewModel.dictationHistoryRevision,
             searchText: model.searchText,
-            filter: model.filter
+            filter: model.filter,
+            since: model.since
         )) {
             if model.hasLoaded, !model.searchText.isEmpty {
                 try? await Task.sleep(for: .milliseconds(200))
@@ -54,12 +65,17 @@ struct HistorySettingsPane: View {
         let revision: Int
         let searchText: String
         let filter: DictationHistoryQuery.Filter
+        let since: Date?
     }
 
     // MARK: - Storage
 
     private var storageStatus: String {
-        guard settings.dictationHistoryRetention.savesDictations else { return "Nothing is saved." }
+        guard settings.dictationHistoryRetention.savesDictations else {
+            // Off deleted everything. A count here means that delete failed.
+            return model.totalCount == 0
+                ? "Nothing is saved." : "\(model.totalCount.formatted()) not deleted yet."
+        }
         switch model.totalCount {
         case 0: return "Nothing saved yet."
         case 1: return "1 dictation on this Mac."
@@ -119,6 +135,7 @@ struct HistorySettingsPane: View {
             presenting: pendingRetention
         ) { pending in
             Button(Self.deleteButtonTitle(count: pending.deletedCount), role: .destructive) {
+                retentionPick += 1
                 applyRetention(pending.retention)
             }
         } message: { pending in
@@ -130,8 +147,9 @@ struct HistorySettingsPane: View {
         }
     }
 
-    private static func deleteButtonTitle(count: Int) -> String {
-        count == 1 ? "Delete 1 Dictation" : "Delete \(count.formatted()) Dictations"
+    private static func deleteButtonTitle(count: Int?) -> String {
+        guard let count else { return "Delete" }
+        return count == 1 ? "Delete 1 Dictation" : "Delete \(count.formatted()) Dictations"
     }
 
     private var pendingRetentionTitle: String {
@@ -145,6 +163,9 @@ struct HistorySettingsPane: View {
     /// A rule that deletes something asks first; one that deletes nothing
     /// (longer, or nothing old enough yet) just applies.
     private func chooseRetention(_ retention: DictationHistoryRetention) {
+        retentionPick += 1
+        let pick = retentionPick
+        pendingRetention = nil
         guard retention != settings.dictationHistoryRetention else { return }
         guard settings.dictationHistoryRetention.keepsLonger(than: retention) else {
             applyRetention(retention)
@@ -152,6 +173,7 @@ struct HistorySettingsPane: View {
         }
         Task {
             let deletedCount = await model.countDeleted(by: retention, now: Date())
+            guard pick == retentionPick else { return }
             if deletedCount == 0 {
                 applyRetention(retention)
             } else {
@@ -188,6 +210,19 @@ struct HistorySettingsPane: View {
                     .labelsHidden()
                     .fixedSize()
                     .accessibilityIdentifier("history.filter")
+                }
+            }
+
+            if let since = model.since {
+                SettingsGroupRow {
+                    HStack {
+                        Text("Since \(since.formatted(date: .abbreviated, time: .omitted))")
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 8)
+                        Button("Show All") { model.since = nil }
+                            .buttonStyle(.link)
+                            .accessibilityIdentifier("history.since.clear")
+                    }
                 }
             }
 
@@ -257,7 +292,7 @@ private struct HistoryEntryRow: View {
         }
         .contextMenu {
             Button("Copy") { model.copyFinalText(of: entry) }
-            if entry.polishChangedText {
+            if entry.textWasChanged {
                 Button("Copy Transcript") { model.copyTranscript(of: entry) }
             }
             Divider()
@@ -280,8 +315,8 @@ private struct HistoryEntryRow: View {
             if let problem = DictationHistoryRowText.problem(for: entry) {
                 Text(problem)
                     .foregroundStyle(.orange)
-            } else if entry.polishChangedText {
-                Text("Polished")
+            } else if let change = DictationHistoryRowText.change(for: entry) {
+                Text(change)
             }
         }
         .font(.callout)
@@ -291,7 +326,7 @@ private struct HistoryEntryRow: View {
 
     @ViewBuilder
     private var expandedBody: some View {
-        if entry.polishChangedText {
+        if entry.textWasChanged {
             let diff = TranscriptDiff.words(from: entry.rawText, to: entry.finalText)
             Text(Self.marked(entry.finalText, ranges: diff.added, color: .green))
                 .textSelection(.enabled)
@@ -313,7 +348,7 @@ private struct HistoryEntryRow: View {
         HStack(spacing: 8) {
             Button("Copy") { model.copyFinalText(of: entry) }
                 .accessibilityIdentifier("history.row.copy")
-            if entry.polishChangedText {
+            if entry.textWasChanged {
                 Button("Copy Transcript") { model.copyTranscript(of: entry) }
                     .accessibilityIdentifier("history.row.copyTranscript")
             }

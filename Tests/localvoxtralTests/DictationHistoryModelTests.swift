@@ -83,6 +83,23 @@ final class DictationHistoryModelTests: XCTestCase {
         XCTAssertEqual(model.entries.map(\.rawText), ["lost words"])
     }
 
+    func testSinceKeepsOnlyTheDictationsOfThePeriodAndCountsAsAFilter() async throws {
+        let store = try makeStore()
+        store.save(record("this week", minutesAgo: 60, commitSucceeded: false))
+        store.save(record("last month", minutesAgo: 60 * 24 * 40, commitSucceeded: false))
+        let model = makeModel(store)
+        model.filter = .notInserted
+
+        model.since = origin.addingTimeInterval(-7 * 86_400)
+        await model.reload()
+        XCTAssertEqual(model.entries.map(\.rawText), ["this week"])
+        XCTAssertTrue(model.isFiltering)
+
+        model.since = nil
+        await model.reload()
+        XCTAssertEqual(model.entries.map(\.rawText), ["this week", "last month"])
+    }
+
     func testDeleteRemovesTheRowFromTheListAndTheStore() async throws {
         let store = try makeStore(dictations: 3)
         let model = makeModel(store)
@@ -204,6 +221,22 @@ final class DictationHistoryRowTextTests: XCTestCase {
         XCTAssertEqual(
             DictationHistoryRowText.problem(for: entry(commitSucceeded: false, status: .llmFailed)),
             "Not inserted")
+    }
+
+    func testOnlyAModelsChangeIsCalledPolished() {
+        func changed(polishSeconds: Double?, status: DictationSessionStatus = .completed)
+            -> DictationHistoryEntry
+        {
+            DictationHistoryEntry(
+                id: UUID(), startedAt: now, finishedAt: now, rawText: "foo", polishedText: "bar",
+                polishingDurationSeconds: polishSeconds, provider: "p", model: "m",
+                outputMode: "overlay_buffer", targetAppBundleID: nil, status: status,
+                commitSucceeded: true, polishProfile: nil, polishContextSummary: nil)
+        }
+        XCTAssertNil(DictationHistoryRowText.change(for: entry()))
+        XCTAssertEqual(DictationHistoryRowText.change(for: changed(polishSeconds: 1.2)), "Polished")
+        // The replacement dictionary, with polishing off.
+        XCTAssertEqual(DictationHistoryRowText.change(for: changed(polishSeconds: nil)), "Edited")
     }
 
     func testDetailsListTheModelThenWhatPolishingDid() {
