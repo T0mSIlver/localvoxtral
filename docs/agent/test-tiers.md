@@ -3,7 +3,7 @@
 | Tier | What | When | Cost |
 |---|---|---|---|
 | 0 | Unit suite (500+ tests) + shell gate suites + format lint + coverage | every non-fast-path PR/push, in CI's `build-test` job on **GitHub-hosted macOS** (owner decision 2026-09-05 — same-repo PRs too, not just forks; the Mac is the queue bottleneck and hosted runners are free for public repos) | ~4 min hosted, ~0 s queue |
-| 0 | Packaging + launch smoke of the **signed** bundle, and the installable artifact | every non-fast-path PR/push, in CI's `mac-lanes` job on the self-hosted Mac — the `localvoxtral-dev` identity is what keeps the owner's TCC grant valid across `try-pr.sh` installs. Fork PRs get an ad-hoc-signed equivalent inside `build-test` instead, since `mac-lanes` never runs for them | ~1 min |
+| 0 | Packaging + launch smoke of the **signed** bundle, and the installable artifact | every non-fast-path push, dispatch and same-repo PR that is NOT a draft (a draft builds no bundle unless its body carries `[mac-lanes]`), in CI's `mac-lanes` job on the self-hosted Mac — the `localvoxtral-dev` identity is what keeps the owner's TCC grant valid across `try-pr.sh` installs. Fork PRs get an ad-hoc-signed equivalent inside `build-test` instead, since `mac-lanes` never runs for them | ~1 min |
 | 0 | PolishHelper / SpeechHelper unit suites (Metal-free: router, cache locator, watchdog; codec/delta contract) | self-hosted lanes only, and path-gated per helper — a PR runs a helper's suite only when the diff touches that helper's directory or the shared CI plumbing; `workflow_dispatch` and every push to main run both (`scripts/ci/helper-lane-filter.sh`, no marker). Locally: `remote-build.sh test --package-path PolishHelper` / `SpeechHelper` | 11 s + 20 s |
 | 1 | `RealtimeAPIVLLMIntegrationTests` vs the live local speechd STT test service: real inference through the production websocket client, word-accuracy asserted | conditional in CI (self-hosted): a PR runs it when the diff touches what the lane can see (the realtime client family, its scorer and fixture, the package pins, the CI plumbing: `scripts/ci/stt-lane-filter.sh`) or opts in with `[run-stt-integration]`; every push to main and every dispatch runs it. The service it talks to is the helper installed on the build host, not the PR's build, so a SpeechHelper diff is the next row's business; locally via `remote-build.sh integration` | ~50 s |
 | 1 | `PolishHelperIntegrationTests`: the packaged polishing helper vs the real pinned model — production request path, shared eval baseline, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches LLM-relevant paths or the PR opts in with `[run-llm-eval]` — see "When must the LLM lanes run?"; locally via `remote-build.sh integration-polishd` | minutes (4B weights + live inference) |
@@ -89,8 +89,9 @@ prompt warmup, clipboard context/macro, repo vocabulary, the polish-commit
 path (`DictationViewModel+Session.swift`), and the eval support/corpus. The
 decide step writes "LLM eval lane: RUNNING (…)" or "SKIPPED (…)" to the
 run's step summary so a skipped run is self-explanatory. The PolishHelper
-UNIT suite (Metal-free) and the tier-1 speechd realtime integration stay
-per-push.
+UNIT suite (Metal-free) is path-gated per helper, and the tier-1 speechd
+realtime integration is path-gated on PRs (`scripts/ci/stt-lane-filter.sh`)
+and unconditional on pushes to main and dispatches.
 
 The rule behind the list — the LLM lanes are REQUIRED for changes to:
 prompts, model pins/catalog, sampling/template kwargs, the polish request
@@ -184,6 +185,14 @@ avoidable run costs far more than its own duration.
   cannot: `dogfood=true` for an instrumented artifact when the queued run
   carries no `[dogfood-package]` marker, or any other artifact-only input. A
   dispatch that would merely re-run the same lanes is never worth its slot.
+- **Drafts, and how a push is priced.** `mac-lanes` skips a draft, so the
+  cheap loop is: open as a draft, push as often as the hosted `build-test`
+  needs, `gh pr ready <n>` once. After that every push costs a Mac slot and
+  cancels the run in progress (11 % of the Mac's busy time went to runs that
+  were later cancelled, #418), so pull a PR back with `gh pr ready <n> --undo`
+  before a series of pushes; that also replaces its queued Mac job with a
+  skipped one. A draft and its ready run share one head SHA, which is why
+  `watch-checks.sh` reads the newest check run of each name.
 - Do not "just rerun" a red run to see if it is flaky before reading its log
   either — the flake signatures are enumerated in
   `docs/agent/field-debugging.md`, and a rerun is a full second run.

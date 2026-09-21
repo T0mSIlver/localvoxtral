@@ -110,7 +110,10 @@ MARKER_TEXT_FILE="${2:-}"
 # (test-llm-lane-filter.sh checks that), and only if the answer to "can this
 # change what reaches the model, or which session's context does" is no:
 # anything that resolves a join, reads a screen or a repository, or accepts or
-# rejects a hook record stays out.
+# rejects a hook record stays out. Two that look like plumbing and are not:
+# ClaudeRemoteListenerCoordinator evicts remote sessions from the registry the
+# join resolves against, and CmuxSocketPasswordStore decides whether the cmux
+# client authenticates, which decides whether that join arm resolves at all.
 EXEMPT=(
   'Sources/localvoxtral/ClaudeContext/AGENTS.md'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel.swift'  # Settings pane model
@@ -134,9 +137,7 @@ EXEMPT=(
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardPidLedger.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardPort.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardSupervisor.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteListenerCoordinator.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteTokenRedaction.swift'      # log redaction
-  'Sources/localvoxtral/ClaudeContext/CmuxSocketPasswordStore.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeSurfaceProbeCommand.swift'       # the --probe-surface CLI wrapper
 )
 

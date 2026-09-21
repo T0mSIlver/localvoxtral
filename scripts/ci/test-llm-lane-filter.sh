@@ -84,6 +84,10 @@ expect true "a NEW file in ClaudeContext runs the lane until it is exempted" \
   Sources/localvoxtral/ClaudeContext/SomethingNobodyClassifiedYet.swift
 expect true "what reads a screen or accepts a hook record is not exempt" \
   Sources/localvoxtral/ClaudeContext/ClaudeRemoteContextListener.swift
+expect true "what evicts sessions from the registry is not exempt" \
+  Sources/localvoxtral/ClaudeContext/ClaudeRemoteListenerCoordinator.swift
+expect true "what decides whether the cmux join arm authenticates is not exempt" \
+  Sources/localvoxtral/ClaudeContext/CmuxSocketPasswordStore.swift
 
 # Every exempt path must exist (a rename must not leave a dead exemption that a
 # new file of the old name would inherit), and the catch-all must be the ONLY
@@ -92,6 +96,12 @@ expect true "what reads a screen or accepts a hook record is not exempt" \
 FILTER_SOURCE="$ROOT_DIR/scripts/ci/llm-lane-filter.sh"
 exempt_paths="$(sed -n "/^EXEMPT=(/,/^)/p" "$FILTER_SOURCE" | sed -n "s/^  '\([^']*\)'.*/\1/p")"
 [[ -n "$exempt_paths" ]] || fail "could not parse the EXEMPT list"
+# The sed above reads one shape of entry. An entry written any other way
+# (double quotes, another indent, a computed value) would skip both checks
+# below, so every line of the array has to be one the sed read.
+exempt_lines="$(sed -n "/^EXEMPT=(/,/^)/p" "$FILTER_SOURCE" | sed '1d;$d' | grep -vcE "^[[:space:]]*(#|$)" || true)"
+[[ "$exempt_lines" == "$(wc -l <<<"$exempt_paths" | tr -d ' ')" ]] \
+  || fail "EXEMPT holds an entry this test cannot parse (single-quoted, two-space indent, one per line)"
 patterns="$(sed -n "/^PATTERNS=(/,/^)/p" "$FILTER_SOURCE" | sed -n "s/^  '\([^']*\)'.*/\1/p")"
 while IFS= read -r exempt; do
   [[ -e "$ROOT_DIR/$exempt" ]] || fail "exempt path does not exist: $exempt"
