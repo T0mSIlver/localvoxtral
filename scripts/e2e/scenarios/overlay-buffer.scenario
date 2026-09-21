@@ -1,0 +1,4 @@
+# Overlay Buffer: text collects in the overlay and is committed on stop.
+mode=overlay
+phrase=hello from localvoxtral. this is an end to end check of the packaged app. the words are held in the overlay and committed on stop.
+min_word_accuracy=0.55

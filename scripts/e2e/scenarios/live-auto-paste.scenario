@@ -1,0 +1,4 @@
+# Live Auto-Paste: text reaches the focused app while the dictation runs.
+mode=live
+phrase=hello from localvoxtral. this is an end to end check of the packaged app. the words are read from a file and typed into a window.
+min_word_accuracy=0.55

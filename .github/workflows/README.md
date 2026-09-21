@@ -194,6 +194,28 @@ means nothing on users' machines); proper distribution signing needs a
 Developer ID cert. Dispatch-only: pushing tags by hand no longer triggers a
 release.
 
+## `cask.yml`
+
+Pins the Homebrew tap,
+[T0mSIlver/homebrew-localvoxtral](https://github.com/T0mSIlver/homebrew-localvoxtral),
+to a stable release. `release.yml` calls it once a stable release is public;
+nightlies and rc builds never reach it, because `brew upgrade` follows the tap.
+It runs on a GitHub-hosted Mac, which has never had the app. In order: it
+requires a published stable release, hashes the published zip and checks it
+against the `.sha256` asset, renders the cask with `scripts/ci/render-cask.sh`,
+installs and zaps that cask from a throwaway local tap
+(`scripts/ci/verify-cask-install.sh`), pushes it with the
+`HOMEBREW_TAP_DEPLOY_KEY` secret (a write deploy key on the tap), and installs
+once more from the public tap. It refuses to move the tap to an older version.
+
+The cask's text lives in the renderer, not in the tap: edit it there, and the
+next release or dispatch carries it over. A run that goes red before the push
+leaves a good release and a tap on the previous version. Repair it with:
+
+```bash
+gh workflow run cask.yml -f tag=v0.9.0
+```
+
 ## `dmg-test.yml`
 
 Manual-dispatch harness on the self-hosted Mac runner that packages the app,
@@ -217,6 +239,18 @@ item, checks that launch alone does not spawn managed backend processes, opens
 Settings from the status menu, selects the three settings tabs, checks the
 managed backend rows, and verifies clean quit. Failure uploads
 `ui-smoke-log`.
+
+The same job then repackages the app as a dogfood build and runs
+`scripts/e2e-dictation.sh`: the packaged app dictates from a WAV in place of
+the microphone into a throwaway target window, once per scenario in
+`scripts/e2e/scenarios/`, and the inserted text is scored against the spoken
+phrase. Both checks run even when the other failed. The script exits 3 when
+the Mac could not run it (locked, no STT server, no Accessibility grant), which
+a scheduled slot reports as a warning and a dispatch or label reports as a
+failure. `e2e-dictation-log` is uploaded on every run. The guard answers
+"already covered today" separately for the drill and for the dictation, so a
+red drill neither hides a missing dictation nor makes all three slots repeat
+one that passed.
 
 One-time runner TCC grants are required because the runner is a launchd agent
 inside the owner's GUI session:

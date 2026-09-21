@@ -205,6 +205,8 @@ jobs:
           ./scripts/ci/test-ui-gate.sh
           ./scripts/ci/test-runner-node-resign.sh
           ./scripts/ci/test-launch-app-shim.sh
+          ./scripts/ci/test-word-accuracy.sh
+          ./scripts/ci/test-e2e-dictation-preconditions.sh
           ./scripts/ci/test-ac-power-guard.sh
           ./scripts/ci/test-llm-lane-filter.sh
           ./scripts/ci/test-herdr-lane-filter.sh
@@ -216,6 +218,7 @@ jobs:
           ./scripts/ci/test-resolve-release-notes.sh
           ./scripts/ci/test-nightly-version.sh
           ./scripts/ci/test-prune-nightly-releases.sh
+          ./scripts/ci/test-render-cask.sh
           ./scripts/ci/test-watch-checks.sh
 
       - name: Record hosted toolchain

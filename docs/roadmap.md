@@ -28,7 +28,6 @@ constraints this repo adds, and the proof a PR needs to carry.
 - [Dictation history you can actually look at](https://github.com/T0mSIlver/localvoxtral/issues/378)
 - [Let the overlay be moved, and remember where](https://github.com/T0mSIlver/localvoxtral/issues/379)
 - [The shortcut recorder refuses function keys that would work fine](https://github.com/T0mSIlver/localvoxtral/issues/377)
-- [Homebrew cask in a tap of our own](https://github.com/T0mSIlver/localvoxtral/issues/384)
 
 Several of these came from people who forked the repo and solved the problem
 for themselves. The
