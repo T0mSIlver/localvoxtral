@@ -14,6 +14,13 @@ final class DogfoodAudioFileSourceTests: XCTestCase {
         XCTAssertEqual(try DogfoodAudioFileSource.pcm16(fromWAV: Self.wav(pcm: samples)), samples)
     }
 
+    func testParsesASliceWhoseIndicesDoNotStartAtZero() throws {
+        let samples = Data([0x01, 0x00, 0x02, 0x00])
+        let slice = (Data([0xFF]) + Self.wav(pcm: samples)).dropFirst()
+        XCTAssertEqual(slice.startIndex, 1)
+        XCTAssertEqual(try DogfoodAudioFileSource.pcm16(fromWAV: slice), samples)
+    }
+
     func testSkipsAnOddSizedChunkBeforeTheData() throws {
         // RIFF pads an odd-sized chunk to an even offset. A parser that forgets
         // the pad byte reads the next chunk header one byte early.
@@ -106,41 +113,41 @@ final class DogfoodAudioFileSourceTests: XCTestCase {
     /// sent as the first audio of the NEXT dictation.
     func testNoChunkArrivesAfterStopReturns() async {
         let collector = ChunkCollector()
-        let source = DogfoodAudioFileSource(pcm: Data(count: 64)) { _ in
-            try Task.checkCancellation()
-            await Task.yield()
-        }
+        let gate = SleepGate()
+        let source = DogfoodAudioFileSource(pcm: Data(count: 64)) { _ in try await gate.sleep() }
 
         source.start { collector.append($0) }
-        await collector.waitForChunks(3)
+        await gate.waitForEntries(1)
+        let producer = source.currentTask
         source.stop()
-        let countAtStop = collector.chunks.count
+        gate.release()
+        await producer?.value
 
-        for _ in 0..<200 { await Task.yield() }
-        XCTAssertEqual(collector.chunks.count, countAtStop)
+        XCTAssertEqual(collector.chunks.count, 1)
     }
 
     func testRestartingPlaysTheFileFromItsBeginning() async {
         let chunkBytes = DogfoodAudioFileSource.chunkByteCount
         let pcm = Data(repeating: 7, count: chunkBytes)
-        let source = DogfoodAudioFileSource(pcm: pcm) { _ in
-            try Task.checkCancellation()
-            await Task.yield()
-        }
+        let gate = SleepGate()
+        let source = DogfoodAudioFileSource(pcm: pcm) { _ in try await gate.sleep() }
 
         let first = ChunkCollector()
         source.start { first.append($0) }
-        await first.waitForChunks(2)
+        await gate.waitForEntries(1)
+        let firstProducer = source.currentTask
 
         let second = ChunkCollector()
         source.start { second.append($0) }
-        await second.waitForChunks(1)
-        let firstCountAtRestart = first.chunks.count
+        await gate.waitForEntries(2)
+        let secondProducer = source.currentTask
         source.stop()
+        gate.release()
+        await firstProducer?.value
+        await secondProducer?.value
 
-        XCTAssertEqual(second.chunks[0], pcm)
-        for _ in 0..<200 { await Task.yield() }
-        XCTAssertEqual(first.chunks.count, firstCountAtRestart)
+        XCTAssertEqual(first.chunks, [pcm])
+        XCTAssertEqual(second.chunks, [pcm])
     }
 
     // MARK: - View model
@@ -152,25 +159,24 @@ final class DogfoodAudioFileSourceTests: XCTestCase {
         let url = try writeTemporaryWAV(pcm: pcm)
         let viewModel = makeViewModel()
         viewModel.dogfoodAudioFileURL = url
-        viewModel.dogfoodAudioFileSleep = { _ in
-            try Task.checkCancellation()
-            await Task.yield()
-        }
+        let gate = SleepGate()
+        viewModel.dogfoodAudioFileSleep = { _ in try await gate.sleep() }
 
         XCTAssertFalse(viewModel.capturesFromMicrophone)
         XCTAssertEqual(viewModel.currentMicrophoneAuthorizationStatus(), .authorized)
 
         let collector = ChunkCollector()
         try viewModel.startSessionAudioCapture(preferredDeviceID: nil) { collector.append($0) }
-        await collector.waitForChunks(1)
+        await gate.waitForEntries(1)
+        let producer = viewModel.dogfoodAudioFileSource?.currentTask
+        XCTAssertNotNil(producer)
         viewModel.stopSessionAudioCapture()
-        let countAtStop = collector.chunks.count
+        gate.release()
+        await producer?.value
 
-        XCTAssertEqual(collector.chunks[0], pcm)
+        XCTAssertEqual(collector.chunks, [pcm])
         XCTAssertNil(viewModel.dogfoodAudioFileSource)
         XCTAssertFalse(viewModel.hasInitializedMicrophone)
-        for _ in 0..<200 { await Task.yield() }
-        XCTAssertEqual(collector.chunks.count, countAtStop)
     }
 
     /// Falling back to the microphone would let an end-to-end run pass or fail
@@ -251,6 +257,61 @@ final class DogfoodAudioFileSourceTests: XCTestCase {
         }
         body += chunk("data", pcm)
         return Data("RIFF".utf8) + le32(UInt32(body.count)) + body
+    }
+}
+
+/// A sleep that parks the producer until the test releases it, and IGNORES
+/// cancellation while parked: the worst sleep a stop has to hold against. Once
+/// released, a parked sleep returns normally and any later sleep throws, so a
+/// producer that outlived its stop delivers one more chunk and then ends,
+/// which fails the count assertion instead of hanging the suite.
+private final class SleepGate: Sendable {
+    private struct State {
+        var entries = 0
+        var released = false
+        var sleepers: [CheckedContinuation<Void, Never>] = []
+        var entryWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    }
+
+    private let state = Mutex(State())
+
+    func sleep() async throws {
+        if state.withLock({ $0.released }) { throw CancellationError() }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let (resumeNow, reached) = state.withLock {
+                state -> (Bool, [CheckedContinuation<Void, Never>]) in
+                state.entries += 1
+                let reached = state.entryWaiters.filter { $0.count <= state.entries }
+                state.entryWaiters.removeAll { $0.count <= state.entries }
+                if state.released { return (true, reached.map(\.continuation)) }
+                state.sleepers.append(continuation)
+                return (false, reached.map(\.continuation))
+            }
+            reached.forEach { $0.resume() }
+            if resumeNow { continuation.resume() }
+        }
+    }
+
+    /// Returns once `count` sleeps have been entered, which is also once
+    /// `count` chunks have been delivered by producers that are now parked.
+    func waitForEntries(_ count: Int) async {
+        await withCheckedContinuation { continuation in
+            let resumeNow = state.withLock { state -> Bool in
+                guard state.entries < count else { return true }
+                state.entryWaiters.append((count, continuation))
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
+    }
+
+    func release() {
+        let sleepers = state.withLock { state -> [CheckedContinuation<Void, Never>] in
+            state.released = true
+            defer { state.sleepers = [] }
+            return state.sleepers
+        }
+        sleepers.forEach { $0.resume() }
     }
 }
 

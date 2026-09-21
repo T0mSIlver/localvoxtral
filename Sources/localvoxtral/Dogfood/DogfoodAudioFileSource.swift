@@ -138,6 +138,10 @@ final class DogfoodAudioFileSource: Sendable {
             "dogfood audio file started bytes=\(pcm.count, privacy: .public)")
     }
 
+    /// The running producer, awaitable so the suite observes its exit without
+    /// polling a clock.
+    var currentTask: Task<Void, Never>? { state.withLock { $0.task } }
+
     /// Once this returns, the handler passed to `start` is never called again.
     /// `stopDictation` flushes the chunk buffer right after stopping capture,
     /// and a chunk landing after that flush would leak into the next session.
@@ -150,7 +154,8 @@ final class DogfoodAudioFileSource: Sendable {
     }
 
     /// Calls the handler under the lock `stop()` takes, which is what makes
-    /// `stop()`'s guarantee hold against a delivery already in progress.
+    /// `stop()`'s guarantee hold against a delivery already in progress. The
+    /// lock is not recursive, so a handler must not call `start` or `stop`.
     private func deliver(_ chunk: Data, generation: Int, to handler: ChunkHandler) -> Bool {
         state.withLock { state in
             guard state.generation == generation else { return false }
@@ -159,7 +164,9 @@ final class DogfoodAudioFileSource: Sendable {
         }
     }
 
-    static func pcm16(fromWAV wav: Data) throws -> Data {
+    static func pcm16(fromWAV input: Data) throws -> Data {
+        // Offsets below count from zero, which a slice's indices do not.
+        let wav = Data(input)
         guard wav.count >= 12,
               String(data: wav[0..<4], encoding: .ascii) == "RIFF",
               String(data: wav[8..<12], encoding: .ascii) == "WAVE"
