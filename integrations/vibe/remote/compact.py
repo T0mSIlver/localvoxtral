@@ -235,7 +235,13 @@ def process_session_id(agent_pid):
     One interactive Vibe process shows one session in one pane, so the process
     is the session. No pid or no start time means no id, and nothing is sent.
     """
-    if agent_pid is None:
+    # A hook whose Vibe exited before this shell read `$PPID` starts from init.
+    # Every such hook on the host would share that pid, and with it one session
+    # id for every pane. (A payload with its own id still goes out from there:
+    # the watcher cannot signal init, takes that for "gone", and ends the
+    # session at once, which is right.) The same window ending at a subreaper
+    # instead of init is not caught.
+    if agent_pid is None or agent_pid <= 1:
         return None
     start = process_start(agent_pid)
     return "process-%d-%s" % (agent_pid, start) if start else None
@@ -314,7 +320,7 @@ def main():
         events = events_for(payload)
     if not events:
         return
-    if agent_pid is None:
+    if agent_pid is None or agent_pid <= 1:
         agent_pid = vibe_pid(start_pid)
     if agent_pid is not None:
         with open(os.path.join(workdir, "agent-pid"), "w") as handle:

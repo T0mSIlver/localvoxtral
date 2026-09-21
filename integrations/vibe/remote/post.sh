@@ -165,7 +165,8 @@ fi
 [ -n "$PY" ] || exit 0
 
 # Time budget, inside Vibe's five-second hook timeout: compact.py spends at
-# most 0.25 s on the session log and 0.5 s on one `ps`, and each of the two
+# most 0.25 s on the session log and 0.5 s on each `ps` (one, or two for a
+# Unified Harness payload on a host without /proc), and each of the two
 # requests below is capped at one second.
 #
 # $PPID is Vibe, or the `sh -c` Vibe spawned this command through. compact.py

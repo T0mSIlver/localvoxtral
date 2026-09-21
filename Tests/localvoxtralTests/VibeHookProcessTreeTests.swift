@@ -4,7 +4,9 @@ import XCTest
 
 /// The ancestor walk against a REAL process tree, spawned the way Vibe spawns a
 /// hook (`vibe/core/hooks/executor.py`: `create_subprocess_shell(command,
-/// start_new_session=True)`), with the command `hooks.toml` ships. The seamed
+/// start_new_session=True)`; the Unified Harness runner spawns the same way,
+/// `_foreign_hooks.py` `_run_command`, read at 0.5.1), with the command
+/// `hooks.toml` ships. The seamed
 /// tests in `VibeHookPublisherTests` describe that tree from reading; this one
 /// asks the kernel.
 final class VibeHookProcessTreeTests: XCTestCase {

@@ -112,6 +112,7 @@ rollout. localvoxtral supports both. They differ in what a hook receives:
 | Session id | in the payload | none, so the session is named after the Vibe process (pid and start time) |
 | Session log path | in the payload | none, so no prompt is sent |
 | Subagent marker | `parent_session_id` | none |
+| Edit excerpts (ssh host only) | the edit's old and new strings, cut short | none: `search_replace` keeps them in `blocks`, which is not read |
 
 `vibe --legacy-harness` and `vibe --experimental-harness` choose a runner by hand.
 

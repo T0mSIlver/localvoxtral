@@ -27,7 +27,7 @@ import Foundation
 ///
 /// * `tool_output`, `tool_output_text`, `tool_error` — dropped. File content
 ///   never crosses the socket.
-/// * `tool_input` — dropped except `file_path`.
+/// * `tool_input` — dropped except the path argument (`file_path` or `path`).
 /// * `transcript_path` — never crosses the wire. It is handed to the publisher
 ///   (`VibeHookInput.transcriptPath`) for the one read documented in
 ///   `docs/agent/invariants.md`: the last user message, because no Vibe hook

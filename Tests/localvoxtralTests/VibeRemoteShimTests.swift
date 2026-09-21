@@ -494,6 +494,47 @@ final class VibeRemoteShimTests: XCTestCase {
         XCTAssertEqual(dialCount, 0)
     }
 
+    /// compact.py run directly, as post.sh runs it, with a chosen start pid.
+    private func runCompactor(_ payload: String, startPID: Int32) throws -> URL {
+        let work = root.appendingPathComponent("work-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        let input = work.appendingPathComponent("payload")
+        try Data(payload.utf8).write(to: input)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.arguments = ["-I", remoteDir.appendingPathComponent("compact.py").path, work.path, String(startPID)]
+        process.standardInput = try FileHandle(forReadingFrom: input)
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        return work
+    }
+
+    func testAnOrphanedHookNeverNamesASessionAfterInit() throws {
+        // A hook whose wrapper died before its shell read `$PPID` starts from
+        // pid 1. Every such hook on the host would publish under that one
+        // process, one session for every pane (GLM review, 2026-09-21).
+        let unified = #"{"cwd":"/srv/app","hook_event_name":"post_agent"}"#
+        let legacy = """
+        {"session_id":"7f4aefdf","transcript_path":"\(transcript.path)","cwd":"/srv/app",\
+        "parent_session_id":null,"hook_event_name":"post_agent"}
+        """
+        for start in [Int32(1)] {
+            let work = try runCompactor(unified, startPID: start)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: work.appendingPathComponent("plan").path), "\(start)")
+
+            // A payload with its own id is still sent: its watcher cannot
+            // signal init, reads that as "gone", and ends the session at once
+            // (testAVibeThatIsAlreadyGoneGetsItsSessionEndAtOnce).
+            let named = try runCompactor(legacy, startPID: start)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: named.appendingPathComponent("plan").path), "\(start)")
+        }
+        // The control: started from a real process, the same payload is planned.
+        let work = try runCompactor(unified, startPID: getpid())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: work.appendingPathComponent("plan").path))
+    }
+
     func testASessionIdWithoutTheParentFieldStillSendsNothing() throws {
         let run = try runShim(Data(#"{"session_id":"s","cwd":"/srv/app","hook_event_name":"post_agent"}"#.utf8))
         XCTAssertEqual(run.exitCode, 0)
