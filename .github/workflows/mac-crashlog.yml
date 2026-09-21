@@ -16,7 +16,7 @@ on:
         description: "Max number of reports to summarize"
         default: "3"
       log_category:
-        description: "Only this app log category (e.g. ClaudeContext); empty = all"
+        description: "Only this app log category (e.g. ClaudeContext); empty = all but Deltas"
         default: ""
 
 jobs:
@@ -46,13 +46,16 @@ jobs:
           # pushed out of the tail by the overlay's per-frame render lines.
           # Letters only: the value goes into the predicate.
           # Never Deltas: that category logs transcript text, and this log is
-          # public. Excluded in the predicate, so asking for it shows nothing.
+          # public. Excluded in the predicate, and asking for it is refused.
           predicate='subsystem == "com.localvoxtral" AND process == "localvoxtral" AND category != "Deltas"'
           case "$LOG_CATEGORY" in
             "") ;;
+            Deltas) echo "log_category Deltas is never shown: it carries transcript text"; exit 1 ;;
             *[!A-Za-z]*) echo "log_category must be letters only"; exit 1 ;;
             *) predicate="$predicate AND category == \"$LOG_CATEGORY\"" ;;
           esac
+          # pipefail, or tail's exit 0 hides a failed query as an empty section.
+          set -o pipefail
           log show --last "${MINUTES_BACK}m" --info --debug \
             --predicate "$predicate" 2>/dev/null \
             | sed "s|$HOME|~|g" | tail -150 || echo "log query failed"
@@ -138,9 +141,13 @@ jobs:
           vibe_home="${VIBE_HOME:-$HOME/.vibe}"
           hooks="$vibe_home/hooks.toml"
           echo "hooks.toml present: $(yn test -f "$hooks")"
-          echo "localvoxtral block markers: $(grep -c '^# \(>>>\|<<<\) localvoxtral \(>>>\|<<<\)$' "$hooks" 2>/dev/null || echo 0)"
-          echo "[[hooks]] tables: $(grep -c '^\[\[hooks\]\]' "$hooks" 2>/dev/null || echo 0)"
-          echo "top-level 'hooks =' lines: $(grep -c '^hooks[[:space:]]*=' "$hooks" 2>/dev/null || echo 0)"
+          # Captured, not `grep -c || echo 0`: a zero count prints 0 AND exits
+          # 1, which put a second bare 0 in the log. Two -e patterns rather
+          # than an alternation, so the count does not depend on the grep.
+          count() { n="$(grep -c "$@" "$hooks" 2>/dev/null)"; echo "${n:-0}"; }
+          echo "localvoxtral block markers: $(count -e '^# >>> localvoxtral >>>$' -e '^# <<< localvoxtral <<<$')"
+          echo "[[hooks]] tables: $(count -e '^\[\[hooks\]\]')"
+          echo "top-level 'hooks =' lines: $(count -e '^hooks[[:space:]]*=')"
           shim="$vibe_home/localvoxtral/publish.sh"
           echo "publish.sh present: $(yn test -f "$shim")"
           link="$HOME/Library/Application Support/localvoxtral/claude/publisher"
@@ -152,7 +159,12 @@ jobs:
           [ -n "$vibe_bin" ] && echo "vibe version: $("$vibe_bin" --version 2>/dev/null | grep -o '[0-9][0-9.]*' | head -1)"
           echo "--- running vibe processes (tty yes/no, age):"
           ps -axo pid=,tty=,etime=,command= | awk '
-            $4 ~ /(^|\/)vibe$/ || ($4 ~ /python/ && $5 ~ /(^|\/)vibe$/) {
+            # vibe itself, python running it (by path or -m), uv/uvx running
+            # it, and a defunct one, which ps prints in parentheses.
+            { gsub(/^\(|\)$/, "", $4) }
+            $4 ~ /(^|\/)vibe$/ \
+              || ($4 ~ /python/ && ($5 ~ /(^|\/)vibe$/ || ($5 == "-m" && $6 == "vibe"))) \
+              || ($4 ~ /(^|\/)uvx?$/ && ($5 ~ /(^|\/)vibe$/ || $6 ~ /(^|\/)vibe$/)) {
               n++; printf "vibe process %d: tty=%s etime=%s\n", n, ($2 == "??" ? "no" : "yes"), $3
             }
             END { if (!n) print "none" }'
