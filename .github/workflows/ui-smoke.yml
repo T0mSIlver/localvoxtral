@@ -39,7 +39,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # Keep gitignored build state between runs on the persistent
           # self-hosted runner (same rationale as ci.yml/eval-e2e.yml). The
@@ -103,7 +103,7 @@ jobs:
 
       - name: Upload UI smoke log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ui-smoke-log
           path: logs/ui-smoke.log

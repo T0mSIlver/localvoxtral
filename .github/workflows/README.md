@@ -240,3 +240,18 @@ prints a clear skip message and exits successfully.
 
 It needs the same one-time Accessibility and Screen Recording TCC grants as
 `ui-smoke.yml`.
+
+## Action pins
+
+Every `uses:` names a 40-character commit SHA with the tag in a trailing
+comment (`@<sha> # v4.4.0`). A tag is mutable, and an action step on
+`mac-lanes` runs on the owner's Mac with the signing identity, the login
+keychain and the tier-2 TCC grants — in `release.yml`, next to the token that
+publishes the DMG. `WorkflowActionPinningTests` (tier 0) fails on any ref that
+is not a SHA, so a new lane must resolve one:
+
+```bash
+gh api repos/actions/checkout/git/ref/tags/v4 --jq .object.sha
+```
+
+`.github/dependabot.yml` bumps them monthly, grouped into a single PR.

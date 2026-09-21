@@ -64,7 +64,7 @@ jobs:
       IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # Full history + tags so package_app.sh can git-describe the
           # artifact version (shallow clones can't, and fall back to 0.0.0-dev).
@@ -231,7 +231,7 @@ jobs:
 
       - name: Cache SwiftPM build
         if: steps.ci_scope.outputs.docs_only != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .build
           # Keyed on the toolchain as well as Package.resolved: the old key
@@ -291,7 +291,7 @@ jobs:
 
       - name: Upload complete unit-test log
         if: ${{ always() && steps.ci_scope.outputs.docs_only != 'true' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: unit-test-log-${{ runner.os }}
           path: ${{ runner.temp }}/localvoxtral-unit-tests.log
@@ -346,7 +346,7 @@ jobs:
 
       - name: Upload app artifact
         if: steps.ci_scope.outputs.docs_only != 'true' && env.IS_FORK_PR == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: localvoxtral-app
           path: dist/localvoxtral-app.zip
@@ -370,7 +370,7 @@ jobs:
         # Longer retention than the app: field crashes surface days after the
         # try-pr build that produced them.
         if: steps.ci_scope.outputs.docs_only != 'true' && env.IS_FORK_PR == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: localvoxtral-dsym
           path: |
@@ -444,7 +444,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # Full history + tags so package_app.sh can git-describe the
           # artifact version (shallow clones can't, and fall back to 0.0.0-dev).
@@ -1039,7 +1039,7 @@ jobs:
 
       - name: Upload app artifact
         if: steps.ci_scope.outputs.docs_only != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: localvoxtral-app
           path: dist/localvoxtral-app.zip
@@ -1063,7 +1063,7 @@ jobs:
         # Longer retention than the app: field crashes surface days after the
         # try-pr build that produced them.
         if: steps.ci_scope.outputs.docs_only != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: localvoxtral-dsym
           path: |
@@ -1152,7 +1152,7 @@ jobs:
 
       - name: Upload dogfood app artifact
         if: steps.ci_scope.outputs.docs_only != 'true' && steps.dogfood_lane.outputs.run == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: localvoxtral-app-dogfood
           path: dist/localvoxtral-app-dogfood.zip
@@ -1162,7 +1162,7 @@ jobs:
         # Same longer retention rationale as localvoxtral-dsym: field crashes
         # surface days after the build that produced them.
         if: steps.ci_scope.outputs.docs_only != 'true' && steps.dogfood_lane.outputs.run == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: localvoxtral-dsym-dogfood
           path: dist/localvoxtral-dsym-dogfood.zip
@@ -1300,7 +1300,7 @@ jobs:
 
       - name: Upload herdr lane diagnostics
         if: always() && steps.ci_scope.outputs.docs_only != 'true' && steps.herdr_lane.outputs.run == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: herdr-lane-diagnostics
           path: ${{ runner.temp }}/herdr-lane-diagnostics

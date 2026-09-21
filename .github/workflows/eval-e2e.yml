@@ -28,7 +28,7 @@ jobs:
     timeout-minutes: 120
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # Keep gitignored build state between runs on the persistent
           # self-hosted runner (same rationale as ci.yml: default git clean
@@ -142,7 +142,7 @@ jobs:
 
       - name: Upload eval log (scoreboard artifact)
         if: always() && (github.event_name != 'schedule' || steps.guard.outputs.run != 'false')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: eval-e2e-scoreboard
           path: logs/eval-e2e.log
