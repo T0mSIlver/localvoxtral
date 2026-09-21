@@ -213,6 +213,10 @@ file.
   microphone permission gate reports authorized, because no microphone is
   used, and the capture health monitor stays off, because its recovery would
   restart the microphone.
+- **`scripts/e2e-dictation.sh` is its user.** It launches the bundle with a
+  spoken scenario phrase, dictates into a throwaway target window through the
+  control socket, and scores what was inserted. It runs in the UI smoke
+  workflow (`docs/agent/test-tiers.md`).
 - **`MicrophoneCaptureService` is not covered.** Device selection, format
   conversion and capture recovery are bypassed. Everything after the capture
   callback is the production path.

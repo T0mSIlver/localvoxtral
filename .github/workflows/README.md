@@ -218,6 +218,15 @@ Settings from the status menu, selects the three settings tabs, checks the
 managed backend rows, and verifies clean quit. Failure uploads
 `ui-smoke-log`.
 
+The same job then repackages the app as a dogfood build and runs
+`scripts/e2e-dictation.sh`: the packaged app dictates from a WAV in place of
+the microphone into a throwaway target window, once per scenario in
+`scripts/e2e/scenarios/`, and the inserted text is scored against the spoken
+phrase. Both checks run even when the other failed. The script exits 3 when
+the Mac could not run it (locked, no STT server, no Accessibility grant), which
+a scheduled slot reports as a warning and a dispatch or label reports as a
+failure. `e2e-dictation-log` is uploaded on every run.
+
 One-time runner TCC grants are required because the runner is a launchd agent
 inside the owner's GUI session:
 
