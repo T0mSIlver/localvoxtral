@@ -1,0 +1,19 @@
+name: Cask proof (temporary, PR #384 only)
+on:
+  push:
+    branches: [t/github-issue-384-fac7ff]
+permissions:
+  contents: read
+jobs:
+  install:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: ./scripts/ci/verify-cask-install.sh v0.9.0
+  upgrade:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: ./scripts/ci/verify-cask-install.sh v0.9.0 v0.8.4 20eb046ca113233364708c7445ae0e52609eefcbc89a25f8699522ef7cbfe837
