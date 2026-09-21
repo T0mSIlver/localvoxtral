@@ -320,7 +320,7 @@ def main():
         events = events_for(payload)
     if not events:
         return
-    if agent_pid is None or agent_pid <= 1:
+    if agent_pid is None:
         agent_pid = vibe_pid(start_pid)
     if agent_pid is not None:
         with open(os.path.join(workdir, "agent-pid"), "w") as handle:
