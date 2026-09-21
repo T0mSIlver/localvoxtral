@@ -36,6 +36,7 @@ extension DictationViewModel {
         sessionProvider = nil
         sessionModelName = nil
         sessionReplacementDictionary = nil
+        sessionRealtimeConfiguration = nil
     }
 
     /// Live Auto-Paste preflight for Secure Keyboard Entry: a live session
@@ -251,6 +252,7 @@ extension DictationViewModel {
         finalizationWatchdogTask?.cancel()
         finalizationWatchdogTask = nil
         cancelConnectTimeout()
+        cancelRealtimeReconnect()
         isFinalizingStop = false
         isConnectingRealtimeSession = false
         // Every attempt starts with a fresh secure-input sample: a stale
@@ -395,12 +397,17 @@ extension DictationViewModel {
         await debugBeforeConnectHookForTesting?()
         #endif
 
+        // Latched, not rebuilt: a mid-session reconnect (#380) dials exactly
+        // what this session opened with, even if Settings moved on since.
+        let configuration = RealtimeSessionConfiguration(
+            endpoint: endpoint,
+            apiKey: apiKey,
+            model: model
+        )
+        sessionRealtimeConfiguration = configuration
+
         do {
-            try activeRealtimeClient.connect(configuration: .init(
-                endpoint: endpoint,
-                apiKey: apiKey,
-                model: model
-            ))
+            try activeRealtimeClient.connect(configuration: configuration)
             scheduleConnectTimeout()
         } catch {
             abortConnectingSession(disconnectSocket: false)
@@ -609,6 +616,7 @@ extension DictationViewModel {
         finalizationWatchdogTask?.cancel()
         finalizationWatchdogTask = nil
         cancelConnectTimeout()
+        cancelRealtimeReconnect()
 
         let sessionMode = sessionOutputMode ?? settings.dictationOutputMode
         let shouldCommitOverlay = sessionMode == .overlayBuffer
@@ -2277,6 +2285,7 @@ extension DictationViewModel {
         // cancel — funnels through here.
         closeRemoteHerdrForwards()
         cancelConnectTimeout()
+        cancelRealtimeReconnect()
         finalizationWatchdogTask?.cancel()
         finalizationWatchdogTask = nil
         clearPushToTalkShortcutSessionAttempt()

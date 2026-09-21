@@ -23,6 +23,32 @@ there is not.
   `testPrePopulatedFieldTextCannotRescueTheTrailingSpace`). Single-component
   tokens naming an EXISTING absolute path (`/tmp `) abstain via a
   filesystem-existence seam; non-existing ones (`/compact`) stay commands.
+- **A mid-dictation reconnect resumes the session; it never replays it.**
+  When the realtime socket drops without the user asking
+  (`DictationViewModel+Reconnect.swift`, #380), the mic keeps recording and the
+  socket is retried on a bounded backoff. Four things hold that apart from a
+  session restart, and each is load-bearing:
+  (1) the run dials the endpoint/key/model snapshot latched at session start
+  (`sessionRealtimeConfiguration`), never a fresh read of Settings — a backend
+  mode flipped mid-dictation would otherwise carry this session's audio, and
+  its bearer token, to a server it never agreed to;
+  (2) it sends no commit, at any point — the reconnected backend holds no audio
+  buffer to commit;
+  (3) the partial in flight is promoted into the committed transcript at the
+  drop, so the reconnected backend — which starts with an empty transcript of
+  its own — can only produce text Live Auto-Paste has never typed. There are no
+  backspaces in the insertion path, so anything typed twice stays typed twice;
+  (4) every resume point re-checks `reconnectRunID`, which every stop, cancel
+  and abort bumps. A socket that opens a moment after the user stopped finds a
+  run that no longer owns the session and changes nothing.
+  The audio spoken into the gap is kept, not dropped: the run cancels the
+  send loop so the chunks pile up in `AudioChunkBuffer` and the restarted loop
+  replays them. That buffer's retention cap is sized above
+  `RealtimeReconnectPolicy.worstCaseDuration`, so a run that reconnects within
+  its retry cap loses nothing — past the cap the OLDEST audio goes first.
+  What IS lost either way is audio that was already sent when the socket died
+  but whose transcript never came back, and the words at the cut, which the new
+  session hears mid-utterance.
 - **Live Auto-Paste holds back the tail of the transcript.** Replacements are
   applied before typing (nothing is ever un-typed — there are no backspaces in
   the insertion path, and terminals can't support them: field bug 2026-07-06),

@@ -36,6 +36,13 @@ extension DictationViewModel {
 
     private func handleConnectedEvent() {
         cancelConnectTimeout()
+        if isReconnectingRealtimeSession {
+            // The run's own poll notices the open socket and owns what happens
+            // next (status line, audio and commit tasks). Only the indicator
+            // turns green here, as early as the news arrives.
+            setRealtimeIndicatorConnected()
+            return
+        }
         if isConnectingRealtimeSession {
             if shouldCancelPushToTalkStartAfterConnect() {
                 abortConnectingSession()
@@ -64,31 +71,27 @@ extension DictationViewModel {
             return
         }
         guard isDictating else {
-            setRealtimeIndicatorIdle()
+            // A socket closing after the session already ended must not erase
+            // the red icon a failure just lit: an exhausted reconnect run
+            // closes its last half-open socket right after the teardown.
+            if realtimeSessionIndicatorState != .recentFailure {
+                setRealtimeIndicatorIdle()
+            }
             return
         }
-        commitTask?.cancel()
-        commitTask = nil
-        audioSendTask?.cancel()
-        audioSendTask = nil
-        healthMonitor.stop()
-        isAwaitingMicrophonePermission = false
-        microphone.stop()
-        isDictating = false
-        escapeCancelHandler.stop()
-        finishStoppedSession(promotePendingSegment: true)
-        let message = "Connection lost. Dictation stopped."
-        statusText = message
-        lastError = message
-        logConnectionFailure(
-            message: message,
-            technicalDetails:
-                "Realtime websocket disconnected unexpectedly during active dictation."
-        )
-        markRecentConnectionFailureIndicator()
+        if isReconnectingRealtimeSession {
+            // This is the answer to the attempt in flight, not a fresh drop.
+            reconnectAttemptDidFail = true
+            return
+        }
+        guard !beginRealtimeReconnectIfPossible() else { return }
+        endDictationAfterLostConnection()
     }
 
     private func handleStatusEvent(_ message: String) {
+        // "Reconnecting..." stands until the run ends, whatever a dying or a
+        // freshly opened socket has to say about its session in the meantime.
+        if isReconnectingRealtimeSession { return }
         if isConnectingRealtimeSession {
             statusText = "Connecting to realtime backend..."
             return
@@ -128,7 +131,10 @@ extension DictationViewModel {
                 lastError = accessibilityError
             }
         }
-        statusText = isFinalizingStop ? "Finalizing..." : "Transcribing..."
+        statusText =
+            isReconnectingRealtimeSession
+            ? StatusStrings.reconnecting
+            : (isFinalizingStop ? StatusStrings.finalizing : "Transcribing...")
         refreshOverlayBufferSession()
     }
 
@@ -211,6 +217,15 @@ extension DictationViewModel {
             handleConnectFailure(reason: .socketError(message: message))
             return
         }
+        if isReconnectingRealtimeSession {
+            // The socket this attempt opened has already failed. Let the
+            // attempt give up now instead of waiting out its timeout.
+            reconnectAttemptDidFail = true
+            Log.backends.error(
+                "realtime reconnect attempt reported a socket error: \(message, privacy: .public)"
+            )
+            return
+        }
         if !acceptsRealtimeEvents {
             statusText = "Ready"
             return
@@ -260,7 +275,7 @@ extension DictationViewModel {
     // MARK: - Helpers
 
     /// Append a finalized segment to the running transcript.
-    private func appendToTranscript(_ segment: String) {
+    func appendToTranscript(_ segment: String) {
         if transcriptText.isEmpty {
             transcriptText = segment
         } else {
@@ -270,6 +285,7 @@ extension DictationViewModel {
 
     /// Status text appropriate for the current dictation phase.
     private var activeStatusText: String {
+        if isReconnectingRealtimeSession { return StatusStrings.reconnecting }
         if isDictating { return "Listening..." }
         if isFinalizingStop { return "Finalizing..." }
         return "Ready"
