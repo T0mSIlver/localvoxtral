@@ -29,6 +29,16 @@ public enum ClaudeRemoteLocalTTYPath {
     /// future caller comparing it against a hook-reported device would match
     /// everything (review, 2026-09-06).
     ///
+    /// That future arrived from the other side: `ttyname` on a `/dev/tty` fd
+    /// returns the alias verbatim on Darwin, so `ClaudeHookPublisher`'s
+    /// capture chain filters ITS OWN candidates through this rule too (issue
+    /// #376). The two halves of that comparison are deliberately NOT
+    /// symmetric — the pane side (`TerminalFocusedTTYReader.validatedTTY`)
+    /// stays looser, because it is refusing an injected reply rather than
+    /// choosing what to publish. Strictness on the PUBLISHING side is the
+    /// useful asymmetry: it can only turn a meaningless value into an
+    /// abstention, never into a match with the wrong pane.
+    ///
     /// Refused: anything not under `/dev/`, an empty device name, a trailing
     /// slash, `.` or `..` anywhere, more than one `/` inside the device name
     /// (so `/dev/a/b/c` is not a tty), and any character outside ASCII

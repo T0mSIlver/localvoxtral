@@ -290,20 +290,61 @@ public struct ClaudeHookPublisher: Sendable {
     /// process-table read is the true last resort: it reports CLAUDE's terminal
     /// rather than ours, so it answers even for a hook fully detached from the
     /// controlling terminal (setsid), and claude always sits on the pane's tty.
+    ///
+    /// Every step's answer must NAME A DEVICE A PANE CAN CARRY, or it is no
+    /// answer and the next step runs. `ttyname` on the `/dev/tty` fd returns
+    /// the literal `/dev/tty` on Darwin (@eastokes's fork, issue #376): the
+    /// per-process controlling-terminal alias, which no focus probe can ever
+    /// match, and which — being non-nil — used to swallow the process-table
+    /// read underneath it. That is worse than nil in the exact way this path
+    /// is built to avoid: nil is diagnosable and logged, a wrong device
+    /// grounds the dictation in nothing and says nothing.
     public static func controllingTTY(claudePID: Int32? = nil) -> String? {
-        for fd in [Int32(0), 1, 2] where isatty(fd) == 1 {
-            if let name = ttyname(fd) {
+        resolveControllingTTY(
+            claudePID: claudePID,
+            descriptorDevice: { fd in
+                guard isatty(fd) == 1, let name = ttyname(fd) else { return nil }
                 return String(cString: name)
+            },
+            controllingTerminalDevice: {
+                let fd = open("/dev/tty", O_RDONLY | O_NONBLOCK | O_NOCTTY)
+                guard fd >= 0 else { return nil }
+                defer { close(fd) }
+                guard let name = ttyname(fd) else { return nil }
+                return String(cString: name)
+            },
+            processDevice: { ttyDevicePath(forProcess: $0) }
+        )
+    }
+
+    /// `controllingTTY`'s chain with its three syscalls lifted out, so a test
+    /// can hand it what the field hands it.
+    ///
+    /// `claudePID` nil means nobody named the session process, which happens
+    /// only for a publisher invoked directly (tests, manual runs) — the hook's
+    /// own `Environment` always supplies `claudeAncestorPID()`. Our own pid is
+    /// then the right last resort rather than a guess: the step above already
+    /// proved we HAVE a controlling terminal (`/dev/tty` opened) and only
+    /// failed to name it, and a process's own `e_tdev` is that same terminal,
+    /// read off ourselves — no other process's state is trusted. A hook that
+    /// really was detached with `setsid` has no controlling terminal, so this
+    /// reports nothing rather than something wrong.
+    static func resolveControllingTTY(
+        claudePID: Int32?,
+        ownPID: () -> Int32 = { getpid() },
+        descriptorDevice: (Int32) -> String?,
+        controllingTerminalDevice: () -> String?,
+        processDevice: (Int32) -> String?
+    ) -> String? {
+        for fd in [Int32(0), 1, 2] {
+            if let device = concreteTerminalDevice(descriptorDevice(fd)) {
+                return device
             }
         }
-        let fd = open("/dev/tty", O_RDONLY | O_NONBLOCK | O_NOCTTY)
-        if fd >= 0 {
-            defer { close(fd) }
-            if let name = ttyname(fd) {
-                return String(cString: name)
-            }
+        if let device = concreteTerminalDevice(controllingTerminalDevice()) {
+            return device
         }
-        if let claudePID, let device = ttyDevicePath(forProcess: claudePID) {
+        if let device = concreteTerminalDevice(processDevice(claudePID ?? ownPID())) {
             return device
         }
         // Outcome-only, never a path or pid: a silent nil here made a broken
@@ -311,12 +352,29 @@ public struct ClaudeHookPublisher: Sendable {
         // field (2026-07-20) — the join's tty half simply never matched and
         // nothing said why. Unified log only; stdout/stderr stay silent per
         // the hook contract.
-        #if canImport(os)
-        Logger(subsystem: "com.localvoxtral", category: "ClaudeHook").info(
-            "controlling tty unresolved: fds piped, /dev/tty unanswering, process table has no device"
-        )
-        #endif
+        log("controlling tty unresolved: fds piped, /dev/tty unanswering, process table has no device")
         return nil
+    }
+
+    /// A step's answer, kept only when it is shaped like a device a terminal
+    /// pane reports — the same rule the app applies to a tty a session claims
+    /// (`ClaudeRemoteLocalTTYPath.isAcceptable`), so the two halves of the
+    /// comparison cannot disagree about what a tty is.
+    static func concreteTerminalDevice(_ candidate: String?) -> String? {
+        guard let candidate else { return nil }
+        guard ClaudeRemoteLocalTTYPath.isAcceptable(candidate) else {
+            // Outcome words only, same contract as the unresolved branch: the
+            // refused value is a path and paths do not go in the log.
+            log("controlling tty candidate refused: names no pane device, falling through")
+            return nil
+        }
+        return candidate
+    }
+
+    private static func log(_ message: String) {
+        #if canImport(os)
+        Logger(subsystem: "com.localvoxtral", category: "ClaudeHook").info("\(message, privacy: .public)")
+        #endif
     }
 
     /// The `/dev/…` path of `pid`'s controlling terminal from the process

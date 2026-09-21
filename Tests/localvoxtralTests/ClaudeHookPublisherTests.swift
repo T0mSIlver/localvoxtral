@@ -517,6 +517,89 @@ final class ClaudeHookControllingTTYTests: XCTestCase {
         // positive proof remains the hand-tested Ghostty join.
     }
 
+    // MARK: - Capture chain: only a device a pane can carry counts as an answer
+
+    /// Seam-driven chain, so the field's answers can be handed to it verbatim.
+    private func resolvedTTY(
+        claudePID: Int32? = 99,
+        ownPID: Int32 = 4242,
+        descriptors: [Int32: String] = [:],
+        controllingTerminal: String? = nil,
+        processTable: [Int32: String] = [:]
+    ) -> String? {
+        ClaudeHookPublisher.resolveControllingTTY(
+            claudePID: claudePID,
+            ownPID: { ownPID },
+            descriptorDevice: { descriptors[$0] },
+            controllingTerminalDevice: { controllingTerminal },
+            processDevice: { processTable[$0] }
+        )
+    }
+
+    func testDevTTYAliasFallsThroughToTheProcessTable() {
+        // The field shape (@eastokes's fork, issue #376): all three fds piped,
+        // and `ttyname` on the `/dev/tty` fd answers with the alias itself.
+        // Publishing it would hand the focus probe a device no pane carries,
+        // and — being non-nil — bury the read that does know the answer.
+        XCTAssertEqual(
+            resolvedTTY(controllingTerminal: "/dev/tty", processTable: [99: "/dev/ttys004"]),
+            "/dev/ttys004"
+        )
+    }
+
+    func testDevTTYAliasOnADescriptorFallsThroughToo() {
+        // Same rule one step earlier: a tty'd fd is cheaper evidence, not
+        // better evidence, so the alias loses there as well.
+        XCTAssertEqual(
+            resolvedTTY(
+                descriptors: [1: "/dev/tty"],
+                controllingTerminal: "/dev/ttys004",
+                processTable: [99: "/dev/ttys009"]
+            ),
+            "/dev/ttys004"
+        )
+    }
+
+    func testAliasEverywhereReportsNothingRatherThanTheAlias() {
+        // Nil is diagnosable — the unresolved log line fires and the join's
+        // tty half simply abstains. A published `/dev/tty` is not: it grounds
+        // the dictation in a device nothing can match, silently.
+        XCTAssertNil(resolvedTTY(controllingTerminal: "/dev/tty", processTable: [99: "/dev/tty"]))
+    }
+
+    func testMalformedCandidatesAreRefusedTheSameWay() {
+        for candidate in ["", "ttys004", "/dev/", "/dev/../etc/passwd", "/dev/ttys004/"] {
+            XCTAssertNil(
+                resolvedTTY(controllingTerminal: candidate),
+                "\(candidate) is not a device a pane reports"
+            )
+        }
+    }
+
+    func testAConcreteDeviceStillWinsAtEveryStep() {
+        XCTAssertEqual(resolvedTTY(descriptors: [0: "/dev/ttys001"]), "/dev/ttys001")
+        XCTAssertEqual(resolvedTTY(descriptors: [2: "/dev/ttys002"]), "/dev/ttys002")
+        XCTAssertEqual(resolvedTTY(controllingTerminal: "/dev/ttys003"), "/dev/ttys003")
+        XCTAssertEqual(resolvedTTY(processTable: [99: "/dev/ttys004"]), "/dev/ttys004")
+    }
+
+    func testAnUnnamedSessionProcessFallsBackToOurOwnEntry() {
+        // `claudePID` is nil only for a publisher invoked directly — the hook
+        // always supplies `claudeAncestorPID()`. Our own controlling terminal
+        // is then the pane's (a non-setsid hook shares it), and reading it off
+        // our own process table entry trusts nobody else's state.
+        XCTAssertEqual(
+            resolvedTTY(claudePID: nil, ownPID: 4242, processTable: [4242: "/dev/ttys007"]),
+            "/dev/ttys007"
+        )
+    }
+
+    func testANamedSessionProcessIsNeverSecondGuessedByOurOwnEntry() {
+        // Claude's terminal is the pane's terminal. Ours is only a stand-in
+        // for the case where nobody named Claude's process at all.
+        XCTAssertNil(resolvedTTY(claudePID: 99, ownPID: 4242, processTable: [4242: "/dev/ttys007"]))
+    }
+
     func testControllingTTYAgreesWithItsOwnProcessTableEntry() {
         // Environment-independent invariant: whether this suite runs on a
         // pty-attached dev shell (fds are the terminal), piped output (only
