@@ -3,9 +3,37 @@ import ShortcutRecorder
 import SwiftUI
 
 struct ShortcutRecorderField: NSViewRepresentable {
+    /// The app's other dictation slot. A field knows only its own binding, so
+    /// without this the two slots can be given the same key and only Carbon
+    /// notices — anonymously (#391).
+    struct OtherSlot {
+        var mode: DictationOutputMode
+        var shortcut: DictationShortcut?
+    }
+
     @Binding var shortcut: DictationShortcut?
     @Binding var validationError: String?
+    var otherSlot: OtherSlot? = nil
     var fixedWidth: CGFloat? = nil
+
+    /// Every reason this field refuses a recording that we can decide from the
+    /// candidate alone. Kept pure and separate from `canRecord` so the rules
+    /// are unit-testable without an AppKit control.
+    static func rejectionMessage(
+        for candidate: DictationShortcut,
+        otherSlot: OtherSlot?
+    ) -> String? {
+        if let message = DictationShortcutValidation.validationErrorMessage(for: candidate) {
+            return message
+        }
+
+        guard let otherSlot else { return nil }
+        return DictationShortcutValidation.conflictErrorMessage(
+            for: candidate,
+            conflictingWith: otherSlot.shortcut,
+            mode: otherSlot.mode
+        )
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -59,7 +87,10 @@ struct ShortcutRecorderField: NSViewRepresentable {
                 carbonModifierFlags: shortcut.carbonModifierFlags
             ).normalized
 
-            if let message = DictationShortcutValidation.validationErrorMessage(for: candidate) {
+            if let message = ShortcutRecorderField.rejectionMessage(
+                for: candidate,
+                otherSlot: parent.otherSlot
+            ) {
                 parent.validationError = message
                 return false
             }

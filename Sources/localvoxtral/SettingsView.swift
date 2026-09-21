@@ -1067,12 +1067,25 @@ private struct DictationSettingsPane: View {
                             ShortcutRecorderField(
                                 shortcut: overlayBufferShortcutBinding,
                                 validationError: $overlayValidationError,
+                                otherSlot: .init(
+                                    mode: .liveAutoPaste,
+                                    shortcut: settings.livePasteShortcut
+                                ),
                                 fixedWidth: 132
                             )
                             .frame(height: 24, alignment: .leading)
 
                             Button("Reset") {
-                                overlayValidationError = nil
+                                // Reset skips the recorder, so it needs the
+                                // same cross-check: the default shortcut can
+                                // be the one sitting in the other slot.
+                                overlayValidationError =
+                                    DictationShortcutValidation.conflictErrorMessage(
+                                        for: SettingsStore.defaultDictationShortcut,
+                                        conflictingWith: settings.livePasteShortcut,
+                                        mode: .liveAutoPaste
+                                    )
+                                guard overlayValidationError == nil else { return }
                                 viewModel.updateOverlayBufferShortcut(
                                     SettingsStore.defaultDictationShortcut)
                             }
@@ -1101,6 +1114,10 @@ private struct DictationSettingsPane: View {
                             ShortcutRecorderField(
                                 shortcut: livePasteShortcutBinding,
                                 validationError: $livePasteValidationError,
+                                otherSlot: .init(
+                                    mode: .overlayBuffer,
+                                    shortcut: settings.overlayBufferShortcut
+                                ),
                                 fixedWidth: 132
                             )
                             .frame(height: 24, alignment: .leading)
@@ -1192,6 +1209,15 @@ private struct DictationSettingsPane: View {
                     }
                 }
             }
+        }
+        // A "Already used for …" message under one field is stale the moment
+        // the other slot moves, and nothing else clears it until that field is
+        // recorded again.
+        .onChange(of: settings.overlayBufferShortcut) { _, _ in
+            livePasteValidationError = nil
+        }
+        .onChange(of: settings.livePasteShortcut) { _, _ in
+            overlayValidationError = nil
         }
     }
 }

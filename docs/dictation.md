@@ -26,7 +26,9 @@ be recorded on their own, so a spare F13 to F20 on a full-size keyboard works
 as a dedicated dictation key. F1 to F12 are accepted too, but macOS claims
 those presses for brightness and media unless **Use F1, F2, etc. keys as
 standard function keys** is on in System Settings — until it is, the app never
-sees them.
+sees them. The two slots need different shortcuts: recording one mode's
+shortcut into the other is refused with **Already used for …**, since macOS
+hands a key to a single registration.
 
 **Escape** cancels an in-progress dictation.
 

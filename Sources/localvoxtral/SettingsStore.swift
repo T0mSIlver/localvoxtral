@@ -194,6 +194,22 @@ enum DictationShortcutValidation {
         return nil
     }
 
+    /// The one conflict we can see before registering: the app's own other
+    /// dictation slot. Carbon refuses the second `RegisterEventHotKey` for the
+    /// same key and modifiers on the same target with `eventHotKeyExistsErr`,
+    /// and that failure names no culprit — the user is told the shortcut is
+    /// "unavailable" and watches it roll back for no stated reason (#391). A
+    /// key another app holds still fails that way, which is why the Carbon
+    /// path stays as the backstop.
+    static func conflictErrorMessage(
+        for shortcut: DictationShortcut,
+        conflictingWith other: DictationShortcut?,
+        mode: DictationOutputMode
+    ) -> String? {
+        guard let other, other.normalized == shortcut.normalized else { return nil }
+        return "Already used for \(mode.displayName)."
+    }
+
     static func validationErrorMessage(for shortcut: DictationShortcut) -> String? {
         if let persistenceError = persistenceErrorMessage(for: shortcut) {
             return persistenceError

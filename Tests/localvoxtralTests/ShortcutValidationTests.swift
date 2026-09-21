@@ -160,4 +160,118 @@ final class ShortcutValidationTests: XCTestCase {
 
         XCTAssertNotNil(DictationShortcutValidation.persistenceErrorMessage(for: shortcut))
     }
+
+    // MARK: - Cross-slot conflicts (#391)
+
+    private static let f13 = DictationShortcut(
+        keyCode: UInt32(kVK_F13),
+        carbonModifierFlags: 0
+    )
+
+    func testConflict_rejectsTheSameShortcutInTheOtherSlot() {
+        XCTAssertEqual(
+            DictationShortcutValidation.conflictErrorMessage(
+                for: Self.f13,
+                conflictingWith: Self.f13,
+                mode: .overlayBuffer
+            ),
+            "Already used for Overlay Buffer."
+        )
+
+        XCTAssertEqual(
+            DictationShortcutValidation.conflictErrorMessage(
+                for: Self.f13,
+                conflictingWith: Self.f13,
+                mode: .liveAutoPaste
+            ),
+            "Already used for Live Auto-Paste."
+        )
+    }
+
+    func testConflict_allowsTheShortcutWhenTheOtherSlotIsEmpty() {
+        XCTAssertNil(
+            DictationShortcutValidation.conflictErrorMessage(
+                for: Self.f13,
+                conflictingWith: nil,
+                mode: .overlayBuffer
+            )
+        )
+    }
+
+    func testConflict_allowsADifferentShortcut() {
+        let f14 = DictationShortcut(keyCode: UInt32(kVK_F14), carbonModifierFlags: 0)
+        let commandF13 = DictationShortcut(
+            keyCode: UInt32(kVK_F13),
+            carbonModifierFlags: UInt32(cmdKey)
+        )
+
+        XCTAssertNil(
+            DictationShortcutValidation.conflictErrorMessage(
+                for: f14,
+                conflictingWith: Self.f13,
+                mode: .overlayBuffer
+            )
+        )
+        XCTAssertNil(
+            DictationShortcutValidation.conflictErrorMessage(
+                for: commandF13,
+                conflictingWith: Self.f13,
+                mode: .overlayBuffer
+            )
+        )
+    }
+
+    func testConflict_comparesNormalizedShortcuts() {
+        // A freshly recorded function key still carries ShortcutRecorder's
+        // function-key bit; the stored slot does not. Comparing raw flags
+        // would miss the conflict and hand it back to Carbon.
+        let recordedF13 = DictationShortcut(
+            keyCode: UInt32(kVK_F13),
+            carbonModifierFlags: 1 << 23
+        )
+
+        XCTAssertEqual(
+            DictationShortcutValidation.conflictErrorMessage(
+                for: recordedF13,
+                conflictingWith: Self.f13,
+                mode: .overlayBuffer
+            ),
+            "Already used for Overlay Buffer."
+        )
+    }
+
+    @MainActor
+    func testRecorderField_namesTheOtherSlotHoldingTheShortcut() {
+        XCTAssertEqual(
+            ShortcutRecorderField.rejectionMessage(
+                for: Self.f13,
+                otherSlot: .init(mode: .overlayBuffer, shortcut: Self.f13)
+            ),
+            "Already used for Overlay Buffer."
+        )
+    }
+
+    @MainActor
+    func testRecorderField_acceptsTheShortcutOnceTheOtherSlotIsCleared() {
+        XCTAssertNil(
+            ShortcutRecorderField.rejectionMessage(
+                for: Self.f13,
+                otherSlot: .init(mode: .overlayBuffer, shortcut: nil)
+            )
+        )
+    }
+
+    @MainActor
+    func testRecorderField_keyRuleIsReportedBeforeAnyConflict() {
+        // A bare letter is refused for what it is, not as a slot clash.
+        let bareD = DictationShortcut(keyCode: UInt32(kVK_ANSI_D), carbonModifierFlags: 0)
+
+        XCTAssertEqual(
+            ShortcutRecorderField.rejectionMessage(
+                for: bareD,
+                otherSlot: .init(mode: .overlayBuffer, shortcut: bareD)
+            ),
+            "Shortcut needs a modifier key. Only function keys work on their own."
+        )
+    }
 }
