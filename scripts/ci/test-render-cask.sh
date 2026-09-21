@@ -52,7 +52,18 @@ grep -q '"/usr/bin/xattr"' "$CASK" || fail "postflight does not clear quarantine
 grep -q '"--force", "--deep", "--sign", "-"' "$CASK" || fail "postflight does not re-sign locally"
 pass "postflight clears quarantine and re-signs"
 
-if sed -n '/zap trash/,/\]/p' "$CASK" | grep -q 'default\.store\|huggingface'; then
+ZAP="$(sed -n '/^  zap trash: \[/,/^  \]/p' "$CASK")"
+[[ -n "$ZAP" ]] || fail "the cask has no zap stanza"
+for path in \
+  "~/Library/Application Support/localvoxtral" \
+  "~/Library/Caches/com.localvoxtral.app" \
+  "~/Library/HTTPStorages/com.localvoxtral.app" \
+  "~/Library/Preferences/com.localvoxtral.app.plist" \
+  "~/Library/Saved Application State/com.localvoxtral.app.savedState"; do
+  grep -qF "\"$path\"," <<<"$ZAP" || fail "zap does not list $path"
+done
+pass "zap lists the app's own paths"
+if grep -q 'default\.store\|huggingface' <<<"$ZAP"; then
   fail "zap lists a path other apps share"
 fi
 pass "zap leaves shared paths alone"

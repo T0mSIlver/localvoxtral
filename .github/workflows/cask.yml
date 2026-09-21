@@ -34,13 +34,30 @@ concurrency:
 
 jobs:
   cask:
-    # Hosted: nothing here needs the owner's Mac, and the tap's write key stays
-    # off the self-hosted runner.
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Hosted: the tap's write key stays off the self-hosted runner, and a hosted
+    # Mac has never had the app, which is the install a new user gets.
+    runs-on: macos-15
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # release.yml only calls this for a stable release; a hand dispatch can
+      # name anything. GitHub lets a prerelease or a draft carry a vX.Y.Z tag.
+      - name: Require a published stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::not a stable vX.Y.Z tag: $TAG"; exit 1
+          fi
+          STATE="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease --jq '"\(.tagName) draft=\(.isDraft) prerelease=\(.isPrerelease)"')"
+          if [[ "$STATE" != "$TAG draft=false prerelease=false" ]]; then
+            echo "::error::$TAG is not a published stable release ($STATE)"; exit 1
+          fi
 
       # The pin is the hash of the bytes brew will download, not of a file the
       # release job had on disk. The published .sha256 must agree with it.
@@ -54,7 +71,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/release"
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/release" \
             --pattern "localvoxtral-$TAG.zip" --pattern "localvoxtral-$TAG.zip.sha256"
-          SHA256="$(sha256sum "$RUNNER_TEMP/release/localvoxtral-$TAG.zip" | awk '{ print $1 }')"
+          SHA256="$(shasum -a 256 "$RUNNER_TEMP/release/localvoxtral-$TAG.zip" | awk '{ print $1 }')"
           PUBLISHED="$(awk '{ print $1 }' "$RUNNER_TEMP/release/localvoxtral-$TAG.zip.sha256")"
           if [[ "$SHA256" != "$PUBLISHED" ]]; then
             echo "::error::localvoxtral-$TAG.zip hashes to $SHA256 but its .sha256 asset says $PUBLISHED"
@@ -66,10 +83,13 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
           SHA256: ${{ steps.zip.outputs.sha256 }}
-        run: |
-          set -euo pipefail
-          ./scripts/ci/render-cask.sh "$TAG" "$SHA256" > "$RUNNER_TEMP/localvoxtral.rb"
-          ruby -c "$RUNNER_TEMP/localvoxtral.rb"
+        run: ./scripts/ci/render-cask.sh "$TAG" "$SHA256" > "$RUNNER_TEMP/localvoxtral.rb"
+
+      # Before the push: a cask that fails here never reaches the tap.
+      - name: Install the rendered cask from a local tap
+        env:
+          TAG: ${{ inputs.tag }}
+        run: ./scripts/ci/verify-cask-install.sh "$TAG" --cask-file "$RUNNER_TEMP/localvoxtral.rb"
 
       - name: Push the cask to the tap
         env:
@@ -86,10 +106,19 @@ jobs:
           # GitHub's published host key (api.github.com/meta), pinned: ssh-keyscan
           # would trust whoever answers.
           echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > "$RUNNER_TEMP/ssh/known_hosts"
-          export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/ssh/tap_key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/ssh/known_hosts -o StrictHostKeyChecking=yes"
+          export GIT_SSH_COMMAND="ssh -F /dev/null -i $RUNNER_TEMP/ssh/tap_key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/ssh/known_hosts -o StrictHostKeyChecking=yes"
 
           TAP="$RUNNER_TEMP/tap"
           git clone --depth 1 git@github.com:T0mSIlver/homebrew-localvoxtral.git "$TAP"
+
+          # A repair dispatched for an old tag must not take the tap backwards.
+          PINNED="$(sed -n 's/^  version "\(.*\)"$/\1/p' "$TAP/Casks/localvoxtral.rb" 2>/dev/null || true)"
+          if [[ -n "$PINNED" && "$PINNED" != "${TAG#v}" ]] \
+             && [[ "$(printf '%s\n%s\n' "$PINNED" "${TAG#v}" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1)" == "$PINNED" ]]; then
+            echo "::error::the tap pins $PINNED, newer than $TAG; refusing to downgrade it"
+            exit 1
+          fi
+
           mkdir -p "$TAP/Casks"
           cp "$RUNNER_TEMP/localvoxtral.rb" "$TAP/Casks/localvoxtral.rb"
           git -C "$TAP" add Casks/localvoxtral.rb
@@ -103,16 +132,7 @@ jobs:
           git -C "$TAP" push origin HEAD
           echo "Tap pinned to $TAG." >> "$GITHUB_STEP_SUMMARY"
 
-  # A hosted Mac has never had the app, which is the install a new user gets.
-  verify:
-    needs: cask
-    runs-on: macos-15
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install from the tap
+      - name: Install from the public tap
         env:
           TAG: ${{ inputs.tag }}
         run: ./scripts/ci/verify-cask-install.sh "$TAG"
