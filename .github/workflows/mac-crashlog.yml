@@ -144,7 +144,6 @@ jobs:
           link="$HOME/Library/Application Support/localvoxtral/claude/publisher"
           echo "publisher link present: $(yn test -L "$link")"
           echo "publisher link target executable: $(yn test -x "$link")"
-          echo "publisher link target knows --agent: $(yn sh -c 'strings "$0" | grep -q -- "--agent"' "$link")"
           echo "publisher link target inside a try-pr dir: $(yn sh -c 'readlink "$0" | grep -q "^/private/tmp/localvoxtral-try\."' "$link")"
           vibe_bin="$(PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" command -v vibe)"
           echo "vibe on PATH: $(yn test -n "$vibe_bin")"
