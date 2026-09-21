@@ -27,6 +27,7 @@ struct SettingsTab: Hashable, Sendable {
         /// Raw value completed with the terminal row's slug — see `rawValue`.
         case terminal
         case about
+        case history
     }
 
     let kind: Kind
@@ -80,10 +81,12 @@ extension SettingsTab {
     ///
     /// Context sits with the app's own panes: it is a polishing feature that
     /// every harness feeds, not a harness. Its raw value predates the move.
+    /// History leads: it is the one row that is not a setting, and the menu bar
+    /// opens the window on it.
     /// About closes the section as an ordinary row that scrolls with the rest
     /// (CodexBar's idiom), not a row pinned to the sidebar's bottom.
     static let primarySidebarItems: [SettingsTab] = [
-        .general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about,
+        .history, .general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about,
     ]
 
     /// The Integrations section (owner decision, 2026-09-07): one row per
@@ -109,4 +112,5 @@ extension SettingsTab {
     static let integrationsHerdr = SettingsTab(.integrationsHerdr)
     static let integrationsRemote = SettingsTab(.integrationsRemote)
     static let about = SettingsTab(.about)
+    static let history = SettingsTab(.history)
 }

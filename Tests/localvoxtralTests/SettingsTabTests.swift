@@ -116,18 +116,24 @@ final class SettingsTabTests: XCTestCase {
         )
         let rawValues = Set(SettingsTab.allKnownPanes.map(\.rawValue))
 
+        // History is drilled by neither script. Both run on the owner's Mac
+        // against his real store, the capture publishes a picture of the pane
+        // and the drill dumps the window's AX tree into a public CI log when
+        // an assertion fails: either would publish his dictations.
+        let scriptedRawValues = rawValues.subtracting(["history"])
         XCTAssertEqual(
             Self.firstQuotedArguments(ofCalls: "assert_tab ", in: uiSmoke),
-            rawValues,
+            scriptedRawValues,
             "ui-smoke.sh must drill exactly the panes the tab set defines"
         )
 
-        // About is deliberately not captured for the README; every other pane
-        // must be, and nothing the tab set does not define may appear.
+        // About is deliberately not captured for the README; every other
+        // scripted pane must be, and nothing the tab set does not define may
+        // appear.
         let captureIDs = try Self.shellArrayEntries(named: "TAB_IDS", in: capture)
         XCTAssertEqual(
             Set(captureIDs),
-            rawValues.subtracting(["about"]),
+            scriptedRawValues.subtracting(["about"]),
             "capture-readme-assets.sh TAB_IDS must list every captured pane by raw value"
         )
 
@@ -421,7 +427,10 @@ final class SettingsTabTests: XCTestCase {
     func testSidebarOrderIsThePresentationContract() {
         XCTAssertEqual(
             SettingsTab.primarySidebarItems,
-            [.general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about]
+            [
+                .history, .general, .dictation, .endpoints, .textProcessing,
+                .integrationsContext, .about,
+            ]
         )
         XCTAssertEqual(
             SettingsTab.integrationsSidebarItems,
@@ -448,7 +457,7 @@ final class SettingsTabTests: XCTestCase {
         XCTAssertEqual(
             Set(SettingsTab.allKnownPanes.map(\.rawValue)),
             [
-                "general", "endpoints", "dictation", "textProcessing", "about",
+                "general", "endpoints", "dictation", "textProcessing", "about", "history",
                 "integrations.context", "integrations.claude", "integrations.opencode",
                 "integrations.vibe", "integrations.herdr", "integrations.remote",
                 "terminals.ghostty", "terminals.iterm2", "terminals.apple-terminal",

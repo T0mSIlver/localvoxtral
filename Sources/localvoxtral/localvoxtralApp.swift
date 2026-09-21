@@ -10,7 +10,8 @@ struct localvoxtralApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            StatusPopoverView(viewModel: appDelegate.viewModel)
+            StatusPopoverView(
+                viewModel: appDelegate.viewModel, navigator: appDelegate.settingsNavigator)
         } label: {
             let viewModel = appDelegate.viewModel
             let state = viewModel.menuBarIndicatorState

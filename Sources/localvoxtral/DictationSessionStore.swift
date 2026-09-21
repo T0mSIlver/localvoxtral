@@ -256,6 +256,16 @@ final class DictationSessionStore {
         } ?? 0
     }
 
+    /// How many dictations `trim(olderThan:)` would delete, for the question
+    /// the History pane asks before shortening the retention.
+    func count(olderThan cutoff: Date) async -> Int {
+        await read("count dictations before a cutoff") { context in
+            try context.fetchCount(
+                FetchDescriptor<DictationSessionRecord>(
+                    predicate: #Predicate { $0.startedAt < cutoff }))
+        } ?? 0
+    }
+
     /// The text each recent dictation ended up as (polished when there was a
     /// polish, raw otherwise), newest first.
     func recentFinalTexts(limit: Int) async -> [String] {
