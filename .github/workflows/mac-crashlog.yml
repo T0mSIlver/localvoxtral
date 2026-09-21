@@ -45,7 +45,9 @@ jobs:
           # One category at a time keeps a join or backend line from being
           # pushed out of the tail by the overlay's per-frame render lines.
           # Letters only: the value goes into the predicate.
-          predicate='subsystem == "com.localvoxtral" AND process == "localvoxtral"'
+          # Never Deltas: that category logs transcript text, and this log is
+          # public. Excluded in the predicate, so asking for it shows nothing.
+          predicate='subsystem == "com.localvoxtral" AND process == "localvoxtral" AND category != "Deltas"'
           case "$LOG_CATEGORY" in
             "") ;;
             *[!A-Za-z]*) echo "log_category must be letters only"; exit 1 ;;
