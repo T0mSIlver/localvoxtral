@@ -20,7 +20,10 @@ combos involving the modifier are unaffected. Requires Accessibility
 permission.
 
 **Per-mode keyboard shortcuts** — separate shortcuts for Overlay Buffer and
-Live Auto-Paste; behavior follows the `Toggle` / `Push to Talk` setting.
+Live Auto-Paste; behavior follows the `Toggle` / `Push to Talk` setting. A
+shortcut needs at least one modifier, except for a function key: F1 to F20 can
+be recorded on their own, so a spare F13 to F20 on a full-size keyboard works
+as a dedicated dictation key.
 
 **Escape** cancels an in-progress dictation.
 

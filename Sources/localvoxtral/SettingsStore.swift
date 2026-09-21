@@ -152,13 +152,32 @@ enum DictationShortcutValidation {
         flags & allowedModifierFlagsMask
     }
 
+    /// The one key class accepted with no modifier at all. The bare-key rule
+    /// exists so nobody binds the letter `a` and loses the ability to type it;
+    /// a function key has no typing role to swallow, and F13-F20 in particular
+    /// are dedicated keys whose only plausible use is a trigger like this one.
+    /// Letters, digits, punctuation, Space and Return still need a modifier.
+    static let functionKeyCodes: Set<UInt32> = [
+        UInt32(kVK_F1), UInt32(kVK_F2), UInt32(kVK_F3), UInt32(kVK_F4),
+        UInt32(kVK_F5), UInt32(kVK_F6), UInt32(kVK_F7), UInt32(kVK_F8),
+        UInt32(kVK_F9), UInt32(kVK_F10), UInt32(kVK_F11), UInt32(kVK_F12),
+        UInt32(kVK_F13), UInt32(kVK_F14), UInt32(kVK_F15), UInt32(kVK_F16),
+        UInt32(kVK_F17), UInt32(kVK_F18), UInt32(kVK_F19), UInt32(kVK_F20),
+    ]
+
+    static func isFunctionKey(_ keyCode: UInt32) -> Bool {
+        functionKeyCodes.contains(keyCode)
+    }
+
     static func persistenceErrorMessage(for shortcut: DictationShortcut) -> String? {
         if shortcut.keyCode > UInt32(UInt16.max) {
             return "Shortcut key is not supported."
         }
 
-        if normalizedModifierFlags(shortcut.carbonModifierFlags) == 0 {
-            return "Shortcut must include at least one modifier key."
+        if normalizedModifierFlags(shortcut.carbonModifierFlags) == 0,
+            !isFunctionKey(shortcut.keyCode)
+        {
+            return "Shortcut needs a modifier key. Only function keys work on their own."
         }
 
         return nil

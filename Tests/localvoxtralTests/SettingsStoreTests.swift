@@ -836,6 +836,37 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.dictationShortcut, SettingsStore.defaultDictationShortcut)
     }
 
+    // MARK: - bare function key shortcuts
+
+    func testOverlayBufferShortcut_bareFunctionKeyPersistsAcrossReload() {
+        let bareF13 = DictationShortcut(keyCode: UInt32(kVK_F13), carbonModifierFlags: 0)
+        let store = makeStore()
+
+        store.setOverlayBufferShortcut(bareF13)
+        XCTAssertEqual(store.overlayBufferShortcut, bareF13)
+
+        XCTAssertEqual(makeStore().overlayBufferShortcut, bareF13)
+    }
+
+    func testLivePasteShortcut_bareFunctionKeyPersistsAcrossReload() {
+        let bareF14 = DictationShortcut(keyCode: UInt32(kVK_F14), carbonModifierFlags: 0)
+        let store = makeStore()
+
+        store.setLivePasteShortcut(bareF14)
+        XCTAssertEqual(store.livePasteShortcut, bareF14)
+
+        XCTAssertEqual(makeStore().livePasteShortcut, bareF14)
+    }
+
+    func testOverlayBufferShortcut_bareTypingKeyFallsBackToDefault() {
+        let store = makeStore()
+
+        store.setOverlayBufferShortcut(
+            DictationShortcut(keyCode: UInt32(kVK_ANSI_D), carbonModifierFlags: 0))
+
+        XCTAssertEqual(store.overlayBufferShortcut, SettingsStore.defaultDictationShortcut)
+    }
+
     // MARK: - dual shortcut migration
 
     func testLegacyDictationShortcutMigratesToOverlayBufferShortcut() {
