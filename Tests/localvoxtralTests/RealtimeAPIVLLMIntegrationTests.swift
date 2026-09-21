@@ -300,6 +300,103 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
         )
     }
 
+    /// The backend half of the mid-dictation reconnect (#380): after a socket
+    /// drops mid-utterance, the session that replaces it must transcribe the
+    /// audio the gap buffered, delivered as the single burst the restarted send
+    /// loop hands it. The view model's orchestration is unit-tested over
+    /// injected clocks (`RealtimeReconnectTests`); what only a live backend can
+    /// answer is whether the fresh session accepts the replay at all.
+    func testVLLMReconnectedSessionTranscribesReplayedGapAudio() async throws {
+        let configuration = try integrationConfiguration()
+        let beforeDrop = "hello from localvoxtral, this is the first half of the passage."
+        let afterDrop =
+            "the connection dropped and came back, and these words were spoken into the gap."
+        let beforeChunks = IntegrationTestSupport.splitPCM16IntoChunks(
+            try IntegrationTestSupport.makeSpokenPCM16Data(phrase: beforeDrop),
+            chunkSizeBytes: 3_200
+        )
+        // ONE Data, not chunks: this is exactly what the first tick of the
+        // restarted audio-send loop drains out of AudioChunkBuffer.
+        let gapAudio = try IntegrationTestSupport.makeSpokenPCM16Data(phrase: afterDrop)
+
+        let client = RealtimeAPIWebSocketClient()
+
+        // Leg 1: stream up to the drop.
+        let firstReady = expectation(description: "first session ready")
+        let firstTranscript = expectation(description: "first transcript")
+        firstTranscript.assertForOverFulfill = false
+        client.setEventHandler { event in
+            switch event {
+            case .connected:
+                for chunk in beforeChunks {
+                    client.sendAudioChunk(chunk)
+                }
+                client.sendCommit(final: false)
+            case .status(let message):
+                if message.localizedCaseInsensitiveContains("session ready") {
+                    firstReady.fulfill()
+                }
+            case .partialTranscript(let text), .finalTranscript(let text):
+                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    firstTranscript.fulfill()
+                }
+            default:
+                break
+            }
+        }
+        try client.connect(configuration: configuration)
+        await fulfillment(of: [firstReady, firstTranscript], timeout: 60.0)
+
+        // The drop. From the session's side a socket that died and one that was
+        // closed look the same: a `.disconnected` it did not ask for.
+        let dropped = expectation(description: "dropped")
+        client.setEventHandler { event in
+            if case .disconnected = event { dropped.fulfill() }
+        }
+        client.disconnect()
+        await fulfillment(of: [dropped], timeout: 5.0)
+
+        // Leg 2: the reconnect replays the gap on a brand-new session.
+        let replayTexts = NSLockingStringCollector()
+        let secondReady = expectation(description: "second session ready")
+        let replayTranscript = expectation(description: "replayed transcript")
+        replayTranscript.assertForOverFulfill = false
+        client.setEventHandler { event in
+            switch event {
+            case .connected:
+                client.sendAudioChunk(gapAudio)
+                client.sendCommit(final: false)
+                client.sendCommit(final: true)
+            case .status(let message):
+                if message.localizedCaseInsensitiveContains("session ready") {
+                    secondReady.fulfill()
+                }
+            case .finalTranscript(let text):
+                let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !normalized.isEmpty else { return }
+                replayTexts.append(normalized)
+                replayTranscript.fulfill()
+            default:
+                break
+            }
+        }
+        try client.connect(configuration: configuration)
+        await fulfillment(of: [secondReady, replayTranscript], timeout: 60.0)
+        client.disconnect()
+
+        let replayed = replayTexts.snapshot().joined(separator: " ")
+        let accuracy = IntegrationTestSupport.wordAccuracy(expected: afterDrop, actual: replayed)
+        print(
+            "speechd reconnect integration: replayed word accuracy "
+                + "\(String(format: "%.3f", accuracy)); transcript: \(replayed)"
+        )
+        XCTAssertGreaterThanOrEqual(
+            accuracy,
+            0.55,
+            "The session after the drop must transcribe the replayed gap audio. Transcript: \(replayed)"
+        )
+    }
+
     private func runHandshakeCycle(
         client: RealtimeAPIWebSocketClient,
         configuration: RealtimeSessionConfiguration

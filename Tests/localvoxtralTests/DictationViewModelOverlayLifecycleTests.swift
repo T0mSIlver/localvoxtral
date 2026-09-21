@@ -823,11 +823,16 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(configStore.loadLLMPromptTemplatesCallCount, 1)
     }
 
-    func testUnexpectedDisconnectDuringDictationResetsEscapeCancelFlag() {
+    func testUnrecoverableDisconnectDuringDictationResetsEscapeCancelFlag() {
         // Regression: an unexpected realtime disconnect while actively dictating
         // tears down the session (sets isDictating = false). It must also stop
         // EscapeCancelHandler; otherwise the Carbon hotkey stays registered and
         // swallows Escape system-wide until the next session ends.
+        //
+        // No session configuration is latched here, so there is nothing to
+        // reconnect to and the drop tears down in one step (#380). The
+        // exhausted-reconnect teardown is held to the same rule in
+        // RealtimeReconnectTests.
         let settings = makeSettings(outputMode: .overlayBuffer)
         let overlayCoordinator = MockOverlayCoordinator()
         let viewModel = DictationViewModel(

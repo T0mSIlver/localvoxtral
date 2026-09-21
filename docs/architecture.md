@@ -7,6 +7,8 @@ three files totaling ~2.3k lines — the main refactor target):
 - `DictationViewModel+Session.swift` — session lifecycle, stop-finalization
   state machine, LLM polishing + commit path
 - `DictationViewModel+RealtimeEvents.swift` — transcript event routing/merge
+- `DictationViewModel+Reconnect.swift` — the bounded retry run behind a socket
+  that drops mid-dictation
 
 Key subsystems:
 
@@ -16,7 +18,12 @@ Key subsystems:
   (managed speechd / vLLM / any OpenAI-Realtime server) and
   `MistralRealtimeWebSocketClient` (Mistral API mode), both over
   `BaseRealtimeWebSocketClient`. `DictationViewModel.activeRealtimeClient`
-  latches one of them per session from `settings.dictationBackendMode`
+  latches one of them per session from `settings.dictationBackendMode`. A
+  socket that drops on its own mid-dictation is retried on a bounded backoff
+  (`RealtimeReconnectPolicy`) against the endpoint/key/model snapshot the
+  session started on, with the gap's audio held in `AudioChunkBuffer` for
+  replay — see [agent/invariants.md](agent/invariants.md) for what the retry
+  may and may not touch
 - Text merge: `TextMergingAlgorithms` (pure functions — overlap merge,
   word-boundary stabilization, punctuation spacing), `FirstChunkPreprocessor`
 - Insertion: `TextInsertionService` (AX replace → Unicode CGEvents → Cmd+V);

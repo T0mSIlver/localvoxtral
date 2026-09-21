@@ -36,6 +36,7 @@ extension DictationViewModel {
         sessionProvider = nil
         sessionModelName = nil
         sessionReplacementDictionary = nil
+        sessionRealtimeConfiguration = nil
     }
 
     /// Live Auto-Paste preflight for Secure Keyboard Entry: a live session
@@ -251,6 +252,7 @@ extension DictationViewModel {
         finalizationWatchdogTask?.cancel()
         finalizationWatchdogTask = nil
         cancelConnectTimeout()
+        cancelRealtimeReconnect()
         isFinalizingStop = false
         isConnectingRealtimeSession = false
         // Every attempt starts with a fresh secure-input sample: a stale
@@ -395,12 +397,17 @@ extension DictationViewModel {
         await debugBeforeConnectHookForTesting?()
         #endif
 
+        // Latched, not rebuilt: a mid-session reconnect (#380) dials exactly
+        // what this session opened with, even if Settings moved on since.
+        let configuration = RealtimeSessionConfiguration(
+            endpoint: endpoint,
+            apiKey: apiKey,
+            model: model
+        )
+        sessionRealtimeConfiguration = configuration
+
         do {
-            try activeRealtimeClient.connect(configuration: .init(
-                endpoint: endpoint,
-                apiKey: apiKey,
-                model: model
-            ))
+            try activeRealtimeClient.connect(configuration: configuration)
             scheduleConnectTimeout()
         } catch {
             abortConnectingSession(disconnectSocket: false)
@@ -527,6 +534,12 @@ extension DictationViewModel {
                 try? await Task.sleep(for: .seconds(interval))
                 guard !Task.isCancelled else { break }
 
+                // Read before draining: between the socket dying and the
+                // `.disconnected` event cancelling this task, a tick that
+                // drained would hand its chunk to a client that discards it —
+                // and that audio is exactly what a reconnect replays (#380).
+                guard client.isConnected else { continue }
+
                 let bufferedChunk = chunkBuffer.takeAll()
                 guard !bufferedChunk.isEmpty else {
                     emptyBufferTicks += 1
@@ -610,6 +623,7 @@ extension DictationViewModel {
         finalizationWatchdogTask?.cancel()
         finalizationWatchdogTask = nil
         cancelConnectTimeout()
+        cancelRealtimeReconnect()
 
         let sessionMode = sessionOutputMode ?? settings.dictationOutputMode
         let shouldCommitOverlay = sessionMode == .overlayBuffer
@@ -2279,6 +2293,7 @@ extension DictationViewModel {
         // cancel — funnels through here.
         closeRemoteHerdrForwards()
         cancelConnectTimeout()
+        cancelRealtimeReconnect()
         finalizationWatchdogTask?.cancel()
         finalizationWatchdogTask = nil
         clearPushToTalkShortcutSessionAttempt()
