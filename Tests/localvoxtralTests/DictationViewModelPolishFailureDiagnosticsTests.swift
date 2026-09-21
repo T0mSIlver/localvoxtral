@@ -44,7 +44,7 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
         viewModel.currentDictationEventText = "polish this text"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        await waitUntilStoppedSessionCompletes(viewModel)
+        await awaitStoppedSessionCommit(viewModel)
 
         let lastError = try XCTUnwrap(viewModel.lastError)
         XCTAssertTrue(
@@ -101,7 +101,7 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
         viewModel.currentDictationEventText = "polish this long answer"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        await waitUntilStoppedSessionCompletes(viewModel)
+        await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(viewModel.statusText, "LLM polishing failed.")
         let lastError = try XCTUnwrap(viewModel.lastError, "a timeout must not fail silently")
@@ -175,7 +175,7 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
         viewModel.currentDictationEventText = "polish this text"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        await waitUntilStoppedSessionCompletes(viewModel)
+        await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(viewModel.statusText, "LLM polishing failed.")
         let lastError = try XCTUnwrap(
@@ -310,11 +310,31 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
 
     // MARK: - Harness (mirrors the token-guard suite)
 
-    private func waitUntilStoppedSessionCompletes(_ viewModel: DictationViewModel) async {
-        let deadline = ContinuousClock.now + .seconds(1)
-        while viewModel.isCompletingStoppedSession, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+    /// Returns when the stop-commit has actually finished, by awaiting the
+    /// commit's own task.
+    ///
+    /// Call it directly after `finishStoppedSession`, with no suspension in
+    /// between: the task is read while the value that call just stored is
+    /// still there, and the task clears it on its own way out. A stop that
+    /// commits synchronously (nothing to polish) leaves it nil and is already
+    /// over by the time it returns.
+    ///
+    /// The deadline poll this replaces returned whichever way it went, so a
+    /// loaded runner asserted on a session still in flight — a wrong value on
+    /// a rerun-green test (#392/#395/#398).
+    private func awaitStoppedSessionCommit(
+        _ viewModel: DictationViewModel,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let commitTask = viewModel.polishAndCommitTask
+        await commitTask?.value
+        XCTAssertFalse(
+            viewModel.isCompletingStoppedSession,
+            "the commit must be over before anything reads what it wrote",
+            file: file,
+            line: line
+        )
     }
 
     private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {
