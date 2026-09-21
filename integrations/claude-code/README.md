@@ -569,7 +569,7 @@ to a strict numeric shape, records it for that host only once the request is
 fully accepted (the same points the "last seen" time is noted — a request the
 revocation re-check refuses records nothing), and uses it for exactly one
 thing: showing the fixed "Plugin
-update available" line (and a prominent **Update Plugin…** button) in Settings
+update available" line (and a prominent **Update Host…** button) in Settings
 when the host's plugin is older than the app's. The record keeps the highest
 version any of the host's hooks reported this app session — Claude Code
 applies a plugin update only on session restart, so sessions that were already
@@ -605,13 +605,13 @@ sheet whose **Set Up** does all of it in one consented flow, in order, each step
 self-verifying: the SSH config block on this Mac, the shell export block,
 the plugin install-or-update on the host, the `LC_LVX_TTY` crossing check, the
 herdr agents-panel row when herdr is installed, and the final Check Setup. It
-stops at the first failure with the exact remedy. **Update Plugin…** in an
+stops at the first failure with the exact remedy. **Update Host…** in an
 enrolled host's row runs the same flow. The sheet shows no token, command, or
 file contents. Its **Details** link opens the complete command reference in
 [docs/remote-claude-context.md](../../docs/remote-claude-context.md#how-enrollment-works).
 The list in that row shows each enrolled host, when it was last seen,
-and gives you **Update Plugin…**, **Rotate Token**, **Revoke** and **Remove**.
-**Update Plugin…** hides once the host has reported the app's plugin version
+and gives you **Update Host…**, **Rotate Token**, **Revoke** and **Remove**.
+**Update Host…** hides once the host has reported the app's plugin version
 since launch and this Mac's SSH config and shell startup blocks are in place,
 since the run would change nothing it can check from here. It also hides on a
 revoked host, which **Rotate Token** brings back.

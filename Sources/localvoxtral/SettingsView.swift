@@ -2163,14 +2163,8 @@ private struct ClaudeShellSetupRow: View {
 private struct ClaudeRemoteHostsRows: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
 
-    var body: some View {
-        rows.sheet(item: $model.vibeHostSetupRequest) { request in
-            VibeHostSetupSheet(model: model, request: request)
-        }
-    }
-
     @ViewBuilder
-    private var rows: some View {
+    var body: some View {
         if !model.isRemoteAvailable {
             SettingsGroupRow {
                 SettingsInlineMessage(
@@ -2259,36 +2253,36 @@ private struct ClaudeRemoteHostsRows: View {
                             // is known current, since the run would change
                             // nothing.
                             if host.offersUpdate {
-                                Button("Update Plugin…") { model.requestPluginUpdate(hostID: host.id) }
+                                Button("Update Host…") { model.requestPluginUpdate(hostID: host.id) }
                                     .controlSize(.small)
                                     .fixedSize()
                                     .pluginUpdateProminence(needsUpdate: host.pluginNeedsUpdate)
                                     .disabled(model.isEnrollmentBusy)
                             }
-                            // Not while a Vibe hooks run is in flight: the registry
-                            // refuses to commit a credential across a rotation
-                            // anyway, and offering the race helps nobody.
+                            // Not while a setup run is in flight: it mints the
+                            // host's Vibe credential against the current token,
+                            // and the registry refuses to commit it across a
+                            // rotation.
                             Button("Rotate token") { Task { await model.rotate(hostID: host.id) } }
                                 .controlSize(.small)
-                                .disabled(model.isPerformingVibeHostAction)
+                                .disabled(model.isEnrollmentBusy)
                             if !host.isRevoked {
                                 Button("Revoke") { Task { await model.revoke(hostID: host.id) } }
                                     .controlSize(.small)
-                                    .disabled(model.isPerformingVibeHostAction)
+                                    .disabled(model.isEnrollmentBusy)
                             }
                             Button("Remove") { Task { await model.remove(hostID: host.id) } }
                                 .controlSize(.small)
                                 // Removing the row an action is reporting into is
                                 // handled (the late-result guard drops the outcome),
                                 // but offering it mid-run is still offering a race.
-                                .disabled(model.isEnrollmentBusy || model.isPerformingVibeHostAction)
+                                .disabled(model.isEnrollmentBusy)
                         }
                     }
 
                     hostSetupStatus(host.setupStatusText)
 
                     persistentForwardRow(for: host)
-                    vibeHooksRow(for: host)
                     pluginUpdatePanel(for: host)
                 }
             }
@@ -2304,44 +2298,6 @@ private struct ClaudeRemoteHostsRows: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-        }
-    }
-
-    /// Mistral Vibe on this host, INSIDE the host's row like the tunnel switch
-    /// below it: it belongs to a host, and a pane's groups stay constant. The
-    /// buttons follow the state, so none is offered that would change nothing.
-    /// Hidden for a host with no alias on file or a revoked one.
-    @ViewBuilder
-    private func vibeHooksRow(
-        for host: ClaudeIntegrationSettingsModel.HostRow
-    ) -> some View {
-        if let state = host.vibeHooks {
-            HStack(spacing: 8) {
-                Text("Vibe hooks")
-                    .font(.caption)
-                Text(host.vibeHooksResult ?? state.sentence)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .accessibilityIdentifier("claude.remote.host.\(host.id).vibe.status")
-                Spacer(minLength: 8)
-                if let title = state.setupButtonTitle {
-                    Button(title) { model.requestVibeHooksSetup(hostID: host.id) }
-                        .controlSize(.small)
-                        .fixedSize()
-                        .disabled(model.isPerformingVibeHostAction || model.isEnrollmentBusy)
-                        .accessibilityIdentifier("claude.remote.host.\(host.id).vibe.install")
-                }
-                if state.offersRemove {
-                    Button("Remove") { Task { await model.removeVibeHooks(hostID: host.id) } }
-                        .controlSize(.small)
-                        .disabled(model.isPerformingVibeHostAction || model.isEnrollmentBusy)
-                        .accessibilityIdentifier("claude.remote.host.\(host.id).vibe.remove")
-                }
-                if model.isPerformingVibeHostAction {
-                    ProgressView().controlSize(.small)
-                }
-            }
         }
     }
 
@@ -2519,7 +2475,7 @@ private struct ClaudeIntegrationPresentations: ViewModifier {
 /// One consented setup run, one line per step.
 ///
 /// Shared by the enrollment sheet and the per-host update panel: both start the
-/// same run and both render the same six steps. The model owns every sentence;
+/// same run and both render the same seven steps. The model owns every sentence;
 /// this renders strings.
 private struct ClaudeSetupRunSteps: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
@@ -2588,7 +2544,7 @@ private struct ClaudeSetupRunSteps: View {
     }
 }
 
-/// One consent sentence and the six-step automated setup run.
+/// One consent sentence and the seven-step automated setup run.
 private struct ClaudeRemoteEnrollmentSheet: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
     let presentation: ClaudeIntegrationSettingsModel.EnrollmentPresentation
@@ -3492,40 +3448,6 @@ private struct OpencodePluginSetupSheet: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .accessibilityIdentifier("integrations.opencodeSheet.apply")
-            }
-        }
-        .padding(16)
-        .frame(width: 460)
-    }
-}
-
-/// Consent for writing the Mistral Vibe hooks onto an enrolled ssh host.
-private struct VibeHostSetupSheet: View {
-    @Bindable var model: ClaudeIntegrationSettingsModel
-    let request: ClaudeIntegrationSettingsModel.VibeHostSetupRequest
-
-    private static let documentationURL = URL(
-        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/vibe/README.md#on-an-ssh-host"
-    )!
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Mistral Vibe hooks")
-                .font(.headline)
-            Text(request.consentSentence)
-                .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
-            Link("Details", destination: Self.documentationURL)
-
-            HStack {
-                Spacer()
-                Button("Cancel") { model.vibeHostSetupRequest = nil }
-                    .accessibilityIdentifier("claude.remote.vibeSheet.cancel")
-                Button("Set Up") {
-                    Task { await model.confirmVibeHooksSetup() }
-                }
-                .keyboardShortcut(.defaultAction)
-                .accessibilityIdentifier("claude.remote.vibeSheet.apply")
             }
         }
         .padding(16)

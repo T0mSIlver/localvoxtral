@@ -11,7 +11,7 @@ import XCTest
 /// these tests execute the real scripts AND the runner's real stdin and output
 /// limits. (A first version ran the scripts directly and hid that the runner's
 /// standard budget refuses this flow outright — Codex review, 2026-09-20.)
-private final class FakeHost: @unchecked Sendable {
+final class VibeFakeHost: @unchecked Sendable {
     let home: URL
     private let lock = NSLock()
     private var _invocations: [ClaudeRemoteEnrollmentService.Invocation] = []
@@ -96,11 +96,11 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
         try XCTUnwrap(VibeRemoteHooksFiles.bundled())
     }
 
-    private func service(_ host: FakeHost) -> ClaudeRemoteEnrollmentService {
+    private func service(_ host: VibeFakeHost) -> ClaudeRemoteEnrollmentService {
         ClaudeRemoteEnrollmentService(runner: host.runner)
     }
 
-    private func setUp(_ host: FakeHost, files: VibeRemoteHooksFiles? = nil) throws
+    private func setUp(_ host: VibeFakeHost, files: VibeRemoteHooksFiles? = nil) throws
         -> ClaudeRemoteEnrollmentService.VibeHooksOutcome {
         try service(host).setUpRemoteVibeHooks(
             sshHostAlias: "builder", token: Self.token, remoteForwardPort: 18_473,
@@ -123,7 +123,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
     // MARK: - Install
 
     func testSetupWritesThePrivateFilesAndAppendsTheBlock() throws {
-        let host = try FakeHost()
+        let host = try VibeFakeHost()
         try host.write(Self.userHooks, to: ".vibe/hooks.toml")
         let files = try shippedFiles()
 
@@ -140,7 +140,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
     }
 
     func testTheTokenIsInNoArgvAndEveryRunIsABatchModeShOverStdin() throws {
-        let host = try FakeHost()
+        let host = try VibeFakeHost()
         _ = try setUp(host)
         XCTAssertEqual(host.invocations.count, 4, "probe, stage, read back, activate")
         for invocation in host.invocations {
@@ -157,7 +157,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
     }
 
     func testTheRunNeedsTheLargerRunnerBudgetAndAsksForItByName() throws {
-        let host = try FakeHost()
+        let host = try VibeFakeHost()
         _ = try setUp(host)
         let stage = host.invocations[1]
         XCTAssertGreaterThan(
@@ -175,7 +175,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
     func testALargeHooksTomlSurvivesTheRoundTripThroughTheRunner() throws {
         // Far past the 2,000 characters a standard run hands back, and past
         // the pipe buffer on the way out.
-        let host = try FakeHost()
+        let host = try VibeFakeHost()
         var large = Self.userHooks
         for index in 0..<900 {
             large += "\n[[hooks]]\nname = \"user-\(index)\"\ntype = \"post_agent\"\ncommand = \"true # \(String(repeating: "x", count: 60))\"\n"
@@ -187,7 +187,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
     }
 
     func testAHooksTomlPastTheCapIsRefusedByTheHostNotTruncatedByTheMac() throws {
-        let host = try FakeHost()
+        let host = try VibeFakeHost()
         try host.write(String(repeating: "# filler line\n", count: 20_000), to: ".vibe/hooks.toml")
         let failure = try XCTUnwrap(failure { _ = try self.setUp(host) })
         XCTAssertEqual(failure.exitCode, 46)
@@ -196,14 +196,14 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
     }
 
     func testAHostWithoutHooksTomlGetsOneAt0600() throws {
-        let host = try FakeHost()
+        let host = try VibeFakeHost()
         _ = try setUp(host)
         XCTAssertEqual(host.text(".vibe/hooks.toml"), try shippedFiles().hooksBlock)
         XCTAssertEqual(host.mode(".vibe/hooks.toml"), 0o600)
     }
 
     func testASecondRunIsAnUpdateAndLeavesTheFileByteIdentical() throws {
-        let host = try FakeHost()
+        let host = try VibeFakeHost()
         try host.write(Self.userHooks, to: ".vibe/hooks.toml")
         _ = try setUp(host)
         let before = host.text(".vibe/hooks.toml")
@@ -214,7 +214,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
     func testTheInstalledShimDialsWithTheTokenAndPortThatWereWritten() throws {
         // No directory override: the shim must find compact.py, token and port
         // where setup put them, from $HOME alone.
-        let host = try FakeHost()
+        let host = try VibeFakeHost()
         _ = try setUp(host)
         let stub = """
         #!/bin/sh
@@ -247,17 +247,15 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
 
     // MARK: - Refusals
 
-    func testNoVibeOnTheHostSaysSoAndWritesNothing() throws {
-        let host = try FakeHost(vibeInstalled: false)
-        let failure = try XCTUnwrap(failure { _ = try self.setUp(host) })
-        XCTAssertEqual(failure.exitCode, 127)
-        XCTAssertTrue(failure.message.hasPrefix("Vibe was not found on the remote host."))
+    func testNoVibeOnTheHostIsAnOutcomeAndWritesNothing() throws {
+        let host = try VibeFakeHost(vibeInstalled: false)
+        XCTAssertEqual(try setUp(host), .vibeNotFound, "the host's setup run installs what it finds")
         XCTAssertNil(host.text(".vibe/localvoxtral/remote/token"))
         XCTAssertEqual(host.invocations.count, 1)
     }
 
     func testAConflictingHooksTomlIsRefusedBeforeAnythingIsWritten() throws {
-        let host = try FakeHost()
+        let host = try VibeFakeHost()
         let conflicting = "[[hooks]]\nname = \"localvoxtral-remote-turn\"\ntype = \"post_agent\"\n"
         try host.write(conflicting, to: ".vibe/hooks.toml")
         let failure = try XCTUnwrap(failure { _ = try self.setUp(host) })
@@ -267,7 +265,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
     }
 
     func testAnEditOnTheHostBetweenProbeAndWriteIsNotOverwritten() throws {
-        let host = try FakeHost()
+        let host = try VibeFakeHost()
         try host.write(Self.userHooks, to: ".vibe/hooks.toml")
         let edited = Self.userHooks + "# saved just now\n"
         host.beforeScript[2] = { try? host.write(edited, to: ".vibe/hooks.toml") }
@@ -280,7 +278,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
     }
 
     func testASymlinkedVibeDirectoryIsRefused() throws {
-        let host = try FakeHost()
+        let host = try VibeFakeHost()
         let real = host.home.appendingPathComponent("dotfiles-vibe")
         try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(
@@ -292,7 +290,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
     }
 
     func testAHostThatReportsTheWrongVersionGetsAFixedSentence() throws {
-        let host = try FakeHost()
+        let host = try VibeFakeHost()
         // After staging, the host's post.sh claims another version.
         host.beforeScript[3] = {
             let path = host.path(".vibe/localvoxtral/remote/post.sh")
@@ -323,7 +321,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
     }
 
     func testAnInvalidAliasNeverReachesSsh() throws {
-        let host = try FakeHost()
+        let host = try VibeFakeHost()
         XCTAssertThrowsError(try service(host).setUpRemoteVibeHooks(
             sshHostAlias: "-oProxyCommand=evil", token: Self.token, remoteForwardPort: 18_473,
             files: try shippedFiles()
@@ -334,7 +332,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
     // MARK: - Remove
 
     func testRemoveRestoresTheUsersHooksTomlAndDeletesTheToken() throws {
-        let host = try FakeHost()
+        let host = try VibeFakeHost()
         try host.write(Self.userHooks, to: ".vibe/hooks.toml")
         _ = try setUp(host)
 
@@ -345,7 +343,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
     }
 
     func testRemoveDeletesAHooksTomlThatHeldOnlyOurBlockAndKeepsTheLocalBlock() throws {
-        let host = try FakeHost()
+        let host = try VibeFakeHost()
         _ = try setUp(host)
         _ = try service(host).removeRemoteVibeHooks(sshHostAlias: "builder")
         XCTAssertNil(host.text(".vibe/hooks.toml"))
@@ -408,7 +406,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
         XCTAssertNil(ClaudeRemoteEnrollmentService.vibeProbe(inFramedOutput: orphan))
 
         // End to end: a host whose base64 fails keeps its file, byte for byte.
-        let host = try FakeHost()
+        let host = try VibeFakeHost()
         try host.write(Self.userHooks, to: ".vibe/hooks.toml")
         try host.write("#!/bin/sh\nexit 127\n", to: "nobase64/base64", mode: 0o755)
         host.pathPrefix = host.path("nobase64")
@@ -419,7 +417,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
     }
 
     func testAPlantedTemporaryLinkIsRefusedNotWrittenThrough() throws {
-        let host = try FakeHost()
+        let host = try VibeFakeHost()
         try host.write(Self.userHooks, to: ".vibe/hooks.toml")
         try host.write("export PRECIOUS=1\n", to: ".profile")
         try FileManager.default.createSymbolicLink(
@@ -596,135 +594,5 @@ final class VibeHostHooksStateTests: XCTestCase {
         XCTAssertNil(State.derive(host: host(alias: nil), bundledVersion: "1.0.0"))
         XCTAssertNil(State.derive(host: host(alias: "-oProxyCommand=x"), bundledVersion: "1.0.0"))
         XCTAssertNil(State.derive(host: host(revoked: true, purposes: [.vibe]), bundledVersion: "1.0.0"))
-    }
-
-    func testButtonsAreNamedForWhatTheyDoAndHiddenWhenTheyWouldDoNothing() {
-        XCTAssertEqual(State.notSetUp.setupButtonTitle, "Set up…")
-        XCTAssertEqual(State.updateAvailable.setupButtonTitle, "Update…")
-        XCTAssertNil(State.setUp.setupButtonTitle)
-        XCTAssertFalse(State.notSetUp.offersRemove)
-        XCTAssertTrue(State.setUp.offersRemove)
-    }
-}
-
-// MARK: - The flow, through the model
-
-private struct NoPluginService: ClaudePluginInstalling {
-    func installPlugin() throws {}
-    func updatePlugin() throws {}
-    func updateInstalledPlugin() throws {}
-    func uninstallPlugin() throws {}
-}
-
-@MainActor
-final class VibeHostFlowTests: XCTestCase {
-    private func makeModel(registry: ClaudeRemoteHostRegistry, host: FakeHost) throws
-        -> ClaudeIntegrationSettingsModel {
-        let files = try XCTUnwrap(VibeRemoteHooksFiles.bundled())
-        return ClaudeIntegrationSettingsModel(
-            registry: registry,
-            listener: nil,
-            pluginService: { NoPluginService() },
-            enrollmentService: ClaudeRemoteEnrollmentService(runner: host.runner),
-            performAsync: { body in
-                do {
-                    try body()
-                    return nil
-                } catch {
-                    return ClaudePluginActionFailure(error)
-                }
-            },
-            remoteForwardPort: 18_473,
-            vibeRemoteFiles: { files }
-        )
-    }
-
-    private func enrolled() throws -> (ClaudeRemoteHostRegistry, String) {
-        let registry = try ClaudeRemoteHostRegistry(
-            fileURL: URL(fileURLWithPath: "/tmp/lvx-vibe-flow-test/hosts.json"), io: InMemoryHostStoreIO()
-        )
-        return (registry, try registry.enroll(label: "builder", sshHostAlias: "builder").host.id)
-    }
-
-    private func hostToken(_ host: FakeHost) -> String? {
-        host.text(".vibe/localvoxtral/remote/token")?.trimmingCharacters(in: .newlines)
-    }
-
-    func testSetUpEndsWithOneCredentialTheHostHolds() async throws {
-        let (registry, hostID) = try enrolled()
-        let host = try FakeHost()
-        let model = try makeModel(registry: registry, host: host)
-
-        model.requestVibeHooksSetup(hostID: hostID)
-        XCTAssertEqual(model.vibeHostSetupRequest?.sshHostAlias, "builder")
-        XCTAssertNil(hostToken(host), "nothing is written before the sheet is confirmed")
-        await model.confirmVibeHooksSetup()
-
-        XCTAssertNil(model.alert)
-        XCTAssertEqual(registry.authenticate(token: try XCTUnwrap(hostToken(host)))?.id, hostID)
-        XCTAssertEqual(model.hosts.first?.vibeHooks, .setUp)
-    }
-
-    func testAnUpdateWhoseLastStepDiesLeavesTheHostAuthenticated() async throws {
-        let (registry, hostID) = try enrolled()
-        let host = try FakeHost()
-        let model = try makeModel(registry: registry, host: host)
-        model.requestVibeHooksSetup(hostID: hostID)
-        await model.confirmVibeHooksSetup()
-        let working = try XCTUnwrap(hostToken(host))
-
-        // The update's activation script (the 4th of that run, 8th overall)
-        // never reaches the host.
-        host.droppedScripts = [8]
-        model.requestVibeHooksSetup(hostID: hostID)
-        await model.confirmVibeHooksSetup()
-
-        XCTAssertNotNil(model.alert)
-        XCTAssertEqual(hostToken(host), working, "the token file was not replaced")
-        XCTAssertEqual(registry.authenticate(token: working)?.id, hostID, "and it still authenticates")
-    }
-
-    func testRotatingTheHostDuringSetupActivatesNothing() async throws {
-        let (registry, hostID) = try enrolled()
-        let host = try FakeHost()
-        host.beforeScript[2] = { _ = try? registry.rotateToken(hostID: hostID) }
-        let model = try makeModel(registry: registry, host: host)
-        model.requestVibeHooksSetup(hostID: hostID)
-        await model.confirmVibeHooksSetup()
-
-        XCTAssertNotNil(model.alert)
-        XCTAssertNil(hostToken(host), "the token is the last thing written, and the commit before it refused")
-        XCTAssertEqual(registry.host(id: hostID)?.extraCredentialPurposes, [])
-    }
-
-    func testRemoveWithdrawsTheCredentialEvenWhenTheHostCannotBeReached() async throws {
-        let (registry, hostID) = try enrolled()
-        let host = try FakeHost()
-        let model = try makeModel(registry: registry, host: host)
-        model.requestVibeHooksSetup(hostID: hostID)
-        await model.confirmVibeHooksSetup()
-        let token = try XCTUnwrap(hostToken(host))
-
-        host.droppedScripts = [5, 6] // every script of the removal
-        await model.removeVibeHooks(hostID: hostID)
-
-        XCTAssertNil(registry.authenticate(token: token), "a host that is down cannot keep its authorization")
-        XCTAssertEqual(model.alert?.title, "The Vibe hook files are still on the host")
-        XCTAssertEqual(model.hosts.first?.vibeHooks, .notSetUp)
-        XCTAssertEqual(model.hosts.first?.vibeHooksResult, "Withdrawn. Host files remain.")
-    }
-
-    func testAStaleResultDoesNotOutliveARotation() async throws {
-        let (registry, hostID) = try enrolled()
-        let host = try FakeHost()
-        let model = try makeModel(registry: registry, host: host)
-        model.requestVibeHooksSetup(hostID: hostID)
-        await model.confirmVibeHooksSetup()
-        XCTAssertEqual(model.hosts.first?.vibeHooksResult, "Set up.")
-
-        await model.rotate(hostID: hostID)
-        model.refreshHosts()
-        XCTAssertEqual(model.hosts.first?.vibeHooks, .notSetUp)
-        XCTAssertNil(model.hosts.first?.vibeHooksResult)
     }
 }

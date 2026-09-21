@@ -53,9 +53,11 @@ and in the two `command` lines.
 ## On an ssh host
 
 For a Vibe running on a host you ssh into, enroll the host first
-([remote setup](../../docs/remote-claude-context.md)), then press **Set up…** on
-the host's **Vibe hooks** line in **Settings → Remote hosts**. That page lists
-the four ssh commands the button runs.
+([remote setup](../../docs/remote-claude-context.md)). The host's setup run
+installs the Vibe hooks when it finds `vibe` there, next to the Claude Code
+plugin. For a host enrolled before Vibe was installed on it, press **Update Host…**
+on its row in **Settings → Remote hosts**. That page lists the four ssh commands
+the step runs.
 
 The host needs `vibe`, `curl` 7.55 or newer, and the Python interpreter Vibe
 runs on. Nothing is installed with pip: `remote/compact.py` uses the standard
