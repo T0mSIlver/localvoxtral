@@ -1220,6 +1220,18 @@ private struct DictationSettingsPane: View {
                             .frame(width: 44, alignment: .trailing)
                     }
                 }
+
+                SettingsFieldRow(
+                    title: "Position",
+                    help: "Drag the overlay anywhere on it to move it; "
+                        + "double-click it to put it back.",
+                    status: settings.overlayBufferPlacement == nil
+                        ? "Follows the focused window." : nil
+                ) {
+                    if settings.overlayBufferPlacement != nil {
+                        Button("Re-anchor") { settings.overlayBufferPlacement = nil }
+                    }
+                }
             }
         }
         // Carbon refuses the same key twice on one target, so the second mode

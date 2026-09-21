@@ -24,7 +24,9 @@ Key subsystems:
   before typing — see [agent/invariants.md](agent/invariants.md) for the
   latency it costs
 - Overlay: `OverlayBufferSessionCoordinator` (session + hold-before-dismiss
-  timing), `OverlayBufferStateMachine`, `DictationOverlayController` (NSPanel)
+  timing), `OverlayBufferStateMachine`, `DictationOverlayController` (NSPanel),
+  `OverlayManualPlacement` (the dragged position, stored per display and
+  re-validated against the attached ones before use)
 - Backend modes: `BackendMode` is per engine — `managedLocal`, `externalURL`,
   `mistralAPI`. Only the managed mode runs a supervised helper; the two hosted
   modes are pure configuration (`SettingsStore.resolvedWebSocketURL` /

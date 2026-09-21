@@ -1,4 +1,5 @@
 import Carbon.HIToolbox
+import CoreGraphics
 import Foundation
 import Observation
 import Synchronization
@@ -321,6 +322,9 @@ final class SettingsStore {
         static let overlayBufferShortcutEnabled = "settings.overlay_buffer_shortcut_enabled"
         static let overlayBufferFontSize = "settings.overlay_buffer_font_size"
         static let overlayBufferVisibleLines = "settings.overlay_buffer_visible_lines"
+        static let overlayBufferPositionScreenID = "settings.overlay_buffer_position_screen_id"
+        static let overlayBufferPositionOffsetX = "settings.overlay_buffer_position_offset_x"
+        static let overlayBufferPositionOffsetY = "settings.overlay_buffer_position_offset_y"
         static let livePasteShortcutKeyCode = "settings.live_paste_shortcut_key_code"
         static let livePasteShortcutModifiers = "settings.live_paste_shortcut_carbon_modifiers"
         static let livePasteShortcutEnabled = "settings.live_paste_shortcut_enabled"
@@ -916,6 +920,46 @@ final class SettingsStore {
         didSet { defaults.set(overlayBufferVisibleLines, forKey: Keys.overlayBufferVisibleLines) }
     }
 
+    /// Where the user dragged the Overlay Buffer panel, or nil for the
+    /// anchored position. Stored against the display it was on and
+    /// re-validated against the attached displays on every use — see
+    /// `OverlayManualPlacementResolver`.
+    var overlayBufferPlacement: OverlayManualPlacement? {
+        didSet { persistOverlayBufferPlacement() }
+    }
+
+    private func persistOverlayBufferPlacement() {
+        guard let placement = overlayBufferPlacement, placement.isWellFormed else {
+            defaults.removeObject(forKey: Keys.overlayBufferPositionScreenID)
+            defaults.removeObject(forKey: Keys.overlayBufferPositionOffsetX)
+            defaults.removeObject(forKey: Keys.overlayBufferPositionOffsetY)
+            return
+        }
+        defaults.set(placement.screenID, forKey: Keys.overlayBufferPositionScreenID)
+        defaults.set(Double(placement.topLeftOffset.x), forKey: Keys.overlayBufferPositionOffsetX)
+        defaults.set(Double(placement.topLeftOffset.y), forKey: Keys.overlayBufferPositionOffsetY)
+    }
+
+    /// Reads a stored placement back, rejecting anything the resolver could not
+    /// clamp: a half-written trio, an empty display id, a NaN offset. A first
+    /// run has none of the three keys and lands here as nil, which is the
+    /// anchored position.
+    static func loadOverlayBufferPlacement(defaults: UserDefaults) -> OverlayManualPlacement? {
+        guard let screenID = defaults.string(forKey: Keys.overlayBufferPositionScreenID),
+              !screenID.isEmpty,
+              defaults.object(forKey: Keys.overlayBufferPositionOffsetX) != nil,
+              defaults.object(forKey: Keys.overlayBufferPositionOffsetY) != nil
+        else { return nil }
+        let placement = OverlayManualPlacement(
+            screenID: screenID,
+            topLeftOffset: CGPoint(
+                x: defaults.double(forKey: Keys.overlayBufferPositionOffsetX),
+                y: defaults.double(forKey: Keys.overlayBufferPositionOffsetY)
+            )
+        )
+        return placement.isWellFormed ? placement : nil
+    }
+
     var livePasteShortcutEnabled: Bool {
         didSet { defaults.set(livePasteShortcutEnabled, forKey: Keys.livePasteShortcutEnabled) }
     }
@@ -1169,6 +1213,8 @@ final class SettingsStore {
             ? defaults.integer(forKey: Keys.overlayBufferVisibleLines)
             : OverlayLayoutMetrics.defaultVisibleLines
         overlayBufferVisibleLines = OverlayLayoutMetrics.clampedVisibleLines(storedOverlayVisibleLines)
+
+        overlayBufferPlacement = Self.loadOverlayBufferPlacement(defaults: defaults)
 
         // Zero-based; negatives are meaningless and an index past the device's
         // channel count is clamped again at capture start (the device can

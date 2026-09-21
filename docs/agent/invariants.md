@@ -29,6 +29,33 @@ there is not.
   so `LiveHoldBackReplacementStream` withholds the trailing partial word plus
   any suffix that is still a live prefix of a dictionary rule. Nothing is lost
   (`flushRemainder()` releases it at stop) but it costs latency of appearance.
+- **The overlay panel's click-through is insertion machinery, not window
+  chrome.** `NonActivatingPanel` refuses key and main and swallows every click
+  on its body, because the panel is on screen exactly while the app it is
+  about to insert into must keep focus. @joostliebregts's fork made the whole
+  panel draggable and lost the Overlay Buffer's auto-paste — to AppKit's
+  window-drag machinery, which moves a window by making the click belong to
+  it. What is load-bearing is therefore HOW the panel moves, not where the
+  user grabs it: `OverlayDragRegionView` sets the frame itself and swallows
+  the event, with no `performDrag(with:)`, no `isMovableByWindowBackground`
+  and no path that lets a mouse event reach the window. Reaching for either of
+  those to simplify the drag is the fork's change. The region covers the whole
+  panel (owner ruling, 2026-09-21, after hand-testing that a dragged overlay
+  still auto-pastes) and hands the scroll wheel back to the transcript by
+  re-running the hit test with itself hidden.
+- **A remembered overlay position is re-validated against the live displays,
+  never trusted.** `OverlayManualPlacement` stores the panel's top-left as an
+  offset inside ONE display's own frame, identified by its ColorSync UUID —
+  not a global point, and not the display number, which macOS reassigns per
+  session. On every use `OverlayManualPlacementResolver` requires that display
+  to still be attached (gone: the overlay falls back to the anchored position
+  and the stored point is KEPT, so replugging restores it) and clamps the
+  panel back inside its visible frame. Dragging runs through the same clamp as
+  restoring, so a position can never be dropped where the next session would
+  have to rescue it. The failure this exists for is silent and unrecoverable
+  by the user: an overlay restored onto a monitor that is no longer there has
+  no handle to drag it back with.
+
 - **LLM polishing trusts the model's text in both profiles.** Human dictation
   evaluation found that `PolishTokenGuard` could reduce fidelity by undoing
   useful formatting and reconstructed identifiers, so it is not in the commit
