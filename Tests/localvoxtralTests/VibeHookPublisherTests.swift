@@ -596,8 +596,16 @@ final class VibeIntegrationFilesTests: XCTestCase {
         let types = block.split(separator: "\n").filter { $0.hasPrefix("type = ") }
         XCTAssertEqual(types, [#"type = "post_tool""#, #"type = "post_agent""#])
         XCTAssertFalse(block.contains("strict = true"), "a strict hook turns our failure into the user's")
+        // The block's own pattern decides, the way both of Vibe's runners
+        // apply it: case-insensitive, against the whole tool name.
+        let line = try XCTUnwrap(block.split(separator: "\n").first { $0.hasPrefix(#"match = "re:"#) })
+        let regex = try NSRegularExpression(
+            pattern: String(line.dropFirst(#"match = "re:"#.count).dropLast()),
+            options: [.caseInsensitive]
+        )
         for tool in VibeHookInputParser.fileTools {
-            XCTAssertTrue(block.contains(tool), "\(tool) is parsed but never hooked")
+            let range = NSRange(tool.startIndex..., in: tool)
+            XCTAssertNotNil(regex.firstMatch(in: tool, range: range), "\(tool) is parsed but never hooked")
         }
     }
 }

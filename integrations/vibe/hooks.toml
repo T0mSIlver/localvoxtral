@@ -5,7 +5,7 @@
 [[hooks]]
 name = "localvoxtral-files"
 type = "post_tool"
-match = "re:^(read_file|write_file|edit)$"
+match = "re:^(read_file|write_file|edit|file_system[.](read_file|write_file|search_replace))$"
 command = "sh \"$HOME/.vibe/localvoxtral/publish.sh\" 2>/dev/null || :"
 timeout = 5.0
 description = "Tell localvoxtral which files this session touched."
