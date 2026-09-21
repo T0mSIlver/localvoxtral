@@ -316,6 +316,47 @@ remote host can do; it does not protect the host from itself.
 
 ---
 
+## Mistral Vibe on an enrolled host
+
+An enrolled host can report its Mistral Vibe sessions too, over the same tunnel.
+Each host row in **Settings → Remote hosts** has a **Vibe hooks** line with
+**Set up…**, **Update…** and **Remove**. It appears for a host that has an SSH
+alias on file and is not revoked.
+
+Set up runs four `ssh -o BatchMode=yes -o ClearAllForwardings=yes -- <alias>
+/bin/sh -s` commands, each with its script on stdin:
+
+1. Read the host: whether `vibe` is on the non-interactive PATH (with
+   `~/.local/bin` added), the installed hooks version, and `~/.vibe/hooks.toml`
+   (base64, at most 256 KiB) with its `cksum`.
+2. Write `~/.vibe/localvoxtral/remote/` at mode 0700 with `post.sh`,
+   `compact.py` and `port` (0600), and put a marked block of two
+   `[[hooks]]` tables into `~/.vibe/hooks.toml`. The new `hooks.toml` text is
+   computed on this Mac by the same rules as the local install, and the script
+   writes it only if the file's `cksum` is still the one step 1 saw.
+3. Read the host again and compare the version and the block.
+4. Write `token` (0600). It goes last, so a run that stops earlier leaves an
+   existing install working with its current token.
+
+The run refuses, and writes nothing, when a path under `~/.vibe` is a symlink,
+when `hooks.toml` has an unpaired marker, a marker inside a multi-line string, a
+hook named `localvoxtral-remote-files` or `localvoxtral-remote-turn` outside the
+block, or a key right after the block, and when the file changed during the run.
+
+The token is a second credential for the same host, minted for this run. The
+app keeps only a hash of the host's first token, which went into the Claude
+Code plugin's config, so Vibe cannot reuse it. The new one is trusted from just before
+step 4, next to the previous Vibe token until step 4 has succeeded, so an
+update that loses its connection cannot lock the host out. It authenticates as
+the same host and dies with **Rotate token** and **Revoke** like the first.
+**Remove** withdraws it before it contacts the host, so it stops working even
+when the host is unreachable; the alert then says the files are still there. It sits in `~/.vibe/localvoxtral/remote/token`,
+readable by any process running as you on that host, which is the exposure the
+Claude Code plugin's token already has in `~/.claude`.
+
+What runs on the host, what it sends and what it never sends is in the
+[Vibe hooks README](../integrations/vibe/README.md#on-an-ssh-host).
+
 ## Why `ExitOnForwardFailure` stays `no`
 
 `ExitOnForwardFailure yes` tells `ssh` to refuse the whole session if a

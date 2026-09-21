@@ -50,6 +50,41 @@ their old hooks.
 If you set `VIBE_HOME`, use that directory instead of `~/.vibe` in both steps
 and in the two `command` lines.
 
+## On an ssh host
+
+For a Vibe running on a host you ssh into, enroll the host first
+([remote setup](../../docs/remote-claude-context.md)), then press **Set up…** on
+the host's **Vibe hooks** line in **Settings → Remote hosts**. That page lists
+the four ssh commands the button runs.
+
+The host needs `vibe`, `curl` 7.55 or newer, and the Python interpreter Vibe
+runs on. Nothing is installed with pip: `remote/compact.py` uses the standard
+library only.
+
+On the host, each hook runs `remote/post.sh`:
+
+1. It reads the token and port from 0600 files next to it. The token goes into a
+   shell variable that was unset first, then into a private header file for
+   curl. It is in no command line and in no child's environment.
+2. It runs `compact.py` on the interpreter that is running Vibe. A `post_tool`
+   payload contains whole files, so the script keeps the session id, the working
+   directory, the file path and up to 2048 characters each of the edit strings
+   or the file read, and drops the rest. It reads the last user message from the
+   session log under the rules above.
+3. It posts at most two small requests to the tunnel, with `X-Lvx-Agent: vibe`,
+   one second each. After a failed dial it skips file hooks for five minutes, so
+   a Mac that is asleep does not make ssh print errors over your terminal.
+4. The first time a session's hook reaches the Mac, it leaves one background
+   shell that waits for that Vibe process to exit and then tells the Mac the
+   session ended. Vibe has no hook for that, and the Mac cannot check a process
+   on another machine. Set `LOCALVOXTRAL_VIBE_WATCHER=off` in Vibe's environment
+   to turn it off. Sessions then expire after four idle hours.
+
+It prints nothing and always exits 0.
+
+One machine can hold both blocks, the local one and the remote one. Their
+markers and hook names differ.
+
 ## Uninstall
 
 Delete the marked block from `~/.vibe/hooks.toml` and remove

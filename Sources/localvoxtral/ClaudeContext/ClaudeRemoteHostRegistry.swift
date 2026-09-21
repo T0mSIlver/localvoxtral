@@ -50,8 +50,34 @@ public struct ClaudeRemoteHost: Sendable, Equatable, Identifiable {
     /// fixed Settings string. Not persisted; see
     /// `notePluginVersion(hostID:_:)`.
     public var reportedPluginVersion: ClaudeRemotePluginVersionReport?
+    /// Which extra credentials this host holds (see `ClaudeRemoteCredentialPurpose`).
+    /// Purposes only, never anything derived from a token.
+    public var extraCredentialPurposes: Set<ClaudeRemoteCredentialPurpose> = []
+    /// The Vibe hooks version this host's authenticated Vibe hooks reported
+    /// this app session, highest seen, under the same rules and for the same
+    /// reason as `reportedPluginVersion`. Nil until a Vibe hook arrives.
+    public var reportedVibeHooksVersion: String?
 
     public var isRevoked: Bool { revokedAt != nil }
+}
+
+/// What an EXTRA credential of a host is for.
+///
+/// A host is enrolled with one token, and the app keeps only its hash: the
+/// plaintext went into the Claude Code plugin's config once and is gone. A
+/// second integration on the same host (the Vibe hooks) therefore cannot be
+/// handed "the host's token", and rotating it would cut off the Claude Code
+/// sessions using it. So a host may hold one more credential per purpose
+/// (owner decision 2026-09-20).
+///
+/// An extra credential authenticates AS THE HOST: same id, same session
+/// namespace, same origin channel. The purpose is a label for the UI and for
+/// replacing the right one, not a permission: both tokens sit under one user
+/// on one machine, so there is no boundary between them to enforce. Rotating
+/// or revoking the host clears every extra credential, because both are what
+/// you do when a token may have leaked.
+public enum ClaudeRemoteCredentialPurpose: String, Sendable, Codable, CaseIterable {
+    case vibe
 }
 
 /// A freshly issued credential. The ONLY time a plaintext token exists.
@@ -333,6 +359,14 @@ public struct ClaudeRemoteHostFileStoreIO: ClaudeRemoteHostStoreIO {
 public final class ClaudeRemoteHostRegistry: Sendable {
     /// Persisted shape. Internal: `tokenHash`/`tokenSalt` are storage details,
     /// and a public type carrying them invites someone to log one.
+    /// One extra credential. Same digest construction as the host's own.
+    struct StoredCredential: Codable, Equatable {
+        var purpose: ClaudeRemoteCredentialPurpose
+        var tokenSalt: String
+        var tokenHash: String
+        var createdAt: Date
+    }
+
     struct StoredHost: Codable, Equatable {
         var id: String
         var label: String
@@ -354,6 +388,12 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         /// was silent on the subject. Optional for the same
         /// forward/backward-compatibility reason as the alias above.
         var persistentForwardEnabled: Bool? = nil
+        /// Absent means none. Optional for the compatibility reason above: an
+        /// older build ignores the key (and drops it on its next write, which
+        /// costs a Vibe re-setup, never a host).
+        var extraCredentials: [StoredCredential]? = nil
+        /// TRANSIENT, like `pluginVersionReport` below.
+        var vibeHooksVersionReport: String? = nil
         /// TRANSIENT: the highest plugin version this host's authenticated
         /// hooks have reported during this app session. Deliberately outside
         /// `CodingKeys` — it is refreshed by every hook and self-heals within
@@ -377,6 +417,7 @@ public final class ClaudeRemoteHostRegistry: Sendable {
             case hashVersion
             case sshHostAlias
             case persistentForwardEnabled
+            case extraCredentials
         }
 
         var publicView: ClaudeRemoteHost {
@@ -388,7 +429,9 @@ public final class ClaudeRemoteHostRegistry: Sendable {
                 lastSeenAt: lastSeenAt,
                 revokedAt: revokedAt,
                 persistentForwardEnabled: persistentForwardEnabled ?? false,
-                reportedPluginVersion: pluginVersionReport
+                reportedPluginVersion: pluginVersionReport,
+                extraCredentialPurposes: Set((extraCredentials ?? []).map(\.purpose)),
+                reportedVibeHooksVersion: vibeHooksVersionReport
             )
         }
     }
@@ -410,6 +453,11 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         case writeFailed(path: String)
         case invalidLabel
         case tooManyHosts(limit: Int)
+        /// An extra credential was requested for a revoked host.
+        case hostRevoked(String)
+        /// The host's token was rotated between preparing an extra credential
+        /// and committing it.
+        case hostCredentialChanged(String)
         /// The id allocator failed to produce an unused id. Effectively
         /// impossible; reported rather than looped on forever.
         case idAllocationFailed
@@ -578,6 +626,17 @@ public final class ClaudeRemoteHostRegistry: Sendable {
             if equal, host.revokedAt == nil {
                 matched = host
             }
+            // Extra credentials, under the same rule: every stored hash is
+            // compared, a match never short-circuits, and a revoked host
+            // matches nothing (revocation clears these too; the check stays in
+            // case a file says otherwise).
+            for credential in host.extraCredentials ?? [] {
+                let extra = ClaudeRemoteTokenDigest.hash(token: token, salt: credential.tokenSalt)
+                if ClaudeRemoteTokenDigest.constantTimeEquals(extra, credential.tokenHash),
+                   !credential.tokenHash.isEmpty, host.revokedAt == nil {
+                    matched = host
+                }
+            }
         }
         return matched
     }
@@ -634,7 +693,136 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         }
     }
 
+    /// The Vibe hooks version an authenticated Vibe hook reported. Highest
+    /// wins and nothing is persisted, exactly as `notePluginVersion`: a host's
+    /// running Vibe sessions keep the hooks they started with.
+    public func noteVibeHooksVersion(hostID: String, _ version: String) {
+        guard ClaudeRemotePluginVersionCodec.isAcceptableVersion(version) else { return }
+        persistLock.withLock { _ in
+            state.withLock { hosts in
+                guard let index = hosts.firstIndex(where: { $0.id == hostID }) else { return }
+                guard hosts[index].vibeHooksVersionReport.map({
+                    ClaudeRemotePluginVersionCodec.isVersion($0, olderThan: version)
+                }) ?? true else { return }
+                hosts[index].vibeHooksVersionReport = version
+            }
+        }
+    }
+
     // MARK: - Mutations
+
+    /// Issue (or replace) this host's extra credential for `purpose`.
+    ///
+    /// - Returns: the plaintext token, knowable only here.
+    /// Refused for a revoked host: reinstating one is `rotateToken`'s job, and
+    /// it is a decision about the whole host.
+    ///
+    /// FOR TESTS. It retires the previous credential in the same call, which
+    /// is the one ordering the setup flow must not use: the host does not hold
+    /// the new token yet. Production code goes through `prepareCredential`,
+    /// `commitCredential` and, once the host has the token,
+    /// `retireOtherCredentials`.
+    func issueCredential(
+        hostID: String, purpose: ClaudeRemoteCredentialPurpose
+    ) throws -> String {
+        let pending = try prepareCredential(hostID: hostID, purpose: purpose)
+        try commitCredential(pending, hostID: hostID)
+        try retireOtherCredentials(hostID: hostID, keeping: pending)
+        return pending.token
+    }
+
+    /// A credential that exists only in memory until `commitCredential`.
+    ///
+    /// Two phases because the token has to reach the host BEFORE the store
+    /// trusts it: committing first would replace a working credential with
+    /// one the host never received whenever the ssh run fails.
+    public struct PendingCredential: Sendable {
+        public let token: String
+        let purpose: ClaudeRemoteCredentialPurpose
+        let salt: String
+        /// The host's own credential as it was when this one was prepared. A
+        /// rotation replaces it, and a credential prepared BEFORE a rotation
+        /// must not be committed after it: the rotation answered a suspected
+        /// leak, and this token was already on its way to the host by then.
+        let hostGeneration: String
+    }
+
+    public func prepareCredential(
+        hostID: String, purpose: ClaudeRemoteCredentialPurpose
+    ) throws -> PendingCredential {
+        guard let host = state.withLock({ hosts in hosts.first { $0.id == hostID } }) else {
+            throw StoreError.unknownHost(hostID)
+        }
+        guard host.revokedAt == nil else { throw StoreError.hostRevoked(hostID) }
+        let generation = host.tokenSalt + ":" + host.tokenHash
+        return PendingCredential(
+            token: makeToken(), purpose: purpose, salt: makeToken(), hostGeneration: generation
+        )
+    }
+
+    /// Trust `pending` IN ADDITION to the purpose's current credential.
+    ///
+    /// Both stay valid until `retireOtherCredentials`, because the caller is
+    /// about to replace the token file on the host and cannot know whether
+    /// that write landed if the connection dies: with only the old one
+    /// trusted a landed write locks the host out, with only the new one a
+    /// failed write does. At most one previous credential is kept.
+    public func commitCredential(_ pending: PendingCredential, hostID: String) throws {
+        let token = pending.token
+        let salt = pending.salt
+        let purpose = pending.purpose
+        let timestamp = now()
+        try transact { hosts in
+            guard let index = hosts.firstIndex(where: { $0.id == hostID }) else {
+                throw StoreError.unknownHost(hostID)
+            }
+            guard hosts[index].revokedAt == nil else { throw StoreError.hostRevoked(hostID) }
+            guard hosts[index].tokenSalt + ":" + hosts[index].tokenHash == pending.hostGeneration else {
+                throw StoreError.hostCredentialChanged(hostID)
+            }
+            var credentials = hosts[index].extraCredentials ?? []
+            let previous = credentials.filter { $0.purpose == purpose }.max { $0.createdAt < $1.createdAt }
+            credentials.removeAll { $0.purpose == purpose }
+            if let previous { credentials.append(previous) }
+            credentials.append(StoredCredential(
+                purpose: purpose,
+                tokenSalt: salt,
+                tokenHash: ClaudeRemoteTokenDigest.hash(token: token, salt: salt),
+                createdAt: timestamp
+            ))
+            hosts[index].extraCredentials = credentials
+            hosts[index].vibeHooksVersionReport = nil
+        }
+        Log.claudeContext.info(
+            "Issued \(purpose.rawValue, privacy: .public) credential for Claude remote host \(hostID, privacy: .public)"
+        )
+    }
+
+    /// The host has `pending`'s token now: drop the purpose's other credential.
+    public func retireOtherCredentials(hostID: String, keeping pending: PendingCredential) throws {
+        let kept = ClaudeRemoteTokenDigest.hash(token: pending.token, salt: pending.salt)
+        try transact { hosts in
+            guard let index = hosts.firstIndex(where: { $0.id == hostID }) else {
+                throw StoreError.unknownHost(hostID)
+            }
+            hosts[index].extraCredentials?.removeAll {
+                $0.purpose == pending.purpose && $0.tokenHash != kept
+            }
+        }
+    }
+
+    /// Drop this host's extra credentials for `purpose`. The tokens stop
+    /// working the instant this returns.
+    public func removeCredential(hostID: String, purpose: ClaudeRemoteCredentialPurpose) throws {
+        try transact { hosts in
+            guard let index = hosts.firstIndex(where: { $0.id == hostID }) else {
+                throw StoreError.unknownHost(hostID)
+            }
+            let remaining = (hosts[index].extraCredentials ?? []).filter { $0.purpose != purpose }
+            hosts[index].extraCredentials = remaining.isEmpty ? nil : remaining
+            hosts[index].vibeHooksVersionReport = nil
+        }
+    }
 
     /// Issue a credential for a new host.
     ///
@@ -693,6 +881,10 @@ public final class ClaudeRemoteHostRegistry: Sendable {
             hosts[index].tokenSalt = salt
             hosts[index].tokenHash = ClaudeRemoteTokenDigest.hash(token: token, salt: salt)
             hosts[index].hashVersion = Self.currentHashVersion
+            // A rotation answers a suspected leak, and the extra credentials
+            // sat next to the leaked one. They go; Vibe setup mints a new one.
+            hosts[index].extraCredentials = nil
+            hosts[index].vibeHooksVersionReport = nil
             // Rotating an enrolled-then-revoked host reinstates it: the user is
             // handing out a new credential, which is the same act as enrolling.
             hosts[index].revokedAt = nil
@@ -716,6 +908,7 @@ public final class ClaudeRemoteHostRegistry: Sendable {
             // that was deleted.
             hosts[index].tokenHash = ""
             hosts[index].tokenSalt = ""
+            hosts[index].extraCredentials = nil
         }
         Log.claudeContext.info("Revoked Claude remote host \(hostID, privacy: .public)")
     }

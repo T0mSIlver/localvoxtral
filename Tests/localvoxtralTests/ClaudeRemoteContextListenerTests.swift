@@ -1248,6 +1248,23 @@ extension ClaudeRemoteContextListenerTests {
         )
     }
 
+    func testAVibeRequestReportsItsOwnVersionAndSaysNothingAboutTheClaudePlugin() throws {
+        try startListener()
+        _ = try send(hookRequest(token: token, extraHeaders: [
+            "X-Lvx-Agent: vibe", "X-Lvx-Vibe-Hooks-Version: 1.0.0",
+        ]))
+        let host = try XCTUnwrap(hosts.host(id: hostID))
+        XCTAssertEqual(host.reportedVibeHooksVersion, "1.0.0")
+        XCTAssertNil(
+            host.reportedPluginVersion,
+            "a missing plugin header on a Vibe request must not read as a pre-1.10.0 Claude plugin"
+        )
+
+        _ = try send(hookRequest(token: token, extraHeaders: ["X-Lvx-Plugin-Version: 1.11.0"]))
+        XCTAssertEqual(hosts.host(id: hostID)?.reportedPluginVersion, .version("1.11.0"))
+        XCTAssertEqual(hosts.host(id: hostID)?.reportedVibeHooksVersion, "1.0.0")
+    }
+
     func testAClaudeRequestKeepsItsSessionHandles() throws {
         try startListener()
         _ = try send(hookRequest(token: token, extraHeaders: [

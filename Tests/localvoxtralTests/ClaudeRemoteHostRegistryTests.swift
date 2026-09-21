@@ -272,15 +272,23 @@ final class ClaudeRemoteHostRegistryTests: XCTestCase {
         // `reportedPluginVersion` too: a strict-shape version label the host's
         // own authenticated hooks sent (never a token), and the pane needs it
         // to say the plugin is outdated.
+        // `extraCredentialPurposes` and `reportedVibeHooksVersion` joined it
+        // with the Vibe hooks: the first is a set of purpose LABELS (never a
+        // hash, salt or token), the second the same kind of version label as
+        // the plugin's. The Vibe row renders from both.
         XCTAssertEqual(
             Set(properties),
             [
                 "id", "label", "sshHostAlias", "createdAt", "lastSeenAt", "revokedAt",
                 "persistentForwardEnabled", "reportedPluginVersion",
+                "extraCredentialPurposes", "reportedVibeHooksVersion",
             ]
         )
         let described = String(describing: enrollment.host)
         XCTAssertFalse(described.contains(enrollment.token))
+        let vibeToken = try registry.issueCredential(hostID: enrollment.host.id, purpose: .vibe)
+        let withExtra = try XCTUnwrap(registry.host(id: enrollment.host.id))
+        XCTAssertFalse(String(describing: withExtra).contains(vibeToken))
     }
 
     func testStoredHashIsSaltedSoIdenticalTokensDoNotShareAHash() throws {

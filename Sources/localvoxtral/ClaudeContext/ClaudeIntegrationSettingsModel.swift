@@ -304,6 +304,63 @@ public final class ClaudeIntegrationSettingsModel {
         /// for a revoked host too: the run carries no token, so it cannot
         /// bring the host back (Rotate token does).
         public var offersUpdate: Bool = true
+        /// The Vibe hooks on this host. `nil` hides the sub-row: no alias on
+        /// file to ssh to, or a revoked host.
+        public var vibeHooks: VibeHostHooksState?
+        /// Outcome of the last Vibe hooks run for this host, this app session.
+        public var vibeHooksResult: String?
+    }
+
+    /// The per-host Vibe hooks row. From what this Mac knows without ssh: the
+    /// credential it issued, and the version the host's hooks last reported.
+    public enum VibeHostHooksState: Sendable, Equatable {
+        case notSetUp
+        case setUp
+        case updateAvailable
+
+        public var sentence: String {
+            switch self {
+            case .notSetUp: return "Not set up."
+            case .setUp: return "Set up."
+            case .updateAvailable: return "Update available."
+            }
+        }
+
+        /// Named for what pressing it would do, nil when it would change
+        /// nothing this Mac can check.
+        public var setupButtonTitle: String? {
+            switch self {
+            case .notSetUp: return "Set up…"
+            case .updateAvailable: return "Update…"
+            case .setUp: return nil
+            }
+        }
+
+        public var offersRemove: Bool { self != .notSetUp }
+
+        static func derive(host: ClaudeRemoteHost, bundledVersion: String?) -> VibeHostHooksState? {
+            guard !host.isRevoked,
+                  host.sshHostAlias.map(ClaudeRemoteEnrollmentService.isValidHostAlias) == true
+            else { return nil }
+            guard host.extraCredentialPurposes.contains(.vibe) else { return .notSetUp }
+            if let reported = host.reportedVibeHooksVersion, let bundledVersion,
+               ClaudeRemotePluginVersionCodec.isVersion(reported, olderThan: bundledVersion) {
+                return .updateAvailable
+            }
+            return .setUp
+        }
+    }
+
+    /// What the Vibe hooks consent sheet is about.
+    public struct VibeHostSetupRequest: Sendable, Equatable, Identifiable {
+        public var hostID: String
+        public var sshHostAlias: String
+        public var id: String { hostID }
+
+        public var consentSentence: String {
+            "localvoxtral will write ~/.vibe/localvoxtral/remote/ and edit ~/.vibe/hooks.toml on "
+                + "\(sshHostAlias), over ssh."
+        }
     }
 
     /// The one fixed sentence the row's status position shows while
@@ -696,6 +753,13 @@ public final class ClaudeIntegrationSettingsModel {
     /// Copies the bundled Vibe shim and edits `~/.vibe/hooks.toml`. Nil
     /// disables the row's actions.
     private let vibeService: @Sendable () -> VibeHooksInstallService?
+    /// The files Vibe setup writes onto an enrolled host. Nil hides every
+    /// host's Vibe row, which is what a test that injects nothing gets.
+    private let vibeRemoteFiles: @Sendable () -> VibeRemoteHooksFiles?
+    /// The host whose Vibe hooks consent sheet is up.
+    public var vibeHostSetupRequest: VibeHostSetupRequest?
+    public private(set) var isPerformingVibeHostAction = false
+    private var vibeHostResults: [String: String] = [:]
     /// Whether a herdr binary is on this Mac's PATH. Synchronous and fast,
     /// so the row's visibility is reserved at construction instead of
     /// popping in after the first async refresh.
@@ -823,6 +887,7 @@ public final class ClaudeIntegrationSettingsModel {
         statuslineHookCommand: @escaping @Sendable () -> String? = { nil },
         opencodeService: @escaping @Sendable () -> OpencodePluginInstallService? = { nil },
         vibeService: @escaping @Sendable () -> VibeHooksInstallService? = { nil },
+        vibeRemoteFiles: @escaping @Sendable () -> VibeRemoteHooksFiles? = { nil },
         herdrBinaryAvailable: @escaping @Sendable () -> Bool = { false },
         herdrPresenceReport: @escaping @Sendable () -> Bool = { false },
         herdrPaneReportingHostIDs: @escaping @Sendable () -> [String] = { [] },
@@ -842,6 +907,7 @@ public final class ClaudeIntegrationSettingsModel {
         self.statuslineHookCommand = statuslineHookCommand
         self.opencodeService = opencodeService
         self.vibeService = vibeService
+        self.vibeRemoteFiles = vibeRemoteFiles
         self.herdrBinaryAvailable = herdrBinaryAvailable
         self.herdrPresenceReport = herdrPresenceReport
         self.herdrPaneReportingHostIDs = herdrPaneReportingHostIDs
@@ -1183,6 +1249,10 @@ public final class ClaudeIntegrationSettingsModel {
             guard let shell = loginShell(), let writer = shellRCWriter(shell) else { return true }
             return writer.isApplied() == true
         }()
+        let bundledVibeVersion = vibeRemoteFiles()?.version
+        // No ssh runner or no bundled files, no row: the buttons would have
+        // nothing to run or nothing to write.
+        let enrollmentIsExecutable = enrollmentService.canExecuteRemotely && bundledVibeVersion != nil
         hosts = enrolledHosts.map { host in
             let forwardState = forwards?.states[host.id]
             return HostRow(
@@ -1221,7 +1291,11 @@ public final class ClaudeIntegrationSettingsModel {
                         enrollmentService.sshConfigBlockIsCurrent(snippet: $0, hostID: host.id)
                     } != true
                     || !shellStepSettled
-                )
+                ),
+                vibeHooks: enrollmentIsExecutable
+                    ? VibeHostHooksState.derive(host: host, bundledVersion: bundledVibeVersion)
+                    : nil,
+                vibeHooksResult: vibeHostResults[host.id]
             )
         }
         herdrMachines = Self.herdrMachineSection(
@@ -1418,6 +1492,7 @@ public final class ClaudeIntegrationSettingsModel {
     /// Issue a new token for an existing host and show it once.
     public func rotate(hostID: String) async {
         guard let registry else { return }
+        vibeHostResults[hostID] = nil
         do {
             let enrollment = try registry.rotateToken(hostID: hostID)
             // The alias the user enrolled with, or nothing. The label is NOT a
@@ -1481,6 +1556,7 @@ public final class ClaudeIntegrationSettingsModel {
 
     public func revoke(hostID: String) async {
         guard let registry else { return }
+        vibeHostResults[hostID] = nil
         do {
             try registry.revoke(hostID: hostID)
             refreshHosts()
@@ -1502,6 +1578,7 @@ public final class ClaudeIntegrationSettingsModel {
     /// the sheet and docs always offered them.
     public func remove(hostID: String) async {
         guard let registry else { return }
+        vibeHostResults[hostID] = nil
         let isLastHost = registry.hosts().allSatisfy { $0.id == hostID }
         var manualNotes: [String] = []
 
@@ -1839,6 +1916,97 @@ public final class ClaudeIntegrationSettingsModel {
             opencodeResult = "Removed."
         }
         refreshOpencodeStatus()
+    }
+
+    // MARK: Mistral Vibe hooks on an enrolled host
+
+    /// Open the consent sheet. Nothing is written until it is confirmed.
+    public func requestVibeHooksSetup(hostID: String) {
+        guard let host = registry?.host(id: hostID), !host.isRevoked,
+              let alias = host.sshHostAlias, ClaudeRemoteEnrollmentService.isValidHostAlias(alias)
+        else { return }
+        vibeHostSetupRequest = VibeHostSetupRequest(hostID: hostID, sshHostAlias: alias)
+    }
+
+    /// Write the hooks onto the host with a credential minted for this run,
+    /// and trust that credential only once the host has it.
+    public func confirmVibeHooksSetup() async {
+        guard let request = vibeHostSetupRequest, let registry, let files = vibeRemoteFiles(),
+              !isPerformingVibeHostAction
+        else { return }
+        vibeHostSetupRequest = nil
+        isPerformingVibeHostAction = true
+        defer { isPerformingVibeHostAction = false }
+
+        vibeHostResults[request.hostID] = nil
+        let service = enrollmentService
+        let port = remoteForwardPort
+        let failure = await performAsync {
+            try ClaudeRemoteEnrollmentService.describingVibeFailures {
+                // Bound to the host's token as it is NOW: a Rotate token
+                // pressed while ssh runs makes the commit below refuse.
+                let pending = try registry.prepareCredential(hostID: request.hostID, purpose: .vibe)
+                _ = try service.setUpRemoteVibeHooks(
+                    sshHostAlias: request.sshHostAlias, token: pending.token,
+                    remoteForwardPort: port, files: files,
+                    beforeTokenActivation: { try registry.commitCredential(pending, hostID: request.hostID) }
+                )
+                try registry.retireOtherCredentials(hostID: request.hostID, keeping: pending)
+            }
+        }
+        finishVibeHostAction(
+            hostID: request.hostID, failure: failure,
+            title: "Could not set up the Vibe hooks", failed: "Could not set up.", done: "Set up."
+        )
+    }
+
+    /// Withdraw the credential FIRST, then clean the host up. The other order
+    /// lets a host that is down, or that refuses the command, keep a valid
+    /// token for as long as it likes. If the cleanup then fails, the files
+    /// left on the host hold a token that no longer authenticates; the alert
+    /// says they are still there.
+    public func removeVibeHooks(hostID: String) async {
+        guard let registry, let host = registry.host(id: hostID), let alias = host.sshHostAlias,
+              !isPerformingVibeHostAction
+        else { return }
+        isPerformingVibeHostAction = true
+        defer { isPerformingVibeHostAction = false }
+
+        vibeHostResults[hostID] = nil
+        let service = enrollmentService
+        if let failure = await performAsync({
+            try registry.removeCredential(hostID: hostID, purpose: .vibe)
+        }) {
+            finishVibeHostAction(
+                hostID: hostID, failure: failure,
+                title: "Could not remove the Vibe hooks", failed: "Could not remove.", done: ""
+            )
+            return
+        }
+        let failure = await performAsync {
+            try ClaudeRemoteEnrollmentService.describingVibeFailures {
+                _ = try service.removeRemoteVibeHooks(sshHostAlias: alias)
+            }
+        }
+        finishVibeHostAction(
+            hostID: hostID, failure: failure,
+            title: "The Vibe hook files are still on the host",
+            failed: "Withdrawn. Host files remain.", done: "Removed."
+        )
+    }
+
+    private func finishVibeHostAction(
+        hostID: String, failure: ClaudePluginActionFailure?, title: String, failed: String, done: String
+    ) {
+        if let failure {
+            alert = DetailAlert(title: title, detail: failure.describedError)
+            vibeHostResults[hostID] = failed
+            Log.claudeContext.error("Vibe host action failed: \(failure.describedError, privacy: .public)")
+        } else {
+            vibeHostResults[hostID] = done
+            Log.claudeContext.info("Vibe host action completed")
+        }
+        refreshHosts()
     }
 
     // MARK: Mistral Vibe hooks
@@ -3026,6 +3194,10 @@ public final class ClaudeIntegrationSettingsModel {
             return "The host list at \(path) could not be read."
         case .unsupportedVersion:
             return "The host list was written by a newer version of localvoxtral."
+        case .hostRevoked:
+            return "This host is revoked. Rotate its token first."
+        case .hostCredentialChanged:
+            return "This host's token was rotated during setup. Run the Vibe hooks setup again."
         case .unknownHost, .idAllocationFailed, .none:
             return String(describing: error)
         }
