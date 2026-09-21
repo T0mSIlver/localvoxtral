@@ -44,10 +44,18 @@ else
   STAMP_DIR=""
 fi
 
+# A stamp is "<state> <epoch>", well under 64 bytes. Anything running as the
+# user can rewrite the file, and the `${LINE#* }` split below is quadratic in
+# the length of a value with no space in it (3 s for 100 KB), on every redraw
+# of the status line. So only the head of the file is ever read.
+read_stamp() {
+  dd if="$1" bs=256 count=1 2>/dev/null
+}
+
 STATE=""
 EPOCH=""
 if [ -n "$STAMP_DIR" ] && [ -r "$STAMP_DIR/hook-status" ]; then
-  LINE="$(cat "$STAMP_DIR/hook-status" 2>/dev/null)" || LINE=""
+  LINE="$(read_stamp "$STAMP_DIR/hook-status")" || LINE=""
   STATE="${LINE%% *}"
   EPOCH="${LINE#* }"
   [ "$EPOCH" = "$LINE" ] && EPOCH=""
@@ -70,7 +78,7 @@ SESSION_STATE=""
 SESSION_EPOCH=""
 if [ -n "$STAMP_DIR" ] && [ -n "$SESSION_ID" ] \
   && [ -r "$STAMP_DIR/sessions/$SESSION_ID" ]; then
-  SESSION_LINE="$(cat "$STAMP_DIR/sessions/$SESSION_ID" 2>/dev/null)" || SESSION_LINE=""
+  SESSION_LINE="$(read_stamp "$STAMP_DIR/sessions/$SESSION_ID")" || SESSION_LINE=""
   SESSION_STATE="${SESSION_LINE%% *}"
   SESSION_EPOCH="${SESSION_LINE#* }"
   [ "$SESSION_EPOCH" = "$SESSION_LINE" ] && SESSION_EPOCH=""

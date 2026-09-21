@@ -205,7 +205,7 @@ fi
 # the app validates the shape and trusts nothing else about it.
 cat 2>/dev/null >"$WORK/header" <<EOF || fail_open
 Authorization: Bearer $TOKEN
-X-Lvx-Plugin-Version: 1.11.0
+X-Lvx-Plugin-Version: 1.12.0
 EOF
 
 # --- Allowlisted environment enrichment --------------------------------------
