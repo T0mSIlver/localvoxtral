@@ -482,9 +482,15 @@ final class DictationViewModel {
             },
             service: { [weak self] in self?.llmPolishingService ?? LLMPolishingService() },
             unavailableReason: { [weak self] in
-                self?.settings.polishingBackendMode == .managedLocal
-                    ? "Needs a hosted polishing model."
-                    : nil
+                guard let settings = self?.settings else { return nil }
+                if settings.polishingBackendMode == .managedLocal {
+                    return "Needs a hosted polishing model."
+                }
+                // The pass reads saved dictations and nothing else.
+                if !settings.dictationHistoryRetention.savesDictations {
+                    return "Needs dictation history."
+                }
+                return nil
             }
         )
         model.onRunFinished = { [weak self] outcome, countAtStart in
@@ -980,6 +986,7 @@ final class DictationViewModel {
         textInsertion.refreshAccessibilityTrustState()
         if startRuntimeServices {
             sessionStore = DictationSessionStore()
+            applyDictationHistoryRetention()
             learnedTermStore = LearnedTermStore(
                 fileURL: LearnedTermStore.defaultFileURL(),
                 onChange: { [weak self] in

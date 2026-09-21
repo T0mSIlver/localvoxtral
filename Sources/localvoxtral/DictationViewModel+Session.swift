@@ -2246,8 +2246,23 @@ extension DictationViewModel {
             polishContextSummary: polishContextSummary
         )
         debugSavedSessionRecordSink?(record)
+        let retention = settings.dictationHistoryRetention
+        guard retention.savesDictations else {
+            Log.persistence.debug("Dictation history is off: not saving this dictation")
+            return
+        }
         sessionStore?.save(record)
+        if let cutoff = retention.cutoff(now: record.finishedAt) {
+            sessionStore?.trim(olderThan: cutoff)
+        }
         termSuggestionCadence?.dictationSaved()
+    }
+
+    /// Brings the store in line with the retention setting: at launch, and
+    /// when the setting changes. `off` deletes everything there is.
+    func applyDictationHistoryRetention(now: Date = Date()) {
+        guard let cutoff = settings.dictationHistoryRetention.cutoff(now: now) else { return }
+        sessionStore?.trim(olderThan: cutoff)
     }
 
     func replacementDictionaryForCurrentSession() -> ReplacementDictionary? {

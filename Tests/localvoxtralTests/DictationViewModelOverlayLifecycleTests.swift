@@ -464,6 +464,64 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
     }
 
+    // MARK: - History retention on the save path
+
+    /// Finishes one overlay dictation of `text` against `store`.
+    private func finishDictation(
+        _ text: String, retention: DictationHistoryRetention, store: DictationSessionStore
+    ) -> DictationViewModel {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.dictationHistoryRetention = retention
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = MockAppConfigStore()
+        viewModel.sessionStore = store
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = text
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+        return viewModel
+    }
+
+    func testADictationIsSavedAndOlderOnesPastTheRetentionAreTrimmed() async throws {
+        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let longAgo = Date(timeIntervalSince1970: 1_000_000)
+        store.save(
+            DictationSessionRecord(
+                startedAt: longAgo, finishedAt: longAgo, rawText: "from 1970",
+                provider: "p", model: "m", outputMode: "overlay_buffer",
+                status: .sttCompleted, commitSucceeded: true))
+
+        _ = finishDictation("hello world", retention: .days7, store: store)
+
+        let entries = await store.entries()
+        XCTAssertEqual(entries.map(\.rawText), ["hello world"])
+    }
+
+    func testNothingIsSavedWhenHistoryIsOffAndApplyingTheRuleDeletesTheRest() async throws {
+        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let longAgo = Date(timeIntervalSince1970: 1_000_000)
+        store.save(
+            DictationSessionRecord(
+                startedAt: longAgo, finishedAt: longAgo, rawText: "from 1970",
+                provider: "p", model: "m", outputMode: "overlay_buffer",
+                status: .sttCompleted, commitSucceeded: true))
+
+        let viewModel = finishDictation("hello world", retention: .off, store: store)
+
+        let afterDictation = await store.entries()
+        XCTAssertEqual(afterDictation.map(\.rawText), ["from 1970"])
+
+        viewModel.applyDictationHistoryRetention(now: longAgo)
+        let afterApplying = await store.count()
+        XCTAssertEqual(afterApplying, 0)
+    }
+
     // MARK: - F6: polished badge flag + raw-transcript copy affordance
 
     func testPolishChangedCommitFlagsBadgeAndRetainsRawTranscript() async {
