@@ -22,9 +22,6 @@ final class TermSuggestionCadence {
     private let isDictationActive: @MainActor () -> Bool
     private let launchedAt: Date
     private let now: @MainActor () -> Date
-    /// The counter when the run in flight read the history. Dictations saved
-    /// while it waits for an answer were not read, so they stay counted.
-    private var countAtRunStart: Int?
 
     init(
         settings: SettingsStore,
@@ -69,22 +66,25 @@ final class TermSuggestionCadence {
         Log.polishing.info(
             "Term suggestions starting by themselves after \(count, privacy: .public) dictations"
         )
-        countAtRunStart = count
-        model.startInBackground()
+        model.startInBackground(countAtStart: count)
     }
 
     /// Wired to `SpeakerTermSuggestionModel.onRunFinished`, so the button's
     /// runs count too: a user who just pressed it has nothing new to find
     /// fifty dictations early.
-    func runFinished(_ outcome: SpeakerTermSuggestionModel.RunOutcome) {
+    ///
+    /// `countAtStart` is the counter when a background run read the history:
+    /// dictations saved while it waited for an answer were not read, so they
+    /// stay counted. Nil for the button, which reads everything there is.
+    func runFinished(_ outcome: SpeakerTermSuggestionModel.RunOutcome, countAtStart: Int? = nil) {
         let count = settings.termSuggestionDictationsSinceRun
-        let read = countAtRunStart ?? count
-        countAtRunStart = nil
         switch outcome {
         case .completed:
-            settings.termSuggestionDictationsSinceRun = max(0, count - read)
+            settings.termSuggestionDictationsSinceRun = max(0, count - (countAtStart ?? count))
             settings.termSuggestionRetryAt = 0
-        case .failed:
+        // Stop waits like a failure: without it the next saved dictation
+        // would restart the run the user just killed (review, 2026-09-21).
+        case .failed, .stopped:
             settings.termSuggestionRetryAt = count + Self.retryAfterFailure
         case .notRun:
             break

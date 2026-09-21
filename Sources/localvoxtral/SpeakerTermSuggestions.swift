@@ -170,7 +170,10 @@ final class SpeakerTermSuggestionModel {
     enum RunOutcome: Equatable {
         case completed
         case failed
-        /// Refused before a request went out, or stopped.
+        /// The Stop button.
+        case stopped
+        /// Refused before a request went out, or a stopped run's request
+        /// coming back after the fact.
         case notRun
     }
 
@@ -186,8 +189,10 @@ final class SpeakerTermSuggestionModel {
     /// badge is how a background run says it found something.
     private(set) var hasUnseenSuggestions = false
     @ObservationIgnored private var isPaneVisible = false
-    /// Every finished run, the button's included.
-    @ObservationIgnored var onRunFinished: (@MainActor (RunOutcome) -> Void)?
+    /// Every finished run, the button's included. `countAtStart` is what
+    /// `startInBackground` was given, handed back so the cadence never has to
+    /// guess which run an outcome belongs to.
+    @ObservationIgnored var onRunFinished: (@MainActor (RunOutcome, _ countAtStart: Int?) -> Void)?
     /// What the running state shows: how much is being read, and since when.
     private(set) var readingCount = 0
     private(set) var startedAt: Date?
@@ -271,9 +276,9 @@ final class SpeakerTermSuggestionModel {
     /// A run nobody asked for (`TermSuggestionCadence`). Same request, same
     /// row; what differs is that a failure or an empty answer leaves no
     /// message behind for a user who never pressed anything.
-    func startInBackground() {
+    func startInBackground(countAtStart: Int) {
         guard phase != .loading else { return }
-        task = Task { await suggest(background: true) }
+        task = Task { await suggest(background: true, countAtStart: countAtStart) }
     }
 
     /// The Stop button.
@@ -284,15 +289,16 @@ final class SpeakerTermSuggestionModel {
         runID += 1
         phase = .idle
         Log.polishing.info("Term suggestions stopped by the user")
+        onRunFinished?(.stopped, nil)
     }
 
     var unavailableReason: String? { unavailableReasonProvider() }
 
     @discardableResult
-    func suggest(background: Bool = false) async -> RunOutcome {
+    func suggest(background: Bool = false, countAtStart: Int? = nil) async -> RunOutcome {
         guard phase != .loading else { return .notRun }
         let outcome = await run(background: background)
-        onRunFinished?(outcome)
+        onRunFinished?(outcome, countAtStart)
         return outcome
     }
 

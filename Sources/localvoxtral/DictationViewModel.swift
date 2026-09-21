@@ -425,7 +425,9 @@ final class DictationViewModel {
                     : nil
             }
         )
-        model.onRunFinished = { [weak self] in self?.termSuggestionCadence?.runFinished($0) }
+        model.onRunFinished = { [weak self] outcome, countAtStart in
+            self?.termSuggestionCadence?.runFinished(outcome, countAtStart: countAtStart)
+        }
         storedTermSuggestions = model
         return model
     }

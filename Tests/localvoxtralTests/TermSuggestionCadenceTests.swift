@@ -90,8 +90,8 @@ final class TermSuggestionCadenceTests: XCTestCase {
             launchedAt: launchedAt,
             now: { [unowned self] in self.clock }
         )
-        model.onRunFinished = { [unowned self] outcome in
-            cadence.runFinished(outcome)
+        model.onRunFinished = { [unowned self] outcome, countAtStart in
+            cadence.runFinished(outcome, countAtStart: countAtStart)
             self.finished.append(outcome)
             let waiters = self.finishedWaiters
             self.finishedWaiters = []
@@ -241,15 +241,35 @@ final class TermSuggestionCadenceTests: XCTestCase {
         await fixture.service.requestArrived(count: 2)
 
         fixture.service.answer(.failure(URLError(.timedOut)))
-        await runFinished(count: 1)
-
-        XCTAssertEqual(finished, [.notRun])
-        XCTAssertEqual(fixture.model.phase, .loading)
-        save(1, fixture)
-        XCTAssertEqual(fixture.service.requestCount, 2)
-
-        fixture.service.answer(.success("[]"))
         await runFinished(count: 2)
+
+        XCTAssertEqual(finished, [.stopped, .notRun])
+        XCTAssertEqual(fixture.model.phase, .loading)
+
+        // The replacement read everything (it came from the button), and the
+        // late return of the stopped run took nothing from its bookkeeping.
+        save(3, fixture)
+        fixture.service.answer(.success("[]"))
+        await runFinished(count: 3)
+        XCTAssertEqual(fixture.settings.termSuggestionDictationsSinceRun, 0)
+    }
+
+    /// Stop means stop: the next saved dictation must not restart the run
+    /// the user just killed.
+    func testStoppingABackgroundRunWaitsTenDictationsLikeAFailure() async {
+        let fixture = makeFixture()
+
+        save(25, fixture)
+        await fixture.service.requestArrived(count: 1)
+        fixture.model.stop()
+        fixture.service.answer(.failure(CancellationError()))
+        await runFinished(count: 2)
+
+        save(TermSuggestionCadence.retryAfterFailure - 1, fixture)
+        XCTAssertEqual(fixture.service.requestCount, 1)
+
+        save(1, fixture)
+        await fixture.service.requestArrived(count: 2)
     }
 
     // MARK: - Deferrals
