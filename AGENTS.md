@@ -82,13 +82,14 @@ This is a real app with daily users. Nothing ships on "it compiles".
 
 ## Test tiers — the short version
 
-Tier 0 (unit suites + packaging + launch smoke) and the tier-1 speechd
-realtime integration run on every non-fast-path PR/push. The live-model LLM
-lanes and the live-herdr lane are CONDITIONAL: they run only for lane-filter
-path matches (`scripts/ci/llm-lane-filter.sh` / `speechd-lane-filter.sh` /
-`herdr-lane-filter.sh`) or the literal markers `[run-llm-eval]` /
-`[run-speechd-integration]` / `[run-herdr-integration]` in the PR body or head
-commit — and the marker must be present when the run is created (rerun reuses
+Tier 0 (unit suites + packaging + launch smoke) runs on every non-fast-path
+PR/push. Every live lane is CONDITIONAL, the tier-1 speechd realtime
+integration included: they run only for lane-filter path matches
+(`scripts/ci/stt-lane-filter.sh` / `llm-lane-filter.sh` /
+`speechd-lane-filter.sh` / `herdr-lane-filter.sh`) or the literal markers
+`[run-stt-integration]` / `[run-llm-eval]` / `[run-speechd-integration]` /
+`[run-herdr-integration]` in the PR body or head commit; the realtime
+integration also runs on every push to main — and the marker must be present when the run is created (rerun reuses
 the old payload; push after adding it). Tier 2 (UI smoke, nightly E2E eval)
 is scheduled, never per-PR.
 
