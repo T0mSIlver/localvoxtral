@@ -423,7 +423,7 @@ final class VibeRemoteShimTests: XCTestCase {
         // pane. The Vibe has to die in a window — after compact.py has read it
         // out of the process table, before the watcher asks `ps` whether it is
         // alive — and a sleep cannot hold a window open on a loaded host. A
-        // FIFO does: the stub curl below blocks on it before the hook's first
+        // FIFO does: the stub curl below waits on it before the hook's first
         // request, which is already past compact.py, and the driver opens the
         // writing end, kills and REAPS the Vibe, and only then lets the hook
         // run on. Nothing here is timed; the order is the handshake.
@@ -432,12 +432,21 @@ final class VibeRemoteShimTests: XCTestCase {
         let held = root.appendingPathComponent("held")
         try FileManager.default.createDirectory(at: held, withIntermediateDirectories: true)
         let wrapper = """
-        #!/bin/sh
-        if [ ! -e "\(held.path)/passed" ]; then
-          : >"\(held.path)/passed"
-          IFS= read -r _ <"\(gate.path)" || :
-        fi
-        exec "\(stubDir.path)/curl" "$@"
+        #!/usr/bin/python3
+        import os, select, sys
+        if not os.path.exists("\(held.path)/passed"):
+            open("\(held.path)/passed", "w").close()
+            # O_NONBLOCK, so that opening the reading end never blocks: a
+            # driver that has already given up must not leave this process,
+            # and the hook waiting on it, here for good. Both are orphans by
+            # then, and neither the test's own cleanup nor unlinking the FIFO
+            # can free a process asleep in open(). The wait itself ends on the
+            # driver's write, or on the EOF its exit sends, and the cap is the
+            # driver's own deadline so that neither outlives the other by long.
+            gate = os.open("\(gate.path)", os.O_RDONLY | os.O_NONBLOCK)
+            select.select([gate], [], [], 60)
+            os.close(gate)
+        os.execv("\(stubDir.path)/curl", ["\(stubDir.path)/curl"] + sys.argv[1:])
 
         """
         try Data(wrapper.utf8).write(to: held.appendingPathComponent("curl"))
@@ -463,6 +472,7 @@ final class VibeRemoteShimTests: XCTestCase {
         thread.join(60)
         if not opened:
             vibe.kill()
+            vibe.wait()
             sys.exit(4)
         vibe.kill()
         vibe.wait()  # gone AND reaped: `ps -o lstart=` has no answer for it now
@@ -474,11 +484,22 @@ final class VibeRemoteShimTests: XCTestCase {
             if os.path.exists(os.path.join(capture, "body-3")):
                 sys.exit(0)
             time.sleep(0.05)
-        sys.exit(3)
+        # Which silence this is: a shim that named no Vibe never armed a
+        # watcher at all, which is a different bug from one that stayed quiet.
+        try:
+            with open(os.path.join(capture, "header-1")) as handle:
+                named = "X-Lvx-Env-Hook-Parent-Pid" in handle.read()
+        except OSError:
+            named = False
+        sys.exit(3 if named else 5)
         """
         XCTAssertEqual(
             try runWatcherDriver(driver, extraPath: held.path, arguments: [gate.path]), 0,
-            "4 means the hook never reached its first request, 3 means no SessionEnd"
+            """
+            3 means a watcher was armed and sent no SessionEnd, 4 means the hook \
+            never reached its first request, 5 means compact.py named no Vibe \
+            (its `ps -ax` runs under a 0.5 s timeout) so no watcher was armed
+            """
         )
         XCTAssertTrue(try captured("argv", 3).hasSuffix("/v1/hook/SessionEnd\n"))
         // The watcher has to be the one the dead Vibe left behind. Named after
@@ -576,9 +597,10 @@ final class VibeRemoteShimTests: XCTestCase {
             XCTAssertFalse(FileManager.default.fileExists(atPath: work.appendingPathComponent("plan").path), "\(start)")
 
             // A payload with its own id is still sent: its watcher cannot
-            // signal init, so it takes the branch a Vibe that really died
-            // takes in testAVibeThatIsAlreadyGoneGetsItsSessionEndAtOnce, and
-            // the session ends at once.
+            // signal init, so it ends the session at once the same way a Vibe
+            // that really died does in
+            // testAVibeThatIsAlreadyGoneGetsItsSessionEndAtOnce — there on an
+            // empty start time, here on a `kill -0` a non-root user loses.
             let named = try runCompactor(legacy, startPID: start)
             XCTAssertTrue(FileManager.default.fileExists(atPath: named.appendingPathComponent("plan").path), "\(start)")
         }
