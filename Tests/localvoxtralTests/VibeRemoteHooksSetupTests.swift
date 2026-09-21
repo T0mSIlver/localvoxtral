@@ -11,6 +11,11 @@ import XCTest
 /// these tests execute the real scripts AND the runner's real stdin and output
 /// limits. (A first version ran the scripts directly and hid that the runner's
 /// standard budget refuses this flow outright — Codex review, 2026-09-20.)
+private let vibeFakeHostSharedStubDirectory: URL = {
+    atexit { try? FileManager.default.removeItem(at: vibeFakeHostSharedStubDirectory) }
+    return FileManager.default.temporaryDirectory.appendingPathComponent("vibe-host-stubs-\(UUID().uuidString)")
+}()
+
 final class VibeFakeHost: @unchecked Sendable {
     let home: URL
     private let lock = NSLock()
@@ -21,7 +26,7 @@ final class VibeFakeHost: @unchecked Sendable {
     var droppedScripts: Set<Int> = []
     /// A directory put first on the host's PATH, to shadow a tool.
     var pathPrefix: String? {
-        didSet { try? writeFakeSSH() }
+        didSet { try? writeFakeSSHPath() }
     }
 
     init(vibeInstalled: Bool = true) throws {
@@ -29,18 +34,44 @@ final class VibeFakeHost: @unchecked Sendable {
         let bin = home.appendingPathComponent(".local/bin")
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
         if vibeInstalled {
-            let vibe = bin.appendingPathComponent("vibe")
-            try Data("#!/bin/sh\nexit 0\n".utf8).write(to: vibe)
-            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: vibe.path)
+            try FileManager.default.createSymbolicLink(
+                at: bin.appendingPathComponent("vibe"), withDestinationURL: try Self.sharedStub("vibe")
+            )
         }
-        try writeFakeSSH()
+        try writeFakeSSHPath()
+        try FileManager.default.createSymbolicLink(at: fakeSSH, withDestinationURL: try Self.sharedStub("fake-ssh"))
     }
 
-    private func writeFakeSSH() throws {
+    /// The two executables every host needs, written once per test process and
+    /// symlinked into each host. Executing a script the system has not seen
+    /// before cost 170–260 ms on the build host against 23 ms for one it has,
+    /// and each of the 28 hosts used to write its own pair. What differs per
+    /// host stays out of the script: `fake-ssh` takes `$HOME` from the
+    /// directory it was reached through and `PATH` from a file beside it.
+    private static let sharedStubs: [String: String] = [
+        "vibe": "#!/bin/sh\nexit 0\n",
+        "fake-ssh": """
+            #!/bin/sh
+            home="${0%/*}"
+            HOME="$home" PATH="$(/bin/cat "$home/fake-ssh.path")" exec /bin/sh -s
+
+            """,
+    ]
+
+    private static func sharedStub(_ name: String) throws -> URL {
+        let url = vibeFakeHostSharedStubDirectory.appendingPathComponent(name)
+        guard !FileManager.default.fileExists(atPath: url.path) else { return url }
+        try FileManager.default.createDirectory(
+            at: vibeFakeHostSharedStubDirectory, withIntermediateDirectories: true
+        )
+        try Data(sharedStubs[name]!.utf8).write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        return url
+    }
+
+    private func writeFakeSSHPath() throws {
         let path = (pathPrefix.map { $0 + ":" } ?? "") + "/usr/bin:/bin"
-        let ssh = "#!/bin/sh\nHOME='\(home.path)' PATH='\(path)' exec /bin/sh -s\n"
-        try Data(ssh.utf8).write(to: fakeSSH)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeSSH.path)
+        try Data(path.utf8).write(to: home.appendingPathComponent("fake-ssh.path"))
     }
 
     private var fakeSSH: URL { home.appendingPathComponent("fake-ssh") }
@@ -237,8 +268,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
         process.standardInput = try FileHandle(forReadingFrom: URL(fileURLWithPath: host.path("payload.json")))
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
+        try process.runUntilExit()
 
         XCTAssertEqual(process.terminationStatus, 0)
         XCTAssertEqual(host.text("captured-url"), "http://127.0.0.1:18473/v1/hook/Stop\n")

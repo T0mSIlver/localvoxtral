@@ -15,7 +15,7 @@ final class VibeRemoteShimTests: XCTestCase {
 
     private var remoteDir: URL { root.appendingPathComponent("remote") }
     private var captureDir: URL { root.appendingPathComponent("capture") }
-    private var stubDir: URL { root.appendingPathComponent("bin") }
+    private var stubDir: URL { Self.sharedStubDir }
     private var transcript: URL { root.appendingPathComponent("session/messages.jsonl") }
 
     private static var repositoryRoot: URL {
@@ -23,28 +23,16 @@ final class VibeRemoteShimTests: XCTestCase {
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     }
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
-        root = FileManager.default.temporaryDirectory.appendingPathComponent("vibe-remote-\(UUID().uuidString)")
-        for directory in [remoteDir, captureDir, stubDir, transcript.deletingLastPathComponent()] {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        }
-        let source = Self.repositoryRoot.appendingPathComponent("integrations/vibe/remote")
-        for name in ["post.sh", "compact.py"] {
-            try FileManager.default.copyItem(
-                at: source.appendingPathComponent(name), to: remoteDir.appendingPathComponent(name)
-            )
-        }
-        try Data((Self.token + "\n").utf8).write(to: remoteDir.appendingPathComponent("token"))
-        try Data("18473\n".utf8).write(to: remoteDir.appendingPathComponent("port"))
-        try Data("""
-        {"role": "user", "content": "first prompt", "injected": false}
-        {"role": "assistant", "content": "ASSISTANT-SECRET", "injected": false}
-        {"role": "user", "content": "rename the wire enum", "injected": false}
-        {"role": "tool", "content": "TOOL-SECRET", "injected": false}
+    /// The stub `curl`, written once for the class: everything that varies per
+    /// call reaches it through the environment. Executing a script the system
+    /// has not seen before cost 170–260 ms on the build host against 23 ms for
+    /// one it has, and every test here used to write its own.
+    private static let sharedStubDir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("vibe-remote-stub-\(UUID().uuidString)")
 
-        """.utf8).write(to: transcript)
-
+    private static func writeStubCurlOnce() throws {
+        let curl = sharedStubDir.appendingPathComponent("curl")
+        guard !FileManager.default.fileExists(atPath: curl.path) else { return }
         // One numbered capture per invocation: argv, the header file, the body.
         let stub = """
         #!/bin/sh
@@ -62,9 +50,38 @@ final class VibeRemoteShimTests: XCTestCase {
         exit "${FAKE_CURL_EXIT:-0}"
 
         """
-        let curl = stubDir.appendingPathComponent("curl")
+        try FileManager.default.createDirectory(at: sharedStubDir, withIntermediateDirectories: true)
         try Data(stub.utf8).write(to: curl)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: curl.path)
+    }
+
+    override class func tearDown() {
+        try? FileManager.default.removeItem(at: sharedStubDir)
+        super.tearDown()
+    }
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        try Self.writeStubCurlOnce()
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("vibe-remote-\(UUID().uuidString)")
+        for directory in [remoteDir, captureDir, transcript.deletingLastPathComponent()] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let source = Self.repositoryRoot.appendingPathComponent("integrations/vibe/remote")
+        for name in ["post.sh", "compact.py"] {
+            try FileManager.default.copyItem(
+                at: source.appendingPathComponent(name), to: remoteDir.appendingPathComponent(name)
+            )
+        }
+        try Data((Self.token + "\n").utf8).write(to: remoteDir.appendingPathComponent("token"))
+        try Data("18473\n".utf8).write(to: remoteDir.appendingPathComponent("port"))
+        try Data("""
+        {"role": "user", "content": "first prompt", "injected": false}
+        {"role": "assistant", "content": "ASSISTANT-SECRET", "injected": false}
+        {"role": "user", "content": "rename the wire enum", "injected": false}
+        {"role": "tool", "content": "TOOL-SECRET", "injected": false}
+
+        """.utf8).write(to: transcript)
     }
 
     override func tearDownWithError() throws {
@@ -115,8 +132,7 @@ final class VibeRemoteShimTests: XCTestCase {
         let sink = try FileHandle(forWritingTo: output)
         process.standardOutput = sink
         process.standardError = sink
-        try process.run()
-        process.waitUntilExit()
+        try process.runUntilExit()
         try sink.close()
         return Run(exitCode: process.terminationStatus, output: try Data(contentsOf: output))
     }
