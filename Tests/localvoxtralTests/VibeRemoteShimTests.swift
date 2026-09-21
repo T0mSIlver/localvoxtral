@@ -392,14 +392,16 @@ final class VibeRemoteShimTests: XCTestCase {
     }
 
     /// Runs `driver` (Python) with the watcher on, and returns its exit code.
-    private func runWatcherDriver(_ driver: String, extraPath: String? = nil) throws -> Int32 {
+    private func runWatcherDriver(
+        _ driver: String, extraPath: String? = nil, arguments: [String] = []
+    ) throws -> Int32 {
         let payloadFile = root.appendingPathComponent("payload.json")
         try payload(event: "post_agent").write(to: payloadFile)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
         process.arguments = [
             "-c", driver, remoteDir.appendingPathComponent("post.sh").path, payloadFile.path, captureDir.path,
-        ]
+        ] + arguments
         process.environment = [
             "HOME": root.path,
             "PATH": "\(extraPath.map { $0 + ":" } ?? "")\(stubDir.path):/usr/bin:/bin",
@@ -418,26 +420,96 @@ final class VibeRemoteShimTests: XCTestCase {
 
     func testAVibeThatIsAlreadyGoneGetsItsSessionEndAtOnce() throws {
         // The hook outlives its Vibe: Ctrl-C at the end of a turn, a closed
-        // pane. The fake Vibe starts the hook detached and exits without
-        // waiting, and a slow stub curl keeps the hook busy past that exit.
-        let slow = root.appendingPathComponent("slow")
-        try FileManager.default.createDirectory(at: slow, withIntermediateDirectories: true)
-        let wrapper = "#!/bin/sh\nsleep 0.5\nexec \"\(stubDir.path)/curl\" \"$@\"\n"
-        try Data(wrapper.utf8).write(to: slow.appendingPathComponent("curl"))
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: slow.path + "/curl")
+        // pane. The Vibe has to die in a window — after compact.py has read it
+        // out of the process table, before the watcher asks `ps` whether it is
+        // alive — and a sleep cannot hold a window open on a loaded host. A
+        // FIFO does: the stub curl below waits on it before the hook's first
+        // request, which is already past compact.py, and the driver opens the
+        // writing end, kills and REAPS the Vibe, and only then lets the hook
+        // run on. Nothing here is timed; the order is the handshake.
+        let gate = root.appendingPathComponent("vibe-reaped")
+        XCTAssertEqual(mkfifo(gate.path, 0o600), 0, String(cString: strerror(errno)))
+        let held = root.appendingPathComponent("held")
+        try FileManager.default.createDirectory(at: held, withIntermediateDirectories: true)
+        let wrapper = """
+        #!/usr/bin/python3
+        import os, select, sys
+        if not os.path.exists("\(held.path)/passed"):
+            open("\(held.path)/passed", "w").close()
+            # O_NONBLOCK, so that opening the reading end never blocks: a
+            # driver that has already given up must not leave this process,
+            # and the hook waiting on it, here for good. Both are orphans by
+            # then, and neither the test's own cleanup nor unlinking the FIFO
+            # can free a process asleep in open(). The wait itself ends on the
+            # driver's write, or on the EOF its exit sends, and the cap is the
+            # driver's own deadline so that neither outlives the other by long.
+            gate = os.open("\(gate.path)", os.O_RDONLY | os.O_NONBLOCK)
+            select.select([gate], [], [], 60)
+            os.close(gate)
+        os.execv("\(stubDir.path)/curl", ["\(stubDir.path)/curl"] + sys.argv[1:])
+
+        """
+        try Data(wrapper.utf8).write(to: held.appendingPathComponent("curl"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: held.path + "/curl")
+
         let driver = """
-        import os, subprocess, sys, time
-        shim, payload, capture = sys.argv[1:4]
-        fake_vibe = "import subprocess, sys; subprocess.Popen(['/bin/sh', sys.argv[1]], stdin=open(sys.argv[2], 'rb'), start_new_session=True)"
-        subprocess.run([sys.executable, "-c", fake_vibe, shim, payload], check=True)
+        import os, subprocess, sys, threading, time
+        shim, payload, capture, gate = sys.argv[1:5]
+        # A Vibe that lives until it is killed, so `$PPID` and compact.py's
+        # process table name the real process on every host.
+        fake_vibe = ("import subprocess, sys, time;"
+                     " subprocess.Popen(['/bin/sh', sys.argv[1]], stdin=open(sys.argv[2], 'rb'),"
+                     " start_new_session=True); time.sleep(600)")
+        vibe = subprocess.Popen([sys.executable, "-c", fake_vibe, shim, payload])
+        with open(os.path.join(capture, "vibe-pid-0"), "w") as handle:
+            handle.write(str(vibe.pid))
+        # Opening the writing end returns when the hook opens the reading one,
+        # inside its first request. A deadline, because a hook that never gets
+        # there must fail the test rather than hang the suite.
+        opened = []
+        thread = threading.Thread(target=lambda: opened.append(open(gate, "w")), daemon=True)
+        thread.start()
+        thread.join(60)
+        if not opened:
+            vibe.kill()
+            vibe.wait()
+            sys.exit(4)
+        vibe.kill()
+        vibe.wait()  # gone AND reaped: `ps -o lstart=` has no answer for it now
+        opened[0].write("go\\n")
+        opened[0].close()
+        # The SessionEnd is owed from here on. Only the watcher's own request
+        # is still in flight, which is another process, so it is watched for.
         for _ in range(400):
             if os.path.exists(os.path.join(capture, "body-3")):
                 sys.exit(0)
             time.sleep(0.05)
-        sys.exit(3)
+        # Which silence this is: a shim that named no Vibe never armed a
+        # watcher at all, which is a different bug from one that stayed quiet.
+        try:
+            with open(os.path.join(capture, "header-1")) as handle:
+                named = "X-Lvx-Env-Hook-Parent-Pid" in handle.read()
+        except OSError:
+            named = False
+        sys.exit(3 if named else 5)
         """
-        XCTAssertEqual(try runWatcherDriver(driver, extraPath: slow.path), 0, "3 means no SessionEnd")
+        XCTAssertEqual(
+            try runWatcherDriver(driver, extraPath: held.path, arguments: [gate.path]), 0,
+            """
+            3 means a watcher was armed and sent no SessionEnd, 4 means the hook \
+            never reached its first request, 5 means compact.py named no Vibe \
+            (its `ps -ax` runs under a 0.5 s timeout) so no watcher was armed
+            """
+        )
         XCTAssertTrue(try captured("argv", 3).hasSuffix("/v1/hook/SessionEnd\n"))
+        // The watcher has to be the one the dead Vibe left behind. Named after
+        // init instead, it would report the end of a session on every hook
+        // whose wrapper died early, and this test would pass without ever
+        // running the path it is about.
+        XCTAssertEqual(
+            try request(1).headers["x-lvx-env-hook-parent-pid"], try captured("vibe-pid", 0),
+            "the SessionEnd must come from a watcher armed on the Vibe this test killed"
+        )
     }
 
     // MARK: - Unified Harness payloads
@@ -525,8 +597,10 @@ final class VibeRemoteShimTests: XCTestCase {
             XCTAssertFalse(FileManager.default.fileExists(atPath: work.appendingPathComponent("plan").path), "\(start)")
 
             // A payload with its own id is still sent: its watcher cannot
-            // signal init, reads that as "gone", and ends the session at once
-            // (testAVibeThatIsAlreadyGoneGetsItsSessionEndAtOnce).
+            // signal init, so it ends the session at once the same way a Vibe
+            // that really died does in
+            // testAVibeThatIsAlreadyGoneGetsItsSessionEndAtOnce — there on an
+            // empty start time, here on a `kill -0` a non-root user loses.
             let named = try runCompactor(legacy, startPID: start)
             XCTAssertTrue(FileManager.default.fileExists(atPath: named.appendingPathComponent("plan").path), "\(start)")
         }
