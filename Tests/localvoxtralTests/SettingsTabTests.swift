@@ -116,11 +116,11 @@ final class SettingsTabTests: XCTestCase {
         )
         let rawValues = Set(SettingsTab.allKnownPanes.map(\.rawValue))
 
-        // History is drilled by neither script. Both run on the owner's Mac
-        // against his real store, the capture publishes a picture of the pane
-        // and the drill dumps the window's AX tree into a public CI log when
-        // an assertion fails: either would publish his dictations.
-        let scriptedRawValues = rawValues.subtracting(["history"])
+        // History and Insights are drilled by neither script. Both run on the
+        // owner's Mac against his real store, the capture publishes a picture
+        // of the pane and the drill dumps the window's AX tree into a public CI
+        // log when an assertion fails: either would publish what he dictated.
+        let scriptedRawValues = rawValues.subtracting(["history", "insights"])
         XCTAssertEqual(
             Self.firstQuotedArguments(ofCalls: "assert_tab ", in: uiSmoke),
             scriptedRawValues,
@@ -428,7 +428,7 @@ final class SettingsTabTests: XCTestCase {
         XCTAssertEqual(
             SettingsTab.primarySidebarItems,
             [
-                .history, .general, .dictation, .endpoints, .textProcessing,
+                .history, .insights, .general, .dictation, .endpoints, .textProcessing,
                 .integrationsContext, .about,
             ]
         )
@@ -458,6 +458,7 @@ final class SettingsTabTests: XCTestCase {
             Set(SettingsTab.allKnownPanes.map(\.rawValue)),
             [
                 "general", "endpoints", "dictation", "textProcessing", "about", "history",
+                "insights",
                 "integrations.context", "integrations.claude", "integrations.opencode",
                 "integrations.vibe", "integrations.herdr", "integrations.remote",
                 "terminals.ghostty", "terminals.iterm2", "terminals.apple-terminal",

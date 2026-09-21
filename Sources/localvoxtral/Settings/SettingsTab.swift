@@ -28,6 +28,7 @@ struct SettingsTab: Hashable, Sendable {
         case terminal
         case about
         case history
+        case insights
     }
 
     let kind: Kind
@@ -81,12 +82,12 @@ extension SettingsTab {
     ///
     /// Context sits with the app's own panes: it is a polishing feature that
     /// every harness feeds, not a harness. Its raw value predates the move.
-    /// History leads: it is the one row that is not a setting, and the menu bar
-    /// opens the window on it.
+    /// History and Insights lead: they are the rows that are not settings, and
+    /// the menu bar opens the window on History.
     /// About closes the section as an ordinary row that scrolls with the rest
     /// (CodexBar's idiom), not a row pinned to the sidebar's bottom.
     static let primarySidebarItems: [SettingsTab] = [
-        .history, .general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about,
+        .history, .insights, .general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about,
     ]
 
     /// The Integrations section (owner decision, 2026-09-07): one row per
@@ -113,4 +114,5 @@ extension SettingsTab {
     static let integrationsRemote = SettingsTab(.integrationsRemote)
     static let about = SettingsTab(.about)
     static let history = SettingsTab(.history)
+    static let insights = SettingsTab(.insights)
 }

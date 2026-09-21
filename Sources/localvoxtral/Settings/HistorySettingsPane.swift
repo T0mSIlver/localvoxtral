@@ -6,6 +6,7 @@ import SwiftUI
 struct HistorySettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
+    var navigator: SettingsNavigator?
 
     @State private var model: DictationHistoryModel
     /// A shorter retention waiting for the user's yes, with what it deletes.
@@ -25,10 +26,12 @@ struct HistorySettingsPane: View {
     /// `model` is for a caller that needs the pane in a given state (a
     /// rendering check); the app lets the pane build its own.
     init(
-        settings: SettingsStore, viewModel: DictationViewModel, model: DictationHistoryModel? = nil
+        settings: SettingsStore, viewModel: DictationViewModel,
+        navigator: SettingsNavigator? = nil, model: DictationHistoryModel? = nil
     ) {
         self.settings = settings
         self.viewModel = viewModel
+        self.navigator = navigator
         _model = State(
             initialValue: model
                 ?? DictationHistoryModel(store: { [weak viewModel] in viewModel?.sessionStore })
@@ -44,6 +47,10 @@ struct HistorySettingsPane: View {
             // Launch and each save apply the rule; a Mac left on for a month
             // without a dictation would otherwise list what it promised to drop.
             viewModel.applyDictationHistoryRetention()
+            if let filter = navigator?.historyFilterRequest {
+                model.filter = filter
+                navigator?.historyFilterRequest = nil
+            }
         }
         // One reload per store write and per query edit. The short wait lets a
         // burst of keystrokes cost one fetch; a store write reloads at once.
