@@ -67,7 +67,7 @@ there is not.
   ended. The residual these do not cover: a transcript emitted by a retired
   socket AFTER a run has already completed is still accepted. Closing that one
   needs a connection generation stamped on every event, which is a change to
-  the enum and to both clients — tracked, not bolted on here.
+  the enum and to both clients — tracked in issue #417, not bolted on here.
 - **Live Auto-Paste holds back the tail of the transcript.** Replacements are
   applied before typing (nothing is ever un-typed — there are no backspaces in
   the insertion path, and terminals can't support them: field bug 2026-07-06),
