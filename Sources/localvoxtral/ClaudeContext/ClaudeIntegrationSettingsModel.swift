@@ -24,10 +24,21 @@ public protocol ClaudePluginInstalling: Sendable {
     /// Default nil so test doubles that only exercise install paths keep
     /// working; the pane then reports `.unknown` rather than guessing.
     func pluginListOutput() throws -> String?
+    /// stdout of `claude plugin marketplace list --json`, or nil when it is
+    /// unavailable. Same default, same reason.
+    func marketplaceListOutput() throws -> String?
+    /// Re-point the marketplace registration at this app's own copy, without
+    /// touching the installed plugin.
+    func repairMarketplaceRegistration() throws
 }
 
 extension ClaudePluginInstalling {
     public func pluginListOutput() throws -> String? { nil }
+    public func marketplaceListOutput() throws -> String? { nil }
+    /// A double that does not model the registration cannot repair one. The
+    /// launch path only calls this after a listing said repair is needed, and
+    /// a double that answers no listing never gets there.
+    public func repairMarketplaceRegistration() throws {}
 }
 
 extension ClaudePluginInstallService: ClaudePluginInstalling {}
@@ -651,6 +662,19 @@ public final class ClaudeIntegrationSettingsModel {
     /// unavailable. Async because the listing shells out; injected so tests
     /// drive the status derivation from fixtures.
     private let fetchPluginListOutput: @Sendable () async -> String?
+    /// stdout of `claude plugin marketplace list --json`. Same shape and same
+    /// reason as the listing above: it shells out, so it is async and injected.
+    private let fetchMarketplaceListOutput: @Sendable () async -> String?
+    /// The marketplace path this app wants Claude Code to hold — its own
+    /// mirror (`ClaudeMarketplaceMirror`). Nil where nothing models it, which
+    /// makes the launch repair decide "no" rather than guess.
+    ///
+    /// A CLOSURE, read when the repair runs. This model is built during app
+    /// startup, BEFORE the launch maintenance that creates the mirror; a value
+    /// captured then is nil for the whole of the first launch after an update,
+    /// which is precisely the launch that has a rotting registration to take
+    /// over (review, 2026-09-21).
+    private let desiredMarketplacePath: @Sendable () -> String?
     /// The bundled local plugin's `plugin.json` version, for the update
     /// comparison. Nil when the bundled manifest could not be read.
     private let bundledPluginVersion: String?
@@ -784,6 +808,8 @@ public final class ClaudeIntegrationSettingsModel {
             .noSessions
         },
         fetchPluginListOutput: @escaping @Sendable () async -> String? = { nil },
+        fetchMarketplaceListOutput: @escaping @Sendable () async -> String? = { nil },
+        desiredMarketplacePath: @escaping @Sendable () -> String? = { nil },
         bundledPluginVersion: String? = nil,
         statuslineService: @escaping @Sendable () -> ClaudeStatuslineInstallService? = { nil },
         statuslineHookCommand: @escaping @Sendable () -> String? = { nil },
@@ -800,6 +826,8 @@ public final class ClaudeIntegrationSettingsModel {
         self.shellRCWriter = shellRCWriter
         self.liveLocalTTYReport = liveLocalTTYReport
         self.fetchPluginListOutput = fetchPluginListOutput
+        self.fetchMarketplaceListOutput = fetchMarketplaceListOutput
+        self.desiredMarketplacePath = desiredMarketplacePath
         self.bundledPluginVersion = bundledPluginVersion
         self.statuslineService = statuslineService
         self.statuslineHookCommand = statuslineHookCommand
@@ -902,6 +930,114 @@ public final class ClaudeIntegrationSettingsModel {
 
     public func uninstallPlugin() async {
         await runPluginAction("Removed.") { try $0.uninstallPlugin() }
+    }
+
+    /// The row's Repair: re-point the marketplace, leaving the installed
+    /// plugin alone. Offered when the listing says the plugin is installed and
+    /// loading nothing.
+    public func repairMarketplaceRegistration() async {
+        await runPluginAction("Repaired.") { try $0.repairMarketplaceRegistration() }
+    }
+
+    /// Keep an installed plugin LOADING, once per launch.
+    ///
+    /// Claude Code stores the marketplace as the directory path it was
+    /// registered with and re-reads it at every session start. That path used
+    /// to be inside the app bundle, so it went stale whenever the app moved —
+    /// and for a `try-pr.sh` build it pointed into `/private/tmp`, which is
+    /// swept. The plugin then fails to load with `cache-miss`: installed,
+    /// enabled, running no hooks, in every session, until someone reinstalls
+    /// it by hand (field failure, 2026-09-21).
+    ///
+    /// Same bargain as the launch-time update: the user chose to install the
+    /// plugin, and WHERE it is loaded from is this app's business, not a
+    /// decision to put in front of them. Nothing is installed or removed here
+    /// — one `marketplace add`, which replaces the path and leaves the plugin,
+    /// its userConfig and its cache alone.
+    public func repairMarketplaceRegistrationAtLaunch() async {
+        await refreshLocalPluginStatus()
+        guard !isPerformingPluginAction else { return }
+        let registered = await fetchMarketplaceListOutput()
+            .flatMap { ClaudePluginListing.registeredMarketplacePath(in: $0) }
+        guard Self.marketplaceNeedsRepair(
+            status: localPluginStatus,
+            registeredPath: registered,
+            desiredPath: desiredMarketplacePath()
+        ) else { return }
+        isPerformingPluginAction = true
+        defer { isPerformingPluginAction = false }
+
+        Log.claudeContext.info("Re-pointing the Claude Code marketplace at this app's own copy")
+        let service = pluginService()
+        if let failure = await performAsync({ try service.repairMarketplaceRegistration() }) {
+            Log.claudeContext.error(
+                "Claude marketplace repair at launch failed: \(failure.describedError, privacy: .public)"
+            )
+        } else {
+            Log.claudeContext.info("Claude Code marketplace re-pointed")
+        }
+        await refreshLocalPluginStatus()
+    }
+
+    /// Whether Claude Code's registration must be re-pointed. Pure, because
+    /// this decides to run a command against someone's Claude Code config and
+    /// every row of the table deserves a test.
+    ///
+    /// Two triggers, and both require an installed plugin:
+    ///   - the listing says the marketplace failed to load — whatever the path
+    ///     is, it is not working;
+    ///   - the registered path is one that CANNOT keep working: it is already
+    ///     gone, or it points inside an app bundle, which is the shape that
+    ///     rots (`/private/tmp/localvoxtral-try.XXXX/…/localvoxtral.app/…`).
+    ///
+    /// A working path that is simply not ours is LEFT ALONE. Registering a
+    /// checkout — `claude plugin marketplace add ./integrations/claude-code` —
+    /// is documented in the plugin README and is how anyone edits the shim and
+    /// sees the edit; taking it over at every launch would undo a deliberate
+    /// setup, silently, and leave one log line to explain it (review,
+    /// 2026-09-21).
+    ///
+    /// A path we could not read is not a path that disagrees: absence of
+    /// evidence never triggers a command here.
+    public nonisolated static func marketplaceNeedsRepair(
+        status: ClaudePluginStatus,
+        registeredPath: String?,
+        desiredPath: String?,
+        registrationCanRot: (String) -> Bool = { registrationCanRot(path: $0) }
+    ) -> Bool {
+        switch status {
+        case .notInstalled, .unknown:
+            return false
+        case .failedToLoad:
+            return true
+        case .installed, .updateAvailable:
+            guard let registeredPath, let desiredPath else { return false }
+            guard !pathsAreTheSameDirectory(registeredPath, desiredPath) else { return false }
+            return registrationCanRot(registeredPath)
+        }
+    }
+
+    /// Whether a registered marketplace path is one this app must take over.
+    ///
+    /// The two rot shapes, and nothing else: a path that no longer exists
+    /// (the sweep already happened), and a path inside an app bundle (the
+    /// sweep, the move or the delete has not happened YET — an app bundle is
+    /// exactly what the user drags to the Trash or replaces on update).
+    public nonisolated static func registrationCanRot(
+        path: String,
+        directoryExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+    ) -> Bool {
+        guard directoryExists(path) else { return true }
+        return path.contains(".app/Contents/")
+    }
+
+    /// `/tmp/x` and `/private/tmp/x` are one directory on macOS, and a
+    /// registration that names either must not read as a disagreement.
+    nonisolated static func pathsAreTheSameDirectory(_ lhs: String, _ rhs: String) -> Bool {
+        func normalized(_ path: String) -> String {
+            URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+        }
+        return normalized(lhs) == normalized(rhs)
     }
 
     /// Bring an installed plugin up to the bundled version, once per launch.

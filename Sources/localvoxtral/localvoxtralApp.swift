@@ -661,8 +661,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }
         }
+        if let bundled = ClaudePluginAssets.marketplaceURL() {
+            do {
+                let outcome = try ClaudeMarketplaceMirror.refresh(source: bundled)
+                if outcome != .unchanged {
+                    Log.claudeContext.info(
+                        "Claude marketplace mirror \(String(describing: outcome), privacy: .public) from \(bundled.path, privacy: .public)"
+                    )
+                }
+            } catch {
+                Log.claudeContext.error(
+                    "Claude marketplace mirror refresh failed: \(String(describing: error), privacy: .public)"
+                )
+            }
+        }
         guard let settings = viewModel.claudeIntegrationSettings else { return }
-        Task { await settings.updateOutdatedPluginAtLaunch() }
+        Task {
+            // Order matters: the registration is re-pointed at the mirror
+            // refreshed above BEFORE the version check, so an update lands in
+            // a marketplace Claude Code can actually read.
+            await settings.repairMarketplaceRegistrationAtLaunch()
+            await settings.updateOutdatedPluginAtLaunch()
+        }
     }
 
     /// Binds the remote (SSH) hook listener, but only for a user who has
@@ -796,6 +816,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try? ClaudePluginInstallService.live().pluginListOutput()
                 }.value
             },
+            // Off the main actor for the same reason as the listing above.
+            fetchMarketplaceListOutput: {
+                await Task.detached(priority: .userInitiated) {
+                    try? ClaudePluginInstallService.live().marketplaceListOutput()
+                }.value
+            },
+            // Read at repair time, not now: this model is built before the
+            // launch maintenance that creates the mirror.
+            desiredMarketplacePath: { ClaudeMarketplaceMirror.usableURL()?.path },
             bundledPluginVersion: ClaudePluginAssets.localPluginVersion(),
             statuslineService: {
                 ClaudeStatuslineInstallService(
