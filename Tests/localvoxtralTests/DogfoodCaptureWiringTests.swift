@@ -683,7 +683,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
             startRuntimeServices: false
         )
         viewModel.appConfigStore = MockAppConfigStore()
-        viewModel.llmPolishingService = SucceedingPolishingService()
+        viewModel.llmPolishingService = FakePolishingService(returning: "polished output text", durationSeconds: 0.25)
         viewModel.dogfoodCaptureStore = DogfoodCaptureStore(directoryURL: captureDirectory)
         // Always injected, even for the tests that ignore it: the production
         // watcher would arm a REAL 2 s timer on a process-retained view model,
@@ -726,20 +726,6 @@ private final class WiringPasteboardStub: PasteboardReading {
     init(text: String) { self.text = text }
     func types() -> [NSPasteboard.PasteboardType]? { [.string] }
     func string() -> String? { text }
-}
-
-/// Always polishes successfully, without networking.
-private actor SucceedingPolishingService: LLMPolishingServicing {
-    func polish(
-        request: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        LLMPolishingResult(
-            rawText: request.inputText,
-            polishedText: "polished output text",
-            durationSeconds: 0.25
-        )
-    }
 }
 
 #endif

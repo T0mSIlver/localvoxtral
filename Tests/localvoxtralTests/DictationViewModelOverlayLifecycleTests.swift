@@ -468,7 +468,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
 
         let overlayCoordinator = MockOverlayCoordinator()
-        let polishingService = CapturingMockLLMPolishingService(resultText: "Hello world.")
+        let polishingService = FakePolishingService(returning: "Hello world.")
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
@@ -505,7 +505,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         let overlayCoordinator = MockOverlayCoordinator()
         // The model returns the input verbatim — no visible change to annotate.
-        let polishingService = CapturingMockLLMPolishingService(resultText: "hello world")
+        let polishingService = FakePolishingService(returning: "hello world")
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
@@ -564,7 +564,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
 
         let overlayCoordinator = MockOverlayCoordinator()
-        let polishingService = CapturingMockLLMPolishingService(resultText: "Polished text")
+        let polishingService = FakePolishingService(returning: "Polished text")
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
@@ -590,7 +590,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         await awaitStoppedSessionCommit(viewModel)
 
-        let request = await polishingService.lastRequest()
+        let request = await polishingService.lastRequest
         XCTAssertEqual(request?.inputText, "PostgreSQL rocks")
         XCTAssertEqual(request?.systemPrompt, "system instructions")
         XCTAssertEqual(
@@ -608,7 +608,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
 
         let overlayCoordinator = MockOverlayCoordinator()
-        let polishingService = CapturingMockLLMPolishingService(resultText: "Polished text")
+        let polishingService = FakePolishingService(returning: "Polished text")
         let configStore = MockAppConfigStore(
             replacementDictionary: ReplacementDictionary(entries: [
                 ReplacementEntry(replaceWith: "PostgreSQL", matches: ["postgres"]),
@@ -635,7 +635,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         await awaitStoppedSessionCommit(viewModel)
 
-        let request = await polishingService.lastRequest()
+        let request = await polishingService.lastRequest
         XCTAssertEqual(configStore.loadReplacementDictionaryCallCount, 0)
         XCTAssertEqual(request?.inputText, "postgres rocks")
         XCTAssertEqual(request?.userPrompts, ["Working text:\npostgres rocks"])
@@ -648,7 +648,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
 
         let overlayCoordinator = MockOverlayCoordinator()
-        let polishingService = FailingMockLLMPolishingService()
+        let polishingService = FakePolishingService(failing: MockPolishingError())
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
@@ -689,7 +689,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         settings.polishingBackendMode = .externalURL
 
         let overlayCoordinator = MockOverlayCoordinator()
-        let polishingService = NetworkFailingMockLLMPolishingService()
+        let polishingService = FakePolishingService(failing: LLMPolishingError.networkError("Connection refused"))
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
@@ -1094,49 +1094,6 @@ private actor BlockingMockLLMPolishingService: LLMPolishingServicing {
     func waitUntilFirstRequestArrives() async {
         guard requests == 0 else { return }
         await withCheckedContinuation { arrivalWaiters.append($0) }
-    }
-}
-
-private actor CapturingMockLLMPolishingService: LLMPolishingServicing {
-    private let resultText: String
-    private var requests: [LLMPolishingRequest] = []
-
-    init(resultText: String) {
-        self.resultText = resultText
-    }
-
-    func polish(
-        request: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        requests.append(request)
-        return LLMPolishingResult(
-            rawText: request.inputText,
-            polishedText: resultText,
-            durationSeconds: 0.01
-        )
-    }
-
-    func lastRequest() -> LLMPolishingRequest? {
-        requests.last
-    }
-}
-
-private actor FailingMockLLMPolishingService: LLMPolishingServicing {
-    func polish(
-        request _: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        throw MockPolishingError()
-    }
-}
-
-private actor NetworkFailingMockLLMPolishingService: LLMPolishingServicing {
-    func polish(
-        request _: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        throw LLMPolishingError.networkError("Connection refused")
     }
 }
 

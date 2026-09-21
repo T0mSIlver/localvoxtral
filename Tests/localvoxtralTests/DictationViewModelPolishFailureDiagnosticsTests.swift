@@ -26,7 +26,9 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
             startRuntimeServices: false
         )
         viewModel.appConfigStore = MockAppConfigStore()
-        viewModel.llmPolishingService = TimeoutFailingPolishingService()
+        viewModel.llmPolishingService = FakePolishingService(
+            failing: LLMPolishingError.networkError("The request timed out.")
+        )
         // The failure path presents a REAL modal NSAlert when NSApp exists —
         // the exact suite-hang class AGENTS.md warns about. Pre-setting the
         // alert flag makes presentConnectionFailureAlert a no-op (same
@@ -87,7 +89,15 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
             startRuntimeServices: false
         )
         viewModel.appConfigStore = MockAppConfigStore()
-        viewModel.llmPolishingService = TransportTimeoutPolishingService()
+        // Fails the way the real service does when URLSession gives up on a slow
+        // endpoint: through the service's own transport-error classification,
+        // so the test covers it.
+        viewModel.llmPolishingService = FakePolishingService(
+            failing: LLMPolishingService.polishingError(
+                forTransportError: URLError(.timedOut),
+                timeoutSeconds: LLMPolishingService.requestTimeoutInterval
+            )
+        )
         // Same modal-alert guard as the sibling tests (AGENTS.md).
         viewModel.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
@@ -161,7 +171,16 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
             startRuntimeServices: false
         )
         viewModel.appConfigStore = MockAppConfigStore()
-        viewModel.llmPolishingService = RejectingPolishingService()
+        // The shape a live Mistral rejection actually has (probe, 2026-09-15):
+        // an HTTP status plus an `object`/`message`/`type`/`code` envelope.
+        // `message` is the diagnosis; everything around it is noise that must
+        // not reach the UI.
+        viewModel.llmPolishingService = FakePolishingService(
+            failing: LLMPolishingError.requestFailed(
+                statusCode: 401,
+                body: #"{"object":"error","message":"Unauthorized","type":"invalid_request_error","param":null,"code":"1100","request_id":"abc123"}"#
+            )
+        )
         // Same modal-alert guard as the sibling tests (AGENTS.md).
         viewModel.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
@@ -306,45 +325,4 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
 
     // MARK: - Harness (mirrors the token-guard suite)
 
-}
-
-/// Always fails like a client-side timeout, exercising the connection-failure
-/// diagnostics path without networking.
-private actor TimeoutFailingPolishingService: LLMPolishingServicing {
-    func polish(
-        request _: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        throw LLMPolishingError.networkError("The request timed out.")
-    }
-}
-
-/// Fails the way the real service does when URLSession gives up on a slow endpoint:
-/// through the service's own transport-error classification, so the test covers it.
-private actor TransportTimeoutPolishingService: LLMPolishingServicing {
-    func polish(
-        request _: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        throw LLMPolishingService.polishingError(
-            forTransportError: URLError(.timedOut),
-            timeoutSeconds: LLMPolishingService.requestTimeoutInterval
-        )
-    }
-}
-
-/// Always fails the way a hosted provider rejects a bad API key: an HTTP
-/// status plus a multi-line JSON error body.
-private actor RejectingPolishingService: LLMPolishingServicing {
-    /// The shape a live Mistral rejection actually has (probe, 2026-09-15):
-    /// an `object`/`message`/`type`/`code` envelope. `message` is the
-    /// diagnosis; everything around it is noise that must not reach the UI.
-    static let body = #"{"object":"error","message":"Unauthorized","type":"invalid_request_error","param":null,"code":"1100","request_id":"abc123"}"#
-
-    func polish(
-        request _: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        throw LLMPolishingError.requestFailed(statusCode: 401, body: Self.body)
-    }
 }

@@ -10,7 +10,7 @@ final class LearnedTermWiringTests: XCTestCase {
     private func makeViewModel(
         outcome: RepoVocabularyMatcher.GroundingOutcome?,
         repositoryRoot: String? = nil,
-        service: any LLMPolishingServicing = IdentityPolishingService()
+        service: any LLMPolishingServicing = FakePolishingService()
     ) -> (DictationViewModel, LearnedTermStore) {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = true
@@ -170,13 +170,13 @@ final class LearnedTermWiringTests: XCTestCase {
     /// The point of the whole feature: a spelling confirmed in this project
     /// corrects a later dictation with no repo, screen or session hit at all.
     func testConfirmedTermGroundsALaterDictationWithNoLiveSource() async {
-        let recording = RecordingPolishingService()
+        let recording = FakePolishingService()
         let (viewModel, store) = makeViewModel(outcome: nil, service: recording)
         seed(store, term: "useAuth.ts", dictations: 3)
 
         await commit(viewModel, text: "open useauth.ts please")
 
-        let request = await recording.request
+        let request = await recording.lastRequest
         XCTAssertEqual(
             request?.inputText, "open useAuth.ts please",
             "the remembered spelling is placed before the model call, like any other source"
@@ -186,13 +186,13 @@ final class LearnedTermWiringTests: XCTestCase {
     /// Below the bar, nothing is used: two sightings can be the same mistake
     /// twice, and a mistake that grounds is a mistake that spreads.
     func testUnconfirmedTermDoesNotGroundADictation() async {
-        let recording = RecordingPolishingService()
+        let recording = FakePolishingService()
         let (viewModel, store) = makeViewModel(outcome: nil, service: recording)
         seed(store, term: "useAuth.ts", dictations: 2)
 
         await commit(viewModel, text: "open useauth.ts please")
 
-        let request = await recording.request
+        let request = await recording.lastRequest
         XCTAssertEqual(request?.inputText, "open useauth.ts please")
     }
 
@@ -213,37 +213,4 @@ final class LearnedTermWiringTests: XCTestCase {
 
     // MARK: - Helpers
 
-}
-
-/// Keeps the request the session built, which is where a grounding decision
-/// becomes observable.
-private actor RecordingPolishingService: LLMPolishingServicing {
-    private(set) var request: LLMPolishingRequest?
-
-    func polish(
-        request: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        self.request = request
-        return LLMPolishingResult(
-            rawText: request.inputText,
-            polishedText: request.inputText,
-            durationSeconds: 0.01
-        )
-    }
-}
-
-/// Returns the input unchanged: what the model does with the prompt is not
-/// this file's subject.
-private actor IdentityPolishingService: LLMPolishingServicing {
-    func polish(
-        request: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        LLMPolishingResult(
-            rawText: request.inputText,
-            polishedText: request.inputText,
-            durationSeconds: 0.01
-        )
-    }
 }

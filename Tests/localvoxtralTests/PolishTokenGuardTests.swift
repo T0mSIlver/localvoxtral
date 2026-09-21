@@ -554,7 +554,9 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
 
         let overlayCoordinator = MockOverlayCoordinator()
-        let polishingService = MangleFlagPolishingService(replacement: "\u{2013} force")
+        let polishingService = FakePolishingService(transform: {
+            $0.replacingOccurrences(of: "--force", with: "\u{2013} force")
+        })
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
@@ -594,7 +596,9 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
 
         let overlayCoordinator = MockOverlayCoordinator()
-        let polishingService = DeleteFlagPolishingService()
+        let polishingService = FakePolishingService(transform: {
+            $0.replacingOccurrences(of: "--force ", with: "")
+        })
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
@@ -635,7 +639,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
         let overlayCoordinator = MockOverlayCoordinator()
         let expected = "Look at `UserSessionManager.swift`."
-        let polishingService = RecordingPolishingService { _ in expected }
+        let polishingService = FakePolishingService(returning: expected)
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
@@ -748,7 +752,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             startRuntimeServices: false
         )
         viewModel.appConfigStore = appConfigStore
-        viewModel.llmPolishingService = IdentityPolishingService()
+        viewModel.llmPolishingService = FakePolishingService()
         viewModel.debugResolveTargetAppBundleIDOverride = { capturedBundleID }
         var savedRecord: DictationSessionRecord?
         viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
@@ -1008,9 +1012,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
                 userContent: "Clean this up.\n{{input_text}}"
             )
         )
-        viewModel.llmPolishingService = RecordingPolishingService(
-            transform: { _ in modelOutput }
-        )
+        viewModel.llmPolishingService = FakePolishingService(returning: modelOutput)
         viewModel.debugResolveTargetAppBundleIDOverride = {
             agentProfile ? "com.apple.Terminal" : "com.acme.notes"
         }
@@ -1056,7 +1058,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
                 userContent: "Clean this up.\n{{input_text}}"
             )
         )
-        let service = RecordingPolishingService()
+        let service = FakePolishingService()
 
         let viewModel = DictationViewModel(
             settings: settings,
@@ -1079,7 +1081,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
-        let request = await service.capturedRequest
+        let request = await service.lastRequest
         return (savedRecord, request)
     }
 
@@ -1344,7 +1346,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         settings.polishClipboardContextEnabled = contextEnabled
         settings.agentPolishProfileEnabled = agentProfile
 
-        let service = RecordingPolishingService(transform: polishTransform)
+        let service = FakePolishingService(transform: polishTransform)
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: MockOverlayCoordinator(),
@@ -1369,7 +1371,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
-        let request = await service.capturedRequest
+        let request = await service.lastRequest
         return ClipboardMacroSessionResult(
             record: savedRecord,
             request: request,
@@ -1512,7 +1514,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             promptTemplates: template,
             agentPromptTemplates: template
         )
-        let service = RecordingPolishingService()
+        let service = FakePolishingService()
         let contextStub = PasteboardStub(string: "UserSessionManager.swift")
         let payloadStub = PasteboardStub(string: "err.log payload")
 
@@ -1548,7 +1550,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         XCTAssertEqual(contextReadsWhenVocabRan, 1)
         XCTAssertEqual(payloadReadsWhenVocabRan, 1)
         // Both features still landed in the request/record as usual.
-        let capturedRequest = await service.capturedRequest
+        let capturedRequest = await service.lastRequest
         let request = try XCTUnwrap(capturedRequest)
         XCTAssertTrue(request.inputText.contains(ClipboardPayloadMacro.placeholder))
         XCTAssertTrue(
@@ -1578,7 +1580,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             promptTemplates: template,
             agentPromptTemplates: template
         )
-        let service = RecordingPolishingService()
+        let service = FakePolishingService()
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: MockOverlayCoordinator(),
@@ -1602,7 +1604,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
 
-        let capturedRequest = await service.capturedRequest
+        let capturedRequest = await service.lastRequest
         XCTAssertEqual(capturedRequest?.inputText, "open useAuth.ts and fix the import")
         XCTAssertEqual(
             viewModel.currentDictationEventText,
@@ -1632,7 +1634,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             promptTemplates: template,
             agentPromptTemplates: template
         )
-        let service = RecordingPolishingService()
+        let service = FakePolishingService()
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: MockOverlayCoordinator(),
@@ -1660,7 +1662,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             "look at UserSessionManager.swift"
         )
         // The matched entity also rode the dictionary slot as a hint entry.
-        let capturedRequest = await service.capturedRequest
+        let capturedRequest = await service.lastRequest
         let request = try XCTUnwrap(capturedRequest)
         XCTAssertEqual(request.inputText, "look at UserSessionManager.swift")
         XCTAssertTrue(
@@ -1695,7 +1697,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             promptTemplates: template,
             agentPromptTemplates: template
         )
-        let service = RecordingPolishingService()
+        let service = FakePolishingService()
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: MockOverlayCoordinator(),
@@ -1721,7 +1723,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             "look at UserSessionManager.swift"
         )
         // No dictionary slot: the hint section must not appear anywhere.
-        let capturedRequest = await service.capturedRequest
+        let capturedRequest = await service.lastRequest
         let request = try XCTUnwrap(capturedRequest)
         XCTAssertEqual(request.inputText, "look at UserSessionManager.swift")
         XCTAssertFalse(
@@ -1752,7 +1754,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             promptTemplates: template,
             agentPromptTemplates: template
         )
-        let service = RecordingPolishingService()
+        let service = FakePolishingService()
         let overlayCoordinator = MockOverlayCoordinator()
         let viewModel = DictationViewModel(
             settings: settings,
@@ -1786,7 +1788,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         // The commit completed despite the wedged pipeline...
         XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
         // ...the request was built WITHOUT vocabulary...
-        let capturedRequest = await service.capturedRequest
+        let capturedRequest = await service.lastRequest
         let request = try XCTUnwrap(capturedRequest)
         XCTAssertFalse(
             request.userPrompts.contains { $0.contains("Repository vocabulary") }
@@ -1888,7 +1890,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             promptTemplates: template,
             agentPromptTemplates: template
         )
-        let service = RecordingPolishingService()
+        let service = FakePolishingService()
 
         let viewModel = DictationViewModel(
             settings: settings,
@@ -1914,7 +1916,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
-        let request = await service.capturedRequest
+        let request = await service.lastRequest
         return (savedRecord, request)
     }
 
@@ -1946,7 +1948,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             promptTemplates: template,
             agentPromptTemplates: template
         )
-        let service = RecordingPolishingService()
+        let service = FakePolishingService()
 
         let viewModel = DictationViewModel(
             settings: settings,
@@ -1971,7 +1973,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
-        return (savedRecord, await service.capturedRequest)
+        return (savedRecord, await service.lastRequest)
     }
 
     /// Both sources map the same heard span to DIFFERENT exact terms. Through
@@ -2136,82 +2138,4 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
     // MARK: - Helpers
 
-}
-
-/// Returns the input with `--force` rewritten to a mangled variant, as a small
-/// polish model that folds `--` into a dash might.
-private actor MangleFlagPolishingService: LLMPolishingServicing {
-    private let replacement: String
-
-    init(replacement: String) {
-        self.replacement = replacement
-    }
-
-    func polish(
-        request: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        let polished = request.inputText.replacingOccurrences(of: "--force", with: replacement)
-        return LLMPolishingResult(
-            rawText: request.inputText,
-            polishedText: polished,
-            durationSeconds: 0.01
-        )
-    }
-}
-
-/// Returns the input unchanged — a no-op polish for profile-selection tests
-/// that only care which prompt profile the session requested.
-private actor IdentityPolishingService: LLMPolishingServicing {
-    func polish(
-        request: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        LLMPolishingResult(
-            rawText: request.inputText,
-            polishedText: request.inputText,
-            durationSeconds: 0.01
-        )
-    }
-}
-
-/// Captures the exact request the session assembled, so the clipboard-context
-/// and payload-macro tests can assert the request contents. The polished output
-/// is `transform(inputText)` — identity by default, or a deliberate mangle
-/// (e.g. placeholder duplication) for the drift tests.
-private actor RecordingPolishingService: LLMPolishingServicing {
-    private(set) var capturedRequest: LLMPolishingRequest?
-    private let transform: @Sendable (String) -> String
-
-    init(transform: @escaping @Sendable (String) -> String = { $0 }) {
-        self.transform = transform
-    }
-
-    func polish(
-        request: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        capturedRequest = request
-        return LLMPolishingResult(
-            rawText: request.inputText,
-            polishedText: transform(request.inputText),
-            durationSeconds: 0.01
-        )
-    }
-}
-
-/// Drops `--force` from the input entirely, exercising the unrepairable
-/// fallback path.
-private actor DeleteFlagPolishingService: LLMPolishingServicing {
-    func polish(
-        request: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        let polished = request.inputText.replacingOccurrences(of: "--force ", with: "")
-        return LLMPolishingResult(
-            rawText: request.inputText,
-            polishedText: polished,
-            durationSeconds: 0.01
-        )
-    }
 }
