@@ -44,25 +44,18 @@ final class LearnedTermWiringTests: XCTestCase {
         return (viewModel, store)
     }
 
-    /// Returns when the commit has actually finished, by awaiting the commit's
-    /// own task rather than a deadline: grounding, the merge and the learned
-    /// terms all land inside `polishAndCommitTask`, and a poll that gives up
-    /// after a second lets a loaded runner assert on a session still in flight
-    /// (#395). The task is read before the first suspension, while the value
-    /// `finishStoppedSession` just stored is still there — the task clears it
-    /// on its own way out.
+    /// Grounding, the merge and the learned terms all land inside
+    /// `polishAndCommitTask`, so the commit is awaited before anything is read.
     private func commit(_ viewModel: DictationViewModel, text: String) async {
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.currentDictationEventText = text
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        let commitTask = viewModel.polishAndCommitTask
-        XCTAssertNotNil(commitTask, "the commit these tests assert on is the polish task")
-        await commitTask?.value
-        XCTAssertFalse(
-            viewModel.isCompletingStoppedSession,
-            "the commit must be over before anything reads what it wrote"
+        XCTAssertNotNil(
+            viewModel.polishAndCommitTask,
+            "the commit these tests assert on is the polish task"
         )
+        await awaitStoppedSessionCommit(viewModel)
         viewModel.learnedTermStore?.waitForPendingWrites()
     }
 
