@@ -1,0 +1,19 @@
+# Action pins are commit SHAs (issue #381), which no upstream push can move —
+# and which therefore never pick up a fix on their own. Dependabot is what
+# turns that into reviewable bumps instead of pins that quietly rot.
+#
+# Monthly and grouped into ONE PR: every bump is a same-repo PR, so it runs
+# `mac-lanes` on the single self-hosted Mac, and that runner is shared with
+# every agent working on the repo.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: ci

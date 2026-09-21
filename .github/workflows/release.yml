@@ -71,7 +71,7 @@ jobs:
       # end-to-end before the branch merges. Nightlies publish from main only.
       # Rehearsals (publish=false) run from any ref on either channel.
       - name: Checkout release ref
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
@@ -273,7 +273,7 @@ jobs:
 
       - name: Upload complete unit-test log
         if: always() && steps.plan.outputs.proceed != 'false'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-unit-test-log
           path: ${{ runner.temp }}/localvoxtral-release-unit-tests.log
@@ -368,7 +368,7 @@ jobs:
         # The rehearsal's whole output. Named so it can never be mistaken for
         # a release: it lives on the run, not on a tag, and expires in a week.
         if: steps.plan.outputs.proceed != 'false' && steps.plan.outputs.publish == 'false'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: localvoxtral-release-rehearsal
           path: |
@@ -448,7 +448,7 @@ jobs:
 
       - name: Publish GitHub release
         if: steps.plan.outputs.proceed != 'false' && steps.plan.outputs.publish == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: localvoxtral ${{ steps.meta.outputs.tag }}
