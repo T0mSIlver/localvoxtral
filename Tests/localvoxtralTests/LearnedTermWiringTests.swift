@@ -44,13 +44,47 @@ final class LearnedTermWiringTests: XCTestCase {
         return (viewModel, store)
     }
 
+    /// Returns when the commit has actually finished, by awaiting the commit's
+    /// own task rather than a deadline: grounding, the merge and the learned
+    /// terms all land inside `polishAndCommitTask`, and a poll that gives up
+    /// after a second lets a loaded runner assert on a session still in flight
+    /// (#395). The task is read before the first suspension, while the value
+    /// `finishStoppedSession` just stored is still there — the task clears it
+    /// on its own way out.
     private func commit(_ viewModel: DictationViewModel, text: String) async {
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.currentDictationEventText = text
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        await waitUntilStoppedSessionCompletes(viewModel)
+        let commitTask = viewModel.polishAndCommitTask
+        XCTAssertNotNil(commitTask, "the commit these tests assert on is the polish task")
+        await commitTask?.value
+        XCTAssertFalse(
+            viewModel.isCompletingStoppedSession,
+            "the commit must be over before anything reads what it wrote"
+        )
         viewModel.learnedTermStore?.waitForPendingWrites()
+    }
+
+    /// Seeds sightings of one term and waits for them to land.
+    ///
+    /// `LearnedTermStore.record` folds on its own `.utility` queue while
+    /// `snapshot()` reads straight out of memory, so an unawaited seed is
+    /// invisible to the commit path's read — which then grounds the dictation
+    /// against nothing (#392).
+    private func seed(
+        _ store: LearnedTermStore,
+        term: String,
+        source: PolishContextSource = .repository,
+        dictations: Int
+    ) {
+        for _ in 0..<dictations {
+            store.record(
+                [LearnedTermObservation(term: term, source: source)],
+                project: LearnedTermProjectResolver.shared
+            )
+        }
+        store.waitForPendingWrites()
     }
 
     /// A spelling the merge pre-applied is remembered, under the shared
@@ -147,12 +181,7 @@ final class LearnedTermWiringTests: XCTestCase {
     func testConfirmedTermGroundsALaterDictationWithNoLiveSource() async {
         let recording = RecordingPolishingService()
         let (viewModel, store) = makeViewModel(outcome: nil, service: recording)
-        for _ in 0..<3 {
-            store.record(
-                [LearnedTermObservation(term: "useAuth.ts", source: .repository)],
-                project: LearnedTermProjectResolver.shared
-            )
-        }
+        seed(store, term: "useAuth.ts", dictations: 3)
 
         await commit(viewModel, text: "open useauth.ts please")
 
@@ -168,12 +197,7 @@ final class LearnedTermWiringTests: XCTestCase {
     func testUnconfirmedTermDoesNotGroundADictation() async {
         let recording = RecordingPolishingService()
         let (viewModel, store) = makeViewModel(outcome: nil, service: recording)
-        for _ in 0..<2 {
-            store.record(
-                [LearnedTermObservation(term: "useAuth.ts", source: .repository)],
-                project: LearnedTermProjectResolver.shared
-            )
-        }
+        seed(store, term: "useAuth.ts", dictations: 2)
 
         await commit(viewModel, text: "open useauth.ts please")
 
@@ -186,12 +210,7 @@ final class LearnedTermWiringTests: XCTestCase {
     /// into "learned".
     func testGroundingFromMemoryRefreshesWithoutRewritingProvenance() async {
         let (viewModel, store) = makeViewModel(outcome: nil)
-        for _ in 0..<3 {
-            store.record(
-                [LearnedTermObservation(term: "useAuth.ts", source: .repository)],
-                project: LearnedTermProjectResolver.shared
-            )
-        }
+        seed(store, term: "useAuth.ts", dictations: 3)
 
         await commit(viewModel, text: "open useauth.ts please")
 
@@ -202,13 +221,6 @@ final class LearnedTermWiringTests: XCTestCase {
     }
 
     // MARK: - Helpers
-
-    private func waitUntilStoppedSessionCompletes(_ viewModel: DictationViewModel) async {
-        let deadline = ContinuousClock.now + .seconds(1)
-        while viewModel.isCompletingStoppedSession, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
 
     private func makeSettings() -> SettingsStore {
         let suiteName = "localvoxtral.LearnedTermWiringTests.\(UUID().uuidString)"
