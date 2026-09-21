@@ -155,6 +155,25 @@ jobs:
               n++; printf "vibe process %d: tty=%s etime=%s\n", n, ($2 == "??" ? "no" : "yes"), $3
             }
             END { if (!n) print "none" }'
+          # Vibe picks its hook runner from a server-side rollout cached here;
+          # the two runners send different hook payloads. Closed set only.
+          echo "--- vibe harness rollout (cached):"
+          /usr/bin/python3 - "$vibe_home/experiment_eval_cache.json" <<'PY' 2>/dev/null || echo "unreadable"
+          import json, sys
+          seen = set()
+          def walk(x):
+              if isinstance(x, dict):
+                  for k, v in x.items():
+                      if k == "vibe_cli_unified_harness_rollout" and isinstance(v, dict):
+                          vals = [v.get("defaultValue")] + [r.get("force") for r in v.get("rules", []) if isinstance(r, dict)]
+                          for val in vals:
+                              seen.add(val if val in ("unified", "legacy") else "other")
+                      walk(v)
+              elif isinstance(x, list):
+                  for v in x: walk(v)
+          walk(json.load(open(sys.argv[1])))
+          print("default/forced values:", " ".join(sorted(seen)) or "none")
+          PY
           echo "--- broker socket:"
           sock="$HOME/Library/Application Support/localvoxtral/run/claude-context.sock"
           echo "socket present: $(yn test -S "$sock")"
