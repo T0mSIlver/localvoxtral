@@ -73,6 +73,7 @@ PATTERNS=(
   '*VibeHookInputParser*'                            # which Vibe hook fields become session state
   '*VibeTranscriptPrompt*'                           # the prior prompt, read from Vibe's session log
   '*VibeHookPublisher*'                              # the Vibe pid/tty the joins key on
+  '*ClaudeRemoteAgent*'                              # which agent a remote session is filed under
   '*TerminalScreenContext*'                          # screen context source/policy feeding the prompt
   '*TerminalScreenAXReader*'                         # screen text sanitization/compaction: the excerpt's exact bytes
   '*TerminalScreenAppleScriptReader*'                # iTerm2/Terminal.app focused-pane contents: the excerpt's exact bytes

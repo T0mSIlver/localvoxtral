@@ -1350,6 +1350,67 @@ there is not.
   `hookParentPID` is a String on purpose: a pid in another host's namespace is
   not a number this process may probe, only a label to compare against another
   label.
+- **A remote request names its agent in a header, and the header buys nothing
+  but a namespace.** A remote host runs no publisher of ours, so the agent
+  cannot ride inside the record the way it does locally: the Vibe shim
+  (`integrations/vibe/remote/`) sends `X-Lvx-Agent: vibe` beside a body in
+  Claude Code's hook shape. `ClaudeRemoteAgentCodec` reads absent as Claude
+  Code (every plugin shipped before the header is one) and REFUSES a value it
+  does not know, opencode included, rather than filing a newer shim's agent
+  under Claude Code's join rules. The header is a claim by an authenticated
+  host about its own sessions: the origin stays `.remote` and the id stays
+  scoped under the host whose token authenticated the request, with the agent
+  prefix in front (`vibe:remote:<host>:<id>`) only so two agents on one host
+  cannot share a key. For any agent but Claude Code the listener drops the two
+  Claude-allocated handles (`bridgeSessionID`, `desktopSessionID`) on arrival,
+  whatever the shim sent, for the reason the local publisher withholds them.
+  On the host, Vibe's payload never crosses the tunnel as Vibe wrote it: a
+  `post_tool` payload embeds whole files, so `compact.py` (standard-library
+  Python, run on the interpreter Vibe itself uses, owner decision 2026-09-20)
+  reduces it to the fields the Mac keeps plus the same short excerpts a remote
+  Claude Code session sends, and reads the prior prompt under the same rules as
+  `VibeTranscriptPrompt`. The two implementations are a pair: change one,
+  change the other. The token lives in a 0600 file under
+  `~/.vibe/localvoxtral/remote/` (owner decision, same exposure as the Claude
+  plugin's token in `~/.claude`: any process running as that user can read
+  it), is read into a shell variable, reaches curl through a header file, and
+  is never exported, so `compact.py` cannot see it: the shim runs `set +a` and
+  `unset TOKEN` before the first assignment, because a shell exports a
+  variable it imported from its environment (Codex review, 2026-09-20). The
+  shim prints nothing on any path, because Vibe reports hook output as a
+  failure; there is no stdout gate because there is no stdout. The interpreter
+  is the one RUNNING Vibe (`/proc/<pid>/exe`, or `ps -o comm=` on macOS, of the
+  hook's parent or grandparent), accepted only as an absolute path whose name
+  is exactly a Python, and run with `-I`; the `vibe` launcher's shebang and
+  `python3` are fallbacks under the same check.
+  **A remote Vibe session ends because the host says so.** Vibe has no
+  session-end hook and a remote pid cannot be probed, so without help a
+  finished session would stay joinable for the four-hour TTL on the very
+  terminal the next one starts in — the normal exit path, not the abnormal one
+  the Claude Code residual describes (Codex review, 2026-09-20). The first hook
+  of a session that reaches the Mac therefore leaves one background shell on
+  the host (`post.sh`, "Exit watcher"): one per session by an atomic `mkdir`
+  lock, holding none of the hook's descriptors (Vibe waits for them to close),
+  comparing the Vibe process's start time as well as its pid, re-reading the
+  token when it fires, posting `SessionEnd`, and giving up after five tries a
+  minute apart. `LOCALVOXTRAL_VIBE_WATCHER=off` disables it. Three shapes it
+  handles on purpose (GLM review, 2026-09-20): a Vibe that is ALREADY gone when
+  the hook looks (Ctrl-C at the end of the turn) gets its `SessionEnd` at once
+  instead of no watcher; a session id reused by a new process (a resume)
+  replaces the old watcher, whose `SessionEnd` would otherwise evict the live
+  session; and when the host's `ps` gives `compact.py` no process table, no pid
+  is published and no watcher starts, because the only pid left is the `sh -c`
+  wrapper and watching it would end a LIVE session two seconds later.
+  There is deliberately NO Mac-side eviction of an older remote Vibe session by
+  a newer one on the same surface. It was built and removed the same day:
+  suspend Vibe A, start B in that pane, bring A back, and a dictation into A
+  joins B until A's next hook. Two live candidates on one surface make the
+  join abstain, and abstaining is the failure this file prefers everywhere.
+  RESIDUAL, stated plainly: when the watcher's `SessionEnd` never arrives (the
+  tunnel was down for all five tries, the host rebooted, the watcher is off),
+  the dead session stays the surface's candidate until its TTL: alone, it still
+  joins; beside a new session, the surface abstains. Nothing on the Mac can
+  tell a finished remote process from an idle one.
 - **A refused `RemoteForward` bind is not a diagnosis, and only a nonce
   round-trip may upgrade it to one.** OpenSSH's `remote port forwarding failed`
   says a port is held, never by whom, and the two holders want opposite things

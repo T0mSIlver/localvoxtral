@@ -1147,3 +1147,112 @@ private final class EphemeralStoreIO: ClaudeRemoteHostStoreIO {
     func read(from url: URL) throws -> Data? { contents.withLock { $0 } }
     func write(_ data: Data, to url: URL) throws { contents.withLock { $0 = data } }
 }
+
+// MARK: - Agents other than Claude Code (`X-Lvx-Agent`)
+
+extension ClaudeRemoteContextListenerTests {
+    func testAVibeRequestIsFiledAsVibeInsideTheHostsNamespace() throws {
+        try startListener()
+        let response = try XCTUnwrap(try send(hookRequest(
+            event: "UserPromptSubmit",
+            token: token,
+            payload: ["session_id": "s-1", "cwd": "/srv/app", "prompt": "rename the enum"],
+            extraHeaders: ["X-Lvx-Agent: vibe", "X-Lvx-Env-Ssh-Tty: /dev/pts/4"]
+        )))
+        XCTAssertEqual(response.status, 200)
+
+        let snapshot = try XCTUnwrap(sessions.liveSessions().first)
+        XCTAssertEqual(snapshot.agent, .vibe)
+        XCTAssertEqual(snapshot.sessionID, "vibe:remote:\(hostID!):s-1")
+        XCTAssertEqual(snapshot.latestPriorUserPrompt, "rename the enum")
+        XCTAssertNil(snapshot.localWorkspacePath, "a remote cwd is a label whatever the agent")
+        XCTAssertEqual(snapshot.remoteSessionEnvironment?.sshTTY, "/dev/pts/4")
+        XCTAssertEqual(
+            ClaudeRemoteSessionScope.hostID(fromScopedSessionID: snapshot.sessionID), hostID
+        )
+    }
+
+    func testClaudeAndVibeSessionsWithOneRawIdOnOneHostStayApart() throws {
+        try startListener()
+        _ = try send(hookRequest(token: token))
+        _ = try send(hookRequest(token: token, extraHeaders: ["X-Lvx-Agent: vibe"]))
+        XCTAssertEqual(
+            Set(sessions.liveSessions().map(\.sessionID)),
+            ["remote:\(hostID!):s-1", "vibe:remote:\(hostID!):s-1"]
+        )
+    }
+
+    func testAnAgentThisBuildDoesNotKnowIsNeverFiledAsClaudeCode() throws {
+        try startListener()
+        for agent in ["pi", "opencode", "Vibe", ""] {
+            let response = try XCTUnwrap(
+                try send(hookRequest(token: token, extraHeaders: ["X-Lvx-Agent: \(agent)"]))
+            )
+            XCTAssertEqual(response.status, 200, "same answer as any unparseable record")
+            XCTAssertTrue(sessions.liveSessions().isEmpty, agent)
+        }
+    }
+
+    func testClaudeAllocatedSessionHandlesAreDroppedFromAVibeRequest() throws {
+        // A Vibe started inside a Claude Code session inherits both variables.
+        try startListener()
+        _ = try send(hookRequest(token: token, extraHeaders: [
+            "X-Lvx-Agent: vibe",
+            "X-Lvx-Env-Bridge-Session-Id: session_inherited",
+            "X-Lvx-Env-Desktop-Session-Id: local_inherited",
+            "X-Lvx-Env-Herdr-Pane-Id: w1:p2",
+        ]))
+        let environment = try XCTUnwrap(sessions.liveSessions().first?.remoteSessionEnvironment)
+        XCTAssertNil(environment.bridgeSessionID)
+        XCTAssertNil(environment.desktopSessionID)
+        XCTAssertEqual(environment.herdrPaneID, "w1:p2")
+    }
+
+    func testAVibeRequestSaysNothingAboutTheClaudePlugin() throws {
+        try startListener()
+        _ = try send(hookRequest(token: token, extraHeaders: ["X-Lvx-Agent: vibe"]))
+        XCTAssertNil(
+            hosts.host(id: hostID)?.reportedPluginVersion,
+            "a missing plugin header on a Vibe request must not read as a pre-1.10.0 Claude plugin"
+        )
+        _ = try send(hookRequest(token: token, extraHeaders: ["X-Lvx-Plugin-Version: 1.11.0"]))
+        XCTAssertEqual(hosts.host(id: hostID)?.reportedPluginVersion, .version("1.11.0"))
+    }
+
+    func testAVibeSessionEndFromTheHostsWatcherEvictsTheSession() throws {
+        try startListener()
+        _ = try send(hookRequest(event: "Stop", token: token, extraHeaders: ["X-Lvx-Agent: vibe"]))
+        XCTAssertEqual(sessions.liveSessions().count, 1)
+        _ = try send(hookRequest(
+            event: "SessionEnd", token: token, payload: ["session_id": "s-1"],
+            extraHeaders: ["X-Lvx-Agent: vibe"]
+        ))
+        XCTAssertTrue(sessions.liveSessions().isEmpty)
+    }
+
+    func testTwoVibeSessionsOnOneSurfaceBothStayAndTheJoinAbstains() throws {
+        // A watcher that failed leaves the old session beside the new one.
+        // Evicting the old one looked attractive and was wrong: suspend Vibe
+        // A, start B in the same pane, bring A back, and a dictation into A
+        // would join B. Two candidates make the join abstain, which is the
+        // safe failure.
+        try startListener()
+        let surface = ["X-Lvx-Agent: vibe", "X-Lvx-Env-Ssh-Tty: /dev/pts/4",
+                       "X-Lvx-Env-Ssh-Connection: 10.0.0.2,50000,10.0.0.9,22"]
+        for id in ["old", "new"] {
+            _ = try send(hookRequest(event: "Stop", token: token, payload: ["session_id": id], extraHeaders: surface))
+        }
+        XCTAssertEqual(
+            Set(sessions.liveSessions().map(\.sessionID)),
+            ["vibe:remote:\(hostID!):old", "vibe:remote:\(hostID!):new"]
+        )
+    }
+
+    func testAClaudeRequestKeepsItsSessionHandles() throws {
+        try startListener()
+        _ = try send(hookRequest(token: token, extraHeaders: [
+            "X-Lvx-Env-Bridge-Session-Id: session_mine",
+        ]))
+        XCTAssertEqual(sessions.liveSessions().first?.remoteSessionEnvironment?.bridgeSessionID, "session_mine")
+    }
+}

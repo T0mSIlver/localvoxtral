@@ -237,6 +237,12 @@ public enum ClaudeRemoteSessionScope {
     /// `ClaudeRemoteHostRegistry.makeHostID` (`h` + 8 hex, no separators), so
     /// splitting at the first separator cannot cut one short.
     public static func hostID(fromScopedSessionID sessionID: String) -> String? {
+        // The registry puts a non-Claude agent's prefix in FRONT of the remote
+        // scope (`vibe:remote:<hostID>:<sessionID>`).
+        var sessionID = Substring(sessionID)
+        if let agentPrefix = ClaudeAgentSessionScope.agentPrefixes.first(where: sessionID.hasPrefix) {
+            sessionID = sessionID.dropFirst(agentPrefix.count)
+        }
         guard sessionID.hasPrefix(prefix) else { return nil }
         let remainder = sessionID.dropFirst(prefix.count)
         guard let separator = remainder.firstIndex(of: ":") else { return nil }
