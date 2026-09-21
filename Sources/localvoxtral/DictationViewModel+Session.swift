@@ -533,6 +533,12 @@ extension DictationViewModel {
                 try? await Task.sleep(for: .seconds(interval))
                 guard !Task.isCancelled else { break }
 
+                // Read before draining: between the socket dying and the
+                // `.disconnected` event cancelling this task, a tick that
+                // drained would hand its chunk to a client that discards it —
+                // and that audio is exactly what a reconnect replays (#380).
+                guard client.isConnected else { continue }
+
                 let bufferedChunk = chunkBuffer.takeAll()
                 guard !bufferedChunk.isEmpty else {
                     emptyBufferTicks += 1

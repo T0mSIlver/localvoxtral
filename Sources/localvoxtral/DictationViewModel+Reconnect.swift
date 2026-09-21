@@ -107,6 +107,16 @@ extension DictationViewModel {
         reconnectAttemptDidFail = false
         reconnectTask?.cancel()
         reconnectTask = nil
+        // Cancelling the task does not cancel the socket the attempt opened.
+        // Left alone, a socket still in `connecting` can open after the stop
+        // and transmit the audio the stop flushed into its pending queue — the
+        // stop-finalization path takes its `!isConnected` shortcut and never
+        // closes it, and its late `.connected` turns the menu bar icon green
+        // with no session behind it. A run is only ever in flight when the
+        // session has no healthy socket, so there is nothing here to protect.
+        // Emission is queued to the main queue, so the `.disconnected` this
+        // raises cannot re-enter before the caller finishes tearing down.
+        activeRealtimeClient.disconnect()
         Log.backends.notice("realtime reconnect run cancelled")
     }
 
@@ -145,11 +155,14 @@ extension DictationViewModel {
             while waited < policy.attemptTimeout {
                 await sleepFor(policy.pollInterval)
                 guard isReconnectRunCurrent(runID) else { return }
+                // Failure is read FIRST: a server can accept the upgrade and
+                // then reject the session on an open socket, which leaves
+                // `isConnected` true on a session that will never transcribe.
+                if reconnectAttemptDidFail { break }
                 if activeRealtimeClient.isConnected {
                     completeRealtimeReconnect(attempt: attempt)
                     return
                 }
-                if reconnectAttemptDidFail { break }
                 waited += policy.pollInterval
             }
             Log.backends.error(

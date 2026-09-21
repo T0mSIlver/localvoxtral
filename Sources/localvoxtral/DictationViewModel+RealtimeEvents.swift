@@ -84,6 +84,15 @@ extension DictationViewModel {
             reconnectAttemptDidFail = true
             return
         }
+        if activeRealtimeClient.isConnected {
+            // A socket this session has already replaced, reporting its own
+            // close late. Events carry no connection identity, so the live
+            // client's own state is the only way to tell: it says the session
+            // is up, and a session that is up is neither torn down nor
+            // reconnected.
+            debugLog("ignoring a disconnect from a retired socket; the session's socket is up")
+            return
+        }
         guard !beginRealtimeReconnectIfPossible() else { return }
         endDictationAfterLostConnection()
     }
@@ -116,7 +125,7 @@ extension DictationViewModel {
     }
 
     private func handlePartialTranscriptEvent(_ delta: String) {
-        guard acceptsRealtimeEvents else { return }
+        guard acceptsRealtimeEvents, !isReconnectingRealtimeSession else { return }
         let processedDelta = preprocessIncomingTranscriptChunk(delta)
         guard !processedDelta.isEmpty else { return }
         if isFinalizingStop {
@@ -131,15 +140,18 @@ extension DictationViewModel {
                 lastError = accessibilityError
             }
         }
-        statusText =
-            isReconnectingRealtimeSession
-            ? StatusStrings.reconnecting
-            : (isFinalizingStop ? StatusStrings.finalizing : "Transcribing...")
+        statusText = isFinalizingStop ? StatusStrings.finalizing : "Transcribing..."
         refreshOverlayBufferSession()
     }
 
+    // Both transcript handlers refuse anything that arrives while a reconnect
+    // run is in flight. Nothing legitimate can: the old socket is gone, and the
+    // new one is sent no audio until the run completes and restarts the send
+    // loop. What CAN arrive is a straggler the dying socket emitted after the
+    // run had already promoted the partial it belongs to — accepted, it would
+    // re-type text Live Auto-Paste has no way to un-type.
     private func handleFinalTranscriptEvent(_ text: String) {
-        guard acceptsRealtimeEvents else { return }
+        guard acceptsRealtimeEvents, !isReconnectingRealtimeSession else { return }
         let processedText = preprocessIncomingTranscriptChunk(text)
         if isFinalizingStop {
             realtimeFinalizationLastActivityAt = Date()
@@ -285,7 +297,6 @@ extension DictationViewModel {
 
     /// Status text appropriate for the current dictation phase.
     private var activeStatusText: String {
-        if isReconnectingRealtimeSession { return StatusStrings.reconnecting }
         if isDictating { return "Listening..." }
         if isFinalizingStop { return "Finalizing..." }
         return "Ready"

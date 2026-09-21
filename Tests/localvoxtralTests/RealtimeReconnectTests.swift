@@ -305,6 +305,95 @@ final class RealtimeReconnectTests: XCTestCase {
         XCTAssertEqual(client.connectCount, 0)
     }
 
+    // MARK: - Nothing outlives the run (Codex review of #415)
+
+    func testCancellingARunClosesTheSocketItsAttemptOpened() async {
+        // The task cancel does not cancel the socket. Left open, an attempt
+        // still in `connecting` could open after the stop and transmit the
+        // audio the stop flushed into its pending queue.
+        let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
+        viewModel.debugReconnectSleepOverride = { [weak viewModel] _ in
+            guard let viewModel, client.connectCount > 0 else { return }
+            viewModel.stopDictation(reason: "manual toggle")
+        }
+
+        viewModel.handle(event: .disconnected)
+        await viewModel.reconnectTask?.value
+
+        XCTAssertEqual(client.connectCount, 1, "sanity: an attempt had dialled")
+        XCTAssertGreaterThan(
+            client.disconnectCount, 0,
+            "the cancel must close the socket the attempt left in flight"
+        )
+    }
+
+    func testAnAttemptWhoseSocketErrorsIsNotCountedAsSuccess() async {
+        // A server can accept the upgrade and then reject the session on an
+        // open socket: `isConnected` is true on a session that will never
+        // transcribe, so the failure signal has to win.
+        let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
+        viewModel.debugReconnectSleepOverride = { [weak viewModel] _ in
+            guard let viewModel, client.connectCount > 0 else { return }
+            client.setConnected(true)
+            viewModel.handle(event: .error("session rejected while the socket stayed open"))
+        }
+
+        viewModel.handle(event: .disconnected)
+        await viewModel.reconnectTask?.value
+
+        XCTAssertEqual(client.connectCount, RealtimeReconnectPolicy.default.maxAttempts)
+        XCTAssertFalse(viewModel.isDictating)
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.connectionLostMessage)
+    }
+
+    func testATranscriptFromTheDyingSocketIsNotTypedAgainDuringAReconnect() async {
+        // The socket's receive callback can pass its own state check and emit
+        // a final AFTER the drop was handled and its partial promoted. Typed
+        // again, it would duplicate in the field — there are no backspaces.
+        let (viewModel, client) = makeDictatingViewModel(outputMode: .liveAutoPaste)
+        viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { [weak self] chunk in
+                self?.insertedChunks.append(chunk)
+                return true
+            },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false }
+        )
+        viewModel.handle(event: .partialTranscript("hello world"))
+        XCTAssertEqual(insertedChunks, ["hello world"])
+
+        viewModel.debugReconnectSleepOverride = { _ in }
+        viewModel.handle(event: .disconnected)
+        let task = viewModel.reconnectTask
+
+        // The straggler: the same words, arriving as a final after promotion.
+        viewModel.handle(event: .finalTranscript("hello world"))
+
+        XCTAssertEqual(insertedChunks, ["hello world"], "the straggler must not be typed again")
+        XCTAssertEqual(viewModel.currentDictationEventText, "hello world")
+        XCTAssertEqual(viewModel.transcriptText, "hello world")
+
+        viewModel.cancelRealtimeReconnect()
+        await task?.value
+    }
+
+    func testADropReportedByARetiredSocketLeavesALiveSessionAlone() {
+        // Events carry no connection identity, so a `.disconnected` from a
+        // socket the session already replaced must be judged by the live
+        // client's own state.
+        let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
+        client.setConnected(true)
+
+        viewModel.handle(event: .disconnected)
+
+        XCTAssertTrue(viewModel.isDictating, "a live session must not be torn down")
+        XCTAssertFalse(
+            viewModel.isReconnectingRealtimeSession,
+            "nor reconnected — its socket is up"
+        )
+        XCTAssertNil(viewModel.reconnectTask)
+    }
+
     // MARK: - Status line ownership
 
     func testStatusAndTranscriptEventsDoNotClobberReconnectingText() async {
@@ -317,6 +406,10 @@ final class RealtimeReconnectTests: XCTestCase {
         viewModel.handle(event: .partialTranscript("stray"))
 
         XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.reconnecting)
+        XCTAssertTrue(
+            viewModel.pendingSegmentText.isEmpty,
+            "a transcript arriving mid-run belongs to a socket the session left behind"
+        )
 
         viewModel.cancelRealtimeReconnect()
         await task?.value

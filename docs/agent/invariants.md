@@ -49,6 +49,25 @@ there is not.
   What IS lost either way is audio that was already sent when the socket died
   but whose transcript never came back, and the words at the cut, which the new
   session hears mid-utterance.
+- **A realtime event carries no connection identity, so the live client's own
+  state is the tiebreak.** `RealtimeEvent` says what happened, never which
+  socket it happened to, and the handler is shared by both clients and reached
+  through `DispatchQueue.main.async` — so a socket the session has already
+  retired can report its close, its error or even a transcript after the
+  session moved on. Three guards stand in for the missing identity, and all
+  three are load-bearing (Codex review of #415, each with a regression test):
+  a `.disconnected` is ignored when `activeRealtimeClient.isConnected` (the
+  live socket is up, so nothing is down to recover); transcript events are
+  refused outright while a reconnect run is in flight, because nothing
+  legitimate can arrive then and a straggler would re-type text Live Auto-Paste
+  cannot un-type; and cancelling a run closes the socket its attempt opened,
+  since cancelling the Swift task does not cancel a WebSocket left in
+  `connecting` — one that opens later would transmit the audio the stop flushed
+  into its pending queue and turn the menu bar icon green behind a session that
+  ended. The residual these do not cover: a transcript emitted by a retired
+  socket AFTER a run has already completed is still accepted. Closing that one
+  needs a connection generation stamped on every event, which is a change to
+  the enum and to both clients — tracked, not bolted on here.
 - **Live Auto-Paste holds back the tail of the transcript.** Replacements are
   applied before typing (nothing is ever un-typed — there are no backspaces in
   the insertion path, and terminals can't support them: field bug 2026-07-06),
