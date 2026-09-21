@@ -729,6 +729,9 @@ public final class ClaudeIntegrationSettingsModel {
     /// persisted, like the plugin version report: after a relaunch the run is
     /// offered again, which is also how a Vibe installed later gets its hooks.
     private var hostsWithoutVibe: Set<String> = []
+    /// The same for Claude Code: a host set up for Vibe alone never reports a
+    /// plugin version, and without this its row would offer the run forever.
+    private var hostsWithoutClaude: Set<String> = []
     /// Whether a herdr binary is on this Mac's PATH. Synchronous and fast,
     /// so the row's visibility is reserved at construction instead of
     /// popping in after the first async refresh.
@@ -1223,6 +1226,7 @@ public final class ClaudeIntegrationSettingsModel {
         // never makes it worth offering.
         let vibeStepCanRun = enrollmentService.canExecuteRemotely && bundledVibeVersion != nil
         let withoutVibe = hostsWithoutVibe
+        let withoutClaude = hostsWithoutClaude
         hosts = enrolledHosts.map { host in
             let forwardState = forwards?.states[host.id]
             let vibe = vibeStepCanRun
@@ -1264,10 +1268,10 @@ public final class ClaudeIntegrationSettingsModel {
                     || vibe == .updateAvailable
                 ),
                 offersUpdate: !host.isRevoked && (
-                    !Self.pluginIsCurrent(
+                    !(withoutClaude.contains(host.id) || Self.pluginIsCurrent(
                         reported: host.reportedPluginVersion,
                         expected: ClaudeRemoteEnrollmentService.remotePluginVersion
-                    )
+                    ))
                     || expectedSSHConfigSnippet(for: host).flatMap {
                         enrollmentService.sshConfigBlockIsCurrent(snippet: $0, hostID: host.id)
                     } != true
@@ -2434,11 +2438,19 @@ public final class ClaudeIntegrationSettingsModel {
         // indicator must clear on this run, not at the host's next hook (the
         // host may not run another hook for hours, and the user is looking at
         // the row right now).
-        registry?.notePluginVersion(
-            hostID: hostID,
-            .version(ClaudeRemoteEnrollmentService.remotePluginVersion)
-        )
+        let claudeFound = pluginAttempt.steps.first?.message != "claudeNotFound"
+        if claudeFound {
+            hostsWithoutClaude.remove(hostID)
+            registry?.notePluginVersion(
+                hostID: hostID,
+                .version(ClaudeRemoteEnrollmentService.remotePluginVersion)
+            )
+        } else {
+            hostsWithoutClaude.insert(hostID)
+        }
         switch pluginAttempt.steps.first?.message {
+        case "claudeNotFound":
+            markSetup(.remotePlugin, .skipped("Claude Code is not installed on the remote host."))
         case "installed": markSetup(.remotePlugin, .done("The remote plugin was installed and verified."))
         case "updated": markSetup(.remotePlugin, .done("The remote plugin was updated and verified."))
         default: markSetup(.remotePlugin, .done("The remote plugin is already current and verified."))
@@ -2539,9 +2551,17 @@ public final class ClaudeIntegrationSettingsModel {
                 markSetup(.remoteVibe, .done("The Vibe hooks are installed and verified."))
             } else {
                 hostsWithoutVibe.insert(hostID)
+                guard claudeFound else {
+                    failNoAgent(.remoteVibe)
+                    return
+                }
                 markSetup(.remoteVibe, .skipped("Mistral Vibe is not installed on the remote host."))
             }
         } else {
+            guard claudeFound else {
+                failNoAgent(.remoteVibe)
+                return
+            }
             markSetup(.remoteVibe, .skipped("This build carries no Vibe hook files."))
         }
         guard continueSetup(hostID: hostID) else { return }
@@ -2552,7 +2572,8 @@ public final class ClaudeIntegrationSettingsModel {
             try service.executeVerification(
                 sshHostAlias: alias,
                 remoteForwardPort: port,
-                listenerIsBound: listenerWasBound
+                listenerIsBound: listenerWasBound,
+                includesPluginCheck: claudeFound
             )
         }
         if let failure = checkAttempt.failure {
@@ -2576,10 +2597,32 @@ public final class ClaudeIntegrationSettingsModel {
             )
             return
         }
-        markSetup(.checkSetup, .done("The tunnel and remote plugin checks passed."))
-        setupSummaries[hostID] = "Setup complete."
+        markSetup(
+            .checkSetup,
+            .done(claudeFound ? "The tunnel and remote plugin checks passed." : "The tunnel check passed.")
+        )
+        // A step the run left to the user outlives the panel in the row's
+        // one sentence, since the panel is about to close.
+        setupSummaries[hostID] = setupManualInstructions == nil
+            ? "Setup complete."
+            : "Setup complete. One step is manual; see Learn more."
+        // A finished update has nothing left to show, so its panel closes and
+        // the row is one line again. A failed one stays open: its reason and
+        // remedy are in the steps. `setupRun` is kept for the record.
+        if case .updateHost = confirmation.action { presentedPluginUpdate = nil }
         refreshHosts()
         Log.claudeContext.info("Claude remote host setup completed")
+    }
+
+    /// Neither agent is on the host, so the run has installed nothing that
+    /// could ever send context.
+    private func failNoAgent(_ step: RemoteHostSetupRun.Step) {
+        failSetup(
+            step,
+            reason: "No supported agent was found on the remote host.",
+            remedy: "Install Claude Code or Mistral Vibe there, or put it on the non-interactive SSH PATH, "
+                + "then run setup again."
+        )
     }
 
     private func markSetup(_ step: RemoteHostSetupRun.Step, _ state: RemoteHostSetupRun.State) {

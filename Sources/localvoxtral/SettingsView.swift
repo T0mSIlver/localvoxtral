@@ -2382,6 +2382,7 @@ private struct ClaudeRemoteHostsRows: View {
                 ClaudeSetupRunSteps(model: model, hostID: host.id)
             }
             .padding(.leading, 8)
+            .padding(.top, 8)
             .padding(.bottom, 4)
         }
     }

@@ -1409,7 +1409,12 @@ there is not.
   harness gets its own line or none does, and none is the choice). Vibe is the
   `remoteVibe` step of the host's one setup run: it installs when the probe
   finds `vibe`, reports `vibeNotFound` as a skipped step otherwise, and a
-  failure fails the run. The row offers the run while the plugin OR the Vibe
+  failure fails the run. Claude Code is optional the same way
+  (`claudeNotFound`, decided on exit 127 AND our PATH resolver's own sentence,
+  never a bare 127): the plugin step is skipped and the final check drops its
+  plugin half. A host with neither agent fails the run. A finished update
+  closes its panel, so a step the run left to the user is carried by the
+  row's one sentence. The row offers the run while the plugin OR the Vibe
   hooks are outdated or unheard from. "This host has no Vibe" is remembered
   for the app session only, like the plugin version report, which is also how
   a Vibe installed later gets its hooks: the run is offered again after a

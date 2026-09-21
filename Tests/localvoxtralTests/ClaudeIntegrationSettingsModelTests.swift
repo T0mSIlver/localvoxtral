@@ -192,6 +192,8 @@ private struct SetupFlowScript: Sendable {
     /// fresh host: nothing before, the shipped version after the install.
     var pluginVersionBefore: String?
     var pluginVersionAfter: String? = ClaudeRemoteEnrollmentService.remotePluginVersion
+    /// The host has no Claude Code: the listing dies in our own PATH resolver.
+    var claudeMissing = false
     var envEchoesBack = true
     var sendEnvOutput = "hostname builder\nsendenv LANG LC_*\n"
     var herdr = ClaudeRemoteEnrollmentService.RunResult(
@@ -2443,7 +2445,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         model.requestPluginUpdate(hostID: hostID)
         model.requestHostUpdateRun()
         await model.confirmEnrollmentAction()
-        XCTAssertEqual(model.hosts.first?.setupStatusText, "Setup complete.")
+        XCTAssertEqual(model.hosts.first?.setupStatusText, "Setup complete. One step is manual; see Learn more.")
         XCTAssertFalse(model.hosts[0].pluginNeedsUpdate)
 
         // A pre-update session's next hook arrives header-less (this is the
@@ -3357,6 +3359,12 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             }
             // The framed JSON listing runs twice: before the install call
             // (decides install / update / current) and after it (read-back).
+            if stdin.contains(ClaudeRemoteEnrollmentService.pluginListFrameBegin), script.claudeMissing {
+                return .init(
+                    exitCode: 127,
+                    message: "localvoxtral: 'claude' was not found on this host's non-interactive PATH."
+                )
+            }
             if stdin.contains(ClaudeRemoteEnrollmentService.pluginListFrameBegin) {
                 let isReadBack = listingCalls.withLock { calls -> Bool in
                     calls += 1
@@ -3603,6 +3611,79 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     }
 
     @MainActor
+    func testAHostWithVibeAndNoClaudeCodeIsSetUpForVibeAlone() async throws {
+        let host = try VibeFakeHost()
+        let registry = try makeRegistry()
+        let (model, hostID, _, recorder) = try await enrollAndRunSetup(
+            script: SetupFlowScript(claudeMissing: true), vibeHost: host, registry: registry
+        )
+
+        let run = try XCTUnwrap(model.setupRun)
+        XCTAssertEqual(run.items[2].state, .skipped("Claude Code is not installed on the remote host."))
+        XCTAssertEqual(run.items[5].state, .done("The Vibe hooks are installed and verified."))
+        XCTAssertEqual(run.items[6].state, .done("The tunnel check passed."))
+        XCTAssertEqual(model.hosts.first?.setupStatusText, "Setup complete.")
+        XCTAssertEqual(registry.authenticate(token: try XCTUnwrap(vibeToken(host)))?.id, hostID)
+        let scripts = recorder.all.map { String(decoding: $0.standardInput, as: UTF8.self) }
+        XCTAssertFalse(scripts.contains { $0.contains("claude plugin install") }, "nothing to install into")
+        XCTAssertFalse(
+            scripts.contains { $0.contains("claude plugin list") && !$0.contains(ClaudeRemoteEnrollmentService.pluginListFrameBegin) },
+            "the final check has no plugin to look for"
+        )
+        XCTAssertNil(registry.host(id: hostID)?.reportedPluginVersion, "no version was verified")
+        model.refreshHosts()
+        XCTAssertEqual(model.hosts.first?.offersUpdate, false, "a plugin that cannot exist is not pending")
+    }
+
+    @MainActor
+    func testAHostWithNeitherAgentFailsTheRunAndSaysSo() async throws {
+        let host = try VibeFakeHost(vibeInstalled: false)
+        let (model, _, _, _) = try await enrollAndRunSetup(
+            script: SetupFlowScript(claudeMissing: true), vibeHost: host
+        )
+        let run = try XCTUnwrap(model.setupRun)
+        XCTAssertEqual(run.items[2].state, .skipped("Claude Code is not installed on the remote host."))
+        XCTAssertEqual(failedReason(run.items[5].state), "No supported agent was found on the remote host.")
+        XCTAssertEqual(run.items[6].state, .pending)
+
+        // The same with a build that carries no Vibe files at all.
+        let (bare, _, _, _) = try await enrollAndRunSetup(script: SetupFlowScript(claudeMissing: true))
+        XCTAssertEqual(
+            failedReason(try XCTUnwrap(bare.setupRun).items[5].state),
+            "No supported agent was found on the remote host."
+        )
+    }
+
+    @MainActor
+    func testAFinishedUpdateClosesItsPanelAndAFailedOneStaysOpen() async throws {
+        let host = try VibeFakeHost()
+        let registry = try makeRegistry()
+        let (model, hostID, _, _) = try await enrollAndRunSetup(vibeHost: host, registry: registry)
+
+        await runHostUpdate(model, hostID: hostID)
+        XCTAssertNil(model.presentedPluginUpdate, "nothing left to show: the row is one line again")
+        XCTAssertEqual(model.hosts.first?.setupStatusText, "Setup complete.")
+        XCTAssertNotNil(model.setupRun)
+
+        host.droppedScripts = [12] // the third run's activation script
+        await runHostUpdate(model, hostID: hostID)
+        XCTAssertEqual(model.presentedPluginUpdate?.hostID, hostID, "the reason and remedy are in the steps")
+    }
+
+    @MainActor
+    func testAManualStepOutlivesTheClosedPanelInTheRowsSentence() async throws {
+        let registry = try makeRegistry()
+        var script = SetupFlowScript()
+        script.herdr = .init(exitCode: 42, message: "LVX_HERDR_CUSTOMIZED")
+        let (model, hostID, _, _) = try await enrollAndRunSetup(script: script, registry: registry)
+        await runHostUpdate(model, hostID: hostID)
+        XCTAssertNil(model.presentedPluginUpdate)
+        XCTAssertEqual(
+            model.hosts.first?.setupStatusText, "Setup complete. One step is manual; see Learn more."
+        )
+    }
+
+    @MainActor
     func testTheRowOffersTheRunWhileVibeIsUnknownOrOutdatedAndHidesItOnceSettled() async throws {
         let host = try VibeFakeHost()
         let registry = try makeRegistry()
@@ -3756,7 +3837,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         )
         XCTAssertFalse(model.setupManualInstructions?.contains("[[rows]]") == true)
         XCTAssertEqual(run.items[6].state, .done("The tunnel and remote plugin checks passed."))
-        XCTAssertEqual(model.hosts.first?.setupStatusText, "Setup complete.")
+        XCTAssertEqual(model.hosts.first?.setupStatusText, "Setup complete. One step is manual; see Learn more.")
     }
 
     @MainActor
@@ -3809,7 +3890,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             .done("The SSH config block is already current.")
         )
         XCTAssertEqual(run.items[2].state, .done("The remote plugin was updated and verified."))
-        XCTAssertEqual(model.hosts.first?.setupStatusText, "Setup complete.")
+        XCTAssertEqual(model.hosts.first?.setupStatusText, "Setup complete. One step is manual; see Learn more.")
     }
 
     @MainActor

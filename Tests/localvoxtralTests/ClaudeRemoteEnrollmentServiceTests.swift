@@ -3057,6 +3057,24 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertEqual(installFailure, "The remote plugin setup command failed.")
     }
 
+    func testAHostWithoutClaudeCodeIsAnOutcomeOnlyWhenOurOwnResolverSaysSo() throws {
+        // A bare 127 is any "command not found" (the test above still throws
+        // on it). The outcome needs our PATH resolver's own sentence as well.
+        let scripts = Mutex(0)
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            scripts.withLock { $0 += 1 }
+            return .init(
+                exitCode: 127,
+                message: "banner\nlocalvoxtral: 'claude' was not found on this host's non-interactive PATH."
+            )
+        })
+        XCTAssertEqual(
+            try service.setupRemotePlugin(sshHostAlias: "builder", token: "test-token", remoteForwardPort: 28_511),
+            .claudeNotFound
+        )
+        XCTAssertEqual(scripts.withLock { $0 }, 1, "nothing is attempted after the listing")
+    }
+
     func testVerifiedPluginVersionMatchesTheRemotePluginManifest() throws {
         let manifestURL = repositoryRoot
             .appendingPathComponent("integrations/claude-code/plugins/localvoxtral-remote")

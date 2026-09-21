@@ -321,7 +321,9 @@ remote host can do; it does not protect the host from itself.
 An enrolled host can report its Mistral Vibe sessions too, over the same tunnel.
 A host has one setup run, and Vibe is a step of it. **Set Up Host** and the
 row's **Update Host…** install the Claude Code plugin and then, when `vibe` is on the
-host, the Vibe hooks. A host without Vibe skips the step. The row offers
+host, the Vibe hooks. A host without Vibe skips that step, and a host without
+Claude Code skips the plugin step and the plugin half of the final check. The
+run fails only when the host has neither. The row offers
 **Update Host…** while the plugin or the Vibe hooks are outdated or not yet heard
 from, so after installing Vibe on a host, relaunch localvoxtral and press it.
 
