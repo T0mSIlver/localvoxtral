@@ -71,6 +71,40 @@ expect false "unrelated marker text does not trigger" \
 
 # --- run=false side ---------------------------------------------------------
 
+# --- The ClaudeContext exemption list (#418) --------------------------------
+expect false "an enrollment change does not run the lane" \
+  Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService.swift
+expect false "a settings-model plus forward-supervisor change does not run the lane" \
+  Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel.swift \
+  Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardSupervisor.swift
+expect true "an exempt file beside a join change still runs the lane" \
+  Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService.swift \
+  Sources/localvoxtral/ClaudeContext/SSHDestinationTTYProbe.swift
+expect true "a NEW file in ClaudeContext runs the lane until it is exempted" \
+  Sources/localvoxtral/ClaudeContext/SomethingNobodyClassifiedYet.swift
+expect true "what reads a screen or accepts a hook record is not exempt" \
+  Sources/localvoxtral/ClaudeContext/ClaudeRemoteContextListener.swift
+
+# Every exempt path must exist (a rename must not leave a dead exemption that a
+# new file of the old name would inherit), and the catch-all must be the ONLY
+# pattern that matches it: exempting a file that a named pattern asks for would
+# silently overrule that pattern.
+FILTER_SOURCE="$ROOT_DIR/scripts/ci/llm-lane-filter.sh"
+exempt_paths="$(sed -n "/^EXEMPT=(/,/^)/p" "$FILTER_SOURCE" | sed -n "s/^  '\([^']*\)'.*/\1/p")"
+[[ -n "$exempt_paths" ]] || fail "could not parse the EXEMPT list"
+patterns="$(sed -n "/^PATTERNS=(/,/^)/p" "$FILTER_SOURCE" | sed -n "s/^  '\([^']*\)'.*/\1/p")"
+while IFS= read -r exempt; do
+  [[ -e "$ROOT_DIR/$exempt" ]] || fail "exempt path does not exist: $exempt"
+  while IFS= read -r pattern; do
+    [[ "$pattern" == 'Sources/localvoxtral/ClaudeContext/*' ]] && continue
+    # shellcheck disable=SC2254
+    case "$exempt" in
+      $pattern) fail "exempt path $exempt is also asked for by pattern $pattern" ;;
+    esac
+  done <<<"$patterns"
+done <<<"$exempt_paths"
+echo "PASS: every exempt path exists and only the catch-all matches it"
+
 expect false "top-level docs do not run the lane" \
   README.md AGENTS.md
 expect false "UI-only Swift change does not run the lane" \

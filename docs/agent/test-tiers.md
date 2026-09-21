@@ -101,7 +101,12 @@ UI, insertion, audio, backend-supervision, or test-only changes elsewhere.
 Either way, the PR's Proof section states one of the two: the lane's
 scoreboard, or a one-line justification for skipping. If the path filter
 misses a change that belongs above, add `[run-llm-eval]` AND extend the
-filter list in the same PR. `./scripts/remote-build.sh integration-polishd`
+filter list in the same PR. The other direction has a list too: `EXEMPT` in
+the same script names the `ClaudeContext/` files that install, configure or
+keep a tunnel open, so an enrollment or settings diff does not buy live 4B
+inference on the owner's Mac. A new file in that directory runs the lane until
+it is added there, and only a file that cannot change what reaches the model,
+or which session's context does, belongs. `./scripts/remote-build.sh integration-polishd`
 remains the local equivalent. The nightly `eval-e2e.yml` lane is the only
 scheduled eval; the per-PR polishd lane skipped by the filter runs again only
 when a matching change (or the marker) triggers it.
