@@ -36,7 +36,8 @@ jobs:
       (github.event.label.name == 'needs-ui-smoke' &&
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, macOS, ARM64]
-    timeout-minutes: 20
+    # The AX drill, a second (dogfood) packaging pass and the e2e dictation.
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -70,6 +71,12 @@ jobs:
           else
             echo "UI smoke slot: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
+          E2E_REASON="$(sed -n 's/^e2e_reason=//p' <<<"$DECISION")"
+          if [[ "$(sed -n 's/^e2e_run=//p' <<<"$DECISION")" == "true" ]]; then
+            echo "E2E dictation slot: RUNNING ($E2E_REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "E2E dictation slot: SKIPPED ($E2E_REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Clean stale outputs (keep build caches)
         # Shared repair-and-clean for the persistent workspace (see the
@@ -78,8 +85,10 @@ jobs:
         # The guard condition compares `!= 'false'` (not `== 'true'`) so a
         # missing output fails OPEN: if the guard ever exits 0 without
         # emitting run=..., the drill runs rather than every slot silently
-        # skipping green forever. Same condition on the two steps below.
-        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
+        # skipping green forever. Same condition on the two steps below; the
+        # e2e dictation steps read `e2e_run` the same way, and this step runs
+        # when either check does.
+        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false' || steps.guard.outputs.e2e_run != 'false'
         run: ./scripts/ci/clean-stale-outputs.sh
 
       - name: Package app bundle
@@ -100,6 +109,68 @@ jobs:
           mkdir -p logs
           set -o pipefail
           ./scripts/ui-smoke.sh 2>&1 | tee logs/ui-smoke.log
+
+      - name: Package dogfood app bundle (dictates from a file)
+        # The e2e dictation check needs the instrumented build: only it can
+        # dictate from a WAV in place of the microphone (docs/dogfood-builds.md).
+        # Enablement is the step env, never the .dogfood-capture-enable marker
+        # file, for the reason ci.yml gives: this workspace is persistent.
+        # `!cancelled()` so a red smoke drill does not hide a dictation
+        # regression, or the other way round.
+        if: ${{ !cancelled() && (github.event_name != 'schedule' || steps.guard.outputs.e2e_run != 'false') }}
+        env:
+          LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
+          LOCALVOXTRAL_DOGFOOD: "1"
+        run: ./scripts/package_app.sh release
+
+      - name: Run e2e dictation
+        # The packaged app hears a WAV, dictates into a throwaway window, and
+        # the inserted text is scored (scripts/e2e-dictation.sh). Exit 3 means
+        # the Mac was not in a state to run it (locked, no STT server, no
+        # Accessibility grant): a scheduled slot reports that and stays green,
+        # like the guard's own skips, while a dispatch or a label is an operator
+        # asking for a result and goes red.
+        id: e2e
+        if: ${{ !cancelled() && (github.event_name != 'schedule' || steps.guard.outputs.e2e_run != 'false') }}
+        # A job timeout SIGKILLs the step, and then nothing restores the
+        # owner's defaults until the next lane run. Two scenarios take about
+        # two minutes; this bound ends a wedged run while the job can still
+        # deliver the script's TERM.
+        timeout-minutes: 10
+        env:
+          LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN: "1"
+        run: |
+          mkdir -p logs
+          set +e
+          ./scripts/e2e-dictation.sh 2>&1 | tee logs/e2e-dictation.log
+          STATUS="${PIPESTATUS[0]}"
+          set -e
+          if [[ "$STATUS" == "0" ]]; then
+            echo "scored=true" >> "$GITHUB_OUTPUT"
+          fi
+          sed -n '/^E2E dictation summary:/,$p' logs/e2e-dictation.log >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$STATUS" == "3" && "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            echo "::warning::e2e dictation did not run: the Mac was not in a state to run it."
+            exit 0
+          fi
+          exit "$STATUS"
+
+      - name: E2E dictation scored
+        # What ui-smoke-guard.sh reads to decide that today's dictation is
+        # covered. The step above concludes `success` on a scheduled exit 3
+        # too, so its conclusion cannot say that every scenario was scored.
+        # The name must match E2E_STEP in the guard.
+        if: ${{ !cancelled() && steps.e2e.outputs.scored == 'true' }}
+        run: echo "Every e2e dictation scenario was scored and passed."
+
+      - name: Upload e2e dictation log
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-dictation-log
+          path: logs/e2e-dictation.log
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload UI smoke log
         if: failure()

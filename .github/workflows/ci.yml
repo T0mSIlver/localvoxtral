@@ -205,6 +205,8 @@ jobs:
           ./scripts/ci/test-ui-gate.sh
           ./scripts/ci/test-runner-node-resign.sh
           ./scripts/ci/test-launch-app-shim.sh
+          ./scripts/ci/test-word-accuracy.sh
+          ./scripts/ci/test-e2e-dictation-preconditions.sh
           ./scripts/ci/test-ac-power-guard.sh
           ./scripts/ci/test-llm-lane-filter.sh
           ./scripts/ci/test-herdr-lane-filter.sh
