@@ -767,9 +767,13 @@ final class DictationViewModel {
             localNetworkPermissionPreflight ?? LocalNetworkPermissionPreflight()
         // The real control only in the running app: a unit suite that reached
         // it would move the volume of the Mac running the tests, and the build
-        // host is the owner's own machine.
-        let ducksRealOutput =
-            startRuntimeServices && !TerminalTargetDetector.isRunningUnderXCTest
+        // host is the owner's own machine. `startRuntimeServices` is the gate
+        // that ships; the XCTest check is a second one for the two suites that
+        // do pass true, and is DEBUG-only because the symbol is.
+        var ducksRealOutput = startRuntimeServices
+        #if DEBUG
+        ducksRealOutput = ducksRealOutput && !TerminalTargetDetector.isRunningUnderXCTest
+        #endif
         self.audioDucking = AudioDuckingController(
             volumeControl: ducksRealOutput
                 ? CoreAudioSystemOutputVolumeControl()
