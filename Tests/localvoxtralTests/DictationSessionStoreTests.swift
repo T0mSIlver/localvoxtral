@@ -44,10 +44,44 @@ final class DictationSessionStoreTests: XCTestCase {
         XCTAssertEqual(entries.map(\.rawText), ["newer raw", "older"])
         let newest = try XCTUnwrap(entries.first)
         XCTAssertEqual(newest.finalText, "Newer polished.")
-        XCTAssertTrue(newest.polishChangedText)
+        XCTAssertTrue(newest.textWasChanged)
         XCTAssertEqual(newest.targetAppBundleID, "com.mitchellh.ghostty")
         XCTAssertEqual(newest.status, .completed)
-        XCTAssertFalse(try XCTUnwrap(entries.last).polishChangedText)
+        XCTAssertFalse(try XCTUnwrap(entries.last).textWasChanged)
+    }
+
+    func testPolishRanOnlyWhenAPolishAnswered() async throws {
+        let store = try makeStore()
+        // The replacement dictionary changed this one with polishing off.
+        store.save(record("foo", polished: "bar", daysAgo: 3))
+        let polished = record("hello", polished: "Hello.", daysAgo: 2)
+        polished.polishingDurationSeconds = 1.2
+        store.save(polished)
+        let failed = record("timed out", daysAgo: 1, status: .llmFailed)
+        failed.polishingDurationSeconds = 40
+        store.save(failed)
+
+        let entries = await store.entries()
+
+        XCTAssertEqual(entries.map(\.polishRan), [false, true, false])
+        XCTAssertEqual(entries.map(\.textWasChanged), [false, true, true])
+    }
+
+    func testSearchTreatsPercentAndUnderscoreAsTextNotWildcards() async throws {
+        let store = try makeStore()
+        store.save(record("a 50% discount", daysAgo: 2))
+        store.save(record("a 50 dollar discount", daysAgo: 1))
+        store.save(record("snake_case name", daysAgo: 3))
+        store.save(record("snakeXcase name", daysAgo: 4))
+
+        var query = DictationHistoryQuery()
+        query.searchText = "50%"
+        let percent = await store.entries(matching: query)
+        XCTAssertEqual(percent.map(\.rawText), ["a 50% discount"])
+
+        query.searchText = "snake_case"
+        let underscore = await store.entries(matching: query)
+        XCTAssertEqual(underscore.map(\.rawText), ["snake_case name"])
     }
 
     func testSearchMatchesTranscriptOrPolishedTextIgnoringCaseAndAccents() async throws {

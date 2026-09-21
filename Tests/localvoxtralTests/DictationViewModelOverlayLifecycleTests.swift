@@ -503,7 +503,10 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(entries.map(\.rawText), ["hello world"])
     }
 
-    func testNothingIsSavedWhenHistoryIsOffAndApplyingTheRuleDeletesTheRest() async throws {
+    /// Turning history off deletes what is saved. A dictation made under off
+    /// runs that delete again, so one that failed does not leave the archive
+    /// on disk until the next launch.
+    func testUnderOffADictationIsNotSavedAndWhatWasLeftIsDeleted() async throws {
         let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
         let longAgo = Date(timeIntervalSince1970: 1_000_000)
         store.save(
@@ -512,14 +515,55 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
                 provider: "p", model: "m", outputMode: "overlay_buffer",
                 status: .sttCompleted, commitSucceeded: true))
 
-        let viewModel = finishDictation("hello world", retention: .off, store: store)
+        _ = finishDictation("hello world", retention: .off, store: store)
 
-        let afterDictation = await store.entries()
-        XCTAssertEqual(afterDictation.map(\.rawText), ["from 1970"])
+        let remaining = await store.count()
+        XCTAssertEqual(remaining, 0)
+    }
 
+    func testTurningHistoryOffStopsATermSuggestionPassThatIsReadingIt() async throws {
+        /// Never answers: the pass stays in flight until something cancels it.
+        final class SilentService: LLMPolishingServicing {
+            func polish(
+                request: LLMPolishingRequest, configuration: LLMPolishingConfiguration
+            ) async throws -> LLMPolishingResult {
+                // Never waited out: the test cancels it.
+                try await Task.sleep(for: .seconds(86_400))
+                throw CancellationError()
+            }
+        }
+
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.polishingBackendMode = .externalURL
+        settings.llmPolishingEnabled = true
+        settings.llmPolishingEndpointURL = "http://127.0.0.1:9/v1/chat/completions"
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false
+        )
+        viewModel.llmPolishingService = SilentService()
+        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let longAgo = Date(timeIntervalSince1970: 1_000_000)
+        store.save(
+            DictationSessionRecord(
+                startedAt: longAgo, finishedAt: longAgo, rawText: "something I said",
+                provider: "p", model: "m", outputMode: "overlay_buffer",
+                status: .sttCompleted, commitSucceeded: true))
+        viewModel.sessionStore = store
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.termSuggestions.start()
+        for _ in 0..<1_000 where viewModel.termSuggestions.phase != .loading {
+            await Task.yield()
+        }
+        XCTAssertEqual(viewModel.termSuggestions.phase, .loading)
+
+        settings.dictationHistoryRetention = .off
         viewModel.applyDictationHistoryRetention(now: longAgo)
-        let afterApplying = await store.count()
-        XCTAssertEqual(afterApplying, 0)
+
+        XCTAssertEqual(viewModel.termSuggestions.phase, .idle)
+        XCTAssertEqual(viewModel.termSuggestions.unavailableReason, "Needs dictation history.")
     }
 
     // MARK: - F6: polished badge flag + raw-transcript copy affordance

@@ -21,17 +21,22 @@ struct DictationHistoryEntry: Identifiable, Equatable, Sendable {
     let polishProfile: String?
     let polishContextSummary: String?
 
-    /// What the dictation ended up as: the polished text when polishing
-    /// changed it, the transcript otherwise.
+    /// What the dictation ended up as, the transcript when nothing changed it.
     var finalText: String { polishedText ?? rawText }
 
-    /// The commit path stores `polishedText` only when it differs from the
-    /// transcript, but a record written by an older build may hold an equal
-    /// copy.
-    var polishChangedText: Bool {
+    /// `polishedText` holds whatever the commit path turned the transcript
+    /// into, and that is not always a model's work: with polishing off, the
+    /// replacement dictionary and the clipboard marker land there too. The
+    /// commit path stores it only when it differs, but a record written by an
+    /// older build may hold an equal copy.
+    var textWasChanged: Bool {
         guard let polishedText else { return false }
         return polishedText != rawText
     }
+
+    /// A polish request answered for this dictation. Only the polish path
+    /// records a duration.
+    var polishRan: Bool { polishingDurationSeconds != nil && status != .llmFailed }
 }
 
 extension DictationHistoryEntry {
@@ -100,8 +105,8 @@ final class DictationSessionStore {
     /// `ModelContext`, and two contexts saving at once is how a delete-all
     /// would lose to the insert it was started after.
     private var lastWrite: Task<Void, Never>?
-    /// Bumped after every write that landed, so an open History window knows
-    /// to read again.
+    /// Called after every write that changed something, so an open History
+    /// pane reads again.
     var onChange: (@MainActor () -> Void)?
 
     convenience init?() {
