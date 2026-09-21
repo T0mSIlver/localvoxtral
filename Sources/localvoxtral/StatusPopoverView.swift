@@ -126,7 +126,10 @@ struct StatusPopoverView: View {
             }
 
             Button("Settings…") {
-                if navigator.selectedTab == .history { navigator.selectedTab = .general }
+                // Settings… must land on a settings pane, not on the page History left open.
+                if [.history, .insights].contains(navigator.selectedTab) {
+                    navigator.selectedTab = .general
+                }
                 NSApp.activate(ignoringOtherApps: true)
                 openSettings()
             }
