@@ -475,9 +475,16 @@ final class DictationViewModel {
                     : nil
             }
         )
+        model.onRunFinished = { [weak self] outcome, countAtStart in
+            self?.termSuggestionCadence?.runFinished(outcome, countAtStart: countAtStart)
+        }
         storedTermSuggestions = model
         return model
     }
+    /// Nil without runtime services, so no unit test's saved dictation can
+    /// start a request.
+    @ObservationIgnored
+    var termSuggestionCadence: TermSuggestionCadence?
     @ObservationIgnored
     let overlayBufferCoordinator: OverlayBufferSessionCoordinating
     @ObservationIgnored
@@ -912,8 +919,23 @@ final class DictationViewModel {
             learnedTermStore = LearnedTermStore(
                 fileURL: LearnedTermStore.defaultFileURL(),
                 onChange: { [weak self] in
-                    Task { @MainActor in self?.learnedTermRevision += 1 }
+                    Task { @MainActor in
+                        self?.learnedTermRevision += 1
+                        // What keeps the sidebar badge honest between two
+                        // openings of the pane; reads memory, never the disk.
+                        self?.termSuggestions.refreshLearnedSuggestions()
+                    }
                 }
+            )
+            termSuggestionCadence = TermSuggestionCadence(
+                settings: settings,
+                model: { [weak self] in self?.termSuggestions },
+                isDictationActive: { [weak self] in
+                    guard let self else { return false }
+                    return self.isDictating || self.isFinalizingStop
+                        || self.isConnectingRealtimeSession
+                },
+                launchedAt: Date()
             )
             installMistralUsageLedger(
                 MistralUsageLedger(fileURL: MistralUsageLedger.defaultFileURL()) {

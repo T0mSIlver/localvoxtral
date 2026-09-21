@@ -113,6 +113,25 @@ enum SpeechdCacheLimit: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// How often the hosted "Suggest terms" pass runs by itself, in saved
+/// dictations (`TermSuggestionCadence`). `never` leaves only the button.
+enum TermSuggestionInterval: Int, CaseIterable, Identifiable, Sendable {
+    case every25 = 25
+    case every50 = 50
+    case every100 = 100
+    case every200 = 200
+    case never = 0
+
+    var id: Int { rawValue }
+
+    /// Nil for `never`.
+    var dictations: Int? { self == .never ? nil : rawValue }
+
+    var displayName: String {
+        dictations.map { "Every \($0) dictations" } ?? "Never"
+    }
+}
+
 /// Streaming step cadence for the managed dictation helper: how much audio is
 /// batched before each incremental transcription step. Lower values show words
 /// sooner; higher values leave more compute headroom. `Auto` omits the
@@ -284,6 +303,9 @@ final class SettingsStore {
         static let polishSpeakerProfile = "settings.polish_speaker_profile"
         static let polishSpeakerTerms = "settings.polish_speaker_terms"
         static let polishDismissedTermSuggestions = "settings.polish_dismissed_term_suggestions"
+        static let termSuggestionInterval = "settings.term_suggestion_interval"
+        static let termSuggestionDictationsSinceRun = "settings.term_suggestion_dictations_since_run"
+        static let termSuggestionRetryAt = "settings.term_suggestion_retry_at"
         static let clipboardPayloadMacroEnabled = "settings.clipboard_payload_macro_enabled"
         static let terminalScreenContextEnabled = "settings.terminal_screen_context_enabled"
         static let repoVocabularyEnabled = "settings.repo_vocabulary_enabled"
@@ -563,6 +585,29 @@ final class SettingsStore {
             defaults.set(
                 polishDismissedTermSuggestions, forKey: Keys.polishDismissedTermSuggestions)
         }
+    }
+
+    /// An absent key is `every50`: the pass runs by itself unless the user
+    /// picks Never (owner ruling, 2026-09-21).
+    var termSuggestionInterval: TermSuggestionInterval {
+        didSet { defaults.set(termSuggestionInterval.rawValue, forKey: Keys.termSuggestionInterval) }
+    }
+
+    /// Dictations saved since the last completed suggestion run. Persisted:
+    /// at fifty per run, a counter that restarted with the app would never
+    /// get there.
+    var termSuggestionDictationsSinceRun: Int {
+        didSet {
+            defaults.set(
+                termSuggestionDictationsSinceRun, forKey: Keys.termSuggestionDictationsSinceRun)
+        }
+    }
+
+    /// The counter value a failed background run waits for before the next
+    /// attempt; 0 when nothing failed. Persisted, or a relaunch would retry
+    /// at once against an API that is still down.
+    var termSuggestionRetryAt: Int {
+        didSet { defaults.set(termSuggestionRetryAt, forKey: Keys.termSuggestionRetryAt) }
     }
 
     func dismissTermSuggestion(_ term: String) {
@@ -1165,6 +1210,12 @@ final class SettingsStore {
         polishSpeakerProfile = defaults.string(forKey: Keys.polishSpeakerProfile) ?? ""
         polishDismissedTermSuggestions =
             defaults.stringArray(forKey: Keys.polishDismissedTermSuggestions) ?? []
+        termSuggestionInterval =
+            (defaults.object(forKey: Keys.termSuggestionInterval) as? Int)
+            .flatMap(TermSuggestionInterval.init(rawValue:)) ?? .every50
+        termSuggestionRetryAt = max(0, defaults.integer(forKey: Keys.termSuggestionRetryAt))
+        termSuggestionDictationsSinceRun = max(
+            0, defaults.integer(forKey: Keys.termSuggestionDictationsSinceRun))
         polishSpeakerTerms = SpeakerTerms.sanitized(
             defaults.stringArray(forKey: Keys.polishSpeakerTerms) ?? [])
         polishClipboardContextEnabled = Self.loadBool(
