@@ -15,6 +15,9 @@ on:
       max_reports:
         description: "Max number of reports to summarize"
         default: "3"
+      log_category:
+        description: "Only this app log category (e.g. ClaudeContext); empty = all but Deltas"
+        default: ""
 
 jobs:
   crashlog:
@@ -37,9 +40,24 @@ jobs:
       - name: Recent localvoxtral app log (redacted)
         env:
           MINUTES_BACK: ${{ inputs.minutes_back }}
+          LOG_CATEGORY: ${{ inputs.log_category }}
         run: |
+          # One category at a time keeps a join or backend line from being
+          # pushed out of the tail by the overlay's per-frame render lines.
+          # Letters only: the value goes into the predicate.
+          # Never Deltas: that category logs transcript text, and this log is
+          # public. Excluded in the predicate, and asking for it is refused.
+          predicate='subsystem == "com.localvoxtral" AND process == "localvoxtral" AND category != "Deltas"'
+          case "$LOG_CATEGORY" in
+            "") ;;
+            Deltas) echo "log_category Deltas is never shown: it carries transcript text"; exit 1 ;;
+            *[!A-Za-z]*) echo "log_category must be letters only"; exit 1 ;;
+            *) predicate="$predicate AND category == \"$LOG_CATEGORY\"" ;;
+          esac
+          # pipefail, or tail's exit 0 hides a failed query as an empty section.
+          set -o pipefail
           log show --last "${MINUTES_BACK}m" --info --debug \
-            --predicate 'subsystem == "com.localvoxtral" AND process == "localvoxtral"' 2>/dev/null \
+            --predicate "$predicate" 2>/dev/null \
             | sed "s|$HOME|~|g" | tail -150 || echo "log query failed"
 
       - name: Reproduce the app's model pre-download command (native HTTPS)
@@ -112,6 +130,66 @@ jobs:
           probe_model "speechd" "$speech_repo" "$speech_revision"
           probe_model "polishd" "$polish_repo" "$polish_revision"
           exit 0
+
+      - name: Mistral Vibe hooks state (counts and booleans only)
+        run: |
+          # Field-debugging a Vibe session that never joins. This log is
+          # PUBLIC: print counts, yes/no, and version numbers, never a path
+          # under $HOME, a hook command, or a file's text.
+          set +e
+          yn() { if "$@" >/dev/null 2>&1; then echo yes; else echo no; fi; }
+          vibe_home="${VIBE_HOME:-$HOME/.vibe}"
+          hooks="$vibe_home/hooks.toml"
+          echo "hooks.toml present: $(yn test -f "$hooks")"
+          # Captured, not `grep -c || echo 0`: a zero count prints 0 AND exits
+          # 1, which put a second bare 0 in the log. Two -e patterns rather
+          # than an alternation, so the count does not depend on the grep.
+          count() { n="$(grep -c "$@" "$hooks" 2>/dev/null)"; echo "${n:-0}"; }
+          echo "localvoxtral block markers: $(count -e '^# >>> localvoxtral >>>$' -e '^# <<< localvoxtral <<<$')"
+          echo "[[hooks]] tables: $(count -e '^\[\[hooks\]\]')"
+          echo "top-level 'hooks =' lines: $(count -e '^hooks[[:space:]]*=')"
+          shim="$vibe_home/localvoxtral/publish.sh"
+          echo "publish.sh present: $(yn test -f "$shim")"
+          link="$HOME/Library/Application Support/localvoxtral/claude/publisher"
+          echo "publisher link present: $(yn test -L "$link")"
+          echo "publisher link target executable: $(yn test -x "$link")"
+          echo "publisher link target inside a try-pr dir: $(yn sh -c 'readlink "$0" | grep -q "^/private/tmp/localvoxtral-try\."' "$link")"
+          vibe_bin="$(PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" command -v vibe)"
+          echo "vibe on PATH: $(yn test -n "$vibe_bin")"
+          [ -n "$vibe_bin" ] && echo "vibe version: $("$vibe_bin" --version 2>/dev/null | grep -o '[0-9][0-9.]*' | head -1)"
+          echo "--- running vibe processes (tty yes/no, age):"
+          ps -axo pid=,tty=,etime=,command= | awk '
+            # vibe itself, python running it (by path or -m), uv/uvx running
+            # it, and a defunct one, which ps prints in parentheses.
+            { gsub(/^\(|\)$/, "", $4) }
+            $4 ~ /(^|\/)vibe$/ \
+              || ($4 ~ /python/ && ($5 ~ /(^|\/)vibe$/ || ($5 == "-m" && $6 == "vibe"))) \
+              || ($4 ~ /(^|\/)uvx?$/ && ($5 ~ /(^|\/)vibe$/ || $6 ~ /(^|\/)vibe$/)) {
+              n++; printf "vibe process %d: tty=%s etime=%s\n", n, ($2 == "??" ? "no" : "yes"), $3
+            }
+            END { if (!n) print "none" }'
+          # Vibe picks its hook runner from a server-side rollout cached here;
+          # the two runners send different hook payloads. Closed set only.
+          echo "--- vibe harness rollout (cached):"
+          /usr/bin/python3 - "$vibe_home/experiment_eval_cache.json" <<'PY' 2>/dev/null || echo "unreadable"
+          import json, sys
+          seen = set()
+          def walk(x):
+              if isinstance(x, dict):
+                  for k, v in x.items():
+                      if k == "vibe_cli_unified_harness_rollout" and isinstance(v, dict):
+                          vals = [v.get("defaultValue")] + [r.get("force") for r in v.get("rules", []) if isinstance(r, dict)]
+                          for val in vals:
+                              seen.add(val if val in ("unified", "legacy") else "other")
+                      walk(v)
+              elif isinstance(x, list):
+                  for v in x: walk(v)
+          walk(json.load(open(sys.argv[1])))
+          print("default/forced values:", " ".join(sorted(seen)) or "none")
+          PY
+          echo "--- broker socket:"
+          sock="$HOME/Library/Application Support/localvoxtral/run/claude-context.sock"
+          echo "socket present: $(yn test -S "$sock")"
 
       - name: Claude remote ssh config state (markers only)
         run: |
