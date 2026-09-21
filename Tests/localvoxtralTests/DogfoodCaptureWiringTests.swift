@@ -10,10 +10,6 @@ import XCTest
 /// harness as the polish-failure diagnostics suite) and reads the record back.
 @MainActor
 final class DogfoodCaptureWiringTests: XCTestCase {
-    // DictationViewModel owns app-lifetime services; retain test instances for
-    // the process lifetime (mirrors the token-guard suite).
-    private static var retainedViewModels: [DictationViewModel] = []
-
     /// Armed build + armed runtime flag: a polished overlay commit writes
     /// exactly one record whose text stages, session facts, join abstention,
     /// and screen decision describe the dictation that just committed.
@@ -660,7 +656,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         editSignal: EditSignalHarness? = nil,
         commitOutcome: OverlayBufferCommitOutcome = .succeeded
     ) throws -> Harness {
-        let settings = makeSettings()
+        let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = true
         settings.polishingBackendMode = .managedLocal
         settings.dogfoodCaptureEnabled = dogfoodArmed
@@ -679,15 +675,15 @@ final class DogfoodCaptureWiringTests: XCTestCase {
             try? FileManager.default.removeItem(at: base)
         }
 
-        let overlayCoordinator = WiringMockOverlayCoordinator()
+        let overlayCoordinator = MockOverlayCoordinator()
         overlayCoordinator.commitOutcome = commitOutcome
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
             startRuntimeServices: false
         )
-        viewModel.appConfigStore = WiringMockAppConfigStore()
-        viewModel.llmPolishingService = SucceedingPolishingService()
+        viewModel.appConfigStore = MockAppConfigStore()
+        viewModel.llmPolishingService = FakePolishingService(returning: "polished output text", durationSeconds: 0.25)
         viewModel.dogfoodCaptureStore = DogfoodCaptureStore(directoryURL: captureDirectory)
         // Always injected, even for the tests that ignore it: the production
         // watcher would arm a REAL 2 s timer on a process-retained view model,
@@ -701,7 +697,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
             sleeper.fireAll()
         }
         viewModel.isShowingConnectionFailureAlert = true
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
@@ -722,17 +718,6 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         }
     }
 
-    private func makeSettings() -> SettingsStore {
-        let suiteName = "localvoxtral.DogfoodCaptureWiringTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
-        settings.dictationOutputMode = .overlayBuffer
-        return settings
-    }
 }
 
 /// A plain-text pasteboard with no concealed/transient markers.
@@ -741,69 +726,6 @@ private final class WiringPasteboardStub: PasteboardReading {
     init(text: String) { self.text = text }
     func types() -> [NSPasteboard.PasteboardType]? { [.string] }
     func string() -> String? { text }
-}
-
-/// Always polishes successfully, without networking.
-private actor SucceedingPolishingService: LLMPolishingServicing {
-    func polish(
-        request: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        LLMPolishingResult(
-            rawText: request.inputText,
-            polishedText: "polished output text",
-            durationSeconds: 0.25
-        )
-    }
-}
-
-private final class WiringMockAppConfigStore: AppConfigServing {
-    func configDirectoryURL() -> URL {
-        FileManager.default.temporaryDirectory
-    }
-
-    func loadReplacementDictionary() -> ReplacementDictionary {
-        ReplacementDictionary(entries: [])
-    }
-
-    func loadLLMPromptTemplates() -> LLMPromptTemplates {
-        LLMPromptTemplates(systemContent: "system", userContent: "{{input_text}}")
-    }
-
-    func loadTerminalAppBundleIDs() -> [String] {
-        []
-    }
-}
-
-@MainActor
-private final class WiringMockOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitTargetAppPID: pid_t? = nil
-    /// What `commitIfNeeded` reports — the seam for the failed / clipboard-
-    /// fallback arming tests.
-    var commitOutcome: OverlayBufferCommitOutcome = .succeeded
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(
-            targetRect: CGRect(x: 0, y: 0, width: 100, height: 24),
-            source: .windowCenter
-        )
-    }
-
-    func startSession(preResolvedAnchor _: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
-    func beginFinalizing(displayBufferText _: String, commitBufferText _: String) {}
-    func refresh(displayBufferText _: String, commitBufferText _: String) {}
-
-    func commitIfNeeded(
-        using _: OverlayTextCommitting,
-        autoCopyEnabled _: Bool
-    ) -> OverlayBufferCommitOutcome {
-        commitOutcome
-    }
-
-    func dismissAfterHold(minimumVisibility _: TimeInterval) {}
-    func reset() {}
-    func captureLiveCommitTargetAppPID() {}
-    func markPolished(_: Bool) {}
 }
 
 #endif

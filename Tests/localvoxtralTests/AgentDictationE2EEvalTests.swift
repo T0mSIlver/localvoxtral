@@ -82,10 +82,6 @@ import XCTest
 final class AgentDictationE2EEvalTests: XCTestCase {
     private typealias Support = AgentDictationE2EEvalSupport
 
-    // DictationViewModel owns app-lifetime services; retain instances for the
-    // process lifetime (the token-guard suite pattern).
-    private static var retainedViewModels: [DictationViewModel] = []
-
     /// Generous: the first request after a cold Metal JIT cache can pay
     /// kernel-compilation time on top of model load.
     private static let helperReadyTimeout: TimeInterval = 300
@@ -143,7 +139,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             // hand-rolled beside it: what this eval scores has to be the
             // request the app sends, and the store is the only thing that
             // knows what that is.
-            let settings = makeSettings()
+            let settings = makeSettings(outputMode: .overlayBuffer)
             guard let configuration = Support.configureMistralPolishing(
                 settings, apiKey: enablement.apiKey, model: enablement.polishModel
             ) else {
@@ -475,7 +471,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         fixtureRepos: [String: URL],
         vocabularyCache: RepoVocabularyCache
     ) async throws -> PolishStageOutcome {
-        let settings = makeSettings()
+        let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = true
         switch enablement.provider {
         case .speechd:
@@ -497,7 +493,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         let service = EvalRecordingPolishingService(configuration: polishConfiguration)
         let viewModel = DictationViewModel(
             settings: settings,
-            overlayBufferCoordinator: EvalOverlayCoordinator(),
+            overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: false
         )
         viewModel.appConfigStore = configStore
@@ -545,7 +541,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
         var savedRecord: DictationSessionRecord?
         viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
@@ -1125,17 +1121,6 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
     // MARK: - Settings
 
-    private func makeSettings() -> SettingsStore {
-        let suiteName = "localvoxtral.AgentDictationE2EEvalTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
-        settings.dictationOutputMode = .overlayBuffer
-        return settings
-    }
 }
 
 // MARK: - Local doubles
@@ -1165,36 +1150,6 @@ private actor EvalRecordingPolishingService: LLMPolishingServicing {
         lastRawPolishedText = result.polishedText
         return result
     }
-}
-
-/// Overlay coordinator double: the commit itself (AX insertion / pasteboard)
-/// is out of scope for the eval — the scored artifact is the committed TEXT,
-/// read from the view model exactly like the token-guard suite does.
-@MainActor
-private final class EvalOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitTargetAppPID: pid_t? = nil
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(
-            targetRect: CGRect(x: 0, y: 0, width: 100, height: 24),
-            source: .windowCenter
-        )
-    }
-
-    func startSession(preResolvedAnchor _: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
-    func beginFinalizing(displayBufferText _: String, commitBufferText _: String) {}
-    func refresh(displayBufferText _: String, commitBufferText _: String) {}
-
-    func commitIfNeeded(
-        using _: OverlayTextCommitting,
-        autoCopyEnabled _: Bool
-    ) -> OverlayBufferCommitOutcome {
-        .succeeded
-    }
-
-    func dismissAfterHold(minimumVisibility _: TimeInterval) {}
-    func reset() {}
-    func captureLiveCommitTargetAppPID() {}
 }
 
 private struct EvalInfraError: Error, CustomStringConvertible {

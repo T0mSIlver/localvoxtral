@@ -9,10 +9,6 @@ import XCTest
 /// sending debugging to a process that was never involved.
 @MainActor
 final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
-    // DictationViewModel owns app-lifetime services; retain test instances for
-    // the process lifetime (mirrors the token-guard suite).
-    private static var retainedViewModels: [DictationViewModel] = []
-
     /// Managed mode + a polish request that fails with a network error: the
     /// surfaced failure details must name the managed polishd endpoint (the
     /// one the request went to), never the external-URL setting.
@@ -30,7 +26,9 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
             startRuntimeServices: false
         )
         viewModel.appConfigStore = MockAppConfigStore()
-        viewModel.llmPolishingService = TimeoutFailingPolishingService()
+        viewModel.llmPolishingService = FakePolishingService(
+            failing: LLMPolishingError.networkError("The request timed out.")
+        )
         // The failure path presents a REAL modal NSAlert when NSApp exists —
         // the exact suite-hang class AGENTS.md warns about. Pre-setting the
         // alert flag makes presentConnectionFailureAlert a no-op (same
@@ -91,7 +89,15 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
             startRuntimeServices: false
         )
         viewModel.appConfigStore = MockAppConfigStore()
-        viewModel.llmPolishingService = TransportTimeoutPolishingService()
+        // Fails the way the real service does when URLSession gives up on a slow
+        // endpoint: through the service's own transport-error classification,
+        // so the test covers it.
+        viewModel.llmPolishingService = FakePolishingService(
+            failing: LLMPolishingService.polishingError(
+                forTransportError: URLError(.timedOut),
+                timeoutSeconds: LLMPolishingService.requestTimeoutInterval
+            )
+        )
         // Same modal-alert guard as the sibling tests (AGENTS.md).
         viewModel.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
@@ -165,7 +171,16 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
             startRuntimeServices: false
         )
         viewModel.appConfigStore = MockAppConfigStore()
-        viewModel.llmPolishingService = RejectingPolishingService()
+        // The shape a live Mistral rejection actually has (probe, 2026-09-15):
+        // an HTTP status plus an `object`/`message`/`type`/`code` envelope.
+        // `message` is the diagnosis; everything around it is noise that must
+        // not reach the UI.
+        viewModel.llmPolishingService = FakePolishingService(
+            failing: LLMPolishingError.requestFailed(
+                statusCode: 401,
+                body: #"{"object":"error","message":"Unauthorized","type":"invalid_request_error","param":null,"code":"1100","request_id":"abc123"}"#
+            )
+        )
         // Same modal-alert guard as the sibling tests (AGENTS.md).
         viewModel.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
@@ -310,134 +325,4 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
 
     // MARK: - Harness (mirrors the token-guard suite)
 
-    /// Returns when the stop-commit has actually finished, by awaiting the
-    /// commit's own task.
-    ///
-    /// Call it directly after `finishStoppedSession`, with no suspension in
-    /// between: the task is read while the value that call just stored is
-    /// still there, and the task clears it on its own way out. A stop that
-    /// commits synchronously (nothing to polish) leaves it nil and is already
-    /// over by the time it returns.
-    ///
-    /// The deadline poll this replaces returned whichever way it went, so a
-    /// loaded runner asserted on a session still in flight — a wrong value on
-    /// a rerun-green test (#392/#395/#398).
-    private func awaitStoppedSessionCommit(
-        _ viewModel: DictationViewModel,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) async {
-        let commitTask = viewModel.polishAndCommitTask
-        await commitTask?.value
-        XCTAssertFalse(
-            viewModel.isCompletingStoppedSession,
-            "the commit must be over before anything reads what it wrote",
-            file: file,
-            line: line
-        )
-    }
-
-    private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {
-        let suiteName =
-            "localvoxtral.DictationViewModelPolishFailureDiagnosticsTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-
-        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
-        settings.dictationOutputMode = outputMode
-        return settings
-    }
-
-    private func retainForTestProcessLifetime(_ viewModel: DictationViewModel) {
-        Self.retainedViewModels.append(viewModel)
-    }
-}
-
-/// Always fails like a client-side timeout, exercising the connection-failure
-/// diagnostics path without networking.
-private actor TimeoutFailingPolishingService: LLMPolishingServicing {
-    func polish(
-        request _: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        throw LLMPolishingError.networkError("The request timed out.")
-    }
-}
-
-/// Fails the way the real service does when URLSession gives up on a slow endpoint:
-/// through the service's own transport-error classification, so the test covers it.
-private actor TransportTimeoutPolishingService: LLMPolishingServicing {
-    func polish(
-        request _: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        throw LLMPolishingService.polishingError(
-            forTransportError: URLError(.timedOut),
-            timeoutSeconds: LLMPolishingService.requestTimeoutInterval
-        )
-    }
-}
-
-/// Always fails the way a hosted provider rejects a bad API key: an HTTP
-/// status plus a multi-line JSON error body.
-private actor RejectingPolishingService: LLMPolishingServicing {
-    /// The shape a live Mistral rejection actually has (probe, 2026-09-15):
-    /// an `object`/`message`/`type`/`code` envelope. `message` is the
-    /// diagnosis; everything around it is noise that must not reach the UI.
-    static let body = #"{"object":"error","message":"Unauthorized","type":"invalid_request_error","param":null,"code":"1100","request_id":"abc123"}"#
-
-    func polish(
-        request _: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        throw LLMPolishingError.requestFailed(statusCode: 401, body: Self.body)
-    }
-}
-
-private final class MockAppConfigStore: AppConfigServing {
-    func configDirectoryURL() -> URL {
-        FileManager.default.temporaryDirectory
-    }
-
-    func loadReplacementDictionary() -> ReplacementDictionary {
-        ReplacementDictionary(entries: [])
-    }
-
-    func loadLLMPromptTemplates() -> LLMPromptTemplates {
-        LLMPromptTemplates(systemContent: "system", userContent: "{{input_text}}")
-    }
-
-    func loadTerminalAppBundleIDs() -> [String] {
-        []
-    }
-}
-
-@MainActor
-private final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitTargetAppPID: pid_t? = nil
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(
-            targetRect: CGRect(x: 0, y: 0, width: 100, height: 24),
-            source: .windowCenter
-        )
-    }
-
-    func startSession(preResolvedAnchor _: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
-    func beginFinalizing(displayBufferText _: String, commitBufferText _: String) {}
-    func refresh(displayBufferText _: String, commitBufferText _: String) {}
-
-    func commitIfNeeded(
-        using _: OverlayTextCommitting,
-        autoCopyEnabled _: Bool
-    ) -> OverlayBufferCommitOutcome {
-        .succeeded
-    }
-
-    func dismissAfterHold(minimumVisibility _: TimeInterval) {}
-    func reset() {}
-    func captureLiveCommitTargetAppPID() {}
 }

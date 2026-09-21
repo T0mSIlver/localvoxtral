@@ -9,10 +9,6 @@ import XCTest
 /// setup / key-check seams the Engines pane and the wizard both drive.
 @MainActor
 final class MistralAPIModeTests: XCTestCase {
-    // DictationViewModel owns app-lifetime services; retain test instances for
-    // the process duration so teardown does not race service shutdown.
-    private static var retainedViewModels: [DictationViewModel] = []
-
     // MARK: - Active realtime client
 
     func testActiveRealtimeClientDefaultsToTheOpenAICompatibleClient() {
@@ -179,7 +175,7 @@ final class MistralAPIModeTests: XCTestCase {
         // request would be billed for nothing.
         XCTAssertNotNil(settings.llmPolishingConfiguration, "precondition: config resolves")
         XCTAssertNil(
-            PolishPromptWarmup.plan(settings: settings, appConfigStore: MistralNoopConfigStore())
+            PolishPromptWarmup.plan(settings: settings, appConfigStore: MockAppConfigStore())
         )
     }
 
@@ -414,11 +410,11 @@ final class MistralAPIModeTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             backendManager: backendManager,
-            overlayBufferCoordinator: MistralNoopOverlayCoordinator(),
+            overlayBufferCoordinator: MockOverlayCoordinator(),
             localNetworkPermissionPreflight: preflight,
             startRuntimeServices: false
         )
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         return (viewModel, settings, backendManager)
     }
 }
@@ -451,36 +447,6 @@ private final class FakeMistralAPIKeyVerifier: MistralAPIKeyVerifying {
         recorded.withLock { $0.append(apiKey) }
         return result
     }
-}
-
-private struct MistralNoopConfigStore: AppConfigServing {
-    func configDirectoryURL() -> URL { FileManager.default.temporaryDirectory }
-    func loadReplacementDictionary() -> ReplacementDictionary { ReplacementDictionary(entries: []) }
-    func loadLLMPromptTemplates() -> LLMPromptTemplates {
-        LLMPromptTemplates(systemContent: "system", userContent: "user {{input_text}}")
-    }
-    func loadTerminalAppBundleIDs() -> [String] { [] }
-}
-
-@MainActor
-private final class MistralNoopOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitTargetAppPID: pid_t? = nil
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(targetRect: .zero, source: .windowCenter)
-    }
-    func startSession(preResolvedAnchor: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
-    func beginFinalizing(displayBufferText: String, commitBufferText: String) {}
-    func refresh(displayBufferText: String, commitBufferText: String) {}
-    @discardableResult
-    func commitIfNeeded(
-        using textCommitter: OverlayTextCommitting, autoCopyEnabled: Bool
-    ) -> OverlayBufferCommitOutcome {
-        .succeeded
-    }
-    func dismissAfterHold(minimumVisibility: TimeInterval) {}
-    func reset() {}
-    func captureLiveCommitTargetAppPID() {}
 }
 
 private final class FakeMistralModelLister: MistralModelListing {
