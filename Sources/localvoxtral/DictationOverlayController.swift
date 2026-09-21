@@ -343,7 +343,13 @@ final class DictationOverlayController {
         )
         guard let settled = OverlayManualPlacementResolver.settle(
             draggedFrame: proposed, screens: screensProvider())
-        else { return }
+        else {
+            // No display could be named, so there is nothing to remember this
+            // against. Still follow the mouse: a handle that does nothing is
+            // worse than a move that is forgotten at the end of the session.
+            panel.setFrame(proposed, display: true)
+            return
+        }
         draggedPlacement = settled.placement
         panel.setFrame(settled.frame, display: true)
     }

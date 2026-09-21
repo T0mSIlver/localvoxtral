@@ -173,19 +173,22 @@ extension OverlayScreenSnapshot {
 extension NSScreen {
     /// Identity that survives a reboot or a cable swap.
     ///
-    /// NOT the display number in `deviceDescription`: macOS hands those out per
-    /// session, so a position stored against one restores onto whichever
-    /// display inherited the number next time. The ColorSync UUID is tied to
-    /// the panel itself. A screen that has neither is skipped entirely rather
-    /// than sharing a placeholder id with the next one — two displays claiming
-    /// one identity is worse than a display that cannot be dragged to.
+    /// The ColorSync UUID is tied to the display itself. The display NUMBER is
+    /// the fallback and a poorer one — macOS hands those out per session, so a
+    /// position stored against one can restore onto whichever display
+    /// inherited the number — but it is unique among the displays attached at
+    /// any one moment, which is what dragging needs, and a restore is clamped
+    /// on screen either way. The two are namespaced apart so a number can
+    /// never be mistaken for a UUID.
     var overlayPlacementID: String? {
         guard let number = deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
         else { return nil }
         let displayID = CGDirectDisplayID(number.uint32Value)
-        guard let uuid = CGDisplayCreateUUIDFromDisplayID(displayID)?.takeRetainedValue() else {
-            return nil
+        if let uuid = CGDisplayCreateUUIDFromDisplayID(displayID)?.takeRetainedValue(),
+           let string = CFUUIDCreateString(nil, uuid) as String?
+        {
+            return "uuid:\(string)"
         }
-        return CFUUIDCreateString(nil, uuid) as String?
+        return "num:\(displayID)"
     }
 }
