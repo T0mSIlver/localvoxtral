@@ -37,10 +37,10 @@ sees them.
   optional LLM polishing, then commits into the focused app. The overlay
   shows a **Polished** badge whenever the LLM touched your text, and the raw
   transcript stays one click away in the menu bar popover. Drag the
-  overlay by the grip in its header to put it somewhere the anchored position
-  never gets right; it stays there across restarts, and a double-click on the
-  grip (or **Re-anchor** in Settings → Dictation → Overlay Buffer) hands it
-  back to the focused window. A position on a display you later unplug is kept
+  overlay anywhere on it to put it where the anchored position never gets
+  right; it stays there across restarts, and a double-click on it (or
+  **Re-anchor** in Settings → Dictation → Overlay Buffer) hands it back to the
+  focused window. A position on a display you later unplug is kept
   but not used — the overlay returns to the anchor until that display is back.
 - **Live Auto-Paste** — words land in the focused app while you're still
   talking. Dictionary replacements are applied before text is typed;

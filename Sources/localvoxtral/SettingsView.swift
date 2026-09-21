@@ -1223,8 +1223,8 @@ private struct DictationSettingsPane: View {
 
                 SettingsFieldRow(
                     title: "Position",
-                    help: "Drag the overlay by the grip in its header; "
-                        + "double-click the grip to put it back.",
+                    help: "Drag the overlay anywhere on it to move it; "
+                        + "double-click it to put it back.",
                     status: settings.overlayBufferPlacement == nil
                         ? "Follows the focused window." : nil
                 ) {

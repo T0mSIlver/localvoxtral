@@ -41,18 +41,22 @@ private final class NonActivatingPanel: NSPanel {
     }
 }
 
-/// The one region of the overlay that tracks the mouse.
+/// The overlay's whole surface, as a drag surface.
 ///
-/// The rest of the panel stays inert on purpose. @joostliebregts's fork made
-/// the whole panel draggable and lost the Overlay Buffer's auto-paste: a
-/// window-wide drag hands the mouse to AppKit's own window-drag machinery,
-/// which moves the panel by making it the window the click belongs to — and
-/// the panel is precisely the window that must never take focus from the app
-/// the text is about to be inserted into. So this view never calls
-/// `performDrag(with:)`, never sets `isMovableByWindowBackground`, and never
-/// lets the event reach the window: it moves the frame itself and swallows the
-/// click, exactly as `NonActivatingPanel.mouseDown` does for the body.
-private final class OverlayDragHandleView: NSView {
+/// The load-bearing part is HOW it moves the panel, not where the user grabs
+/// it. @joostliebregts's fork lost the Overlay Buffer's auto-paste to AppKit's
+/// own window-drag machinery (`isMovableByWindowBackground` /
+/// `performDrag(with:)`), which moves a window by making the click belong to
+/// it — and this panel is precisely the window that must never take focus from
+/// the app the text is about to be inserted into. So this view sets the frame
+/// itself and swallows the event, exactly as `NonActivatingPanel.mouseDown`
+/// does for clicks that reach the window. Covering the whole panel with it
+/// changes nothing about focus: every click on the body was already being
+/// swallowed.
+///
+/// It does have to hand the scroll wheel back, or a long transcript could no
+/// longer be scrolled — see `scrollWheel(with:)`.
+private final class OverlayDragRegionView: NSView {
     /// Drag started, at this screen location.
     var onDragBegan: ((CGPoint) -> Void)?
     /// Mouse moved during a drag, now at this screen location.
@@ -62,6 +66,7 @@ private final class OverlayDragHandleView: NSView {
     var onReanchorRequested: (() -> Void)?
 
     private var isDragging = false
+    private var isPassingEventThrough = false
     private var trackingArea: NSTrackingArea?
 
     override init(frame frameRect: NSRect) {
@@ -77,8 +82,27 @@ private final class OverlayDragHandleView: NSView {
     override var isOpaque: Bool { false }
 
     /// The app is never frontmost while dictating, so without this the first
-    /// click on the handle would be spent activating it instead of dragging.
+    /// click would be spent activating it instead of dragging.
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// Lets `scrollWheel(with:)` find the SwiftUI view underneath.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        isPassingEventThrough ? nil : super.hitTest(point)
+    }
+
+    /// Scrolling belongs to the transcript, not to this view. AppKit routes a
+    /// scroll to whatever the content view hit-tests to, which is now always
+    /// this view, so it re-runs the hit test with itself out of the way and
+    /// forwards. Without this, a transcript longer than the visible lines
+    /// could be auto-scrolled but never scrolled back.
+    override func scrollWheel(with event: NSEvent) {
+        isPassingEventThrough = true
+        defer { isPassingEventThrough = false }
+        guard let target = window?.contentView?.hitTest(event.locationInWindow),
+              target !== self
+        else { return }
+        target.scrollWheel(with: event)
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -127,8 +151,7 @@ private final class OverlayDragHandleView: NSView {
 final class DictationOverlayController {
     private let panel: NonActivatingPanel
     private let hostingView: TransparentHostingView<DictationOverlayView>
-    private let dragHandleView = OverlayDragHandleView(frame: .zero)
-    private let dragHandleHeightConstraint: NSLayoutConstraint
+    private let dragRegionView = OverlayDragRegionView(frame: .zero)
     private let cornerRadius: CGFloat = 12
     /// Builds metrics from the user's overlay settings at the start of each
     /// overlay session; they are then locked until `hide()` (see
@@ -168,6 +191,17 @@ final class DictationOverlayController {
     /// The translation is measured against both, so a drag never accumulates
     /// rounding drift from the clamped positions it passes through.
     private var dragAnchor: (panelOrigin: CGPoint, mouse: CGPoint)?
+    /// Whether the current drag has passed `Self.dragThreshold`. Until it has,
+    /// the panel does not move: every double-click starts with a plain click,
+    /// and a hand that shakes a point between press and release would
+    /// otherwise store a position the user never meant to set.
+    private var dragPassedThreshold = false
+    /// What the last render positioned the panel with. Re-anchoring needs it:
+    /// a double-click has to move the panel NOW, and outside dictation nothing
+    /// else calls `render` — the panel would otherwise sit where it was until
+    /// the next word arrived, which reads as the double-click doing nothing
+    /// (field report, 2026-09-21).
+    private var lastPositioning: (anchor: OverlayAnchor, contentSize: CGSize)?
 
     init(
         metricsProvider: @escaping @MainActor () -> OverlayLayoutMetrics = {
@@ -233,18 +267,16 @@ final class DictationOverlayController {
             hostingView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
         ])
 
-        // The handle covers the header band the grip is drawn in, above the
-        // hosting view so it wins the hit test. The transcript below it stays
-        // untouchable, which is what keeps a stray click off the text.
-        dragHandleView.translatesAutoresizingMaskIntoConstraints = false
-        containerView.addSubview(dragHandleView, positioned: .above, relativeTo: hostingView)
-        dragHandleHeightConstraint = dragHandleView.heightAnchor.constraint(
-            equalToConstant: Self.dragHandleHeight(for: initialMetrics))
+        // Covers the whole panel, above the hosting view so it wins the hit
+        // test. The panel already swallowed every click on its body, so this
+        // takes nothing away — it only gives the swallowed clicks a job.
+        dragRegionView.translatesAutoresizingMaskIntoConstraints = false
+        containerView.addSubview(dragRegionView, positioned: .above, relativeTo: hostingView)
         NSLayoutConstraint.activate([
-            dragHandleView.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
-            dragHandleView.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
-            dragHandleView.topAnchor.constraint(equalTo: containerView.topAnchor),
-            dragHandleHeightConstraint,
+            dragRegionView.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            dragRegionView.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
+            dragRegionView.topAnchor.constraint(equalTo: containerView.topAnchor),
+            dragRegionView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
         ])
 
         panel.contentView = containerView
@@ -256,17 +288,18 @@ final class DictationOverlayController {
         panel.contentView?.superview?.layer?.masksToBounds = true
         panel.orderOut(nil)
 
-        dragHandleView.onDragBegan = { [weak self] mouse in
+        dragRegionView.onDragBegan = { [weak self] mouse in
             guard let self else { return }
             self.dragAnchor = (panelOrigin: self.panel.frame.origin, mouse: mouse)
+            self.dragPassedThreshold = false
         }
-        dragHandleView.onDragMoved = { [weak self] mouse in
+        dragRegionView.onDragMoved = { [weak self] mouse in
             self?.continueDrag(to: mouse)
         }
-        dragHandleView.onDragEnded = { [weak self] in
+        dragRegionView.onDragEnded = { [weak self] in
             self?.endDrag()
         }
-        dragHandleView.onReanchorRequested = { [weak self] in
+        dragRegionView.onReanchorRequested = { [weak self] in
             self?.reanchor()
         }
     }
@@ -292,7 +325,6 @@ final class DictationOverlayController {
             polished: snapshot.polished,
             claudeJoin: snapshot.claudeJoin
         )
-        dragHandleHeightConstraint.constant = Self.dragHandleHeight(for: metrics)
 
         let contentHeight = metrics.contentHeight(
             text: bufferText,
@@ -303,6 +335,7 @@ final class DictationOverlayController {
             height: min(contentHeight, metrics.maximumPanelHeight)
         )
 
+        lastPositioning = (anchor: snapshot.anchor, contentSize: size)
         positionPanel(near: snapshot.anchor, contentSize: size)
         applyFrameViewMask()
         panel.orderFrontRegardless()
@@ -319,25 +352,30 @@ final class DictationOverlayController {
         lockedOriginX = nil
         draggedPlacement = nil
         dragAnchor = nil
+        dragPassedThreshold = false
+        lastPositioning = nil
         metricsLock.unlock()
         panel.orderOut(nil)
     }
 
-    /// Height of the band the drag handle covers: the panel's top padding plus
-    /// the header row the grip is drawn in. Stops at the transcript.
-    private static func dragHandleHeight(for metrics: OverlayLayoutMetrics) -> CGFloat {
-        OverlayLayoutMetrics.contentPadding + metrics.headerHeight
-    }
-
     // MARK: - Dragging
+
+    /// How far the mouse travels before a click counts as a drag, in points.
+    private static let dragThreshold: CGFloat = 3
 
     private func continueDrag(to mouse: CGPoint) {
         guard let dragAnchor else { return }
+        let dx = mouse.x - dragAnchor.mouse.x
+        let dy = mouse.y - dragAnchor.mouse.y
+        if !dragPassedThreshold {
+            guard dx * dx + dy * dy >= Self.dragThreshold * Self.dragThreshold else { return }
+            dragPassedThreshold = true
+        }
         let size = panel.frame.size
         let proposed = CGRect(
             origin: CGPoint(
-                x: dragAnchor.panelOrigin.x + (mouse.x - dragAnchor.mouse.x),
-                y: dragAnchor.panelOrigin.y + (mouse.y - dragAnchor.mouse.y)
+                x: dragAnchor.panelOrigin.x + dx,
+                y: dragAnchor.panelOrigin.y + dy
             ),
             size: size
         )
@@ -356,6 +394,7 @@ final class DictationOverlayController {
 
     private func endDrag() {
         dragAnchor = nil
+        dragPassedThreshold = false
         guard let draggedPlacement else { return }
         placementWriter(draggedPlacement)
         Log.overlay.info(
@@ -363,13 +402,17 @@ final class DictationOverlayController {
         )
     }
 
-    /// Drops the remembered position, here and in settings. The next render
-    /// falls back to this session's anchored placement, which is still locked,
-    /// so the panel snaps to where it would have opened.
+    /// Drops the remembered position, here and in settings, and puts the panel
+    /// back at once. The anchored placement locked at the start of the session
+    /// is still there, so it snaps to where the overlay would have opened.
     private func reanchor() {
         draggedPlacement = nil
         dragAnchor = nil
+        dragPassedThreshold = false
         placementWriter(nil)
+        if let lastPositioning {
+            positionPanel(near: lastPositioning.anchor, contentSize: lastPositioning.contentSize)
+        }
         Log.overlay.info("drag: overlay re-anchored")
     }
 

@@ -215,22 +215,9 @@ struct DictationOverlayView: View {
             .accessibilityLabel(accessibilityLabel)
     }
 
-    /// The affordance for the drag region `DictationOverlayController` lays
-    /// over the header. Drawn rather than left invisible because the overlay is
-    /// only on screen while dictating: a move-by-dragging nobody can see is a
-    /// move nobody finds. Quiet enough to stay out of the transcript's way —
-    /// the region it marks is the whole header band, not just these lines.
-    private var dragGrip: some View {
-        Image(systemName: "line.3.horizontal")
-            .font(.system(size: metrics.badgeFontSize, weight: .semibold))
-            .foregroundStyle(.tertiary)
-            .accessibilityLabel("Drag to move the overlay")
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: OverlayLayoutMetrics.stackSpacing) {
             HStack(alignment: .center, spacing: 6) {
-                dragGrip
                 Text(phaseTitle)
                     .font(.system(size: metrics.titleFontSize, weight: .semibold))
                     .foregroundStyle(isSecureInputTitle ? Self.warningColor : Color.secondary)

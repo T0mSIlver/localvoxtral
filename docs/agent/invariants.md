@@ -33,12 +33,16 @@ there is not.
   chrome.** `NonActivatingPanel` refuses key and main and swallows every click
   on its body, because the panel is on screen exactly while the app it is
   about to insert into must keep focus. @joostliebregts's fork made the whole
-  panel draggable and lost the Overlay Buffer's auto-paste. So there is ONE
-  mouse-tracking region — `OverlayDragHandleView`, over the header band the
-  grip is drawn in — and it moves the frame itself: no `performDrag(with:)`,
-  no `isMovableByWindowBackground`, no path that lets the event reach the
-  window. Widening that region, or reaching for AppKit's window-drag
-  machinery to simplify it, is the same change the fork made.
+  panel draggable and lost the Overlay Buffer's auto-paste — to AppKit's
+  window-drag machinery, which moves a window by making the click belong to
+  it. What is load-bearing is therefore HOW the panel moves, not where the
+  user grabs it: `OverlayDragRegionView` sets the frame itself and swallows
+  the event, with no `performDrag(with:)`, no `isMovableByWindowBackground`
+  and no path that lets a mouse event reach the window. Reaching for either of
+  those to simplify the drag is the fork's change. The region covers the whole
+  panel (owner ruling, 2026-09-21, after hand-testing that a dragged overlay
+  still auto-pastes) and hands the scroll wheel back to the transcript by
+  re-running the hit test with itself hidden.
 - **A remembered overlay position is re-validated against the live displays,
   never trusted.** `OverlayManualPlacement` stores the panel's top-left as an
   offset inside ONE display's own frame, identified by its ColorSync UUID —
