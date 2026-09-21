@@ -74,6 +74,7 @@ extension DictationViewModel {
         healthMonitor.stop()
         isAwaitingMicrophonePermission = false
         microphone.stop()
+        audioDucking.restoreAfterSession()
         isDictating = false
         escapeCancelHandler.stop()
         finishStoppedSession(promotePendingSegment: true)

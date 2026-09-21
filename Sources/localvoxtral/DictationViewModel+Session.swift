@@ -422,6 +422,9 @@ extension DictationViewModel {
 
             isConnectingRealtimeSession = false
             isDictating = true
+            // Here, not at connect: a connect that times out or is refused
+            // must never leave other audio down. Both output modes duck.
+            audioDucking.duckForSessionStart()
             escapeCancelHandler.start()
             applyPreCapturedSessionTargetVerdict()
             statusText = "Listening..."
@@ -449,6 +452,7 @@ extension DictationViewModel {
             escapeCancelHandler.stop()
             healthMonitor.stop()
             microphone.stop()
+            audioDucking.restoreAfterSession()
             activeRealtimeClient.disconnect()
             setRealtimeIndicatorIdle()
             Log.dictation.error("Failed to start microphone after realtime connect: \(error.localizedDescription, privacy: .public)")
@@ -2292,6 +2296,7 @@ extension DictationViewModel {
         polishAndCommitTask = nil
         clearLatchedSessionMetadata()
         stopMicrophoneIfInitialized()
+        audioDucking.restoreAfterSession()
         realtimeFinalizationLastActivityAt = nil
         firstChunkPreprocessor.reset()
         textInsertion.endLiveReplacementSession()

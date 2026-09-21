@@ -1182,6 +1182,33 @@ private struct DictationSettingsPane: View {
                     Toggle("", isOn: $settings.autoCopyEnabled)
                         .labelsHidden()
                 }
+
+                SettingsFieldRow(
+                    title: "Duck other audio",
+                    help: "Lowers music and calls while you dictate."
+                ) {
+                    Toggle("", isOn: $settings.audioDuckingEnabled)
+                        .labelsHidden()
+                }
+
+                SettingsFieldRow(title: "Fade") {
+                    HStack(spacing: 8) {
+                        Slider(
+                            value: $settings.audioDuckingFadeDuration,
+                            in: SettingsStore.audioDuckingFadeDurationRange,
+                            step: 0.1
+                        )
+                        .frame(width: SettingsLayout.sliderWidth)
+
+                        Text("\(Int(settings.audioDuckingFadeDuration * 1000))ms")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, alignment: .trailing)
+                    }
+                    // Dimmed rather than hidden: the pane's row set stays put
+                    // whatever the toggle says (owner rule, 2026-07-04).
+                    .disabled(!settings.audioDuckingEnabled)
+                }
             }
 
             SettingsGroup(title: "Overlay Buffer") {
