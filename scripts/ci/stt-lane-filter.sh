@@ -31,20 +31,27 @@
 # catch, and the nightly e2e dictation (scripts/e2e-dictation.sh) drives the
 # same client through the whole packaged app.
 #
-# The microphone tests in the same suite are env-disabled in CI, so
-# MicrophoneCaptureService is listed for the day they are not.
 set -euo pipefail
 
 MARKER='[run-stt-integration]'
 
+# The files the suite executes, traced from the test: the client, its base
+# and protocol, what they call, and what the unconditional device test calls.
+# Exact paths except for the client family: bash `case` lets `*` cross `/`, and
+# a wide `*Realtime*` also bought the lane for the view model's event handling
+# and the reconnect policy, which the suite never runs. A new file the client
+# comes to depend on has to be added here; until then main's run and the
+# nightly e2e dictation are what see it.
 PATTERNS=(
-  'Sources/localvoxtral/*Realtime*'                 # RealtimeAPI/Base/Mistral clients, RealtimeClient, failure classification
-  'Sources/localvoxtral/*WebSocket*'
-  'Sources/localvoxtral/AudioChunkBuffer*'          # what the client is fed
-  'Sources/localvoxtral/MicrophoneCaptureService*'
-  'Sources/localvoxtral/TextMergingAlgorithms*'     # the scorer normalizes through it
-  'Tests/localvoxtralTests/RealtimeAPIVLLMIntegrationTests*'
-  'Tests/localvoxtralTests/IntegrationTestSupport*'
+  'Sources/localvoxtral/RealtimeClient.swift'
+  'Sources/localvoxtral/*RealtimeWebSocketClient.swift'   # Base, and Mistral, which shares it
+  'Sources/localvoxtral/RealtimeAPIWebSocketClient.swift' # the client under test
+  'Sources/localvoxtral/StringExtensions.swift'           # API key and model trimming
+  'Sources/localvoxtral/MicrophoneCaptureService.swift'
+  'Sources/localvoxtral/AudioDeviceManager.swift'         # the unavailable-device test
+  'Sources/localvoxtral/TextMergingAlgorithms.swift'      # the scorer normalizes through it
+  'Tests/localvoxtralTests/RealtimeAPIVLLMIntegrationTests.swift'
+  'Tests/localvoxtralTests/IntegrationTestSupport.swift'
   'Package.swift'
   'Package.resolved'
   '.github/workflows/ci.yml'

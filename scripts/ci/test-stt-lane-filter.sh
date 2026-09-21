@@ -39,8 +39,16 @@ expect true "the realtime client runs the lane" \
   Sources/localvoxtral/RealtimeAPIWebSocketClient.swift
 expect true "the shared base client runs the lane" \
   Sources/localvoxtral/BaseRealtimeWebSocketClient.swift
-expect true "the view model's realtime event handling runs the lane" \
+expect true "what the client trims keys and model names with runs the lane" \
+  Sources/localvoxtral/StringExtensions.swift
+expect true "what the unavailable-device test calls runs the lane" \
+  Sources/localvoxtral/AudioDeviceManager.swift
+# `*` in a bash case pattern crosses `/`, so a wide *Realtime* used to buy the
+# lane for files the suite never executes.
+expect false "the view model's realtime event handling does not" \
   "Sources/localvoxtral/DictationViewModel+RealtimeEvents.swift"
+expect false "the reconnect policy does not" \
+  Sources/localvoxtral/RealtimeReconnectPolicy.swift
 expect true "the scorer's normalizer runs the lane" \
   Sources/localvoxtral/TextMergingAlgorithms.swift
 expect true "the suite itself runs the lane" \
@@ -66,17 +74,24 @@ expect true "a push to main is never gated" --event push docs/architecture.md
 expect true "a dispatch is never gated" --event workflow_dispatch docs/architecture.md
 expect true "an unknown event fails open" --event merge_group docs/architecture.md
 
-# Every source pattern must still match a file, or a rename has silently
-# ungated the lane for the file it was written for.
+# A rename must not silently ungate the lane for the file an entry was written
+# for. Exact entries are checked as paths; the one glob is checked against the
+# three clients it exists to cover, by name, because "matches something" would
+# still pass with two of them gone.
 patterns="$(sed -n "/^PATTERNS=(/,/^)/p" "$FILTER" | sed -n "s/^  '\([^']*\)'.*/\1/p")"
 [[ -n "$patterns" ]] || fail "could not parse PATTERNS"
+pattern_lines="$(sed -n "/^PATTERNS=(/,/^)/p" "$FILTER" | sed '1d;$d' | grep -vcE "^[[:space:]]*(#|$)" || true)"
+[[ "$pattern_lines" == "$(wc -l <<<"$patterns" | tr -d ' ')" ]] \
+  || fail "PATTERNS holds an entry this test cannot parse"
 while IFS= read -r pattern; do
-  # shellcheck disable=SC2086
-  if ! compgen -G "$ROOT_DIR/"$pattern >/dev/null; then
-    fail "pattern matches no file in the tree: $pattern"
-  fi
+  [[ "$pattern" == *'*'* ]] && continue
+  [[ -e "$ROOT_DIR/$pattern" ]] || fail "listed path does not exist: $pattern"
 done <<<"$patterns"
-echo "PASS: every pattern matches a file in the tree"
+for client in BaseRealtimeWebSocketClient RealtimeAPIWebSocketClient MistralRealtimeWebSocketClient; do
+  [[ -e "$ROOT_DIR/Sources/localvoxtral/$client.swift" ]] || fail "client file is gone: $client.swift"
+  expect true "$client is in the client family" "Sources/localvoxtral/$client.swift"
+done
+echo "PASS: every listed path exists and the glob covers the three clients"
 
 if "$FILTER" >/dev/null 2>&1; then fail "a missing argument was accepted"; fi
 echo "OK: stt-lane-filter tests passed"

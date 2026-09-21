@@ -117,6 +117,11 @@ GREEN_ROLLUP='[
 pr_view() { # <sha> <rollup-json>
   printf '{"headRefOid":"%s","statusCheckRollup":%s}\n' "$1" "$2"
 }
+# The same, saying whether the PR is a draft or comes from a fork: the two
+# cases where a skipped mac-lanes is the head's finished state.
+pr_view_state() { # <sha> <isDraft> <isCrossRepository>
+  printf '{"headRefOid":"%s","isDraft":%s,"isCrossRepository":%s,"statusCheckRollup":[]}\n' "$1" "$2" "$3"
+}
 
 new_scenario() {
   SCEN="$TMP_DIR/scen.$RANDOM$RANDOM"
@@ -192,6 +197,38 @@ run_watch 3600 336
 $OUT"
 pass "an older green run does not hide the newest run's failure"
 
+# --- the seconds after `gh pr ready`: only the draft's skipped mac-lanes exists
+# A ready same-repo PR always gets a real mac-lanes run, so a skipped one is
+# the draft-era run and the head is not green yet.
+
+new_scenario
+pr_view_state "$NEW_SHA" false false >"$SCEN/pr-view.1"
+check_runs build-test:completed:success mac-lanes:completed:skipped >"$SCEN/check-runs.$NEW_SHA.1"
+check_runs build-test:completed:success mac-lanes:completed:skipped \
+  build-test:in_progress:null mac-lanes:queued:null >"$SCEN/check-runs.$NEW_SHA.2"
+check_runs build-test:completed:success mac-lanes:completed:skipped \
+  build-test:completed:success mac-lanes:completed:success >"$SCEN/check-runs.$NEW_SHA.3"
+run_watch 3600 336
+expect_rc 0 "a ready PR showing only its draft-era skip"
+[[ "$(polls "check-runs.$NEW_SHA")" == 3 ]] \
+  || fail "a ready PR showing only its draft-era skip: decided after $(polls "check-runs.$NEW_SHA") polls, expected 3
+$OUT"
+pass "a ready PR waits for its real mac-lanes run instead of passing on the draft's skip"
+
+new_scenario
+pr_view_state "$NEW_SHA" true false >"$SCEN/pr-view.1"
+check_runs build-test:completed:success mac-lanes:completed:skipped >"$SCEN/check-runs.$NEW_SHA.1"
+run_watch 3600 336
+expect_rc 0 "a draft with mac-lanes skipped"
+pass "a draft's skipped mac-lanes is its finished state"
+
+new_scenario
+pr_view_state "$NEW_SHA" false true >"$SCEN/pr-view.1"
+check_runs build-test:completed:success mac-lanes:completed:skipped >"$SCEN/check-runs.$NEW_SHA.1"
+run_watch 3600 336
+expect_rc 0 "a fork PR with mac-lanes skipped"
+pass "a fork PR's skipped mac-lanes is its finished state"
+
 # --- no check ever appears ---------------------------------------------------
 
 new_scenario
@@ -239,7 +276,8 @@ $OUT"
 pass "a failed check exits 1 and names it"
 
 new_scenario
-pr_view "$NEW_SHA" '[]' >"$SCEN/pr-view.1"
+# A fork PR: ci.yml never runs mac-lanes for it, so the skip is final.
+pr_view_state "$NEW_SHA" false true >"$SCEN/pr-view.1"
 check_runs build-test:completed:success mac-lanes:completed:skipped >"$SCEN/check-runs.$NEW_SHA.1"
 run_watch 3600 336
 expect_rc 0 "success + skipped"

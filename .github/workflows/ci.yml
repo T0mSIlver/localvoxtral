@@ -4,7 +4,12 @@ on:
   pull_request:
     # The defaults plus `ready_for_review`: mac-lanes skips a draft (see its
     # `if:`), so marking a PR ready has to start the run that was skipped.
-    types: [opened, synchronize, reopened, ready_for_review]
+    # `converted_to_draft` so that a PR pulled back to draft replaces its
+    # queued or running Mac job (same concurrency group) with a skipped one.
+    # NOT `edited`: a body edit would start a run whose skipped jobs become
+    # the newest check runs on that head, and a skipped required check counts
+    # as passing, so an edit could turn a red head green.
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [main]
   # Manual dispatch exists to produce artifacts on demand — today that means
@@ -153,6 +158,7 @@ jobs:
               || grep -qF '[run-speechd-integration]' <<<"$MARKER_TEXT" \
               || grep -qF '[run-herdr-integration]' <<<"$MARKER_TEXT" \
               || grep -qF '[run-stt-integration]' <<<"$MARKER_TEXT" \
+              || grep -qF '[mac-lanes]' <<<"$MARKER_TEXT" \
               || grep -qF '[dogfood-package]' <<<"$MARKER_TEXT"; then
             full_run "explicit lane marker present in PR body / head commit"
           fi
@@ -558,6 +564,7 @@ jobs:
               || grep -qF '[run-speechd-integration]' <<<"$MARKER_TEXT" \
               || grep -qF '[run-herdr-integration]' <<<"$MARKER_TEXT" \
               || grep -qF '[run-stt-integration]' <<<"$MARKER_TEXT" \
+              || grep -qF '[mac-lanes]' <<<"$MARKER_TEXT" \
               || grep -qF '[dogfood-package]' <<<"$MARKER_TEXT"; then
             full_run "explicit lane marker present in PR body / head commit"
           fi

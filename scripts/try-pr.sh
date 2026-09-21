@@ -111,9 +111,32 @@ run_has_artifact() {
 # A draft PR's run is green without mac-lanes, the job that builds the bundle
 # (ci.yml), so say that instead of letting `gh run download` fail on a name.
 if (( ! DOGFOOD )) && ! run_has_artifact "$RUN_ID"; then
-  echo "CI run $RUN_ID for '$TARGET' has no $ARTIFACT artifact: mac-lanes skips draft PRs." >&2
-  echo "Mark it ready (gh pr ready $TARGET), or put [mac-lanes] in its body and push again." >&2
-  exit 1
+  # One head can carry a draft's run (no bundle) and the run `gh pr ready`
+  # started, so look past the newest green one before giving up.
+  WITH_ARTIFACT=""
+  ACTIVE_RUN=""
+  if [[ -n "${HEAD_SHA:-}" ]]; then
+    for candidate in $(gh run list --workflow CI --commit "$HEAD_SHA" --status success --limit 10 \
+        --json databaseId --jq '.[].databaseId'); do
+      if run_has_artifact "$candidate"; then
+        WITH_ARTIFACT="$candidate"
+        break
+      fi
+    done
+    ACTIVE_RUN="$(gh run list --workflow CI --commit "$HEAD_SHA" --limit 10 --json databaseId,status \
+      --jq '[.[] | select(.status != "completed")][0].databaseId // empty')"
+  fi
+  if [[ -n "$WITH_ARTIFACT" ]]; then
+    RUN_ID="$WITH_ARTIFACT"
+  elif [[ -n "$ACTIVE_RUN" ]]; then
+    echo "CI run $ACTIVE_RUN is still building '$TARGET'. Wait for it: ./scripts/watch-checks.sh --run $ACTIVE_RUN" >&2
+    exit 1
+  else
+    echo "No green CI run for '$TARGET' carries the $ARTIFACT artifact." >&2
+    echo "A draft PR skips mac-lanes, the job that builds it: gh pr ready $TARGET, or put [mac-lanes] in its body and push." >&2
+    echo "A docs-only diff builds no bundle either; [mac-lanes] in the body forces the full run." >&2
+    exit 1
+  fi
 fi
 
 if (( DOGFOOD )) && ! run_has_artifact "$RUN_ID"; then

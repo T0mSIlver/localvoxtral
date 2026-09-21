@@ -82,8 +82,8 @@ This is a real app with daily users. Nothing ships on "it compiles".
 
 ## Test tiers — the short version
 
-Tier 0 (unit suites + packaging + launch smoke) runs on every non-fast-path
-PR/push. Every live lane is CONDITIONAL, the tier-1 speechd realtime
+Tier 0 (unit suites; packaging + launch smoke once a PR is not a draft) runs
+on every non-fast-path PR/push. Every live lane is CONDITIONAL, the tier-1 speechd realtime
 integration included: they run only for lane-filter path matches
 (`scripts/ci/stt-lane-filter.sh` / `llm-lane-filter.sh` /
 `speechd-lane-filter.sh` / `herdr-lane-filter.sh`) or the literal markers
@@ -111,16 +111,18 @@ ablation workflows: `docs/agent/test-tiers.md`.
 
 - CI is two parallel jobs, both required checks on main: `build-test`
   (tier 0, GitHub-hosted, EVERY event and contributor) and `mac-lanes`
-  (self-hosted, never for fork PRs, never for DRAFTS). Open PRs as drafts
+  (self-hosted, never for fork PRs, and for a DRAFT only when its body held
+  `[mac-lanes]` when the run was created). Open PRs as drafts
   (`gh pr create --draft`), iterate on `build-test`, and `gh pr ready <n>`
   once it is green: that starts `mac-lanes`. One Mac serves every agent, and
-  each push of a ready PR takes a slot. `[mac-lanes]` in a draft's body opts
-  in (signed `try-pr.sh` artifact, live lanes). A new lane goes in `build-test` unless
+  each push of a ready PR takes a slot. The marker is for a draft that needs
+  the signed `try-pr.sh` artifact or a live lane. A new lane goes in `build-test` unless
   you can name what on the owner's Mac it needs — signing identity, STT
   service, Metal, herdr fixture, GUI session. Never move fork-PR work to the self-hosted runner.
 - Docs-only diffs take a fast path (`scripts/ci/docs-only-filter.sh`,
   conservative allowlist; unknown paths fail open to the full run). Only
-  `build-test` fast-paths; release and every other workflow stay fully gated.
+  `ci.yml` fast-paths, in both of its jobs; release and every other workflow
+  stay fully gated.
 - Watch a PR's checks with `./scripts/watch-checks.sh <n>` (or `--run
   <run-id>` for a push/rerun) — unlike bare `gh`, it probes the build host
   and fail-fasts when the Mac stops answering.

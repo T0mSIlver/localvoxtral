@@ -20,7 +20,8 @@ hosted runners are free for public repositories.
 A **fork PR gets only this job** (`mac-lanes` never runs untrusted code on the
 owner's machine), so on a fork it additionally packages, uploads and
 launch-smokes an ad-hoc-signed bundle. Same-repo runs skip those steps here
-because `mac-lanes` does them with the real signing identity.
+because `mac-lanes` does them with the real signing identity. A same-repo
+DRAFT therefore gets no bundle at all, unless its body carries `[mac-lanes]`.
 
 **`mac-lanes` — the self-hosted Mac, same-repo PRs that are not drafts /
 pushes to main / dispatches only.** A draft gets `build-test` alone; marking it
@@ -99,7 +100,9 @@ packaging, artifact, smoke, warm, and integration steps. The filter fails open
 to the full run for unknown or ambiguous diffs and excludes CI control files,
 packaging inputs (`assets/icons/**`), and every path selected by the
 LLM/speechd lane filters; an explicit `[run-llm-eval]` /
-`[run-speechd-integration]` marker also forces the full run.
+`[run-speechd-integration]` / `[run-herdr-integration]` /
+`[run-stt-integration]` / `[dogfood-package]` / `[mac-lanes]` marker also
+forces the full run.
 
 The two helper unit suites are additionally path-gated per helper
 (`scripts/ci/helper-lane-filter.sh`): a PR runs a helper's suite only when the

@@ -76,11 +76,13 @@ probe_host() {
 # Sets current_sha and check_rows (name, pending|pass|fail, detail, url per
 # line); on failure sets query_error and returns non-zero.
 query_pr() {
-  local runs statuses
-  if ! current_sha="$(gh pr view "$TARGET" --json headRefOid --jq '.headRefOid' 2>&1)"; then
-    query_error="$current_sha"
+  local runs statuses pr_state pr_draft pr_fork
+  if ! pr_state="$(gh pr view "$TARGET" --json headRefOid,isDraft,isCrossRepository \
+      --jq '[.headRefOid, (.isDraft // false | tostring), (.isCrossRepository // false | tostring)] | @tsv' 2>&1)"; then
+    query_error="$pr_state"
     return 1
   fi
+  IFS=$'\t' read -r current_sha pr_draft pr_fork <<<"$pr_state"
   if ! runs="$(gh api --paginate "repos/{owner}/{repo}/commits/$TARGET_SHA/check-runs?per_page=100" --jq '
     .check_runs[] | [
       .id,
@@ -101,6 +103,15 @@ query_pr() {
   # protection reads the newest check run of each name, so this does too.
   # Done outside jq because --paginate applies the filter per page.
   runs="$(sort -t $'\t' -k2,2 -k1,1nr <<<"$runs" | awk -F'\t' '$2 != "" && !seen[$2]++' | cut -f2-)"
+  # A same-repo PR that is NOT a draft always gets a real mac-lanes run, so a
+  # `skipped` one is the draft-era run, read in the seconds between
+  # `gh pr ready` and the new run registering. Counting it as a pass reported
+  # a head as green before its Mac job had been created.
+  if [[ "$pr_draft" == "false" && "$pr_fork" == "false" ]]; then
+    runs="$(awk -F'\t' 'BEGIN { OFS = FS }
+      $1 == "mac-lanes" && $3 == "skipped" { $2 = "pending"; $3 = "draft-era-skip" }
+      { print }' <<<"$runs")"
+  fi
   if ! statuses="$(gh api --paginate "repos/{owner}/{repo}/commits/$TARGET_SHA/status?per_page=100" --jq '
     .statuses[] | [
       .context,
