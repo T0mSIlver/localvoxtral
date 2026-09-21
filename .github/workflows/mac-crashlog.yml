@@ -15,6 +15,9 @@ on:
       max_reports:
         description: "Max number of reports to summarize"
         default: "3"
+      log_category:
+        description: "Only this app log category (e.g. ClaudeContext); empty = all"
+        default: ""
 
 jobs:
   crashlog:
@@ -37,9 +40,19 @@ jobs:
       - name: Recent localvoxtral app log (redacted)
         env:
           MINUTES_BACK: ${{ inputs.minutes_back }}
+          LOG_CATEGORY: ${{ inputs.log_category }}
         run: |
+          # One category at a time keeps a join or backend line from being
+          # pushed out of the tail by the overlay's per-frame render lines.
+          # Letters only: the value goes into the predicate.
+          predicate='subsystem == "com.localvoxtral" AND process == "localvoxtral"'
+          case "$LOG_CATEGORY" in
+            "") ;;
+            *[!A-Za-z]*) echo "log_category must be letters only"; exit 1 ;;
+            *) predicate="$predicate AND category == \"$LOG_CATEGORY\"" ;;
+          esac
           log show --last "${MINUTES_BACK}m" --info --debug \
-            --predicate 'subsystem == "com.localvoxtral" AND process == "localvoxtral"' 2>/dev/null \
+            --predicate "$predicate" 2>/dev/null \
             | sed "s|$HOME|~|g" | tail -150 || echo "log query failed"
 
       - name: Reproduce the app's model pre-download command (native HTTPS)
