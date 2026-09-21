@@ -132,17 +132,22 @@ public struct ClaudePluginInstallService: Sendable {
 
     private let claudeExecutableURL: URL?
     private let marketplaceURL: URL?
+    /// The app-owned mirror, and the ONLY path a repair may register. Nil
+    /// disables repair rather than letting it fall back to the bundle.
+    private let repairMarketplaceURL: URL?
     private let publisherURL: URL?
     private let runner: Runner
 
     public init(
         claudeExecutableURL: URL?,
         marketplaceURL: URL?,
+        repairMarketplaceURL: URL? = nil,
         publisherURL: URL? = nil,
         runner: @escaping Runner
     ) {
         self.claudeExecutableURL = claudeExecutableURL
         self.marketplaceURL = marketplaceURL
+        self.repairMarketplaceURL = repairMarketplaceURL
         self.publisherURL = publisherURL
         self.runner = runner
     }
@@ -183,14 +188,16 @@ public struct ClaudePluginInstallService: Sendable {
     }
 
     @discardableResult
-    public func perform(_ action: Action) throws -> RunResult {
+    public func perform(_ action: Action, marketplacePath: String? = nil) throws -> RunResult {
         guard claudeExecutableURL != nil else { throw ServiceError.claudeCLINotFound }
-        guard let marketplaceURL else { throw ServiceError.marketplaceUnavailable }
+        guard let path = marketplacePath ?? marketplaceURL?.path else {
+            throw ServiceError.marketplaceUnavailable
+        }
 
         let invocation = Invocation(
             arguments: Self.arguments(
                 for: action,
-                marketplacePath: marketplaceURL.path,
+                marketplacePath: path,
                 publisherPath: publisherURL?.path
             )
         )
@@ -203,6 +210,48 @@ public struct ClaudePluginInstallService: Sendable {
             )
         }
         return result
+    }
+
+    /// stdout of `claude plugin marketplace list --json`: where Claude Code
+    /// will look for our marketplace at the next session start.
+    ///
+    /// Read, never assumed. The path Claude Code holds is the path it was
+    /// registered with once, which is not necessarily where this app lives now
+    /// — that gap is the whole reason the mirror exists.
+    public func marketplaceListOutput() throws -> String? {
+        guard claudeExecutableURL != nil else { return nil }
+        let result = try runner(Invocation(arguments: ["plugin", "marketplace", "list", "--json"]))
+        return result.succeeded ? result.message : nil
+    }
+
+    /// Invocations whose output is PARSED rather than shown, and which must
+    /// therefore reach the caller whole. The display cap exists so a chatty
+    /// failure cannot become a wall of text in an alert; applied to JSON it
+    /// silently truncates a document into an undecodable one, and every
+    /// decision taken from that document quietly stops being taken (review,
+    /// 2026-09-21).
+    static func isMachineReadable(_ invocation: Invocation) -> Bool {
+        invocation.arguments.contains("--json")
+    }
+
+    /// Point Claude Code's registration at the marketplace this app ships,
+    /// leaving the installed plugin, its userConfig and its cache alone.
+    ///
+    /// `marketplace add` on a name that is already registered REPLACES its
+    /// path and exits 0 (verified against Claude Code 2.1.x on a live install,
+    /// with the old path deleted and with it present). No remove first:
+    /// `marketplace remove` is the verb that takes the user's installed plugin
+    /// with it.
+    ///
+    /// Registers the MIRROR or nothing. `perform` falls back to the app
+    /// bundle when no mirror has materialized, which is a fair bargain for an
+    /// install the user asked for — but this call exists to take a rotting
+    /// path OFF the registration, and re-pinning it to a bundle inside
+    /// `/private/tmp` would recreate the very failure it is repairing
+    /// (review, 2026-09-21).
+    public func repairMarketplaceRegistration() throws {
+        guard let repairMarketplaceURL else { throw ServiceError.marketplaceUnavailable }
+        try perform(.addMarketplace, marketplacePath: repairMarketplaceURL.path)
     }
 
     /// stdout of `claude plugin list --json` for the Integrations pane's
@@ -267,7 +316,13 @@ public extension ClaudePluginInstallService {
         let executable = locateClaudeCLI()
         return ClaudePluginInstallService(
             claudeExecutableURL: executable,
-            marketplaceURL: ClaudePluginAssets.marketplaceURL(),
+            // The MIRROR, not the bundle: Claude Code stores this path and
+            // re-reads it at every session start, so registering a path inside
+            // the app bundle pins the plugin to wherever that bundle was the
+            // day it was installed (ClaudeMarketplaceMirror). The bundle is
+            // the fallback for the launch that has not mirrored yet.
+            marketplaceURL: ClaudeMarketplaceMirror.usableURL() ?? ClaudePluginAssets.marketplaceURL(),
+            repairMarketplaceURL: ClaudeMarketplaceMirror.usableURL(),
             // Tell the plugin exactly where THIS app's publisher lives, so the
             // shim works from /Applications, ~/Applications, a dev build, or a
             // mounted volume without guessing.
@@ -447,7 +502,7 @@ public extension ClaudePluginInstallService {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return RunResult(
                 exitCode: process.terminationStatus,
-                message: String(raw.prefix(2_000))
+                message: isMachineReadable(invocation) ? raw : String(raw.prefix(2_000))
             )
         }
     }

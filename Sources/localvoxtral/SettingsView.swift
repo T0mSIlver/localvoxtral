@@ -1834,9 +1834,14 @@ private struct ClaudePluginInstallRow: View {
                 if let action = model.localPluginStatus.primaryAction {
                     Button(action.title) {
                         Task {
-                            if action == .install {
+                            switch action {
+                            case .install:
                                 await model.installPlugin()
-                            } else {
+                            case .repair:
+                                // The plugin is installed and current; only
+                                // the path Claude Code loads it from is wrong.
+                                await model.repairMarketplaceRegistration()
+                            case .update, .installOrUpdate:
                                 await model.updatePlugin()
                             }
                         }

@@ -19,6 +19,10 @@ public enum ClaudePluginStatus: Sendable, Equatable {
     case notInstalled
     case installed(version: String?)
     case updateAvailable(installed: String, bundled: String)
+    /// Installed and enabled, and loading nothing: Claude Code cannot read the
+    /// marketplace it was installed from, so no session runs its hooks. Its
+    /// own state is fine — what rotted is the PATH it was registered with.
+    case failedToLoad(version: String?)
 
     /// One short sentence, per the pane's copy rule.
     public var sentence: String {
@@ -29,6 +33,7 @@ public enum ClaudePluginStatus: Sendable, Equatable {
             guard let version else { return "Installed." }
             return "Installed \(version)."
         case .updateAvailable: return "Update available."
+        case .failedToLoad: return "Installed, but not loading."
         }
     }
 
@@ -38,12 +43,15 @@ public enum ClaudePluginStatus: Sendable, Equatable {
         case update
         /// The state is unreadable, so the button claims neither.
         case installOrUpdate
+        /// Re-register the marketplace where the plugin is loaded from.
+        case repair
 
         public var title: String {
             switch self {
             case .install: return "Install"
             case .update: return "Update"
             case .installOrUpdate: return "Install or update"
+            case .repair: return "Repair"
             }
         }
     }
@@ -57,6 +65,7 @@ public enum ClaudePluginStatus: Sendable, Equatable {
         case .unknown: return .installOrUpdate
         case .notInstalled: return .install
         case .updateAvailable: return .update
+        case .failedToLoad: return .repair
         case .installed(let version): return version == nil ? .installOrUpdate : nil
         }
     }
@@ -86,6 +95,9 @@ public enum ClaudePluginStatus: Sendable, Equatable {
         guard let entry = ClaudePluginListing.entry(for: listReference(), in: entries) else {
             return .notInstalled
         }
+        // Checked before the version comparison: a plugin that loads nothing
+        // is not made well by being the newest one.
+        if entry.marketplaceFailedToLoad { return .failedToLoad(version: entry.knownVersion) }
         guard let installed = entry.knownVersion else { return .installed(version: nil) }
         // m7: inequality is not ordering — a manually installed NEWER
         // marketplace must read as installed, never as an update onto an

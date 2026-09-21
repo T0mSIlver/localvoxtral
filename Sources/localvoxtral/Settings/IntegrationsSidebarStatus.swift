@@ -14,11 +14,14 @@ enum IntegrationsSidebarStatus {
     /// is green, not yellow: the installed plugin joins fine and the update
     /// is optional. `.notInstalled` is yellow — the CLI answered the listing,
     /// so Claude Code is detected and only setup is pending. `.unknown` is
-    /// grey: nothing was detected, only the probe failed.
+    /// grey: nothing was detected, only the probe failed. `.failedToLoad` is
+    /// yellow for the same reason `.notInstalled` is: Claude Code answered,
+    /// and a setup step — re-pointing the marketplace — is pending. It is not
+    /// green, because a plugin that loads nothing joins nothing.
     static func claudeDot(pluginStatus: ClaudePluginStatus) -> SettingsStatusDot {
         switch pluginStatus {
         case .installed, .updateAvailable: return .green
-        case .notInstalled: return .yellow
+        case .notInstalled, .failedToLoad: return .yellow
         case .unknown: return .grey
         }
     }

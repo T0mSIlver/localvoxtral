@@ -317,6 +317,26 @@ publisher binary. The shim tries that link before the install-time
 **Update** only when that launch-time update failed, and no install button
 while the plugin is current.
 
+What gets registered is not the app bundle's own copy of this directory but a
+mirror of it at `~/Library/Application Support/localvoxtral/claude/marketplace`,
+refreshed at launch whenever its contents differ. Claude Code stores the
+marketplace as the path it was handed and re-reads it at every session start, so
+registering a path inside the bundle pins your Claude Code to wherever that app
+was: a `try-pr.sh` build under `/private/tmp`, a disk image, a folder you later
+renamed. When that path goes, the plugin stops loading — `Marketplace
+localvoxtral failed to load: cache-miss`, no hooks in any session — and the only
+sign is a half-filled `lvx ◐` status line. The row reads **Installed, but not
+loading** in that state and offers **Repair**; launch does the same repair on
+its own, with one `claude plugin marketplace add` (on a directory source that
+re-points the name, verified on Claude Code 2.1.x), which leaves the installed
+plugin, its `publisher_path` and its cache untouched.
+
+Launch only takes over a registration that cannot keep working: one that is
+already gone, one inside an app bundle, or one Claude Code reports as not
+loading. **A marketplace you registered from a checkout is left alone** — that
+is how you edit the shim and see the edit, and the app has no business undoing
+it on every launch.
+
 Everything it does goes through Claude Code's own plugin CLI.
 
 **Plugin install and uninstall never touch `~/.claude/settings.json`.**
