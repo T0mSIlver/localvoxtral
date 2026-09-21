@@ -83,6 +83,7 @@ query_pr() {
   fi
   if ! runs="$(gh api --paginate "repos/{owner}/{repo}/commits/$TARGET_SHA/check-runs?per_page=100" --jq '
     .check_runs[] | [
+      .id,
       .name,
       (if .status != "completed" then "pending"
        elif (.conclusion == "success" or .conclusion == "neutral" or .conclusion == "skipped") then "pass"
@@ -93,6 +94,13 @@ query_pr() {
     query_error="$runs"
     return 1
   fi
+  # One SHA can carry several runs of the same check: a draft's run and the
+  # run `gh pr ready` starts (ci.yml skips mac-lanes on drafts), or a rerun.
+  # The older one ends `cancelled` or `skipped`, and reading it next to the
+  # newer one reported a green head as failed (#419, 2026-09-21). Branch
+  # protection reads the newest check run of each name, so this does too.
+  # Done outside jq because --paginate applies the filter per page.
+  runs="$(sort -t $'\t' -k2,2 -k1,1nr <<<"$runs" | awk -F'\t' '$2 != "" && !seen[$2]++' | cut -f2-)"
   if ! statuses="$(gh api --paginate "repos/{owner}/{repo}/commits/$TARGET_SHA/status?per_page=100" --jq '
     .statuses[] | [
       .context,

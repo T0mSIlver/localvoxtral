@@ -96,12 +96,13 @@ chmod +x "$STUB_BIN/gh" "$STUB_BIN/ssh"
 
 # --- fixtures ---------------------------------------------------------------
 
-check_runs() { # <name>:<status>:<conclusion|null>...
-  local items=() spec name status conclusion
+check_runs() { # <name>:<status>:<conclusion|null>... (later = newer: ids count up)
+  local items=() spec name status conclusion id=100
   for spec in "$@"; do
     IFS=: read -r name status conclusion <<<"$spec"
     [[ "$conclusion" == null ]] || conclusion="\"$conclusion\""
-    items+=("{\"name\":\"$name\",\"status\":\"$status\",\"conclusion\":$conclusion,\"html_url\":\"https://example.invalid/$name\"}")
+    id=$((id + 1))
+    items+=("{\"id\":$id,\"name\":\"$name\",\"status\":\"$status\",\"conclusion\":$conclusion,\"html_url\":\"https://example.invalid/$name\"}")
   done
   local joined
   joined="$(IFS=,; echo "${items[*]-}")"
@@ -162,6 +163,34 @@ $OUT"
 [[ "$(polls "check-runs.$OLD_SHA")" == 0 ]] \
   || fail "the previous commit's checks were consulted"
 pass "a fresh head with the previous commit's green rollup waits for its own checks, then passes"
+
+# --- two runs on one head: a draft's run, then the run `gh pr ready` starts ---
+# ci.yml skips mac-lanes on a draft, and marking the PR ready starts a second
+# run on the SAME sha while the first ends cancelled. The head is green when
+# the newest check run of each name is (what branch protection reads); the
+# superseded one next to it made a mergeable PR report as failed (#419).
+
+new_scenario
+pr_view "$NEW_SHA" "$GREEN_ROLLUP" >"$SCEN/pr-view.1"
+check_runs build-test:completed:cancelled mac-lanes:completed:cancelled \
+  build-test:completed:success mac-lanes:in_progress:null >"$SCEN/check-runs.$NEW_SHA.1"
+check_runs build-test:completed:cancelled mac-lanes:completed:cancelled \
+  build-test:completed:success mac-lanes:completed:success >"$SCEN/check-runs.$NEW_SHA.2"
+run_watch 3600 336
+expect_rc 0 "a superseded cancelled run beside the head's real run"
+[[ "$(polls "check-runs.$NEW_SHA")" == 2 ]] \
+  || fail "a superseded cancelled run: decided after $(polls "check-runs.$NEW_SHA") polls, expected 2 (newest mac-lanes pending, then green)
+$OUT"
+pass "only the newest check run of each name decides the head"
+
+new_scenario
+pr_view "$NEW_SHA" "$GREEN_ROLLUP" >"$SCEN/pr-view.1"
+check_runs build-test:completed:success mac-lanes:completed:success \
+  build-test:completed:success mac-lanes:completed:failure >"$SCEN/check-runs.$NEW_SHA.1"
+run_watch 3600 336
+[[ "$RC" != 0 ]] || fail "an older green run hid the newest run's failure
+$OUT"
+pass "an older green run does not hide the newest run's failure"
 
 # --- no check ever appears ---------------------------------------------------
 
