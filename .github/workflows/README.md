@@ -30,7 +30,8 @@ launch-smoking the bundle signed with the stable `localvoxtral-dev` identity
 (an ad-hoc signature would invalidate the owner's Accessibility grant on every
 `scripts/try-pr.sh` install), the installable `localvoxtral-app` artifact and
 `localvoxtral-dsym` (30-day retention) for symbolicating field crashes, the
-live STT-service integration, the conditional polishd/speechd/herdr live-model
+live STT-service integration (path-gated on PRs by `scripts/ci/stt-lane-filter.sh`,
+always on main), the conditional polishd/speechd/herdr live-model
 lanes, the two MLX helper unit suites (kept here for the warm Cmlx build), the
 dogfood capture suite and packaging, the UI-gate install, and the process leak
 check. It keeps `clean: false` — the persistent warm `.build` that makes those

@@ -152,6 +152,7 @@ jobs:
           if grep -qF '[run-llm-eval]' <<<"$MARKER_TEXT" \
               || grep -qF '[run-speechd-integration]' <<<"$MARKER_TEXT" \
               || grep -qF '[run-herdr-integration]' <<<"$MARKER_TEXT" \
+              || grep -qF '[run-stt-integration]' <<<"$MARKER_TEXT" \
               || grep -qF '[dogfood-package]' <<<"$MARKER_TEXT"; then
             full_run "explicit lane marker present in PR body / head commit"
           fi
@@ -214,6 +215,7 @@ jobs:
           ./scripts/ci/test-llm-lane-filter.sh
           ./scripts/ci/test-herdr-lane-filter.sh
           ./scripts/ci/test-helper-lane-filter.sh
+          ./scripts/ci/test-stt-lane-filter.sh
           ./scripts/ci/test-herdr-fixture-recovery.sh
           ./scripts/ci/test-clean-stale-outputs.sh
           ./scripts/ci/test-workflow-step-names.sh
@@ -555,6 +557,7 @@ jobs:
           if grep -qF '[run-llm-eval]' <<<"$MARKER_TEXT" \
               || grep -qF '[run-speechd-integration]' <<<"$MARKER_TEXT" \
               || grep -qF '[run-herdr-integration]' <<<"$MARKER_TEXT" \
+              || grep -qF '[run-stt-integration]' <<<"$MARKER_TEXT" \
               || grep -qF '[dogfood-package]' <<<"$MARKER_TEXT"; then
             full_run "explicit lane marker present in PR body / head commit"
           fi
@@ -868,6 +871,10 @@ jobs:
         env:
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           BASE_REF: ${{ github.base_ref }}
+          # env indirection, not inline ${{ }} in the script body: PR bodies
+          # and commit messages are attacker-shaped strings.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           FILES="$RUNNER_TEMP/helper-lane-changed-files.txt"
@@ -884,6 +891,9 @@ jobs:
             : >"$FILES"
             echo "polish_run=true" >> "$GITHUB_OUTPUT"
             echo "speech_run=true" >> "$GITHUB_OUTPUT"
+            echo "stt_run=true" >> "$GITHUB_OUTPUT"
+            echo "Live STT lane: RUNNING (diff unavailable — failing open)" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
             echo "PolishHelper unit lane: RUNNING (diff unavailable — failing open)" \
               | tee -a "$GITHUB_STEP_SUMMARY"
             echo "SpeechHelper unit lane: RUNNING (diff unavailable — failing open)" \
@@ -906,6 +916,24 @@ jobs:
           }
           decide polish PolishHelper polish_run
           decide speech SpeechHelper speech_run
+
+          # The live STT integration, decided here because this step already
+          # holds the diff. Its rules and why the lane can be gated at all are
+          # in scripts/ci/stt-lane-filter.sh.
+          STT_MARKER_TEXT="$RUNNER_TEMP/stt-lane-marker-text.txt"
+          printf '%s\n' "$PR_BODY" > "$STT_MARKER_TEXT"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" && -n "$PR_HEAD_SHA" ]]; then
+            git log -1 --format=%B "$PR_HEAD_SHA" >> "$STT_MARKER_TEXT" 2>/dev/null || true
+          fi
+          stt_decision="$(./scripts/ci/stt-lane-filter.sh "$FILES" "$GITHUB_EVENT_NAME" "$STT_MARKER_TEXT")"
+          stt_run="$(sed -n 's/^run=//p' <<<"$stt_decision")"
+          stt_reason="$(sed -n 's/^reason=//p' <<<"$stt_decision")"
+          echo "stt_run=$stt_run" >> "$GITHUB_OUTPUT"
+          if [[ "$stt_run" == "true" ]]; then
+            echo "Live STT lane: RUNNING ($stt_reason)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Live STT lane: SKIPPED ($stt_reason)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
 
       # No "Setup Swift" step here on purpose. A prior `swift-actions/setup-swift@v2`
       # step (floating swift-version: "6.2") pinned the swift.org toolchain,
@@ -941,7 +969,7 @@ jobs:
         # run dir is absent and there is nothing to warm — the still-resident
         # STT service serves the suite, so skip cleanly instead of failing CI.
         # The integration step below is the real gate on the STT service.
-        if: steps.ci_scope.outputs.docs_only != 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.helper_lanes.outputs.stt_run == 'true'
         run: |
           if [ -d /Users/Shared/localvoxtral/run ]; then
             ./scripts/mac/lv-test-servers.sh ensure speechd
@@ -955,7 +983,10 @@ jobs:
         # (launchd service com.localvoxtral.testspeechd, warmed on-demand by the
         # step above). Nowhere else has that backend, which is why this lane
         # stayed behind when tier 0 moved to hosted runners.
-        if: steps.ci_scope.outputs.docs_only != 'true'
+        # Path-gated by the decide step above (scripts/ci/stt-lane-filter.sh):
+        # every PR whose diff the lane can see, every push to main, every
+        # dispatch.
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.helper_lanes.outputs.stt_run == 'true'
         env:
           VLLM_REALTIME_TEST_ENABLE: "1"
           VLLM_REALTIME_TEST_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead
