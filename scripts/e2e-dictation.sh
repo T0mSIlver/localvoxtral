@@ -184,12 +184,15 @@ app_log_since() {
 
 wait_for_audio_drained() {
   # wait_for_audio_drained <log-start> <timeout-seconds>
-  local start="$1" deadline=$((SECONDS + $2))
+  local start="$1" deadline=$((SECONDS + $2)) lines
   if ! app_log_since "$start" >/dev/null; then
     return 2
   fi
   while ((SECONDS < deadline)); do
-    if app_log_since "$start" | grep -q "dogfood audio file drained"; then
+    # Captured, not piped into `grep -q`: grep leaving at the first match
+    # SIGPIPEs `log show`, and under pipefail that reads as "no match".
+    lines="$(app_log_since "$start")"
+    if grep -q "dogfood audio file drained" <<<"$lines"; then
       return 0
     fi
     sleep 2
@@ -411,7 +414,15 @@ if [[ "$REALTIME_ENDPOINT" == "ws://127.0.0.1:8000/"* && -d /Users/Shared/localv
 fi
 endpoint_authority="${REALTIME_ENDPOINT#*://}"
 endpoint_authority="${endpoint_authority%%/*}"
-if ! nc -z -w 3 "${endpoint_authority%%:*}" "${endpoint_authority##*:}" >/dev/null 2>&1; then
+endpoint_host="${endpoint_authority%%:*}"
+if [[ "$endpoint_authority" == *:* ]]; then
+  endpoint_port="${endpoint_authority##*:}"
+elif [[ "$REALTIME_ENDPOINT" == wss://* ]]; then
+  endpoint_port=443
+else
+  endpoint_port=80
+fi
+if ! nc -z -w 3 "$endpoint_host" "$endpoint_port" >/dev/null 2>&1; then
   record_not_runnable "No STT server answers on $REALTIME_ENDPOINT."
   finish
 fi

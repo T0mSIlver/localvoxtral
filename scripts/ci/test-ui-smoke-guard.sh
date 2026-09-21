@@ -97,6 +97,7 @@ cat >"$TMP_DIR/bin/gh" <<'STUB'
 path="$2"
 case "$path" in
   */workflows/ui-smoke.yml/runs*)
+    [[ -n "${STUB_PATH_LOG:-}" ]] && printf '%s\n' "$path" >>"$STUB_PATH_LOG"
     printf '%s\n' "$STUB_RUNS_TSV"
     ;;
   */actions/runs/111/jobs)
@@ -105,7 +106,12 @@ case "$path" in
     printf 'skipped\n'
     ;;
   */actions/runs/222/jobs)
-    printf '%s\n' "$STUB_RUN_222_DRILL"
+    # The guard selects a step by name inside --jq; answer per step.
+    case "$*" in
+      *"E2E dictation scored"*) printf '%s\n' "${STUB_RUN_222_E2E:-skipped}" ;;
+      *"Run AX UI smoke"*) printf '%s\n' "$STUB_RUN_222_DRILL" ;;
+      *) exit 1 ;;
+    esac
     ;;
   *)
     exit 1
@@ -148,5 +154,59 @@ expect false "fractional-second timestamp still parses as covered" \
   "${gh_env[@]}" \
   "STUB_RUNS_TSV=$(printf '222\t%s' "$frac_iso")" \
   "STUB_RUN_222_DRILL=success"
+
+# --- The e2e dictation's own coverage answer ------------------------------
+# One shared answer would be wrong both ways: a drill-only pass would end the
+# evening without a dictation, and a drill that is red for a standing reason
+# would make every slot take the keyboard for a dictation that already passed.
+
+expect_e2e() {
+  local expected_run="$1" expected_e2e="$2" description="$3"
+  shift 3
+  local output run e2e e2e_reason
+  output="$(env "$@" "$GUARD")" || fail "$description: guard exited non-zero"
+  run="$(sed -n 's/^run=//p' <<<"$output")"
+  e2e="$(sed -n 's/^e2e_run=//p' <<<"$output")"
+  e2e_reason="$(sed -n 's/^e2e_reason=//p' <<<"$output")"
+  [[ "$run" == "$expected_run" && "$e2e" == "$expected_e2e" ]] \
+    || fail "$description: expected run=$expected_run e2e_run=$expected_e2e, got run=$run e2e_run=$e2e"
+  [[ -n "$e2e_reason" ]] || fail "$description: e2e_reason line is missing"
+  printf 'PASS: %s (%s)\n' "$description" "$e2e_reason"
+}
+
+expect_e2e false true "drill covered, dictation not: only the dictation runs" \
+  UI_SMOKE_GUARD_LAST_SUCCESS_AGE_SECONDS=3600 \
+  UI_SMOKE_GUARD_LAST_E2E_SUCCESS_AGE_SECONDS=none \
+  UI_SMOKE_GUARD_LOCK_STATE=unlocked
+expect_e2e true false "dictation covered, drill not: only the drill runs" \
+  UI_SMOKE_GUARD_LAST_SUCCESS_AGE_SECONDS=none \
+  UI_SMOKE_GUARD_LAST_E2E_SUCCESS_AGE_SECONDS=3600 \
+  UI_SMOKE_GUARD_LOCK_STATE=unlocked
+expect_e2e false false "a locked screen skips both" \
+  UI_SMOKE_GUARD_LAST_SUCCESS_AGE_SECONDS=none \
+  UI_SMOKE_GUARD_LAST_E2E_SUCCESS_AGE_SECONDS=none \
+  UI_SMOKE_GUARD_LOCK_STATE=locked
+expect_e2e false false "battery power skips both" \
+  AC_POWER_GUARD_STATE=battery \
+  UI_SMOKE_GUARD_LAST_SUCCESS_AGE_SECONDS=none \
+  UI_SMOKE_GUARD_LAST_E2E_SUCCESS_AGE_SECONDS=none \
+  UI_SMOKE_GUARD_LOCK_STATE=unlocked
+
+# Production query path. The dictation step concludes `success` even when the
+# Mac could not run it (exit 3 on a schedule), so coverage reads the marker
+# step, and it reads `completed` runs: its pass must count on an evening when
+# the drill, and so the run, was red.
+PATH_LOG="$TMP_DIR/paths"
+: >"$PATH_LOG"
+expect_e2e true false "a scored dictation covers the day while the drill stays red" \
+  "${gh_env[@]}" "STUB_PATH_LOG=$PATH_LOG" \
+  "STUB_RUNS_TSV=$(printf '222\t%s' "$(now_iso)")" \
+  "STUB_RUN_222_DRILL=failure" "STUB_RUN_222_E2E=success"
+grep -q 'runs?status=success&' "$PATH_LOG" || fail "the drill no longer asks for success-concluded runs"
+grep -q 'runs?status=completed&' "$PATH_LOG" || fail "the dictation does not look at red runs"
+expect_e2e false true "a dictation that could not run does not cover the day" \
+  "${gh_env[@]}" \
+  "STUB_RUNS_TSV=$(printf '222\t%s' "$(now_iso)")" \
+  "STUB_RUN_222_DRILL=success" "STUB_RUN_222_E2E=skipped"
 
 echo "ui-smoke-guard tests passed"

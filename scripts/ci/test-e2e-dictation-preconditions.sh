@@ -90,6 +90,16 @@ grep -q "nc -z -w 3 127.0.0.1 59999" "$EVENTS" || fail "the STT endpoint's host 
 untouched "absent STT server"
 echo "PASS: an absent STT server is 'not runnable', and nothing was touched"
 
+: >"$EVENTS"
+set +e
+HOME="$WORK/home" PATH="$BIN:$PATH" LV_E2E_PLISTBUDDY="$BIN/plistbuddy" LV_E2E_ANNOUNCE=0 \
+  STUB_DOGFOOD_STAMP=true LV_SCREEN_LOCK_STATE=unlocked \
+  LV_E2E_REALTIME_ENDPOINT="wss://stt.example/v1/realtime" \
+  "$ROOT_DIR/scripts/e2e-dictation.sh" "$WORK/app.app" >"$WORK/out" 2>&1
+set -e
+grep -q "nc -z -w 3 stt.example 443" "$EVENTS" || fail "a portless wss endpoint was not probed on 443"
+echo "PASS: a portless endpoint is probed on its scheme's port"
+
 # The scenarios that ship must parse.
 for scenario in "$ROOT_DIR"/scripts/e2e/scenarios/*.scenario; do
   mode="$(sed -n 's/^mode=//p' "$scenario" | head -n 1)"

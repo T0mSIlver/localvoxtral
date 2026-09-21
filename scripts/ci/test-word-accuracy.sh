@@ -23,6 +23,10 @@ expect 1.000 "" ""
 expect 0.000 "" "noise"
 # Text inserted twice must lose half the score, not keep all of it.
 expect 0.500 "hello from localvoxtral" "hello from localvoxtral hello from localvoxtral"
+# Bytes above ASCII are letters. An awk that read the bracket expression's
+# octal escapes literally would drop "é" and score two empty sides as equal.
+expect 0.000 "é" ""
+expect 1.000 "café au lait" "Café au lait"
 # Punctuation splits tokens the way the Swift scorer's letter/digit runs do.
 expect 1.000 "end to end" "end-to-end"
 
