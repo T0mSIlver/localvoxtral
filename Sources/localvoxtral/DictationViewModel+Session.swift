@@ -2176,7 +2176,6 @@ extension DictationViewModel {
     }
 
 
-
     /// Polishing prompt profile for a stop-commit: `.agent` iff the user has the
     /// agent profile enabled AND the captured target bundle ID is terminal-like
     /// (built-in terminal allowlist, or the user's Settings → Terminals list —

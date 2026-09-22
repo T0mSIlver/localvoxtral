@@ -320,7 +320,7 @@ final class DictationViewModel {
         /// read the one clipboard; a counting stub proves the no-read paths.
         var pasteboardReader: @MainActor () -> any PasteboardReading
         /// Where the copy actions write.
-        var pasteboardWriter: (String) -> Void
+        var pasteboardWriter: @MainActor (String) -> Void
         /// The bundle identifier of a running process, for the app the
         /// overlay commits into.
         var bundleIdentifier: (pid_t) -> String?
@@ -341,7 +341,7 @@ final class DictationViewModel {
         init(
             microphone: (() -> any MicrophoneCapturing)? = nil,
             pasteboardReader: @escaping @MainActor () -> any PasteboardReading = { SystemPasteboardReader() },
-            pasteboardWriter: @escaping (String) -> Void = DictationViewModel.writeToSystemPasteboard,
+            pasteboardWriter: @escaping @MainActor (String) -> Void = DictationViewModel.writeToSystemPasteboard,
             bundleIdentifier: @escaping (pid_t) -> String? = {
                 NSRunningApplication(processIdentifier: $0)?.bundleIdentifier
             },
@@ -779,6 +779,10 @@ final class DictationViewModel {
 
     @ObservationIgnored
     private var lifecycleObservers: [NSObjectProtocol] = []
+    /// The center `lifecycleObservers` were registered on, so deinit removes
+    /// them from the same one.
+    @ObservationIgnored
+    private var lifecycleNotificationCenter: NotificationCenter = .default
     @ObservationIgnored
     private let managesRuntimeServices: Bool
     /// When true, the startup permission-prompt pass (microphone +
@@ -1044,7 +1048,7 @@ final class DictationViewModel {
     @MainActor
     deinit {
         for observer in lifecycleObservers {
-            NotificationCenter.default.removeObserver(observer)
+            lifecycleNotificationCenter.removeObserver(observer)
         }
         lifecycleObservers.removeAll()
         commitTask?.cancel()
@@ -1123,6 +1127,7 @@ final class DictationViewModel {
         }
 
         lifecycleObservers = [sleepObserver, terminateObserver]
+        lifecycleNotificationCenter = nc
     }
 
     /// True when `LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS=1` — the
@@ -1993,7 +1998,7 @@ final class DictationViewModel {
     /// The production `Dependencies.pasteboardWriter`: the general pasteboard,
     /// which a test never reaches (headless CI has no pasteboard server, and
     /// clobbering the host clipboard is antisocial).
-    nonisolated static func writeToSystemPasteboard(_ text: String) {
+    static func writeToSystemPasteboard(_ text: String) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
