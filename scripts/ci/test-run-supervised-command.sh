@@ -184,6 +184,48 @@ is_live_non_zombie "$stubborn_pid" && fail "hung-sampler run: descendant survive
 fixture_pid=""
 stubborn_pid=""
 
+# A forensic lsof that hangs must be killed at its own cap the same way. The
+# cap's log line used to name an unbound variable, which under set -u ended
+# the watcher itself: no marker, no group kill, and the supervisor sat in
+# wait forever, the blind hang the caps exist to prevent (#439 review).
+pid_fifo="$TMP_DIR/hung-lsof-pids"
+timeout_fifo="$TMP_DIR/hung-lsof-trigger"
+open_pid_fifo "$pid_fifo"
+open_timeout_fifo "$timeout_fifo"
+cat >"$TMP_DIR/bin/sample" <<'STUB'
+#!/usr/bin/env bash
+echo "stub-sample-of-pid-$1"
+STUB
+cat >"$TMP_DIR/bin/lsof" <<'STUB'
+#!/usr/bin/env bash
+exec sleep 300
+STUB
+chmod +x "$TMP_DIR/bin/sample" "$TMP_DIR/bin/lsof"
+PATH="$TMP_DIR/bin:$PATH" \
+LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO="$timeout_fifo" \
+LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
+LOCALVOXTRAL_SUPERVISOR_LSOF_POLLS=3 \
+  "$SUPERVISOR" 999 "$TMP_DIR/hung-lsof.log" -- "$FIXTURE" "$pid_fifo" 4<&- &
+supervisor_pid=$!
+read -r fixture_pid stubborn_pid <&3
+exec 3<&-
+printf 'fire\n' >&4
+if wait "$supervisor_pid"; then
+  fail "hung-lsof run unexpectedly succeeded"
+else
+  status=$?
+fi
+supervisor_pid=""
+exec 4<&-
+[[ "$status" == "124" ]] || fail "hung-lsof run: timeout status changed from 124 to $status"
+grep -q -- '--- lsof killed at the 300 ms cap ---' "$TMP_DIR/hung-lsof.log" \
+  || fail "hung lsof was not killed at the cap"
+is_live_non_zombie "$fixture_pid" && fail "hung-lsof run: leader survived"
+is_live_non_zombie "$stubborn_pid" && fail "hung-lsof run: descendant survived"
+fixture_pid=""
+stubborn_pid=""
+rm -f "$TMP_DIR/bin/lsof"
+
 # On timeout the supervisor must also record the PROCESS TREE (descendants of
 # the command pid plus the process group) and the PIPE HOLDERS: the
 # 2026-09-06/07 hosted hangs died with xctest gone, the swift-package driver
