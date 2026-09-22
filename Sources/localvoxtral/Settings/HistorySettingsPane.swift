@@ -70,8 +70,9 @@ struct HistorySettingsPane: View {
 
     // MARK: - Storage
 
-    /// Nil under Don't keep once the delete went through: the picker already
-    /// says it. A count left there means that delete failed.
+    /// Nil at zero: the empty list below says so, and under Don't keep the
+    /// picker does. A count left under Don't keep means the delete has not
+    /// finished, or failed.
     private var storageStatus: String? {
         guard settings.dictationHistoryRetention.savesDictations else {
             switch model.totalCount {
@@ -81,7 +82,7 @@ struct HistorySettingsPane: View {
             }
         }
         switch model.totalCount {
-        case 0: return "Nothing saved yet."
+        case 0: return nil
         case 1: return "1 dictation on this Mac."
         default: return "\(model.totalCount.formatted()) dictations on this Mac."
         }
