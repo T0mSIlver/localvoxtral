@@ -47,4 +47,6 @@ reviewing what you submit.
   session joins) have documented invariants in
   [docs/agent/invariants.md](docs/agent/invariants.md) — read them before
   proposing changes there; deliberate tradeoffs are not bugs.
+- Found a vulnerability? Do not open an issue — report it privately through
+  [SECURITY.md](SECURITY.md).
 - Questions or ideas: open an issue before a large PR.

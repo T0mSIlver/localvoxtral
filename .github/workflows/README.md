@@ -285,6 +285,24 @@ prints a clear skip message and exits successfully.
 It needs the same one-time Accessibility and Screen Recording TCC grants as
 `ui-smoke.yml`.
 
+## `codeql.yml`
+
+Code scanning of the workflows themselves, on Ubuntu, on every push to main,
+every same-repo PR that changes `.github/workflows/**` or
+`.github/actions/**`, and Mondays at 06:23 UTC. The repo is public,
+`mac-lanes` runs on the owner's machine with the signing identity and the
+login keychain, and `release.yml` holds the token that publishes the DMG, so
+an injectable `${{ }}` expression or an over-scoped `permissions:` block is
+the failure worth catching. A fork PR is skipped: its token cannot write
+security events, so the upload would fail. Workflow changes from a fork are
+analysed by the push run once merged.
+
+Swift is not analysed. On `macos-latest` the traced `swift build` of the root
+package, about 3 minutes untraced, ran past a 45-minute limit and GitHub kept
+no log (#470). Retrying it belongs on a hosted runner too: never move code
+scanning to `[self-hosted, macOS, ARM64]`, the one Mac every agent queues
+behind (#418).
+
 ## Action pins
 
 Every `uses:` names a 40-character commit SHA with the tag in a trailing
