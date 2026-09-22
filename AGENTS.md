@@ -72,6 +72,9 @@ and order it with blocked-by links, not prose.
 - No wall-clock in tests: no `Date()`, no real `Task.sleep` polling. Inject
   clocks; `OverlayBufferSessionCoordinator`'s `now:` / `sleepFor:` seams are
   the reference. Session code still arms wall-clock timers; add no more.
+- Test classes run in several xctest processes at once (#442). A test that
+  listens binds port 0 or takes `unusedLoopbackPort()`, never a fixed port
+  or a counter from one. Files and sockets get unique names.
 - A test that reaches `beginDictationSession` arms the real 1 s connect
   timeout on a process-retained view model. It must set
   `viewModel.isShowingConnectionFailureAlert = true`, or the alert fires

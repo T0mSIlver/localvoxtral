@@ -19,18 +19,12 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
     private var hosts: ClaudeRemoteHostRegistry!
     private var token: String!
     private var hostID: String!
+    /// Each test gets its own port, from the OS: a shared one would make a
+    /// leaked listener from a previous test look like a failure in the next,
+    /// and the counter from a fixed base this replaced gave every xctest
+    /// process the same ports (`bindFailed(errno: 48)` under
+    /// `swift test --parallel`, #442).
     private var port: UInt16!
-
-    /// Each test gets its own port: a shared one would make a leaked listener
-    /// from a previous test look like a failure in the next.
-    private static let portCounter = Mutex<UInt16>(45_871)
-
-    private func nextPort() -> UInt16 {
-        Self.portCounter.withLock { port in
-            port += 1
-            return port
-        }
-    }
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -44,7 +38,7 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         let enrollment = try hosts.enroll(label: "buildhost")
         token = enrollment.token
         hostID = enrollment.host.id
-        port = nextPort()
+        port = try unusedLoopbackPort()
     }
 
     override func tearDown() {
