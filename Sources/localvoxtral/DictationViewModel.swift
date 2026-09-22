@@ -20,30 +20,6 @@ enum MenuBarIndicatorState: Equatable {
     case secureInputWarning
 }
 
-/// A single raw realtime-delta log emission, captured before any
-/// merge/preprocess/insertion processing. Mirrors what `Log.deltas` records
-/// when `SettingsStore.debugLogRealtimeDeltas` is on; surfaced through the
-/// `#if DEBUG` `debugDeltaLogSink` seam for instrumentation tests.
-///
-/// `payload` is the exact, unprocessed string the backend delivered (quoted in
-/// the actual log via `.debugDescription` so whitespace is visible); it is nil
-/// for events that carry no string payload (session boundaries, finalized).
-struct DebugRealtimeDeltaLogRecord: Equatable, Sendable {
-    enum Kind: String, Sendable {
-        case sessionConnected = "session.connected"
-        case sessionDisconnected = "session.disconnected"
-        case partialDelta = "partial"
-        case finalTranscript = "final"
-        case status = "status"
-        case error = "error"
-        case transcriptionFinalized = "finalized"
-    }
-
-    let kind: Kind
-    let sequence: Int
-    let payload: String?
-}
-
 @MainActor
 @Observable
 final class DictationViewModel {
