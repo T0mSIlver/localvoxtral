@@ -16,8 +16,15 @@ final class AppWindowOpenerTests: XCTestCase {
         var appearsOnAttempt = 1
         /// Whether the window is up before any of this runs.
         var isAlreadyOnScreen = false
+        /// The window turns up DURING the wait rather than with the ask —
+        /// the scene took the action and built the window a moment later.
+        var appearsDuringWait = false
 
-        var isOnScreen: Bool { isAlreadyOnScreen || shows >= appearsOnAttempt }
+        var isOnScreen: Bool {
+            if isAlreadyOnScreen { return true }
+            let asksThatCount = appearsDuringWait ? waits.count : shows
+            return asksThatCount >= appearsOnAttempt
+        }
 
         func opener() -> AppWindowOpener {
             AppWindowOpener(
@@ -53,6 +60,19 @@ final class AppWindowOpenerTests: XCTestCase {
         XCTAssertEqual(fake.waits, Array(repeating: AppWindowOpener.interval, count: 3))
     }
 
+    /// The window does not always exist the instant the action is taken, so
+    /// the attempt is judged again after the wait.
+    func testAWindowThatArrivesDuringTheWaitCountsForThatAttempt() async {
+        let fake = Fake()
+        fake.appearsDuringWait = true
+        fake.appearsOnAttempt = 2
+
+        let attempt = await fake.opener().open()
+
+        XCTAssertEqual(attempt, 2)
+        XCTAssertEqual(fake.shows, 2)
+    }
+
     func testItGivesUpRatherThanAskingForever() async {
         let fake = Fake()
         fake.appearsOnAttempt = .max
@@ -61,6 +81,8 @@ final class AppWindowOpenerTests: XCTestCase {
 
         XCTAssertNil(attempt)
         XCTAssertEqual(fake.shows, AppWindowOpener.attemptLimit)
+        // One wait between asks, and none after the last one.
+        XCTAssertEqual(fake.waits.count, AppWindowOpener.attemptLimit - 1)
     }
 
     /// A window already on screen is still asked for once — that ask is what

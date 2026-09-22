@@ -49,14 +49,22 @@ final class LaunchAgentLoginItemRegistrar: LoginItemRegistering {
     /// The `.app` to open at login, or nil when the running binary is not in
     /// one.
     private let appBundle: URL?
+    /// Injected so a test never runs `launchctl` against the machine it is
+    /// running on.
+    private let clearDisablement: @MainActor () -> Void
 
     init(
         directory: URL = FileManager.default.homeDirectoryForCurrentUser
             .appending(path: "Library/LaunchAgents", directoryHint: .isDirectory),
-        appBundle: URL? = LaunchAgentLoginItemRegistrar.runningAppBundle()
+        appBundle: URL? = LaunchAgentLoginItemRegistrar.runningAppBundle(),
+        clearDisablement: @escaping @MainActor () -> Void =
+            LaunchAgentLoginItemRegistrar.clearUserDisablement
     ) {
         self.directory = directory
-        self.appBundle = appBundle
+        self.appBundle = appBundle.flatMap {
+            Self.isDurableLocation($0) ? $0 : nil
+        }
+        self.clearDisablement = clearDisablement
     }
 
     /// `Bundle.main.bundleURL` is the `.app` for a packaged build and the
@@ -67,6 +75,17 @@ final class LaunchAgentLoginItemRegistrar: LoginItemRegistering {
         return url.pathExtension == "app" ? url : nil
     }
 
+    /// Whether a bundle is somewhere a login item can still point at tomorrow.
+    ///
+    /// macOS runs a quarantined app — unzipped and double-clicked where it
+    /// landed, never dragged to Applications — from a read-only mount under
+    /// `AppTranslocation` that is thrown away when the app quits. A login item
+    /// naming that path is dead from the first login on, while the row would
+    /// say it is on. Installing the app properly clears translocation.
+    static func isDurableLocation(_ bundle: URL) -> Bool {
+        !bundle.path.contains("/AppTranslocation/")
+    }
+
     private var plistURL: URL {
         directory.appending(path: "\(Self.label).plist", directoryHint: .notDirectory)
     }
@@ -74,7 +93,14 @@ final class LaunchAgentLoginItemRegistrar: LoginItemRegistering {
     func currentState() -> LoginItemState {
         guard let appBundle else { return .unavailable }
         guard let installed = installedAppPath() else { return .disabled }
-        return installed == appBundle.path ? .enabled : .enabledForAnotherCopy
+        if installed == appBundle.path { return .enabled }
+        // A login item naming a copy that is no longer there opens nothing at
+        // login, so it is not a login item: the app was moved, or — the common
+        // one on this project's own Mac — the registered copy was a try-pr
+        // build under /private/tmp that the system reaper has since deleted.
+        // Off is the truth, and turning the switch on re-points the agent here.
+        guard FileManager.default.fileExists(atPath: installed) else { return .disabled }
+        return .enabledForAnotherCopy
     }
 
     func register() throws {
@@ -92,6 +118,31 @@ final class LaunchAgentLoginItemRegistrar: LoginItemRegistering {
         let data = try PropertyListSerialization.data(
             fromPropertyList: agent, format: .xml, options: 0)
         try data.write(to: plistURL, options: .atomic)
+        clearDisablement()
+    }
+
+    /// Turning the switch on has to survive the user having turned this login
+    /// item off in System Settings, under Login Items' "Allow in the
+    /// Background". That is recorded as a launchd disablement for the label,
+    /// NOT as a deleted file, so the file alone would say on while login kept
+    /// skipping it. Best effort by design: the item is registered either way,
+    /// and a `launchctl` that is missing or refuses must not fail the switch.
+    static func clearUserDisablement() {
+        let launchctl = URL(filePath: "/bin/launchctl")
+        guard FileManager.default.isExecutableFile(atPath: launchctl.path) else { return }
+        let process = Process()
+        process.executableURL = launchctl
+        process.arguments = ["enable", "gui/\(getuid())/\(label)"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            Log.diagnostics.info(
+                "Login item: launchctl enable did not run (\(String(describing: error), privacy: .public))"
+            )
+        }
     }
 
     func unregister() throws {
@@ -120,9 +171,15 @@ enum LoginItemError: Error {
 /// Backs "Open localvoxtral at login".
 ///
 /// The installed login item is the single source of truth — nothing is
-/// mirrored into `SettingsStore`. The user can remove it from System Settings
-/// while the app is not running, so a stored copy would be a second answer
-/// that is wrong from the moment they do.
+/// mirrored into `SettingsStore`. The item outlives any one launch and can be
+/// removed without the app running, so a stored copy would be a second answer
+/// that is wrong from the moment it is.
+///
+/// One gap, deliberate: System Settings can turn the item off under Login
+/// Items' "Allow in the Background" without deleting the file, and reading
+/// that back means spawning `launchctl` on every refresh. It is not read; what
+/// the switch does instead is CLEAR that disablement whenever it is turned on,
+/// so an item this app says is on can always be made on by flipping it.
 @MainActor
 @Observable
 final class LoginItemController {
@@ -165,8 +222,8 @@ final class LoginItemController {
     }
 
     /// Re-reads the login item. Called whenever the pane appears and whenever
-    /// the app comes back to the front, because System Settings can have
-    /// removed it in between.
+    /// the app comes back to the front, because the item can have been removed
+    /// in between.
     func refresh() {
         failure = nil
         state = registrar.currentState()

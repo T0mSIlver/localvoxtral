@@ -30,14 +30,17 @@ struct AppWindowOpener {
     /// Asks until the window is there. Returns the attempt that worked, or nil
     /// if the window never appeared.
     ///
-    /// The first ask is unconditional, window on screen or not: the menu bar
-    /// item's History and the onboarding Engines link come through here while
-    /// the window may be open behind another app, and they have to bring it
-    /// forward.
+    /// The first ask is unconditional, window on screen or not: the onboarding
+    /// wizard's Engines link comes through here while its own window has the
+    /// screen, and it has to bring the window forward rather than decide there
+    /// is nothing to do. (The menu bar item's History does not come through
+    /// here — a SwiftUI view can use the `openSettings` action directly.)
     func open() async -> Int? {
         for attempt in 1...Self.attemptLimit {
             show()
             if isOnScreen() { return attempt }
+            // The last ask gets no wait: nothing would look at the result.
+            guard attempt < Self.attemptLimit else { break }
             await sleepFor(Self.interval)
             if isOnScreen() { return attempt }
         }

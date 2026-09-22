@@ -10,6 +10,10 @@ import XCTest
 final class LaunchAgentLoginItemRegistrarTests: XCTestCase {
     private var directory: URL!
     private let appBundle = URL(filePath: "/Applications/localvoxtral.app")
+    /// How many times registering asked for a user disablement to be cleared.
+    /// A test must never run the real `launchctl`, which would change the
+    /// launchd state of the machine running the suite.
+    private var disablementClears = 0
 
     override func setUp() async throws {
         try await super.setUp()
@@ -24,11 +28,15 @@ final class LaunchAgentLoginItemRegistrarTests: XCTestCase {
     }
 
     private func makeRegistrar() -> LaunchAgentLoginItemRegistrar {
-        LaunchAgentLoginItemRegistrar(directory: directory, appBundle: appBundle)
+        makeRegistrar(appBundle: appBundle)
     }
 
     private func makeRegistrar(appBundle: URL?) -> LaunchAgentLoginItemRegistrar {
-        LaunchAgentLoginItemRegistrar(directory: directory, appBundle: appBundle)
+        LaunchAgentLoginItemRegistrar(
+            directory: directory,
+            appBundle: appBundle,
+            clearDisablement: { self.disablementClears += 1 }
+        )
     }
 
     private var plistURL: URL {
@@ -40,6 +48,43 @@ final class LaunchAgentLoginItemRegistrarTests: XCTestCase {
         let plist = try PropertyListSerialization.propertyList(
             from: data, options: [], format: nil)
         return try XCTUnwrap(plist as? [String: Any])
+    }
+
+    /// Turning it on has to survive the user having turned it off in System
+    /// Settings, which disables the label in launchd rather than deleting the
+    /// file — the file alone would then say on while login skipped it.
+    func testRegisteringAlsoClearsAUserDisablement() throws {
+        try makeRegistrar().register()
+
+        XCTAssertEqual(disablementClears, 1)
+    }
+
+    /// A login item naming a copy that is gone opens nothing: the row reads
+    /// off, and turning it on re-points the agent at this app.
+    func testAnAgentNamingAMissingCopyReadsAsOff() throws {
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        let agent: [String: Any] = [
+            "Label": LaunchAgentLoginItemRegistrar.label,
+            "ProgramArguments": ["/usr/bin/open", "/private/tmp/deleted-by-the-reaper.app"],
+            "RunAtLoad": true,
+        ]
+        try PropertyListSerialization
+            .data(fromPropertyList: agent, format: .xml, options: 0)
+            .write(to: plistURL)
+
+        XCTAssertEqual(makeRegistrar().currentState(), .disabled)
+    }
+
+    /// An app run from where it was unzipped is translocated onto a mount that
+    /// dies with the process, so there is nothing durable to open at login.
+    func testATranslocatedCopyHasNothingToOpenAtLogin() {
+        let translocated = URL(
+            filePath:
+                "/private/var/folders/x/AppTranslocation/0F1E-2D3C/d/localvoxtral.app")
+        let registrar = makeRegistrar(appBundle: translocated)
+
+        XCTAssertEqual(registrar.currentState(), .unavailable)
     }
 
     func testNothingInstalledReadsAsOff() {
@@ -93,7 +138,12 @@ final class LaunchAgentLoginItemRegistrarTests: XCTestCase {
     /// The everyday state on the owner's Mac: the login item names the
     /// installed copy while a build under test is the one asking.
     func testAnAgentForAnotherCopyReadsAsOnAndIsNamedAsSuch() throws {
-        try makeRegistrar().register()
+        // The registered copy has to exist for the state to mean anything, so
+        // it is this directory standing in for an installed bundle.
+        let installed = directory.appending(path: "installed-localvoxtral.app")
+        try FileManager.default.createDirectory(
+            at: installed, withIntermediateDirectories: true)
+        try makeRegistrar(appBundle: installed).register()
 
         let underTest = makeRegistrar(
             appBundle: URL(filePath: "/private/tmp/localvoxtral-try.1/localvoxtral.app"))
@@ -104,7 +154,10 @@ final class LaunchAgentLoginItemRegistrarTests: XCTestCase {
     /// Turning it on from a second copy takes the login item over rather than
     /// leaving two of them: there is one file, and it names one app.
     func testRegisteringFromAnotherCopyTakesOverTheSameAgent() throws {
-        try makeRegistrar().register()
+        let installed = directory.appending(path: "installed-localvoxtral.app")
+        try FileManager.default.createDirectory(
+            at: installed, withIntermediateDirectories: true)
+        try makeRegistrar(appBundle: installed).register()
         let other = URL(filePath: "/private/tmp/localvoxtral-try.1/localvoxtral.app")
 
         let underTest = makeRegistrar(appBundle: other)
