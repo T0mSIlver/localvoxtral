@@ -6,9 +6,13 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|eval-llm|eval-e2e|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
+#   ./scripts/remote-build.sh [build|test|test-cost-budgets|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|eval-llm|eval-e2e|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
 #     build        swift build
-#     test         swift build + unit tests (default; skips live-backend suites)
+#     test         swift build + unit tests (default; skips live-backend suites
+#                  and the cost-budget suite below)
+#     test-cost-budgets
+#                  PolishContextPreparationTests, the suite whose assertions
+#                  are about how much work a preparation costs (#430)
 #     integration  realtime pipeline tests against the live speechd STT service
 #     integration-keychain
 #                  KeychainSecretStore against the REAL login keychain
@@ -293,7 +297,8 @@ esac
 UNIT_TEST_SKIPS=(--skip RealtimeAPIVLLMIntegrationTests --skip LLMPolishPromptEvalTests
   --skip PolishHelperIntegrationTests --skip SpeechHelperIntegrationTests
   --skip SpeechdStreamingBenchTests --skip AgentDictationE2EEvalTests
-  --skip HerdrIntegrationTests --skip MistralRealtimeSoakTests)
+  --skip HerdrIntegrationTests --skip MistralRealtimeSoakTests
+  --skip PolishContextPreparationTests)
 
 # On-demand test server to warm before the suite runs (empty = none). The
 # build host's speechd/polishd launchd test services are launch-on-demand to
@@ -304,6 +309,13 @@ ENSURE_SERVER=""
 case "$CMD" in
   build)   REMOTE_CMD=(swift build "$@") ;;
   test)    REMOTE_CMD=(swift test "${UNIT_TEST_SKIPS[@]}" "$@") ;;
+  test-cost-budgets)
+    # PolishContextPreparationTests asserts how much work a preparation costs,
+    # so its cases are slow on purpose (#430) and are out of the `test` lane.
+    # CI runs them in their own required step of `build-test`; this is how you
+    # run them here.
+    REMOTE_CMD=(swift test --filter PolishContextPreparationTests "$@")
+    ;;
   integration)
     ENSURE_SERVER="speechd"
     REMOTE_CMD=(env VLLM_REALTIME_TEST_ENABLE=1
