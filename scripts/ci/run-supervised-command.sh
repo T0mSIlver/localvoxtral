@@ -93,7 +93,7 @@ run_forensic_bounded() {
   done
   if kill -0 "$forensic_pid" 2>/dev/null; then
     kill -KILL -- "-$forensic_pid" 2>/dev/null || kill -KILL "$forensic_pid" 2>/dev/null || true
-    echo "--- $runner killed at the ${lsof_polls}00 ms cap ---" >>"$log_file"
+    echo "--- $label killed at the ${lsof_polls}00 ms cap ---" >>"$log_file"
   fi
   wait "$forensic_pid" 2>/dev/null || true
 }
@@ -358,7 +358,9 @@ command_pgid=$command_pid
 (
   trap 'exit 0' HUP INT TERM
   if [[ -n "${LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO:-}" ]]; then
-    read -r _ <"$LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO"
+    # Opened read-write so the open() cannot block, and so cannot fail with
+    # EINTR under bash 3.2 (no SA_RESTART, no retry); read() itself is retried.
+    read -r _ 0<>"$LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO"
   else
     sleep "$timeout_seconds"
   fi
