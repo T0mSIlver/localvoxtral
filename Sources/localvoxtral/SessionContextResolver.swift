@@ -158,7 +158,7 @@ final class SessionContextResolver {
     /// open an `ssh -L`. (It reads no window title — no join has since #250.)
     /// An opted-out user, a remote endpoint, or a revoked Accessibility grant
     /// means none of that happens.
-    func resolveClaudeSessionJoin(endpointURL: URL) async -> ClaudeSessionJoin? {
+    private func resolveClaudeSessionJoin(endpointURL: URL) async -> ClaudeSessionJoin? {
         guard let resolver = claudeSessionJoinResolver else {
             return dogfoodUnresolvedJoin(cause: "gate: no resolver installed")
         }
@@ -211,7 +211,7 @@ final class SessionContextResolver {
     /// distinguish "gate refused" from "resolver abstained" — and always
     /// returns nil, keeping the guard sites one-liners. Compiled to a bare nil
     /// in a shipping build.
-    func dogfoodUnresolvedJoin(cause: String) -> ClaudeSessionJoin? {
+    private func dogfoodUnresolvedJoin(cause: String) -> ClaudeSessionJoin? {
         #if LOCALVOXTRAL_DOGFOOD
         DogfoodCaptureTap.shared.noteJoinAbstention(cause)
         #endif
