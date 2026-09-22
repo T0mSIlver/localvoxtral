@@ -98,33 +98,21 @@ final class NemotronASREngine: SpeechASREngine, @unchecked Sendable {
 
 final class NemotronASRSession: SpeechASRStreamingSession, @unchecked Sendable {
     private let session: NemotronASRStreamSession
-    private let maxSamples: Int
-    private var acceptedSamples = 0
-    private var reachedLimit = false
+    /// The engine has no token budget to cap, so the limit is enforced on the audio
+    /// this session accepts — see `UtteranceAudioCap`.
+    private var cap: UtteranceAudioCap
 
-    /// Nemotron is RNN-T: it emits a variable number of tokens per frame and never
-    /// ends a stream on its own, so a token cap is not a duration and there is no
-    /// end-of-stream to report. The limit is therefore enforced here, on the audio
-    /// the session accepts, which is what `UtteranceLimit` means in the first place.
     init(session: NemotronASRStreamSession, utteranceLimit: UtteranceLimit) {
         self.session = session
-        self.maxSamples = utteranceLimit.seconds * NemotronASRSession.sampleRate
+        self.cap = UtteranceAudioCap(limit: utteranceLimit)
     }
 
-    private static let sampleRate = 16_000
-
     func step(_ samples: [Float]) -> SpeechStreamDelta {
-        guard !reachedLimit else { return SpeechStreamDelta(text: "", tokenIds: []) }
-        let room = maxSamples - acceptedSamples
-        if samples.count >= room {
-            reachedLimit = true
-            let accepted = Array(samples.prefix(room))
-            acceptedSamples += accepted.count
-            guard !accepted.isEmpty else { return SpeechStreamDelta(text: "", tokenIds: []) }
-            return delta(session.step(accepted))
-        }
-        acceptedSamples += samples.count
-        return delta(session.step(samples))
+        let accepted = cap.accept(samples.count)
+        guard accepted > 0 else { return SpeechStreamDelta(text: "", tokenIds: []) }
+        return delta(session.step(
+            accepted == samples.count ? samples : Array(samples.prefix(accepted))
+        ))
     }
 
     func finish() -> SpeechStreamDelta {
@@ -135,7 +123,7 @@ final class NemotronASRSession: SpeechASRStreamingSession, @unchecked Sendable {
 
     var decodedTokenCount: Int { session.tokens.count }
 
-    var utteranceStop: UtteranceStop? { reachedLimit ? .lengthLimit : nil }
+    var utteranceStop: UtteranceStop? { cap.stop }
 
     private func delta(_ delta: NemotronASRStreamSession.Delta) -> SpeechStreamDelta {
         SpeechStreamDelta(text: delta.text, tokenIds: delta.tokenIds)

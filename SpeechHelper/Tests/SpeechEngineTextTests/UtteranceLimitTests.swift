@@ -148,3 +148,32 @@ final class UtteranceLimitTests: XCTestCase {
         )
     }
 }
+
+final class UtteranceAudioCapTests: XCTestCase {
+    private let sampleRate = 16_000
+
+    func testAudioUpToTheLimitIsAcceptedWhole() {
+        var cap = UtteranceAudioCap(limit: UtteranceLimit(seconds: 2), sampleRate: sampleRate)
+
+        XCTAssertEqual(cap.accept(sampleRate), sampleRate)
+        XCTAssertNil(cap.stop)
+        XCTAssertEqual(cap.accept(sampleRate), sampleRate)
+        XCTAssertNil(
+            cap.stop,
+            "a session that ends exactly at the limit lost nothing; there is nothing to report"
+        )
+    }
+
+    func testAudioPastTheLimitIsTruncatedAndReportedOnce() {
+        var cap = UtteranceAudioCap(limit: UtteranceLimit(seconds: 1), sampleRate: sampleRate)
+
+        XCTAssertEqual(cap.accept(12_000), 12_000)
+        XCTAssertNil(cap.stop)
+        // 4,000 samples of room left, 8,000 offered.
+        XCTAssertEqual(cap.accept(8_000), 4_000)
+        XCTAssertEqual(cap.stop, .lengthLimit)
+        // Every later chunk is dropped whole, and the stop does not change.
+        XCTAssertEqual(cap.accept(8_000), 0)
+        XCTAssertEqual(cap.stop, .lengthLimit)
+    }
+}

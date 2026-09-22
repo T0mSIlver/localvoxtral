@@ -111,3 +111,30 @@ public struct UtteranceStopReporter: Equatable, Sendable {
         reported = false
     }
 }
+
+/// How much audio one session has accepted against an `UtteranceLimit`, for an engine
+/// whose decoder has no token budget to cap (Nemotron's RNN-T emits a variable number
+/// of tokens per frame and never ends a stream on its own). Audio past the limit is
+/// dropped, which is exactly what `UtteranceStop.lengthLimit` tells the user — so the
+/// cap latches when audio is actually lost, not at the boundary a session may simply
+/// end on.
+public struct UtteranceAudioCap: Equatable, Sendable {
+    private let maxSamples: Int
+    private var acceptedSamples = 0
+    private var droppedAudio = false
+
+    public init(limit: UtteranceLimit, sampleRate: Int = 16_000) {
+        self.maxSamples = limit.seconds * sampleRate
+    }
+
+    /// How many of the next `sampleCount` samples the engine may still be fed.
+    public mutating func accept(_ sampleCount: Int) -> Int {
+        let room = max(0, maxSamples - acceptedSamples)
+        if sampleCount > room { droppedAudio = true }
+        let accepted = min(sampleCount, room)
+        acceptedSamples += accepted
+        return accepted
+    }
+
+    public var stop: UtteranceStop? { droppedAudio ? .lengthLimit : nil }
+}
