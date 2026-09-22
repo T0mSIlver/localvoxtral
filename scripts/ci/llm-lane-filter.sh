@@ -85,6 +85,8 @@ PATTERNS=(
   '*SessionContextResolver*'                        # the context gates themselves (#432 step 4b)
   '*PolishRequestAssembler*'                        # sections, pre-application, prompts, blocks (#432 step 5)
   '*PolishOutcomeClassifier*'                       # placeholder integrity, failure copy (#432 step 5)
+  '*PolishContextGatherer*'                         # the gather step: budgets, preparations, merge (#432 step 6)
+  '*RepoVocabularyGrounding*'                       # the repository-vocabulary pipeline and its gates (#432 step 6)
   '*LLMPolishEvalSupport*'                           # shared eval corpus + scorer
   '*PolishHelperIntegrationTests*'                   # the lane's own suite
   '*AgentDictationE2EEval*'                          # agent-dictation E2E eval harness (suite + support + its unit tests)
