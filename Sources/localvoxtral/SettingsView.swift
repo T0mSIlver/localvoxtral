@@ -323,20 +323,10 @@ private struct GeneralSettingsPane: View {
                     status: loginItem.statusMessage,
                     statusAccessibilityIdentifier: "settings.general.loginItemStatus"
                 ) {
-                    HStack(spacing: SettingsLayout.rowSpacing) {
-                        // Only while macOS is waiting for the approval: there
-                        // is nowhere useful to send the user in any other
-                        // state.
-                        if loginItem.needsApproval {
-                            Button("Open System Settings") {
-                                loginItem.openSystemSettings()
-                            }
-                        }
-                        Toggle("", isOn: loginItemBinding)
-                            .labelsHidden()
-                            .disabled(!loginItem.isAvailable)
-                            .accessibilityIdentifier("settings.general.loginItem")
-                    }
+                    Toggle("", isOn: loginItemBinding)
+                        .labelsHidden()
+                        .disabled(!loginItem.isAvailable)
+                        .accessibilityIdentifier("settings.general.loginItem")
                 }
 
                 SettingsFieldRow(

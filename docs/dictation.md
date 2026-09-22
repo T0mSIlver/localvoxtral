@@ -107,9 +107,9 @@ History; the panes sit under the sidebar's Settings header:
 
 - **General** — permission status for Microphone and Accessibility (with
   grant buttons), Re-run setup, and two startup switches: **Open localvoxtral
-  at login** adds the app to your macOS login items, and **Open the window at
-  launch** brings the window up on History every time the app starts. Both are
-  off, and a first launch shows the setup wizard rather than the window.
+  at login** starts the app when you log in, and **Open the window at launch**
+  brings the window up on History every time the app starts. Both are off, and
+  a first launch shows the setup wizard rather than the window.
 - **Engines** — Dictation and Polishing each switch independently between
   `Managed local` (a model picker for polishing, plus a status light),
   `External URL` (server URL, model name, API key), and `Mistral API`

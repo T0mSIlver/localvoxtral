@@ -3,9 +3,9 @@ import XCTest
 
 @testable import localvoxtral
 
-/// "Open localvoxtral at login" (#449). Never the real `SMAppService`: a test
-/// that registered it would add the test runner to the developer's own login
-/// items.
+/// "Open localvoxtral at login" (#449): how the switch reads and what it does
+/// with what the registrar reports. The registrar's own contract — the file
+/// launchd reads — is `LaunchAgentLoginItemRegistrarTests`.
 @MainActor
 final class LoginItemControllerTests: XCTestCase {
     private final class FakeRegistrar: LoginItemRegistering {
@@ -17,7 +17,6 @@ final class LoginItemControllerTests: XCTestCase {
         var unregisterError: Error?
         private(set) var registerCount = 0
         private(set) var unregisterCount = 0
-        private(set) var openSystemSettingsCount = 0
 
         init(state: LoginItemState) {
             self.state = state
@@ -35,10 +34,6 @@ final class LoginItemControllerTests: XCTestCase {
             unregisterCount += 1
             if let unregisterError { throw unregisterError }
             state = .disabled
-        }
-
-        func openSystemSettings() {
-            openSystemSettingsCount += 1
         }
     }
 
@@ -68,23 +63,15 @@ final class LoginItemControllerTests: XCTestCase {
         XCTAssertNil(controller.statusMessage)
     }
 
-    /// The switch follows the system's answer, not the caller's request: a
-    /// `register()` that returns without throwing can still need approval.
-    func testAwaitingApprovalReadsAsOnAndSaysSo() {
-        let registrar = FakeRegistrar(state: .disabled)
-        registrar.stateAfterRegister = .requiresApproval
-        let controller = LoginItemController(registrar: registrar)
+    /// The switch reads what is on disk, not what was asked for: a login item
+    /// that names another copy of localvoxtral is on, and says so.
+    func testALoginItemForAnotherCopyReadsAsOnAndSaysSo() {
+        let controller = LoginItemController(
+            registrar: FakeRegistrar(state: .enabledForAnotherCopy))
 
-        controller.setOn(true)
-
-        XCTAssertEqual(controller.state, .requiresApproval)
         XCTAssertTrue(controller.isOn)
-        XCTAssertEqual(controller.statusMessage, "Needs your approval in System Settings.")
-        // The one state with somewhere to send the user — and the only one
-        // whose row offers the button that takes them there.
-        XCTAssertTrue(controller.needsApproval)
-        controller.openSystemSettings()
-        XCTAssertEqual(registrar.openSystemSettingsCount, 1)
+        XCTAssertTrue(controller.isAvailable)
+        XCTAssertEqual(controller.statusMessage, "Set up for another copy of localvoxtral.")
     }
 
     func testARefusedRegistrationLeavesTheSwitchOffAndExplains() {
@@ -111,8 +98,8 @@ final class LoginItemControllerTests: XCTestCase {
             controller.statusMessage, "Couldn't remove localvoxtral from your login items.")
     }
 
-    /// System Settings can turn the login item off while the app is running,
-    /// so the pane re-reads the system rather than trusting what it last saw.
+    /// The login item can be removed while the app is running, so the pane
+    /// re-reads it rather than trusting what it last saw.
     func testRefreshTakesTheSystemsAnswerAndClearsAStaleFailure() {
         let registrar = FakeRegistrar(state: .enabled)
         registrar.unregisterError = RefusedByTheSystem()
@@ -127,14 +114,13 @@ final class LoginItemControllerTests: XCTestCase {
         XCTAssertNil(controller.statusMessage)
     }
 
-    /// An unbundled build (`swift run`) has no login item to register. The row
+    /// An unbundled build (`swift run`) has nothing to open at login. The row
     /// says why instead of offering a switch that cannot work.
     func testAnUnavailableLoginItemDisablesTheRow() {
         let controller = LoginItemController(registrar: FakeRegistrar(state: .unavailable))
 
         XCTAssertFalse(controller.isAvailable)
         XCTAssertFalse(controller.isOn)
-        XCTAssertFalse(controller.needsApproval)
         XCTAssertEqual(controller.statusMessage, "Only an installed copy can do this.")
     }
 }
