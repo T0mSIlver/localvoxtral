@@ -279,7 +279,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.debugBeforeConnectHookForTesting = { [weak viewModel] in
-            viewModel?.applyDictationBackendModeChange(.mistralAPI)
+            viewModel?.engines.applyDictationBackendModeChange(.mistralAPI)
         }
 
         await viewModel.beginDictationSession()
@@ -584,7 +584,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertTrue(viewModel.isConnectingRealtimeSession)
         XCTAssertNil(viewModel.sessionProvider)
 
-        viewModel.applyDictationBackendModeChange(.externalURL)
+        viewModel.engines.applyDictationBackendModeChange(.externalURL)
         viewModel.debugHandleDictationShortcutReleaseForTesting()
         backendManager.resumeEnsure()
         await viewModel.managedStartupTask?.value
@@ -605,7 +605,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.polishingBackendMode = .managedLocal
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.applyDictationBackendModeChange(.externalURL)
+        viewModel.engines.applyDictationBackendModeChange(.externalURL)
         await backendManager.waitForStopDictationCallCount(1)
 
         XCTAssertEqual(backendManager.stopDictationCallCount, 1)
@@ -620,7 +620,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.polishingBackendMode = .managedLocal
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.applyPolishingBackendModeChange(.externalURL)
+        viewModel.engines.applyPolishingBackendModeChange(.externalURL)
         await backendManager.waitForStopPolishingCallCount(1)
 
         XCTAssertEqual(backendManager.stopDictationCallCount, 0)
@@ -641,7 +641,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.isConnectingRealtimeSession = true
-        viewModel.applyPolishingBackendModeChange(.externalURL)
+        viewModel.engines.applyPolishingBackendModeChange(.externalURL)
 
         XCTAssertFalse(
             viewModel.isConnectingRealtimeSession,
@@ -719,8 +719,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         let externalModelBefore = viewModel.settings.llmPolishingModel
-        viewModel.applyLLMPolishingModelChange("example/new-polishing-model")
-        await viewModel.polishingShutdownTask?.value
+        viewModel.engines.applyLLMPolishingModelChange("example/new-polishing-model")
+        await viewModel.engines.polishingShutdownTask?.value
 
         XCTAssertEqual(viewModel.settings.managedLLMPolishingModel, "example/new-polishing-model")
         // The external-mode model NAME lives in a separate key and must not move.
@@ -738,9 +738,9 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.applyLLMPolishingModelChange("example/new-polishing-model")
-        await viewModel.polishingShutdownTask?.value
-        await viewModel.polishingWarmupTask?.value
+        viewModel.engines.applyLLMPolishingModelChange("example/new-polishing-model")
+        await viewModel.engines.polishingShutdownTask?.value
+        await viewModel.engines.polishingWarmupTask?.value
 
         // Field regression (PR #99 hand-test): picking a model must download
         // and relaunch immediately, not wait for a disable/enable toggle.
@@ -755,9 +755,9 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.applySpeechdCacheLimitChange(.gb2)
-        await viewModel.dictationShutdownTask?.value
-        await viewModel.dictationWarmupTask?.value
+        viewModel.engines.applySpeechdCacheLimitChange(.gb2)
+        await viewModel.engines.dictationShutdownTask?.value
+        await viewModel.engines.dictationWarmupTask?.value
 
         // Owner rule (2026-07-17): changing the memory limit or step interval
         // must not require a Managed -> External -> Managed round trip.
@@ -773,9 +773,9 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.applySpeechdStepCadenceChange(.ms100)
-        await viewModel.dictationShutdownTask?.value
-        await viewModel.dictationWarmupTask?.value
+        viewModel.engines.applySpeechdStepCadenceChange(.ms100)
+        await viewModel.engines.dictationShutdownTask?.value
+        await viewModel.engines.dictationWarmupTask?.value
 
         XCTAssertEqual(viewModel.settings.speechdStepCadence, .ms100)
         XCTAssertEqual(backendManager.stopDictationCallCount, 1)
@@ -789,10 +789,10 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.applySpeechdCacheLimitChange(.gb2)
-        viewModel.applySpeechdStepCadenceChange(.ms100)
+        viewModel.engines.applySpeechdCacheLimitChange(.gb2)
+        viewModel.engines.applySpeechdStepCadenceChange(.ms100)
 
-        XCTAssertNil(viewModel.dictationShutdownTask)
+        XCTAssertNil(viewModel.engines.dictationShutdownTask)
         XCTAssertEqual(viewModel.settings.speechdCacheLimit, .gb2)
         XCTAssertEqual(viewModel.settings.speechdStepCadence, .ms100)
         XCTAssertEqual(backendManager.stopDictationCallCount, 0)
@@ -806,10 +806,10 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.applySpeechdCacheLimitChange(viewModel.settings.speechdCacheLimit)
-        viewModel.applySpeechdStepCadenceChange(viewModel.settings.speechdStepCadence)
+        viewModel.engines.applySpeechdCacheLimitChange(viewModel.settings.speechdCacheLimit)
+        viewModel.engines.applySpeechdStepCadenceChange(viewModel.settings.speechdStepCadence)
 
-        XCTAssertNil(viewModel.dictationShutdownTask)
+        XCTAssertNil(viewModel.engines.dictationShutdownTask)
         XCTAssertEqual(backendManager.stopDictationCallCount, 0)
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
     }
@@ -821,8 +821,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.applyDictationBackendModeChange(.managedLocal)
-        await viewModel.dictationWarmupTask?.value
+        viewModel.engines.applyDictationBackendModeChange(.managedLocal)
+        await viewModel.engines.dictationWarmupTask?.value
 
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: false)])
         XCTAssertEqual(backendManager.stopDictationCallCount, 0)
@@ -840,18 +840,18 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.applyDictationBackendModeChange(.managedLocal)
+        viewModel.engines.applyDictationBackendModeChange(.managedLocal)
         await backendManager.waitUntilEnsureStarted()
 
         // Turning polishing off must stop polishd only — the speechd warmup keeps
         // its own task slot and must survive (regression: a shared slot let this
         // cancel the in-flight dictation warmup).
-        viewModel.llmPolishingEnabledDidChange(false)
-        await viewModel.polishingShutdownTask?.value
+        viewModel.engines.llmPolishingEnabledDidChange(false)
+        await viewModel.engines.polishingShutdownTask?.value
 
-        XCTAssertEqual(viewModel.dictationWarmupTask?.isCancelled, false)
+        XCTAssertEqual(viewModel.engines.dictationWarmupTask?.isCancelled, false)
         backendManager.resumeEnsure()
-        await viewModel.dictationWarmupTask?.value
+        await viewModel.engines.dictationWarmupTask?.value
 
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: false)])
         XCTAssertEqual(backendManager.stopPolishingCallCount, 1)
@@ -867,18 +867,18 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.applyDictationBackendModeChange(.externalURL)
+        viewModel.engines.applyDictationBackendModeChange(.externalURL)
         await backendManager.waitForStopDictationCallCount(1)
 
         // Flip back while the stop is still executing: the warmup must wait for
         // the stop to finish, or the stale stop kills the fresh speechd process
         // (review finding on rapid managed→external→managed flips).
-        viewModel.applyDictationBackendModeChange(.managedLocal)
+        viewModel.engines.applyDictationBackendModeChange(.managedLocal)
         await Task.yield()
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
 
         backendManager.resumeStopDictation()
-        await viewModel.dictationWarmupTask?.value
+        await viewModel.engines.dictationWarmupTask?.value
 
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: false)])
         XCTAssertEqual(backendManager.stopDictationCallCount, 1)
@@ -899,7 +899,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.llmPolishingEnabledDidChange(true)
+        viewModel.engines.llmPolishingEnabledDidChange(true)
         await backendManager.waitForStopPolishingCallCount(1)
 
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
@@ -916,8 +916,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.warmUpManagedBackendsAtLaunchIfNeeded()
-        await viewModel.polishingWarmupTask?.value
+        viewModel.engines.warmUpManagedBackendsAtLaunchIfNeeded()
+        await viewModel.engines.polishingWarmupTask?.value
         await Task.yield()
 
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
@@ -935,7 +935,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.applyDictationOutputModeChange(.liveAutoPaste)
+        viewModel.engines.applyDictationOutputModeChange(.liveAutoPaste)
         await Task.yield()
 
         XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
@@ -976,8 +976,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         // applyDictationTriggerModeChange, which registers real hotkeys, so the
         // transition handler is driven directly here).
         viewModel.settings.modifierOnlyHotKeyEnabled = true
-        viewModel.handleOverlayReachabilityTransition(wasReachable: false)
-        await viewModel.polishingWarmupTask?.value
+        viewModel.engines.handleOverlayReachabilityTransition(wasReachable: false)
+        await viewModel.engines.polishingWarmupTask?.value
 
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
         XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
@@ -993,9 +993,9 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
         // Off then immediately on: the queued stop must never run, or it lands
         // after the warmup and stops the polishd the settings now require.
-        viewModel.llmPolishingEnabledDidChange(false)
-        viewModel.llmPolishingEnabledDidChange(true)
-        await viewModel.polishingWarmupTask?.value
+        viewModel.engines.llmPolishingEnabledDidChange(false)
+        viewModel.engines.llmPolishingEnabledDidChange(true)
+        await viewModel.engines.polishingWarmupTask?.value
 
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
         XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
@@ -1009,8 +1009,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.applyPolishingBackendModeChange(.managedLocal)
-        await viewModel.polishingWarmupTask?.value
+        viewModel.engines.applyPolishingBackendModeChange(.managedLocal)
+        await viewModel.engines.polishingWarmupTask?.value
 
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
         XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
@@ -1026,11 +1026,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.applyPolishingBackendModeChange(.managedLocal)
-        await viewModel.polishingWarmupTask?.value
+        viewModel.engines.applyPolishingBackendModeChange(.managedLocal)
+        await viewModel.engines.polishingWarmupTask?.value
 
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
-        XCTAssertNil(viewModel.polishingWarmupTask)
+        XCTAssertNil(viewModel.engines.polishingWarmupTask)
     }
 
     // MARK: - LLM polishing enable toggle stops managed polishd
@@ -1041,10 +1041,10 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.polishingBackendMode = .managedLocal
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.llmPolishingEnabledDidChange(false)
+        viewModel.engines.llmPolishingEnabledDidChange(false)
         // The shutdown runs in a tracked task; await it deterministically
         // rather than racing on Task.yield().
-        await viewModel.polishingShutdownTask?.value
+        await viewModel.engines.polishingShutdownTask?.value
 
         XCTAssertEqual(backendManager.stopPolishingCallCount, 1)
     }
@@ -1055,11 +1055,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.polishingBackendMode = .externalURL
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.llmPolishingEnabledDidChange(false)
-        await viewModel.polishingShutdownTask?.value
+        viewModel.engines.llmPolishingEnabledDidChange(false)
+        await viewModel.engines.polishingShutdownTask?.value
 
         XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
-        XCTAssertNil(viewModel.polishingShutdownTask)
+        XCTAssertNil(viewModel.engines.polishingShutdownTask)
     }
 
     func testLLMPolishingEnabledInManagedModeWarmsUpPolishingEagerly() async {
@@ -1069,8 +1069,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.llmPolishingEnabledDidChange(true)
-        await viewModel.polishingWarmupTask?.value
+        viewModel.engines.llmPolishingEnabledDidChange(true)
+        await viewModel.engines.polishingWarmupTask?.value
 
         // Owner-specified UX: enabling the toggle immediately bootstraps the
         // managed polishing backend (install/model download/start) so the
@@ -1078,7 +1078,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         // for the next dictation.
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
         XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
-        XCTAssertNil(viewModel.polishingShutdownTask)
+        XCTAssertNil(viewModel.engines.polishingShutdownTask)
     }
 
     func testLLMPolishingEnabledInExternalModeDoesNotWarmUp() async {
@@ -1088,11 +1088,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.llmPolishingEnabledDidChange(true)
-        await viewModel.polishingWarmupTask?.value
+        viewModel.engines.llmPolishingEnabledDidChange(true)
+        await viewModel.engines.polishingWarmupTask?.value
 
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
-        XCTAssertNil(viewModel.polishingWarmupTask)
+        XCTAssertNil(viewModel.engines.polishingWarmupTask)
     }
 
     func testLLMPolishingDisabledCancelsInFlightWarmup() async {
@@ -1103,14 +1103,14 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.llmPolishingEnabledDidChange(true)
+        viewModel.engines.llmPolishingEnabledDidChange(true)
         await backendManager.waitUntilEnsureStarted()
-        let warmup = viewModel.polishingWarmupTask
+        let warmup = viewModel.engines.polishingWarmupTask
 
-        viewModel.llmPolishingEnabledDidChange(false)
+        viewModel.engines.llmPolishingEnabledDidChange(false)
         backendManager.resumeEnsure()
         await warmup?.value
-        await viewModel.polishingShutdownTask?.value
+        await viewModel.engines.polishingShutdownTask?.value
 
         XCTAssertTrue(warmup?.isCancelled == true)
         XCTAssertEqual(backendManager.stopPolishingCallCount, 1)
@@ -1127,9 +1127,9 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.applyDictationOutputModeChange(.liveAutoPaste)
+        viewModel.engines.applyDictationOutputModeChange(.liveAutoPaste)
         await Task.yield()
-        viewModel.applyDictationOutputModeChange(.overlayBuffer)
+        viewModel.engines.applyDictationOutputModeChange(.overlayBuffer)
         await Task.yield()
 
         XCTAssertEqual(viewModel.settings.dictationOutputMode, .overlayBuffer)
@@ -1146,9 +1146,9 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.warmUpManagedBackendsAtLaunchIfNeeded()
-        await viewModel.dictationWarmupTask?.value
-        await viewModel.polishingWarmupTask?.value
+        viewModel.engines.warmUpManagedBackendsAtLaunchIfNeeded()
+        await viewModel.engines.dictationWarmupTask?.value
+        await viewModel.engines.polishingWarmupTask?.value
 
         // Per-backend warmup slots: two independent ensure requests, one per
         // backend, so neither can cancel the other later.
@@ -1171,11 +1171,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.warmUpManagedBackendsAtLaunchIfNeeded()
-        await viewModel.dictationWarmupTask?.value
+        viewModel.engines.warmUpManagedBackendsAtLaunchIfNeeded()
+        await viewModel.engines.dictationWarmupTask?.value
 
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: false)])
-        XCTAssertNil(viewModel.polishingWarmupTask)
+        XCTAssertNil(viewModel.engines.polishingWarmupTask)
     }
 
     func testWarmUpManagedBackendsAtLaunchIfNeededOnboardingIncompleteDoesNotWarmUp() async {
@@ -1187,12 +1187,12 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = false
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.warmUpManagedBackendsAtLaunchIfNeeded()
-        await viewModel.polishingWarmupTask?.value
+        viewModel.engines.warmUpManagedBackendsAtLaunchIfNeeded()
+        await viewModel.engines.polishingWarmupTask?.value
 
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
-        XCTAssertNil(viewModel.dictationWarmupTask)
-        XCTAssertNil(viewModel.polishingWarmupTask)
+        XCTAssertNil(viewModel.engines.dictationWarmupTask)
+        XCTAssertNil(viewModel.engines.polishingWarmupTask)
     }
 
     func testWarmUpManagedBackendsAtLaunchIfNeededExternalModesDoNotWarmUp() async {
@@ -1204,12 +1204,12 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.warmUpManagedBackendsAtLaunchIfNeeded()
-        await viewModel.polishingWarmupTask?.value
+        viewModel.engines.warmUpManagedBackendsAtLaunchIfNeeded()
+        await viewModel.engines.polishingWarmupTask?.value
 
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
-        XCTAssertNil(viewModel.dictationWarmupTask)
-        XCTAssertNil(viewModel.polishingWarmupTask)
+        XCTAssertNil(viewModel.engines.dictationWarmupTask)
+        XCTAssertNil(viewModel.engines.polishingWarmupTask)
     }
 
     func testWarmUpManagedBackendsAtLaunchIfNeededEnabledManagedWarmsUpPolishingOnly() async {
@@ -1220,8 +1220,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.warmUpManagedBackendsAtLaunchIfNeeded()
-        await viewModel.polishingWarmupTask?.value
+        viewModel.engines.warmUpManagedBackendsAtLaunchIfNeeded()
+        await viewModel.engines.polishingWarmupTask?.value
 
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
         XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
@@ -1235,11 +1235,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.warmUpManagedBackendsAtLaunchIfNeeded()
-        await viewModel.polishingWarmupTask?.value
+        viewModel.engines.warmUpManagedBackendsAtLaunchIfNeeded()
+        await viewModel.engines.polishingWarmupTask?.value
 
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
-        XCTAssertNil(viewModel.polishingWarmupTask)
+        XCTAssertNil(viewModel.engines.polishingWarmupTask)
     }
 
     /// Live menu-bar output mode with the Overlay Buffer shortcut still
@@ -1254,8 +1254,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.warmUpManagedBackendsAtLaunchIfNeeded()
-        await viewModel.polishingWarmupTask?.value
+        viewModel.engines.warmUpManagedBackendsAtLaunchIfNeeded()
+        await viewModel.engines.polishingWarmupTask?.value
 
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
     }
@@ -1268,11 +1268,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.warmUpManagedBackendsAtLaunchIfNeeded()
-        await viewModel.polishingWarmupTask?.value
+        viewModel.engines.warmUpManagedBackendsAtLaunchIfNeeded()
+        await viewModel.engines.polishingWarmupTask?.value
 
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
-        XCTAssertNil(viewModel.polishingWarmupTask)
+        XCTAssertNil(viewModel.engines.polishingWarmupTask)
     }
 
     // MARK: - Engines pane model-download controls
@@ -1286,12 +1286,12 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.pauseManagedModelDownload(for: BackendCatalog.polishd)
-        await viewModel.polishingShutdownTask?.value
+        viewModel.engines.pauseManagedModelDownload(for: BackendCatalog.polishd)
+        await viewModel.engines.polishingShutdownTask?.value
 
         XCTAssertEqual(backendManager.pausedDownloadSpecIDs, [BackendCatalog.polishd.id])
         XCTAssertTrue(backendManager.cancelledDownloadSpecIDs.isEmpty)
-        XCTAssertNil(viewModel.dictationShutdownTask, "polishing's controls must not touch dictation")
+        XCTAssertNil(viewModel.engines.dictationShutdownTask, "polishing's controls must not touch dictation")
     }
 
     func testCancelButtonRoutesToTheManagerForTheDictationEngineToo() async {
@@ -1300,8 +1300,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.cancelManagedModelDownload(for: BackendCatalog.speechd)
-        await viewModel.dictationShutdownTask?.value
+        viewModel.engines.cancelManagedModelDownload(for: BackendCatalog.speechd)
+        await viewModel.engines.dictationShutdownTask?.value
 
         XCTAssertEqual(backendManager.cancelledDownloadSpecIDs, [BackendCatalog.speechd.id])
         XCTAssertTrue(backendManager.pausedDownloadSpecIDs.isEmpty)
@@ -1315,8 +1315,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.resumeManagedModelDownload(for: BackendCatalog.polishd)
-        await viewModel.polishingWarmupTask?.value
+        viewModel.engines.resumeManagedModelDownload(for: BackendCatalog.polishd)
+        await viewModel.engines.polishingWarmupTask?.value
 
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
     }
@@ -1345,8 +1345,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
         // Captured before the pause: the fix retires the startup task slot.
         let startupTask = viewModel.managedStartupTask
-        viewModel.pauseManagedModelDownload(for: BackendCatalog.speechd)
-        await viewModel.dictationShutdownTask?.value
+        viewModel.engines.pauseManagedModelDownload(for: BackendCatalog.speechd)
+        await viewModel.engines.dictationShutdownTask?.value
         await startupTask?.value
 
         XCTAssertEqual(backendManager.pausedDownloadSpecIDs, [BackendCatalog.speechd.id])
@@ -1377,8 +1377,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertTrue(viewModel.isConnectingRealtimeSession)
 
         let startupTask = viewModel.managedStartupTask
-        viewModel.cancelManagedModelDownload(for: BackendCatalog.polishd)
-        await viewModel.polishingShutdownTask?.value
+        viewModel.engines.cancelManagedModelDownload(for: BackendCatalog.polishd)
+        await viewModel.engines.polishingShutdownTask?.value
         await startupTask?.value
 
         XCTAssertEqual(backendManager.cancelledDownloadSpecIDs, [BackendCatalog.polishd.id])

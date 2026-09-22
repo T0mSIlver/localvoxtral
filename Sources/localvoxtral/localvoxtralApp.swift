@@ -315,7 +315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startDogfoodControlSocket()
         #endif
         reconcileBundledConfigDefaults()
-        viewModel.preflightConfiguredLocalNetworkEndpoints()
+        viewModel.engines.preflightConfiguredLocalNetworkEndpoints()
         switch LaunchWindowPolicy.decide(
             onboardingCompleted: settingsStore.onboardingCompleted,
             opensWindowAtLaunch: settingsStore.opensWindowAtLaunch
@@ -1080,7 +1080,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // First launch skips the eager warmup (the wizard owns bootstrap);
             // once the wizard is done — finished or skipped — start whatever
             // required managed backends it didn't already start.
-            self?.viewModel.warmUpManagedBackendsAtLaunchIfNeeded()
+            self?.viewModel.engines.warmUpManagedBackendsAtLaunchIfNeeded()
             self?.presentPendingConfigDefaultsPromptIfNeeded()
         }
         onboardingController = controller

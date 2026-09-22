@@ -141,7 +141,7 @@ final class OnboardingViewModel {
         // → Finish reads "runs on this Mac" while both engines are still on
         // Mistral (GLM review, 2026-09-16).
         downloadsStarted = false
-        viewModel.applyMistralQuickSetup(apiKey: mistralAPIKeyDraft)
+        viewModel.engines.applyMistralQuickSetup(apiKey: mistralAPIKeyDraft)
     }
 
     /// The `.engine` page's "Check key" button. Advisory only — see
@@ -153,7 +153,7 @@ final class OnboardingViewModel {
         mistralAPIKeyCheckState = .checking
         mistralAPIKeyCheckTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            let verification = await self.viewModel.verifyMistralAPIKey(apiKey)
+            let verification = await self.viewModel.engines.verifyMistralAPIKey(apiKey)
             self.mistralAPIKeyCheckState = .finished(verification)
         }
     }
@@ -171,9 +171,9 @@ final class OnboardingViewModel {
         // Matters for Re-run Setup: a user who previously switched to
         // External URL and now chooses the managed download path must end
         // up actually using what was downloaded.
-        viewModel.applyDictationBackendModeChange(.managedLocal)
+        viewModel.engines.applyDictationBackendModeChange(.managedLocal)
         if polishingConsent {
-            viewModel.applyPolishingBackendModeChange(.managedLocal)
+            viewModel.engines.applyPolishingBackendModeChange(.managedLocal)
             settings.llmPolishingEnabled = true
         }
         driver.start(dictation: true, polishing: polishingConsent)
@@ -188,8 +188,8 @@ final class OnboardingViewModel {
         // overlay commit fire a silently failing polish request. The user
         // re-enables it once their endpoint is configured.
         settings.llmPolishingEnabled = false
-        viewModel.applyDictationBackendModeChange(.externalURL)
-        viewModel.applyPolishingBackendModeChange(.externalURL)
+        viewModel.engines.applyDictationBackendModeChange(.externalURL)
+        viewModel.engines.applyPolishingBackendModeChange(.externalURL)
         completeOnboarding()
         onOpenEndpointsSettings?()
         onRequestClose?()

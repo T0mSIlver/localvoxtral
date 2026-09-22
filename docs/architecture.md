@@ -4,6 +4,9 @@ Everything routes through `DictationViewModel` (`@MainActor`, split across
 three files totaling ~2.3k lines — the main refactor target):
 
 - `DictationViewModel.swift` — state, wiring, hotkey press/release dispatch
+- `EnginesModel.swift` — the Engines pane behind `viewModel.engines`: backend
+  modes, the Mistral key check and model catalog, managed warmup/shutdown,
+  download controls (no session path)
 - `DictationViewModel+Session.swift` — session lifecycle, stop-finalization
   state machine, LLM polishing + commit path
 - `DictationViewModel+RealtimeEvents.swift` — transcript event routing/merge

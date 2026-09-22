@@ -479,7 +479,7 @@ final class SettingsStore {
 
     /// Metal buffer-pool cache limit for the managed dictation helper. Changing
     /// it from Settings restarts the engine so the new argv applies immediately
-    /// (`DictationViewModel.applySpeechdCacheLimitChange`); direct writes apply
+    /// (`EnginesModel.applySpeechdCacheLimitChange`); direct writes apply
     /// on the next (re)start.
     var speechdCacheLimit: SpeechdCacheLimit {
         didSet { defaults.set(speechdCacheLimit.rawValue, forKey: Keys.speechdCacheLimit) }
