@@ -19,7 +19,7 @@ final class ManualSessionClock: Sendable {
 
     private struct CountWaiter {
         let count: Int
-        let continuation: CheckedContinuation<Void, Never>
+        let wait: BoundedWait
     }
 
     private struct State {
@@ -32,10 +32,10 @@ final class ManualSessionClock: Sendable {
         var cancelledBeforeSuspending: Set<UInt64> = []
         var countWaiters: [CountWaiter] = []
 
-        mutating func takeSatisfiedCountWaiters() -> [CheckedContinuation<Void, Never>] {
+        mutating func takeSatisfiedCountWaiters() -> [BoundedWait] {
             let satisfied = countWaiters.filter { $0.count <= sleepers.count }
             countWaiters.removeAll { $0.count <= sleepers.count }
-            return satisfied.map(\.continuation)
+            return satisfied.map(\.wait)
         }
     }
 
@@ -68,7 +68,7 @@ final class ManualSessionClock: Sendable {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 let (cancelled, satisfied) = self.state.withLock { state in
                     if state.cancelledBeforeSuspending.remove(id) != nil {
-                        return (true, [CheckedContinuation<Void, Never>]())
+                        return (true, [BoundedWait]())
                     }
                     state.sleepers.append(Sleeper(
                         id: id,
@@ -78,7 +78,7 @@ final class ManualSessionClock: Sendable {
                     return (false, state.takeSatisfiedCountWaiters())
                 }
                 if cancelled { continuation.resume() }
-                satisfied.forEach { $0.resume() }
+                satisfied.forEach { $0.resolve() }
             }
         } onCancel: {
             let continuation = self.state.withLock { state -> CheckedContinuation<Void, Never>? in
@@ -114,33 +114,19 @@ final class ManualSessionClock: Sendable {
     func waitForSleepers(
         _ count: Int,
         failAfter: TimeInterval = 10,
+        isolation: isolated (any Actor)? = #isolation,
         file: StaticString = #filePath,
         line: UInt = #line
     ) async {
-        let armed = XCTestExpectation(description: "\(count) timer(s) armed on the session clock")
-        let waiting = Task {
-            await self.untilSleepers(count)
-            armed.fulfill()
+        let armed = BoundedWait()
+        let ready = state.withLock { state -> Bool in
+            if state.sleepers.count >= count { return true }
+            state.countWaiters.append(CountWaiter(count: count, wait: armed))
+            return false
         }
-        let result = await XCTWaiter().fulfillment(of: [armed], timeout: failAfter)
-        if result != .completed {
-            waiting.cancel()
-            XCTFail(
-                "no \(count) timer(s) were ever armed on the session clock",
-                file: file,
-                line: line
-            )
-        }
-    }
-
-    private func untilSleepers(_ count: Int) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let ready = self.state.withLock { state -> Bool in
-                if state.sleepers.count >= count { return true }
-                state.countWaiters.append(CountWaiter(count: count, continuation: continuation))
-                return false
-            }
-            if ready { continuation.resume() }
-        }
+        if ready { armed.resolve() }
+        if await armed.value(failAfter: failAfter) { return }
+        state.withLock { $0.countWaiters.removeAll { $0.wait === armed } }
+        XCTFail("no \(count) timer(s) were ever armed on the session clock", file: file, line: line)
     }
 }

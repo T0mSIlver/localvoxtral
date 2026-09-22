@@ -16,15 +16,13 @@ func awaitNextWrite<Value>(
     line: UInt = #line,
     after trigger: () -> Void
 ) async {
-    let written = XCTestExpectation(description: "the watched value was written")
+    let written = BoundedWait()
     withObservationTracking {
         _ = value()
     } onChange: {
-        written.fulfill()
+        written.resolve()
     }
     trigger()
-    let result = await XCTWaiter().fulfillment(of: [written], timeout: failAfter)
-    if result != .completed {
-        XCTFail("the watched value was never written", file: file, line: line)
-    }
+    if await written.value(failAfter: failAfter) { return }
+    XCTFail("the watched value was never written", file: file, line: line)
 }
