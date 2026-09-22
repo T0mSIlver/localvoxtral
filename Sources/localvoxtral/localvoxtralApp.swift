@@ -13,6 +13,10 @@ struct localvoxtralApp: App {
             StatusPopoverView(
                 viewModel: appDelegate.viewModel, navigator: appDelegate.settingsNavigator)
         } label: {
+            // The label is the one view that exists from launch, so it is
+            // where the app can be handed SwiftUI's own way to open the
+            // window — see `SettingsOpenerHandoff`.
+            SettingsOpenerHandoff { appDelegate.settingsOpener = $0 }
             let viewModel = appDelegate.viewModel
             let state = viewModel.menuBarIndicatorState
             if let idleIcon = MenuBarIconAsset.idleIcon {
@@ -140,6 +144,24 @@ struct localvoxtralApp: App {
     }
 }
 
+/// Hands the app delegate SwiftUI's `openSettings` action.
+///
+/// The delegate has to open the window at launch ("Open the window at launch",
+/// #449) and is not a view, so the action has to be captured by one. The menu
+/// bar item's label is the only view alive at launch — it is rendered into the
+/// status item before anything else exists — and it renders nothing itself.
+struct SettingsOpenerHandoff: View {
+    @Environment(\.openSettings) private var openSettings
+    let hand: @MainActor (@escaping @MainActor () -> Void) -> Void
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+            .onAppear { hand { openSettings() } }
+    }
+}
+
 /// Owns the shared model graph and presents the first-launch onboarding wizard.
 /// A menu-bar (LSUIElement) app has no launch window scene, so the wizard is
 /// shown here from `applicationDidFinishLaunching`.
@@ -149,9 +171,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let backendManager: BackendManager
     let viewModel: DictationViewModel
     let settingsNavigator = SettingsNavigator()
-    /// "Open localvoxtral at login". Built here so the pane reads the system's
-    /// registration once per launch rather than on every view update.
+    /// "Open localvoxtral at login". Built here so the pane reads the login
+    /// item once per launch rather than on every view update.
     let loginItemController = LoginItemController()
+    /// SwiftUI's own `openSettings`, handed over by the menu bar label
+    /// (`SettingsOpenerHandoff`). Nil until the label has appeared.
+    var settingsOpener: (@MainActor () -> Void)?
     let dockIconPolicy = DockIconPolicy(apply: AppDelegate.applyActivationPolicy)
 
     private var onboardingController: OnboardingWindowController?
@@ -1077,12 +1102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             dockIconPolicy.beginWindowOpening()
             defer { dockIconPolicy.endWindowOpening() }
             let opener = AppWindowOpener(
-                show: {
-                    NSApp.activate(ignoringOtherApps: true)
-                    // AppKit entry point for the SwiftUI `Settings` scene on
-                    // macOS 14+.
-                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-                },
+                show: { [weak self] in self?.askForTheWindow() },
                 isOnScreen: { AppDelegate.windowIsOnScreen() },
                 sleepFor: { try? await Task.sleep(for: $0) }
             )
@@ -1102,6 +1122,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }
         }
+    }
+
+    /// Asks for the window, by every route the app has, best first.
+    ///
+    /// `NSApp.sendAction(showSettingsWindow:)` — the route the onboarding
+    /// Engines link has always used — is ACCEPTED at launch and opens nothing
+    /// (#449, measured on the packaged build, and not for want of a main menu:
+    /// it fails with the Dock icon up too). SwiftUI's own `openSettings` is
+    /// what the menu bar item's Settings… uses, and that one works; the label
+    /// hands it over at launch.
+    private func askForTheWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        if let settingsOpener {
+            settingsOpener()
+            return
+        }
+        // AppKit entry point for the SwiftUI `Settings` scene on macOS 14+.
+        // Addressed through the main menu's own item when there is one, since
+        // `to: nil` walks a responder chain that answers without acting.
+        if let item = AppDelegate.settingsMenuItem() {
+            NSApp.sendAction(item.action!, to: item.target, from: item)
+            return
+        }
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    }
+
+    /// The app menu's Settings… item, which exists only while the process is
+    /// `.regular` — AppKit synthesizes no main menu for an accessory app.
+    private static func settingsMenuItem() -> NSMenuItem? {
+        let selector = Selector(("showSettingsWindow:"))
+        for top in NSApp.mainMenu?.items ?? [] {
+            for item in top.submenu?.items ?? [] where item.action == selector {
+                return item
+            }
+        }
+        return nil
     }
 
     /// Every window the process has, for the one log line that has to explain
