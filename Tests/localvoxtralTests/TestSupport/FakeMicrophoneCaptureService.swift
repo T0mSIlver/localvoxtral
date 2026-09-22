@@ -126,14 +126,20 @@ final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendab
     func refreshInputTapIfNeeded() -> Bool { false }
 }
 
-extension DictationViewModel {
-    /// The fake a test injected through `Dependencies.microphone`. Reaching it
-    /// instantiates the lazy service, which is what a real session does too.
+extension SessionAudioPipeline {
+    /// The fake a test injected as the microphone. Reaching it instantiates
+    /// the lazy service, which is what a real session does too.
     @MainActor
     var fakeMicrophone: FakeMicrophoneCaptureService {
         guard let fake = microphone as? FakeMicrophoneCaptureService else {
-            preconditionFailure("this view model was built without a FakeMicrophoneCaptureService")
+            preconditionFailure("this pipeline was built without a FakeMicrophoneCaptureService")
         }
         return fake
     }
+}
+
+extension DictationViewModel {
+    /// The fake a test injected through `Dependencies.microphone`.
+    @MainActor
+    var fakeMicrophone: FakeMicrophoneCaptureService { audio.fakeMicrophone }
 }

@@ -44,10 +44,7 @@ extension DictationViewModel {
         // Nothing may keep talking to a socket that is gone. Stopping the
         // audio drain is also what lets the buffer hold the gap: chunks the
         // send loop would have taken and dropped stay put for the replay.
-        commitTask?.cancel()
-        commitTask = nil
-        audioSendTask?.cancel()
-        audioSendTask = nil
+        audio.cancelSendAndCommitTasks()
 
         // The partial in flight can never be finalized by a session that no
         // longer exists. Promoting it keeps those words — and, because the
@@ -185,7 +182,7 @@ extension DictationViewModel {
         reconnectTask = nil
 
         let replaySeconds =
-            Double(audioChunkBuffer.bufferedByteCount) / Double(AudioChunkBuffer.bytesPerSecond)
+            Double(audio.audioChunkBuffer.bufferedByteCount) / Double(AudioChunkBuffer.bytesPerSecond)
         Log.backends.notice(
             "realtime reconnected on attempt \(attempt, privacy: .public); replaying \(String(format: "%.1f", replaySeconds), privacy: .public)s of buffered audio"
         )
@@ -194,8 +191,11 @@ extension DictationViewModel {
         statusText = "Listening..."
         // The buffer is deliberately NOT cleared: the first tick of the
         // restarted send loop is what replays the gap.
-        restartAudioSendTask()
-        restartCommitTask()
+        audio.restartAudioSendTask(
+            client: activeRealtimeClient,
+            debugLoggingEnabled: debugLoggingEnabled
+        )
+        audio.restartCommitTask(client: activeRealtimeClient)
     }
 
     private func exhaustRealtimeReconnect(policy: RealtimeReconnectPolicy) {
@@ -220,17 +220,14 @@ extension DictationViewModel {
         technicalDetails: String =
             "Realtime websocket disconnected unexpectedly during active dictation."
     ) {
-        commitTask?.cancel()
-        commitTask = nil
-        audioSendTask?.cancel()
-        audioSendTask = nil
-        healthMonitor.stop()
+        audio.cancelSendAndCommitTasks()
+        audio.healthMonitor.stop()
         isAwaitingMicrophonePermission = false
-        stopSessionAudioCapture()
+        audio.stopSessionAudioCapture()
         // Here and not at the drop: a reconnect keeps the session running, and
         // fading the user's music back mid-sentence would announce a blip they
         // were never meant to notice. This is the end of the line.
-        audioDucking.restoreAfterSession()
+        audio.audioDucking.restoreAfterSession()
         isDictating = false
         escapeCancelHandler.stop()
         finishStoppedSession(promotePendingSegment: true)

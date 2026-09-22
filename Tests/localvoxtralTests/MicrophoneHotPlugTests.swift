@@ -13,79 +13,79 @@ final class MicrophoneHotPlugTests: XCTestCase {
         id: "AppleUSBAudioEngine:Rode:NT-USB:1", name: "NT-USB", channelCount: 2)
 
     func testMicrophonePluggedInWhileIdleIsListed() {
-        let (viewModel, _) = makeViewModel()
-        viewModel.fakeMicrophone.configureDevices(
+        let (audio, _) = makePipeline()
+        audio.fakeMicrophone.configureDevices(
             [builtIn], defaultInputDeviceID: builtIn.id)
-        viewModel.refreshMicrophoneInputs()
-        XCTAssertEqual(viewModel.availableInputDevices, [builtIn])
+        audio.refreshMicrophoneInputs()
+        XCTAssertEqual(audio.availableInputDevices, [builtIn])
 
-        viewModel.fakeMicrophone.configureDevices(
+        audio.fakeMicrophone.configureDevices(
             [builtIn, usb], defaultInputDeviceID: builtIn.id)
-        viewModel.handleMicrophoneInputDevicesChanged()
+        audio.handleMicrophoneInputDevicesChanged()
 
-        XCTAssertEqual(viewModel.availableInputDevices, [builtIn, usb])
+        XCTAssertEqual(audio.availableInputDevices, [builtIn, usb])
         XCTAssertEqual(
-            viewModel.selectedInputDeviceID, builtIn.id,
+            audio.selectedInputDeviceID, builtIn.id,
             "plugging a mic in lists it; it must not steal the selection"
         )
     }
 
     func testMicrophoneUnpluggedWhileIdleIsReselectedWhenPluggedBack() {
-        let (viewModel, settings) = makeViewModel()
-        viewModel.fakeMicrophone.configureDevices(
+        let (audio, settings) = makePipeline()
+        audio.fakeMicrophone.configureDevices(
             [builtIn, usb], defaultInputDeviceID: builtIn.id)
-        viewModel.refreshMicrophoneInputs()
-        viewModel.selectMicrophoneInput(id: usb.id)
+        audio.refreshMicrophoneInputs()
+        audio.selectMicrophoneInput(id: usb.id)
 
-        viewModel.fakeMicrophone.configureDevices(
+        audio.fakeMicrophone.configureDevices(
             [builtIn], defaultInputDeviceID: builtIn.id)
-        viewModel.handleMicrophoneInputDevicesChanged()
+        audio.handleMicrophoneInputDevicesChanged()
 
-        XCTAssertEqual(viewModel.availableInputDevices, [builtIn])
-        XCTAssertEqual(viewModel.selectedInputDeviceID, builtIn.id)
+        XCTAssertEqual(audio.availableInputDevices, [builtIn])
+        XCTAssertEqual(audio.selectedInputDeviceID, builtIn.id)
         XCTAssertEqual(
             settings.selectedInputDeviceUID, usb.id,
             "a mic that is only unplugged stays the saved choice"
         )
 
-        viewModel.fakeMicrophone.configureDevices(
+        audio.fakeMicrophone.configureDevices(
             [builtIn, usb], defaultInputDeviceID: builtIn.id)
-        viewModel.handleMicrophoneInputDevicesChanged()
+        audio.handleMicrophoneInputDevicesChanged()
 
-        XCTAssertEqual(viewModel.selectedInputDeviceID, usb.id)
+        XCTAssertEqual(audio.selectedInputDeviceID, usb.id)
     }
 
     func testPickingTheFallbackWhileSavedMicIsUnpluggedSavesIt() {
-        let (viewModel, settings) = makeViewModel()
-        viewModel.fakeMicrophone.configureDevices(
+        let (audio, settings) = makePipeline()
+        audio.fakeMicrophone.configureDevices(
             [builtIn, usb], defaultInputDeviceID: builtIn.id)
-        viewModel.refreshMicrophoneInputs()
-        viewModel.selectMicrophoneInput(id: usb.id)
-        viewModel.fakeMicrophone.configureDevices(
+        audio.refreshMicrophoneInputs()
+        audio.selectMicrophoneInput(id: usb.id)
+        audio.fakeMicrophone.configureDevices(
             [builtIn], defaultInputDeviceID: builtIn.id)
-        viewModel.handleMicrophoneInputDevicesChanged()
+        audio.handleMicrophoneInputDevicesChanged()
 
-        viewModel.selectMicrophoneInput(id: builtIn.id)
-        viewModel.fakeMicrophone.configureDevices(
+        audio.selectMicrophoneInput(id: builtIn.id)
+        audio.fakeMicrophone.configureDevices(
             [builtIn, usb], defaultInputDeviceID: builtIn.id)
-        viewModel.handleMicrophoneInputDevicesChanged()
+        audio.handleMicrophoneInputDevicesChanged()
 
         XCTAssertEqual(settings.selectedInputDeviceUID, builtIn.id)
-        XCTAssertEqual(viewModel.selectedInputDeviceID, builtIn.id)
+        XCTAssertEqual(audio.selectedInputDeviceID, builtIn.id)
     }
 
     func testFirstRefreshSavesTheResolvedDefault() {
-        let (viewModel, settings) = makeViewModel()
-        viewModel.fakeMicrophone.configureDevices(
+        let (audio, settings) = makePipeline()
+        audio.fakeMicrophone.configureDevices(
             [builtIn, usb], defaultInputDeviceID: usb.id)
 
-        viewModel.refreshMicrophoneInputs()
+        audio.refreshMicrophoneInputs()
 
-        XCTAssertEqual(viewModel.selectedInputDeviceID, usb.id)
+        XCTAssertEqual(audio.selectedInputDeviceID, usb.id)
         XCTAssertEqual(settings.selectedInputDeviceUID, usb.id)
     }
 
-    private func makeViewModel() -> (DictationViewModel, SettingsStore) {
+    private func makePipeline() -> (SessionAudioPipeline, SettingsStore) {
         let suiteName = "localvoxtral.MicrophoneHotPlugTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
@@ -93,13 +93,11 @@ final class MicrophoneHotPlugTests: XCTestCase {
             defaults.removePersistentDomain(forName: suiteName)
         }
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
-        let viewModel = DictationViewModel(
+        let audio = SessionAudioPipeline(
             settings: settings,
-            overlayBufferCoordinator: MockOverlayCoordinator(),
-            startRuntimeServices: false,
-            dependencies: .init(microphone: { FakeMicrophoneCaptureService() })
+            microphone: { FakeMicrophoneCaptureService() },
+            ducksRealOutput: false
         )
-        retainForTestProcessLifetime(viewModel)
-        return (viewModel, settings)
+        return (audio, settings)
     }
 }

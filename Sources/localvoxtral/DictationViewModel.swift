@@ -173,8 +173,8 @@ final class DictationViewModel {
     /// and future per-app behaviors key off it. See `TerminalTargetDetector`.
     private(set) var sessionTargetIsTerminalLike = false
 
-    private(set) var availableInputDevices: [MicrophoneInputDevice] = []
-    private(set) var selectedInputDeviceID = ""
+    var availableInputDevices: [MicrophoneInputDevice] { audio.availableInputDevices }
+    var selectedInputDeviceID: String { audio.selectedInputDeviceID }
 
 
     /// Set by the app delegate so the General settings pane can re-present the
@@ -365,69 +365,13 @@ final class DictationViewModel {
         dependencies.repoVocabularyGrounding ?? repoVocabularyPipeline
     }
 
-    // Services — internal so extension files can access them.
+    /// The session's audio: capture, the send and commit loops, ducking and
+    /// the input device selection.
     @ObservationIgnored
-    private(set) var hasInitializedMicrophone = false
-    @ObservationIgnored
-    lazy var microphone: any MicrophoneCapturing = {
-        hasInitializedMicrophone = true
-        return dependencies.microphone?() ?? MicrophoneCaptureService()
-    }()
-
-    /// Ducks other audio for the length of a session. Assigned in `init` so
-    /// its volume control can be the real CoreAudio one only in the app;
-    /// `var` so a test can swap the whole controller.
-    @ObservationIgnored
-    var audioDucking: AudioDuckingController
-
-    /// A failed/cancelled connection can end before audio capture ever starts.
-    /// Do not instantiate the lazy CoreAudio service merely to stop it: doing
-    /// so registers device listeners that an app-lifetime view model then owns.
-    func stopMicrophoneIfInitialized() {
-        #if LOCALVOXTRAL_DOGFOOD
-        stopDogfoodAudioFileSource()
-        #endif
-        guard hasInitializedMicrophone else { return }
-        microphone.stop()
-    }
-
-    /// False only in a dogfood build launched with an audio file to dictate
-    /// from: that session needs no microphone grant, and nothing may fall back
-    /// to the microphone behind its back.
-    var capturesFromMicrophone: Bool {
-        #if LOCALVOXTRAL_DOGFOOD
-        return dogfoodAudioFileURL == nil
-        #else
-        return true
-        #endif
-    }
-
-    /// Starts whatever feeds this session's audio.
-    func startSessionAudioCapture(
-        preferredDeviceID: String?,
-        chunkHandler: @escaping MicrophoneCaptureService.ChunkHandler
-    ) throws {
-        #if LOCALVOXTRAL_DOGFOOD
-        if let dogfoodAudioFileURL {
-            try startDogfoodAudioFileSource(dogfoodAudioFileURL, chunkHandler: chunkHandler)
-            return
-        }
-        #endif
-        try microphone.start(
-            preferredDeviceID: preferredDeviceID,
-            preferredInputChannel: selectedInputChannel,
-            chunkHandler: chunkHandler
-        )
-    }
-
-    /// Once this returns no further chunk reaches the session's handler.
-    func stopSessionAudioCapture() {
-        #if LOCALVOXTRAL_DOGFOOD
-        stopDogfoodAudioFileSource()
-        guard capturesFromMicrophone else { return }
-        #endif
-        microphone.stop()
-    }
+    let audio: SessionAudioPipeline
+    /// Read by the permission rows; the pipeline owns it.
+    var microphone: any MicrophoneCapturing { audio.microphone }
+    var capturesFromMicrophone: Bool { audio.capturesFromMicrophone }
 
     @ObservationIgnored
     let networkMonitor = NetworkMonitor()
@@ -444,10 +388,6 @@ final class DictationViewModel {
     @ObservationIgnored
     lazy var activeRealtimeClient: any RealtimeClient = realtimeAPIClient
     @ObservationIgnored
-    let audioChunkBuffer = AudioChunkBuffer()
-    @ObservationIgnored
-    let healthMonitor = AudioCaptureHealthMonitor()
-    @ObservationIgnored
     var llmPolishingService: any LLMPolishingServicing = LLMPolishingService()
     @ObservationIgnored
     var appConfigStore: any AppConfigServing = AppConfigStore()
@@ -461,15 +401,6 @@ final class DictationViewModel {
     /// the store: tests inject the clock and the event source.
     @ObservationIgnored
     var dogfoodEditSignalWatcher = DogfoodEditSignalWatcher()
-    /// The WAV this launch dictates from in place of the microphone, or nil.
-    /// `var` so tests name a file without touching the process environment.
-    @ObservationIgnored
-    var dogfoodAudioFileURL = DogfoodAudioFileSource.fileURL(
-        fromEnvironment: ProcessInfo.processInfo.environment)
-    @ObservationIgnored
-    var dogfoodAudioFileSleep: DogfoodAudioFileSource.Sleep = { try await Task.sleep(for: $0) }
-    @ObservationIgnored
-    var dogfoodAudioFileSource: DogfoodAudioFileSource?
     #endif
     /// Warms the managed polishing helper's prompt-prefix cache on every
     /// helper launch (see `PolishPromptWarmupCoordinator`). Created only when
@@ -564,13 +495,9 @@ final class DictationViewModel {
 
     // Mutable state — internal so extension files can access.
     @ObservationIgnored
-    var commitTask: Task<Void, Never>?
-    @ObservationIgnored
     var managedStartupTask: Task<Void, Never>?
     @ObservationIgnored
     var managedStartupTaskID: UUID?
-    @ObservationIgnored
-    var audioSendTask: Task<Void, Never>?
     @ObservationIgnored
     var stopFinalizationTask: Task<Void, Never>?
     @ObservationIgnored
@@ -741,14 +668,10 @@ final class DictationViewModel {
         #if DEBUG
         ducksRealOutput = ducksRealOutput && !TerminalTargetDetector.isRunningUnderXCTest
         #endif
-        self.audioDucking = AudioDuckingController(
-            volumeControl: ducksRealOutput
-                ? CoreAudioSystemOutputVolumeControl()
-                : UnavailableSystemOutputVolumeControl(),
-            isEnabled: { settings.audioDuckingEnabled },
-            fadeDuration: { settings.audioDuckingFadeDuration },
-            interruptedDuck: { settings.audioDuckingPendingRestore },
-            recordInterruptedDuck: { settings.audioDuckingPendingRestore = $0 }
+        self.audio = SessionAudioPipeline(
+            settings: settings,
+            microphone: dependencies.microphone,
+            ducksRealOutput: ducksRealOutput
         )
         if let overlayBufferCoordinator {
             self.overlayBufferCoordinator = overlayBufferCoordinator
@@ -804,21 +727,21 @@ final class DictationViewModel {
             // A launch that died mid-session (crash, force quit) left the
             // volume down with nothing running. Put it back before anything
             // else starts.
-            audioDucking.restoreInterruptedDuckFromPreviousLaunch()
+            audio.audioDucking.restoreInterruptedDuckFromPreviousLaunch()
 
-            microphone.onConfigurationChange = { [weak self] in
+            audio.microphone.onConfigurationChange = { [weak self] in
                 Task { @MainActor [weak self] in
-                    self?.healthMonitor.handleConfigurationChange()
+                    self?.audio.healthMonitor.handleConfigurationChange()
                 }
             }
 
-            microphone.onInputDevicesChanged = { [weak self] in
+            audio.microphone.onInputDevicesChanged = { [weak self] in
                 Task { @MainActor [weak self] in
-                    self?.handleMicrophoneInputDevicesChanged()
+                    self?.audio.handleMicrophoneInputDevicesChanged()
                 }
             }
 
-            microphone.onError = { [weak self] message in
+            audio.microphone.onError = { [weak self] message in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     self.lastError = message
@@ -936,11 +859,11 @@ final class DictationViewModel {
             lifecycleNotificationCenter.removeObserver(observer)
         }
         lifecycleObservers.removeAll()
-        commitTask?.cancel()
+        audio.commitTask?.cancel()
         managedStartupTask?.cancel()
         managedStartupTaskID = nil
         engines.cancelTasks()
-        audioSendTask?.cancel()
+        audio.audioSendTask?.cancel()
         stopFinalizationTask?.cancel()
         connectTimeoutTask?.cancel()
         reconnectTask?.cancel()
@@ -951,11 +874,11 @@ final class DictationViewModel {
         polishPromptWarmupCoordinator?.cancelTasks()
         textInsertion.stopAllTasks()
         overlayBufferCoordinator.reset()
-        healthMonitor.cancelTasks()
+        audio.healthMonitor.cancelTasks()
         escapeCancelHandler.stop()
-        audioDucking.restoreImmediatelyForTermination()
+        audio.audioDucking.restoreImmediatelyForTermination()
         if managesRuntimeServices {
-            stopMicrophoneIfInitialized()
+            audio.stopMicrophoneIfInitialized()
             networkMonitor.stop()
             activeRealtimeClient.disconnect()
             shortcuts.unregister()
@@ -998,7 +921,7 @@ final class DictationViewModel {
                 #endif
                 // Inline, not in the Task below: a fade would not get to
                 // finish and the Task is not guaranteed to run at all.
-                self.audioDucking.restoreImmediatelyForTermination()
+                self.audio.audioDucking.restoreImmediatelyForTermination()
                 Task {
                     self.cancelManagedStartupTask()
                     if self.isDictating {
@@ -1155,101 +1078,25 @@ final class DictationViewModel {
         )
     }
 
-    /// CoreAudio reported a device plugged in, unplugged, or a new system
-    /// default input.
-    /// While a capture runs the health monitor owns the refresh: it compares
-    /// the selection before and after to catch the live mic disappearing.
-    /// Otherwise nobody is listening, so refresh here — without this a mic
-    /// plugged in after launch stayed out of the menu until relaunch.
-    func handleMicrophoneInputDevicesChanged() {
-        if healthMonitor.isMonitoring {
-            healthMonitor.handleInputDevicesChanged()
-        } else {
-            refreshMicrophoneInputs()
-        }
-    }
-
     func refreshMicrophoneInputs() {
-        let devices = microphone.availableInputDevices()
-        if availableInputDevices != devices {
-            availableInputDevices = devices
-        }
-
-        let savedSelection = settings.selectedInputDeviceUID.trimmed
-        let currentSelection = selectedInputDeviceID.trimmed
-        let explicitSelection = !savedSelection.isEmpty ? savedSelection : currentSelection
-
-        guard !devices.isEmpty else { return }
-
-        if !explicitSelection.isEmpty,
-           devices.contains(where: { $0.id == explicitSelection })
-        {
-            if selectedInputDeviceID != explicitSelection {
-                selectedInputDeviceID = explicitSelection
-            }
-            if settings.selectedInputDeviceUID != explicitSelection {
-                settings.selectedInputDeviceUID = explicitSelection
-            }
-            return
-        }
-
-        let resolvedSelection: String
-        if let defaultID = microphone.defaultInputDeviceID(),
-           devices.contains(where: { $0.id == defaultID })
-        {
-            resolvedSelection = defaultID
-        } else if let firstDevice = devices.first {
-            resolvedSelection = firstDevice.id
-        } else {
-            return
-        }
-
-        if selectedInputDeviceID != resolvedSelection {
-            selectedInputDeviceID = resolvedSelection
-        }
-        // A saved mic that is only unplugged stays saved, so plugging it back
-        // in selects it again. Only a first run with nothing saved records
-        // the fallback.
-        if savedSelection.isEmpty {
-            settings.selectedInputDeviceUID = resolvedSelection
-        }
+        audio.refreshMicrophoneInputs()
     }
 
+    /// Saves and selects the input; a running dictation restarts on it.
     func selectMicrophoneInput(id: String) {
-        guard !id.isEmpty else { return }
-        // Save even when `id` is already selected: it may be the fallback
-        // standing in for an unplugged saved mic, and clicking it means
-        // "use this one from now on".
-        if settings.selectedInputDeviceUID != id {
-            settings.selectedInputDeviceUID = id
-        }
-        guard selectedInputDeviceID != id else { return }
-
-        selectedInputDeviceID = id
+        guard audio.selectMicrophoneInput(id: id) else { return }
 
         guard isDictating else { return }
         stopDictation(reason: "input device changed by user", finalizeRemainingAudio: false)
         startDictation()
     }
 
-    /// Channels the selected input device reports. Above 2 the capture path
-    /// picks ONE channel (there is no meaningful downmix), so the popover
-    /// offers the choice; at or below 2 the picker stays hidden.
-    var selectedInputDeviceChannelCount: UInt32 {
-        availableInputDevices.first { $0.id == selectedInputDeviceID }?.channelCount ?? 1
-    }
+    var selectedInputDeviceChannelCount: UInt32 { audio.selectedInputDeviceChannelCount }
+    var selectedInputChannel: Int { audio.selectedInputChannel }
 
-    var selectedInputChannel: Int {
-        MicrophoneCaptureService.resolvedCaptureChannel(
-            settings.selectedInputChannel,
-            channelCount: AVAudioChannelCount(selectedInputDeviceChannelCount))
-    }
-
+    /// Saves the input channel; a running dictation restarts on it.
     func selectMicrophoneInputChannel(_ channel: Int) {
-        guard channel >= 0, channel < Int(selectedInputDeviceChannelCount) else { return }
-        guard settings.selectedInputChannel != channel else { return }
-
-        settings.selectedInputChannel = channel
+        guard audio.selectMicrophoneInputChannel(channel) else { return }
 
         guard isDictating else { return }
         stopDictation(reason: "input channel changed by user", finalizeRemainingAudio: false)
@@ -1355,26 +1202,7 @@ final class DictationViewModel {
     }
 
     func currentMicrophoneAuthorizationStatus() -> MicrophoneAuthorizationStatus {
-        guard capturesFromMicrophone else { return .authorized }
-        // A mere status read (the onboarding/General permission rows) must
-        // not force the lazy CoreAudio service into existence; once the
-        // service exists, or when one was injected, ask it, so the injected
-        // replacement stays authoritative.
-        guard hasInitializedMicrophone || dependencies.microphone != nil else {
-            switch AVCaptureDevice.authorizationStatus(for: .audio) {
-            case .authorized:
-                return .authorized
-            case .denied:
-                return .denied
-            case .restricted:
-                return .restricted
-            case .notDetermined:
-                return .notDetermined
-            @unknown default:
-                return .notDetermined
-            }
-        }
-        return microphone.authorizationStatus()
+        audio.microphoneAuthorizationStatus()
     }
 
     func stopDictation(reason: String = "unspecified", finalizeRemainingAudio: Bool = true) {
@@ -1387,16 +1215,13 @@ final class DictationViewModel {
         cancelRealtimeReconnect()
         polishAndCommitTask?.cancel()
         polishAndCommitTask = nil
-        commitTask?.cancel()
-        commitTask = nil
-        audioSendTask?.cancel()
-        audioSendTask = nil
-        healthMonitor.stop()
+        audio.cancelSendAndCommitTasks()
+        audio.healthMonitor.stop()
         isAwaitingMicrophonePermission = false
 
-        stopSessionAudioCapture()
-        audioDucking.restoreAfterSession()
-        flushBufferedAudio()
+        audio.stopSessionAudioCapture()
+        audio.audioDucking.restoreAfterSession()
+        audio.flushBufferedAudio(to: activeRealtimeClient)
         isDictating = false
         escapeCancelHandler.stop()
 

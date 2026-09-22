@@ -158,25 +158,25 @@ final class DogfoodAudioFileSourceTests: XCTestCase {
         let pcm = Data(repeating: 9, count: chunkBytes)
         let url = try writeTemporaryWAV(pcm: pcm)
         let viewModel = makeViewModel()
-        viewModel.dogfoodAudioFileURL = url
+        viewModel.audio.dogfoodAudioFileURL = url
         let gate = SleepGate()
-        viewModel.dogfoodAudioFileSleep = { _ in try await gate.sleep() }
+        viewModel.audio.dogfoodAudioFileSleep = { _ in try await gate.sleep() }
 
         XCTAssertFalse(viewModel.capturesFromMicrophone)
         XCTAssertEqual(viewModel.currentMicrophoneAuthorizationStatus(), .authorized)
 
         let collector = ChunkCollector()
-        try viewModel.startSessionAudioCapture(preferredDeviceID: nil) { collector.append($0) }
+        try viewModel.audio.startSessionAudioCapture(preferredDeviceID: nil) { collector.append($0) }
         await gate.waitForEntries(1)
-        let producer = viewModel.dogfoodAudioFileSource?.currentTask
+        let producer = viewModel.audio.dogfoodAudioFileSource?.currentTask
         XCTAssertNotNil(producer)
-        viewModel.stopSessionAudioCapture()
+        viewModel.audio.stopSessionAudioCapture()
         gate.release()
         await producer?.value
 
         XCTAssertEqual(collector.chunks, [pcm])
-        XCTAssertNil(viewModel.dogfoodAudioFileSource)
-        XCTAssertFalse(viewModel.hasInitializedMicrophone)
+        XCTAssertNil(viewModel.audio.dogfoodAudioFileSource)
+        XCTAssertFalse(viewModel.audio.hasInitializedMicrophone)
     }
 
     /// Falling back to the microphone would let an end-to-end run pass or fail
@@ -184,22 +184,22 @@ final class DogfoodAudioFileSourceTests: XCTestCase {
     @MainActor
     func testAnUnusableFileFailsTheStartInsteadOfFallingBackToTheMicrophone() throws {
         let viewModel = makeViewModel()
-        viewModel.dogfoodAudioFileURL = FileManager.default.temporaryDirectory
+        viewModel.audio.dogfoodAudioFileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("dogfood-audio-missing-\(UUID().uuidString).wav")
 
         XCTAssertThrowsError(
-            try viewModel.startSessionAudioCapture(preferredDeviceID: nil) { _ in }
+            try viewModel.audio.startSessionAudioCapture(preferredDeviceID: nil) { _ in }
         ) { error in
             XCTAssertEqual(error as? DogfoodAudioFileSource.LoadError, .unreadable)
         }
-        XCTAssertNil(viewModel.dogfoodAudioFileSource)
-        XCTAssertFalse(viewModel.hasInitializedMicrophone)
+        XCTAssertNil(viewModel.audio.dogfoodAudioFileSource)
+        XCTAssertFalse(viewModel.audio.hasInitializedMicrophone)
     }
 
     @MainActor
     func testWithoutAFileTheMicrophoneStaysTheSource() {
         let viewModel = makeViewModel()
-        viewModel.dogfoodAudioFileURL = nil
+        viewModel.audio.dogfoodAudioFileURL = nil
         XCTAssertTrue(viewModel.capturesFromMicrophone)
     }
 

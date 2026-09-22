@@ -283,6 +283,7 @@ final class SessionAudioPipeline {
 
     /// Saves and selects `id`. True when the selection changed, which a
     /// running dictation has to be restarted for.
+    @discardableResult
     func selectMicrophoneInput(id: String) -> Bool {
         guard !id.isEmpty else { return false }
         // Save even when `id` is already selected: it may be the fallback
@@ -312,6 +313,7 @@ final class SessionAudioPipeline {
 
     /// Saves `channel`. True when it changed, which a running dictation has
     /// to be restarted for.
+    @discardableResult
     func selectMicrophoneInputChannel(_ channel: Int) -> Bool {
         guard channel >= 0, channel < Int(selectedInputDeviceChannelCount) else { return false }
         guard settings.selectedInputChannel != channel else { return false }
