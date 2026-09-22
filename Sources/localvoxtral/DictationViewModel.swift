@@ -347,8 +347,10 @@ final class DictationViewModel {
         }
     }
 
-    /// `var` so a test can replace one collaborator after construction; the
-    /// lifecycle center is read at init and the rest when a session uses them.
+    /// `var` so a test can replace one collaborator after construction. The
+    /// lifecycle center and the microphone are read at init (the microphone
+    /// into the audio pipeline, so replace it through `init`); the rest when a
+    /// session uses them.
     @ObservationIgnored
     var dependencies: Dependencies
 
