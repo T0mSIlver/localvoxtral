@@ -829,7 +829,6 @@ extension DictationViewModel {
                     // before the request is built without stalling the commit. On
                     // timeout / no repo / feature off it is a fast no-op and the
                     // request is byte-identical to the no-vocabulary path.
-                    var replacementDictionarySection = replacementDictionaryPrompt
                     var repoVocabularyOutcome = RepoVocabularyMatcher.GroundingOutcome.empty
                     // The git root that pipeline resolves is also the
                     // learned-terms project key. Scoped to THIS commit: an
@@ -1095,112 +1094,6 @@ extension DictationViewModel {
                     ], maxVerificationPairs: RepoVocabularyMatcher.nominationCap(
                         forTranscript: workingText
                     ))
-                    let learnedVocabularyEntries = merged.entries(from: .learned)
-                    let repoVocabularyEntries = merged.entries(from: .repository)
-                    let clipboardVocabularyEntries = merged.entries(from: .clipboard)
-                    let screenVocabularyEntries = merged.entries(from: .terminal)
-                    let claudeVocabularyEntries = merged.entries(from: .claude)
-                    let repoVocabularyCount = repoVocabularyEntries.count
-                    let clipboardVocabularyCount = clipboardVocabularyEntries.count
-                    let screenVocabularyCount = screenVocabularyEntries.count
-                    let claudeVocabularyCount = claudeVocabularyEntries.count
-
-                    // Sections are rendered from the MERGED entries, never the
-                    // per-source matches: a span the merge abstained on must
-                    // not survive as a prompt hint the model could apply by
-                    // hand. Appended to the replacement-dictionary section so
-                    // the entries land in the `{{replacement_dictionary}}` slot
-                    // both profiles already carry — dynamic-suffix side of the
-                    // prompt-cache split, never the cached prefix.
-                    if !repoVocabularyEntries.isEmpty, templateCarriesDictionarySlot {
-                        replacementDictionarySection = RepoVocabularyMatcher.appendedPromptSection(
-                            base: replacementDictionarySection,
-                            entries: repoVocabularyEntries
-                        )
-                        Log.polishing.info(
-                            "Repo vocabulary attached: \(repoVocabularyCount, privacy: .public) entries"
-                        )
-                    }
-
-                    if !clipboardVocabularyEntries.isEmpty, templateCarriesDictionarySlot {
-                        replacementDictionarySection =
-                            RepoVocabularyMatcher.appendedPromptSection(
-                                base: replacementDictionarySection,
-                                entries: clipboardVocabularyEntries,
-                                header: RepoVocabularyMatcher.clipboardVocabularyHeader
-                            )
-                    }
-                    if clipboardVocabularyCount > 0 {
-                        // Counts only — entity content is clipboard content.
-                        Log.polishing.info(
-                            "Clipboard vocabulary attached: clipboard-vocab:\(clipboardVocabularyCount, privacy: .public)"
-                        )
-                    }
-
-                    // Rendered from the MERGED entries like every other source —
-                    // a span the merge abstained on must not reappear here as a
-                    // prompt hint. Hint entries need the dictionary slot;
-                    // pre-application does not.
-                    if !screenVocabularyEntries.isEmpty, templateCarriesDictionarySlot {
-                        replacementDictionarySection =
-                            RepoVocabularyMatcher.appendedPromptSection(
-                                base: replacementDictionarySection,
-                                entries: screenVocabularyEntries,
-                                header: RepoVocabularyMatcher.terminalScreenVocabularyHeader
-                            )
-                    }
-                    if screenVocabularyCount > 0 {
-                        // Counts only — entity content is screen content.
-                        Log.polishing.info(
-                            "Terminal screen vocabulary attached: screen-vocab:\(screenVocabularyCount, privacy: .public)"
-                        )
-                    }
-
-                    if !claudeVocabularyEntries.isEmpty, templateCarriesDictionarySlot {
-                        replacementDictionarySection =
-                            RepoVocabularyMatcher.appendedPromptSection(
-                                base: replacementDictionarySection,
-                                entries: claudeVocabularyEntries,
-                                header: RepoVocabularyMatcher.claudeSessionVocabularyHeader
-                            )
-                    }
-                    if claudeVocabularyCount > 0 {
-                        // Counts only — entity content is session content.
-                        Log.polishing.info(
-                            "Claude session vocabulary attached: claude-vocab:\(claudeVocabularyCount, privacy: .public)"
-                        )
-                    }
-
-                    if !learnedVocabularyEntries.isEmpty, templateCarriesDictionarySlot {
-                        replacementDictionarySection =
-                            RepoVocabularyMatcher.appendedPromptSection(
-                                base: replacementDictionarySection,
-                                entries: learnedVocabularyEntries,
-                                header: RepoVocabularyMatcher.learnedVocabularyHeader
-                            )
-                    }
-                    if !learnedVocabularyEntries.isEmpty {
-                        // Counts only — the terms are the speaker's own words.
-                        Log.polishing.info(
-                            "Learned vocabulary attached: learned-vocab:\(learnedVocabularyEntries.count, privacy: .public)"
-                        )
-                    }
-
-                    // Render from the MERGED pairs only: a span the merge
-                    // pre-applied or abstained-and-dropped must not reappear.
-                    // These remain untrusted suggestions for the model to
-                    // verify against context, deliberately never pre-applied.
-                    if !merged.verificationPairs.isEmpty && templateCarriesDictionarySlot {
-                        replacementDictionarySection =
-                            RepoVocabularyMatcher.appendedVerificationSection(
-                                base: replacementDictionarySection,
-                                pairs: merged.verificationPairs
-                            )
-                        Log.polishing.info(
-                            "Verification candidates attached: \(merged.verificationPairs.count, privacy: .public)"
-                        )
-                    }
-
                     guard !Task.isCancelled else { return }
 
                     // What this dictation taught, remembered for the next one
@@ -1210,153 +1103,44 @@ extension DictationViewModel {
                     // question put to the model, not an answer.
                     self.recordLearnedTerms(merged: merged, project: learnedProject)
 
-                    // Exact repo/clipboard bytes and their ASR spans have
-                    // already been selected by the deterministic matcher. Put
-                    // those bytes into the working text before the single LLM
-                    // call instead of relying on a generative model to copy a
-                    // prompt hint exactly. The same mappings remain in the
-                    // prompt as provenance/context. Boundary checks make this
-                    // a no-op if a recorded span is no longer independently
-                    // replaceable.
-                    // `merged.all`, never a concatenation of the per-source
-                    // entries: the merge is what already resolved agreement and
-                    // conflict ACROSS sources, and re-assembling its inputs by
-                    // hand would reintroduce exactly the duplicates and
-                    // contested spans it dropped. Terminal entries are in here
-                    // because the terminal is a candidate in the merge above.
-                    let groundingEntries = merged.all
-                    let groundedWorkingText: String
-                    if clipboardPayload != nil {
-                        // The payload placeholder is a commit-control token,
-                        // not dictation. Ground every surrounding segment but
-                        // keep each placeholder byte-exact so its integrity
-                        // count and final substitution cannot be bypassed by a
-                        // vocabulary term with the same normalized body.
-                        groundedWorkingText = workingText
-                            .components(separatedBy: ClipboardPayloadMacro.placeholder)
-                            .map {
-                                RepoVocabularyMatcher.preapplying(
-                                    entries: groundingEntries,
-                                    to: $0
-                                )
-                            }
-                            .joined(separator: ClipboardPayloadMacro.placeholder)
-                    } else {
-                        groundedWorkingText = RepoVocabularyMatcher.preapplying(
-                            entries: groundingEntries,
-                            to: workingText
-                        )
-                    }
-                    if groundedWorkingText != workingText {
-                        Log.polishing.info(
-                            "Technical grounding pre-applied: repo=\(repoVocabularyCount, privacy: .public), terminal=\(screenVocabularyCount, privacy: .public), claude=\(claudeVocabularyCount, privacy: .public), clipboard=\(clipboardVocabularyCount, privacy: .public)"
-                        )
-                    }
-
-                    var userPrompts = promptTemplates.renderedUserPrompts(
-                        inputText: groundedWorkingText,
-                        replacementDictionary: replacementDictionarySection
-                    )
-                    // Reference-context blocks are prepended to the FINAL user
-                    // message, letting the polish model fix near-miss spelling
-                    // of technical terms against what the user copied and what
-                    // was on their screen.
-                    //
-                    // ONE `attaching` call with the blocks ordered by
-                    // `allocationRank` (terminal, then clipboard). The composer
-                    // owns the two invariants for every source: context rides
-                    // INSIDE the last message (a separate message between prefix
-                    // and suffix invalidated polishd's single-slot checkpoint on
-                    // every request, and the cold 4B re-prefill blew the polish
-                    // client timeout — field, 2026-07-11), and it is prepended
-                    // so the transcript stays LAST. Two sequential prepends keep
-                    // both invariants too, but silently REVERSE source order —
-                    // the array is the form that cannot get that wrong.
-                    //
-                    // Both excerpts were already selected off-actor above: at or
-                    // below its grant a source is attached verbatim; above it,
-                    // the excerpt is the transcript-relevant selection rather
-                    // than the head of the buffer.
-                    //
-                    // The screen block is nil unless the decision is `.render`,
-                    // which requires the captured pane to be positively joined
-                    // to one live Claude session — so plain, unjoined Ghostty
-                    // scrollback contributes vocabulary only and never an
-                    // excerpt.
-                    let repoBlock = claudeRepoSnapshot?.contextBlock(
-                        excerpt: claudeRepoPreparation.excerpt,
-                        renderBudget: repoRenderBudget
-                    )
-                    let screenBlock = screenDecision.contextBlock(
-                        excerpt: screenPreparation.excerpt,
-                        renderBudget: screenRenderBudget
-                    )
-                    let claudeBlock = capturedClaudeJoin?.snapshot.claudeContextBlock(
-                        excerpt: claudeSessionPreparation.excerpt,
-                        renderBudget: claudeRenderBudget
-                    )
-                    let clipboardBlock = capturedClipboardContext?.contextBlock(
-                        excerpt: clipboardPreparation.excerpt,
-                        renderBudget: clipboardRenderBudget
-                    )
-                    // Ordered by `allocationRank` — repository, terminal, claude,
-                    // clipboard — the same fixed order the budget allocated in.
-                    let contextBlocks = [repoBlock, screenBlock, claudeBlock, clipboardBlock]
-                        .compactMap { $0 }
-                    if !contextBlocks.isEmpty {
-                        userPrompts = PolishContextBlock.attaching(contextBlocks, to: userPrompts)
-                    }
-                    if let clipboardBlock {
-                        Log.polishing.info(
-                            "Polish clipboard context attached: \(clipboardBlock.summary, privacy: .public)"
-                        )
-                    }
-                    if let screenBlock {
-                        Log.polishing.info(
-                            "Polish terminal screen context attached: \(screenBlock.summary, privacy: .public)"
-                        )
-                    }
-                    if let repoBlock {
-                        // Count-only by construction: the summary is the
-                        // collector's provenance line, which is numbers and
-                        // fixed slugs. Repository contents never reach a log.
-                        Log.polishing.info(
-                            "Polish Claude repository context attached: \(repoBlock.summary, privacy: .public)"
-                        )
-                    }
-                    if let claudeBlock {
-                        Log.polishing.info(
-                            "Polish Claude session context attached: \(claudeBlock.summary, privacy: .public)"
-                        )
-                    }
-
-                    // Provenance stays count-only. The screen is recorded only
-                    // when it actually contributed (an excerpt, terms, or both)
-                    // — a dropped capture is not worth a summary line. Ordered
-                    // clipboard-then-screen to match the existing session-record
-                    // format.
-                    var capturedPolishContextSummary: String? = clipboardBlock?.summary
-                    if screenVocabularyCount > 0 || screenBlock != nil {
-                        // The block's summary when one was rendered (it reports
-                        // the TRIMMED count); the decision's otherwise.
-                        let screenSummary =
-                            screenBlock?.summary ?? screenDecision.provenanceSummary
-                        capturedPolishContextSummary = capturedPolishContextSummary
-                            .map { "\($0) \(screenSummary)" } ?? screenSummary
-                    }
-
-                    let polishingRequest = LLMPolishingRequest(
-                        inputText: groundedWorkingText,
-                        systemPrompt: promptTemplates.systemContent,
-                        userPrompts: userPrompts
-                    )
+                    // Sections, pre-application, prompts, blocks and provenance
+                    // are one pure step over the merged material; the request
+                    // it builds is pinned by PolishRequestGoldenTests.
+                    let assembly = PolishRequestAssembler.assemble(PolishRequestAssembler.Input(
+                        merged: merged,
+                        templateCarriesDictionarySlot: templateCarriesDictionarySlot,
+                        replacementDictionaryPrompt: replacementDictionaryPrompt,
+                        workingText: workingText,
+                        clipboardPayload: clipboardPayload,
+                        promptTemplates: promptTemplates,
+                        screenDecision: screenDecision,
+                        claudeRepoSnapshot: claudeRepoSnapshot,
+                        claudeRepoPreparation: claudeRepoPreparation,
+                        claudeSessionPreparation: claudeSessionPreparation,
+                        clipboardPreparation: clipboardPreparation,
+                        screenPreparation: screenPreparation,
+                        capturedClaudeJoin: capturedClaudeJoin,
+                        capturedClipboardContext: capturedClipboardContext,
+                        repoRenderBudget: repoRenderBudget,
+                        screenRenderBudget: screenRenderBudget,
+                        claudeRenderBudget: claudeRenderBudget,
+                        clipboardRenderBudget: clipboardRenderBudget
+                    ))
+                    let polishingRequest = assembly.request
+                    let groundedWorkingText = assembly.groundedWorkingText
+                    let capturedPolishContextSummary = assembly.polishContextSummary
+                    let repoBlock = assembly.repoBlock
+                    let screenBlock = assembly.screenBlock
+                    let claudeBlock = assembly.claudeBlock
+                    let clipboardBlock = assembly.clipboardBlock
+                    let repoVocabularyCount = assembly.repoVocabularyCount
+                    let clipboardVocabularyCount = assembly.clipboardVocabularyCount
 
                     var processedTextForPersistence: String? =
                         workingText != originalText ? workingText : nil
                     var polishingDuration: Double? = nil
                     var sessionStatus: DictationSessionStatus = .completed
-                    var llmConnectionFailure:
-                        (title: String, message: String, technicalDetails: String?)?
+                    var llmConnectionFailure: PolishOutcomeClassifier.Failure?
                     #if LOCALVOXTRAL_DOGFOOD
                     // The model's raw reply and the (placeholder-bearing)
                     // committed text, hoisted out of the do-block for the
@@ -1380,7 +1164,11 @@ extension DictationViewModel {
                             // could undo useful formatting and reconstruction.
                             // Placeholder-count integrity for an explicit paste
                             // macro remains independent below.
-                            var committedText = result.polishedText
+                            var committedText = PolishOutcomeClassifier.committedText(
+                                polished: result.polishedText,
+                                groundedWorkingText: groundedWorkingText,
+                                clipboardPayload: clipboardPayload
+                            )
 
                             // Placeholder-count integrity stays independent of
                             // trusting model text: a duplicated placeholder
@@ -1389,22 +1177,6 @@ extension DictationViewModel {
                             // standalone counts against the grounded pre-polish
                             // text; on mismatch, discard the polish and keep
                             // that placeholder-bearing text.
-                            if clipboardPayload != nil {
-                                let expectedPlaceholders =
-                                    ClipboardPayloadMacro.standalonePlaceholderCount(
-                                        in: groundedWorkingText
-                                    )
-                                let actualPlaceholders =
-                                    ClipboardPayloadMacro.standalonePlaceholderCount(
-                                        in: committedText
-                                    )
-                                if actualPlaceholders != expectedPlaceholders {
-                                    committedText = groundedWorkingText
-                                    Log.polishing.warning(
-                                        "Clipboard payload macro: polish changed placeholder count (\(expectedPlaceholders, privacy: .public) -> \(actualPlaceholders, privacy: .public)); polish discarded"
-                                    )
-                                }
-                            }
 
                             // Persist the PLACEHOLDER-bearing committed text —
                             // the clipboard payload must never enter the session
@@ -1446,61 +1218,10 @@ extension DictationViewModel {
                         } catch {
                             guard !Task.isCancelled else { return }
                             sessionStatus = .llmFailed
-                            switch error as? LLMPolishingError {
-                            case .some(.networkError(let details)):
-                                llmConnectionFailure = (
-                                    "LLM Polishing Connection Failed",
-                                    "Unable to connect to the configured LLM polishing endpoint.",
-                                    // Name the endpoint the request was ACTUALLY
-                                    // sent to — in managed mode the external-URL
-                                    // setting (its untouched placeholder default,
-                                    // typically :8080) was never used, and naming
-                                    // it sent field debugging to the wrong
-                                    // process (2026-07-11).
-                                    self.llmPolishingConnectionTechnicalDetails(
-                                        details,
-                                        endpointURL: config.endpointURL
-                                    )
-                                )
-                            case .some(.requestFailed(let statusCode, let body)):
-                                // A hosted provider answers a bad key, an
-                                // unaccepted body field or an exhausted quota
-                                // with an HTTP status and a JSON error body.
-                                // The connection was fine, so "unable to
-                                // connect" would send debugging the wrong way;
-                                // surface the status and the provider's own
-                                // one-line reason instead. The raw body stays
-                                // in the log line below — never in
-                                // `lastError`, which Settings renders as the
-                                // one-line failure summary.
-                                let summary = Self.llmPolishingRejectionMessage(
-                                    statusCode: statusCode,
-                                    body: body
-                                )
-                                llmConnectionFailure = (
-                                    "LLM Polishing Request Rejected",
-                                    summary,
-                                    self.llmPolishingConnectionTechnicalDetails(
-                                        summary,
-                                        endpointURL: config.endpointURL
-                                    )
-                                )
-                            case .some(.timedOut(let seconds)):
-                                // The endpoint was reachable and simply slow — a long
-                                // transcript or a cold prefix cache. "Unable to connect"
-                                // would send debugging after a network that was fine (#314).
-                                let summary = Self.llmPolishingTimeoutMessage(seconds: seconds)
-                                llmConnectionFailure = (
-                                    "LLM Polishing Timed Out",
-                                    summary,
-                                    self.llmPolishingConnectionTechnicalDetails(
-                                        summary,
-                                        endpointURL: config.endpointURL
-                                    )
-                                )
-                            case .some(.emptyInput), .some(.invalidResponse), .none:
-                                break
-                            }
+                            llmConnectionFailure = PolishOutcomeClassifier.failure(
+                                for: error,
+                                endpointURL: config.endpointURL
+                            )
                             Log.polishing.error(
                                 "LLM polishing failed: \(error.localizedDescription, privacy: .public)"
                             )
@@ -2570,14 +2291,7 @@ extension DictationViewModel {
 
     /// Strips credentials, query, and fragment from a URL for safe logging.
     private func sanitizedURLForLogging(_ url: URL) -> String {
-        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-            return url.absoluteString
-        }
-        components.user = nil
-        components.password = nil
-        components.query = nil
-        components.fragment = nil
-        return components.string ?? url.absoluteString
+        URLLogSanitizer.sanitized(url)
     }
 
     private func sanitizedRealtimeEndpointForLogging() -> String {
@@ -2616,102 +2330,6 @@ extension DictationViewModel {
         guard let value else { return nil }
         let trimmed = value.trimmed
         return trimmed.isEmpty ? nil : trimmed
-    }
-
-    /// ONE LINE for a polish request the endpoint answered with a non-2xx
-    /// status — the hosted-provider failure mode (a wrong API key, a body
-    /// field the provider does not accept, an exhausted quota). It names the
-    /// status, what that status generally means, and the provider's own
-    /// one-sentence reason when the body carries one. A live Mistral probe
-    /// (2026-09-15) answered an unsupported `top_k` with HTTP 400 and
-    /// `{"object":"error","message":"top_k sampling is not enabled for this
-    /// model", …}`: that `message` is the whole diagnosis, and the status
-    /// alone would say only "something in the body".
-    ///
-    /// The RAW body never appears here — this text reaches the alert and (via
-    /// the technical details) `lastError`, which Settings renders as the
-    /// one-line failure summary. The body goes to the log.
-    /// One line for a polish request that outlived its timeout. The overlay commits the
-    /// unpolished transcript on any polish failure, so nothing dictated is lost.
-    nonisolated static func llmPolishingTimeoutMessage(seconds: TimeInterval) -> String {
-        "Polishing took longer than \(Int(seconds.rounded())) seconds, so the transcript was not polished."
-    }
-
-    nonisolated static func llmPolishingRejectionMessage(statusCode: Int, body: String) -> String {
-        let reason: String
-        switch statusCode {
-        case 401, 403:
-            reason = "rejected the API key"
-        case 404:
-            reason = "has no such model or path"
-        case 422:
-            reason = "rejected the request body"
-        case 429:
-            reason = "is rate limiting or out of quota"
-        case 500...599:
-            reason = "failed to answer"
-        default:
-            reason = "rejected the request"
-        }
-        let head = "The LLM polishing endpoint \(reason) (HTTP \(statusCode))"
-        guard let detail = providerErrorMessage(inBody: body) else {
-            return head + "."
-        }
-        return "\(head): \(detail)"
-    }
-
-    /// The provider's own error sentence, pulled out of a JSON error body and
-    /// flattened to one bounded line. Mistral answers
-    /// `{"object":"error","message":"…"}`; OpenAI-shaped servers answer
-    /// `{"error":{"message":"…"}}`; the realtime surface can nest a `detail`.
-    /// Anything else (HTML, a stack trace, an empty body) yields nil and the
-    /// caller falls back to the status alone, rather than pasting bytes into
-    /// the UI.
-    nonisolated static func providerErrorMessage(inBody body: String) -> String? {
-        // One line in a popover-sized surface: a provider that answers with a
-        // paragraph gets truncated rather than widening the alert.
-        let characterLimit = 160
-
-        guard let data = body.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-
-        let nested = json["error"] as? [String: Any]
-        let candidate =
-            (json["message"] as? String)
-            ?? ((json["message"] as? [String: Any])?["detail"] as? String)
-            ?? (nested?["message"] as? String)
-            ?? ((nested?["message"] as? [String: Any])?["detail"] as? String)
-            ?? (nested?["detail"] as? String)
-            ?? (json["error"] as? String)
-            ?? (json["detail"] as? String)
-
-        guard let candidate else { return nil }
-        let flattened = candidate
-            .replacingOccurrences(of: "[\r\n\t]+", with: " ", options: .regularExpression)
-            .replacingOccurrences(of: " +", with: " ", options: .regularExpression)
-            .trimmed
-        guard !flattened.isEmpty else { return nil }
-
-        if flattened.count > characterLimit {
-            return String(flattened.prefix(characterLimit)).trimmed + "…"
-        }
-        return flattened.hasSuffix(".") ? flattened : flattened + "."
-    }
-
-    /// Failure details for the alert/`lastError`, naming `endpointURL` — the
-    /// endpoint the failing request was actually sent to, captured from the
-    /// request's own configuration (Settings may have changed since).
-    func llmPolishingConnectionTechnicalDetails(
-        _ details: String,
-        endpointURL: URL
-    ) -> String {
-        let endpoint = sanitizedURLForLogging(endpointURL)
-        let normalizedDetails = details.trimmed
-        if normalizedDetails.isEmpty {
-            return "Unable to connect to endpoint \(endpoint)."
-        }
-        return "\(normalizedDetails) [endpoint: \(endpoint)]"
     }
 
     func startStopFinalizationWatchdog() {

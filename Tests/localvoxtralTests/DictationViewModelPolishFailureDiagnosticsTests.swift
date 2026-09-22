@@ -129,24 +129,16 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
     /// The details formatter itself: the given endpoint URL (sanitized) is
     /// named both with and without underlying error details.
     func testConnectionTechnicalDetailsNameTheGivenEndpoint() {
-        let settings = makeSettings(outputMode: .overlayBuffer)
-        let viewModel = DictationViewModel(
-            settings: settings,
-            overlayBufferCoordinator: MockOverlayCoordinator(),
-            startRuntimeServices: false
-        )
-        viewModel.appConfigStore = MockAppConfigStore()
-        retainForTestProcessLifetime(viewModel)
         let endpoint = URL(string: "http://127.0.0.1:8472/v1/chat/completions")!
 
         XCTAssertEqual(
-            viewModel.llmPolishingConnectionTechnicalDetails(
+            PolishOutcomeClassifier.connectionTechnicalDetails(
                 "request timed out", endpointURL: endpoint
             ),
             "request timed out [endpoint: http://127.0.0.1:8472/v1/chat/completions]"
         )
         XCTAssertEqual(
-            viewModel.llmPolishingConnectionTechnicalDetails(
+            PolishOutcomeClassifier.connectionTechnicalDetails(
                 "  ", endpointURL: endpoint
             ),
             "Unable to connect to endpoint http://127.0.0.1:8472/v1/chat/completions."
@@ -238,7 +230,7 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
             (418, "rejected the request"),
         ]
         for (status, needle) in cases {
-            let message = DictationViewModel.llmPolishingRejectionMessage(
+            let message = PolishOutcomeClassifier.llmPolishingRejectionMessage(
                 statusCode: status,
                 body: ""
             )
@@ -267,7 +259,7 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
     /// the reader to the log for a one-line answer.
     func testRejectionMessageCarriesTheProviderReasonForABadBodyField() {
         let body = #"{"object":"error","message":"top_k sampling is not enabled for this model","type":"invalid_request_invalid_args","param":null,"code":"3051","raw_status_code":400}"#
-        let message = DictationViewModel.llmPolishingRejectionMessage(statusCode: 400, body: body)
+        let message = PolishOutcomeClassifier.llmPolishingRejectionMessage(statusCode: 400, body: body)
 
         XCTAssertEqual(
             message,
@@ -282,45 +274,45 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
     func testProviderErrorMessageExtractionIsBoundedAndShapeTolerant() {
         // Mistral's envelope.
         XCTAssertEqual(
-            DictationViewModel.providerErrorMessage(
+            PolishOutcomeClassifier.providerErrorMessage(
                 inBody: #"{"object":"error","message":"Unauthorized","code":"1100"}"#
             ),
             "Unauthorized."
         )
         // OpenAI-shaped servers nest it.
         XCTAssertEqual(
-            DictationViewModel.providerErrorMessage(
+            PolishOutcomeClassifier.providerErrorMessage(
                 inBody: #"{"error":{"message":"Incorrect API key provided.","type":"invalid_request_error"}}"#
             ),
             "Incorrect API key provided."
         )
         // A nested `detail`, as the realtime surface can send.
         XCTAssertEqual(
-            DictationViewModel.providerErrorMessage(
+            PolishOutcomeClassifier.providerErrorMessage(
                 inBody: #"{"error":{"message":{"detail":"Model not found"}}}"#
             ),
             "Model not found."
         )
         // Newlines are flattened — the summary is one line, always.
         XCTAssertEqual(
-            DictationViewModel.providerErrorMessage(
+            PolishOutcomeClassifier.providerErrorMessage(
                 inBody: #"{"message":"first line\nsecond line"}"#
             ),
             "first line second line."
         )
         // A paragraph is truncated rather than pasted whole.
         let long = String(repeating: "x", count: 400)
-        let truncated = DictationViewModel.providerErrorMessage(
+        let truncated = PolishOutcomeClassifier.providerErrorMessage(
             inBody: #"{"message":"\#(long)"}"#
         )
         // 160 characters of provider text plus the ellipsis that says so.
         XCTAssertEqual(truncated?.count, 161)
         XCTAssertEqual(truncated?.hasSuffix("…"), true)
         // Not JSON, no message, empty message: no UI text at all.
-        XCTAssertNil(DictationViewModel.providerErrorMessage(inBody: "<html>502 Bad Gateway</html>"))
-        XCTAssertNil(DictationViewModel.providerErrorMessage(inBody: ""))
-        XCTAssertNil(DictationViewModel.providerErrorMessage(inBody: #"{"object":"error"}"#))
-        XCTAssertNil(DictationViewModel.providerErrorMessage(inBody: #"{"message":"   "}"#))
+        XCTAssertNil(PolishOutcomeClassifier.providerErrorMessage(inBody: "<html>502 Bad Gateway</html>"))
+        XCTAssertNil(PolishOutcomeClassifier.providerErrorMessage(inBody: ""))
+        XCTAssertNil(PolishOutcomeClassifier.providerErrorMessage(inBody: #"{"object":"error"}"#))
+        XCTAssertNil(PolishOutcomeClassifier.providerErrorMessage(inBody: #"{"message":"   "}"#))
     }
 
     // MARK: - Harness (mirrors the token-guard suite)
