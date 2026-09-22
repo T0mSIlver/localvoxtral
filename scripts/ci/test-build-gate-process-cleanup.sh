@@ -32,15 +32,14 @@ export LOCALVOXTRAL_BUILD_GATE_SOURCE_ONLY
 # shellcheck source=../mac/localvoxtral-build-gate.sh
 source "$GATE"
 
-if run_payload_with_cleanup 'exit 7'; then
+# In a subshell: the wrapper owns EXIT while it runs and clears it on return,
+# which would take this script's cleanup trap with it.
+if ( run_payload_with_cleanup 'exit 7' ); then
   fail "non-zero payload unexpectedly succeeded"
 else
   status=$?
 fi
 [[ "$status" == "7" ]] || fail "payload exit status changed from 7 to $status"
-# The wrapper owns EXIT while it runs and clears it on return, which took
-# this script's cleanup with it. Arm it again.
-trap cleanup EXIT
 
 # No wall-clock wait: reading the FIFO is the readiness handshake, and
 # waiting for the wrapper means its EXIT cleanup has completed.
@@ -54,12 +53,12 @@ trap cleanup EXIT
 # land first: "line 83: .../normal-exit-pids: Interrupted system call".
 # The read builtin retries read() on EINTR.
 open_pid_fifo() {
-  pid_fifo="$TMP_DIR/$1"
+  pid_fifo="$1"
   mkfifo "$pid_fifo"
   exec 3<>"$pid_fifo"
 }
 
-open_pid_fifo pids
+open_pid_fifo "$TMP_DIR/pids"
 printf -v payload '%q %q' "$FIXTURE" "$pid_fifo"
 (
   LOCALVOXTRAL_GATE_TERM_POLLS=0 run_payload_with_cleanup "$payload"
@@ -90,7 +89,7 @@ is_live_non_zombie "$stubborn_pid" \
 fixture_pid=""
 stubborn_pid=""
 
-open_pid_fifo normal-exit-pids
+open_pid_fifo "$TMP_DIR/normal-exit-pids"
 printf -v payload '%q %q %q' "$FIXTURE" "$pid_fifo" exit-leader
 (
   LOCALVOXTRAL_GATE_TERM_POLLS=0 run_payload_with_cleanup "$payload"
