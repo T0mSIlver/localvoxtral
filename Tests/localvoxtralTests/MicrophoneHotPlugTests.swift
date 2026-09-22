@@ -14,13 +14,13 @@ final class MicrophoneHotPlugTests: XCTestCase {
 
     func testMicrophonePluggedInWhileIdleIsListed() {
         let (viewModel, _) = makeViewModel()
-        viewModel.microphone.debugConfigureDeviceEnumeration(
-            devices: [builtIn], defaultInputDeviceID: builtIn.id)
+        viewModel.fakeMicrophone.configureDevices(
+            [builtIn], defaultInputDeviceID: builtIn.id)
         viewModel.refreshMicrophoneInputs()
         XCTAssertEqual(viewModel.availableInputDevices, [builtIn])
 
-        viewModel.microphone.debugConfigureDeviceEnumeration(
-            devices: [builtIn, usb], defaultInputDeviceID: builtIn.id)
+        viewModel.fakeMicrophone.configureDevices(
+            [builtIn, usb], defaultInputDeviceID: builtIn.id)
         viewModel.handleMicrophoneInputDevicesChanged()
 
         XCTAssertEqual(viewModel.availableInputDevices, [builtIn, usb])
@@ -32,13 +32,13 @@ final class MicrophoneHotPlugTests: XCTestCase {
 
     func testMicrophoneUnpluggedWhileIdleIsReselectedWhenPluggedBack() {
         let (viewModel, settings) = makeViewModel()
-        viewModel.microphone.debugConfigureDeviceEnumeration(
-            devices: [builtIn, usb], defaultInputDeviceID: builtIn.id)
+        viewModel.fakeMicrophone.configureDevices(
+            [builtIn, usb], defaultInputDeviceID: builtIn.id)
         viewModel.refreshMicrophoneInputs()
         viewModel.selectMicrophoneInput(id: usb.id)
 
-        viewModel.microphone.debugConfigureDeviceEnumeration(
-            devices: [builtIn], defaultInputDeviceID: builtIn.id)
+        viewModel.fakeMicrophone.configureDevices(
+            [builtIn], defaultInputDeviceID: builtIn.id)
         viewModel.handleMicrophoneInputDevicesChanged()
 
         XCTAssertEqual(viewModel.availableInputDevices, [builtIn])
@@ -48,8 +48,8 @@ final class MicrophoneHotPlugTests: XCTestCase {
             "a mic that is only unplugged stays the saved choice"
         )
 
-        viewModel.microphone.debugConfigureDeviceEnumeration(
-            devices: [builtIn, usb], defaultInputDeviceID: builtIn.id)
+        viewModel.fakeMicrophone.configureDevices(
+            [builtIn, usb], defaultInputDeviceID: builtIn.id)
         viewModel.handleMicrophoneInputDevicesChanged()
 
         XCTAssertEqual(viewModel.selectedInputDeviceID, usb.id)
@@ -57,17 +57,17 @@ final class MicrophoneHotPlugTests: XCTestCase {
 
     func testPickingTheFallbackWhileSavedMicIsUnpluggedSavesIt() {
         let (viewModel, settings) = makeViewModel()
-        viewModel.microphone.debugConfigureDeviceEnumeration(
-            devices: [builtIn, usb], defaultInputDeviceID: builtIn.id)
+        viewModel.fakeMicrophone.configureDevices(
+            [builtIn, usb], defaultInputDeviceID: builtIn.id)
         viewModel.refreshMicrophoneInputs()
         viewModel.selectMicrophoneInput(id: usb.id)
-        viewModel.microphone.debugConfigureDeviceEnumeration(
-            devices: [builtIn], defaultInputDeviceID: builtIn.id)
+        viewModel.fakeMicrophone.configureDevices(
+            [builtIn], defaultInputDeviceID: builtIn.id)
         viewModel.handleMicrophoneInputDevicesChanged()
 
         viewModel.selectMicrophoneInput(id: builtIn.id)
-        viewModel.microphone.debugConfigureDeviceEnumeration(
-            devices: [builtIn, usb], defaultInputDeviceID: builtIn.id)
+        viewModel.fakeMicrophone.configureDevices(
+            [builtIn, usb], defaultInputDeviceID: builtIn.id)
         viewModel.handleMicrophoneInputDevicesChanged()
 
         XCTAssertEqual(settings.selectedInputDeviceUID, builtIn.id)
@@ -76,8 +76,8 @@ final class MicrophoneHotPlugTests: XCTestCase {
 
     func testFirstRefreshSavesTheResolvedDefault() {
         let (viewModel, settings) = makeViewModel()
-        viewModel.microphone.debugConfigureDeviceEnumeration(
-            devices: [builtIn, usb], defaultInputDeviceID: usb.id)
+        viewModel.fakeMicrophone.configureDevices(
+            [builtIn, usb], defaultInputDeviceID: usb.id)
 
         viewModel.refreshMicrophoneInputs()
 
@@ -96,7 +96,8 @@ final class MicrophoneHotPlugTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: MockOverlayCoordinator(),
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(microphone: { FakeMicrophoneCaptureService() })
         )
         retainForTestProcessLifetime(viewModel)
         return (viewModel, settings)

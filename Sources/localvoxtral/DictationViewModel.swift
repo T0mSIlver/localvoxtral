@@ -313,13 +313,29 @@ final class DictationViewModel {
     @ObservationIgnored
     var secureInputWarningSound: () -> Void = { NSSound(named: "Basso")?.play() }
 
+    /// The collaborators a view model is built from. Production defaults;
+    /// a test replaces the ones it has to observe or hold still. Each field
+    /// retires a `debug…` seam (#432 step 2).
+    struct Dependencies {
+        /// Built on first use, so a mere permission read never registers
+        /// CoreAudio device listeners. Nil is the CoreAudio service.
+        var microphone: (() -> any MicrophoneCapturing)?
+
+        init(microphone: (() -> any MicrophoneCapturing)? = nil) {
+            self.microphone = microphone
+        }
+    }
+
+    @ObservationIgnored
+    let dependencies: Dependencies
+
     // Services — internal so extension files can access them.
     @ObservationIgnored
     private(set) var hasInitializedMicrophone = false
     @ObservationIgnored
-    lazy var microphone: MicrophoneCaptureService = {
+    lazy var microphone: any MicrophoneCapturing = {
         hasInitializedMicrophone = true
-        return MicrophoneCaptureService()
+        return dependencies.microphone?() ?? MicrophoneCaptureService()
     }()
 
     /// Ducks other audio for the length of a session. Assigned in `init` so
@@ -377,9 +393,6 @@ final class DictationViewModel {
         microphone.stop()
     }
 
-    #if DEBUG
-    var debugHasInitializedMicrophoneForTesting: Bool { hasInitializedMicrophone }
-    #endif
     @ObservationIgnored
     let networkMonitor = NetworkMonitor()
     @ObservationIgnored
@@ -756,14 +769,6 @@ final class DictationViewModel {
     var debugReconnectSleepOverride: (@MainActor (TimeInterval) async -> Void)?
     #endif
     @ObservationIgnored
-    var debugMicrophoneAuthorizationStatusOverride: MicrophoneAuthorizationStatus?
-    /// Test seam: replaces `microphone.requestAccess` in the session-start
-    /// permission gate so tests can hold and fire the grant continuation
-    /// deterministically (the real call shows a TCC prompt and touches the
-    /// microphone service).
-    @ObservationIgnored
-    var debugMicrophoneRequestAccessOverride: ((@escaping @Sendable (Bool) -> Void) -> Void)?
-    @ObservationIgnored
     var debugHasRequestedStartupPermissions: Bool { hasRequestedStartupPermissions }
 
     @ObservationIgnored
@@ -812,9 +817,11 @@ final class DictationViewModel {
         localNetworkPermissionPreflight: (any LocalNetworkPermissionPreflighting)? = nil,
         startRuntimeServices: Bool = true,
         suppressStartupPermissionPrompts: Bool =
-            DictationViewModel.startupPermissionPromptsSuppressed()
+            DictationViewModel.startupPermissionPromptsSuppressed(),
+        dependencies: Dependencies = Dependencies()
     ) {
         self.settings = settings
+        self.dependencies = dependencies
         self.backendManager =
             backendManager
             ?? BackendManager(
@@ -1879,25 +1886,16 @@ final class DictationViewModel {
     private func requestMicrophoneAccessForSessionStart(
         completion: @escaping @Sendable (Bool) -> Void
     ) {
-        if let debugMicrophoneRequestAccessOverride {
-            debugMicrophoneRequestAccessOverride(completion)
-            return
-        }
         microphone.requestAccess(completion: completion)
     }
 
     func currentMicrophoneAuthorizationStatus() -> MicrophoneAuthorizationStatus {
-        #if DEBUG
-        if let debugMicrophoneAuthorizationStatusOverride {
-            return debugMicrophoneAuthorizationStatusOverride
-        }
-        #endif
         guard capturesFromMicrophone else { return .authorized }
         // A mere status read (the onboarding/General permission rows) must
-        // not force the lazy capture service into existence; but once the
-        // service exists, ask it, so any injected replacement stays
-        // authoritative.
-        guard hasInitializedMicrophone else {
+        // not force the lazy CoreAudio service into existence; once the
+        // service exists, or when one was injected, ask it, so the injected
+        // replacement stays authoritative.
+        guard hasInitializedMicrophone || dependencies.microphone != nil else {
             switch AVCaptureDevice.authorizationStatus(for: .audio) {
             case .authorized:
                 return .authorized

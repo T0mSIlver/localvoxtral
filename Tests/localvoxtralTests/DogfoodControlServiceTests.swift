@@ -18,7 +18,7 @@ final class DogfoodControlServiceTests: XCTestCase {
         let viewModel = makeViewModel()
         // Refused inside the same start path a real gesture takes — the socket
         // reports the refusal and does not route around it.
-        viewModel.debugMicrophoneAuthorizationStatusOverride = .denied
+        viewModel.fakeMicrophone.authorization = .denied
         let service = makeService(viewModel: viewModel)
 
         let reply = await expectSuccess(service, .sessionStart(.overlayBuffer))
@@ -32,7 +32,7 @@ final class DogfoodControlServiceTests: XCTestCase {
 
     func testSessionStartReportsTheMicrophoneRefusalCategory() async {
         let viewModel = makeViewModel()
-        viewModel.debugMicrophoneAuthorizationStatusOverride = .denied
+        viewModel.fakeMicrophone.authorization = .denied
         let service = makeService(viewModel: viewModel)
 
         let reply = await expectSuccess(service, .sessionStart(.liveAutoPaste))
@@ -578,7 +578,11 @@ final class DogfoodControlServiceTests: XCTestCase {
         addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
 
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
-        let viewModel = DictationViewModel(settings: settings, startRuntimeServices: false)
+        let viewModel = DictationViewModel(
+            settings: settings,
+            startRuntimeServices: false,
+            dependencies: .init(microphone: { FakeMicrophoneCaptureService() })
+        )
         viewModel.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
         return viewModel
