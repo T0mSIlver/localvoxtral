@@ -189,8 +189,18 @@ lv_run_unit_shards() {
   while read -r count _; do expected=$((expected + count)); done <"$work/plan"
   echo "==> $expected tests in $planned shards (build ${build_seconds} s)" | tee -a "$log"
 
+  # Ctrl-C or the CI supervisor's timeout still leaves every shard's output so
+  # far in the log, so a hang names the test it hung in; the caller's own
+  # handlers run afterwards. Armed before the first shard starts, and the
+  # handler reads LV_SHARD_* at signal time, so no signal finds it missing.
+  LV_SHARD_WORK="$work" LV_SHARD_LOG="$log" LV_SHARD_PLANNED="$planned"
+  LV_SHARD_PIDS=()
+  LV_SHARD_SAVED_TRAPS="$(trap -p INT TERM HUP)"
+  trap 'lv_interrupt_unit_shards INT' INT
+  trap 'lv_interrupt_unit_shards TERM' TERM
+  trap 'lv_interrupt_unit_shards HUP' HUP
+
   local index=0 line class
-  local -a pids=()
   while read -r line; do
     index=$((index + 1))
     local -a filter_args=()
@@ -203,22 +213,12 @@ lv_run_unit_shards() {
     lv_run_one_unit_shard "$work" "$index" \
       ${skip_args[@]+"${skip_args[@]}"} "${filter_args[@]}" \
       ${extra_args[@]+"${extra_args[@]}"} &
-    pids+=($!)
+    LV_SHARD_PIDS+=($!)
   done <"$work/plan"
-
-  # Ctrl-C or the CI supervisor's timeout still leaves every shard's output so
-  # far in the log, so a hang names the test it hung in. The caller's own
-  # handlers run afterwards.
-  local saved_traps signal
-  saved_traps="$(trap -p INT TERM HUP)"
-  for signal in INT TERM HUP; do
-    # shellcheck disable=SC2064  # expanded now on purpose
-    trap "lv_interrupt_unit_shards '$work' '$log' $planned ${pids[*]}; trap - INT TERM HUP; $saved_traps; kill -s $signal \$\$" "$signal"
-  done
 
   local ran=0 status=0 shard_status seconds executed classes
   for index in $(seq 1 "$planned"); do
-    wait "${pids[$((index - 1))]}" 2>/dev/null
+    wait "${LV_SHARD_PIDS[$((index - 1))]}" 2>/dev/null
     read -r shard_status seconds <"$work/$index.status" 2>/dev/null || { shard_status=1; seconds="?"; }
     executed="$(lv_executed_test_count "$work/$index.log")"
     ran=$((ran + executed))
@@ -232,7 +232,7 @@ lv_run_unit_shards() {
     [[ "$shard_status" == "0" ]] || status=1
   done
   trap - INT TERM HUP
-  eval "$saved_traps"
+  eval "$LV_SHARD_SAVED_TRAPS"
 
   echo "==> Unit shards: $ran of $expected tests ran in $planned shards, $((SECONDS - started)) s (build ${build_seconds} s)" \
     | tee -a "$log"
@@ -275,17 +275,30 @@ lv_run_one_unit_shard() {
   echo "$shard_status $((SECONDS - shard_started))" >"$work/$index.status"
 }
 
+# Signal handler of lv_run_unit_shards: stop the shards, log what they printed,
+# then restore the caller's handlers and deliver the signal again to them.
 lv_interrupt_unit_shards() {
-  local work="$1" log="$2" planned="$3" index
-  shift 3
-  kill "$@" 2>/dev/null
-  wait 2>/dev/null
-  for index in $(seq 1 "$planned"); do
-    [[ -f "$work/$index.logged" ]] && continue
+  local signal="$1" index
+  trap '' INT TERM HUP
+  if (( ${#LV_SHARD_PIDS[@]} > 0 )); then
+    kill "${LV_SHARD_PIDS[@]}" 2>/dev/null
+    wait "${LV_SHARD_PIDS[@]}" 2>/dev/null
+  fi
+  for index in $(seq 1 "$LV_SHARD_PLANNED"); do
+    [[ -f "$LV_SHARD_WORK/$index.logged" ]] && continue
     {
-      echo "==> Shard $index/$planned: INTERRUPTED; its output so far:"
-      cat "$work/$index.log" 2>/dev/null
-    } | tee -a "$log"
+      echo "==> Shard $index/$LV_SHARD_PLANNED: INTERRUPTED; its output so far:"
+      cat "$LV_SHARD_WORK/$index.log" 2>/dev/null
+    } | tee -a "$LV_SHARD_LOG"
   done
-  rm -rf "$work"
+  rm -rf "$LV_SHARD_WORK"
+  trap - INT TERM HUP
+  eval "$LV_SHARD_SAVED_TRAPS"
+  kill -s "$signal" $$
+  # Reached only when the caller's handler returned instead of exiting.
+  case "$signal" in
+    HUP) exit 129 ;;
+    INT) exit 130 ;;
+    *) exit 143 ;;
+  esac
 }
