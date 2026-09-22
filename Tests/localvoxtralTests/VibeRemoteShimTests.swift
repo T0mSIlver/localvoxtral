@@ -34,11 +34,20 @@ final class VibeRemoteShimTests: XCTestCase {
         let curl = sharedStubDir.appendingPathComponent("curl")
         guard !FileManager.default.fileExists(atPath: curl.path) else { return }
         // One numbered capture per invocation: argv, the header file, the body.
+        //
+        // Everything here that can be a shell builtin is one: the suite runs
+        // the REAL shim, which already spends ~15 process spawns per hook
+        // (`ps -ax` in compact.py among them), and a stub that added `ls`,
+        // `grep` and `env` to each of the two dials per run made the test
+        // harness a measurable share of the suite. The invocation counter is a
+        // probe loop rather than `ls | grep -c`, and the environment dump is
+        // written only for the one case that reads it.
         let stub = """
         #!/bin/sh
-        n=$(($(ls "$FAKE_CURL_DIR" | grep -c '^argv-') + 1))
+        n=1
+        while [ -e "$FAKE_CURL_DIR/argv-$n" ]; do n=$((n + 1)); done
         printf '%s\\n' "$@" >"$FAKE_CURL_DIR/argv-$n"
-        env >"$FAKE_CURL_DIR/env-$n"
+        [ -n "${FAKE_CURL_DUMP_ENV:-}" ] && env >"$FAKE_CURL_DIR/env-$n"
         while [ "$#" -gt 0 ]; do
           case "$1" in
           --header) case "$2" in @*) cp "${2#@}" "$FAKE_CURL_DIR/header-$n" ;; esac; shift ;;
@@ -293,7 +302,9 @@ final class VibeRemoteShimTests: XCTestCase {
         // A shell exports what it imported from its environment. Vibe started
         // with TOKEN exported must not make curl (or compact.py) inherit the
         // host's bearer token through that name.
-        _ = try runShim(payload(event: "post_agent"), environment: ["TOKEN": "inherited-and-exported"])
+        _ = try runShim(payload(event: "post_agent"), environment: [
+            "TOKEN": "inherited-and-exported", "FAKE_CURL_DUMP_ENV": "1",
+        ])
         XCTAssertEqual(dialCount, 2)
         for index in 1...2 {
             let environment = try captured("env", index)
