@@ -8,8 +8,10 @@ session state the views read. The dictation itself lives in
 - `DictationSessionController.swift` — session state, start and stop, the
   realtime clients, the stop's inputs to the commit
 - `DictationSessionController+Session.swift` — managed-backend wait, connect
-  and its timeout, stop-finalization, the stop-commit that drives
-  `StopCommitCoordinator`, connection-failure handling
+  and its timeout, stop-finalization, connection-failure handling
+- `DictationSessionController+StopCommit.swift` — the stop-commit: each
+  output path's finish, the overlay commit and its polish task (driving
+  `StopCommitCoordinator`), the session record
 - `DictationSessionController+RealtimeEvents.swift` — realtime event routing
 - `DictationSessionController+Reconnect.swift` — the bounded retry run behind a
   socket that drops mid-dictation

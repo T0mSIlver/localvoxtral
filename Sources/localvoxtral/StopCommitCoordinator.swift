@@ -5,10 +5,11 @@ import Foundation
 /// dictionary, payload macro), the profile and templates, the sample it takes
 /// of the world before the async task starts, the two clipboard gates, the
 /// gather-assemble-send step, the overlay commit, the record's provenance,
-/// and — in a dogfood build — the capture record. The view model supplies
-/// the session's inputs — the replacement dictionary it latched at start, and
-/// the commit target whose bundle ID picks the profile — and applies the
-/// outcome; `PolishRequestGoldenTests` pins what those inputs produce.
+/// and — in a dogfood build — the capture record. The session's stop-commit
+/// (`DictationSessionController+StopCommit.swift`) supplies its inputs — the
+/// transcript, the replacement dictionary latched at start, the commit target
+/// whose bundle ID picks the profile — and applies the outcome;
+/// `PolishRequestGoldenTests` pins what those inputs produce.
 ///
 /// It touches nothing but what it is handed — `capture` clears the
 /// context's captures, `commit` inserts through the overlay, `polish`

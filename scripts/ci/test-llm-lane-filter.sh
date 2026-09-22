@@ -127,6 +127,8 @@ expect false "a view model or session change does not run the lane" \
   Sources/localvoxtral/DictationSessionController+Session.swift
 expect true "the stop-commit's polish step runs the lane" \
   Sources/localvoxtral/StopCommitCoordinator.swift
+expect true "the session's stop-commit, which feeds it, runs the lane" \
+  Sources/localvoxtral/DictationSessionController+StopCommit.swift
 # The pure polish pieces moved to the core target (#432 step 9) and still run it.
 expect true "the token guard in the core target runs the lane" \
   Sources/localvoxtralCore/PolishTokenGuard.swift
