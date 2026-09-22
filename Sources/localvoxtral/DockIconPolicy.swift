@@ -27,6 +27,9 @@ import AppKit
 @MainActor
 final class DockIconPolicy {
     private var openWindows: Set<ObjectIdentifier> = []
+    /// Windows the app has asked for and not yet seen. They count like open
+    /// ones — see `beginWindowOpening`.
+    private var windowsBeingOpened = 0
     private var appliedPolicy: NSApplication.ActivationPolicy
     /// Returns whether the process actually took the policy. A refusal leaves
     /// this object's belief untouched, so the next window registration tries
@@ -59,9 +62,29 @@ final class DockIconPolicy {
         applyIfChanged()
     }
 
+    /// Shows the Dock icon for a window that is being ASKED for, before it
+    /// exists.
+    ///
+    /// Not cosmetic: `.regular` is also what gives the process its main menu,
+    /// and the SwiftUI `Settings` scene answers `showSettingsWindow:` through
+    /// that menu. Asked as `.accessory` — which is what a launch is, before
+    /// any window — the action is accepted and opens nothing (#449, measured
+    /// on the packaged build over eight asks in 1.75 s).
+    func beginWindowOpening() {
+        windowsBeingOpened += 1
+        applyIfChanged()
+    }
+
+    /// Balances `beginWindowOpening`. The window that opened has registered
+    /// itself by now, so the icon stays; if none did, it goes away again.
+    func endWindowOpening() {
+        windowsBeingOpened = max(0, windowsBeingOpened - 1)
+        applyIfChanged()
+    }
+
     private func applyIfChanged() {
         let desired: NSApplication.ActivationPolicy =
-            openWindows.isEmpty ? .accessory : .regular
+            openWindows.isEmpty && windowsBeingOpened == 0 ? .accessory : .regular
         guard desired != appliedPolicy else { return }
         guard apply(desired) else { return }
         appliedPolicy = desired

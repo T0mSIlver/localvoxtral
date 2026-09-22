@@ -1068,6 +1068,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openWindow(on tab: SettingsTab) {
         settingsNavigator.selectedTab = tab
         Task { @MainActor in
+            // The Dock icon goes up FIRST, and with it the app's main menu:
+            // `showSettingsWindow:` is answered through that menu, so an
+            // accessory app — which is what a launch is, before any window —
+            // gets the action accepted and no window (#449). Released below,
+            // by which point the window that opened has registered itself and
+            // holds the icon on its own.
+            dockIconPolicy.beginWindowOpening()
+            defer { dockIconPolicy.endWindowOpening() }
             let opener = AppWindowOpener(
                 show: {
                     NSApp.activate(ignoringOtherApps: true)
@@ -1080,7 +1088,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             guard let attempt = await opener.open() else {
                 Log.diagnostics.error(
-                    "The localvoxtral window never opened; showSettingsWindow: was answered but no window appeared."
+                    """
+                    The localvoxtral window never opened; showSettingsWindow: was answered \
+                    but no window appeared. Windows now: \
+                    \(AppDelegate.windowSummary(), privacy: .public)
+                    """
                 )
                 return
             }
@@ -1090,6 +1102,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }
         }
+    }
+
+    /// Every window the process has, for the one log line that has to explain
+    /// why the window the user asked for is not on screen.
+    private static func windowSummary() -> String {
+        let windows = NSApp.windows.map { window in
+            "\(window.title.isEmpty ? "<untitled>" : window.title)"
+                + "[\(type(of: window)) visible=\(window.isVisible)]"
+        }
+        return windows.isEmpty ? "none" : windows.joined(separator: ", ")
     }
 
     /// The scene's window, by the title `SettingsWindowChromeView` keeps on it.

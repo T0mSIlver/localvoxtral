@@ -79,6 +79,53 @@ final class DockIconPolicyTests: XCTestCase {
 
     /// `DockIconWindowRegistrarView` deregisters from both `willClose` and
     /// view teardown, so the same window can be removed twice.
+    /// The Dock icon — and the main menu that comes with it — has to be up
+    /// BEFORE the window is asked for, or the SwiftUI Settings scene answers
+    /// and opens nothing (#449).
+    func testAWindowBeingOpenedShowsTheDockIconBeforeItExists() {
+        let policy = makePolicy()
+
+        policy.beginWindowOpening()
+
+        XCTAssertEqual(applied, [.regular])
+        XCTAssertEqual(policy.currentPolicy, .regular)
+    }
+
+    func testAWindowThatOpenedKeepsTheIconWhenTheOpenEnds() {
+        let policy = makePolicy()
+        policy.beginWindowOpening()
+        policy.addWindow(settingsID)
+
+        policy.endWindowOpening()
+
+        XCTAssertEqual(applied, [.regular])
+        XCTAssertEqual(policy.currentPolicy, .regular)
+    }
+
+    /// An ask that never produced a window must not leave the app with a Dock
+    /// tile and nothing to switch to.
+    func testAnOpenThatNeverArrivedGivesTheIconBack() {
+        let policy = makePolicy()
+        policy.beginWindowOpening()
+
+        policy.endWindowOpening()
+
+        XCTAssertEqual(applied, [.regular, .accessory])
+    }
+
+    /// Two asks at once (the launch one and a wizard link) are one hold.
+    func testOverlappingOpensHoldTheIconUntilTheLastOneEnds() {
+        let policy = makePolicy()
+        policy.beginWindowOpening()
+        policy.beginWindowOpening()
+
+        policy.endWindowOpening()
+        XCTAssertEqual(policy.currentPolicy, .regular)
+
+        policy.endWindowOpening()
+        XCTAssertEqual(applied, [.regular, .accessory])
+    }
+
     func testRemovingAnAlreadyClosedWindowIsANoOp() {
         let policy = makePolicy()
 
