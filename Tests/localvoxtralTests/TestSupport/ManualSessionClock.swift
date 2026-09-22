@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import XCTest
 @testable import localvoxtral
 
 /// A `SessionClock` a test advances by hand. A sleep returns when `advance`
@@ -107,8 +108,32 @@ final class ManualSessionClock: Sendable {
 
     /// Returns once at least `count` timers are armed: how a test knows the
     /// task it woke has reached its next sleep. Only wait for a timer the
-    /// code under test is certain to arm; nothing else resumes this.
-    func waitForSleepers(_ count: Int) async {
+    /// code under test is certain to arm. If it never arms one, the test
+    /// fails after `failAfter` seconds of wall time instead of hanging the
+    /// suite: a bound on a failure, never a wait a passing test relies on.
+    func waitForSleepers(
+        _ count: Int,
+        failAfter: TimeInterval = 10,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let armed = XCTestExpectation(description: "\(count) timer(s) armed on the session clock")
+        let waiting = Task {
+            await self.untilSleepers(count)
+            armed.fulfill()
+        }
+        let result = await XCTWaiter().fulfillment(of: [armed], timeout: failAfter)
+        if result != .completed {
+            waiting.cancel()
+            XCTFail(
+                "no \(count) timer(s) were ever armed on the session clock",
+                file: file,
+                line: line
+            )
+        }
+    }
+
+    private func untilSleepers(_ count: Int) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             let ready = self.state.withLock { state -> Bool in
                 if state.sleepers.count >= count { return true }

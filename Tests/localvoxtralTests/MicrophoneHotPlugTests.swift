@@ -85,6 +85,33 @@ final class MicrophoneHotPlugTests: XCTestCase {
         XCTAssertEqual(settings.selectedInputDeviceUID, usb.id)
     }
 
+    /// The popover reads the device list, the selection and the channel count
+    /// through the view model, which forwards them from the audio pipeline.
+    func testThePopoverSeesPlugsAndSelectionsThroughTheViewModel() {
+        let settings = makeSettings()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false,
+            dependencies: .init(microphone: { FakeMicrophoneCaptureService() })
+        )
+        retainForTestProcessLifetime(viewModel)
+        viewModel.fakeMicrophone.configureDevices([builtIn], defaultInputDeviceID: builtIn.id)
+        viewModel.refreshMicrophoneInputs()
+        XCTAssertEqual(viewModel.availableInputDevices, [builtIn])
+        XCTAssertEqual(viewModel.selectedInputDeviceID, builtIn.id)
+
+        viewModel.fakeMicrophone.configureDevices([builtIn, usb], defaultInputDeviceID: builtIn.id)
+        // What the microphone's CoreAudio callback calls.
+        viewModel.audio.handleMicrophoneInputDevicesChanged()
+        XCTAssertEqual(viewModel.availableInputDevices, [builtIn, usb])
+
+        viewModel.selectMicrophoneInput(id: usb.id)
+        XCTAssertEqual(viewModel.selectedInputDeviceID, usb.id)
+        XCTAssertEqual(settings.selectedInputDeviceUID, usb.id)
+        XCTAssertEqual(viewModel.selectedInputDeviceChannelCount, 2)
+    }
+
     private func makePipeline() -> (SessionAudioPipeline, SettingsStore) {
         let suiteName = "localvoxtral.MicrophoneHotPlugTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
