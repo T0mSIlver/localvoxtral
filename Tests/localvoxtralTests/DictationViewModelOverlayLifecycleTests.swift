@@ -158,8 +158,6 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        // Prevent NSAlert from blocking test execution when the timeout path presents.
-        viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.isConnectingRealtimeSession = true
         viewModel.statusText = "Connecting to realtime backend..."
         viewModel.shortcuts.isPushToTalkShortcutHeld = true

@@ -66,7 +66,7 @@ final class SessionClockTests: XCTestCase {
         let promptTimeout = viewModel.session.microphonePermissionTimeoutTask
 
         await clock.waitForSleepers(1)
-        clock.advance(by: 119.9)
+        clock.advance(by: TimingConstants.microphonePermissionPromptTimeout - 0.1)
         XCTAssertEqual(clock.pendingSleepers, 1)
         XCTAssertTrue(viewModel.isAwaitingMicrophonePermission)
 
@@ -75,6 +75,35 @@ final class SessionClockTests: XCTestCase {
 
         XCTAssertFalse(viewModel.isAwaitingMicrophonePermission)
         XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready)
+    }
+
+    /// A second prompt cancels the first prompt's timeout, and a cancelled
+    /// sleep returns at once: that timeout must not then clear the second
+    /// prompt's flag (GLM's review of this step).
+    func testACancelledPromptTimeoutLeavesTheNewerPromptAlone() async {
+        let clock = ManualSessionClock()
+        let microphone = FakeMicrophoneCaptureService()
+        microphone.authorization = .notDetermined
+        let viewModel = makeViewModel(clock: clock, microphone: microphone)
+
+        viewModel.startDictation()
+        let firstTimeout = viewModel.session.microphonePermissionTimeoutTask
+        await clock.waitForSleepers(1)
+        // Declined: the flag drops, and the authorization stays notDetermined.
+        await awaitNextWrite(of: { viewModel.statusText }) {
+            microphone.resolvePendingAccess(granted: false)
+        }
+        XCTAssertFalse(viewModel.isAwaitingMicrophonePermission)
+
+        viewModel.startDictation()
+        XCTAssertTrue(viewModel.isAwaitingMicrophonePermission, "a second prompt is up")
+        await firstTimeout?.value
+
+        XCTAssertTrue(
+            viewModel.isAwaitingMicrophonePermission,
+            "the first prompt's cancelled timeout must not clear the second prompt"
+        )
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.requestingMicrophonePermission)
     }
 
     func testRecentFailureIndicatorResetsWhenTheClockSaysSo() async {

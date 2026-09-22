@@ -25,6 +25,9 @@ final class ManualSessionClock: Sendable {
         var now: Date
         var nextID: UInt64 = 0
         var sleepers: [Sleeper] = []
+        /// A cancellation that landed before its sleep registered. One that
+        /// lands after `advance` already resumed the sleep also stays here;
+        /// ids are never reused, so it can match nothing later.
         var cancelledBeforeSuspending: Set<UInt64> = []
         var countWaiters: [CountWaiter] = []
 

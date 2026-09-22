@@ -1274,7 +1274,7 @@ extension DictationSessionController {
 
     func resolveConnectTimeout(
         timeoutSeconds: TimeInterval,
-        sleepFor: (TimeInterval) async -> Void = DictationSessionController.sleepForConnectTimeoutSocketErrorGrace
+        sleepFor: (TimeInterval) async -> Void
     ) async {
         guard isConnectingRealtimeSession else { return }
 
@@ -1298,10 +1298,6 @@ extension DictationSessionController {
 
         abortConnectingSession()
         handleConnectFailure(reason: .timedOut(timeoutSeconds: timeoutSeconds))
-    }
-
-    private static func sleepForConnectTimeoutSocketErrorGrace(_ duration: TimeInterval) async {
-        try? await Task.sleep(for: .seconds(duration))
     }
 
     func handleConnectFailure(reason: RealtimeConnectFailureReason) {

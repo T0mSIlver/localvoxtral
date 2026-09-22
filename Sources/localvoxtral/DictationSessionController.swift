@@ -600,8 +600,10 @@ final class DictationSessionController {
             }
             microphonePermissionTimeoutTask?.cancel()
             microphonePermissionTimeoutTask = Task { [weak self, clock = dependencies.clock] in
-                await clock.sleep(.seconds(120))
-                guard let self, self.isAwaitingMicrophonePermission else { return }
+                await clock.sleep(.seconds(TimingConstants.microphonePermissionPromptTimeout))
+                // A cancelled timeout belongs to a prompt a newer one replaced:
+                // it must not clear the newer prompt's flag.
+                guard let self, !Task.isCancelled, self.isAwaitingMicrophonePermission else { return }
                 self.isAwaitingMicrophonePermission = false
                 self.statusText = StatusStrings.ready
                 if self.shortcuts.shouldCancelPushToTalkStartAfterConnect() {
