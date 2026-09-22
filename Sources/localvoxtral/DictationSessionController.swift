@@ -12,6 +12,10 @@ import os
 /// rest of the app and is the facade the views bind to: it forwards the
 /// session state they read. `ShortcutController` and `PermissionsCoordinator`
 /// talk to this type directly.
+///
+/// The view model's deinit tears the session down; this type has none. Keep
+/// every task and closure it starts `[weak self]`, or one could outlive that
+/// teardown.
 @MainActor
 @Observable
 final class DictationSessionController {
