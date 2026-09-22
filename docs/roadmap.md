@@ -25,7 +25,6 @@ constraints this repo adds, and the proof a PR needs to carry.
 
 - [Duck other audio while dictating, and fade it back](https://github.com/T0mSIlver/localvoxtral/issues/375)
 - [A dropped WebSocket ends the dictation instead of reconnecting](https://github.com/T0mSIlver/localvoxtral/issues/380)
-- [Dictation history you can actually look at](https://github.com/T0mSIlver/localvoxtral/issues/378)
 - [Let the overlay be moved, and remember where](https://github.com/T0mSIlver/localvoxtral/issues/379)
 - [The shortcut recorder refuses function keys that would work fine](https://github.com/T0mSIlver/localvoxtral/issues/377)
 

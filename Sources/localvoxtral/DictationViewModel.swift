@@ -270,6 +270,9 @@ final class DictationViewModel {
     private(set) var mistralUsageLedger: MistralUsageLedger?
     /// Bumped on every ledger write so the Usage row re-reads the ledger.
     private(set) var mistralUsageRevision = 0
+    /// Bumped after every history write that landed, so the History pane
+    /// reads the store again.
+    private(set) var dictationHistoryRevision = 0
 
     /// The in-flight key check. Kept awaitable so the unit suite observes the
     /// result without polling a clock.
@@ -986,6 +989,7 @@ final class DictationViewModel {
         textInsertion.refreshAccessibilityTrustState()
         if startRuntimeServices {
             sessionStore = DictationSessionStore()
+            sessionStore?.onChange = { [weak self] in self?.dictationHistoryRevision += 1 }
             applyDictationHistoryRetention()
             learnedTermStore = LearnedTermStore(
                 fileURL: LearnedTermStore.defaultFileURL(),

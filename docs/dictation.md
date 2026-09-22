@@ -53,6 +53,29 @@ glance, a **microphone picker**, an auto-copy toggle for the final text, and
 — after a polished commit — the raw transcript one click away. LLM polishing
 prompts are editable (see the config folder below).
 
+## History
+
+Every dictation is saved on this Mac, in plain text, in
+`~/Library/Application Support/default.store`. Nothing in it leaves the
+machine, except that the term suggestion pass sends recent dictations to your
+hosted polishing model when you have one.
+
+**History** in the menu bar popover opens the list, newest first:
+
+- Search covers the transcript and the polished text. The filter keeps the
+  dictations that were **Not inserted** (the text never reached the app, so
+  this list is the only copy) or whose polishing failed.
+- Click a row for the whole text. When polishing or a replacement changed it,
+  the transcript is shown under it with the removed words marked, and
+  **Copy Transcript** copies the unchanged version.
+- **Delete** removes the dictation from the store. **Delete All…** removes
+  every one.
+
+**Keep dictations** sets how long they stay: forever (the default), 90, 30 or
+7 days, or **Don't keep**, which deletes what is saved and saves nothing new.
+A shorter setting says how many dictations it deletes and asks before it does.
+Term suggestions read this history, so they stop under Don't keep.
+
 ## Settings
 
 Open **Settings** from the menu bar popover:

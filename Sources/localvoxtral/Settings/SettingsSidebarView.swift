@@ -22,6 +22,7 @@ extension SettingsTab {
         case .integrationsRemote: return "Remote hosts"
         case .terminal: return terminalApp?.displayName ?? "Terminal"
         case .about: return "About"
+        case .history: return "History"
         }
     }
 
@@ -45,6 +46,8 @@ extension SettingsTab {
         case .integrationsRemote: return .symbolMark(systemName: "network")
         case .terminal: return terminalApp?.sidebarIcon ?? .symbolMark(systemName: "terminal")
         case .about: return .tile(systemImage: "info.circle.fill", tint: Color(nsColor: .systemGray))
+        case .history:
+            return .tile(systemImage: "clock.arrow.circlepath", tint: Color(nsColor: .systemOrange))
         }
     }
 

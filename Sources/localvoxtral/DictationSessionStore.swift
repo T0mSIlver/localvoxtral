@@ -95,6 +95,8 @@ struct DictationHistoryQuery: Equatable, Sendable {
     /// diacritics. Empty matches everything.
     var searchText = ""
     var filter = Filter.all
+    /// Only dictations that started at or after this. Nil is all of them.
+    var since: Date?
     var limit = 500
 }
 
@@ -222,6 +224,7 @@ final class DictationSessionStore {
             let notInsertedOnly = query.filter == .notInserted
             let polishFailedOnly = query.filter == .polishFailed
             let polishFailed = DictationSessionStatus.llmFailed.rawValue
+            let since = query.since ?? .distantPast
             var descriptor = FetchDescriptor<DictationSessionRecord>(
                 predicate: #Predicate { record in
                     (matchAnyText
@@ -229,6 +232,7 @@ final class DictationSessionStore {
                         || (record.polishedText?.localizedStandardContains(search) == true))
                         && (!notInsertedOnly || !record.commitSucceeded)
                         && (!polishFailedOnly || record.status == polishFailed)
+                        && record.startedAt >= since
                 },
                 sortBy: [SortDescriptor(\.startedAt, order: .reverse)]
             )
@@ -254,6 +258,17 @@ final class DictationSessionStore {
         await read("count dictations") { context in
             try context.fetchCount(FetchDescriptor<DictationSessionRecord>())
         } ?? 0
+    }
+
+    /// How many dictations `trim(olderThan:)` would delete, for the question
+    /// the History pane asks before shortening the retention. Nil when the
+    /// store could not say: a failed count is not "nothing to delete".
+    func count(olderThan cutoff: Date) async -> Int? {
+        await read("count dictations before a cutoff") { context in
+            try context.fetchCount(
+                FetchDescriptor<DictationSessionRecord>(
+                    predicate: #Predicate { $0.startedAt < cutoff }))
+        }
     }
 
     /// The text each recent dictation ended up as (polished when there was a

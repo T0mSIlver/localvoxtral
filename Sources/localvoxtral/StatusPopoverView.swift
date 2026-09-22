@@ -32,6 +32,7 @@ struct StatusPopoverView: View {
     @Environment(\.openSettings) private var openSettings
 
     var viewModel: DictationViewModel
+    var navigator: SettingsNavigator
 
     private var hasLatestSegment: Bool {
         !viewModel.lastFinalSegment.trimmed.isEmpty
@@ -117,7 +118,15 @@ struct StatusPopoverView: View {
 
             Divider()
 
+            // Same window as Settings, opened on its History pane.
+            Button("History") {
+                navigator.selectedTab = .history
+                NSApp.activate(ignoringOtherApps: true)
+                openSettings()
+            }
+
             Button("Settings…") {
+                if navigator.selectedTab == .history { navigator.selectedTab = .general }
                 NSApp.activate(ignoringOtherApps: true)
                 openSettings()
             }

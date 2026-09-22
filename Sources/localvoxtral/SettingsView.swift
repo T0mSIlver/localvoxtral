@@ -163,7 +163,8 @@ struct SettingsView: View {
         // for something outside the app (a harness, a terminal, a host).
         // Context sits among them since PR #310, so its consents are shown
         // by the pane's toggles, not by the row.
-        case .general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about:
+        case .general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about,
+            .history:
             return nil
         }
     }
@@ -263,6 +264,8 @@ struct SettingsView: View {
                 }
             case .about:
                 AboutSettingsPane(settings: settings, viewModel: viewModel)
+            case .history:
+                HistorySettingsPane(settings: settings, viewModel: viewModel)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -297,7 +300,7 @@ private struct GeneralSettingsPane: View {
     }
 }
 
-private enum SettingsLayout {
+enum SettingsLayout {
     static let pageSpacing: CGFloat = 16
     static let pagePadding: CGFloat = 18
     static let sectionSpacing: CGFloat = 10
@@ -2746,7 +2749,7 @@ private struct AboutSettingsPane: View {
     }
 }
 
-private struct SettingsPage<Content: View>: View {
+struct SettingsPage<Content: View>: View {
     /// Identifies the pane's content subtree to the AX drills
     /// (`settings.pane.<rawValue>`), which scope their content assertions to it
     /// so a sidebar row's label can never satisfy a pane assertion.
@@ -3001,7 +3004,7 @@ private struct SpeakerTermsFlow: Layout {
     }
 }
 
-private struct SettingsGroup<Content: View>: View {
+struct SettingsGroup<Content: View>: View {
     let title: String
     /// When set, the group's header row carries ONE "Learn more" link to this
     /// page (owner review, 2026-09-07): details a row's one-line help can no
@@ -3057,7 +3060,7 @@ private struct SettingsGroup<Content: View>: View {
 /// Insets + trailing divider shared by everything that is a row of a
 /// `SettingsGroup`. The divider is inset like the row's content, so it reads
 /// as a separator between rows rather than a rule across the card.
-private struct SettingsGroupRow<Content: View>: View {
+struct SettingsGroupRow<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -3312,7 +3315,7 @@ struct SettingsFieldRow<Content: View, Footer: View>: View {
     }
 }
 
-private struct SettingsHelpText: View {
+struct SettingsHelpText: View {
     let text: String
 
     init(_ text: String) {
