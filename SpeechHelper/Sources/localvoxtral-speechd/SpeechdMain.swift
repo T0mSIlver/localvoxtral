@@ -2,8 +2,9 @@ import Foundation
 import SpeechEngine
 import SpeechEngineText
 
-/// localvoxtral's bundled realtime ASR engine: loads the Voxtral MLX model and serves the
-/// OpenAI-Realtime websocket subset on loopback, a drop-in for the Python `voxmlx` process.
+/// localvoxtral's bundled realtime ASR engine: loads the MLX model named by `--model` (or
+/// `--model-dir`) and serves the OpenAI-Realtime websocket subset on loopback, a drop-in for
+/// the Python `voxmlx` process.
 /// Spawned and supervised by the app (BackendProcessSupervisor); the model is loaded BEFORE
 /// the listener binds, so `/health` becoming reachable is the readiness signal (matching the
 /// supervisor's readinessURL contract).

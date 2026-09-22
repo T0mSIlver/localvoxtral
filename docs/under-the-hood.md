@@ -45,6 +45,17 @@ supervises two inference engines for you — no terminal required:
   against a session left running, not a speed limit: the helper holds a
   steady 4.2 GB and stays ahead of live speech for at least three hours. On
   reaching the limit it stops and says so in the menu bar.
+
+  The Engines pane also offers
+  [NVIDIA Nemotron 3.5 ASR Streaming 0.6B in 8-bit](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit),
+  for Macs where the speech model and the polish model compete for memory:
+  0.8 GB on disk against Voxtral's 2.6 GB. It is a cache-aware streaming
+  RNN-T rather than a decoder that attends over the whole utterance, so it
+  transcribes in fixed 320 ms chunks, and it is the less accurate of the
+  two. NVIDIA publishes it under OpenMDW 1.1. Changing the picker restarts
+  the helper and downloads the new checkpoint. Both models are pinned to an
+  exact Hugging Face commit, and the app downloads and loads that commit,
+  never the repo's moving `main`.
 - **Polishing — `localvoxtral-polishd`**, a bundled Swift helper built on
   Apple's [MLX Swift](https://github.com/ml-explore/mlx-swift-lm), runs
   [Qwen3.5-4B-OptiQ in 4-bit](https://huggingface.co/mlx-community/Qwen3.5-4B-OptiQ-4bit)

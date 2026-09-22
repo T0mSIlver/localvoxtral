@@ -92,21 +92,16 @@ public struct UtteranceStopReporter: Equatable, Sendable {
 
     public init() {}
 
-    /// Returns the stop to report, or nil when there is nothing new to report. The token
-    /// count is only read when a report is due: the engine hands out a copy of its whole
-    /// token array, and every step after a stop would otherwise pay for it.
-    public mutating func check(
-        isFinished: Bool,
-        decodedTokenCount: @autoclosure () -> Int,
-        maxDecodedTokens: Int
-    ) -> UtteranceStop? {
-        guard !reported, isFinished,
-              let stop = UtteranceStop.classify(
-                isFinished: isFinished,
-                decodedTokenCount: decodedTokenCount(),
-                maxDecodedTokens: maxDecodedTokens
-              )
-        else { return nil }
+    /// Returns the stop to report, or nil when there is nothing new to report. Each
+    /// streaming engine classifies its own stop (Voxtral's decoder hits a token cap;
+    /// Nemotron's RNN-T never ends a stream, so its session caps the audio it accepts),
+    /// hence an already-classified argument.
+    ///
+    /// The stop is evaluated only while a report is still possible: classifying a Voxtral
+    /// session copies its whole token array, and every step after a stop would otherwise
+    /// pay for it.
+    public mutating func report(_ stop: @autoclosure () -> UtteranceStop?) -> UtteranceStop? {
+        guard !reported, let stop = stop() else { return nil }
         reported = true
         return stop
     }

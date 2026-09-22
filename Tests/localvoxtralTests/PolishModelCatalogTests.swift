@@ -63,9 +63,9 @@ final class PolishModelCatalogTests: XCTestCase {
         )
         try Data("\(otherRevision)\n".utf8).write(to: repoDirectory.appending(path: "refs/main"))
 
-        XCTAssertTrue(PolishModelCache.isDownloaded(repoID: repoID, cacheRoot: cacheRoot))
+        XCTAssertTrue(ManagedModelCache.isDownloaded(repoID: repoID, cacheRoot: cacheRoot))
         XCTAssertFalse(
-            PolishModelCache.isDownloaded(
+            ManagedModelCache.isDownloaded(
                 repoID: repoID,
                 revision: pinned,
                 cacheRoot: cacheRoot
@@ -80,11 +80,11 @@ final class PolishModelCatalogTests: XCTestCase {
         )
         try Data().write(to: pinnedSnapshot.appending(path: "config.json"))
         XCTAssertFalse(
-            PolishModelCache.isDownloaded(repoID: repoID, revision: pinned, cacheRoot: cacheRoot)
+            ManagedModelCache.isDownloaded(repoID: repoID, revision: pinned, cacheRoot: cacheRoot)
         )
         try Data("weights".utf8).write(to: pinnedSnapshot.appending(path: "model.safetensors"))
         XCTAssertTrue(
-            PolishModelCache.isDownloaded(repoID: repoID, revision: pinned, cacheRoot: cacheRoot)
+            ManagedModelCache.isDownloaded(repoID: repoID, revision: pinned, cacheRoot: cacheRoot)
         )
     }
 
@@ -119,7 +119,7 @@ final class PolishModelCatalogTests: XCTestCase {
             withIntermediateDirectories: true
         )
 
-        XCTAssertFalse(PolishModelCache.isDownloaded(repoID: repoID, cacheRoot: cacheRoot))
+        XCTAssertFalse(ManagedModelCache.isDownloaded(repoID: repoID, cacheRoot: cacheRoot))
 
         // config.json lands FIRST in a real download — its presence alone is
         // the mid-download state and must NOT read as downloaded (field
@@ -130,7 +130,7 @@ final class PolishModelCatalogTests: XCTestCase {
                 contents: Data()
             )
         )
-        XCTAssertFalse(PolishModelCache.isDownloaded(repoID: repoID, cacheRoot: cacheRoot))
+        XCTAssertFalse(ManagedModelCache.isDownloaded(repoID: repoID, cacheRoot: cacheRoot))
 
         XCTAssertTrue(
             FileManager.default.createFile(
@@ -138,7 +138,7 @@ final class PolishModelCatalogTests: XCTestCase {
                 contents: Data("weights".utf8)
             )
         )
-        XCTAssertTrue(PolishModelCache.isDownloaded(repoID: repoID, cacheRoot: cacheRoot))
+        XCTAssertTrue(ManagedModelCache.isDownloaded(repoID: repoID, cacheRoot: cacheRoot))
     }
 
     func testCachePresenceChecksAllShardsAgainstTheWeightIndex() throws {
@@ -175,7 +175,7 @@ final class PolishModelCatalogTests: XCTestCase {
                 contents: Data("shard".utf8)
             )
         )
-        XCTAssertFalse(PolishModelCache.isDownloaded(repoID: repoID, cacheRoot: cacheRoot))
+        XCTAssertFalse(ManagedModelCache.isDownloaded(repoID: repoID, cacheRoot: cacheRoot))
 
         XCTAssertTrue(
             FileManager.default.createFile(
@@ -183,7 +183,7 @@ final class PolishModelCatalogTests: XCTestCase {
                 contents: Data("shard".utf8)
             )
         )
-        XCTAssertTrue(PolishModelCache.isDownloaded(repoID: repoID, cacheRoot: cacheRoot))
+        XCTAssertTrue(ManagedModelCache.isDownloaded(repoID: repoID, cacheRoot: cacheRoot))
     }
 
     func testCachePresenceFollowsMainReference() throws {
@@ -215,7 +215,7 @@ final class PolishModelCatalogTests: XCTestCase {
         )
 
         XCTAssertTrue(
-            PolishModelCache.isDownloaded(repoID: "owner/model", cacheRoot: cacheRoot)
+            ManagedModelCache.isDownloaded(repoID: "owner/model", cacheRoot: cacheRoot)
         )
     }
 
@@ -243,6 +243,6 @@ final class PolishModelCatalogTests: XCTestCase {
             withDestinationURL: cacheRoot.appending(path: "models--owner--model/blobs/missing")
         )
 
-        XCTAssertFalse(PolishModelCache.isDownloaded(repoID: repoID, cacheRoot: cacheRoot))
+        XCTAssertFalse(ManagedModelCache.isDownloaded(repoID: repoID, cacheRoot: cacheRoot))
     }
 }

@@ -104,10 +104,14 @@ final class SpeechHelperIntegrationTests: XCTestCase {
             "models--" + repoID.replacingOccurrences(of: "/", with: "--")
         )
         let snapshotsDir = repoDir.appendingPathComponent("snapshots")
-        let pinnedRevision = SpeechModelCatalog.option(forRepoID: repoID)?.revision
+        let catalogOption = SpeechModelCatalog.option(forRepoID: repoID)
+        let pinnedRevision = catalogOption?.revision
+        let engine = catalogOption?.engine ?? .voxtral
 
         if let pinnedRevision {
-            if Self.snapshotIsProvisioned(snapshotsDir.appendingPathComponent(pinnedRevision)) {
+            if Self.snapshotIsProvisioned(
+                snapshotsDir.appendingPathComponent(pinnedRevision), engine: engine
+            ) {
                 return
             }
         } else if let revision = try? String(
@@ -116,7 +120,9 @@ final class SpeechHelperIntegrationTests: XCTestCase {
         )
         .trimmingCharacters(in: .whitespacesAndNewlines),
             !revision.isEmpty,
-            Self.snapshotIsProvisioned(snapshotsDir.appendingPathComponent(revision))
+            Self.snapshotIsProvisioned(
+                snapshotsDir.appendingPathComponent(revision), engine: engine
+            )
         {
             return
         }
@@ -187,13 +193,21 @@ final class SpeechHelperIntegrationTests: XCTestCase {
 
     static let provisionedSentinel = ".localvoxtral-provisioned"
 
-    static func snapshotIsProvisioned(_ snapshot: URL) -> Bool {
+    /// Nemotron checkpoints carry their vocabulary inside `config.json`; only the
+    /// Voxtral loader needs the separate `tekken.json` tokenizer.
+    static func snapshotIsProvisioned(
+        _ snapshot: URL,
+        engine: SpeechEngineKind = .voxtral
+    ) -> Bool {
         let fileManager = FileManager.default
-        let hasRequiredMetadata = fileManager.fileExists(
+        var hasRequiredMetadata = fileManager.fileExists(
             atPath: snapshot.appendingPathComponent(provisionedSentinel).path
         )
             && fileManager.fileExists(atPath: snapshot.appendingPathComponent("config.json").path)
-            && fileManager.fileExists(atPath: snapshot.appendingPathComponent("tekken.json").path)
+        if engine == .voxtral {
+            hasRequiredMetadata = hasRequiredMetadata
+                && fileManager.fileExists(atPath: snapshot.appendingPathComponent("tekken.json").path)
+        }
         guard hasRequiredMetadata else { return false }
         if fileManager.fileExists(atPath: snapshot.appendingPathComponent("model.safetensors").path) {
             return true
@@ -239,6 +253,19 @@ final class SpeechHelperIntegrationTests: XCTestCase {
         }
 
         XCTAssertFalse(Self.snapshotIsProvisioned(snapshot))
+    }
+
+    func testSnapshotProvisioningSentinelDoesNotDemandVoxtralsTokenizerFromNemotron() throws {
+        let snapshot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("speechd-nemotron-snapshot-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: snapshot) }
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        for name in [Self.provisionedSentinel, "config.json", "model.safetensors"] {
+            try Data().write(to: snapshot.appendingPathComponent(name))
+        }
+
+        XCTAssertTrue(Self.snapshotIsProvisioned(snapshot, engine: .nemotron))
+        XCTAssertFalse(Self.snapshotIsProvisioned(snapshot, engine: .voxtral))
     }
 
     private func launchHelper(
@@ -436,10 +463,11 @@ final class SpeechHelperIntegrationTests: XCTestCase {
             extraArguments: ["--max-utterance-seconds", "\(limitSeconds)"]
         )
 
-        // The helper's cap is ceil(limit x 12.5) + 64 finish-padding tokens, and decoded
-        // tokens trail the audio by up to the 30-token maximum transcription delay. The cap
-        // must cross while audio is still streaming (the final commit path reports nothing),
-        // so the speech has to outlast that budget with room to spare.
+        // The cap must cross while audio is still streaming (the final commit path reports
+        // nothing), so the speech has to outlast the budget with room to spare. Voxtral's
+        // cap is the widest: ceil(limit x 12.5) + 64 finish-padding tokens, with decoded
+        // tokens trailing the audio by up to the 30-token maximum transcription delay.
+        // Nemotron caps on the audio itself, so it stops at the limit — well inside this.
         let maxDecodedTokens = Int((Double(limitSeconds) * 12.5).rounded(.up)) + 64
         let secondsToCrossCap = Double(maxDecodedTokens + 30) / 12.5
         let phrase = [

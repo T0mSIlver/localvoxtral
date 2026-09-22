@@ -80,6 +80,78 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertFalse(configuration.arguments.contains("--step-ms"))
     }
 
+    func testSpeechdDownloadsAndLaunchesTheSelectedCatalogModel() async throws {
+        let modelPreparer = FakeModelPreparer()
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
+        let selected = try XCTUnwrap(
+            SpeechModelCatalog.option(
+                forRepoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
+            )
+        )
+        let manager = makeManager(
+            modelPreparer: modelPreparer,
+            speechModelProvider: { selected },
+            supervisorFactory: supervisorFactory
+        )
+
+        try await manager.ensureReady(dictation: true, polishing: false)
+
+        let request = try XCTUnwrap(modelPreparer.prepareCalls.first)
+        XCTAssertEqual(request.repoID, selected.repoID)
+        XCTAssertEqual(request.revision, selected.revision)
+        let configuration = try XCTUnwrap(supervisorFactory.createdConfigurations.first)
+        let modelIndex = try XCTUnwrap(configuration.arguments.firstIndex(of: "--model"))
+        XCTAssertEqual(configuration.arguments[modelIndex + 1], selected.repoID)
+        let revisionIndex = try XCTUnwrap(
+            configuration.arguments.firstIndex(of: "--model-revision")
+        )
+        XCTAssertEqual(configuration.arguments[revisionIndex + 1], selected.revision)
+    }
+
+    /// A supervisor captures its argv once, so a model change under a running
+    /// helper must stop it and relaunch — otherwise the next dictation attaches
+    /// to the previous checkpoint.
+    func testSpeechdRelaunchesWhenTheSelectedModelChangesUnderARunningHelper() async throws {
+        let modelPreparer = FakeModelPreparer()
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
+        let first = SpeechModelCatalog.defaultOption
+        let second = try XCTUnwrap(
+            SpeechModelCatalog.option(
+                forRepoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
+            )
+        )
+        let selected = SpeechModelBox(first)
+        let manager = makeManager(
+            modelPreparer: modelPreparer,
+            speechModelProvider: { selected.value },
+            supervisorFactory: supervisorFactory
+        )
+
+        try await manager.ensureReady(dictation: true, polishing: false)
+        selected.value = second
+        try await manager.ensureReady(dictation: true, polishing: false)
+
+        XCTAssertEqual(modelPreparer.prepareCalls.map(\.repoID), [first.repoID, second.repoID])
+        XCTAssertEqual(supervisorFactory.createdConfigurations.count, 2)
+        let relaunch = supervisorFactory.createdConfigurations[1].arguments
+        let modelIndex = try XCTUnwrap(relaunch.firstIndex(of: "--model"))
+        XCTAssertEqual(relaunch[modelIndex + 1], second.repoID)
+    }
+
+    /// The counterpart: an unchanged selection must not restart anything.
+    func testSpeechdKeepsRunningWhenTheSelectedModelIsUnchanged() async throws {
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
+        let manager = makeManager(supervisorFactory: supervisorFactory)
+
+        try await manager.ensureReady(dictation: true, polishing: false)
+        try await manager.ensureReady(dictation: true, polishing: false)
+
+        XCTAssertEqual(supervisorFactory.createdConfigurations.count, 1)
+    }
+
     func testSpeechdCacheLimitAutoOmitsFlagAndPresetsAppendMegabytes() async throws {
         let option = SpeechModelCatalog.defaultOption
         let baseArguments = [
@@ -1074,6 +1146,9 @@ final class BackendManagerTests: XCTestCase {
         polishingModelProvider: @escaping BackendManager.PolishingModelProvider = {
             SettingsStore.defaultLLMPolishingModel
         },
+        speechModelProvider: @escaping BackendManager.SpeechModelProvider = {
+            SpeechModelCatalog.defaultOption
+        },
         speechdCacheLimitProvider: @escaping BackendManager.SpeechdCacheLimitProvider = { nil },
         speechdStepCadenceProvider: @escaping BackendManager.SpeechdStepCadenceProvider = { nil },
         supervisorFactory: FakeSupervisorFactory
@@ -1083,6 +1158,7 @@ final class BackendManagerTests: XCTestCase {
             layout: BackendInstallLayout(root: URL(fileURLWithPath: "/tmp/localvoxtral-backend-manager-tests")),
             legacyPortDefense: legacyPortDefense,
             polishingModelProvider: polishingModelProvider,
+            speechModelProvider: speechModelProvider,
             speechdCacheLimitProvider: speechdCacheLimitProvider,
             speechdStepCadenceProvider: speechdStepCadenceProvider,
             supervisorFactory: { configuration in
@@ -1097,6 +1173,16 @@ final class BackendManagerTests: XCTestCase {
 /// `var` still trips the sendable-capture warning — box it instead.
 private final class ProvidedValueBox: @unchecked Sendable {
     var value: Int?
+}
+
+/// Same idea for the speech-model provider, whose value is not an `Int?`.
+@MainActor
+private final class SpeechModelBox {
+    var value: SpeechModelOption
+
+    init(_ value: SpeechModelOption) {
+        self.value = value
+    }
 }
 
 private struct FixedLegacyPortDefense: LegacyVoxmlxPortDefending {

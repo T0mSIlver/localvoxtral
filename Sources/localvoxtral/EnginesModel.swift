@@ -301,6 +301,17 @@ final class EnginesModel {
         restartManagedDictationEngineForSettingChange(reason: "step interval changed")
     }
 
+    /// Same restart contract again, and the same reason: speechd loads its
+    /// checkpoint once, at launch. The new model downloads (with progress in
+    /// the status row) as part of that restart.
+    func applyManagedSpeechModelChange(_ repoID: String) {
+        guard let option = SpeechModelCatalog.option(forRepoID: repoID),
+              settings.managedSpeechModel != option.repoID
+        else { return }
+        settings.managedSpeechModel = option.repoID
+        restartManagedDictationEngineForSettingChange(reason: "dictation model changed")
+    }
+
     private func restartManagedDictationEngineForSettingChange(reason: String) {
         guard settings.dictationBackendMode == .managedLocal else { return }
         Log.backends.info(

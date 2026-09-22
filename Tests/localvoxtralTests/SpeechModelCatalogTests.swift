@@ -14,6 +14,7 @@ final class SpeechModelCatalogTests: XCTestCase {
     func testSpeechModelCatalogPinsFullCommitSHA() {
         let option = SpeechModelCatalog.defaultOption
         XCTAssertEqual(option.repoID, "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead")
+        XCTAssertEqual(option.engine, .voxtral)
         XCTAssertEqual(option.revision.count, 40)
         XCTAssertTrue(option.revision.allSatisfy(\.isHexDigit))
     }
@@ -47,5 +48,87 @@ final class SpeechModelCatalogTests: XCTestCase {
         )
         // CI and older build gates reach Voxtral on 8000 without reading the list.
         XCTAssertEqual(rows.first { $0[0] == "voxtral" }?[1], "8000")
+    }
+
+    func testEveryCatalogEntryIsUniqueAndPinnedToACommit() {
+        let repoIDs = SpeechModelCatalog.options.map(\.repoID)
+        XCTAssertEqual(Set(repoIDs).count, repoIDs.count)
+        for option in SpeechModelCatalog.options {
+            XCTAssertEqual(option.revision.count, 40, option.repoID)
+            XCTAssertTrue(option.revision.allSatisfy(\.isHexDigit), option.repoID)
+        }
+    }
+
+    func testNemotronEntryPinsItsRevisionAndEngine() throws {
+        let option = try XCTUnwrap(
+            SpeechModelCatalog.option(
+                forRepoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
+            )
+        )
+        XCTAssertEqual(option.engine, .nemotron)
+        XCTAssertEqual(option.revision, "7279359e4481b5e9e185a318bd618e429c6d86cd")
+        // The whole point of the second entry: it is the small one.
+        XCTAssertLessThan(option.sizeOnDiskGB, SpeechModelCatalog.defaultOption.sizeOnDiskGB)
+    }
+
+    /// The helper picks its engine from the repo id it is launched with, so a
+    /// catalog entry whose id does not map to its declared engine would load
+    /// the wrong model class. The helper's own inference is unit-tested in
+    /// `SpeechASREngineKindTests`; this pins the two sides together.
+    func testCatalogEngineMatchesTheRepoIDTheHelperInfersFrom() {
+        for option in SpeechModelCatalog.options {
+            let inferred = option.repoID.lowercased().contains("nemotron")
+                ? SpeechEngineKind.nemotron
+                : SpeechEngineKind.voxtral
+            XCTAssertEqual(option.engine, inferred, option.repoID)
+        }
+    }
+
+    func testPickerHelpTextNamesTheSizeAndDownloadState() throws {
+        let option = try XCTUnwrap(
+            SpeechModelCatalog.option(
+                forRepoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
+            )
+        )
+        // The size renders in the user's locale (0.8 / 0,8), so assert around it.
+        XCTAssertEqual(option.sizeOnDiskGB, 0.8)
+        let pending = SpeechModelPickerSupport.helpText(for: option, isDownloaded: false)
+        XCTAssertTrue(pending.hasPrefix("Lowest memory, less accurate. "), pending)
+        XCTAssertTrue(pending.hasSuffix(" GB, downloads on first use"), pending)
+        XCTAssertTrue(
+            SpeechModelPickerSupport.helpText(for: option, isDownloaded: true)
+                .hasSuffix(" GB, downloaded")
+        )
+    }
+
+    @MainActor
+    func testManagedSpeechModelSelectionPersistsAcrossLaunches() throws {
+        let defaults = makeSettingsDefaults()
+        let settings = makeSettings(defaults: defaults)
+        XCTAssertEqual(settings.resolvedManagedSpeechModel, SpeechModelCatalog.defaultOption)
+
+        let nemotron = try XCTUnwrap(
+            SpeechModelCatalog.option(
+                forRepoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
+            )
+        )
+        settings.managedSpeechModel = nemotron.repoID
+
+        let relaunched = makeSettings(defaults: defaults)
+        XCTAssertEqual(relaunched.resolvedManagedSpeechModel, nemotron)
+        // Managed mode reports the selected repo as the session's model name.
+        relaunched.dictationBackendMode = .managedLocal
+        XCTAssertEqual(relaunched.effectiveModelName(for: .realtimeAPI), nemotron.repoID)
+    }
+
+    @MainActor
+    func testStoredRepoOutsideTheCatalogFallsBackToTheDefault() {
+        let defaults = makeSettingsDefaults()
+        defaults.set("someone/retired-model", forKey: "settings.managed_speech_model")
+
+        let settings = makeSettings(defaults: defaults)
+
+        XCTAssertEqual(settings.resolvedManagedSpeechModel, SpeechModelCatalog.defaultOption)
+        XCTAssertEqual(settings.managedSpeechModel, SpeechModelCatalog.defaultOption.repoID)
     }
 }
