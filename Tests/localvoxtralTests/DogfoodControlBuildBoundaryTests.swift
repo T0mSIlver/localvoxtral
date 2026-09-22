@@ -73,6 +73,23 @@ final class DogfoodControlBuildBoundaryTests: XCTestCase {
     /// an ACTIVE `#if LOCALVOXTRAL_DOGFOOD` branch — never in its `#else`, and
     /// never outside a conditional at all.
     func testNoControlSocketReferenceEscapesTheDogfoodFlag() throws {
+        // The whole-file prefilter below searches `.literal`, which does not
+        // match across canonical equivalence. That is the same thing as
+        // `contains` only while every guarded token is ASCII, and ASCII has no
+        // decompositions — so a non-ASCII token added later would make the
+        // prefilter skip files it should have scanned, silently. Pinned here
+        // rather than left as a comment.
+        for token in Self.guardedTokens {
+            XCTAssertTrue(
+                token.allSatisfy(\.isASCII),
+                """
+                \(token) is not ASCII. The prefilter in this test matches \
+                literally; a non-ASCII token needs a prefilter that folds the \
+                way String.contains does, or no prefilter at all.
+                """
+            )
+        }
+
         let root = try Self.repositoryRoot()
         let sources = root.appendingPathComponent("Sources")
         var escapes: [String] = []
