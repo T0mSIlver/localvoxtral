@@ -29,16 +29,18 @@ fi
 
 # Newest commit first: the first time a path appears is its last touch. A
 # commit's header line is a tab followed by its time, which no unquoted path
-# can start with. Stops reading as soon as every tracked file has a time.
+# can start with. The log is read to its end on purpose: stopping once every
+# tracked file has a time would leave git writing into a closed pipe, and
+# under `pipefail` its SIGPIPE fails the whole script on any history longer
+# than one pipe buffer (test-restore-mtimes.sh pins this).
 git -c core.quotePath=false log --format='%x09%ct' --name-only --no-renames \
-  | awk -v total="$total" '
+  | awk '
       FNR == NR { tracked[$0] = 1; next }
       /^\t[0-9]+$/ { time = substr($0, 2); next }
       $0 == "" || !($0 in tracked) || ($0 in seen) { next }
       {
         seen[$0] = 1
         print time "\t" $0
-        if (++done >= total) exit
       }
     ' "$TRACKED" - \
   | perl -ne '

@@ -98,4 +98,39 @@ pass "idempotent"
 [[ "$NOW" -gt "$T4" ]] || fail "test setup: checkout mtime $NOW is not newer than $T4"
 pass "the fixture started from checkout-time mtimes"
 
+# --- a history longer than the pipe buffer ---------------------------------
+#
+# The script reads `git log` through a pipe under `set -o pipefail`. If the
+# reader stops before git has written everything, git dies of SIGPIPE and the
+# pipeline's status is 141, which `set -e` turns into a failed CI step. The
+# repository above fits in one pipe buffer, so it cannot show that; this one
+# is 4,000 commits touching one file, about 200 KB of log for a single
+# tracked file that every commit but the last leaves the reader nothing to
+# wait for.
+BIG="$TMP_DIR/big"
+mkdir -p "$BIG"
+cd "$BIG"
+git init -q
+git config user.name t
+git config user.email t@example.com
+git config commit.gpgsign false
+{
+  i=0
+  while [ "$i" -lt 4000 ]; do
+    i=$((i + 1))
+    printf 'commit refs/heads/main\ncommitter t <t@example.com> %d +0000\ndata 14\ncommit %06d\n' \
+      $((T1 + i)) "$i"
+    printf 'M 100644 inline a-file-with-a-deliberately-long-name-to-fill-the-pipe.txt\ndata 5\n%04d\n\n' \
+      $((i % 10000))
+  done
+} | git fast-import --quiet
+git checkout -q main
+touch a-file-with-a-deliberately-long-name-to-fill-the-pipe.txt
+OUT="$("$RESTORE" "$BIG")" || fail "a history longer than the pipe buffer made the script exit non-zero (SIGPIPE under pipefail)"
+[[ "$OUT" == "restore-mtimes: set 1 of 1 tracked files" ]] \
+  || fail "unexpected summary on the long history: '$OUT'"
+[[ "$(mtime a-file-with-a-deliberately-long-name-to-fill-the-pipe.txt)" == "$((T1 + 4000))" ]] \
+  || fail "the long history's file should carry its last commit time"
+pass "a history longer than the pipe buffer is read to the end"
+
 echo "all restore-mtimes checks passed"
