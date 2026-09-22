@@ -175,8 +175,8 @@
       "kind": "remoteSourceControl",
       "location": "https://github.com/apple/swift-nio.git",
       "state": {
-        "revision": "e932d3c4d8f77433c8f7093b5ebcbf91463948a0",
-        "version": "2.95.0"
+        "revision": "21de5f08c1a166a6dd293d0e587ad977bf8dac5d",
+        "version": "2.103.0"
       }
     },
     {
@@ -184,8 +184,8 @@
       "kind": "remoteSourceControl",
       "location": "https://github.com/apple/swift-nio-extras.git",
       "state": {
-        "revision": "3df009d563dc9f21a5c85b33d8c2e34d2e4f8c3b",
-        "version": "1.32.1"
+        "revision": "41449336c8ecfadac6b4b5be75f9c3c306e61ced",
+        "version": "1.35.1"
       }
     },
     {
@@ -193,8 +193,8 @@
       "kind": "remoteSourceControl",
       "location": "https://github.com/apple/swift-nio-http2.git",
       "state": {
-        "revision": "b6571f3db40799df5a7fc0e92c399aa71c883edd",
-        "version": "1.40.0"
+        "revision": "0f3e54e29c944c2e835ad52159da7d9e1c94ac69",
+        "version": "1.46.0"
       }
     },
     {
