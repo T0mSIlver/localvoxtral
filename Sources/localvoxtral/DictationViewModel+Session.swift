@@ -849,21 +849,20 @@ extension DictationViewModel {
                             // Trust the polishing model for both prompt profiles.
                             // Human evaluation found deterministic token repair
                             // could undo useful formatting and reconstruction.
-                            // Placeholder-count integrity for an explicit paste
-                            // macro remains independent below.
-                            var committedText = PolishOutcomeClassifier.committedText(
+                            //
+                            // Placeholder-count integrity stays independent of
+                            // that trust: a duplicated placeholder would paste
+                            // the payload twice, while dropping one of two
+                            // would lose a requested paste. It is the classifier
+                            // that compares standalone counts against the
+                            // grounded pre-polish text and, on mismatch,
+                            // discards the polish and returns that
+                            // placeholder-bearing text.
+                            let committedText = PolishOutcomeClassifier.committedText(
                                 polished: result.polishedText,
                                 groundedWorkingText: groundedWorkingText,
                                 clipboardPayload: clipboardPayload
                             )
-
-                            // Placeholder-count integrity stays independent of
-                            // trusting model text: a duplicated placeholder
-                            // would paste the payload twice, while dropping one
-                            // of two would lose a requested paste. Compare
-                            // standalone counts against the grounded pre-polish
-                            // text; on mismatch, discard the polish and keep
-                            // that placeholder-bearing text.
 
                             // Persist the PLACEHOLDER-bearing committed text —
                             // the clipboard payload must never enter the session
