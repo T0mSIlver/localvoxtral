@@ -271,6 +271,56 @@ quote_remote_command() {
   fi
 }
 
+# The build host's SSH gate refuses any payload holding a shell metacharacter
+# (`payload_has_safe_chars` in scripts/mac/localvoxtral-build-gate.sh) and
+# writes the reason only to its own log on the Mac. From here that denial
+# reads as a bare exit 126 after a full tree sync, so the same characters are
+# refused locally, before the round trip, with the reason and the workaround
+# (#431). The blocklist stays the gate's; this is a copy of it, kept
+# byte-identical to the pattern that function matches.
+GATE_BLOCKED_CHARS=$'\n\r`$;&|<>(){}[]!*?~#\\'
+GATE_BLOCKED_CHAR=""
+
+# Sets GATE_BLOCKED_CHAR to the first character of $1 the gate refuses.
+find_gate_blocked_char() {
+  local text="$1" i
+  GATE_BLOCKED_CHAR=""
+  for (( i = 0; i < ${#text}; i++ )); do
+    case "$GATE_BLOCKED_CHARS" in
+      *"${text:i:1}"*) GATE_BLOCKED_CHAR="${text:i:1}"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# Checked against the argument as the payload will carry it (`printf %q`), so
+# whitespace — which travels as a backslash escape — is caught too.
+reject_gate_blocked_args() {
+  local arg quoted named where
+  for arg in "$@"; do
+    printf -v quoted '%q' "$arg"
+    find_gate_blocked_char "$arg" || find_gate_blocked_char "$quoted" || continue
+    case "$GATE_BLOCKED_CHAR" in
+      $'\n') named="a newline" ;;
+      $'\r') named="a carriage return" ;;
+      *) named="'$GATE_BLOCKED_CHAR'" ;;
+    esac
+    where="it holds $named"
+    [[ "$arg" == *"$GATE_BLOCKED_CHAR"* ]] \
+      || where="quoting it for transport produces $named"
+    {
+      printf "remote-build.sh: the build host's SSH gate would refuse this argument,\n"
+      printf 'because %s and the gate allows no shell metacharacter in a payload:\n\n' "$where"
+      printf '  %s\n' "$arg"
+      if [[ "$GATE_BLOCKED_CHAR" == "|" ]]; then
+        printf '\nFor several suites, pass --filter once per suite:\n\n'
+        printf '  %s %s --filter SuiteA --filter SuiteB\n' "$0" "$CMD"
+      fi
+    } >&2
+    exit 1
+  done
+}
+
 case "$CMD" in
   diag|svc-status|disk|gc)
     if [[ $# -ne 0 ]]; then
@@ -693,6 +743,10 @@ case "$CMD" in
     exit 1
     ;;
 esac
+
+# Checked on the assembled payload, so every command that forwards arguments
+# is covered, and before the first ssh of the run.
+reject_gate_blocked_args "${REMOTE_CMD[@]}"
 
 if [[ -n "$ENSURE_SERVER" ]]; then
   ensure_remote_server "$ENSURE_SERVER"

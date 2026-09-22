@@ -51,6 +51,9 @@ name instead.
 - Every run's full remote output lands in `.build/last-remote.log`. Never pipe
   the script itself through grep (a crash eats the failing test's name) — let
   it print, then grep the log file.
+- The SSH gate refuses shell metacharacters in a payload, so `--filter` takes no
+  `|` — pass it once per suite: `--filter SuiteA --filter SuiteB`.
+  `remote-build.sh` catches those locally, before the sync.
 
 ## Proof culture — non-negotiable
 
