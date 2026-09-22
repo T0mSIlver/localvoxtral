@@ -1067,24 +1067,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// a pane that is not a settings pane.
     private func openWindow(on tab: SettingsTab) {
         settingsNavigator.selectedTab = tab
-        // One runloop turn later, always. Sent from inside
-        // `applicationDidFinishLaunching` the action is accepted and does
-        // nothing — no window appears (hand-checked on the packaged build
-        // through the UI gate, PR #452) — because the SwiftUI `Settings` scene
-        // is not yet ready to act on it. The same deferral is harmless for the
-        // user-driven callers.
         Task { @MainActor in
-            NSApp.activate(ignoringOtherApps: true)
-            // AppKit entry point for the SwiftUI `Settings` scene on macOS 14+.
-            let opened = NSApp.sendAction(
-                Selector(("showSettingsWindow:")), to: nil, from: nil)
-            if !opened {
+            let opener = AppWindowOpener(
+                show: {
+                    NSApp.activate(ignoringOtherApps: true)
+                    // AppKit entry point for the SwiftUI `Settings` scene on
+                    // macOS 14+.
+                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                },
+                isOnScreen: { AppDelegate.windowIsOnScreen() },
+                sleepFor: { try? await Task.sleep(for: $0) }
+            )
+            guard let attempt = await opener.open() else {
                 Log.diagnostics.error(
-                    "The localvoxtral window did not open: nothing answered showSettingsWindow:."
+                    "The localvoxtral window never opened; showSettingsWindow: was answered but no window appeared."
+                )
+                return
+            }
+            if attempt > 1 {
+                Log.diagnostics.notice(
+                    "The localvoxtral window opened on attempt \(attempt, privacy: .public)."
                 )
             }
         }
     }
+
+    /// The scene's window, by the title `SettingsWindowChromeView` keeps on it.
+    /// Hidden-title chrome does not clear `window.title`, precisely so the AX
+    /// drills — and this — can find it.
+    private static func windowIsOnScreen() -> Bool {
+        NSApp.windows.contains {
+            $0.title == SettingsWindowChromeView.windowTitle && $0.isVisible
+        }
+    }
+
 }
 
 @MainActor
