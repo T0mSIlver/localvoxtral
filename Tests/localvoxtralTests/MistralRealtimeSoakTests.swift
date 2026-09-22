@@ -99,7 +99,7 @@ final class MistralRealtimeSoakTests: XCTestCase {
 
         let log = SoakEventLog()
         let client = MistralRealtimeWebSocketClient()
-        client.setEventHandler { event in
+        client.setEventHandler { event, _ in
             let now = elapsed()
             switch event {
             case .status(let message) where message.localizedCaseInsensitiveContains("session ready"):

@@ -4,6 +4,36 @@ import os
 extension DictationViewModel {
     // MARK: - Realtime Event Routing
 
+    /// The door every realtime event comes through in the running app, and the
+    /// one place a connection's identity is judged (#417).
+    ///
+    /// `generation` names the socket that raised the event. A socket the session
+    /// has already retired can report its close, its error or a transcript long
+    /// after the session moved on — in Live Auto-Paste a straggling transcript
+    /// would be typed a second time, and there are no backspaces in the
+    /// insertion path. Nothing downstream re-checks this, so nothing downstream
+    /// has to guess from session state which socket it is hearing.
+    func handle(event: RealtimeEvent, from generation: RealtimeConnectionGeneration) {
+        guard generation == sessionConnectionGeneration else {
+            debugLog(
+                "dropping an event from connection \(generation); "
+                    + "the session is on \(sessionConnectionGeneration)"
+            )
+            return
+        }
+        if case .disconnected = event {
+            // The session's socket just said it is gone, so the session is on no
+            // connection until the next dial stamps one. This is what refuses a
+            // straggler emitted between the close and the reconnect's first
+            // attempt, when the generation has not moved on yet.
+            sessionConnectionGeneration = .none
+        }
+        handle(event: event)
+    }
+
+    /// Routes an event that has already been judged to belong to the session's
+    /// live socket. Reached from `handle(event:from:)` in the app; called
+    /// directly only by tests that drive the session without a socket.
     func handle(event: RealtimeEvent) {
         // Instrument the raw, pre-processing delta stream first. This is the
         // single choke point where every realtime event arrives on the main
@@ -84,15 +114,6 @@ extension DictationViewModel {
             reconnectAttemptDidFail = true
             return
         }
-        if activeRealtimeClient.isConnected {
-            // A socket this session has already replaced, reporting its own
-            // close late. Events carry no connection identity, so the live
-            // client's own state is the only way to tell: it says the session
-            // is up, and a session that is up is neither torn down nor
-            // reconnected.
-            debugLog("ignoring a disconnect from a retired socket; the session's socket is up")
-            return
-        }
         guard !beginRealtimeReconnectIfPossible() else { return }
         endDictationAfterLostConnection()
     }
@@ -125,7 +146,7 @@ extension DictationViewModel {
     }
 
     private func handlePartialTranscriptEvent(_ delta: String) {
-        guard acceptsRealtimeEvents, !isReconnectingRealtimeSession else { return }
+        guard acceptsRealtimeEvents else { return }
         let processedDelta = preprocessIncomingTranscriptChunk(delta)
         guard !processedDelta.isEmpty else { return }
         if isFinalizingStop {
@@ -144,14 +165,8 @@ extension DictationViewModel {
         refreshOverlayBufferSession()
     }
 
-    // Both transcript handlers refuse anything that arrives while a reconnect
-    // run is in flight. Nothing legitimate can: the old socket is gone, and the
-    // new one is sent no audio until the run completes and restarts the send
-    // loop. What CAN arrive is a straggler the dying socket emitted after the
-    // run had already promoted the partial it belongs to — accepted, it would
-    // re-type text Live Auto-Paste has no way to un-type.
     private func handleFinalTranscriptEvent(_ text: String) {
-        guard acceptsRealtimeEvents, !isReconnectingRealtimeSession else { return }
+        guard acceptsRealtimeEvents else { return }
         let processedText = preprocessIncomingTranscriptChunk(text)
         if isFinalizingStop {
             realtimeFinalizationLastActivityAt = Date()

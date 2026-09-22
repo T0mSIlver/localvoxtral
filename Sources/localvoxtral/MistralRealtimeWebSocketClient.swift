@@ -93,6 +93,10 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         state.withLock { $0.base.socketState == .connected }
     }
 
+    var connectionGeneration: RealtimeConnectionGeneration {
+        state.withLock { $0.base.connectionGeneration }
+    }
+
     init(
         targetStreamingDelayMilliseconds: Int? = nil,
         now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
@@ -114,7 +118,9 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         state.withLock { body(&$0.base) }
     }
 
-    func setEventHandler(_ handler: @escaping @Sendable (RealtimeEvent) -> Void) {
+    func setEventHandler(
+        _ handler: @escaping @Sendable (RealtimeEvent, RealtimeConnectionGeneration) -> Void
+    ) {
         state.withLock { $0.base.onEvent = handler }
     }
 
@@ -221,7 +227,14 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         let request = try makeConnectRequest(configuration: configuration)
 
         #if DEBUG
-        if state.withLock({ $0.skipsSocketCreationForTesting }) {
+        let skipsSocket: Bool = state.withLock { s in
+            guard s.skipsSocketCreationForTesting else { return false }
+            // No socket to swap, so the stamp is all this call does — the
+            // session still reads it back as the connection it is now on.
+            s.base.connectionGeneration = .next()
+            return true
+        }
+        if skipsSocket {
             return
         }
         #endif
@@ -233,6 +246,12 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         let previousUsage: MistralUsageEntry? = state.withLock { s in
             let usage = takeUsageLocked(&s)
             closeSocketLocked(&s, cancelTask: true)
+            // Stamped in the SAME locked block as the swap. A separate
+            // acquisition would leave a window where the outgoing socket is
+            // still the current one while the generation has already moved:
+            // a frame admitted in that window would come out wearing the new
+            // socket's name, which is the failure this whole stamp exists for.
+            s.base.connectionGeneration = .next()
             s.usageModel = Self.resolvedModel(configuration.model)
             s.health = MistralStreamHealth(openedAt: now())
 
@@ -251,17 +270,18 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
 
     func disconnect() {
         let closedAt = now()
-        let (wasConnected, usage, owedDone): (Bool, MistralUsageEntry?, String?) =
+        let (closed, usage, owedDone):
+            (RealtimeConnectionGeneration?, MistralUsageEntry?, String?) =
             state.withLock { s in
-                let was = s.base.socketState != .disconnected
-                guard was else { return (false, nil, nil) }
+                guard s.base.socketState != .disconnected else { return (nil, nil, nil) }
                 let owedDone =
                     s.finalCommitCompletionGate == .awaitingFinalCommitTranscriptionDone
                     ? s.health?.closedAwaitingDone(at: closedAt) : nil
                 s.base.isUserInitiatedDisconnect = true
+                let generation = s.base.connectionGeneration
                 let usage = takeUsageLocked(&s)
                 closeSocketLocked(&s, cancelTask: true)
-                return (was, usage, owedDone)
+                return (generation, usage, owedDone)
             }
         recordUsage(usage)
         if let owedDone {
@@ -269,9 +289,9 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
                 "mistral realtime closing before transcription.done: \(owedDone, privacy: .public)")
         }
 
-        if wasConnected {
+        if let closed {
             debugLog("disconnect")
-            emit(.disconnected)
+            emit(.disconnected, from: closed)
         }
     }
 
@@ -310,7 +330,7 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
 
     // MARK: - JSON Event Handling
 
-    override func handle(json: [String: Any]) {
+    override func handle(json: [String: Any], from generation: RealtimeConnectionGeneration) {
         let type = json["type"] as? String ?? ""
         if !type.isEmpty {
             debugLog("recv event type=\(type)")
@@ -325,17 +345,18 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         switch type {
         case "session.created":
             let session = json["session"] as? [String: Any]
-            handleSessionCreated(requestID: session?["request_id"] as? String)
+            handleSessionCreated(
+                requestID: session?["request_id"] as? String, from: generation)
 
         case "session.updated":
-            emit(.status("Session updated."))
+            emit(.status("Session updated."), from: generation)
 
         case "transcription.text.delta":
             guard let text = json["text"] as? String, !text.isEmpty else { return }
-            emit(.partialTranscript(text))
+            emit(.partialTranscript(text), from: generation)
 
         case "transcription.done":
-            handleTranscriptionDone(json: json)
+            handleTranscriptionDone(json: json, from: generation)
 
         case "error":
             let message = Self.errorMessage(from: json)
@@ -343,7 +364,7 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
                 s.finalCommitCompletionGate = .idle
             }
             logger.notice("mistral realtime error: \(message, privacy: .public)")
-            emit(.error(message))
+            emit(.error(message), from: generation)
 
         case "transcription.language", "transcription.segment":
             // Not used for dictation; the delta/done stream carries the text.
@@ -355,7 +376,9 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         }
     }
 
-    private func handleSessionCreated(requestID: String?) {
+    private func handleSessionCreated(
+        requestID: String?, from generation: RealtimeConnectionGeneration
+    ) {
         let queuedMessages: [PendingFrame]? = state.withLock { s in
             guard s.base.socketState == .connected else { return nil }
             guard !s.hasReceivedSessionCreated else { return nil }
@@ -380,10 +403,12 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         // consumer that starts streaming on "Session ready." (the live lane
         // does, synchronously) puts its audio behind the audio-format
         // declaration on the wire, not ahead of it.
-        emit(.status("Session ready."))
+        emit(.status("Session ready."), from: generation)
     }
 
-    private func handleTranscriptionDone(json: [String: Any]) {
+    private func handleTranscriptionDone(
+        json: [String: Any], from generation: RealtimeConnectionGeneration
+    ) {
         enum DoneAction {
             case none
             case emitTranscriptionFinalized
@@ -402,14 +427,14 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         let text = (json["text"] as? String) ?? ""
         logger.notice("mistral realtime transcription.done characters=\(text.count, privacy: .public)")
         if !text.isEmpty {
-            emit(.finalTranscript(text))
+            emit(.finalTranscript(text), from: generation)
         }
 
         switch doneAction {
         case .none:
             break
         case .emitTranscriptionFinalized:
-            emit(.transcriptionFinalized)
+            emit(.transcriptionFinalized, from: generation)
         }
     }
 
@@ -477,7 +502,7 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
 
     private func send(event: [String: Any], audioBytes: Int = 0, levelDBFS: Double? = nil) {
         guard JSONSerialization.isValidJSONObject(event) else {
-            emit(.error("Invalid JSON payload generated."))
+            emit(.error("Invalid JSON payload generated."), from: currentConnectionGeneration)
             return
         }
 
@@ -489,7 +514,9 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
             let data = try JSONSerialization.data(
                 withJSONObject: event, options: [.sortedKeys, .withoutEscapingSlashes])
             guard let text = String(data: data, encoding: .utf8) else {
-                emit(.error("Failed to encode WebSocket frame."))
+                emit(
+                    .error("Failed to encode WebSocket frame."),
+                    from: currentConnectionGeneration)
                 return
             }
 
@@ -512,7 +539,9 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
             }
             sendText(text, audioBytes: audioBytes, levelDBFS: levelDBFS)
         } catch {
-            emit(.error("Failed to serialize WebSocket payload: \(error.localizedDescription)"))
+            emit(
+                .error("Failed to serialize WebSocket payload: \(error.localizedDescription)"),
+                from: currentConnectionGeneration)
         }
     }
 
@@ -625,25 +654,30 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
             httpStatusCode: (task.response as? HTTPURLResponse)?.statusCode
         )
 
-        let outcome: (error: String?, disconnected: Bool, usage: MistralUsageEntry?) =
+        let outcome:
+            (
+                error: String?, disconnected: Bool, usage: MistralUsageEntry?,
+                generation: RealtimeConnectionGeneration
+            ) =
             state.withLock { s in
                 guard s.base.socketState != .disconnected, s.base.webSocketTask === task else {
-                    return (nil, false, nil)
+                    return (nil, false, nil, .none)
                 }
 
                 let shouldEmitError = !s.base.isUserInitiatedDisconnect
+                let generation = s.base.connectionGeneration
                 let usage = takeUsageLocked(&s)
                 closeSocketLocked(&s, cancelTask: false)
-                return (shouldEmitError ? resolvedMessage : nil, true, usage)
+                return (shouldEmitError ? resolvedMessage : nil, true, usage, generation)
             }
         recordUsage(outcome.usage)
 
         if let error = outcome.error {
             logger.notice("mistral realtime socket failed: \(error, privacy: .public)")
-            emit(.error(error))
+            emit(.error(error), from: outcome.generation)
         }
         if outcome.disconnected {
-            emit(.disconnected)
+            emit(.disconnected, from: outcome.generation)
         }
     }
 
@@ -738,6 +772,7 @@ extension MistralRealtimeWebSocketClient {
     ) {
         state.withLock { s in
             closeSocketLocked(&s, cancelTask: false)
+            s.base.connectionGeneration = .next()
             s.usageModel = usageModel
             s.sentAudioBytes = 0
             s.base.webSocketTask = task

@@ -31,6 +31,9 @@ extension DictationViewModel {
     }
 
     func clearLatchedSessionMetadata() {
+        // A session with no socket is on no connection, so anything the socket
+        // it just gave up still emits is refused from here on (#417).
+        sessionConnectionGeneration = .none
         sessionOutputMode = nil
         sessionStartedAt = nil
         sessionProvider = nil
@@ -408,6 +411,9 @@ extension DictationViewModel {
 
         do {
             try activeRealtimeClient.connect(configuration: configuration)
+            // Read back with no suspension in between, so the socket this call
+            // opened cannot report in before the session knows its name.
+            sessionConnectionGeneration = activeRealtimeClient.connectionGeneration
             scheduleConnectTimeout()
         } catch {
             abortConnectingSession(disconnectSocket: false)

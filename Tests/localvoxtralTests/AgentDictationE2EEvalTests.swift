@@ -757,7 +757,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         let firstFinal = XCTestExpectation(description: "final transcript")
         firstFinal.assertForOverFulfill = false
 
-        client.setEventHandler { event in
+        client.setEventHandler { event, _ in
             switch event {
             case .connected:
                 // Safe to enqueue before session.created; the client gates

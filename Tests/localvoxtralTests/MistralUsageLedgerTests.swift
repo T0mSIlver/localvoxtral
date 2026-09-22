@@ -426,7 +426,7 @@ extension MistralUsageLedgerTests {
         defer { cleanup() }
 
         client.sendAudioChunk(oneSecond)
-        client.handle(json: ["type": "session.created", "session": ["model": "m"]])
+        client.debugHandleFrameForTesting(json: ["type": "session.created", "session": ["model": "m"]])
         client.sendAudioChunk(oneSecond)
         client.disconnect()
 

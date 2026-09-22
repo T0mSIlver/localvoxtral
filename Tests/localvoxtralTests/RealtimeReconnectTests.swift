@@ -409,28 +409,30 @@ final class RealtimeReconnectTests: XCTestCase {
         XCTAssertEqual(viewModel.statusText, DictationViewModel.connectionLostMessage)
     }
 
-    func testATranscriptFromTheDyingSocketIsNotTypedAgainDuringAReconnect() async {
+    // MARK: - Connection identity (#417)
+
+    func testATranscriptFromTheSocketTheRunLeftBehindIsRefusedWhileItDials() async {
         // The socket's receive callback can pass its own state check and emit
         // a final AFTER the drop was handled and its partial promoted. Typed
         // again, it would duplicate in the field — there are no backspaces.
-        let (viewModel, client) = makeDictatingViewModel(outputMode: .liveAutoPaste)
-        viewModel.textInsertion.debugConfigureInsertionHooks(
-            unicodePoster: { [weak self] chunk in
-                self?.insertedChunks.append(chunk)
-                return true
-            },
-            modifierStateReader: { false },
-            accessibilityInserter: { _, _ in false }
-        )
-        viewModel.handle(event: .partialTranscript("hello world"))
+        let (viewModel, _) = makeDictatingViewModel(outputMode: .liveAutoPaste)
+        recordInsertions(into: viewModel)
+        let dyingSocket = viewModel.sessionConnectionGeneration
+
+        viewModel.handle(event: .partialTranscript("hello world"), from: dyingSocket)
         XCTAssertEqual(insertedChunks, ["hello world"])
 
         viewModel.debugReconnectSleepOverride = { _ in }
-        viewModel.handle(event: .disconnected)
+        viewModel.handle(event: .disconnected, from: dyingSocket)
         let task = viewModel.reconnectTask
 
+        XCTAssertEqual(
+            viewModel.sessionConnectionGeneration, .none,
+            "a session whose socket died is on no connection until the next dial"
+        )
+
         // The straggler: the same words, arriving as a final after promotion.
-        viewModel.handle(event: .finalTranscript("hello world"))
+        viewModel.handle(event: .finalTranscript("hello world"), from: dyingSocket)
 
         XCTAssertEqual(insertedChunks, ["hello world"], "the straggler must not be typed again")
         XCTAssertEqual(viewModel.currentDictationEventText, "hello world")
@@ -440,14 +442,46 @@ final class RealtimeReconnectTests: XCTestCase {
         await task?.value
     }
 
+    func testATranscriptFromTheRetiredSocketIsRefusedOnceTheRunHasReconnected() async {
+        // The residual no state-based guard could reach: the run has completed,
+        // so its flag is clear, `isDictating` is true and the live client
+        // reports connected — every guard that stood in for identity says
+        // accept. Only the socket's own name tells the straggler apart.
+        let (viewModel, client) = makeDictatingViewModel(outputMode: .liveAutoPaste)
+        recordInsertions(into: viewModel)
+        let retiredSocket = viewModel.sessionConnectionGeneration
+
+        viewModel.handle(event: .partialTranscript("hello world"), from: retiredSocket)
+        XCTAssertEqual(insertedChunks, ["hello world"])
+
+        viewModel.debugReconnectSleepOverride = { _ in client.setConnected(true) }
+        viewModel.handle(event: .disconnected, from: retiredSocket)
+        await viewModel.reconnectTask?.value
+
+        XCTAssertFalse(viewModel.isReconnectingRealtimeSession, "sanity: the run completed")
+        XCTAssertTrue(viewModel.isDictating, "sanity: the session is live")
+        XCTAssertTrue(client.isConnected, "sanity: so is its socket")
+        XCTAssertNotEqual(viewModel.sessionConnectionGeneration, retiredSocket)
+
+        viewModel.handle(event: .finalTranscript("hello world"), from: retiredSocket)
+
+        XCTAssertEqual(insertedChunks, ["hello world"], "the straggler must not be typed again")
+        XCTAssertEqual(viewModel.currentDictationEventText, "hello world")
+        XCTAssertEqual(viewModel.transcriptText, "hello world")
+
+        // And the socket the session IS on is still heard.
+        viewModel.handle(
+            event: .partialTranscript("and on"), from: viewModel.sessionConnectionGeneration)
+        XCTAssertEqual(insertedChunks, ["hello world", "and on"])
+    }
+
     func testADropReportedByARetiredSocketLeavesALiveSessionAlone() {
-        // Events carry no connection identity, so a `.disconnected` from a
-        // socket the session already replaced must be judged by the live
-        // client's own state.
         let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
+        let retiredSocket = viewModel.sessionConnectionGeneration
+        viewModel.sessionConnectionGeneration = client.stampNewConnection()
         client.setConnected(true)
 
-        viewModel.handle(event: .disconnected)
+        viewModel.handle(event: .disconnected, from: retiredSocket)
 
         XCTAssertTrue(viewModel.isDictating, "a live session must not be torn down")
         XCTAssertFalse(
@@ -459,23 +493,24 @@ final class RealtimeReconnectTests: XCTestCase {
 
     // MARK: - Status line ownership
 
-    func testStatusAndTranscriptEventsDoNotClobberReconnectingText() async {
-        let (viewModel, _) = makeDictatingViewModel(outputMode: .overlayBuffer)
-        viewModel.debugReconnectSleepOverride = { _ in }
+    func testTheReconnectingStatusStandsWhateverTheNewSocketSays() async {
+        // The socket an attempt opens is the live connection, so the stamp
+        // admits what it says. The run still owns the status line until it ends.
+        let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
+        viewModel.debugReconnectSleepOverride = { [weak viewModel] _ in
+            guard let viewModel, client.connectCount > 0,
+                viewModel.isReconnectingRealtimeSession
+            else { return }
+            viewModel.handle(
+                event: .status("session.created"), from: viewModel.sessionConnectionGeneration)
+            XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.reconnecting)
+            viewModel.cancelRealtimeReconnect()
+        }
 
         viewModel.handle(event: .disconnected)
-        let task = viewModel.reconnectTask
-        viewModel.handle(event: .status("session.created"))
-        viewModel.handle(event: .partialTranscript("stray"))
+        await viewModel.reconnectTask?.value
 
-        XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.reconnecting)
-        XCTAssertTrue(
-            viewModel.pendingSegmentText.isEmpty,
-            "a transcript arriving mid-run belongs to a socket the session left behind"
-        )
-
-        viewModel.cancelRealtimeReconnect()
-        await task?.value
+        XCTAssertEqual(client.connectCount, 1, "sanity: an attempt had dialled")
     }
 
     func testTheSocketErrorBehindTheDropIsNotLeftStandingAsAnError() async {
@@ -496,6 +531,18 @@ final class RealtimeReconnectTests: XCTestCase {
     // MARK: - Fixtures
 
     private var insertedChunks: [String] = []
+
+    /// Route Live Auto-Paste through the test sink instead of the real poster.
+    private func recordInsertions(into viewModel: DictationViewModel) {
+        viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { [weak self] chunk in
+                self?.insertedChunks.append(chunk)
+                return true
+            },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false }
+        )
+    }
 
     private func makeDictatingViewModel(
         outputMode: DictationOutputMode
@@ -531,6 +578,9 @@ final class RealtimeReconnectTests: XCTestCase {
         let client = FakeReconnectRealtimeClient()
         viewModel.activeRealtimeClient = client
         viewModel.isDictating = true
+        // The session starts where a real one does: on the socket its connect
+        // opened, with the client and the view model naming the same one.
+        viewModel.sessionConnectionGeneration = client.stampNewConnection()
         viewModel.sessionOutputMode = outputMode
         viewModel.sessionRealtimeConfiguration = RealtimeSessionConfiguration(
             endpoint: URL(string: "ws://127.0.0.1:8000/v1/realtime")!,
@@ -551,13 +601,17 @@ private final class FakeReconnectRealtimeClient: RealtimeClient, @unchecked Send
         var connectConfigurations: [RealtimeSessionConfiguration] = []
         var commits: [Bool] = []
         var sentAudioBytes = 0
-        var handler: (@Sendable (RealtimeEvent) -> Void)?
+        var connectionGeneration: RealtimeConnectionGeneration = .none
+        var handler: (@Sendable (RealtimeEvent, RealtimeConnectionGeneration) -> Void)?
     }
 
     private let state = Mutex(State())
 
     var supportsPeriodicCommit: Bool { true }
     var isConnected: Bool { state.withLock { $0.isConnected } }
+    var connectionGeneration: RealtimeConnectionGeneration {
+        state.withLock { $0.connectionGeneration }
+    }
     var connectCount: Int { state.withLock { $0.connectCount } }
     var disconnectCount: Int { state.withLock { $0.disconnectCount } }
     var commits: [Bool] { state.withLock { $0.commits } }
@@ -570,7 +624,19 @@ private final class FakeReconnectRealtimeClient: RealtimeClient, @unchecked Send
         state.withLock { $0.isConnected = connected }
     }
 
-    func setEventHandler(_ handler: @escaping @Sendable (RealtimeEvent) -> Void) {
+    /// Stamps a fresh generation the way a real `connect` would, without
+    /// counting as a dial: the fixture starts every test already on a socket.
+    @discardableResult
+    func stampNewConnection() -> RealtimeConnectionGeneration {
+        state.withLock {
+            $0.connectionGeneration = .next()
+            return $0.connectionGeneration
+        }
+    }
+
+    func setEventHandler(
+        _ handler: @escaping @Sendable (RealtimeEvent, RealtimeConnectionGeneration) -> Void
+    ) {
         state.withLock { $0.handler = handler }
     }
 
@@ -578,6 +644,7 @@ private final class FakeReconnectRealtimeClient: RealtimeClient, @unchecked Send
         state.withLock {
             $0.connectCount += 1
             $0.connectConfigurations.append(configuration)
+            $0.connectionGeneration = .next()
         }
     }
 

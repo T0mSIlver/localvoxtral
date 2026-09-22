@@ -36,6 +36,9 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
     var isConnected: Bool {
         state.withLock { $0.base.socketState == .connected }
     }
+    var connectionGeneration: RealtimeConnectionGeneration {
+        state.withLock { $0.base.connectionGeneration }
+    }
 
     override var logger: Logger { Log.realtime }
 
@@ -43,7 +46,9 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         state.withLock { body(&$0.base) }
     }
 
-    func setEventHandler(_ handler: @escaping @Sendable (RealtimeEvent) -> Void) {
+    func setEventHandler(
+        _ handler: @escaping @Sendable (RealtimeEvent, RealtimeConnectionGeneration) -> Void
+    ) {
         state.withLock { $0.base.onEvent = handler }
     }
 
@@ -54,7 +59,11 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         #if DEBUG
         let skipsSocket: Bool = state.withLock { s in
             s.lastConnectConfigurationForTesting = configuration
-            return s.skipsSocketCreationForTesting
+            guard s.skipsSocketCreationForTesting else { return false }
+            // No socket to swap, so the stamp is all this call does — the
+            // session still reads it back as the connection it is now on.
+            s.base.connectionGeneration = .next()
+            return true
         }
         if skipsSocket {
             return
@@ -75,6 +84,12 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
 
         state.withLock { s in
             closeSocketLocked(&s, cancelTask: true)
+            // Stamped in the SAME locked block as the swap. A separate
+            // acquisition would leave a window where the outgoing socket is
+            // still the current one while the generation has already moved:
+            // a frame admitted in that window would come out wearing the new
+            // socket's name, which is the failure this whole stamp exists for.
+            s.base.connectionGeneration = .next()
 
             let (session, task) = createWebSocketSession(request: request, delegate: self)
 
@@ -96,17 +111,17 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
     }
 
     func disconnect() {
-        let wasConnected: Bool = state.withLock { s in
-            let was = s.base.socketState != .disconnected
-            guard was else { return false }
+        let closed: RealtimeConnectionGeneration? = state.withLock { s in
+            guard s.base.socketState != .disconnected else { return nil }
             s.base.isUserInitiatedDisconnect = true
+            let generation = s.base.connectionGeneration
             closeSocketLocked(&s, cancelTask: true)
-            return was
+            return generation
         }
 
-        if wasConnected {
+        if let closed {
             debugLog("disconnect")
-            emit(.disconnected)
+            emit(.disconnected, from: closed)
         }
     }
 
@@ -171,7 +186,7 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
     /// stops transcribing before the final commit (`RealtimeServerMessage.transcriptionStopped`).
     static let transcriptionStoppedCode = "transcription_stopped"
 
-    override func handle(json: [String: Any]) {
+    override func handle(json: [String: Any], from generation: RealtimeConnectionGeneration) {
         let type = json["type"] as? String ?? ""
         if !type.isEmpty {
             debugLog("recv event type=\(type)")
@@ -179,7 +194,7 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
 
         switch type {
         case "session.created":
-            emit(.status("Session ready."))
+            emit(.status("Session ready."), from: generation)
             let startup: (modelName: String, shouldSendUpdate: Bool, queuedMessages: [String])? =
                 state.withLock { s in
                     guard s.base.socketState == .connected else { return nil }
@@ -207,12 +222,12 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
                 sendText(message)
             }
         case "session.updated":
-            emit(.status("Session updated."))
+            emit(.status("Session updated."), from: generation)
         case "transcription.delta",
             "response.audio_transcript.delta",
             "conversation.item.input_audio_transcription.delta":
             if let delta = findString(in: json, matching: ["delta", "text", "transcript"]) {
-                emit(.partialTranscript(delta))
+                emit(.partialTranscript(delta), from: generation)
             }
         case "transcription.done",
             "response.audio_transcript.done",
@@ -234,13 +249,13 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
                 }
             }
             if let text = findString(in: json, matching: ["text", "transcript", "delta"]) {
-                emit(.finalTranscript(text))
+                emit(.finalTranscript(text), from: generation)
             }
             switch doneAction {
             case .none:
                 break
             case .emitTranscriptionFinalized:
-                emit(.transcriptionFinalized)
+                emit(.transcriptionFinalized, from: generation)
             }
         case "error":
             state.withLock { $0.isGenerationInProgress = false }
@@ -248,9 +263,9 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
                 findString(in: json, matching: ["message", "error", "detail"])
                 ?? "Unknown realtime error."
             if json["code"] as? String == Self.transcriptionStoppedCode {
-                emit(.transcriptionStopped(message))
+                emit(.transcriptionStopped(message), from: generation)
             } else {
-                emit(.error(message))
+                emit(.error(message), from: generation)
             }
         default:
             break
@@ -274,14 +289,14 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
 
     private func send(event: [String: Any]) {
         guard JSONSerialization.isValidJSONObject(event) else {
-            emit(.error("Invalid JSON payload generated."))
+            emit(.error("Invalid JSON payload generated."), from: currentConnectionGeneration)
             return
         }
 
         do {
             let data = try JSONSerialization.data(withJSONObject: event)
             guard let text = String(data: data, encoding: .utf8) else {
-                emit(.error("Failed to encode WebSocket frame."))
+                emit(.error("Failed to encode WebSocket frame."), from: currentConnectionGeneration)
                 return
             }
 
@@ -290,8 +305,9 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
             }
             sendText(text)
         } catch {
-            emit(.error(
-                "Failed to serialize WebSocket payload: \(error.localizedDescription)"))
+            emit(
+                .error("Failed to serialize WebSocket payload: \(error.localizedDescription)"),
+                from: currentConnectionGeneration)
         }
     }
 
@@ -363,6 +379,10 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
     private func startSessionReadyTimerLocked(_ s: inout State) {
         stopSessionReadyTimerLocked(&s)
 
+        // The socket this timer is armed for. A close cancels the timer, but a
+        // handler already in flight would otherwise announce compatibility mode
+        // under whatever name the client had picked up by then.
+        let generation = s.base.connectionGeneration
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         timer.schedule(deadline: .now() + 3)
         timer.setEventHandler { [weak self] in
@@ -387,8 +407,9 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
                         )
                     }
             guard let startup else { return }
-            self.emit(.status(
-                "Connected without session.created; using compatibility mode."))
+            self.emit(
+                .status("Connected without session.created; using compatibility mode."),
+                from: generation)
             if startup.shouldSendUpdate {
                 self.send(event: ["type": "session.update", "model": startup.modelName])
             }
@@ -413,21 +434,24 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
     override func handleTerminalSocketError(
         for task: URLSessionWebSocketTask, errorMessage: String?
     ) {
-        let outcome: (error: String?, disconnected: Bool) = state.withLock { s in
-            guard s.base.socketState != .disconnected, s.base.webSocketTask === task else {
-                return (nil, false)
+        let outcome:
+            (error: String?, disconnected: Bool, generation: RealtimeConnectionGeneration) =
+            state.withLock { s in
+                guard s.base.socketState != .disconnected, s.base.webSocketTask === task else {
+                    return (nil, false, .none)
+                }
+
+                let shouldEmitError = !s.base.isUserInitiatedDisconnect
+                let generation = s.base.connectionGeneration
+                closeSocketLocked(&s, cancelTask: false)
+                return (shouldEmitError ? errorMessage : nil, true, generation)
             }
 
-            let shouldEmitError = !s.base.isUserInitiatedDisconnect
-            closeSocketLocked(&s, cancelTask: false)
-            return (shouldEmitError ? errorMessage : nil, true)
-        }
-
         if let error = outcome.error {
-            emit(.error(error))
+            emit(.error(error), from: outcome.generation)
         }
         if outcome.disconnected {
-            emit(.disconnected)
+            emit(.disconnected, from: outcome.generation)
         }
     }
 
@@ -509,6 +533,7 @@ extension RealtimeAPIWebSocketClient {
     ) {
         state.withLock { s in
             closeSocketLocked(&s, cancelTask: false)
+            s.base.connectionGeneration = .next()
             s.base.webSocketTask = task
             s.base.socketState = .connected
             s.base.isUserInitiatedDisconnect = isUserInitiatedDisconnect
