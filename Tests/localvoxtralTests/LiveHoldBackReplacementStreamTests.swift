@@ -16,195 +16,220 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
         ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"])
     }
 
+    /// A stream built from `entries`, fed `steps` in order: each chunk with the
+    /// text its `ingest` must release, then the expected `flushRemainder()`
+    /// (nil: the case never flushes).
+    private struct StreamCase {
+        let name: String
+        let entries: [ReplacementEntry]
+        let steps: [(chunk: String, released: String)]
+        let flush: String?
+    }
+
+    private func assertStreamCases(
+        _ cases: [StreamCase],
+        sanitizesNewlines: Bool = false,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        for testCase in cases {
+            var stream = makeStream(entries: testCase.entries, sanitizesNewlines: sanitizesNewlines)
+            for (index, step) in testCase.steps.enumerated() {
+                XCTAssertEqual(
+                    stream.ingest(step.chunk),
+                    step.released,
+                    "\(testCase.name): ingest #\(index + 1)",
+                    file: file,
+                    line: line
+                )
+            }
+            if let flush = testCase.flush {
+                XCTAssertEqual(
+                    stream.flushRemainder(), flush, "\(testCase.name): flushRemainder", file: file, line: line
+                )
+            }
+        }
+    }
+
     // MARK: - Replacement + hold-back policy
 
-    func testSingleWordRuleReleasesPromptlyAtWordBoundary() {
-        var stream = makeStream(entries: [voxtralEntry])
-        XCTAssertEqual(stream.ingest("voxtral "), "localvoxtral ")
-    }
-
-    func testTrailingPartialWordIsHeldAcrossChunks() {
-        var stream = makeStream(entries: [voxtralEntry])
-        XCTAssertEqual(stream.ingest("vox"), "")
-        XCTAssertEqual(stream.ingest("tral"), "")
-        XCTAssertEqual(stream.ingest(" "), "localvoxtral ")
-    }
-
-    func testNonMatchingTextReleasesWithZeroExtraHold() {
-        var stream = makeStream(entries: [voxtralEntry])
-        XCTAssertEqual(stream.ingest("hello world "), "hello world ")
-    }
-
-    func testMultiWordRuleSpanningIngestChunksMatches() {
-        var stream = makeStream(entries: [
-            ReplacementEntry(replaceWith: "localvoxtral", matches: ["local voxtral"]),
-        ])
-        XCTAssertEqual(stream.ingest("local "), "")
-        // "localvoxtral" is a prefix of no rule, so it releases at once.
-        XCTAssertEqual(stream.ingest("voxtral "), "localvoxtral ")
-        XCTAssertEqual(stream.ingest("rocks "), "rocks ")
-        XCTAssertEqual(stream.flushRemainder(), "")
-    }
-
-    func testMultiWordRuleHoldsBackPossiblePrefixWords() {
-        var stream = makeStream(entries: [
-            ReplacementEntry(replaceWith: "Claude Code", matches: ["cloud code"]),
-        ])
-        // "cloud" alone must not be released: it could be the first word of
-        // the two-word match that only completes with the next chunk.
-        XCTAssertEqual(stream.ingest("use cloud "), "use ")
-        // Once the match applies, neither "Claude" nor "Code" can begin a
-        // rule, so both release immediately.
-        XCTAssertEqual(stream.ingest("code "), "Claude Code ")
-        XCTAssertEqual(stream.flushRemainder(), "")
+    func testReplacementHoldBackPolicy() {
+        let cases: [StreamCase] = [
+            StreamCase(
+                name: "SingleWordRuleReleasesPromptlyAtWordBoundary",
+                entries: [voxtralEntry],
+                steps: [("voxtral ", "localvoxtral ")],
+                flush: nil
+            ),
+            StreamCase(
+                name: "TrailingPartialWordIsHeldAcrossChunks",
+                entries: [voxtralEntry],
+                steps: [("vox", ""), ("tral", ""), (" ", "localvoxtral ")],
+                flush: nil
+            ),
+            StreamCase(
+                name: "NonMatchingTextReleasesWithZeroExtraHold",
+                entries: [voxtralEntry],
+                steps: [("hello world ", "hello world ")],
+                flush: nil
+            ),
+            // "localvoxtral" is a prefix of no rule, so it releases at once.
+            StreamCase(
+                name: "MultiWordRuleSpanningIngestChunksMatches",
+                entries: [ReplacementEntry(replaceWith: "localvoxtral", matches: ["local voxtral"])],
+                steps: [("local ", ""), ("voxtral ", "localvoxtral "), ("rocks ", "rocks ")],
+                flush: ""
+            ),
+            // "cloud" alone must not be released: it could be the first word of
+            // the two-word match that only completes with the next chunk.
+            // Once the match applies, neither "Claude" nor "Code" can begin a
+            // rule, so both release immediately.
+            StreamCase(
+                name: "MultiWordRuleHoldsBackPossiblePrefixWords",
+                entries: [ReplacementEntry(replaceWith: "Claude Code", matches: ["cloud code"])],
+                steps: [("use cloud ", "use "), ("code ", "Claude Code ")],
+                flush: ""
+            ),
+        ]
+        assertStreamCases(cases)
     }
 
     // MARK: - Viable-prefix hold-back bound
 
-    func testLongRuleDoesNotDelayUnrelatedWords() {
-        var stream = makeStream(entries: [
-            ReplacementEntry(replaceWith: "Claude Code", matches: ["the quick brown fox"]),
-        ])
-        // A four-word rule used to hold three complete words of every
-        // dictation. Text that begins no rule is released with no extra hold.
-        XCTAssertEqual(stream.ingest("hello there wide world "), "hello there wide world ")
-        XCTAssertEqual(stream.flushRemainder(), "")
-    }
-
-    func testOnlyWordsThatCanBeginARuleAreHeld() {
-        var stream = makeStream(entries: [
-            ReplacementEntry(replaceWith: "Claude Code", matches: ["the quick brown fox"]),
-        ])
-        // "the quick" is a live prefix of the rule, so it is held; the words
-        // before it are not, so they go out immediately.
-        XCTAssertEqual(stream.ingest("hello world the quick "), "hello world ")
-        // The match fails at "slow" — nothing here begins the rule anymore.
-        XCTAssertEqual(stream.ingest("slow "), "the quick slow ")
-    }
-
-    func testMatchStartAfterPunctuationIsHeldBack() {
-        var stream = makeStream(entries: [
-            ReplacementEntry(replaceWith: "VOXTRAL ROCKS", matches: ["voxtral rocks"]),
-        ])
-        // The rule's lookbehind only forbids a preceding letter or digit, so a
-        // match can start inside a whitespace-delimited word: "voxtral" here
-        // begins after the hyphen. Releasing "foo-voxtral " would let the
-        // correction reach back into already-typed text.
-        XCTAssertEqual(stream.ingest("foo-voxtral "), "foo-")
-        XCTAssertEqual(stream.ingest("rocks "), "VOXTRAL ROCKS ")
-    }
-
-    func testMatchStartAfterCombiningMarkIsHeldBack() {
-        var stream = makeStream(entries: [
-            ReplacementEntry(replaceWith: "VOXTRAL ROCKS", matches: ["voxtral rocks"]),
-        ])
-        // Decomposed "é" is a letter grapheme, but the code point immediately
-        // before the match is a combining mark (category Mn), which the
-        // lookbehind accepts. The candidate scan must accept it too.
-        XCTAssertEqual(stream.ingest("e\u{0301}voxtral "), "e\u{0301}")
-        XCTAssertEqual(stream.ingest("rocks "), "VOXTRAL ROCKS ")
-    }
-
-    func testCaseInsensitivePrefixIsHeld() {
-        var stream = makeStream(entries: [
-            ReplacementEntry(replaceWith: "Claude Code", matches: ["cloud code"]),
-        ])
-        XCTAssertEqual(stream.ingest("use CLOUD "), "use ")
-        XCTAssertEqual(stream.ingest("Code "), "Claude Code ")
-    }
-
-    func testFullCaseFoldingExpansionIsHeld() {
-        // NSRegularExpression full-case-folds literals, so the rule `foo ßx`
-        // matches the text "foo ssx". A literal prefix check would judge the
-        // tail "foo s" dead ("ßx" does not start with "s") and release it, and
-        // the correction would then rewrite text already typed.
-        var stream = makeStream(entries: [
-            ReplacementEntry(replaceWith: "X", matches: ["foo ßx"]),
-        ])
-        XCTAssertEqual(stream.ingest("foo s"), "")
-        XCTAssertEqual(stream.ingest("sx "), "X ")
-    }
-
-    func testFullCaseFoldingLigatureIsHeld() {
-        // "ﬁ" folds to "fi", so the rule `fix it` matches the text "ﬁx it".
-        var stream = makeStream(entries: [
-            ReplacementEntry(replaceWith: "REPAIRED", matches: ["fix it"]),
-        ])
-        XCTAssertEqual(stream.ingest("ﬁx "), "")
-        XCTAssertEqual(stream.ingest("it "), "REPAIRED ")
-    }
-
-    func testKelvinSignFoldsToKAndIsHeld() {
-        // U+212A KELVIN SIGN folds to "k".
-        var stream = makeStream(entries: [
-            ReplacementEntry(replaceWith: "TEMP", matches: ["kelvin scale"]),
-        ])
-        XCTAssertEqual(stream.ingest("\u{212A}elvin "), "")
-        XCTAssertEqual(stream.ingest("scale "), "TEMP ")
-    }
-
-    func testReplacementContainingItsOwnKeyTerminates() {
-        // `apply()` resumes scanning past the inserted replacement text, so a
-        // replacement that reproduces its own key cannot be re-matched forever.
-        // If that ever regresses, the app hangs mid-dictation rather than
-        // failing a test — pin it here.
-        var stream = makeStream(entries: [
-            ReplacementEntry(replaceWith: "big foo", matches: ["foo"]),
-        ])
-        XCTAssertEqual(stream.ingest("foo bar "), "big foo bar ")
-
-        var nested = makeStream(entries: [
-            ReplacementEntry(replaceWith: "xyz abc def", matches: ["abc def"]),
-        ])
-        XCTAssertEqual(nested.ingest("abc def tail "), "xyz abc def tail ")
-    }
-
-    func testSingleWordRuleAmongMultiWordRulesStillReleasesPromptly() {
-        var stream = makeStream(entries: [
-            ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
-            ReplacementEntry(replaceWith: "Claude Code", matches: ["cloud code"]),
-        ])
-        // maxRuleWordCount is 2, but "hello" begins neither rule.
-        XCTAssertEqual(stream.ingest("hello voxtral "), "hello localvoxtral ")
-    }
-
-    func testPunctuationBoundaryCompletesMatchButHoldsUntilWhitespace() {
-        var stream = makeStream(entries: [voxtralEntry])
-        // "voxtral." could still grow into a different word ("voxtral.x"),
-        // so it stays held until whitespace or the final flush.
-        XCTAssertEqual(stream.ingest("voxtral."), "")
-        XCTAssertEqual(stream.ingest(" "), "localvoxtral. ")
-    }
-
-    func testFlushRemainderAppliesFinalUnboundedWordMatch() {
-        var stream = makeStream(entries: [voxtralEntry])
-        XCTAssertEqual(stream.ingest("voxtral"), "")
-        XCTAssertEqual(stream.flushRemainder(), "localvoxtral")
-    }
-
-    func testEmojiGraphemeMatchIsReplaced() {
-        var stream = makeStream(entries: [
-            ReplacementEntry(replaceWith: "developer", matches: ["👩‍💻"]),
-        ])
-        XCTAssertEqual(stream.ingest("👩‍💻 "), "developer ")
-    }
-
-    func testNoRulesReleasesEverythingImmediately() {
-        var stream = makeStream(entries: [])
-        XCTAssertEqual(stream.ingest("partial-word-no-boundary"), "partial-word-no-boundary")
-        XCTAssertEqual(stream.flushRemainder(), "")
-    }
-
-    func testEmptyAndWhitespaceOnlyIngest() {
-        var stream = makeStream(entries: [voxtralEntry])
-        XCTAssertEqual(stream.ingest(""), "")
-        XCTAssertEqual(stream.ingest("   "), "   ")
-        XCTAssertEqual(stream.flushRemainder(), "")
-    }
-
-    func testFlushRemainderOnEmptyStreamIsEmpty() {
-        var stream = makeStream(entries: [voxtralEntry])
-        XCTAssertEqual(stream.flushRemainder(), "")
+    func testViablePrefixHoldBackBound() {
+        let cases: [StreamCase] = [
+            // A four-word rule used to hold three complete words of every
+            // dictation. Text that begins no rule is released with no extra hold.
+            StreamCase(
+                name: "LongRuleDoesNotDelayUnrelatedWords",
+                entries: [ReplacementEntry(replaceWith: "Claude Code", matches: ["the quick brown fox"])],
+                steps: [("hello there wide world ", "hello there wide world ")],
+                flush: ""
+            ),
+            // "the quick" is a live prefix of the rule, so it is held; the words
+            // before it are not, so they go out immediately.
+            // The match fails at "slow" — nothing here begins the rule anymore.
+            StreamCase(
+                name: "OnlyWordsThatCanBeginARuleAreHeld",
+                entries: [ReplacementEntry(replaceWith: "Claude Code", matches: ["the quick brown fox"])],
+                steps: [("hello world the quick ", "hello world "), ("slow ", "the quick slow ")],
+                flush: nil
+            ),
+            // The rule's lookbehind only forbids a preceding letter or digit, so a
+            // match can start inside a whitespace-delimited word: "voxtral" here
+            // begins after the hyphen. Releasing "foo-voxtral " would let the
+            // correction reach back into already-typed text.
+            StreamCase(
+                name: "MatchStartAfterPunctuationIsHeldBack",
+                entries: [ReplacementEntry(replaceWith: "VOXTRAL ROCKS", matches: ["voxtral rocks"])],
+                steps: [("foo-voxtral ", "foo-"), ("rocks ", "VOXTRAL ROCKS ")],
+                flush: nil
+            ),
+            // Decomposed "é" is a letter grapheme, but the code point immediately
+            // before the match is a combining mark (category Mn), which the
+            // lookbehind accepts. The candidate scan must accept it too.
+            StreamCase(
+                name: "MatchStartAfterCombiningMarkIsHeldBack",
+                entries: [ReplacementEntry(replaceWith: "VOXTRAL ROCKS", matches: ["voxtral rocks"])],
+                steps: [("e\u{0301}voxtral ", "e\u{0301}"), ("rocks ", "VOXTRAL ROCKS ")],
+                flush: nil
+            ),
+            StreamCase(
+                name: "CaseInsensitivePrefixIsHeld",
+                entries: [ReplacementEntry(replaceWith: "Claude Code", matches: ["cloud code"])],
+                steps: [("use CLOUD ", "use "), ("Code ", "Claude Code ")],
+                flush: nil
+            ),
+            // NSRegularExpression full-case-folds literals, so the rule `foo ßx`
+            // matches the text "foo ssx". A literal prefix check would judge the
+            // tail "foo s" dead ("ßx" does not start with "s") and release it, and
+            // the correction would then rewrite text already typed.
+            StreamCase(
+                name: "FullCaseFoldingExpansionIsHeld",
+                entries: [ReplacementEntry(replaceWith: "X", matches: ["foo ßx"])],
+                steps: [("foo s", ""), ("sx ", "X ")],
+                flush: nil
+            ),
+            // "ﬁ" folds to "fi", so the rule `fix it` matches the text "ﬁx it".
+            StreamCase(
+                name: "FullCaseFoldingLigatureIsHeld",
+                entries: [ReplacementEntry(replaceWith: "REPAIRED", matches: ["fix it"])],
+                steps: [("ﬁx ", ""), ("it ", "REPAIRED ")],
+                flush: nil
+            ),
+            // U+212A KELVIN SIGN folds to "k".
+            StreamCase(
+                name: "KelvinSignFoldsToKAndIsHeld",
+                entries: [ReplacementEntry(replaceWith: "TEMP", matches: ["kelvin scale"])],
+                steps: [("\u{212A}elvin ", ""), ("scale ", "TEMP ")],
+                flush: nil
+            ),
+            // `apply()` resumes scanning past the inserted replacement text, so a
+            // replacement that reproduces its own key cannot be re-matched forever.
+            // If that ever regresses, the app hangs mid-dictation rather than
+            // failing a test — pin it here.
+            StreamCase(
+                name: "ReplacementContainingItsOwnKeyTerminates",
+                entries: [ReplacementEntry(replaceWith: "big foo", matches: ["foo"])],
+                steps: [("foo bar ", "big foo bar ")],
+                flush: nil
+            ),
+            StreamCase(
+                name: "ReplacementContainingItsOwnKeyTerminates_nested",
+                entries: [ReplacementEntry(replaceWith: "xyz abc def", matches: ["abc def"])],
+                steps: [("abc def tail ", "xyz abc def tail ")],
+                flush: nil
+            ),
+            // maxRuleWordCount is 2, but "hello" begins neither rule.
+            StreamCase(
+                name: "SingleWordRuleAmongMultiWordRulesStillReleasesPromptly",
+                entries: [
+                    ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
+                    ReplacementEntry(replaceWith: "Claude Code", matches: ["cloud code"]),
+                ],
+                steps: [("hello voxtral ", "hello localvoxtral ")],
+                flush: nil
+            ),
+            // "voxtral." could still grow into a different word ("voxtral.x"),
+            // so it stays held until whitespace or the final flush.
+            StreamCase(
+                name: "PunctuationBoundaryCompletesMatchButHoldsUntilWhitespace",
+                entries: [voxtralEntry],
+                steps: [("voxtral.", ""), (" ", "localvoxtral. ")],
+                flush: nil
+            ),
+            StreamCase(
+                name: "FlushRemainderAppliesFinalUnboundedWordMatch",
+                entries: [voxtralEntry],
+                steps: [("voxtral", "")],
+                flush: "localvoxtral"
+            ),
+            StreamCase(
+                name: "EmojiGraphemeMatchIsReplaced",
+                entries: [ReplacementEntry(replaceWith: "developer", matches: ["👩‍💻"])],
+                steps: [("👩‍💻 ", "developer ")],
+                flush: nil
+            ),
+            StreamCase(
+                name: "NoRulesReleasesEverythingImmediately",
+                entries: [],
+                steps: [("partial-word-no-boundary", "partial-word-no-boundary")],
+                flush: ""
+            ),
+            StreamCase(
+                name: "EmptyAndWhitespaceOnlyIngest",
+                entries: [voxtralEntry],
+                steps: [("", ""), ("   ", "   ")],
+                flush: ""
+            ),
+            StreamCase(
+                name: "FlushRemainderOnEmptyStreamIsEmpty",
+                entries: [voxtralEntry],
+                steps: [],
+                flush: ""
+            ),
+        ]
+        assertStreamCases(cases)
     }
 
     // MARK: - Newline sanitization
@@ -213,137 +238,141 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
     // (or the remainder flush) decides whether their run collapses, so the
     // sanitize-ON assertions below check ingest and flush outputs jointly.
 
-    func testNewlineIsCollapsedToSingleSpace() {
-        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
-        XCTAssertEqual(stream.ingest("hello\nworld "), "hello world")
-        XCTAssertEqual(stream.flushRemainder(), " ")
+    func testNewlineSanitization() {
+        let cases: [StreamCase] = [
+            StreamCase(
+                name: "NewlineIsCollapsedToSingleSpace",
+                entries: [voxtralEntry],
+                steps: [("hello\nworld ", "hello world")],
+                flush: " "
+            ),
+            StreamCase(
+                name: "NewlineRunWithAdjacentSpacesProducesNoDoubleSpace",
+                entries: [voxtralEntry],
+                steps: [("hello \n\n world ", "hello world")],
+                flush: " "
+            ),
+            StreamCase(
+                name: "NewlineCollapseSpansReleaseBoundaries",
+                entries: [voxtralEntry],
+                steps: [("hello\n", "hello"), ("\n world ", " world")],
+                flush: " "
+            ),
+            StreamCase(
+                name: "LeadingNewlinesAreDropped",
+                entries: [voxtralEntry],
+                steps: [("\n\nhello ", "hello")],
+                flush: " "
+            ),
+            StreamCase(
+                name: "CarriageReturnsAreSanitized",
+                entries: [voxtralEntry],
+                steps: [("a\r\nb\rc ", "a b c")],
+                flush: " "
+            ),
+            // The tab precedes the newline: the whole run (tab + newline) must
+            // still collapse to exactly one space.
+            StreamCase(
+                name: "TabBeforeNewlineCollapsesToSingleSpace",
+                entries: [voxtralEntry],
+                steps: [("cmd\t\nnext ", "cmd next")],
+                flush: " "
+            ),
+            // The spaces are buffered at the chunk edge; the newline arriving in
+            // the next chunk retroactively collapses the whole run.
+            StreamCase(
+                name: "SpacesBeforeNewlineAcrossChunksCollapse",
+                entries: [voxtralEntry],
+                steps: [("cmd ", "cmd"), ("\nls ", " ls")],
+                flush: " "
+            ),
+            // A synthetic Tab keystroke triggers shell completion UI — same
+            // terminal-state hazard class as Enter.
+            StreamCase(
+                name: "StandaloneTabCollapsesToSingleSpace",
+                entries: [voxtralEntry],
+                steps: [("a\tb ", "a b")],
+                flush: " "
+            ),
+            StreamCase(
+                name: "TabRunCollapsesToSingleSpace",
+                entries: [voxtralEntry],
+                steps: [("a\t\tb ", "a b")],
+                flush: " "
+            ),
+            StreamCase(
+                name: "WhitespaceHeldAtChunkEdgeIsReleasedIntactWhenNoNewlineFollows",
+                entries: [voxtralEntry],
+                steps: [("cmd ", "cmd"), ("ls ", " ls")],
+                flush: " "
+            ),
+            StreamCase(
+                name: "PlainSpaceRunsAreReemittedVerbatim",
+                entries: [voxtralEntry],
+                steps: [("a  b ", "a  b")],
+                flush: " "
+            ),
+            // French typography: the NBSP before `?` is dictated content. It is
+            // buffered like a plain space (so no release ends in whitespace) and
+            // re-emitted VERBATIM — sanitization must not rewrite it to an ASCII
+            // space, which would change the user's French spacing.
+            StreamCase(
+                name: "NonBreakingSpaceIsBufferedAndReemittedVerbatim",
+                entries: [voxtralEntry],
+                steps: [("oui\u{00A0}", "oui"), ("? ", "\u{00A0}?")],
+                flush: " "
+            ),
+            // An NBSP adjacent to a newline joins the run: the whole run collapses
+            // to exactly one ASCII space, same as adjacent plain spaces.
+            StreamCase(
+                name: "NonBreakingSpaceAdjacentToNewlineCollapsesWithTheRun",
+                entries: [voxtralEntry],
+                steps: [("a\u{00A0}\nb ", "a b")],
+                flush: " "
+            ),
+            // "run so" stays a live prefix of the rule, so everything is held back
+            // and the newline reaches the remainder flush; sanitization must still
+            // apply there.
+            StreamCase(
+                name: "FlushedRemainderIsSanitized",
+                entries: [ReplacementEntry(replaceWith: "X", matches: ["run something"])],
+                steps: [("run\nso", "")],
+                flush: "run so"
+            ),
+            // "run" begins no rule, so it is released before the newline's fate is
+            // known. The collapsed space is emitted with the next release.
+            StreamCase(
+                name: "CollapsedNewlineRunSpansAnEarlyRelease",
+                entries: [ReplacementEntry(replaceWith: "localvoxtral", matches: ["local voxtral"])],
+                steps: [("run\nit", "run")],
+                flush: " it"
+            ),
+            StreamCase(
+                name: "ReplacementAndSanitizationCompose",
+                entries: [voxtralEntry],
+                steps: [("voxtral\nrocks ", "localvoxtral rocks")],
+                flush: " "
+            ),
+        ]
+        assertStreamCases(cases, sanitizesNewlines: true)
     }
 
-    func testNewlineRunWithAdjacentSpacesProducesNoDoubleSpace() {
-        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
-        XCTAssertEqual(stream.ingest("hello \n\n world "), "hello world")
-        XCTAssertEqual(stream.flushRemainder(), " ")
-    }
-
-    func testNewlineCollapseSpansReleaseBoundaries() {
-        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
-        XCTAssertEqual(stream.ingest("hello\n"), "hello")
-        XCTAssertEqual(stream.ingest("\n world "), " world")
-        XCTAssertEqual(stream.flushRemainder(), " ")
-    }
-
-    func testLeadingNewlinesAreDropped() {
-        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
-        XCTAssertEqual(stream.ingest("\n\nhello "), "hello")
-        XCTAssertEqual(stream.flushRemainder(), " ")
-    }
-
-    func testCarriageReturnsAreSanitized() {
-        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
-        XCTAssertEqual(stream.ingest("a\r\nb\rc "), "a b c")
-        XCTAssertEqual(stream.flushRemainder(), " ")
-    }
-
-    func testTabBeforeNewlineCollapsesToSingleSpace() {
-        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
-        // The tab precedes the newline: the whole run (tab + newline) must
-        // still collapse to exactly one space.
-        XCTAssertEqual(stream.ingest("cmd\t\nnext "), "cmd next")
-        XCTAssertEqual(stream.flushRemainder(), " ")
-    }
-
-    func testSpacesBeforeNewlineAcrossChunksCollapse() {
-        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
-        // The spaces are buffered at the chunk edge; the newline arriving in
-        // the next chunk retroactively collapses the whole run.
-        XCTAssertEqual(stream.ingest("cmd "), "cmd")
-        XCTAssertEqual(stream.ingest("\nls "), " ls")
-        XCTAssertEqual(stream.flushRemainder(), " ")
-    }
-
-    func testStandaloneTabCollapsesToSingleSpace() {
-        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
-        // A synthetic Tab keystroke triggers shell completion UI — same
-        // terminal-state hazard class as Enter.
-        XCTAssertEqual(stream.ingest("a\tb "), "a b")
-        XCTAssertEqual(stream.flushRemainder(), " ")
-    }
-
-    func testTabRunCollapsesToSingleSpace() {
-        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
-        XCTAssertEqual(stream.ingest("a\t\tb "), "a b")
-        XCTAssertEqual(stream.flushRemainder(), " ")
-    }
-
-    func testWhitespaceHeldAtChunkEdgeIsReleasedIntactWhenNoNewlineFollows() {
-        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
-        XCTAssertEqual(stream.ingest("cmd "), "cmd")
-        XCTAssertEqual(stream.ingest("ls "), " ls")
-        XCTAssertEqual(stream.flushRemainder(), " ")
-    }
-
-    func testPlainSpaceRunsAreReemittedVerbatim() {
-        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
-        XCTAssertEqual(stream.ingest("a  b "), "a  b")
-        XCTAssertEqual(stream.flushRemainder(), " ")
-    }
-
-    /// French typography: the NBSP before `?` is dictated content. It is
-    /// buffered like a plain space (so no release ends in whitespace) and
-    /// re-emitted VERBATIM — sanitization must not rewrite it to an ASCII
-    /// space, which would change the user's French spacing.
-    func testNonBreakingSpaceIsBufferedAndReemittedVerbatim() {
-        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
-        XCTAssertEqual(stream.ingest("oui\u{00A0}"), "oui")
-        XCTAssertEqual(stream.ingest("? "), "\u{00A0}?")
-        XCTAssertEqual(stream.flushRemainder(), " ")
-    }
-
-    /// An NBSP adjacent to a newline joins the run: the whole run collapses
-    /// to exactly one ASCII space, same as adjacent plain spaces.
-    func testNonBreakingSpaceAdjacentToNewlineCollapsesWithTheRun() {
-        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
-        XCTAssertEqual(stream.ingest("a\u{00A0}\nb "), "a b")
-        XCTAssertEqual(stream.flushRemainder(), " ")
-    }
-
-    func testFlushedRemainderIsSanitized() {
-        var stream = makeStream(
-            entries: [ReplacementEntry(replaceWith: "X", matches: ["run something"])],
-            sanitizesNewlines: true
-        )
-        // "run so" stays a live prefix of the rule, so everything is held back
-        // and the newline reaches the remainder flush; sanitization must still
-        // apply there.
-        XCTAssertEqual(stream.ingest("run\nso"), "")
-        XCTAssertEqual(stream.flushRemainder(), "run so")
-    }
-
-    func testCollapsedNewlineRunSpansAnEarlyRelease() {
-        var stream = makeStream(
-            entries: [ReplacementEntry(replaceWith: "localvoxtral", matches: ["local voxtral"])],
-            sanitizesNewlines: true
-        )
-        // "run" begins no rule, so it is released before the newline's fate is
-        // known. The collapsed space is emitted with the next release.
-        XCTAssertEqual(stream.ingest("run\nit"), "run")
-        XCTAssertEqual(stream.flushRemainder(), " it")
-    }
-
-    func testSanitizationOffPreservesNewlines() {
-        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: false)
-        XCTAssertEqual(stream.ingest("hello\nworld "), "hello\nworld ")
-    }
-
-    func testSanitizationOffPreservesTabs() {
-        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: false)
-        XCTAssertEqual(stream.ingest("a\tb "), "a\tb ")
-    }
-
-    func testReplacementAndSanitizationCompose() {
-        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
-        XCTAssertEqual(stream.ingest("voxtral\nrocks "), "localvoxtral rocks")
-        XCTAssertEqual(stream.flushRemainder(), " ")
+    func testSanitizationOffPreservesWhitespace() {
+        let cases: [StreamCase] = [
+            StreamCase(
+                name: "SanitizationOffPreservesNewlines",
+                entries: [voxtralEntry],
+                steps: [("hello\nworld ", "hello\nworld ")],
+                flush: nil
+            ),
+            StreamCase(
+                name: "SanitizationOffPreservesTabs",
+                entries: [voxtralEntry],
+                steps: [("a\tb ", "a\tb ")],
+                flush: nil
+            ),
+        ]
+        assertStreamCases(cases, sanitizesNewlines: false)
     }
 
     // MARK: - Mid-session releases never end in whitespace (sanitize ON)

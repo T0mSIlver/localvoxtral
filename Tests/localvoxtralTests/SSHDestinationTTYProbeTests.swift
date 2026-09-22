@@ -295,29 +295,103 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         XCTAssertFalse(value.hasCompetingHerdrClient)
     }
 
-    func testGhosttyWrappedHerdrInAnotherTabDoesNotCompete() throws {
-        let value = try XCTUnwrap(
-            connection(
-                probe(
-                    processes: [
-                        ssh(["ssh", "-t", "builder", "herdr"], pid: 501),
-                        ssh(
-                            [
-                                "ssh",
-                                "-o", "SetEnv=TERM=xterm-ghostty",
-                                "-o", "SendEnv=COLORTERM",
-                                "-o", "SendEnv=TERM_PROGRAM",
-                                "-o", "SendEnv=TERM_PROGRAM_VERSION",
-                                "builder", "herdr",
-                            ],
-                            pid: 777,
-                            device: otherTerminal
-                        ),
-                    ]
-                )
+    /// The surface client (pid 501) next to one ssh on another terminal: does
+    /// that neighbor count as a competing herdr view?
+    func testNeighborOnAnotherTerminal() throws {
+        let cases: [(name: String, surface: [String], neighbor: SSHClientProcess, competes: Bool)] = [
+            (
+                "GhosttyWrappedHerdrInAnotherTabDoesNotCompete",
+                ["ssh", "-t", "builder", "herdr"],
+                ssh(
+                    [
+                        "ssh",
+                        "-o", "SetEnv=TERM=xterm-ghostty",
+                        "-o", "SendEnv=COLORTERM",
+                        "-o", "SendEnv=TERM_PROGRAM",
+                        "-o", "SendEnv=TERM_PROGRAM_VERSION",
+                        "builder", "herdr",
+                    ],
+                    pid: 777,
+                    device: otherTerminal
+                ),
+                false
+            ),
+            // herdr focus is server-global and multi-client attach is a mirror
+            // (verified in herdr source: handle_pane_current resolves the app's
+            // active pane; tests/multi_client.rs broadcasts frames to all
+            // clients), so two whole-view clients of one server display the SAME
+            // focused pane and joining is correct for both.
+            (
+                "ASecondWholeViewClientOfTheSameServerDoesNotCompete",
+                ["ssh", "-t", "builder", "herdr"],
+                ssh(["ssh", "builder", "herdr"], pid: 777, device: otherTerminal),
+                false
+            ),
+            // Named sessions are separate servers with separate sockets. A client
+            // of `--session scratch` displays a different herdr than the default
+            // one the candidates named — the one shape that could put a different
+            // herdr view on another terminal, so it must still block.
+            (
+                "AHerdrClientOfAnotherSessionSelectorCompetes",
+                ["ssh", "-t", "builder", "herdr"],
+                ssh(["ssh", "builder", "herdr", "--session", "scratch"], pid: 777, device: otherTerminal),
+                true
+            ),
+            // `herdr terminal attach <id>` renders one pane, not the server's
+            // focused view — from here it is indistinguishable from a different
+            // herdr view, so it blocks.
+            (
+                "ASinglePaneHerdrAttachElsewhereCompetes",
+                ["ssh", "-t", "builder", "herdr"],
+                ssh(["ssh", "builder", "herdr", "terminal", "attach", "w1:p3"], pid: 777, device: otherTerminal),
+                true
+            ),
+            // An `-o` neighbor cannot have its destination parsed, but an argv
+            // with no `herdr` substring anywhere cannot have run herdr as its
+            // remote command. One-sided on purpose: it can over-block, never
+            // under-block.
+            (
+                "ARefusedArgvElsewhereCompetesOnlyWhenItMentionsHerdr_harmless",
+                ["ssh", "-t", "builder", "herdr"],
+                ssh(["ssh", "-o", "Compression=yes", "builder"], pid: 777, device: otherTerminal),
+                false
+            ),
+            (
+                "ARefusedArgvElsewhereCompetesOnlyWhenItMentionsHerdr_suspicious",
+                ["ssh", "-t", "builder", "herdr"],
+                ssh(["ssh", "-o", "Compression=yes", "builder", "herdr"], pid: 777, device: otherTerminal),
+                true
+            ),
+            // A tty-holding "ssh" that is not OpenSSH could be anything, including
+            // a herdr client by other means. Unreadable means unruled-out.
+            (
+                "AnUntrustedExecutableElsewhereCompetes",
+                ["ssh", "-t", "builder", "herdr"],
+                ssh(["ssh", "builder"], pid: 777, device: otherTerminal, executable: "/tmp/evil/ssh"),
+                true
+            ),
+            // Its herdr, if any, is another host's server — the candidates are
+            // namespaced by the enrolled host and cannot name it.
+            (
+                "AHerdrClientToADIFFERENTHostDoesNotCompete",
+                ["ssh", "-t", "builder", "herdr"],
+                ssh(["ssh", "elsewhere", "herdr"], pid: 777, device: otherTerminal),
+                false
+            ),
+            // A process we cannot read cannot be ruled out as a herdr client.
+            (
+                "AnUnreadableSSHElsewhereCompetes",
+                ["ssh", "builder"],
+                ssh(nil, pid: 777, device: otherTerminal),
+                true
+            ),
+        ]
+        for (name, surface, neighbor, competes) in cases {
+            let value = try XCTUnwrap(
+                connection(probe(processes: [ssh(surface, pid: 501), neighbor])), name
             )
-        )
-        XCTAssertFalse(value.hasCompetingHerdrClient)
+            XCTAssertEqual(value.hasCompetingHerdrClient, competes, name)
+        }
     }
 
     func testAPlainShellToTheSameHostDoesNotCompete() throws {
@@ -341,47 +415,6 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         XCTAssertEqual(value.herdr, .plainClient(sessionSelector: nil))
     }
 
-    func testASecondWholeViewClientOfTheSameServerDoesNotCompete() throws {
-        // herdr focus is server-global and multi-client attach is a mirror
-        // (verified in herdr source: handle_pane_current resolves the app's
-        // active pane; tests/multi_client.rs broadcasts frames to all
-        // clients), so two whole-view clients of one server display the SAME
-        // focused pane and joining is correct for both.
-        let value = try XCTUnwrap(
-            connection(
-                probe(
-                    processes: [
-                        ssh(["ssh", "-t", "builder", "herdr"], pid: 501),
-                        ssh(["ssh", "builder", "herdr"], pid: 777, device: otherTerminal),
-                    ]
-                )
-            )
-        )
-        XCTAssertFalse(value.hasCompetingHerdrClient)
-    }
-
-    func testAHerdrClientOfAnotherSessionSelectorCompetes() throws {
-        // Named sessions are separate servers with separate sockets. A client
-        // of `--session scratch` displays a different herdr than the default
-        // one the candidates named — the one shape that could put a different
-        // herdr view on another terminal, so it must still block.
-        let value = try XCTUnwrap(
-            connection(
-                probe(
-                    processes: [
-                        ssh(["ssh", "-t", "builder", "herdr"], pid: 501),
-                        ssh(
-                            ["ssh", "builder", "herdr", "--session", "scratch"],
-                            pid: 777,
-                            device: otherTerminal
-                        ),
-                    ]
-                )
-            )
-        )
-        XCTAssertTrue(value.hasCompetingHerdrClient)
-    }
-
     func testMatchingSessionSelectorsDoNotCompete() throws {
         let value = try XCTUnwrap(
             connection(
@@ -399,86 +432,6 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         )
         XCTAssertEqual(value.herdr, .plainClient(sessionSelector: "scratch"))
         XCTAssertFalse(value.hasCompetingHerdrClient)
-    }
-
-    func testASinglePaneHerdrAttachElsewhereCompetes() throws {
-        // `herdr terminal attach <id>` renders one pane, not the server's
-        // focused view — from here it is indistinguishable from a different
-        // herdr view, so it blocks.
-        let value = try XCTUnwrap(
-            connection(
-                probe(
-                    processes: [
-                        ssh(["ssh", "-t", "builder", "herdr"], pid: 501),
-                        ssh(
-                            ["ssh", "builder", "herdr", "terminal", "attach", "w1:p3"],
-                            pid: 777,
-                            device: otherTerminal
-                        ),
-                    ]
-                )
-            )
-        )
-        XCTAssertTrue(value.hasCompetingHerdrClient)
-    }
-
-    func testARefusedArgvElsewhereCompetesOnlyWhenItMentionsHerdr() throws {
-        // An `-o` neighbor cannot have its destination parsed, but an argv
-        // with no `herdr` substring anywhere cannot have run herdr as its
-        // remote command. One-sided on purpose: it can over-block, never
-        // under-block.
-        let harmless = try XCTUnwrap(
-            connection(
-                probe(
-                    processes: [
-                        ssh(["ssh", "-t", "builder", "herdr"], pid: 501),
-                        ssh(
-                            ["ssh", "-o", "Compression=yes", "builder"],
-                            pid: 777,
-                            device: otherTerminal
-                        ),
-                    ]
-                )
-            )
-        )
-        XCTAssertFalse(harmless.hasCompetingHerdrClient)
-
-        let suspicious = try XCTUnwrap(
-            connection(
-                probe(
-                    processes: [
-                        ssh(["ssh", "-t", "builder", "herdr"], pid: 501),
-                        ssh(
-                            ["ssh", "-o", "Compression=yes", "builder", "herdr"],
-                            pid: 777,
-                            device: otherTerminal
-                        ),
-                    ]
-                )
-            )
-        )
-        XCTAssertTrue(suspicious.hasCompetingHerdrClient)
-    }
-
-    func testAnUntrustedExecutableElsewhereCompetes() throws {
-        // A tty-holding "ssh" that is not OpenSSH could be anything, including
-        // a herdr client by other means. Unreadable means unruled-out.
-        let value = try XCTUnwrap(
-            connection(
-                probe(
-                    processes: [
-                        ssh(["ssh", "-t", "builder", "herdr"], pid: 501),
-                        ssh(
-                            ["ssh", "builder"],
-                            pid: 777,
-                            device: otherTerminal,
-                            executable: "/tmp/evil/ssh"
-                        ),
-                    ]
-                )
-            )
-        )
-        XCTAssertTrue(value.hasCompetingHerdrClient)
     }
 
     func testASuspendedHerdrVerbOnTHISDeviceStillCompetes() throws {
@@ -564,37 +517,6 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
             )
         )
         XCTAssertEqual(value.herdr, .notHerdr)
-        XCTAssertTrue(value.hasCompetingHerdrClient)
-    }
-
-    func testAHerdrClientToADIFFERENTHostDoesNotCompete() throws {
-        // Its herdr, if any, is another host's server — the candidates are
-        // namespaced by the enrolled host and cannot name it.
-        let value = try XCTUnwrap(
-            connection(
-                probe(
-                    processes: [
-                        ssh(["ssh", "-t", "builder", "herdr"], pid: 501),
-                        ssh(["ssh", "elsewhere", "herdr"], pid: 777, device: otherTerminal),
-                    ]
-                )
-            )
-        )
-        XCTAssertFalse(value.hasCompetingHerdrClient)
-    }
-
-    func testAnUnreadableSSHElsewhereCompetes() throws {
-        // A process we cannot read cannot be ruled out as a herdr client.
-        let value = try XCTUnwrap(
-            connection(
-                probe(
-                    processes: [
-                        ssh(["ssh", "builder"], pid: 501),
-                        ssh(nil, pid: 777, device: otherTerminal),
-                    ]
-                )
-            )
-        )
         XCTAssertTrue(value.hasCompetingHerdrClient)
     }
 
@@ -1074,60 +996,32 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         SSHDestinationTTYProbe.parse(arguments: argv)?.destination
     }
 
-    func testPlainDestination() {
-        XCTAssertEqual(destination(["ssh", "builder"]), "builder")
-    }
-
-    func testUserAtHostKeepsOnlyTheHost() {
-        XCTAssertEqual(destination(["ssh", "tom@builder"]), "builder")
-    }
-
-    func testDestinationIsLowercasedForComparison() {
-        XCTAssertEqual(destination(["ssh", "Builder.Local"]), "builder.local")
-    }
-
-    func testAbsolutePathArgumentZeroIsStillSSH() {
-        XCTAssertEqual(destination(["/usr/bin/ssh", "builder"]), "builder")
-    }
-
-    func testAnotherProgramIsNeverParsed() {
-        XCTAssertNil(destination(["scp", "builder:/x", "/tmp"]))
-    }
-
-    func testSeparatedAndGluedInertOptionArgumentsAreSkipped() {
-        XCTAssertEqual(destination(["ssh", "-p", "2222", "builder"]), "builder")
-        XCTAssertEqual(destination(["ssh", "-p2222", "builder"]), "builder")
-        XCTAssertEqual(destination(["ssh", "-i", "/keys/id", "builder"]), "builder")
-    }
-
-    func testDestinationInertOOptionsAreSkippedInEveryArgvShape() {
-        XCTAssertEqual(destination(["ssh", "-o", "SetEnv=TERM=xterm-ghostty", "builder"]), "builder")
-        XCTAssertEqual(destination(["ssh", "-oSeNdEnV=COLORTERM", "builder"]), "builder")
-        XCTAssertEqual(destination(["ssh", "-to", "SendEnv=TERM_PROGRAM", "builder"]), "builder")
-        XCTAssertEqual(destination(["ssh", "-toSetEnv=TERM=xterm-ghostty", "builder"]), "builder")
-    }
-
-    func testClusteredFlagsAreSkipped() {
-        XCTAssertEqual(destination(["ssh", "-tt", "builder"]), "builder")
-        XCTAssertEqual(destination(["ssh", "-AC", "builder"]), "builder")
-    }
-
-    func testJumpHostOptionDoesNotBecomeTheDestination() {
-        XCTAssertEqual(destination(["ssh", "-J", "bastion", "builder"]), "builder")
-    }
-
-    func testDoubleDashIntroducesTheDestination() {
-        XCTAssertEqual(destination(["ssh", "-t", "--", "builder"]), "builder")
-    }
-
-    func testDoubleDashWithNothingAfterItAbstains() {
-        XCTAssertNil(destination(["ssh", "--"]))
-    }
-
-    func testRemoteCommandIsNotMistakenForTheDestination() {
-        // The reason this walks options in order instead of taking the last
-        // non-option token: here that would answer `/tmp`.
-        XCTAssertEqual(destination(["ssh", "builder", "ls", "/tmp"]), "builder")
+    func testDestinationParsing() {
+        let cases: [(name: String, argv: [String], expected: String?)] = [
+            ("PlainDestination", ["ssh", "builder"], "builder"),
+            ("UserAtHostKeepsOnlyTheHost", ["ssh", "tom@builder"], "builder"),
+            ("DestinationIsLowercasedForComparison", ["ssh", "Builder.Local"], "builder.local"),
+            ("AbsolutePathArgumentZeroIsStillSSH", ["/usr/bin/ssh", "builder"], "builder"),
+            ("AnotherProgramIsNeverParsed", ["scp", "builder:/x", "/tmp"], nil),
+            ("SeparatedInertOptionArgumentIsSkipped", ["ssh", "-p", "2222", "builder"], "builder"),
+            ("GluedInertOptionArgumentIsSkipped", ["ssh", "-p2222", "builder"], "builder"),
+            ("SeparatedInertIdentityArgumentIsSkipped", ["ssh", "-i", "/keys/id", "builder"], "builder"),
+            ("DestinationInertOOption_separated", ["ssh", "-o", "SetEnv=TERM=xterm-ghostty", "builder"], "builder"),
+            ("DestinationInertOOption_glued", ["ssh", "-oSeNdEnV=COLORTERM", "builder"], "builder"),
+            ("DestinationInertOOption_clusteredSeparated", ["ssh", "-to", "SendEnv=TERM_PROGRAM", "builder"], "builder"),
+            ("DestinationInertOOption_clusteredGlued", ["ssh", "-toSetEnv=TERM=xterm-ghostty", "builder"], "builder"),
+            ("ClusteredFlagsAreSkipped_repeated", ["ssh", "-tt", "builder"], "builder"),
+            ("ClusteredFlagsAreSkipped_distinct", ["ssh", "-AC", "builder"], "builder"),
+            ("JumpHostOptionDoesNotBecomeTheDestination", ["ssh", "-J", "bastion", "builder"], "builder"),
+            ("DoubleDashIntroducesTheDestination", ["ssh", "-t", "--", "builder"], "builder"),
+            ("DoubleDashWithNothingAfterItAbstains", ["ssh", "--"], nil),
+            // The reason this walks options in order instead of taking the last
+            // non-option token: here that would answer `/tmp`.
+            ("RemoteCommandIsNotMistakenForTheDestination", ["ssh", "builder", "ls", "/tmp"], "builder"),
+        ]
+        for (name, argv, expected) in cases {
+            XCTAssertEqual(destination(argv), expected, name)
+        }
     }
 
     // MARK: - Destination-moving options ABSTAIN (review finding 2)
@@ -1161,38 +1055,31 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         }
     }
 
-    func testUnknownOptionLetterAbstains() {
-        XCTAssertNil(destination(["ssh", "-Z", "builder"]))
+    func testArgvWithoutAUsableDestinationAbstains() {
+        let cases: [(name: String, argv: [String])] = [
+            ("UnknownOptionLetterAbstains", ["ssh", "-Z", "builder"]),
+            ("TrailingOptionWithNoOperandAbstains", ["ssh", "-p", "2222"]),
+            ("NoOperandAtAllAbstains", ["ssh"]),
+            ("NoArgumentsAtAllAbstain", []),
+            ("URIDestinationIsRefused", ["ssh", "ssh://tom@builder:22"]),
+            ("DestinationOutsideTheHostnameCharsetIsRefused_semicolon", ["ssh", "builder;rm"]),
+            ("DestinationOutsideTheHostnameCharsetIsRefused_slash", ["ssh", "builder/x"]),
+            ("DestinationOutsideTheHostnameCharsetIsRefused_bracketedIPv6", ["ssh", "[fe80::1]"]),
+            ("EmptyHostPartIsRefused", ["ssh", "tom@"]),
+        ]
+        for (name, argv) in cases {
+            XCTAssertNil(destination(argv), name)
+        }
     }
 
-    func testTrailingOptionWithNoOperandAbstains() {
-        XCTAssertNil(destination(["ssh", "-p", "2222"]))
-    }
-
-    func testNoOperandAtAllAbstains() {
-        XCTAssertNil(destination(["ssh"]))
-        XCTAssertNil(destination([]))
-    }
-
-    func testURIDestinationIsRefused() {
-        XCTAssertNil(destination(["ssh", "ssh://tom@builder:22"]))
-    }
-
-    func testDestinationOutsideTheHostnameCharsetIsRefused() {
-        XCTAssertNil(destination(["ssh", "builder;rm"]))
-        XCTAssertNil(destination(["ssh", "builder/x"]))
-        XCTAssertNil(destination(["ssh", "[fe80::1]"]))
-    }
-
-    func testEmptyHostPartIsRefused() {
-        XCTAssertNil(destination(["ssh", "tom@"]))
-        XCTAssertNil(SSHDestinationTTYProbe.normalizedDestination(""))
-    }
-
-    func testOverlongDestinationIsRefused() {
-        XCTAssertNil(
-            SSHDestinationTTYProbe.normalizedDestination(String(repeating: "a", count: 254))
-        )
+    func testNormalizedDestinationRefuses() {
+        let cases: [(name: String, destination: String)] = [
+            ("EmptyHostPartIsRefused", ""),
+            ("OverlongDestinationIsRefused", String(repeating: "a", count: 254)),
+        ]
+        for (name, destination) in cases {
+            XCTAssertNil(SSHDestinationTTYProbe.normalizedDestination(destination), name)
+        }
     }
 
     func testOptionClassification() {

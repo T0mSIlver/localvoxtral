@@ -13,126 +13,92 @@ final class TerminalWorkingDirectoryResolverTests: XCTestCase {
         )
     }
 
-    func testAbsolutePathWithShellDecoration() {
-        XCTAssertEqual(candidates("/Users/x/dev/proj — zsh"), ["/Users/x/dev/proj"])
+    func testWindowTitleCandidates() {
+        let cases: [(name: String, title: String, expected: [String])] = [
+            ("AbsolutePathWithShellDecoration", "/Users/x/dev/proj — zsh", ["/Users/x/dev/proj"]),
+            ("TildePathIsExpanded", "~/dev/proj", ["/Users/tester/dev/proj"]),
+            ("BareTildeExpandsToHome", "~", ["/Users/tester"]),
+            // "proj — zsh — 80×24": a bare last-path-component is not resolvable.
+            ("TerminalDotAppBareNameIsRejected", "proj — zsh — 80×24", []),
+            ("ITerm2UserHostStyle", "user@host: ~/dev/proj", ["/Users/tester/dev/proj"]),
+            ("EditorDecorationAndBoxDimensions", "/a — vim (80×24)", ["/a"]),
+            ("TrailingCommaTrimmed", "~/dev/proj,", ["/Users/tester/dev/proj"]),
+            ("BoxDimensionsOnlyYieldNoCandidate", "80×24", []),
+            ("MultipleCandidatesInOrderOfAppearance", "host: ~/a and /b/c done", ["/Users/tester/a", "/b/c"]),
+            ("DeduplicatesRepeatedCandidates", "/x/y and /x/y", ["/x/y"]),
+        ]
+        for (name, title, expected) in cases {
+            XCTAssertEqual(candidates(title), expected, name)
+        }
     }
 
-    func testTildePathIsExpanded() {
-        XCTAssertEqual(candidates("~/dev/proj"), ["/Users/tester/dev/proj"])
-    }
-
-    func testBareTildeExpandsToHome() {
-        XCTAssertEqual(candidates("~"), ["/Users/tester"])
-    }
-
-    func testTerminalDotAppBareNameIsRejected() {
-        // "proj — zsh — 80×24": a bare last-path-component is not resolvable.
-        XCTAssertEqual(candidates("proj — zsh — 80×24"), [])
-    }
-
-    func testITerm2UserHostStyle() {
-        XCTAssertEqual(candidates("user@host: ~/dev/proj"), ["/Users/tester/dev/proj"])
-    }
-
-    func testEditorDecorationAndBoxDimensions() {
-        XCTAssertEqual(candidates("/a — vim (80×24)"), ["/a"])
-    }
-
-    func testTrailingCommaTrimmed() {
-        XCTAssertEqual(candidates("~/dev/proj,"), ["/Users/tester/dev/proj"])
-    }
-
-    func testBoxDimensionsOnlyYieldNoCandidate() {
-        XCTAssertEqual(candidates("80×24"), [])
-    }
-
-    func testMultipleCandidatesInOrderOfAppearance() {
-        XCTAssertEqual(
-            candidates("host: ~/a and /b/c done"),
-            ["/Users/tester/a", "/b/c"]
-        )
-    }
-
-    func testDeduplicatesRepeatedCandidates() {
-        XCTAssertEqual(candidates("/x/y and /x/y"), ["/x/y"])
-    }
-
-    func testResolveReturnsFirstExistingDirectory() {
-        let resolved = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
-            fromWindowTitle: "cd /nope then ~/yes",
-            homeDirectory: home,
-            isDirectory: { $0 == "/Users/tester/yes" }
-        )
-        XCTAssertEqual(resolved, "/Users/tester/yes")
-    }
-
-    func testResolveReturnsNilWhenNoneExist() {
-        let resolved = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
-            fromWindowTitle: "/a /b",
-            homeDirectory: home,
-            isDirectory: { _ in false }
-        )
-        XCTAssertNil(resolved)
+    /// `existing` lists the only paths the injected existence check accepts.
+    func testResolveWorkingDirectory() {
+        let cases: [(name: String, title: String, home: String, existing: [String], expected: String?)] = [
+            (
+                "ResolveReturnsFirstExistingDirectory",
+                "cd /nope then ~/yes", home, ["/Users/tester/yes"], "/Users/tester/yes"
+            ),
+            ("ResolveReturnsNilWhenNoneExist", "/a /b", home, [], nil),
+            // The T6 field case (2026-07-11): Ghostty's tab title is exactly
+            // "../Desktop/projects/supervoxtral". The extracted absolute run
+            // "/Desktop/projects/supervoxtral" does not exist; the home-anchored
+            // expansion does and must resolve.
+            (
+                "GhosttyAbbreviatedTitleResolvesHomeAnchored",
+                "../Desktop/projects/supervoxtral",
+                "/Users/x",
+                ["/Users/x/Desktop/projects/supervoxtral"],
+                "/Users/x/Desktop/projects/supervoxtral"
+            ),
+            // A genuinely absolute path that exists must never be shadowed by its
+            // home-anchored twin, even when both exist.
+            (
+                "ExistingAbsolutePathWinsOverHomeAnchoredTwin",
+                "/opt/work/repo", home, ["/opt/work/repo", "\(home)/opt/work/repo"], "/opt/work/repo"
+            ),
+            // A genuinely absolute path that does not exist locally (an SSH or
+            // container path, an unmounted volume) must resolve to NIL — never be
+            // re-anchored under home, which would index a same-named local repo and
+            // inject wrong-repo vocabulary. Only `../`-prefixed (explicitly elided)
+            // titles get home-anchoring.
+            ("NonExistentAbsolutePathDoesNotFallBackToHome", "/work/repo — zsh", home, ["\(home)/work/repo"], nil),
+            // THE T6 field failure, canonical case (owner-confirmed 2026-07-11):
+            // Ghostty's tab title elides with a Unicode HORIZONTAL ELLIPSIS, not
+            // ASCII dots — the real title was "…/Desktop/projects/supervoxtral"
+            // (reported by typing, which loses the distinction from "../"). The
+            // ellipsis-elided title must home-anchor exactly like the ASCII form.
+            (
+                "T6GhosttyEllipsisElidedTitleResolvesHomeAnchored",
+                "…/Desktop/projects/supervoxtral",
+                "/Users/owner",
+                ["/Users/owner/Desktop/projects/supervoxtral"],
+                "/Users/owner/Desktop/projects/supervoxtral"
+            ),
+            // U+2025 TWO DOT LEADER is accepted as an elision mark too.
+            (
+                "TwoDotLeaderElidedTitleResolvesHomeAnchored",
+                "‥/dev/proj — zsh", home, ["\(home)/dev/proj"], "/Users/tester/dev/proj"
+            ),
+            ("AbbreviatedTitleWithNothingExistingResolvesNil", "../foo", home, [], nil),
+        ]
+        for (name, title, home, existing, expected) in cases {
+            let resolved = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
+                fromWindowTitle: title,
+                homeDirectory: home,
+                isDirectory: { existing.contains($0) }
+            )
+            XCTAssertEqual(resolved, expected, name)
+        }
     }
 
     // MARK: - Ghostty-abbreviated titles (leading components elided as `..`)
 
-    /// The T6 field case (2026-07-11): Ghostty's tab title is exactly
-    /// "../Desktop/projects/supervoxtral". The extracted absolute run
-    /// "/Desktop/projects/supervoxtral" does not exist; the home-anchored
-    /// expansion does and must resolve.
-    func testGhosttyAbbreviatedTitleResolvesHomeAnchored() {
-        let resolved = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
-            fromWindowTitle: "../Desktop/projects/supervoxtral",
-            homeDirectory: "/Users/x",
-            isDirectory: { $0 == "/Users/x/Desktop/projects/supervoxtral" }
-        )
-        XCTAssertEqual(resolved, "/Users/x/Desktop/projects/supervoxtral")
-    }
-
-    /// A genuinely absolute path that exists must never be shadowed by its
-    /// home-anchored twin, even when both exist.
-    func testExistingAbsolutePathWinsOverHomeAnchoredTwin() {
-        let resolved = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
-            fromWindowTitle: "/opt/work/repo",
-            homeDirectory: home,
-            isDirectory: { $0 == "/opt/work/repo" || $0 == "\(self.home)/opt/work/repo" }
-        )
-        XCTAssertEqual(resolved, "/opt/work/repo")
-    }
-
-    /// A genuinely absolute path that does not exist locally (an SSH or
-    /// container path, an unmounted volume) must resolve to NIL — never be
-    /// re-anchored under home, which would index a same-named local repo and
-    /// inject wrong-repo vocabulary. Only `../`-prefixed (explicitly elided)
-    /// titles get home-anchoring.
-    func testNonExistentAbsolutePathDoesNotFallBackToHome() {
-        let resolved = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
-            fromWindowTitle: "/work/repo — zsh",
-            homeDirectory: home,
-            isDirectory: { $0 == "\(self.home)/work/repo" }
-        )
-        XCTAssertNil(resolved)
-    }
-
-    /// THE T6 field failure, canonical case (owner-confirmed 2026-07-11):
-    /// Ghostty's tab title elides with a Unicode HORIZONTAL ELLIPSIS, not
-    /// ASCII dots — the real title was "…/Desktop/projects/supervoxtral"
-    /// (reported by typing, which loses the distinction from "../"). The
-    /// ellipsis-elided title must home-anchor exactly like the ASCII form.
-    func testT6GhosttyEllipsisElidedTitleResolvesHomeAnchored() {
-        let resolved = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
-            fromWindowTitle: "…/Desktop/projects/supervoxtral",
-            homeDirectory: "/Users/owner",
-            isDirectory: { $0 == "/Users/owner/Desktop/projects/supervoxtral" }
-        )
-        XCTAssertEqual(resolved, "/Users/owner/Desktop/projects/supervoxtral")
-    }
-
-    /// The same canonical T6 case through the PRODUCTION existence check (no
-    /// injected predicate — the default real-filesystem one), against a real
-    /// temp directory tree, so hermetic test defaults can never mask a broken
-    /// production wiring again.
+    /// The canonical T6 case (the `T6GhosttyEllipsisElidedTitleResolvesHomeAnchored`
+    /// row of `testResolveWorkingDirectory`) through the PRODUCTION existence
+    /// check (no injected predicate — the default real-filesystem one), against
+    /// a real temp directory tree, so hermetic test defaults can never mask a
+    /// broken production wiring again.
     func testT6GhosttyEllipsisElidedTitleResolvesWithRealFilesystemCheck() throws {
         let tempHome = FileManager.default.temporaryDirectory
             .appendingPathComponent("t6-home-\(UUID().uuidString)").path
@@ -151,24 +117,25 @@ final class TerminalWorkingDirectoryResolverTests: XCTestCase {
         )
     }
 
-    /// U+2025 TWO DOT LEADER is accepted as an elision mark too.
-    func testTwoDotLeaderElidedTitleResolvesHomeAnchored() {
-        let resolved = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
-            fromWindowTitle: "‥/dev/proj — zsh",
-            homeDirectory: home,
-            isDirectory: { $0 == "\(self.home)/dev/proj" }
-        )
-        XCTAssertEqual(resolved, "/Users/tester/dev/proj")
-    }
-
-    func testEllipsisFallbackCandidateShape() {
-        XCTAssertEqual(
-            TerminalWorkingDirectoryResolver.homeAnchoredFallbackCandidates(
-                fromWindowTitle: "…/Desktop/proj — zsh",
-                homeDirectory: home
-            ),
-            ["/Users/tester/Desktop/proj"]
-        )
+    func testHomeAnchoredFallbackCandidates() {
+        let cases: [(name: String, title: String, expected: [String])] = [
+            ("EllipsisFallbackCandidateShape", "…/Desktop/proj — zsh", ["/Users/tester/Desktop/proj"]),
+            ("DotDotFallbackCandidateShape", "../Desktop/proj — zsh", ["/Users/tester/Desktop/proj"]),
+            // A tilde run is already home-anchored: no fallback is generated.
+            ("TildeRunHasNoFallback", "~/dev/proj", []),
+            // An absolute run generates NO fallback: only `../` signals elision.
+            ("AbsoluteRunHasNoFallback", "/work/repo — zsh", []),
+        ]
+        for (name, title, expected) in cases {
+            XCTAssertEqual(
+                TerminalWorkingDirectoryResolver.homeAnchoredFallbackCandidates(
+                    fromWindowTitle: title,
+                    homeDirectory: home
+                ),
+                expected,
+                name
+            )
+        }
     }
 
     // MARK: - Redacted title-shape diagnostic
@@ -192,41 +159,6 @@ final class TerminalWorkingDirectoryResolverTests: XCTestCase {
         )
         XCTAssertEqual(shape.count, 60)
         XCTAssertEqual(shape, String(repeating: "a", count: 60))
-    }
-
-    func testAbbreviatedTitleWithNothingExistingResolvesNil() {
-        let resolved = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
-            fromWindowTitle: "../foo",
-            homeDirectory: home,
-            isDirectory: { _ in false }
-        )
-        XCTAssertNil(resolved)
-    }
-
-    func testHomeAnchoredFallbackCandidateShapes() {
-        XCTAssertEqual(
-            TerminalWorkingDirectoryResolver.homeAnchoredFallbackCandidates(
-                fromWindowTitle: "../Desktop/proj — zsh",
-                homeDirectory: home
-            ),
-            ["/Users/tester/Desktop/proj"]
-        )
-        // A tilde run is already home-anchored: no fallback is generated.
-        XCTAssertEqual(
-            TerminalWorkingDirectoryResolver.homeAnchoredFallbackCandidates(
-                fromWindowTitle: "~/dev/proj",
-                homeDirectory: home
-            ),
-            []
-        )
-        // An absolute run generates NO fallback: only `../` signals elision.
-        XCTAssertEqual(
-            TerminalWorkingDirectoryResolver.homeAnchoredFallbackCandidates(
-                fromWindowTitle: "/work/repo — zsh",
-                homeDirectory: home
-            ),
-            []
-        )
     }
 }
 
@@ -620,21 +552,22 @@ final class RepoVocabularyMatcherTests: XCTestCase {
         )
     }
 
-    func testCanonicalUseAuthExample() {
-        let result = entries("open use auth dot t s and fix the import", terms: ["useAuth.ts"])
-        XCTAssertEqual(result.count, 1)
-        XCTAssertEqual(result.first?.replaceWith, "useAuth.ts")
-        XCTAssertEqual(result.first?.matches, ["use auth dot t s"])
-    }
-
-    func testCanonicalUserSessionManagerExample() {
-        let result = entries(
-            "rename the user session manager dot swift file",
-            terms: ["UserSessionManager.swift"]
-        )
-        XCTAssertEqual(result.count, 1)
-        XCTAssertEqual(result.first?.replaceWith, "UserSessionManager.swift")
-        XCTAssertEqual(result.first?.matches, ["user session manager dot swift"])
+    func testCanonicalExamples() {
+        let cases: [(name: String, transcript: String, term: String, heard: String)] = [
+            ("CanonicalUseAuthExample", "open use auth dot t s and fix the import", "useAuth.ts", "use auth dot t s"),
+            (
+                "CanonicalUserSessionManagerExample",
+                "rename the user session manager dot swift file",
+                "UserSessionManager.swift",
+                "user session manager dot swift"
+            ),
+        ]
+        for (name, transcript, term, heard) in cases {
+            let result = entries(transcript, terms: [term])
+            XCTAssertEqual(result.count, 1, name)
+            XCTAssertEqual(result.first?.replaceWith, term, name)
+            XCTAssertEqual(result.first?.matches, [heard], name)
+        }
     }
 
     func testEditDistanceOneNearMiss() {
@@ -739,78 +672,69 @@ final class RepoVocabularyMatcherTests: XCTestCase {
         )
     }
 
-    func testAlignedFallbackAbstainsOnUnrelatedProse() {
-        let result = found("Please improve the error message for users.",
-            vocabulary: RepoVocabulary(
-                terms: ["UserSessionManager.swift", "AuthService.ts"],
-                branch: nil
-            )
-        )
-        XCTAssertTrue(result.isEmpty, "entries: \(result)")
-    }
-
-    func testAlignedFallbackDoesNotForceUnspokenFileExtensionWithoutFileCue() {
-        let result = found("Fix the user session manager.",
-            vocabulary: RepoVocabulary(terms: ["UserSessionManager.swift"], branch: nil)
-        )
-        XCTAssertTrue(result.isEmpty, "entries: \(result)")
-    }
-
-    func testAlignedFallbackAbstainsOnGluedSingleTokenThatWouldDeleteProse() {
-        let result = found("Ouvreusot.ts maintenant.",
-            vocabulary: RepoVocabulary(terms: ["useAuth.ts"], branch: nil)
-        )
-        XCTAssertTrue(result.isEmpty, "entries: \(result)")
-    }
-
-    func testPreapplyApprovedMappingPreservesPunctuation() {
-        XCTAssertEqual(
-            RepoVocabularyMatcher.preapplying(
-                entries: [
-                    ReplacementEntry(
-                        replaceWith: "useAuth.ts",
-                        matches: ["use auth dot t s"]
-                    )
-                ],
-                to: "Open use auth dot t s, then add a null check."
+    func testAlignedFallbackAbstains() {
+        let cases: [(name: String, transcript: String, terms: [String])] = [
+            (
+                "AbstainsOnUnrelatedProse",
+                "Please improve the error message for users.",
+                ["UserSessionManager.swift", "AuthService.ts"]
             ),
-            "Open useAuth.ts, then add a null check."
-        )
+            (
+                "DoesNotForceUnspokenFileExtensionWithoutFileCue",
+                "Fix the user session manager.",
+                ["UserSessionManager.swift"]
+            ),
+            ("AbstainsOnGluedSingleTokenThatWouldDeleteProse", "Ouvreusot.ts maintenant.", ["useAuth.ts"]),
+        ]
+        for (name, transcript, terms) in cases {
+            let result = found(transcript, vocabulary: RepoVocabulary(terms: terms, branch: nil))
+            XCTAssertTrue(result.isEmpty, "\(name): entries: \(result)")
+        }
     }
 
-    func testPreapplyApprovedMappingsUsesLongestAliasFirst() {
-        XCTAssertEqual(
-            RepoVocabularyMatcher.preapplying(
-                entries: [
+    func testPreapplying() {
+        let cases: [(name: String, entries: [ReplacementEntry], text: String, expected: String)] = [
+            (
+                "ApprovedMappingPreservesPunctuation",
+                [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot t s"])],
+                "Open use auth dot t s, then add a null check.",
+                "Open useAuth.ts, then add a null check."
+            ),
+            (
+                "ApprovedMappingsUsesLongestAliasFirst",
+                [
                     ReplacementEntry(replaceWith: "Auth", matches: ["auth"]),
-                    ReplacementEntry(
-                        replaceWith: "AuthService.ts",
-                        matches: ["auth service dot t s"]
-                    ),
+                    ReplacementEntry(replaceWith: "AuthService.ts", matches: ["auth service dot t s"]),
                 ],
-                to: "Open auth service dot t s and inspect auth."
+                "Open auth service dot t s and inspect auth.",
+                "Open AuthService.ts and inspect Auth."
             ),
-            "Open AuthService.ts and inspect Auth."
-        )
-    }
-
-    func testPreapplyRepoClipboardConflictUsesLongerExactTermPrecedence() {
-        let repoEntry = ReplacementEntry(
-            replaceWith: "RepoAPI",
-            matches: ["heard api"]
-        )
-        let clipboardEntry = ReplacementEntry(
-            replaceWith: "ClipboardAPI",
-            matches: ["heard api"]
-        )
-
-        XCTAssertEqual(
-            RepoVocabularyMatcher.preapplying(
-                entries: [repoEntry, clipboardEntry],
-                to: "Open heard api."
+            // A repo entry and a clipboard entry for the same heard span.
+            (
+                "RepoClipboardConflictUsesLongerExactTermPrecedence",
+                [
+                    ReplacementEntry(replaceWith: "RepoAPI", matches: ["heard api"]),
+                    ReplacementEntry(replaceWith: "ClipboardAPI", matches: ["heard api"]),
+                ],
+                "Open heard api.",
+                "Open ClipboardAPI."
             ),
-            "Open ClipboardAPI."
-        )
+            (
+                "ApprovedMappingDoesNotRewriteInsideIdentifier",
+                [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["auth"])],
+                "Keep preauth_handler unchanged.",
+                "Keep preauth_handler unchanged."
+            ),
+            (
+                "SkipsUnsafeControlCharacterTerm",
+                [ReplacementEntry(replaceWith: "bad\nname.ts", matches: ["bad name"])],
+                "Open bad name now.",
+                "Open bad name now."
+            ),
+        ]
+        for (name, entries, text, expected) in cases {
+            XCTAssertEqual(RepoVocabularyMatcher.preapplying(entries: entries, to: text), expected, name)
+        }
     }
 
     func testFrenchComposedAndDecomposedAccentsFallbackAndPreapplyPreservePunctuation() {
@@ -832,41 +756,23 @@ final class RepoVocabularyMatcherTests: XCTestCase {
         }
     }
 
-    func testPreapplyApprovedMappingDoesNotRewriteInsideIdentifier() {
-        XCTAssertEqual(
-            RepoVocabularyMatcher.preapplying(
-                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["auth"])],
-                to: "Keep preauth_handler unchanged."
-            ),
-            "Keep preauth_handler unchanged."
-        )
-    }
-
-    func testPreapplySkipsUnsafeControlCharacterTerm() {
-        XCTAssertEqual(
-            RepoVocabularyMatcher.preapplying(
-                entries: [ReplacementEntry(replaceWith: "bad\nname.ts", matches: ["bad name"])],
-                to: "Open bad name now."
-            ),
-            "Open bad name now."
-        )
-    }
-
-    func testShortFormTermsRejected() {
-        // Bare "app"/"src" normalize to < 4 chars: no standalone entries.
-        XCTAssertTrue(entries("open the app and src", terms: ["app", "src"]).isEmpty)
+    func testNonMatchingNGramsYieldNoEntries() {
+        let cases: [(name: String, transcript: String, terms: [String])] = [
+            // Bare "app"/"src" normalize to < 4 chars: no standalone entries.
+            ("ShortFormTermsRejected", "open the app and src", ["app", "src"]),
+            // "the file" is all stopwords: never a file match even if it normalizes
+            // to a real term.
+            ("PureStopwordNGramsRejected", "open the file now", ["thefile"]),
+        ]
+        for (name, transcript, terms) in cases {
+            XCTAssertTrue(entries(transcript, terms: terms).isEmpty, name)
+        }
     }
 
     func testShortComponentCountsInsideLongerNGram() {
         // "app" alone is too short, but "app dot t s x" -> "apptsx" matches app.tsx.
         let result = entries("edit app dot t s x here", terms: ["app.tsx"])
         XCTAssertEqual(result.first?.replaceWith, "app.tsx")
-    }
-
-    func testPureStopwordNGramsRejected() {
-        // "the file" is all stopwords: never a file match even if it normalizes
-        // to a real term.
-        XCTAssertTrue(entries("open the file now", terms: ["thefile"]).isEmpty)
     }
 
     func testEntryCapAtTwelve() {
@@ -991,43 +897,36 @@ final class RepoVocabularyMatcherTests: XCTestCase {
 final class ClipboardVocabularyTests: XCTestCase {
     // MARK: - Entity extraction (reuses the guard's recognizer)
 
-    func testEntitiesRecognizeCodeLikeTokensAndDedupe() {
-        let excerpt = """
-        Fix UserSessionManager.swift and rerun with --force.
-        See src/auth/useAuth.ts and $HOME_DIR, then UserSessionManager.swift again.
-        """
-        XCTAssertEqual(
-            ClipboardVocabulary.entities(inExcerpt: excerpt),
-            ["UserSessionManager.swift", "--force", "src/auth/useAuth.ts", "$HOME_DIR"]
-        )
-    }
-
-    func testEntitiesUnwrapBacktickSpans() {
-        XCTAssertEqual(
-            ClipboardVocabulary.entities(inExcerpt: "call `resolveWorkingDirectory` here"),
-            ["resolveWorkingDirectory"]
-        )
-    }
-
-    func testEntitiesRecognizeBareContextIdentifiersMissedByGuardGrammar() {
-        XCTAssertEqual(
-            ClipboardVocabulary.entities(
-                inExcerpt: "LOCALVOXTRAL_CODESIGN_IDENTITY ShortcutRecorder POSIXPipeRead.nextChunk(fromDescriptor:)"
+    func testEntities() {
+        let cases: [(name: String, excerpt: String, expected: [String])] = [
+            (
+                "RecognizeCodeLikeTokensAndDedupe",
+                """
+                Fix UserSessionManager.swift and rerun with --force.
+                See src/auth/useAuth.ts and $HOME_DIR, then UserSessionManager.swift again.
+                """,
+                ["UserSessionManager.swift", "--force", "src/auth/useAuth.ts", "$HOME_DIR"]
             ),
-            [
-                "LOCALVOXTRAL_CODESIGN_IDENTITY",
-                "ShortcutRecorder",
-                "POSIXPipeRead.nextChunk(fromDescriptor:)",
-            ]
-        )
-    }
-
-    func testSupplementalEntityExtractionRejectsOrdinaryClipboardProse() {
-        XCTAssertTrue(
-            ClipboardVocabulary.entities(
-                inExcerpt: "Please remember that authentication service behavior matters"
-            ).isEmpty
-        )
+            ("UnwrapBacktickSpans", "call `resolveWorkingDirectory` here", ["resolveWorkingDirectory"]),
+            (
+                "RecognizeBareContextIdentifiersMissedByGuardGrammar",
+                "LOCALVOXTRAL_CODESIGN_IDENTITY ShortcutRecorder POSIXPipeRead.nextChunk(fromDescriptor:)",
+                [
+                    "LOCALVOXTRAL_CODESIGN_IDENTITY",
+                    "ShortcutRecorder",
+                    "POSIXPipeRead.nextChunk(fromDescriptor:)",
+                ]
+            ),
+            (
+                "SupplementalEntityExtractionRejectsOrdinaryClipboardProse",
+                "Please remember that authentication service behavior matters",
+                []
+            ),
+            ("ProseExcerptYieldsNoEntities", "just a plain sentence with no code tokens at all", []),
+        ]
+        for (name, excerpt, expected) in cases {
+            XCTAssertEqual(ClipboardVocabulary.entities(inExcerpt: excerpt), expected, name)
+        }
     }
 
     func testSupplementalEntitiesRejectColonAndHyphenatedProse() {
@@ -1049,14 +948,6 @@ final class ClipboardVocabularyTests: XCTestCase {
                 "excerpt: \(item.excerpt)"
             )
         }
-    }
-
-    func testProseExcerptYieldsNoEntities() {
-        XCTAssertTrue(
-            ClipboardVocabulary.entities(
-                inExcerpt: "just a plain sentence with no code tokens at all"
-            ).isEmpty
-        )
     }
 
     // MARK: - Transcript matching (same matcher as repo vocabulary)

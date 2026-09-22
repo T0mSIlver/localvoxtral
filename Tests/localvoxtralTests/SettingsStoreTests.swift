@@ -33,6 +33,14 @@ final class SettingsStoreTests: XCTestCase {
         SettingsStore(defaults: defaults, environment: [:], secretStore: secrets)
     }
 
+    /// A store over emptied defaults and secrets, the state `setUp` gives
+    /// each test, so the rows of a table test never see each other's writes.
+    private func makeFreshStore() -> SettingsStore {
+        defaults.removePersistentDomain(forName: defaultsSuiteName)
+        secrets = InMemorySecretStore()
+        return makeStore()
+    }
+
     // MARK: - Open the window at launch (#449)
 
     func testTheWindowDoesNotOpenAtLaunchUntilItIsTurnedOn() {
@@ -271,89 +279,44 @@ final class SettingsStoreTests: XCTestCase {
 
     // MARK: - resolvedWebSocketURL
 
-    func testResolvedURL_wsPassthrough() {
-        let store = makeStore()
-        store.realtimeAPIEndpointURL = "ws://127.0.0.1:8000/v1/realtime"
-        store.realtimeProvider = .realtimeAPI
-        store.dictationBackendMode = .externalURL
-        XCTAssertEqual(store.resolvedWebSocketURL?.absoluteString, "ws://127.0.0.1:8000/v1/realtime")
-    }
-
-    func testResolvedURL_wssPassthrough() {
-        let store = makeStore()
-        store.realtimeAPIEndpointURL = "wss://example.com/realtime"
-        store.realtimeProvider = .realtimeAPI
-        store.dictationBackendMode = .externalURL
-        XCTAssertEqual(store.resolvedWebSocketURL?.absoluteString, "wss://example.com/realtime")
-    }
-
-    func testResolvedURL_httpToWs() {
-        let store = makeStore()
-        store.realtimeAPIEndpointURL = "http://localhost:8000/v1/realtime"
-        store.realtimeProvider = .realtimeAPI
-        store.dictationBackendMode = .externalURL
-        XCTAssertEqual(store.resolvedWebSocketURL?.absoluteString, "ws://localhost:8000/v1/realtime")
-    }
-
-    func testResolvedURL_httpsToWss() {
-        let store = makeStore()
-        store.realtimeAPIEndpointURL = "https://example.com/realtime"
-        store.realtimeProvider = .realtimeAPI
-        store.dictationBackendMode = .externalURL
-        XCTAssertEqual(store.resolvedWebSocketURL?.absoluteString, "wss://example.com/realtime")
-    }
-
-    func testResolvedURL_bareHost() {
-        let store = makeStore()
-        store.realtimeAPIEndpointURL = "myhost:9000/path"
-        store.realtimeProvider = .realtimeAPI
-        store.dictationBackendMode = .externalURL
-        XCTAssertEqual(store.resolvedWebSocketURL?.absoluteString, "ws://myhost:9000/path")
-    }
-
-    func testResolvedURL_empty() {
-        let store = makeStore()
-        store.realtimeAPIEndpointURL = ""
-        store.realtimeProvider = .realtimeAPI
-        store.dictationBackendMode = .externalURL
-        XCTAssertNil(store.resolvedWebSocketURL)
-    }
-
-    func testResolvedURL_whitespaceOnly() {
-        let store = makeStore()
-        store.realtimeAPIEndpointURL = "   \n  "
-        store.realtimeProvider = .realtimeAPI
-        store.dictationBackendMode = .externalURL
-        XCTAssertNil(store.resolvedWebSocketURL)
-    }
-
-    func testResolvedURL_trimming() {
-        let store = makeStore()
-        store.realtimeAPIEndpointURL = "  ws://example.com  "
-        store.realtimeProvider = .realtimeAPI
-        store.dictationBackendMode = .externalURL
-        XCTAssertEqual(store.resolvedWebSocketURL?.absoluteString, "ws://example.com")
+    func testResolvedURL() {
+        let cases: [(name: String, endpoint: String, expected: String?)] = [
+            ("wsPassthrough", "ws://127.0.0.1:8000/v1/realtime", "ws://127.0.0.1:8000/v1/realtime"),
+            ("wssPassthrough", "wss://example.com/realtime", "wss://example.com/realtime"),
+            ("httpToWs", "http://localhost:8000/v1/realtime", "ws://localhost:8000/v1/realtime"),
+            ("httpsToWss", "https://example.com/realtime", "wss://example.com/realtime"),
+            ("bareHost", "myhost:9000/path", "ws://myhost:9000/path"),
+            ("empty", "", nil),
+            ("whitespaceOnly", "   \n  ", nil),
+            ("trimming", "  ws://example.com  ", "ws://example.com"),
+        ]
+        for (name, endpoint, expected) in cases {
+            let store = makeFreshStore()
+            store.realtimeAPIEndpointURL = endpoint
+            store.realtimeProvider = .realtimeAPI
+            store.dictationBackendMode = .externalURL
+            XCTAssertEqual(store.resolvedWebSocketURL?.absoluteString, expected, name)
+        }
     }
 
     // MARK: - realtimeProvider migration
 
-    func testRealtimeProvider_legacyRawValueFallsBackToDefault() {
-        // A user who previously selected the now-removed deprecated backend has
-        // its raw value persisted in UserDefaults. Decoding must fall back to the
-        // default provider instead of crashing or producing an invalid state.
-        defaults.set("mlx_audio", forKey: "settings.realtime_provider")
+    func testRealtimeProvider_storedRawValueFallsBackToDefault() {
+        let cases: [(name: String, rawValue: String)] = [
+            // A user who previously selected the now-removed deprecated backend has
+            // its raw value persisted in UserDefaults. Decoding must fall back to the
+            // default provider instead of crashing or producing an invalid state.
+            ("legacyRawValue", "mlx_audio"),
+            ("unknownRawValue", "some_future_provider"),
+        ]
+        for (name, rawValue) in cases {
+            _ = makeFreshStore()
+            defaults.set(rawValue, forKey: "settings.realtime_provider")
 
-        let store = makeStore()
+            let store = makeStore()
 
-        XCTAssertEqual(store.realtimeProvider, .realtimeAPI)
-    }
-
-    func testRealtimeProvider_unknownRawValueFallsBackToDefault() {
-        defaults.set("some_future_provider", forKey: "settings.realtime_provider")
-
-        let store = makeStore()
-
-        XCTAssertEqual(store.realtimeProvider, .realtimeAPI)
+            XCTAssertEqual(store.realtimeProvider, .realtimeAPI, name)
+        }
     }
 
     func testRemovedCommitIntervalSettingIsCleanedUp() {
@@ -633,58 +596,23 @@ final class SettingsStoreTests: XCTestCase {
 
     // MARK: - effectiveModelName
 
-    func testEffectiveModel_plainName() {
-        let store = makeStore()
-        store.realtimeAPIModelName = "my-model"
-        store.realtimeProvider = .realtimeAPI
-        store.dictationBackendMode = .externalURL
-        XCTAssertEqual(store.effectiveModelName, "my-model")
-    }
-
-    func testEffectiveModel_whitespace_trimmed() {
-        let store = makeStore()
-        store.realtimeAPIModelName = "  my-model  "
-        store.realtimeProvider = .realtimeAPI
-        store.dictationBackendMode = .externalURL
-        XCTAssertEqual(store.effectiveModelName, "my-model")
-    }
-
-    func testEffectiveModel_multiline_takesLastNonEmptyLine() {
-        let store = makeStore()
-        store.realtimeAPIModelName = "junk-line\nactual-model"
-        store.realtimeProvider = .realtimeAPI
-        store.dictationBackendMode = .externalURL
-        XCTAssertEqual(store.effectiveModelName, "actual-model")
-    }
-
-    func testEffectiveModel_spacesInLine_takesLastToken() {
-        let store = makeStore()
-        store.realtimeAPIModelName = "some prefix model-name"
-        store.realtimeProvider = .realtimeAPI
-        store.dictationBackendMode = .externalURL
-        XCTAssertEqual(store.effectiveModelName, "model-name")
-    }
-
-    func testEffectiveModel_empty_defaultsToProvider() {
-        let store = makeStore()
-        store.realtimeAPIModelName = ""
-        store.realtimeProvider = .realtimeAPI
-        store.dictationBackendMode = .externalURL
-        XCTAssertEqual(
-            store.effectiveModelName,
-            SettingsStore.RealtimeProvider.realtimeAPI.defaultModelName
-        )
-    }
-
-    func testEffectiveModel_whitespaceOnly_defaultsToProvider() {
-        let store = makeStore()
-        store.realtimeAPIModelName = "   \n  "
-        store.realtimeProvider = .realtimeAPI
-        store.dictationBackendMode = .externalURL
-        XCTAssertEqual(
-            store.effectiveModelName,
-            SettingsStore.RealtimeProvider.realtimeAPI.defaultModelName
-        )
+    func testEffectiveModel() {
+        let providerDefault = SettingsStore.RealtimeProvider.realtimeAPI.defaultModelName
+        let cases: [(name: String, modelName: String, expected: String)] = [
+            ("plainName", "my-model", "my-model"),
+            ("whitespace_trimmed", "  my-model  ", "my-model"),
+            ("multiline_takesLastNonEmptyLine", "junk-line\nactual-model", "actual-model"),
+            ("spacesInLine_takesLastToken", "some prefix model-name", "model-name"),
+            ("empty_defaultsToProvider", "", providerDefault),
+            ("whitespaceOnly_defaultsToProvider", "   \n  ", providerDefault),
+        ]
+        for (name, modelName, expected) in cases {
+            let store = makeFreshStore()
+            store.realtimeAPIModelName = modelName
+            store.realtimeProvider = .realtimeAPI
+            store.dictationBackendMode = .externalURL
+            XCTAssertEqual(store.effectiveModelName, expected, name)
+        }
     }
 
     func testRealtimeProviderDefaultEndpointsMatchToolDefaults() {
@@ -1032,13 +960,6 @@ final class SettingsStoreTests: XCTestCase {
         defaults.set("mistral_api_v2_from_the_future", forKey: "settings.dictation_backend_mode")
         defaults.set("mistral_api_v2_from_the_future", forKey: "settings.polishing_backend_mode")
 
-        let store = makeStore()
-
-        XCTAssertEqual(store.dictationBackendMode, .managedLocal)
-        XCTAssertEqual(store.polishingBackendMode, .managedLocal)
-    }
-
-    func testFreshInstallStillDefaultsToManagedLocal() {
         let store = makeStore()
 
         XCTAssertEqual(store.dictationBackendMode, .managedLocal)
