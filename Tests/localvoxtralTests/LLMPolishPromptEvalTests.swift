@@ -5,7 +5,7 @@ import XCTest
 
 /// Eval harness for the DEFAULT LLM polishing prompt against a live
 /// chat/completions server. It builds requests exactly the way
-/// `DictationViewModel+Session` does — bundled default templates through
+/// `StopCommitCoordinator` does — bundled default templates through
 /// `AppConfigStore`, `renderedUserPrompts`, the production
 /// `LLMPolishingService` — and scores a table of tricky punctuation-spacing
 /// sentences the prompt must fix (French: one space before ?, !, :, ; —

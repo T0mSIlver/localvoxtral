@@ -5,9 +5,10 @@ import Foundation
 /// dictionary, payload macro), the profile and templates, the sample it takes
 /// of the world before the async task starts, the two clipboard gates, the
 /// gather-assemble-send step, the overlay commit, the record's provenance,
-/// and — in a dogfood build — the capture record. The view model only drives
-/// it and applies the outcome, which is why the LLM lane filter names this
-/// file and not the view model's.
+/// and — in a dogfood build — the capture record. The view model supplies
+/// the session's inputs — the replacement dictionary it latched at start, and
+/// the commit target whose bundle ID picks the profile — and applies the
+/// outcome; `PolishRequestGoldenTests` pins what those inputs produce.
 ///
 /// It touches nothing but what it is handed — `capture` clears the
 /// context's captures, `commit` inserts through the overlay, `polish`
@@ -278,16 +279,21 @@ enum StopCommitCoordinator {
         let configurationFailure: (message: String, technicalDetails: String?)?
     }
 
+    /// `latchedReplacementDictionary` is the one the session latched at
+    /// start; without one, the dictionary is loaded now.
     @MainActor
     static func prepare(
         originalText: String,
-        replacementDictionary: ReplacementDictionary?,
+        latchedReplacementDictionary: ReplacementDictionary?,
         settings: SettingsStore,
+        appConfigStore: any AppConfigServing,
         pasteboardReader: @MainActor () -> any PasteboardReading
     ) -> Preparation {
         let polishingConfig = settings.llmPolishingConfiguration
         let replacementAppliedText =
-            replacementDictionary?.apply(to: originalText) ?? originalText
+            (latchedReplacementDictionary
+                ?? effectiveReplacementDictionary(settings: settings, appConfigStore: appConfigStore))?
+                .apply(to: originalText) ?? originalText
         // Spoken clipboard-paste macro (Overlay Buffer only): after the
         // replacement dictionary and BEFORE the polish request is built,
         // swap each spoken marker for the env-var-shaped placeholder and

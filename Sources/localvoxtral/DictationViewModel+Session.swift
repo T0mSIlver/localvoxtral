@@ -676,12 +676,9 @@ extension DictationViewModel {
     private func commitOverlayBufferSession(sessionMode: DictationOutputMode) {
         let preparation = StopCommitCoordinator.prepare(
             originalText: currentDictationEventText,
-            replacementDictionary: sessionReplacementDictionary
-                ?? StopCommitCoordinator.effectiveReplacementDictionary(
-                    settings: settings,
-                    appConfigStore: appConfigStore
-                ),
+            latchedReplacementDictionary: sessionReplacementDictionary,
             settings: settings,
+            appConfigStore: appConfigStore,
             pasteboardReader: dependencies.pasteboardReader
         )
         let originalText = preparation.originalText
