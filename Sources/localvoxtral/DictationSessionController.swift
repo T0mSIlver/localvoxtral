@@ -250,7 +250,7 @@ final class DictationSessionController {
     var preResolvedOverlayAnchor: OverlayAnchor?
 
     /// Terminal-like verdict + Secure Keyboard Entry state sampled in
-    /// `beginDictationSession` BEFORE the socket opens — same reason as
+    /// `prepareDictationSession` BEFORE the socket opens — same reason as
     /// `preResolvedOverlayAnchor` above: the user may focus another app while
     /// the backend connects, and the session must record the app dictation
     /// was started in. Consumed (and cleared) once audio capture starts.
@@ -696,7 +696,7 @@ final class DictationSessionController {
     }
 
     /// Samples the terminal-like verdict and Secure Keyboard Entry state for
-    /// the app focused right now. Called from `beginDictationSession` before
+    /// the app focused right now. Called from `prepareDictationSession` before
     /// the socket opens (see `preCapturedSessionTargetVerdict`).
     /// Opt-in field diagnostic: scalar tracing of posted keyboard chunks is
     /// enabled per session by the presence of the `insertion_scalar_trace`
@@ -720,7 +720,7 @@ final class DictationSessionController {
         )
     }
 
-    /// Consumes the verdict captured at `beginDictationSession` time once
+    /// Consumes the verdict captured at `prepareDictationSession` time once
     /// audio capture starts, and warns (without blocking) when Secure
     /// Keyboard Entry would swallow synthetic keystrokes. Lives in this file
     /// (not +Session) so `sessionTargetIsTerminalLike` stays private(set).

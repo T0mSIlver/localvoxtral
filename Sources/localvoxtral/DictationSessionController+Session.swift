@@ -7,10 +7,10 @@ extension DictationSessionController {
     // MARK: - Session Lifecycle
 
     // Session metadata lifecycle:
-    // - Set: beginDictationSession(outputMode:) — captures values that should
+    // - Set: prepareDictationSession(outputMode:) — captures values that should
     //   stay stable for the active session even if Settings are edited before commit finishes.
     // - Cleared: finishStoppedSession(), abortConnectingSession(), and early-return
-    //   error paths in beginDictationSession() where no session was established.
+    //   error paths in prepareDictationSession() where no session was established.
     // All session exit paths MUST clear these fields to nil.
 
     @discardableResult
@@ -379,7 +379,10 @@ extension DictationSessionController {
         )
     }
 
-    /// Opens the socket for a prepared start, and arms its timeout.
+    /// Opens the socket for a prepared start, and arms its timeout. It dials
+    /// exactly the configuration it is handed and checks nothing, so its
+    /// callers are `beginDictationSession` and the one test that needs the
+    /// gap between the halves.
     func connectDictationSession(_ configuration: RealtimeSessionConfiguration) {
         // Latched, not rebuilt: a mid-session reconnect (#380) dials exactly
         // what this session opened with, even if Settings moved on since.
