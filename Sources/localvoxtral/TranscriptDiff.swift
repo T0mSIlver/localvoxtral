@@ -18,7 +18,20 @@ enum TranscriptDiff {
     /// quadratic, and a rewrite that large has no word-level story to tell.
     static let maxComparedWords = 1_200
 
+    /// One stretch where the texts part ways: the words `before` had there
+    /// and the words `after` has instead. Either side may be empty.
+    struct Hunk: Equatable, Sendable {
+        var removed: [Range<String.Index>]
+        var added: [Range<String.Index>]
+    }
+
     static func words(from before: String, to after: String) -> Result {
+        let hunks = hunks(from: before, to: after)
+        return Result(removed: hunks.flatMap(\.removed), added: hunks.flatMap(\.added))
+    }
+
+    /// In reading order. Two hunks always have a kept word between them.
+    static func hunks(from before: String, to after: String) -> [Hunk] {
         let beforeWords = wordRanges(in: before)
         let afterWords = wordRanges(in: after)
 
@@ -40,19 +53,28 @@ enum TranscriptDiff {
 
         let beforeMiddle = Array(beforeWords[head..<(beforeWords.count - tail)])
         let afterMiddle = Array(afterWords[head..<(afterWords.count - tail)])
-        guard !beforeMiddle.isEmpty || !afterMiddle.isEmpty else { return Result() }
+        guard !beforeMiddle.isEmpty || !afterMiddle.isEmpty else { return [] }
         guard beforeMiddle.count <= maxComparedWords, afterMiddle.count <= maxComparedWords else {
-            return Result(removed: beforeMiddle, added: afterMiddle)
+            return [Hunk(removed: beforeMiddle, added: afterMiddle)]
         }
 
         let kept = longestCommonSubsequence(
             beforeMiddle.map { before[$0] }, afterMiddle.map { after[$0] })
-        let keptBefore = Set(kept.map(\.0))
-        let keptAfter = Set(kept.map(\.1))
-        return Result(
-            removed: beforeMiddle.indices.filter { !keptBefore.contains($0) }.map { beforeMiddle[$0] },
-            added: afterMiddle.indices.filter { !keptAfter.contains($0) }.map { afterMiddle[$0] }
-        )
+        var hunks: [Hunk] = []
+        var beforeIndex = 0
+        var afterIndex = 0
+        // The pair past the end closes the last stretch.
+        for (keptBefore, keptAfter) in kept + [(beforeMiddle.count, afterMiddle.count)] {
+            if keptBefore > beforeIndex || keptAfter > afterIndex {
+                hunks.append(
+                    Hunk(
+                        removed: Array(beforeMiddle[beforeIndex..<keptBefore]),
+                        added: Array(afterMiddle[afterIndex..<keptAfter])))
+            }
+            beforeIndex = keptBefore + 1
+            afterIndex = keptAfter + 1
+        }
+        return hunks
     }
 
     /// Runs of non-whitespace, in order.

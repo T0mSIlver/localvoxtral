@@ -23,6 +23,7 @@ extension SettingsTab {
         case .terminal: return terminalApp?.displayName ?? "Terminal"
         case .about: return "About"
         case .history: return "History"
+        case .insights: return "Insights"
         }
     }
 
@@ -48,6 +49,8 @@ extension SettingsTab {
         case .about: return .tile(systemImage: "info.circle.fill", tint: Color(nsColor: .systemGray))
         case .history:
             return .tile(systemImage: "clock.arrow.circlepath", tint: Color(nsColor: .systemOrange))
+        case .insights:
+            return .tile(systemImage: "chart.bar.fill", tint: Color(nsColor: .systemGreen))
         }
     }
 

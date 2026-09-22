@@ -8,6 +8,14 @@ import SwiftUI
 @Observable
 final class SettingsNavigator {
     var selectedTab: SettingsTab = .general
+    /// What the History pane shows when it next appears, then clears: how an
+    /// Insights count opens the dictations it counted, period included.
+    var historyRequest: HistoryRequest?
+
+    struct HistoryRequest: Equatable {
+        let filter: DictationHistoryQuery.Filter
+        let since: Date?
+    }
 }
 
 struct SettingsView: View {
@@ -164,7 +172,7 @@ struct SettingsView: View {
         // Context sits among them since PR #310, so its consents are shown
         // by the pane's toggles, not by the row.
         case .general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about,
-            .history:
+            .history, .insights:
             return nil
         }
     }
@@ -265,7 +273,9 @@ struct SettingsView: View {
             case .about:
                 AboutSettingsPane(settings: settings, viewModel: viewModel)
             case .history:
-                HistorySettingsPane(settings: settings, viewModel: viewModel)
+                HistorySettingsPane(settings: settings, viewModel: viewModel, navigator: navigator)
+            case .insights:
+                InsightsSettingsPane(viewModel: viewModel, navigator: navigator)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
