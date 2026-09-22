@@ -14,7 +14,8 @@ import XCTest
 //      merge on this path, so punctuation can only land where the deltas
 //      deliver it.
 //   2. `resolvedFinalizedSegment` (the only boundary logic on the RealtimeAPI
-//      path) never relocates punctuation into the middle of a word.
+//      path) never relocates punctuation into the middle of a word. That one
+//      is pure, so `TranscriptAccumulatorTests` pins it without a view model.
 #if DEBUG
 @MainActor
 final class RealtimeAPILivePastePunctuationTests: XCTestCase {
@@ -73,8 +74,8 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
         sendPartials(["spar", "isce", "."], to: viewModel)
 
         XCTAssertEqual(insertedChunks, ["spar", "isce", "."])
-        XCTAssertEqual(viewModel.pendingSegmentText, "sparisce.")
-        XCTAssertEqual(viewModel.livePartialText, "sparisce.")
+        XCTAssertEqual(viewModel.transcript.pendingSegmentText, "sparisce.")
+        XCTAssertEqual(viewModel.transcript.livePartialText, "sparisce.")
     }
 
     func testPartialDeltasWholeWordThenPeriod_staysCorrect() {
@@ -84,7 +85,7 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
         sendPartials(["sparisce", "."], to: viewModel)
 
         XCTAssertEqual(insertedChunks, ["sparisce", "."])
-        XCTAssertEqual(viewModel.pendingSegmentText, "sparisce.")
+        XCTAssertEqual(viewModel.transcript.pendingSegmentText, "sparisce.")
     }
 
     func testPartialDeltasItalianPhraseWithComma_staysCorrect() {
@@ -93,7 +94,7 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
         sendPartials(["al", " fondo", ","], to: viewModel)
 
         XCTAssertEqual(insertedChunks, ["al", " fondo", ","])
-        XCTAssertEqual(viewModel.pendingSegmentText, "al fondo,")
+        XCTAssertEqual(viewModel.transcript.pendingSegmentText, "al fondo,")
     }
 
     func testPartialDeltasItalianApostropheElision_staysCorrect() {
@@ -103,7 +104,7 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
         sendPartials([" un", "'altra"], to: viewModel)
 
         XCTAssertEqual(insertedChunks, ["l", "'acqua", " un", "'altra"])
-        XCTAssertEqual(viewModel.pendingSegmentText, "l'acqua un'altra")
+        XCTAssertEqual(viewModel.transcript.pendingSegmentText, "l'acqua un'altra")
     }
 
     func testMidWordPunctuationOnlyOccursWhenDeltasDeliverItOutOfOrder() {
@@ -116,62 +117,12 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
         sendPartials(["sparis", ".", "ce"], to: viewModel)
 
         XCTAssertEqual(insertedChunks, ["sparis", ".", "ce"])
-        XCTAssertEqual(viewModel.pendingSegmentText, "sparis.ce")
+        XCTAssertEqual(viewModel.transcript.pendingSegmentText, "sparis.ce")
 
         // Conversely, the same characters in left-to-right order are correct:
         let viewModel2 = makeViewModel()
         sendPartials(["sparisce", "."], to: viewModel2)
-        XCTAssertEqual(viewModel2.pendingSegmentText, "sparisce.")
-    }
-
-    // MARK: - resolvedFinalizedSegment boundary logic
-
-    func testResolvedFinalizedSegment_finalExtendsPartialWithPeriod() {
-        // Partial streamed "sparisce", final delivers the trailing period:
-        // the resolved segment is the full "sparisce." — punctuation stays at
-        // the end, never mid-word.
-        let viewModel = makeViewModel()
-        viewModel.pendingSegmentText = "sparisce"
-
-        XCTAssertEqual(viewModel.resolvedFinalizedSegment(from: "sparisce."), "sparisce.")
-    }
-
-    func testResolvedFinalizedSegment_finalOnlyPunctuation_appendsWithSpace() {
-        // If the final carries only the punctuation, it appends after the
-        // buffered word (with a space, per the existing boundary rule) — it
-        // never splices into the word.
-        let viewModel = makeViewModel()
-        viewModel.pendingSegmentText = "sparisce"
-
-        XCTAssertEqual(viewModel.resolvedFinalizedSegment(from: "."), "sparisce .")
-    }
-
-    func testResolvedFinalizedSegment_emptyFinalReturnsPending() {
-        let viewModel = makeViewModel()
-        viewModel.pendingSegmentText = "al fondo"
-
-        XCTAssertEqual(viewModel.resolvedFinalizedSegment(from: ""), "al fondo")
-    }
-
-    func testResolvedFinalizedSegment_emptyPendingReturnsFinal() {
-        let viewModel = makeViewModel()
-
-        XCTAssertEqual(viewModel.resolvedFinalizedSegment(from: "al fondo,"), "al fondo,")
-    }
-
-    func testResolvedFinalizedSegment_disjointWordsJoinWithSpace() {
-        // "al" buffered, "fondo," final → "al fondo," (space-joined).
-        let viewModel = makeViewModel()
-        viewModel.pendingSegmentText = "al"
-
-        XCTAssertEqual(viewModel.resolvedFinalizedSegment(from: "fondo,"), "al fondo,")
-    }
-
-    func testResolvedFinalizedSegment_partialPrefixOfFinal_returnsFinal() {
-        let viewModel = makeViewModel()
-        viewModel.pendingSegmentText = "al fon"
-
-        XCTAssertEqual(viewModel.resolvedFinalizedSegment(from: "al fondo,"), "al fondo,")
+        XCTAssertEqual(viewModel2.transcript.pendingSegmentText, "sparisce.")
     }
 
     // MARK: - Final transcript vs live deltas
@@ -191,8 +142,8 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
         viewModel.handle(event: .finalTranscript("sparisce."))
 
         XCTAssertEqual(insertedChunks, ["sparisce", "."])
-        XCTAssertEqual(viewModel.currentDictationEventText, "sparisce.")
-        XCTAssertEqual(viewModel.pendingSegmentText, "")
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "sparisce.")
+        XCTAssertEqual(viewModel.transcript.pendingSegmentText, "")
     }
 
     func testFinalTranscriptInsertsMultiCharSuffixFromPureExtension() {
@@ -205,8 +156,8 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
         viewModel.handle(event: .finalTranscript("you are right, right?"))
 
         XCTAssertEqual(insertedChunks, ["you are", " right", ", right?"])
-        XCTAssertEqual(viewModel.currentDictationEventText, "you are right, right?")
-        XCTAssertEqual(viewModel.pendingSegmentText, "")
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "you are right, right?")
+        XCTAssertEqual(viewModel.transcript.pendingSegmentText, "")
     }
 
     func testFinalTranscriptThatRevisesLiveTextIsNotInserted() {
@@ -222,7 +173,7 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
 
         // The field keeps the live-typed text; no extra chunk is inserted.
         XCTAssertEqual(insertedChunks, ["sparisce"])
-        XCTAssertEqual(viewModel.pendingSegmentText, "")
+        XCTAssertEqual(viewModel.transcript.pendingSegmentText, "")
     }
 
     func testEmptyFinalTranscriptWithNoLiveDeltasInsertsNothing() {
@@ -232,8 +183,8 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
         viewModel.handle(event: .finalTranscript(""))
 
         XCTAssertEqual(insertedChunks, [])
-        XCTAssertEqual(viewModel.currentDictationEventText, "")
-        XCTAssertEqual(viewModel.pendingSegmentText, "")
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "")
+        XCTAssertEqual(viewModel.transcript.pendingSegmentText, "")
     }
 
     func testFinalTranscriptIdenticalToLiveTextIsNoOp() {
@@ -246,8 +197,8 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
         viewModel.handle(event: .finalTranscript("sparisce"))
 
         XCTAssertEqual(insertedChunks, ["sparisce"])
-        XCTAssertEqual(viewModel.currentDictationEventText, "sparisce")
-        XCTAssertEqual(viewModel.pendingSegmentText, "")
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "sparisce")
+        XCTAssertEqual(viewModel.transcript.pendingSegmentText, "")
     }
 }
 

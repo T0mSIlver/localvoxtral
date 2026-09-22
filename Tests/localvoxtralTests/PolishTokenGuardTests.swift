@@ -570,12 +570,12 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = "run --force now"
+        viewModel.transcript.currentDictationEventText = "run --force now"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
 
-        XCTAssertEqual(viewModel.currentDictationEventText, "run \u{2013} force now")
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "run \u{2013} force now")
         XCTAssertEqual(
             overlayCoordinator.refreshCalls.last?.displayText,
             "run \u{2013} force now"
@@ -616,12 +616,12 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = "run --force now"
+        viewModel.transcript.currentDictationEventText = "run --force now"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
 
-        XCTAssertEqual(viewModel.currentDictationEventText, "run immediately")
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "run immediately")
         XCTAssertEqual(overlayCoordinator.refreshCalls.last?.displayText, "run immediately")
         XCTAssertEqual(savedRecord?.rawText, "run --force now")
         XCTAssertEqual(savedRecord?.polishedText, "run immediately")
@@ -654,12 +654,12 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = "look at user session manager.swift."
+        viewModel.transcript.currentDictationEventText = "look at user session manager.swift."
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
 
-        XCTAssertEqual(viewModel.currentDictationEventText, expected)
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, expected)
         XCTAssertEqual(overlayCoordinator.refreshCalls.last?.displayText, expected)
         XCTAssertEqual(savedRecord?.polishedText, expected)
         XCTAssertEqual(savedRecord?.polishProfile, "agent")
@@ -760,7 +760,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = "fix the bug in the auth module"
+        viewModel.transcript.currentDictationEventText = "fix the bug in the auth module"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
@@ -931,7 +931,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             transcript: "add a note about the meeting",
             modelOutput: clipboard
         )
-        XCTAssertEqual(viewModel.currentDictationEventText, clipboard)
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, clipboard)
     }
 
     /// No content-based clipboard-output scan runs in standard mode. Prompt
@@ -943,7 +943,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             transcript: "summarize my meeting notes",
             modelOutput: payload
         )
-        XCTAssertEqual(viewModel.currentDictationEventText, payload)
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, payload)
     }
 
     /// The terminal-agent profile follows the same model-first policy.
@@ -955,7 +955,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             modelOutput: payload,
             agentProfile: true
         )
-        XCTAssertEqual(viewModel.currentDictationEventText, payload)
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, payload)
     }
 
     /// Clipboard-grounded identifiers commit without a post-model exception
@@ -967,7 +967,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             modelOutput: "Fix UserSessionManager.swift"
         )
         XCTAssertEqual(
-            viewModel.currentDictationEventText,
+            viewModel.transcript.currentDictationEventText,
             "Fix UserSessionManager.swift"
         )
     }
@@ -981,7 +981,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             modelOutput: "Add a note about the meeting."
         )
         XCTAssertEqual(
-            viewModel.currentDictationEventText,
+            viewModel.transcript.currentDictationEventText,
             "Add a note about the meeting."
         )
     }
@@ -1023,7 +1023,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = transcript
+        viewModel.transcript.currentDictationEventText = transcript
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
@@ -1077,7 +1077,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = "fix the user session manager"
+        viewModel.transcript.currentDictationEventText = "fix the user session manager"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
@@ -1359,7 +1359,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = transcript
+        viewModel.transcript.currentDictationEventText = transcript
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
@@ -1367,7 +1367,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         return ClipboardMacroSessionResult(
             record: savedRecord,
             request: request,
-            committedText: viewModel.currentDictationEventText
+            committedText: viewModel.transcript.currentDictationEventText
         )
     }
 
@@ -1529,7 +1529,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = "fix this paste clipboard thanks"
+        viewModel.transcript.currentDictationEventText = "fix this paste clipboard thanks"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
@@ -1586,7 +1586,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = "open useauth.ts and fix the import"
+        viewModel.transcript.currentDictationEventText = "open useauth.ts and fix the import"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
@@ -1594,7 +1594,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         let capturedRequest = await service.lastRequest
         XCTAssertEqual(capturedRequest?.inputText, "open useAuth.ts and fix the import")
         XCTAssertEqual(
-            viewModel.currentDictationEventText,
+            viewModel.transcript.currentDictationEventText,
             "open useAuth.ts and fix the import"
         )
     }
@@ -1639,13 +1639,13 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = "look at user session manager.swift"
+        viewModel.transcript.currentDictationEventText = "look at user session manager.swift"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(
-            viewModel.currentDictationEventText,
+            viewModel.transcript.currentDictationEventText,
             "look at UserSessionManager.swift"
         )
         // The matched entity also rode the dictionary slot as a hint entry.
@@ -1700,13 +1700,13 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = "look at user session manager.swift"
+        viewModel.transcript.currentDictationEventText = "look at user session manager.swift"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(
-            viewModel.currentDictationEventText,
+            viewModel.transcript.currentDictationEventText,
             "look at UserSessionManager.swift"
         )
         // No dictionary slot: the hint section must not appear anywhere.
@@ -1767,7 +1767,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = "open use auth dot t s and fix the import"
+        viewModel.transcript.currentDictationEventText = "open use auth dot t s and fix the import"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
@@ -1899,7 +1899,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = "open use auth dot t s and fix the import"
+        viewModel.transcript.currentDictationEventText = "open use auth dot t s and fix the import"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
@@ -1956,7 +1956,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = transcript
+        viewModel.transcript.currentDictationEventText = transcript
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)

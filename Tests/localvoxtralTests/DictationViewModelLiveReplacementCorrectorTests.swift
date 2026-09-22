@@ -33,7 +33,7 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
             harness.typed.value, ["localvoxtral "],
             "the corrected word is released once its boundary arrives — no raw type, no backspace"
         )
-        XCTAssertEqual(harness.viewModel.pendingSegmentText, "voxtral ")
+        XCTAssertEqual(harness.viewModel.transcript.pendingSegmentText, "voxtral ")
     }
 
     func testCorrectsMultiWordKeyWithLookbackWindow() {
@@ -71,7 +71,7 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
 
         XCTAssertEqual(harness.field.value, "localvoxtral")
         XCTAssertEqual(harness.typed.value, ["localvoxtral"])
-        XCTAssertEqual(harness.viewModel.currentDictationEventText, "voxtral")
+        XCTAssertEqual(harness.viewModel.transcript.currentDictationEventText, "voxtral")
     }
 
     // The exact field regression (2026-07-08), end to end: a short dictation

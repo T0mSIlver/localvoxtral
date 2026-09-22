@@ -58,7 +58,7 @@ extension DictationViewModel {
             // stop-time promotion can skip (the session ends right behind it)
             // but a session that keeps going cannot: the gap would leave a
             // hole in it for the rest of the dictation.
-            appendToTranscript(promoted)
+            transcript.appendToTranscript(promoted)
         }
         refreshOverlayBufferSession()
 

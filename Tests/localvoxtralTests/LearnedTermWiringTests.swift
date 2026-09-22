@@ -48,7 +48,7 @@ final class LearnedTermWiringTests: XCTestCase {
     private func commit(_ viewModel: DictationViewModel, text: String) async {
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = text
+        viewModel.transcript.currentDictationEventText = text
         viewModel.finishStoppedSession(promotePendingSegment: false)
         XCTAssertNotNil(
             viewModel.polishAndCommitTask,

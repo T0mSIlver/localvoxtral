@@ -39,7 +39,7 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = "polish this text"
+        viewModel.transcript.currentDictationEventText = "polish this text"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
@@ -104,7 +104,7 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = "polish this long answer"
+        viewModel.transcript.currentDictationEventText = "polish this long answer"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
@@ -179,7 +179,7 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = "polish this text"
+        viewModel.transcript.currentDictationEventText = "polish this text"
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)

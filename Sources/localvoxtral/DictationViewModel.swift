@@ -140,15 +140,18 @@ final class DictationViewModel {
     var isFinalizingStop = false
     var isConnectingRealtimeSession = false
     var realtimeSessionIndicatorState: RealtimeSessionIndicatorState = .idle
-    var transcriptText = ""
-    var livePartialText = ""
+    /// The text the realtime events built: the partial in flight, the
+    /// dictation event the overlay commits, the latest segment and the
+    /// running transcript.
+    var transcript = TranscriptAccumulator()
     var statusText = StatusStrings.ready
     var lastError: String?
     // Raw message from the most recent websocket .error event this session.
     // Kept separate from lastError, which holds user-facing UI state (e.g. the
     // Accessibility warning) that must never leak into connection-failure details.
     var lastSocketErrorMessage: String?
-    var lastFinalSegment = ""
+    /// What the popover's copy and paste rows read.
+    var lastFinalSegment: String { transcript.lastFinalSegment }
 
     /// Raw (pre-polish) transcript of the most recent stop-commit whose LLM
     /// polishing visibly changed the text. Drives the "Copy raw transcript"
@@ -310,6 +313,11 @@ final class DictationViewModel {
         /// The repository vocabulary a commit grounds against. Nil is the
         /// production pipeline over the commit target's working directory.
         var repoVocabularyGrounding: (any RepoVocabularyGrounding)?
+        /// Every raw-delta log record, called on the same gated path as
+        /// `Log.deltas` (the hidden `debug.log_realtime_deltas` toggle), so
+        /// "never called with the toggle off" proves the path was not
+        /// entered. Nothing in the app observes; tests do.
+        var onRealtimeDeltaLogRecord: ((DebugRealtimeDeltaLogRecord) -> Void)?
 
         init(
             microphone: (() -> any MicrophoneCapturing)? = nil,
@@ -323,7 +331,8 @@ final class DictationViewModel {
                 DictationViewModel.sleepForReconnect,
             connectionFailurePresenter: any ConnectionFailurePresenting = ModalConnectionFailurePresenter(),
             onSessionRecord: ((DictationSessionRecord) -> Void)? = nil,
-            repoVocabularyGrounding: (any RepoVocabularyGrounding)? = nil
+            repoVocabularyGrounding: (any RepoVocabularyGrounding)? = nil,
+            onRealtimeDeltaLogRecord: ((DebugRealtimeDeltaLogRecord) -> Void)? = nil
         ) {
             self.microphone = microphone
             self.pasteboardReader = pasteboardReader
@@ -334,6 +343,7 @@ final class DictationViewModel {
             self.connectionFailurePresenter = connectionFailurePresenter
             self.onSessionRecord = onSessionRecord
             self.repoVocabularyGrounding = repoVocabularyGrounding
+            self.onRealtimeDeltaLogRecord = onRealtimeDeltaLogRecord
         }
     }
 
@@ -613,10 +623,6 @@ final class DictationViewModel {
     @ObservationIgnored
     var isAwaitingMicrophonePermission = false
     @ObservationIgnored
-    var pendingSegmentText = ""
-    @ObservationIgnored
-    var currentDictationEventText = ""
-    @ObservationIgnored
     var sessionOutputMode: DictationOutputMode?
     @ObservationIgnored
     var polishAndCommitTask: Task<Void, Never>?
@@ -639,21 +645,9 @@ final class DictationViewModel {
     @ObservationIgnored
     var firstChunkPreprocessor = FirstChunkPreprocessor()
 
-    // Per-session sequence counter for the opt-in raw-delta log
-    // (`SettingsStore.debugLogRealtimeDeltas`). Reset to 0 when a new realtime
-    // session connects. Only mutated inside the gated logging path, so a value
-    // of 0 while events are flowing proves the toggle is off. Internal so the
-    // realtime-events extension can read/advance it.
+    /// The opt-in raw-delta log (`SettingsStore.debugLogRealtimeDeltas`).
     @ObservationIgnored
-    var realtimeDeltaLogSequence = 0
-
-    /// `#if DEBUG` test seam mirroring the raw-delta log emissions. Only
-    /// invoked when `SettingsStore.debugLogRealtimeDeltas` is on (i.e. inside
-    /// the same gated path that calls `Log.deltas`), so "sink not called when
-    /// disabled" proves the logging call path was not entered. The record is
-    /// the exact pre-processing payload the Logger would emit.
-    @ObservationIgnored
-    var debugDeltaLogSink: ((DebugRealtimeDeltaLogRecord) -> Void)?
+    var realtimeDeltaLog = RealtimeDeltaLog()
     /// Test seam: invoked after the managed-startup status mirror finishes
     /// handling each status update (including updates its guard skips), so
     /// tests can await mirror processing deterministically instead of
@@ -1423,11 +1417,7 @@ final class DictationViewModel {
     }
 
     func clearTranscript() {
-        transcriptText = ""
-        livePartialText = ""
-        lastFinalSegment = ""
-        pendingSegmentText = ""
-        currentDictationEventText = ""
+        transcript = TranscriptAccumulator()
         if !isDictating, !isFinalizingStop, !isConnectingRealtimeSession {
             clearLatchedSessionMetadata()
         }
@@ -1437,7 +1427,7 @@ final class DictationViewModel {
     }
 
     func copyTranscript() {
-        let fullText = fullTranscript.trimmed
+        let fullText = transcript.fullTranscript.trimmed
         guard !fullText.isEmpty else { return }
 
         let pasteboard = NSPasteboard.general
@@ -1573,15 +1563,6 @@ final class DictationViewModel {
         }
     }
 
-    var fullTranscript: String {
-        let finalPart = transcriptText.trimmed
-        let livePart = livePartialText.trimmed
-
-        if finalPart.isEmpty { return livePart }
-        if livePart.isEmpty { return finalPart }
-        return finalPart + "\n" + livePart
-    }
-
     var acceptsRealtimeEvents: Bool {
         isDictating || isFinalizingStop
     }
@@ -1628,20 +1609,6 @@ final class DictationViewModel {
     }
 
 }
-
-#if DEBUG
-extension DictationViewModel {
-    /// Install a sink that receives every raw-delta log emission captured by
-    /// `logRawRealtimeEventIfEnabled`. Only fires when
-    /// `SettingsStore.debugLogRealtimeDeltas` is on (same gated path as
-    /// `Log.deltas`), so it doubles as an observation point for "logging path
-    /// not entered when disabled". Pass `nil` to clear.
-    func debugConfigureDeltaLogSink(_ sink: ((DebugRealtimeDeltaLogRecord) -> Void)?) {
-        debugDeltaLogSink = sink
-    }
-
-}
-#endif
 
 #if LOCALVOXTRAL_DOGFOOD
 extension DictationViewModel {

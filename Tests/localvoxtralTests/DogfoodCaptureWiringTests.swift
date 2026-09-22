@@ -85,7 +85,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
 
         XCTAssertFalse(harness.viewModel.isCompletingStoppedSession)
         XCTAssertEqual(
-            harness.viewModel.currentDictationEventText, "polished output text",
+            harness.viewModel.transcript.currentDictationEventText, "polished output text",
             "the committed text must be unaffected by a capture-write failure"
         )
     }
@@ -137,7 +137,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         }
         DogfoodCaptureTap.shared.beginSession()
         DogfoodCaptureTap.shared.noteRepoVocabularyHarvest(["herdr", "pane.read"])
-        harness.viewModel.currentDictationEventText = "join the herder pane"
+        harness.viewModel.transcript.currentDictationEventText = "join the herder pane"
 
         harness.viewModel.finishStoppedSession(promotePendingSegment: false)
         await harness.viewModel.polishAndCommitTask?.value
@@ -261,7 +261,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     /// call and there is nothing to attribute.
     func testEmptyDictationWritesNoRecord() async throws {
         let harness = try makeHarness(dogfoodArmed: true)
-        harness.viewModel.currentDictationEventText = "   "
+        harness.viewModel.transcript.currentDictationEventText = "   "
 
         harness.viewModel.finishStoppedSession(promotePendingSegment: false)
         await harness.viewModel.polishAndCommitTask?.value
@@ -342,7 +342,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     func testEmptyDictationNeverInstallsAnObserver() async throws {
         let signals = EditSignalHarness()
         let harness = try makeHarness(dogfoodArmed: true, editSignal: signals)
-        harness.viewModel.currentDictationEventText = "   "
+        harness.viewModel.transcript.currentDictationEventText = "   "
 
         harness.viewModel.finishStoppedSession(promotePendingSegment: false)
         await harness.viewModel.polishAndCommitTask?.value
@@ -408,7 +408,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         // The polish stub returns text without the placeholder, so the
         // placeholder-count guard discards the polish and commits the
         // placeholder-bearing grounded text — payload-substituted at commit.
-        harness.viewModel.currentDictationEventText = "paste clipboard"
+        harness.viewModel.transcript.currentDictationEventText = "paste clipboard"
 
         harness.viewModel.finishStoppedSession(promotePendingSegment: false)
         await harness.viewModel.polishAndCommitTask?.value
@@ -702,7 +702,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = "polish this text"
+        viewModel.transcript.currentDictationEventText = "polish this text"
         return Harness(viewModel: viewModel, captureDirectory: captureDirectory)
     }
 
