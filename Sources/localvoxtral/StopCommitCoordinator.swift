@@ -1,14 +1,18 @@
 import Foundation
 
-/// The stop-commit's dealings with everything that is not the polish request
-/// itself: the sample it takes of the world before the async task starts, the
-/// two clipboard gates, the overlay commit, the record's vocabulary
-/// provenance, and — in a dogfood build — the capture record.
+/// Everything in the stop-commit that decides what reaches the polisher, and
+/// the commit around it: the transcript's preparation (replacement
+/// dictionary, payload macro), the profile and templates, the sample it takes
+/// of the world before the async task starts, the two clipboard gates, the
+/// gather-assemble-send step, the overlay commit, the record's provenance,
+/// and — in a dogfood build — the capture record. The view model only drives
+/// it and applies the outcome, which is why the LLM lane filter names this
+/// file and not the view model's.
 ///
 /// It touches nothing but what it is handed — `capture` clears the
-/// context's captures, `commit` inserts through the overlay — and it never
-/// reads or writes the view model, so the ordering rules below hold
-/// wherever the commit is driven from.
+/// context's captures, `commit` inserts through the overlay, `polish`
+/// records learned terms — and it never reads or writes the view model, so
+/// the ordering rules below hold wherever the commit is driven from.
 enum StopCommitCoordinator {
     // MARK: - Prologue
 

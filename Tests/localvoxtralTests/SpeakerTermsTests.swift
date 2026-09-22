@@ -147,17 +147,22 @@ final class SpeakerTermsImportTests: XCTestCase {
         let viewModel = makeViewModel(store: store)
         viewModel.settings.replacementDictionaryEnabled = false
 
-        XCTAssertNil(viewModel.loadEffectiveReplacementDictionary())
+        XCTAssertNil(StopCommitCoordinator.effectiveReplacementDictionary(
+            settings: viewModel.settings, appConfigStore: viewModel.appConfigStore))
 
         viewModel.settings.polishSpeakerTerms = ["Claude Code"]
         XCTAssertEqual(
-            viewModel.loadEffectiveReplacementDictionary()?.apply(to: "claude code from file"),
+            StopCommitCoordinator.effectiveReplacementDictionary(
+                settings: viewModel.settings, appConfigStore: viewModel.appConfigStore
+            )?.apply(to: "claude code from file"),
             "Claude Code from file"
         )
 
         viewModel.settings.replacementDictionaryEnabled = true
         XCTAssertEqual(
-            viewModel.loadEffectiveReplacementDictionary()?.apply(to: "claude code from file"),
+            StopCommitCoordinator.effectiveReplacementDictionary(
+                settings: viewModel.settings, appConfigStore: viewModel.appConfigStore
+            )?.apply(to: "claude code from file"),
             "Claude Code FROM FILE"
         )
     }
