@@ -77,9 +77,10 @@ final class PolishRequestGoldenTests: XCTestCase {
         var payloadPasteboardReads: Int
         /// How often the repo vocabulary pipeline ran (the seam call count).
         var repoVocabularyPipelineRuns: Int
-        /// The confirmed learned terms after the commit, for the project the
-        /// commit resolved to.
-        var learnedTermsAfterCommit: [String]
+        /// The terms the learned-term store holds for the project the commit
+        /// resolved to, at any dictation count: what this commit recorded, plus
+        /// what the case seeded.
+        var learnedTermsRecorded: [String]
     }
 
     // MARK: - Scenario
@@ -89,7 +90,11 @@ final class PolishRequestGoldenTests: XCTestCase {
     struct Scenario {
         var transcript = "please fix local vox trawl before the release"
         var backendMode: BackendMode = .externalURL
-        var endpointURL = "http://127.0.0.1:8472/v1/chat/completions"
+        /// Loopback, so the context gates pass, but not the managed polishd
+        /// pin (port 8472): a managed configuration must differ from an
+        /// external one by more than a catalog field.
+        var endpointURL = "http://127.0.0.1:8080/v1/chat/completions"
+        var externalModel = "qwen35-4b"
         var mistralAPIKey = ""
         var agentProfileEnabled = false
         var targetBundleID: String? = "com.acme.notes"
@@ -182,6 +187,15 @@ final class PolishRequestGoldenTests: XCTestCase {
         scenario.contextPasteboardText =
             "UserSessionManager.swift handles the refresh token"
         try await assertGolden("05-clipboard-context-loopback", scenario)
+    }
+
+    func testClipboardVocabularyGroundsTheTranscript() async throws {
+        var scenario = Scenario()
+        scenario.transcript = "open use auth dot ts and fix the import"
+        scenario.targetBundleID = "com.apple.Terminal"
+        scenario.clipboardContextEnabled = true
+        scenario.contextPasteboardText = "see use_auth.ts for the hook"
+        try await assertGolden("05b-clipboard-vocabulary-grounded", scenario)
     }
 
     func testClipboardContextOnRemoteEndpointReadsNothing() async throws {
@@ -378,23 +392,12 @@ final class PolishRequestGoldenTests: XCTestCase {
 
     // MARK: - Harness
 
-    private final class CountingCollector: ClaudeRepoCollecting, @unchecked Sendable {
-        let snapshot: ClaudeRepoSnapshot?
-        init(snapshot: ClaudeRepoSnapshot?) { self.snapshot = snapshot }
-        func collect(
-            workspace _: LocalWorkspacePath,
-            recentFiles _: [ClaudeRecentFile],
-            transcript _: String
-        ) async -> ClaudeRepoSnapshot? {
-            snapshot
-        }
-    }
-
     private func runScenario(_ scenario: Scenario) async throws -> Golden {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = true
         settings.polishingBackendMode = scenario.backendMode
         settings.llmPolishingEndpointURL = scenario.endpointURL
+        settings.llmPolishingModel = scenario.externalModel
         settings.mistralAPIKey = scenario.mistralAPIKey
         settings.agentPolishProfileEnabled = scenario.agentProfileEnabled
         settings.polishSpeakerProfile = scenario.speakerProfile
@@ -478,6 +481,8 @@ final class PolishRequestGoldenTests: XCTestCase {
 
         var savedRecord: DictationSessionRecord?
         viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        // Read before the commit consumes the join.
+        let joinWorkspace = viewModel.claudeSessionJoin?.snapshot.workspace
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
@@ -489,12 +494,20 @@ final class PolishRequestGoldenTests: XCTestCase {
 
         let request = await service.lastRequest
         let configuration = await service.lastConfiguration
+        // The commit's root box is reported only by the vocabulary pipeline:
+        // when the seam ran, its root (nil meaning no repository); otherwise
+        // the box stays unknown.
+        let repositoryRoot: LearnedTermProjectResolver.RepositoryRoot =
+            pipelineRuns.runs > 0
+            ? scenario.repoVocabularyRoot.map { .root($0) } ?? .noRepository
+            : .unknown
         let learnedProject = LearnedTermProjectResolver.resolve(
-            repositoryRoot: scenario.repoVocabularyRoot.map { .root($0) } ?? .noRepository,
-            workspace: viewModel.claudeSessionJoin?.snapshot.workspace
+            repositoryRoot: repositoryRoot,
+            workspace: joinWorkspace
         )
         let learnedTerms = learnedProject.map {
-            store.snapshot().confirmed(projectKey: $0.key).map(\.term).sorted()
+            store.snapshot().confirmed(projectKey: $0.key, minimumDictations: 1)
+                .map(\.term).sorted()
         } ?? []
 
         return Golden(
@@ -507,7 +520,7 @@ final class PolishRequestGoldenTests: XCTestCase {
             contextPasteboardReads: contextPasteboard.stringCallCount,
             payloadPasteboardReads: payloadPasteboard.stringCallCount,
             repoVocabularyPipelineRuns: pipelineRuns.runs,
-            learnedTermsAfterCommit: learnedTerms
+            learnedTermsRecorded: learnedTerms
         )
     }
 
@@ -555,7 +568,7 @@ final class PolishRequestGoldenTests: XCTestCase {
                 focusedWindowID: { _ in 101 }
             )
             viewModel.claudeSessionJoinResolver = resolver
-            viewModel.claudeRepoCollector = CountingCollector(snapshot: repoSnapshot)
+            viewModel.claudeRepoCollector = StubClaudeRepoCollector(snapshot: repoSnapshot)
             let join = await resolver.resolve(target: ghostty)
             XCTAssertNotNil(join, "the local tty arm must resolve the seeded session")
             viewModel.claudeSessionJoin = join
@@ -619,7 +632,7 @@ final class PolishRequestGoldenTests: XCTestCase {
         let actual = String(decoding: try encoder.encode(golden), as: UTF8.self) + "\n"
         let fixtureURL = Self.fixtureDirectory.appendingPathComponent("\(name).json")
 
-        guard let expected = try? String(contentsOf: fixtureURL, encoding: .utf8) else {
+        guard FileManager.default.fileExists(atPath: fixtureURL.path) else {
             try FileManager.default.createDirectory(
                 at: Self.fixtureDirectory, withIntermediateDirectories: true
             )
@@ -631,6 +644,7 @@ final class PolishRequestGoldenTests: XCTestCase {
             )
             return
         }
+        let expected = try String(contentsOf: fixtureURL, encoding: .utf8)
         guard expected != actual else { return }
 
         let expectedLines = expected.components(separatedBy: "\n")

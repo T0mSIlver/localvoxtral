@@ -2,13 +2,13 @@
   "committedText" : "local vox trawl builds with SwiftPM",
   "configuration" : {
     "apiKeyLength" : 0,
-    "endpointURL" : "http://127.0.0.1:8472/v1/chat/completions",
-    "model" : "mlx-community/Qwen3.5-4B-OptiQ-4bit",
+    "endpointURL" : "http://127.0.0.1:8080/v1/chat/completions",
+    "model" : "qwen35-4b",
     "passthroughExtraParameters" : false,
     "requestShape" : "openAICompatible"
   },
   "contextPasteboardReads" : 0,
-  "learnedTermsAfterCommit" : [
+  "learnedTermsRecorded" : [
 
   ],
   "payloadPasteboardReads" : 0,

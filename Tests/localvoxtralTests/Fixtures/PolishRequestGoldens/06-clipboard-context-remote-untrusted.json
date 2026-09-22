@@ -3,12 +3,12 @@
   "configuration" : {
     "apiKeyLength" : 0,
     "endpointURL" : "https://api.example.com/v1/chat/completions",
-    "model" : "mlx-community/Qwen3.5-4B-OptiQ-4bit",
+    "model" : "qwen35-4b",
     "passthroughExtraParameters" : false,
     "requestShape" : "openAICompatible"
   },
   "contextPasteboardReads" : 0,
-  "learnedTermsAfterCommit" : [
+  "learnedTermsRecorded" : [
 
   ],
   "payloadPasteboardReads" : 0,
