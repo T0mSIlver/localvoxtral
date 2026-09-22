@@ -422,7 +422,7 @@ final class SettingsTabTests: XCTestCase {
     /// drills address the window by title, so the three strings are held equal
     /// here rather than found apart in the evening ui-smoke slot.
     func testWindowTitleIsTheAppNameAndTheDrillsAddressIt() throws {
-        XCTAssertEqual(SettingsView.windowTitle, "localvoxtral")
+        XCTAssertEqual(SettingsWindowChromeView.windowTitle, "localvoxtral")
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()  // SettingsTabTests.swift
             .deletingLastPathComponent()  // localvoxtralTests
@@ -431,8 +431,8 @@ final class SettingsTabTests: XCTestCase {
             let source = try String(
                 contentsOf: repoRoot.appendingPathComponent(script), encoding: .utf8)
             XCTAssertTrue(
-                source.contains("SETTINGS_WINDOW_TITLE=\"\(SettingsView.windowTitle)\""),
-                "\(script) must address the window by its title, \(SettingsView.windowTitle)"
+                source.contains("SETTINGS_WINDOW_TITLE=\"\(SettingsWindowChromeView.windowTitle)\""),
+                "\(script) must address the window by its title, \(SettingsWindowChromeView.windowTitle)"
             )
         }
     }

@@ -27,11 +27,13 @@
 //          AXPress. With --title, an AXButton whose title/description matches is
 //          accepted as a fallback when SwiftUI did not surface the identifier;
 //          the route actually taken is printed, so the log answers the question.
-// --window restricts BOTH searches to windows whose AXTitle contains the given
-//          substring. Both fallbacks (AXTitle for --press, AXScrollArea for
-//          --scope) are matched by shape rather than identity, so a second window
-//          could satisfy them instead of the one under test — the enrollment
-//          sheet alone contains two scroll views. When the hint matches no
+// --window restricts BOTH searches to the windows whose AXTitle IS the given
+//          string, or, when none is, to those whose title contains it. Both
+//          fallbacks (AXTitle for --press, AXScrollArea for --scope) are matched
+//          by shape rather than identity, so a second window could satisfy
+//          them instead of the one under test — the enrollment sheet alone
+//          contains two scroll views, and "Welcome to localvoxtral" contains
+//          the app window's name. When the hint matches no
 //          window the probe searches all of them and says so, so a hint that
 //          stops matching degrades to the old behavior loudly instead of
 //          silently finding nothing.
@@ -186,6 +188,11 @@ func searchWindows() -> [AXUIElement] {
     let allWindows = windows()
     guard let windowTitleHint else { return allWindows }
 
+    // Exact first: the app window is "localvoxtral" and the onboarding window
+    // "Welcome to localvoxtral", so a substring match alone would let the
+    // shape-matched fallbacks answer from the wizard.
+    let exact = allWindows.filter { texts($0).title == windowTitleHint }
+    if !exact.isEmpty { return exact }
     let matching = allWindows.filter { texts($0).title.contains(windowTitleHint) }
     if matching.isEmpty {
         if !warnedAboutUnmatchedWindowHint {
