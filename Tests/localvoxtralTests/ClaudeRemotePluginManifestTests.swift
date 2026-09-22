@@ -838,6 +838,42 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         XCTAssertEqual(hostileSession.stderr, "")
     }
 
+    /// A status line re-runs on every redraw, and the stamp is a file anything
+    /// running as the user can grow. The renderer's `${LINE#* }` split is
+    /// quadratic in a value with no space in it (3 s for 100 KB, minutes for a
+    /// megabyte), so only the head of the stamp may ever be read.
+    ///
+    /// Asserted as a budget against the same render of an ordinary stamp, the
+    /// way `PolishContextPreparationTests` budgets its recognizers: both are one
+    /// spawn of an already-seen script, so the ratio is about 1, and the
+    /// multiple leaves room for a contended host. The quadratic read put it in
+    /// the thousands. Three interleaved samples of each, compared by their
+    /// minimum, so one scheduling pause on either side is not the verdict.
+    func testStatusLineRendererCostsTheSameForAMegabyteStamp() throws {
+        let hugeStamp = String(repeating: "A", count: 1_000_000)
+        var ordinaryCosts: [Duration] = []
+        var hugeCosts: [Duration] = []
+        for _ in 0..<3 {
+            let ordinaryStart = ContinuousClock.now
+            let ordinary = try runStatusLineRenderer(stamp: "ok 2000000000")
+            ordinaryCosts.append(ContinuousClock.now - ordinaryStart)
+            XCTAssertEqual(ordinary.stdout, "lvx \u{1B}[33m\u{25D0}\u{1B}[0m\n")
+
+            let hugeStart = ContinuousClock.now
+            let huge = try runStatusLineRenderer(stamp: hugeStamp)
+            hugeCosts.append(ContinuousClock.now - hugeStart)
+            XCTAssertEqual(huge.exitCode, 0)
+            XCTAssertEqual(huge.stdout, "lvx \u{1B}[90m\u{25CB}\u{1B}[0m\n")
+            XCTAssertEqual(huge.stderr, "")
+        }
+        let ordinaryCost = try XCTUnwrap(ordinaryCosts.min())
+        let hugeCost = try XCTUnwrap(hugeCosts.min())
+        XCTAssertLessThan(
+            hugeCost, ordinaryCost * 50,
+            "a 1 MB stamp cost \(hugeCost) against \(ordinaryCost) for a 13-byte one: the renderer is reading the whole file again"
+        )
+    }
+
     func testStatusLineRendererUsesPlainTextWhenColorIsDisabled() throws {
         let now = 2_000_000_000
         for (stamp, sessions, environment, expected) in [
