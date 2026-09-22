@@ -323,10 +323,20 @@ private struct GeneralSettingsPane: View {
                     status: loginItem.statusMessage,
                     statusAccessibilityIdentifier: "settings.general.loginItemStatus"
                 ) {
-                    Toggle("", isOn: loginItemBinding)
-                        .labelsHidden()
-                        .disabled(!loginItem.isAvailable)
-                        .accessibilityIdentifier("settings.general.loginItem")
+                    HStack(spacing: SettingsLayout.rowSpacing) {
+                        // Only while macOS is waiting for the approval: there
+                        // is nowhere useful to send the user in any other
+                        // state.
+                        if loginItem.needsApproval {
+                            Button("Open System Settings") {
+                                loginItem.openSystemSettings()
+                            }
+                        }
+                        Toggle("", isOn: loginItemBinding)
+                            .labelsHidden()
+                            .disabled(!loginItem.isAvailable)
+                            .accessibilityIdentifier("settings.general.loginItem")
+                    }
                 }
 
                 SettingsFieldRow(
@@ -348,8 +358,15 @@ private struct GeneralSettingsPane: View {
             }
         }
         // System Settings can turn the login item off while the app runs, so
-        // the switch is re-read from the system every time the pane appears.
+        // the switch is re-read from the system every time the pane appears —
+        // and again when the app comes back to the front, which is how the
+        // user returns from turning it off over there.
         .onAppear { loginItem.refresh() }
+        .onReceive(
+            NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+        ) { _ in
+            loginItem.refresh()
+        }
     }
 }
 

@@ -1067,9 +1067,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// a pane that is not a settings pane.
     private func openWindow(on tab: SettingsTab) {
         settingsNavigator.selectedTab = tab
-        NSApp.activate(ignoringOtherApps: true)
-        // AppKit entry point for the SwiftUI `Settings` scene on macOS 14+.
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        // One runloop turn later, always. Sent from inside
+        // `applicationDidFinishLaunching` the action is accepted and does
+        // nothing — no window appears (hand-checked on the packaged build
+        // through the UI gate, PR #452) — because the SwiftUI `Settings` scene
+        // is not yet ready to act on it. The same deferral is harmless for the
+        // user-driven callers.
+        Task { @MainActor in
+            NSApp.activate(ignoringOtherApps: true)
+            // AppKit entry point for the SwiftUI `Settings` scene on macOS 14+.
+            let opened = NSApp.sendAction(
+                Selector(("showSettingsWindow:")), to: nil, from: nil)
+            if !opened {
+                Log.diagnostics.error(
+                    "The localvoxtral window did not open: nothing answered showSettingsWindow:."
+                )
+            }
+        }
     }
 }
 

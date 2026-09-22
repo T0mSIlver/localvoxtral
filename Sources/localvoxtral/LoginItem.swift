@@ -27,6 +27,9 @@ protocol LoginItemRegistering: AnyObject {
     func currentState() -> LoginItemState
     func register() throws
     func unregister() throws
+    /// Opens System Settings on Login Items, for the approval the app cannot
+    /// give itself.
+    func openSystemSettings()
 }
 
 /// `SMAppService.mainApp`: the app registers ITSELF as the login item, so no
@@ -39,7 +42,10 @@ final class SystemLoginItemRegistrar: LoginItemRegistering {
         case .notRegistered: return .disabled
         case .requiresApproval: return .requiresApproval
         case .notFound: return .unavailable
-        @unknown default: return .disabled
+        // A status this build does not know cannot be rendered as a switch
+        // honestly: reported as off, it would spring back the moment the user
+        // flipped it. The row says nothing can be done here instead.
+        @unknown default: return .unavailable
         }
     }
 
@@ -49,6 +55,10 @@ final class SystemLoginItemRegistrar: LoginItemRegistering {
 
     func unregister() throws {
         try SMAppService.mainApp.unregister()
+    }
+
+    func openSystemSettings() {
+        SMAppService.openSystemSettingsLoginItems()
     }
 }
 
@@ -70,7 +80,14 @@ final class LoginItemController {
 
     init(registrar: LoginItemRegistering = SystemLoginItemRegistrar()) {
         self.registrar = registrar
-        state = registrar.currentState()
+        let state = registrar.currentState()
+        self.state = state
+        // What the system said at launch, once per launch. A row that refuses
+        // to work is otherwise indistinguishable in the field from one that
+        // works and was never turned on.
+        Log.diagnostics.info(
+            "Login item state at launch: \(String(describing: state), privacy: .public)"
+        )
     }
 
     /// Where the toggle sits. Awaiting approval counts as on: the app is
@@ -82,6 +99,12 @@ final class LoginItemController {
 
     var isAvailable: Bool {
         state != .unavailable
+    }
+
+    /// The app is registered and macOS is waiting for the user to allow it.
+    /// The only state with somewhere to send them.
+    var needsApproval: Bool {
+        state == .requiresApproval
     }
 
     var statusMessage: String? {
@@ -98,6 +121,10 @@ final class LoginItemController {
     func refresh() {
         failure = nil
         state = registrar.currentState()
+    }
+
+    func openSystemSettings() {
+        registrar.openSystemSettings()
     }
 
     func setOn(_ isOn: Bool) {
