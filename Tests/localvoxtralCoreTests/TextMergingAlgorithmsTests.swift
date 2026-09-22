@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 final class TextMergingAlgorithmsTests: XCTestCase {
 

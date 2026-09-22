@@ -34,60 +34,82 @@ let dogfoodCaptureEnabled =
 let dogfoodSwiftSettings: [SwiftSetting] =
     dogfoodCaptureEnabled ? [.define("LOCALVOXTRAL_DOGFOOD")] : []
 
+/// Everything but the app and its suite, which need AppKit and are declared on
+/// macOS only below. On Linux, `scripts/core-tests-linux.sh` builds the test
+/// product and runs the core's tests.
+var products: [Product] = [
+    // The Claude Code hook publisher. Dependency-free (Foundation +
+    // Darwin/Glibc) so the same source builds for a remote Linux host.
+    .executable(name: "localvoxtral-claude-hook", targets: ["localvoxtral-claude-hook"]),
+]
+var dependencies: [Package.Dependency] = []
+var targets: [Target] = [
+    // Wire contract shared by the app's broker and the hook publisher.
+    // Foundation only — it must compile on Linux for a remote publisher.
+    .target(name: "ClaudeContextWire"),
+    .target(
+        name: "ClaudeHookPublisherCore",
+        dependencies: ["ClaudeContextWire"]
+    ),
+    // Thin main; all logic lives in the Core library so it is testable.
+    // Named for the binary: SwiftPM names the built executable after the
+    // TARGET, not the product (cf. PolishHelper's localvoxtral-polishd).
+    .executableTarget(
+        name: "localvoxtral-claude-hook",
+        dependencies: ["ClaudeHookPublisherCore", "ClaudeContextWire"]
+    ),
+    // What the app computes without AppKit: the transcript merge, the text
+    // merging algorithms, the polish token guard, the payload macro, the
+    // polish-outcome and connection-failure classifiers, the session clock
+    // (#432 step 9). The app re-exports it.
+    .target(name: "localvoxtralCore"),
+    .testTarget(
+        name: "localvoxtralCoreTests",
+        dependencies: ["localvoxtralCore"]
+    ),
+]
+
+#if os(macOS)
+products.insert(.executable(name: "localvoxtral", targets: ["localvoxtral"]), at: 0)
+dependencies.append(.package(url: "https://github.com/Kentzo/ShortcutRecorder.git", from: "3.4.0"))
+targets += [
+    .executableTarget(
+        name: "localvoxtral",
+        dependencies: [
+            .product(name: "ShortcutRecorder", package: "ShortcutRecorder"),
+            "ClaudeContextWire",
+            "localvoxtralCore",
+        ],
+        // Colocated agent-guide markdown, not a bundle resource.
+        exclude: [
+            "ClaudeContext/AGENTS.md"
+        ],
+        resources: [
+            .process("Resources"),
+        ],
+        swiftSettings: dogfoodSwiftSettings
+    ),
+    .testTarget(
+        name: "localvoxtralTests",
+        dependencies: [
+            "localvoxtral",
+            "localvoxtralCore",
+            "ClaudeContextWire",
+            "ClaudeHookPublisherCore",
+        ],
+        // Golden fixtures are read through `#filePath`, not the bundle.
+        exclude: ["Fixtures"],
+        swiftSettings: dogfoodSwiftSettings
+    ),
+]
+#endif
+
 let package = Package(
     name: "localvoxtral",
     platforms: [
         .macOS(.v15),
     ],
-    products: [
-        .executable(name: "localvoxtral", targets: ["localvoxtral"]),
-        // The Claude Code hook publisher. Dependency-free (Foundation +
-        // Darwin/Glibc) so the same source builds for a remote Linux host.
-        .executable(name: "localvoxtral-claude-hook", targets: ["localvoxtral-claude-hook"]),
-    ],
-    dependencies: [
-        .package(url: "https://github.com/Kentzo/ShortcutRecorder.git", from: "3.4.0"),
-    ],
-    targets: [
-        // Wire contract shared by the app's broker and the hook publisher.
-        // Foundation only — it must compile on Linux for a remote publisher.
-        .target(name: "ClaudeContextWire"),
-        .target(
-            name: "ClaudeHookPublisherCore",
-            dependencies: ["ClaudeContextWire"]
-        ),
-        // Thin main; all logic lives in the Core library so it is testable.
-        // Named for the binary: SwiftPM names the built executable after the
-        // TARGET, not the product (cf. PolishHelper's localvoxtral-polishd).
-        .executableTarget(
-            name: "localvoxtral-claude-hook",
-            dependencies: ["ClaudeHookPublisherCore", "ClaudeContextWire"]
-        ),
-        .executableTarget(
-            name: "localvoxtral",
-            dependencies: [
-                .product(name: "ShortcutRecorder", package: "ShortcutRecorder"),
-                "ClaudeContextWire",
-            ],
-            // Colocated agent-guide markdown, not a bundle resource.
-            exclude: [
-                "ClaudeContext/AGENTS.md"
-            ],
-            resources: [
-                .process("Resources"),
-            ],
-            swiftSettings: dogfoodSwiftSettings
-        ),
-        .testTarget(
-            name: "localvoxtralTests",
-            dependencies: [
-                "localvoxtral",
-                "ClaudeContextWire",
-                "ClaudeHookPublisherCore",
-            ],
-            // Golden fixtures are read through `#filePath`, not the bundle.
-            exclude: ["Fixtures"],
-            swiftSettings: dogfoodSwiftSettings
-        ),
-    ]
+    products: products,
+    dependencies: dependencies,
+    targets: targets
 )

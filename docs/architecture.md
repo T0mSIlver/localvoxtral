@@ -42,6 +42,13 @@ pure step (#432 steps 1–8):
 - `SessionAudioPipeline.swift` — `viewModel.audio`: capture, the send and
   commit loops, ducking, the input device selection
 
+`Sources/localvoxtralCore` (#432 step 9) holds what the app computes without
+AppKit: `TranscriptAccumulator`, `TextMergingAlgorithms`, the overlay text
+assembler, `PolishTokenGuard`, `ClipboardPayloadMacro`,
+`PolishOutcomeClassifier`, the connection-failure classifier, `SessionClock`.
+It builds and tests on Linux (`scripts/core-tests-linux.sh`); the app
+re-exports it.
+
 Key subsystems:
 
 - Audio: `MicrophoneCaptureService` (raw CoreAudio AUHAL → 16kHz PCM16),

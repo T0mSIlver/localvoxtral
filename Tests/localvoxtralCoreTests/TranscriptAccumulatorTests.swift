@@ -1,5 +1,5 @@
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// The transcript merge without a session: what a final resolves to against
 /// the buffered partials, what Live Auto-Paste still has to type for it, and

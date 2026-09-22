@@ -1,6 +1,6 @@
 import Foundation
 
-enum TextMergingAlgorithms {
+package enum TextMergingAlgorithms {
     private static let replayCharacterThreshold = 32
     private static let replayWordThreshold = 8
 
@@ -14,7 +14,7 @@ enum TextMergingAlgorithms {
     private static let multipleSpacesRegex = try! NSRegularExpression(pattern: "[ \\t]{2,}")
     private static let wordTokenRegex = try! NSRegularExpression(pattern: "[\\p{L}\\p{N}]+")
 
-    static func longestSuffixPrefixOverlap(lhs: String, rhs: String) -> Int {
+    package static func longestSuffixPrefixOverlap(lhs: String, rhs: String) -> Int {
         let maxOverlap = min(lhs.count, rhs.count)
         guard maxOverlap > 0 else { return 0 }
 
@@ -29,7 +29,7 @@ enum TextMergingAlgorithms {
         return 0
     }
 
-    static func mergeIncrementalText(existing: String, incoming: String) -> (merged: String, appendedDelta: String) {
+    package static func mergeIncrementalText(existing: String, incoming: String) -> (merged: String, appendedDelta: String) {
         guard !incoming.isEmpty else { return (existing, "") }
         guard !existing.isEmpty else { return (incoming, incoming) }
 
@@ -57,7 +57,7 @@ enum TextMergingAlgorithms {
         return (existing + incoming, incoming)
     }
 
-    static func appendToCurrentDictationEvent(segment: String, existingText: String) -> String {
+    package static func appendToCurrentDictationEvent(segment: String, existingText: String) -> String {
         let normalizedSegment = segment.trimmed
         guard !normalizedSegment.isEmpty else { return existingText }
 
@@ -86,7 +86,7 @@ enum TextMergingAlgorithms {
         return normalizedExisting + "\n" + normalizedSegment
     }
 
-    static func longestCommonPrefixLength(lhs: String, rhs: String) -> Int {
+    package static func longestCommonPrefixLength(lhs: String, rhs: String) -> Int {
         var leftIndex = lhs.startIndex
         var rightIndex = rhs.startIndex
         var length = 0
@@ -117,7 +117,7 @@ enum TextMergingAlgorithms {
     /// extension): live mode cannot rewrite already-typed text, so the caller
     /// keeps today's behavior of inserting nothing. Also returns nil for an
     /// empty suffix (final identical to the live text), making it a no-op.
-    static func livePasteExtensionSuffix(
+    package static func livePasteExtensionSuffix(
         finalText: String,
         liveInsertedText: String
     ) -> String? {
@@ -136,7 +136,7 @@ enum TextMergingAlgorithms {
         return suffix.isEmpty ? nil : suffix
     }
 
-    static func stableWordBoundaryLength(in text: String, upTo rawLength: Int) -> Int {
+    package static func stableWordBoundaryLength(in text: String, upTo rawLength: Int) -> Int {
         let length = min(max(0, rawLength), text.count)
         guard length > 0 else { return 0 }
 
@@ -162,7 +162,7 @@ enum TextMergingAlgorithms {
         return 0
     }
 
-    static func isWordBoundaryCharacter(_ character: Character) -> Bool {
+    package static func isWordBoundaryCharacter(_ character: Character) -> Bool {
         if character.isWhitespace {
             return true
         }
@@ -171,12 +171,12 @@ enum TextMergingAlgorithms {
         return character.unicodeScalars.allSatisfy { punctuation.contains($0) }
     }
 
-    static func shouldAvoidLeadingSpace(before character: Character) -> Bool {
+    package static func shouldAvoidLeadingSpace(before character: Character) -> Bool {
         let noLeadingSpaceBefore = CharacterSet(charactersIn: ".,!?;:)]}\"'%-")
         return character.unicodeScalars.allSatisfy { noLeadingSpaceBefore.contains($0) }
     }
 
-    static func appendWithTailOverlap(
+    package static func appendWithTailOverlap(
         existing: String,
         incoming: String
     ) -> (merged: String, appendedDelta: String) {
@@ -233,7 +233,7 @@ enum TextMergingAlgorithms {
 
     /// Lightweight transcription cleanup for tokenizer spacing artifacts.
     /// This is intentionally conservative and should not rewrite semantics.
-    static func normalizeTranscriptionFormatting(_ text: String) -> String {
+    package static func normalizeTranscriptionFormatting(_ text: String) -> String {
         guard !text.isEmpty else { return text }
 
         var output = text.replacingOccurrences(of: "\u{00A0}", with: " ")

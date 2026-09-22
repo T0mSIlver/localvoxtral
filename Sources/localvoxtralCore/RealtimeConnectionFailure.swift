@@ -7,7 +7,7 @@ import Foundation
 /// reconnect to the network, fix the URL scheme). This enum captures the
 /// classification; `RealtimeConnectionFailureClassifier` maps it (plus the
 /// resolved endpoint) to the copy surfaced in the popover and failure alert.
-enum RealtimeConnectionFailureKind: Sendable, Equatable {
+package enum RealtimeConnectionFailureKind: Sendable, Equatable {
     /// The configured endpoint could not be resolved to a valid ws/wss URL.
     case invalidEndpoint
     /// The host was reached but actively refused the connection (server not
@@ -40,23 +40,23 @@ enum RealtimeConnectionFailureKind: Sendable, Equatable {
 }
 
 /// Copy produced for a connection failure, ready to surface to the user.
-struct RealtimeConnectionFailureDescription: Sendable, Equatable {
+package struct RealtimeConnectionFailureDescription: Sendable, Equatable {
     /// Short status line (popover "Status:" + menu-bar context).
-    let status: String
+    package let status: String
     /// Primary user-facing message. Always names the resolved endpoint when one
     /// is known, so a wrong port is instantly visible.
-    let message: String
+    package let message: String
     /// Raw technical/system error preserved for logs and the Console affordance.
-    let technicalDetails: String?
+    package let technicalDetails: String?
 }
 
 /// Pure mapping from a classified failure (+ endpoint) to user-facing copy.
 ///
 /// Kept free of app state on purpose so the message construction is unit-testable
 /// without a view model or live socket.
-enum RealtimeConnectionFailureClassifier {
+package enum RealtimeConnectionFailureClassifier {
     /// Placeholder used when the configured endpoint could not be resolved.
-    static let unknownEndpointDescription = "<unresolved endpoint>"
+    package static let unknownEndpointDescription = "<unresolved endpoint>"
 
     /// Describes a connection failure for the user.
     /// - Parameters:
@@ -67,7 +67,7 @@ enum RealtimeConnectionFailureClassifier {
     ///   - timeoutSeconds: Connect timeout, only meaningful for `.timedOut`.
     ///   - rawError: Raw underlying error string (socket error / thrown error),
     ///     surfaced as technical details. May be nil.
-    static func describe(
+    package static func describe(
         kind: RealtimeConnectionFailureKind,
         endpointDescription: String,
         timeoutSeconds: TimeInterval? = nil,
@@ -187,7 +187,7 @@ enum RealtimeConnectionFailureClassifier {
     /// `"<prefix> <localizedDescription> [<domain>:<code>] url=<url>"`, so the
     /// NSError code is the most reliable signal. Localized-text fallbacks cover
     /// transports that omit the structured code.
-    static func classify(socketErrorMessage message: String?) -> RealtimeConnectionFailureKind {
+    package static func classify(socketErrorMessage message: String?) -> RealtimeConnectionFailureKind {
         guard let message, !message.trimmed.isEmpty else {
             return .unknown
         }

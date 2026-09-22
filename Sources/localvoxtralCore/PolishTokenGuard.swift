@@ -12,27 +12,27 @@ import Foundation
 /// Pure functions on `String`, mirroring `TextMergingAlgorithms`. Recognition
 /// is deliberately conservative: prefer missing a token over a false positive
 /// that would block legitimate cleanup.
-enum PolishTokenGuard {
-    struct Repair: Equatable {
+package enum PolishTokenGuard {
+    package struct Repair: Equatable {
         /// The text the caller should commit for `.clean`/`.repaired`. For
         /// `.fallback` it is the untouched `original`, but the caller decides
         /// what to keep by switching on `outcome`.
-        let text: String
-        let outcome: Outcome
+        package let text: String
+        package let outcome: Outcome
         /// How many protected tokens were accepted as SANCTIONED rewrites (see
         /// `verifyAndRepair(polished:original:sanctionedReplacements:)`) rather
         /// than found verbatim. Callers log this so field logs show when the
         /// repo-vocabulary path changed a protected token on purpose. Defaulted
         /// so every pre-existing construction/comparison stays byte-identical.
-        let sanctionedCount: Int
+        package let sanctionedCount: Int
 
-        init(text: String, outcome: Outcome, sanctionedCount: Int = 0) {
+        package init(text: String, outcome: Outcome, sanctionedCount: Int = 0) {
             self.text = text
             self.outcome = outcome
             self.sanctionedCount = sanctionedCount
         }
 
-        enum Outcome: Equatable {
+        package enum Outcome: Equatable {
             case clean
             case repaired(count: Int)
             case fallback(missing: [String])
@@ -153,18 +153,18 @@ enum PolishTokenGuard {
     /// Ordered, de-duplicated protected tokens found in `text`. Ordering is by
     /// first appearance; tokens whose span is fully contained in a longer
     /// token's span (e.g. a filename inside a path) are dropped.
-    static func protectedTokens(in text: String) -> [String] {
+    package static func protectedTokens(in text: String) -> [String] {
         containmentFiltered(spans: collectSpans(in: text))
     }
 
     /// A recognized span: its range in the source text and the token it yields.
-    typealias ProtectedSpan = (range: NSRange, token: String)
+    package typealias ProtectedSpan = (range: NSRange, token: String)
 
     #if DEBUG
     /// Test seam: the raw recognized spans BEFORE containment filtering, so the
     /// containment sweep can be checked against a naive oracle over identical
     /// input rather than against a re-run of the recognizers.
-    static func debugProtectedSpans(in text: String) -> [ProtectedSpan] {
+    package static func debugProtectedSpans(in text: String) -> [ProtectedSpan] {
         collectSpans(in: text)
     }
     #endif
@@ -297,7 +297,7 @@ enum PolishTokenGuard {
     /// form (case-insensitive, dash/space-normalized) so the guard stays
     /// self-contained. The default `[]` keeps all pre-existing behavior
     /// byte-identical.
-    static func verifyAndRepair(
+    package static func verifyAndRepair(
         polished: String,
         original: String,
         sanctionedReplacements: [(from: String, to: String)] = []
@@ -442,7 +442,7 @@ enum PolishTokenGuard {
     /// Internal (not private): `ClipboardPayloadMacro` reuses this exact
     /// boundary rule for its standalone placeholder count, so the guard and the
     /// macro can never disagree on what "standalone" means.
-    static func isBodyCharacter(_ c: Character) -> Bool {
+    package static func isBodyCharacter(_ c: Character) -> Bool {
         c.isLetter || c.isNumber || c == "_" || c == "-"
     }
 

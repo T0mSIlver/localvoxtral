@@ -17,22 +17,22 @@ import Foundation
 ///   2. `substitutePayload` runs only at the very end, after polish and the
 ///      profile-specific guards, replacing the placeholder with the formatted
 ///      clipboard payload just before commit.
-enum ClipboardPayloadMacro {
+package enum ClipboardPayloadMacro {
     /// Env-var-shaped so it is conspicuous to the model and unlikely to be
     /// confused with dictated prose. All markers collapse to this one string.
-    static let placeholder = "$LV_CLIPBOARD_PAYLOAD"
+    package static let placeholder = "$LV_CLIPBOARD_PAYLOAD"
 
     /// A single-line payload no longer than this (after trimming) is inlined as
     /// `` `payload` `` rather than fenced.
-    static let inlineCharacterThreshold = 60
+    package static let inlineCharacterThreshold = 60
 
     /// Head cap on the payload inside a fenced block. A pasted 200 MB log must
     /// not blow up the overlay or the committed text; the head is what matters
     /// for an error/stack trace.
-    static let payloadCharacterCap = 8000
+    package static let payloadCharacterCap = 8000
 
     /// Appended as the final line inside the fence when the payload was capped.
-    static let truncationMarker = "… [clipboard truncated]"
+    package static let truncationMarker = "… [clipboard truncated]"
 
     // MARK: - Marker detection
 
@@ -50,7 +50,7 @@ enum ClipboardPayloadMacro {
     )
 
     /// Ranges of every marker phrase in `text`, left to right, non-overlapping.
-    static func detectMarkers(in text: String) -> [Range<String.Index>] {
+    package static func detectMarkers(in text: String) -> [Range<String.Index>] {
         let ns = text as NSString
         return markerRegex
             .matches(in: text, range: NSRange(location: 0, length: ns.length))
@@ -59,7 +59,7 @@ enum ClipboardPayloadMacro {
 
     /// Replaces every marker phrase with `placeholder`, returning the rewritten
     /// text and the number of markers replaced.
-    static func replaceMarkersWithPlaceholder(in text: String) -> (text: String, count: Int) {
+    package static func replaceMarkersWithPlaceholder(in text: String) -> (text: String, count: Int) {
         let ns = text as NSString
         let matches = markerRegex.matches(
             in: text, range: NSRange(location: 0, length: ns.length)
@@ -87,7 +87,7 @@ enum ClipboardPayloadMacro {
     /// only verifies the placeholder SURVIVED (dedup + at-least-once), so a
     /// model output that duplicated the placeholder (payload pasted twice) or
     /// dropped one of two would otherwise sail through.
-    static func standalonePlaceholderCount(in text: String) -> Int {
+    package static func standalonePlaceholderCount(in text: String) -> Int {
         var count = 0
         var searchRange = text.startIndex..<text.endIndex
         while let found = text.range(of: placeholder, range: searchRange) {
@@ -114,7 +114,7 @@ enum ClipboardPayloadMacro {
     /// single-backtick wrap would break). Fences get a leading/trailing newline
     /// only when the placeholder wasn't already at a line boundary, so the
     /// block always stands on its own lines without doubling blank lines.
-    static func substitutePayload(in text: String, payload: String) -> String {
+    package static func substitutePayload(in text: String, payload: String) -> String {
         guard text.contains(placeholder) else { return text }
 
         // The agent prompt correctly teaches the model to put environment

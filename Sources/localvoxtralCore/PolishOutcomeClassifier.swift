@@ -3,16 +3,16 @@ import Foundation
 /// What a polish reply means for the commit: the placeholder-integrity check
 /// on the model's text, and the status line, message and technical details a
 /// failed request earns. Pure; the strings are what the goldens pin.
-enum PolishOutcomeClassifier {
-    struct Failure: Equatable {
-        let title: String
-        let message: String
-        let technicalDetails: String?
+package enum PolishOutcomeClassifier {
+    package struct Failure: Equatable {
+        package let title: String
+        package let message: String
+        package let technicalDetails: String?
     }
 
     /// The text the overlay commits for a reply, given the grounded text the
     /// request carried.
-    static func committedText(
+    package static func committedText(
         polished: String,
         groundedWorkingText: String,
         clipboardPayload: String?
@@ -29,7 +29,7 @@ enum PolishOutcomeClassifier {
                 )
             if actualPlaceholders != expectedPlaceholders {
                 committedText = groundedWorkingText
-                Log.polishing.warning(
+                CoreLog.polishing.warning(
                     "Clipboard payload macro: polish changed placeholder count (\(expectedPlaceholders, privacy: .public) -> \(actualPlaceholders, privacy: .public)); polish discarded"
                 )
             }
@@ -38,7 +38,7 @@ enum PolishOutcomeClassifier {
     }
 
     /// Nil for the errors the commit path reports only in the log.
-    static func failure(for error: Error, endpointURL: URL) -> Failure? {
+    package static func failure(for error: Error, endpointURL: URL) -> Failure? {
         switch error as? LLMPolishingError {
         case .some(.networkError(let details)):
             return Failure(
@@ -98,7 +98,7 @@ enum PolishOutcomeClassifier {
 
     /// One line for a polish request that outlived its timeout. The overlay commits the
     /// unpolished transcript on any polish failure, so nothing dictated is lost.
-    static func llmPolishingTimeoutMessage(seconds: TimeInterval) -> String {
+    package static func llmPolishingTimeoutMessage(seconds: TimeInterval) -> String {
         "Polishing took longer than \(Int(seconds.rounded())) seconds, so the transcript was not polished."
     }
 
@@ -115,7 +115,7 @@ enum PolishOutcomeClassifier {
     /// The RAW body never appears here — this text reaches the alert and (via
     /// the technical details) `lastError`, which Settings renders as the
     /// one-line failure summary. The body goes to the log.
-    static func llmPolishingRejectionMessage(statusCode: Int, body: String) -> String {
+    package static func llmPolishingRejectionMessage(statusCode: Int, body: String) -> String {
         let reason: String
         switch statusCode {
         case 401, 403:
@@ -145,7 +145,7 @@ enum PolishOutcomeClassifier {
     /// Anything else (HTML, a stack trace, an empty body) yields nil and the
     /// caller falls back to the status alone, rather than pasting bytes into
     /// the UI.
-    static func providerErrorMessage(inBody body: String) -> String? {
+    package static func providerErrorMessage(inBody body: String) -> String? {
         // One line in a popover-sized surface: a provider that answers with a
         // paragraph gets truncated rather than widening the alert.
         let characterLimit = 160
@@ -180,7 +180,7 @@ enum PolishOutcomeClassifier {
     /// Failure details for the alert/`lastError`, naming `endpointURL` — the
     /// endpoint the failing request was actually sent to, captured from the
     /// request's own configuration (Settings may have changed since).
-    static func connectionTechnicalDetails(
+    package static func connectionTechnicalDetails(
         _ details: String,
         endpointURL: URL
     ) -> String {
@@ -194,8 +194,8 @@ enum PolishOutcomeClassifier {
 }
 
 /// Strips credentials, query, and fragment from a URL for safe logging.
-enum URLLogSanitizer {
-    static func sanitized(_ url: URL) -> String {
+package enum URLLogSanitizer {
+    package static func sanitized(_ url: URL) -> String {
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return url.absoluteString
         }
