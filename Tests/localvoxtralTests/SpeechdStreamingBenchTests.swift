@@ -18,6 +18,9 @@ final class SpeechdStreamingBenchTests: XCTestCase {
         let wavPath: String?
         let cacheLimitMB: Int?
         let maxUtteranceSeconds: Int?
+        /// Catalog repo to benchmark. Absent means the catalog default, which
+        /// is what every run measured before a second model existed.
+        let model: String?
     }
 
     private var repoRoot: URL {
@@ -49,7 +52,13 @@ final class SpeechdStreamingBenchTests: XCTestCase {
             return
         }
 
-        let model = SpeechModelCatalog.defaultOption
+        let model = config.model.flatMap(SpeechModelCatalog.option(forRepoID:))
+            ?? SpeechModelCatalog.defaultOption
+        if let requested = config.model, requested != model.repoID {
+            XCTFail("\(requested) is not in SpeechModelCatalog; nothing to benchmark")
+            return
+        }
+        print("BENCH model=\(model.repoID)")
         var arguments = [
             "--model", model.repoID,
             "--model-revision", model.revision,
