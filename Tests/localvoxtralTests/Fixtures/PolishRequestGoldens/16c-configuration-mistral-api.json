@@ -1,0 +1,39 @@
+{
+  "committedText" : "please fix localvoxtral before the release",
+  "configuration" : {
+    "apiKeyLength" : 15,
+    "endpointURL" : "https://api.mistral.ai",
+    "mistralReasoningEffort" : "off",
+    "model" : "mistral-medium-3-5",
+    "passthroughExtraParameters" : false,
+    "requestShape" : "mistral"
+  },
+  "contextPasteboardReads" : 0,
+  "learnedTermsAfterCommit" : [
+
+  ],
+  "payloadPasteboardReads" : 0,
+  "record" : {
+    "commitSucceeded" : true,
+    "model" : "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead",
+    "outputMode" : "overlay_buffer",
+    "polishProfile" : "standard",
+    "polishedText" : "please fix localvoxtral before the release",
+    "polishingDurationSeconds" : 0.01,
+    "provider" : "realtime_api",
+    "rawText" : "please fix local vox trawl before the release",
+    "status" : "completed",
+    "targetAppBundleID" : "com.acme.notes"
+  },
+  "repoVocabularyPipelineRuns" : 0,
+  "request" : {
+    "inputText" : "please fix localvoxtral before the release",
+    "prefersDeepReasoning" : false,
+    "systemPrompt" : "You polish dictated text.",
+    "userPrompts" : [
+      "Clean this up.\n",
+      "Working text:\nplease fix localvoxtral before the release"
+    ]
+  },
+  "statusText" : "Ready"
+}

@@ -228,6 +228,27 @@ A new scenario is a file in `scripts/e2e/scenarios/` (`mode`, `phrase`,
 `min_word_accuracy`), not a new script. Polishing is off in every scenario so
 the score measures the app; model quality belongs to `eval-e2e`.
 
+## Proving a change to the polish path with the request goldens
+
+Polishing is off in the e2e check, so a change between the stop-commit and
+the polish model is proved by `PolishRequestGoldenTests` instead. Each case
+drives `finishStoppedSession` through the shared fakes and pins, as JSON under
+`Tests/localvoxtralTests/Fixtures/PolishRequestGoldens/`, what one commit
+sent (request, configuration) and wrote (session record, committed text,
+error line, pasteboard read counts). The cases cover both prompt profiles,
+the speaker profile, every context source alone and in conflict, the
+clipboard payload macro, a template without the dictionary slot, the three
+backend configurations and every polish failure.
+
+A refactor of that path (#432 steps 5 to 7) leaves every fixture untouched;
+`git diff --stat` of the directory goes in the Proof section. A PR that
+changes what reaches the model deletes the affected fixture, re-runs the
+suite to record it, and explains the new bytes in the PR. From a non-Mac box
+the recorded file lands only on the build host, which cannot send files
+back, so the test also prints it between `POLISH GOLDEN BEGIN/END` lines in
+`.build/last-remote.log`; lift it from there. A mismatch never rewrites a
+fixture.
+
 ## The live herdr lane
 
 `HerdrIntegrationTests` (`remote-build.sh integration-herdr`) is the only
