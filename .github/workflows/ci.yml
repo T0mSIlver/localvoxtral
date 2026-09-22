@@ -250,6 +250,7 @@ jobs:
             ./scripts/ci/test-nightly-version.sh \
             ./scripts/ci/test-prune-nightly-releases.sh \
             ./scripts/ci/test-render-cask.sh \
+            ./scripts/ci/test-restore-mtimes.sh \
             ./scripts/ci/test-watch-checks.sh \
             ./scripts/ci/test-ui-gate-suite-filter.sh
 
@@ -264,16 +265,49 @@ jobs:
           SLUG="$(swift --version | head -1 | tr -cs 'a-zA-Z0-9.' '-' | cut -c1-48)"
           echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
 
-      - name: Cache SwiftPM build
+      - name: Restore SwiftPM build cache
+        id: build_cache
         if: steps.ci_scope.outputs.docs_only != 'true'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build
           # Keyed on the toolchain as well as Package.resolved: the old key
           # (and its bare `swiftpm-macOS-` restore prefix) would happily
           # restore a swift.org-6.2.1-built .build into an Xcode build.
-          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.hosted_toolchain.outputs.slug }}-${{ hashFiles('Package.resolved') }}
-          restore-keys: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.hosted_toolchain.outputs.slug }}-
+          #
+          # The commit SHA is the last component so that every push to main
+          # SAVES a fresh entry (below) and a PR restores the newest main
+          # build through the prefix. The single-key `actions/cache` step
+          # this replaces saved only on a miss, so one entry from weeks ago
+          # served every run and each run had to rebuild what had changed
+          # since — on top of rebuilding everything else, see the next step.
+          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.hosted_toolchain.outputs.slug }}-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+          restore-keys: |
+            swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.hosted_toolchain.outputs.slug }}-${{ hashFiles('Package.resolved') }}-
+            swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.hosted_toolchain.outputs.slug }}-
+
+      - name: Restore tracked-file mtimes from git
+        # Without this the cache above is dead weight: a fresh checkout stamps
+        # every file with the checkout time, swift-driver compares each
+        # source's mtime with the one recorded in the cached build, and every
+        # file of every target recompiles — 437 "Compiling" lines right after
+        # "Cache restored successfully" (run 35708695284, 2026-09-22), about
+        # 150 s of the 242 s unit-test step. Commit times are the same on
+        # every checkout, so with them restored an unchanged file matches its
+        # record and only what a newer commit touched rebuilds. The matched
+        # key ends in the main commit the cache was saved from; every file
+        # whose content differs from that commit is touched to now, so two
+        # branches committing one file in the same second cannot share an
+        # mtime the driver would take for "unchanged" (the script explains).
+        if: steps.ci_scope.outputs.docs_only != 'true'
+        env:
+          MATCHED_KEY: ${{ steps.build_cache.outputs.cache-matched-key }}
+        run: |
+          CACHE_BASE=""
+          if [[ "$MATCHED_KEY" =~ -([0-9a-f]{40})$ ]]; then
+            CACHE_BASE="${BASH_REMATCH[1]}"
+          fi
+          ./scripts/ci/restore-mtimes.sh . "$CACHE_BASE"
 
       - name: Installer asset-resolution regression test (issue #131)
         # Pure bash against a stubbed curl — no network, sub-second.
@@ -332,6 +366,17 @@ jobs:
           path: ${{ runner.temp }}/localvoxtral-unit-tests.log
           if-no-files-found: error
           retention-days: 7
+
+      - name: Save SwiftPM build cache
+        # Main only: a PR restores main's newest entry through the restore
+        # prefix, and saving per PR push would evict main's entries from the
+        # repository's 10 GB cache. `always()` because a red test run still
+        # leaves a complete build worth reusing.
+        if: ${{ always() && github.ref == 'refs/heads/main' && steps.ci_scope.outputs.docs_only != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build
+          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.hosted_toolchain.outputs.slug }}-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
 
       - name: Coverage summary
         # Visibility, not a gate: lets a PR's Proof section cite real coverage
