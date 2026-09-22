@@ -7,12 +7,11 @@
     "passthroughExtraParameters" : false,
     "requestShape" : "openAICompatible"
   },
-  "contextPasteboardReads" : 0,
   "lastError" : "The request timed out. [endpoint: http://127.0.0.1:8080/v1/chat/completions]",
   "learnedTermsRecorded" : [
 
   ],
-  "payloadPasteboardReads" : 0,
+  "pasteboardReads" : 0,
   "record" : {
     "commitSucceeded" : true,
     "model" : "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead",

@@ -320,14 +320,47 @@ final class DictationViewModel {
         /// Built on first use, so a mere permission read never registers
         /// CoreAudio device listeners. Nil is the CoreAudio service.
         var microphone: (() -> any MicrophoneCapturing)?
+        /// The pasteboard the polish context and the payload macro read. Both
+        /// read the one clipboard; a counting stub proves the no-read paths.
+        var pasteboardReader: @MainActor () -> any PasteboardReading
+        /// Where the copy actions write.
+        var pasteboardWriter: (String) -> Void
+        /// The bundle identifier of a running process, for the app the
+        /// overlay commits into.
+        var bundleIdentifier: (pid_t) -> String?
+        /// The center the sleep and terminate observers register on. Nil is
+        /// the default center, registered only when runtime services run; a
+        /// private center is registered on regardless, so a test posts
+        /// through the real wiring without reaching every retained view
+        /// model in the process.
+        var lifecycleNotificationCenter: NotificationCenter?
+        /// The clock a mid-dictation reconnect run (#380) sleeps on.
+        var reconnectSleep: @MainActor (TimeInterval) async -> Void
 
-        init(microphone: (() -> any MicrophoneCapturing)? = nil) {
+        init(
+            microphone: (() -> any MicrophoneCapturing)? = nil,
+            pasteboardReader: @escaping @MainActor () -> any PasteboardReading = { SystemPasteboardReader() },
+            pasteboardWriter: @escaping (String) -> Void = DictationViewModel.writeToSystemPasteboard,
+            bundleIdentifier: @escaping (pid_t) -> String? = {
+                NSRunningApplication(processIdentifier: $0)?.bundleIdentifier
+            },
+            lifecycleNotificationCenter: NotificationCenter? = nil,
+            reconnectSleep: @escaping @MainActor (TimeInterval) async -> Void =
+                DictationViewModel.sleepForReconnect
+        ) {
             self.microphone = microphone
+            self.pasteboardReader = pasteboardReader
+            self.pasteboardWriter = pasteboardWriter
+            self.bundleIdentifier = bundleIdentifier
+            self.lifecycleNotificationCenter = lifecycleNotificationCenter
+            self.reconnectSleep = reconnectSleep
         }
     }
 
+    /// `var` so a test can replace one collaborator after construction; the
+    /// lifecycle center is read at init and the rest when a session uses them.
     @ObservationIgnored
-    let dependencies: Dependencies
+    var dependencies: Dependencies
 
     // Services — internal so extension files can access them.
     @ObservationIgnored
@@ -677,28 +710,6 @@ final class DictationViewModel {
     var debugDeltaLogSink: ((DebugRealtimeDeltaLogRecord) -> Void)?
     @ObservationIgnored
     var debugSavedSessionRecordSink: ((DictationSessionRecord) -> Void)?
-    /// Test seam: overrides the commit-time target bundle ID resolution
-    /// (`resolveTargetAppBundleID`), which otherwise reads a live
-    /// `NSRunningApplication` from the overlay commit PID — unreachable in unit
-    /// tests. Lets profile-selection tests drive a terminal vs non-terminal
-    /// captured target deterministically.
-    @ObservationIgnored
-    var debugResolveTargetAppBundleIDOverride: (() -> String?)?
-    /// Test seam: injects the pasteboard the polish-context reader consults,
-    /// replacing `SystemPasteboardReader` over `NSPasteboard.general` (global /
-    /// unavailable in unit tests). Only resolved when the clipboard-context
-    /// setting is on AND the polishing endpoint is permitted, so a stub whose
-    /// read methods were never called proves the no-read privacy guarantee for
-    /// both the disabled toggle and a remote endpoint.
-    @ObservationIgnored
-    var debugPolishContextPasteboardReaderOverride: (() -> any PasteboardReading)?
-    /// Test seam: injects the pasteboard the spoken clipboard-paste macro reads,
-    /// replacing `SystemPasteboardReader`. Only resolved when the macro setting
-    /// is on AND a marker phrase is present, so a stub whose read methods were
-    /// never called proves the no-read guarantee when the setting is off or no
-    /// marker was spoken.
-    @ObservationIgnored
-    var debugClipboardPayloadPasteboardReaderOverride: (() -> any PasteboardReading)?
     /// Test seam: replaces the whole AX-title/process-cwd -> git-index -> match
     /// pipeline of
     /// `repoVocabularyGroundingIfEnabled` with a closure returning the grounding for
@@ -750,23 +761,12 @@ final class DictationViewModel {
     /// guessing with `Task.yield()`.
     @ObservationIgnored
     var debugManagedStatusMirrorEventSink: (() -> Void)?
-    /// Test seam: replaces the `NSPasteboard.general` write used by the copy
-    /// actions (`copyLatestSegment`, `copyRawTranscript`) so tests assert what
-    /// gets copied without a pasteboard server or clobbering the host clipboard.
     #if DEBUG
-    @ObservationIgnored
-    var debugPasteboardWriteOverride: ((String) -> Void)?
     /// Test seam: awaited by `beginDictationSession` after its capture awaits
     /// and immediately before the socket opens — the one window in which a
     /// real session can observe Settings changing under it.
     @ObservationIgnored
     var debugBeforeConnectHookForTesting: (@MainActor () async -> Void)?
-    /// Test seam: the clock a mid-dictation reconnect run (#380) sleeps on.
-    /// Set it and a run started by a real `.disconnected` event advances only
-    /// when the test says so — the reconnect adds no wall-clock timer of its
-    /// own, and a test can land a stop inside an attempt.
-    @ObservationIgnored
-    var debugReconnectSleepOverride: (@MainActor (TimeInterval) async -> Void)?
     #endif
     @ObservationIgnored
     var debugHasRequestedStartupPermissions: Bool { hasRequestedStartupPermissions }
@@ -1004,7 +1004,7 @@ final class DictationViewModel {
                 }
             )
             refreshMicrophoneInputs()
-            registerLifecycleObservers()
+            registerLifecycleObservers(on: dependencies.lifecycleNotificationCenter ?? .default)
             requestStartupPermissionsIfNeeded()
             importSpeakerTermsFromReplacementDictionaryIfNeeded()
             // Subscribe BEFORE the launch warmup below so the very first
@@ -1024,6 +1024,8 @@ final class DictationViewModel {
             polishPromptWarmupCoordinator = promptWarmup
             promptWarmup.observe(self.backendManager.statusUpdates)
             engines.warmUpManagedBackendsAtLaunchIfNeeded()
+        } else if let center = dependencies.lifecycleNotificationCenter {
+            registerLifecycleObservers(on: center)
         }
     }
 
@@ -1069,20 +1071,6 @@ final class DictationViewModel {
     }
 
     // MARK: - Lifecycle Observers
-
-    private func registerLifecycleObservers() {
-        registerLifecycleObservers(on: .default)
-    }
-
-    #if DEBUG
-    /// Test seam: registers the REAL lifecycle observers on a private center,
-    /// so a suite can post `willTerminateNotification` through the actual
-    /// wiring without broadcasting to every retained view model in the
-    /// process.
-    func debugRegisterLifecycleObservers(on center: NotificationCenter) {
-        registerLifecycleObservers(on: center)
-    }
-    #endif
 
     private func registerLifecycleObservers(on nc: NotificationCenter) {
 
@@ -1995,16 +1983,14 @@ final class DictationViewModel {
         statusText = "Raw transcript copied."
     }
 
-    /// Single pasteboard-write seam. In DEBUG a test can substitute the write to
-    /// avoid touching (and clobbering) `NSPasteboard.general` — headless CI has
-    /// no pasteboard server, and clobbering the host clipboard is antisocial.
     private func writeToPasteboard(_ text: String) {
-        #if DEBUG
-        if let override = debugPasteboardWriteOverride {
-            override(text)
-            return
-        }
-        #endif
+        dependencies.pasteboardWriter(text)
+    }
+
+    /// The production `Dependencies.pasteboardWriter`: the general pasteboard,
+    /// which a test never reaches (headless CI has no pasteboard server, and
+    /// clobbering the host clipboard is antisocial).
+    nonisolated static func writeToSystemPasteboard(_ text: String) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)

@@ -498,7 +498,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         )
         viewModel.appConfigStore = configStore
         viewModel.llmPolishingService = service
-        viewModel.debugResolveTargetAppBundleIDOverride = {
+        viewModel.stubCommitTarget {
             Support.polishTargetBundleID(forStratum: stratumName)
         }
         // Never the runner's real pasteboard: the polish-failure alert is also
@@ -513,12 +513,12 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                 // fires is exactly what the case scores.
                 settings.clipboardPayloadMacroEnabled = true
                 let payload = features.clipboard
-                viewModel.debugClipboardPayloadPasteboardReaderOverride = {
+                viewModel.dependencies.pasteboardReader = {
                     PasteboardStub(string: payload)
                 }
             } else if let clipboard = features.clipboard {
                 settings.polishClipboardContextEnabled = true
-                viewModel.debugPolishContextPasteboardReaderOverride = {
+                viewModel.dependencies.pasteboardReader = {
                     PasteboardStub(string: clipboard)
                 }
             }

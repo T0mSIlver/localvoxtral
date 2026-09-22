@@ -71,10 +71,9 @@ final class PolishRequestGoldenTests: XCTestCase {
         var committedText: String
         var statusText: String
         var lastError: String?
-        /// How often the clipboard was read for context and for the payload
+        /// How often the clipboard was read, for context or for the payload
         /// macro. Zero is the privacy guarantee two of the cases exist for.
-        var contextPasteboardReads: Int
-        var payloadPasteboardReads: Int
+        var pasteboardReads: Int
         /// How often the repo vocabulary pipeline ran (the seam call count).
         var repoVocabularyPipelineRuns: Int
         /// The terms the learned-term store holds for the project the commit
@@ -103,9 +102,10 @@ final class PolishRequestGoldenTests: XCTestCase {
         var replacementDictionaryEnabled = true
         var clipboardContextEnabled = false
         var trustedEndpointEnabled = false
-        var contextPasteboardText: String? = nil
+        /// What the clipboard holds; the context reader and the payload
+        /// macro read the same one.
+        var clipboardText: String? = nil
         var payloadMacroEnabled = false
-        var payloadPasteboardText: String? = nil
         var terminalScreenContextEnabled = false
         var screenCapture: TerminalScreenCapture? = nil
         var rawScreenAttachmentAuthorized = false
@@ -184,7 +184,7 @@ final class PolishRequestGoldenTests: XCTestCase {
         var scenario = Scenario()
         scenario.transcript = "fix the user session manager refresh token path"
         scenario.clipboardContextEnabled = true
-        scenario.contextPasteboardText =
+        scenario.clipboardText =
             "UserSessionManager.swift handles the refresh token"
         try await assertGolden("05-clipboard-context-loopback", scenario)
     }
@@ -194,7 +194,7 @@ final class PolishRequestGoldenTests: XCTestCase {
         scenario.transcript = "open use auth dot ts and fix the import"
         scenario.targetBundleID = "com.apple.Terminal"
         scenario.clipboardContextEnabled = true
-        scenario.contextPasteboardText = "see use_auth.ts for the hook"
+        scenario.clipboardText = "see use_auth.ts for the hook"
         try await assertGolden("05b-clipboard-vocabulary-grounded", scenario)
     }
 
@@ -203,7 +203,7 @@ final class PolishRequestGoldenTests: XCTestCase {
         scenario.transcript = "fix the user session manager refresh token path"
         scenario.endpointURL = "https://api.example.com/v1/chat/completions"
         scenario.clipboardContextEnabled = true
-        scenario.contextPasteboardText =
+        scenario.clipboardText =
             "UserSessionManager.swift handles the refresh token"
         try await assertGolden("06-clipboard-context-remote-untrusted", scenario)
     }
@@ -212,7 +212,7 @@ final class PolishRequestGoldenTests: XCTestCase {
         var scenario = Scenario()
         scenario.transcript = "here is the error paste clipboard end"
         scenario.payloadMacroEnabled = true
-        scenario.payloadPasteboardText =
+        scenario.clipboardText =
             "Traceback (most recent call last):\n  File \"app.py\", line 42\nValueError: boom"
         try await assertGolden("07-clipboard-payload-macro", scenario)
     }
@@ -290,7 +290,7 @@ final class PolishRequestGoldenTests: XCTestCase {
             isFallbackOnly: false
         )
         scenario.clipboardContextEnabled = true
-        scenario.contextPasteboardText = "see use_auth.ts for the hook"
+        scenario.clipboardText = "see use_auth.ts for the hook"
         try await assertGolden("14-conflict-abstains", scenario)
     }
 
@@ -430,17 +430,15 @@ final class PolishRequestGoldenTests: XCTestCase {
             )
         )
         viewModel.llmPolishingService = service
-        viewModel.debugResolveTargetAppBundleIDOverride = { scenario.targetBundleID }
+        viewModel.stubCommitTarget { scenario.targetBundleID }
         // The failure cases present a real modal alert when NSApp exists; the
         // flag makes the presenter a no-op (AGENTS.md). `lastError` is set
         // before that gate.
         viewModel.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
 
-        let contextPasteboard = PasteboardStub(string: scenario.contextPasteboardText)
-        viewModel.debugPolishContextPasteboardReaderOverride = { contextPasteboard }
-        let payloadPasteboard = PasteboardStub(string: scenario.payloadPasteboardText)
-        viewModel.debugClipboardPayloadPasteboardReaderOverride = { payloadPasteboard }
+        let pasteboard = PasteboardStub(string: scenario.clipboardText)
+        viewModel.dependencies.pasteboardReader = { pasteboard }
 
         final class Counter { var runs = 0 }
         let pipelineRuns = Counter()
@@ -517,8 +515,7 @@ final class PolishRequestGoldenTests: XCTestCase {
             committedText: viewModel.currentDictationEventText,
             statusText: viewModel.statusText,
             lastError: viewModel.lastError,
-            contextPasteboardReads: contextPasteboard.stringCallCount,
-            payloadPasteboardReads: payloadPasteboard.stringCallCount,
+            pasteboardReads: pasteboard.stringCallCount,
             repoVocabularyPipelineRuns: pipelineRuns.runs,
             learnedTermsRecorded: learnedTerms
         )

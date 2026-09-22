@@ -126,7 +126,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         let harness = try makeHarness(dogfoodArmed: true)
         harness.viewModel.settings.polishClipboardContextEnabled = true
         harness.viewModel.settings.repoVocabularyEnabled = true
-        harness.viewModel.debugPolishContextPasteboardReaderOverride = {
+        harness.viewModel.dependencies.pasteboardReader = {
             WiringPasteboardStub(text: "error in PolishContextBudget.swift line 40")
         }
         harness.viewModel.debugRepoVocabularyEntriesOverride = { _ in
@@ -208,7 +208,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         let harness = try makeHarness(dogfoodArmed: true)
         harness.viewModel.settings.polishClipboardContextEnabled = true
         harness.viewModel.settings.repoVocabularyEnabled = true
-        harness.viewModel.debugPolishContextPasteboardReaderOverride = {
+        harness.viewModel.dependencies.pasteboardReader = {
             WiringPasteboardStub(text: "clipboard text")
         }
         harness.viewModel.debugRepoVocabularyPipelineOverride = { _ in
@@ -235,7 +235,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         let harness = try makeHarness(dogfoodArmed: true)
         harness.viewModel.settings.polishClipboardContextEnabled = true
         harness.viewModel.settings.repoVocabularyEnabled = true
-        harness.viewModel.debugPolishContextPasteboardReaderOverride = {
+        harness.viewModel.dependencies.pasteboardReader = {
             WiringPasteboardStub(text: "clipboard text")
         }
         harness.viewModel.debugRepoVocabularyPipelineOverride = { _ in
@@ -402,7 +402,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         let harness = try makeHarness(dogfoodArmed: true, editSignal: signals)
         harness.viewModel.settings.clipboardPayloadMacroEnabled = true
         let payload = (0..<100).map { "word\($0)" }.joined(separator: " ")
-        harness.viewModel.debugClipboardPayloadPasteboardReaderOverride = {
+        harness.viewModel.dependencies.pasteboardReader = {
             WiringPasteboardStub(text: payload)
         }
         // The polish stub returns text without the placeholder, so the
@@ -442,9 +442,8 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     /// view model in the suite.
     func testWillTerminateNotificationFlushesTheOpenWatchInline() async throws {
         let signals = EditSignalHarness()
-        let harness = try makeHarness(dogfoodArmed: true, editSignal: signals)
         let center = NotificationCenter()
-        harness.viewModel.debugRegisterLifecycleObservers(on: center)
+        let harness = try makeHarness(dogfoodArmed: true, editSignal: signals, lifecycleCenter: center)
 
         harness.viewModel.finishStoppedSession(promotePendingSegment: false)
         await harness.viewModel.polishAndCommitTask?.value
@@ -654,7 +653,8 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         dogfoodArmed: Bool,
         blockCaptureDirectory: Bool = false,
         editSignal: EditSignalHarness? = nil,
-        commitOutcome: OverlayBufferCommitOutcome = .succeeded
+        commitOutcome: OverlayBufferCommitOutcome = .succeeded,
+        lifecycleCenter: NotificationCenter? = nil
     ) throws -> Harness {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = true
@@ -680,7 +680,8 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(lifecycleNotificationCenter: lifecycleCenter)
         )
         viewModel.appConfigStore = MockAppConfigStore()
         viewModel.llmPolishingService = FakePolishingService(returning: "polished output text", durationSeconds: 0.25)

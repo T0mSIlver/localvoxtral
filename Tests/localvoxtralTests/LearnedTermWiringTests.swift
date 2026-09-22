@@ -33,7 +33,7 @@ final class LearnedTermWiringTests: XCTestCase {
             agentPromptTemplates: template
         )
         viewModel.llmPolishingService = service
-        viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
+        viewModel.stubCommitTarget { "com.apple.Terminal" }
         viewModel.debugRepoVocabularyEntriesOverride = { _ in outcome }
         viewModel.debugRepoVocabularyRootOverride = repositoryRoot
         let store = LearnedTermStore(fileURL: nil)

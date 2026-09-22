@@ -1833,13 +1833,8 @@ extension DictationViewModel {
     }
 
     func resolveTargetAppBundleID() -> String? {
-        #if DEBUG
-        if let override = debugResolveTargetAppBundleIDOverride {
-            return override()
-        }
-        #endif
         guard let pid = overlayBufferCoordinator.commitTargetAppPID else { return nil }
-        return NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+        return dependencies.bundleIdentifier(pid)
     }
 
     /// Reads a capped clipboard excerpt for polish grounding, but ONLY when the
@@ -1861,17 +1856,8 @@ extension DictationViewModel {
             return nil
         }
         return PolishContextClipboardReader.readClipboardContext(
-            from: resolvePolishContextPasteboardReader()
+            from: dependencies.pasteboardReader()
         )
-    }
-
-    private func resolvePolishContextPasteboardReader() -> any PasteboardReading {
-        #if DEBUG
-        if let override = debugPolishContextPasteboardReaderOverride {
-            return override()
-        }
-        #endif
-        return SystemPasteboardReader()
     }
 
     /// Result of the spoken clipboard-paste macro over the (replacement-applied)
@@ -1900,7 +1886,7 @@ extension DictationViewModel {
             return ClipboardPayloadMacroOutcome(placeholderText: text, payload: nil, summary: nil)
         }
         guard let payload = PolishContextClipboardReader.readableSanitizedString(
-            from: resolveClipboardPayloadPasteboardReader()
+            from: dependencies.pasteboardReader()
         ) else {
             Log.polishing.info(
                 "Clipboard payload macro: marker spoken but clipboard unreadable; transcript left unchanged"
@@ -2192,14 +2178,7 @@ extension DictationViewModel {
         }
     }
 
-    private func resolveClipboardPayloadPasteboardReader() -> any PasteboardReading {
-        #if DEBUG
-        if let override = debugClipboardPayloadPasteboardReaderOverride {
-            return override()
-        }
-        #endif
-        return SystemPasteboardReader()
-    }
+
 
     /// Polishing prompt profile for a stop-commit: `.agent` iff the user has the
     /// agent profile enabled AND the captured target bundle ID is terminal-like
