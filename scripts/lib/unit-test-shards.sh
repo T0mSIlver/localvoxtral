@@ -52,6 +52,9 @@ lv_unit_suite_seconds() {
 # line) and prints one line per shard: "<test count> <class> <class> …".
 # Lines matching any extended regex in LV_SHARD_SKIP_PATTERNS (space
 # separated, the same names the run passes to --skip) are dropped first.
+# Any other line holding a "/" is a test id the shards cannot count (a Swift
+# Testing test: a free function, a nested suite, "name()"), so the plan fails
+# naming it rather than leave that test out.
 #   $1  number of shards
 #   $2  weights file ("<seconds> <class>" per line); may be missing
 lv_plan_unit_shards() {
@@ -63,9 +66,14 @@ lv_plan_unit_shards() {
         if (split(line, field, " ") == 2) { seconds[field[2]] = field[1] + 0; known_total += field[1] }
       }
     }
-    /^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\/[^ ]+$/ {
+    /\// {
       for (i = 1; i <= skip_count; i++) {
         if (skip[i] != "" && $0 ~ skip[i]) next
+      }
+      if ($0 !~ /^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\/[A-Za-z_][A-Za-z0-9_]*$/) {
+        print "not an XCTest test id, which the shards cannot run and count: " $0 > "/dev/stderr"
+        failed = 1
+        exit 4
       }
       split($0, parts, "/")
       class = parts[1]
@@ -75,6 +83,7 @@ lv_plan_unit_shards() {
       test_total++
     }
     END {
+      if (failed) exit 4
       if (class_count == 0) exit 3
       # A class the weights file does not know yet is weighed at the known
       # classes average cost per test.
@@ -169,8 +178,8 @@ lv_run_unit_shards() {
     return 1
   fi
   if ! LV_SHARD_SKIP_PATTERNS="$skip_names" lv_plan_unit_shards "$shards" "$LV_SHARD_WEIGHTS" \
-      <"$work/list" >"$work/plan"; then
-    { echo "==> The listing holds no test classes:"; cat "$work/list"; } | tee -a "$log"
+      <"$work/list" >"$work/plan" 2>"$work/plan.err"; then
+    { echo "==> No shard plan from this listing:"; cat "$work/plan.err" "$work/list"; } | tee -a "$log"
     rm -rf "$work"
     return 1
   fi
@@ -236,7 +245,8 @@ lv_run_unit_shards() {
 }
 
 # Background job: one shard's `swift test`, its output and "<exit> <seconds>".
-# A TERM reaches the swift child too, which a plain subshell would orphan.
+# A TERM reaches `swift test` too: `lv_shard_swift &` is a subshell, so the
+# swift process is its child, which killing the subshell alone would orphan.
 #
 # --skip-build still opens SwiftPM's build database, and a sibling shard that
 # holds it at that moment makes this one exit before running any test ("database
@@ -249,7 +259,7 @@ lv_run_one_unit_shard() {
     lv_shard_swift test --skip-build --ignore-lock "$@" >"$work/$index.attempt" 2>&1 &
     child=$!
     # shellcheck disable=SC2064
-    trap "kill $child 2>/dev/null; cat '$work/$index.attempt' >>'$work/$index.log'; exit 143" TERM INT HUP
+    trap "pkill -TERM -P $child 2>/dev/null; kill $child 2>/dev/null; wait $child 2>/dev/null; cat '$work/$index.attempt' >>'$work/$index.log'; exit 143" TERM INT HUP
     wait "$child"
     shard_status=$?
     cat "$work/$index.attempt" >>"$work/$index.log"

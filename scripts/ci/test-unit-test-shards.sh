@@ -51,6 +51,20 @@ if printf 'no tests here\n' | lv_plan_unit_shards 2 "$TMP_DIR/weights" >/dev/nul
   fail "a listing with no classes must fail"
 fi
 
+# A Swift Testing id the shards could neither filter nor count fails the plan.
+for id in 'Mod/freeFunction()' 'Mod.Suite/test()' 'Mod.Outer/Inner/test()'; do
+  if printf 'Mod.Alpha/testOne\n%s\n' "$id" \
+      | lv_plan_unit_shards 2 "$TMP_DIR/weights" >/dev/null 2>"$TMP_DIR/plan.err"; then
+    fail "the plan accepted a test id it cannot count: $id"
+  fi
+  grep -qF "not an XCTest test id, which the shards cannot run and count: $id" "$TMP_DIR/plan.err" \
+    || fail "no reason given for $id: $(cat "$TMP_DIR/plan.err")"
+done
+# ... unless the run skips it anyway.
+printf 'Mod.Alpha/testOne\nMod/skippedFree()\n' \
+  | LV_SHARD_SKIP_PATTERNS="skippedFree" lv_plan_unit_shards 2 "$TMP_DIR/weights" >/dev/null \
+  || fail "a skipped Swift Testing id must not fail the plan"
+
 # --- weights from a log -----------------------------------------------------
 
 cat >"$TMP_DIR/xctest.log" <<'LOG'
@@ -140,5 +154,47 @@ rm -f "$TMP_DIR/locked-once"
 STUB_LOCK_ONCE=1 lv_run_unit_shards 2 "$log" Skipped >/dev/null \
   || fail "a shard that met a locked build database must be retried: $(cat "$log")"
 grep -q "build database was locked by another shard; retrying" "$log" || fail "retry not logged"
+
+# TERM mid-run: each shard's swift process goes too, not only the subshell
+# that started it, and the log keeps what the shards printed so far.
+cat >"$TMP_DIR/hang-list" <<'LIST'
+Mod.Alpha/testOne
+Mod.Beta/testOne
+LIST
+cat >"$TMP_DIR/term-run.sh" <<SCRIPT
+#!/usr/bin/env bash
+. "$ROOT_DIR/scripts/lib/unit-test-shards.sh"
+lv_shard_swift() {
+  case "\$1 \${2:-}" in
+    "build --build-tests") return 0 ;;
+    "test list") cat "$TMP_DIR/hang-list"; return 0 ;;
+  esac
+  echo "shard output before the hang"
+  "$TMP_DIR/fake-swift" &
+  echo "\$!" >>"$TMP_DIR/swift-pids"
+  wait
+}
+LV_SHARD_WEIGHTS=/dev/null lv_run_unit_shards 2 "$TMP_DIR/term.log"
+SCRIPT
+printf '#!/usr/bin/env bash\nexec sleep 30\n' >"$TMP_DIR/fake-swift"
+chmod +x "$TMP_DIR/term-run.sh" "$TMP_DIR/fake-swift"
+"$TMP_DIR/term-run.sh" >/dev/null 2>&1 &
+runner=$!
+waited=0
+until [[ -f "$TMP_DIR/swift-pids" && "$(wc -l <"$TMP_DIR/swift-pids")" -ge 2 ]]; do
+  (( waited++ < 100 )) || fail "the shards never started"
+  sleep 0.1
+done
+kill -TERM "$runner"
+wait "$runner" 2>/dev/null || true
+while read -r pid; do
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null
+    fail "a shard's swift process outlived TERM"
+  fi
+done <"$TMP_DIR/swift-pids"
+[[ "$(grep -c '^==> Shard [12]/2: INTERRUPTED' "$TMP_DIR/term.log")" == "2" ]] \
+  || fail "interrupted shards missing from the log: $(cat "$TMP_DIR/term.log")"
+grep -q "shard output before the hang" "$TMP_DIR/term.log" || fail "partial shard output lost"
 
 echo "PASS: unit test shards"
