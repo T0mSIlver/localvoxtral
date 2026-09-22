@@ -582,14 +582,14 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.debugHandleDictationShortcutPressForTesting()
+        viewModel.shortcuts.handleDictationShortcutPress()
         await backendManager.waitUntilEnsureStarted()
 
         XCTAssertTrue(viewModel.isConnectingRealtimeSession)
         XCTAssertNil(viewModel.sessionProvider)
 
         viewModel.engines.applyDictationBackendModeChange(.externalURL)
-        viewModel.debugHandleDictationShortcutReleaseForTesting()
+        viewModel.shortcuts.handleDictationShortcutRelease()
         backendManager.resumeEnsure()
         await viewModel.managedStartupTask?.value
         await Task.yield()
@@ -958,7 +958,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.updateOverlayBufferShortcut(nil)
+        viewModel.shortcuts.updateOverlayBufferShortcut(nil)
         await backendManager.waitForStopPolishingCallCount(1)
 
         XCTAssertEqual(backendManager.stopPolishingCallCount, 1)

@@ -1,31 +1,100 @@
 import Foundation
 
-// The keyboard-trigger half of the view model, moved here verbatim from
-// DictationViewModel.swift ahead of its extraction into
-// `ShortcutController` (#432 step 3): the push-to-talk, toggle and
-// modifier-only gestures, hotkey registration and its retry, and the two
-// shortcut slots. Ten members drop `private` so this file can reach them.
-extension DictationViewModel {
+/// What the keyboard triggers ask of the dictation session they drive.
+/// `DictationViewModel` adopts it; a test fake records the calls.
+@MainActor
+protocol ShortcutSessionControlling: AnyObject {
+    var isDictating: Bool { get }
+    var isConnectingRealtimeSession: Bool { get }
+    var isFinalizingStop: Bool { get }
+    var isAwaitingMicrophonePermission: Bool { get }
+    var isAccessibilityTrusted: Bool { get }
+    var statusText: String { get set }
+    var lastError: String? { get set }
+    var currentStatusToken: DictationViewModel.StatusToken { get }
+    var currentErrorToken: DictationViewModel.ErrorToken? { get }
+    func startDictation(outputMode: DictationOutputMode?)
+    func endDictation(reason: String)
+    func toggleDictation(outputMode: DictationOutputMode?)
+    func clearSecureInputRefusalSignalsIfAttemptEnded()
+    func overlayReachabilityDidChange(wasReachable: Bool)
+}
+
+/// The keyboard triggers: the push-to-talk, toggle and modifier-only
+/// gestures, hotkey registration and its retry, and the two shortcut slots.
+/// Owned by `DictationViewModel` and reached as `viewModel.shortcuts`. It
+/// drives the session through `ShortcutSessionControlling`, installed by
+/// the owner once it exists; until then, and after the owner is gone, a
+/// gesture lands on an inert session and is logged.
+@MainActor
+final class ShortcutController {
+    let settings: SettingsStore
+    let hotKeyManager = HotKeyManager()
+
+    /// Held weakly: the owner holds this controller, and a cycle would keep
+    /// the hotkeys registered past the owner's deinit.
+    private weak var owner: (any ShortcutSessionControlling)?
+    private var session: any ShortcutSessionControlling { owner ?? Self.detached }
+    private static let detached = DetachedShortcutSession()
+
+    // Tracks physical key state so repeat key-down events do not retrigger actions.
+    var isPushToTalkShortcutHeld = false
+    // True only when a start attempt was initiated by push-to-talk and may still need
+    // to be cancelled if the user releases before dictation actually begins.
+    var hasActivePushToTalkShortcutSession = false
+    // True when a modifier-only hold gesture started dictation (push-to-talk semantics).
+    var isModifierOnlyHoldActive = false
+
+    /// True while the user is still physically holding the dictation
+    /// shortcut/modifier — a release event is still coming, and it owns
+    /// ending the attempt's refusal signals. The managed-startup path in
+    /// DictationViewModel+Session.swift consults this: a secure-input
+    /// refusal that fires after backend boot may land with no gesture-end
+    /// event left to clear it.
+    var isDictationAttemptGestureActive: Bool { isPushToTalkShortcutHeld }
+
+    init(settings: SettingsStore) {
+        self.settings = settings
+        hotKeyManager.onPressWithMode = { [weak self] mode in self?.handleDictationShortcutPress(mode: mode) }
+        hotKeyManager.onPress = { [weak self] in self?.handleDictationShortcutPress() }
+        hotKeyManager.onRelease = { [weak self] in self?.handleDictationShortcutRelease() }
+        hotKeyManager.onHoldStart = { [weak self] in self?.handleModifierOnlyHoldStart() }
+        hotKeyManager.onModifierOnlyTap = { [weak self] mode in self?.handleModifierOnlyTap(mode: mode) }
+    }
+
+    func install(session: any ShortcutSessionControlling) {
+        owner = session
+    }
+
+    /// The launch registration; the owner calls it once runtime services run.
+    func registerAtLaunch() {
+        registerCurrentHotKeys()
+    }
+
+    func unregister() {
+        hotKeyManager.unregister()
+    }
+
     func handleDictationShortcutPress(mode: DictationOutputMode? = nil) {
         switch settings.dictationShortcutMode {
         case .toggle:
             hasActivePushToTalkShortcutSession = false
-            if isDictating {
-                stopDictation(reason: "manual toggle")
-            } else if isConnectingRealtimeSession {
-                statusText = StatusStrings.connectingRealtimeBackend
-            } else if isFinalizingStop {
-                statusText = StatusStrings.finalizingPreviousDictation
+            if session.isDictating {
+                session.endDictation(reason: "manual toggle")
+            } else if session.isConnectingRealtimeSession {
+                session.statusText = DictationViewModel.StatusStrings.connectingRealtimeBackend
+            } else if session.isFinalizingStop {
+                session.statusText = DictationViewModel.StatusStrings.finalizingPreviousDictation
             } else {
-                startDictation(outputMode: mode)
+                session.startDictation(outputMode: mode)
             }
         case .pushToTalk:
             guard !isPushToTalkShortcutHeld else { return }
             isPushToTalkShortcutHeld = true
-            guard !isDictating, !isConnectingRealtimeSession, !isFinalizingStop else { return }
+            guard !session.isDictating, !session.isConnectingRealtimeSession, !session.isFinalizingStop else { return }
             hasActivePushToTalkShortcutSession = true
-            startDictation(outputMode: mode)
-            if !isDictating, !isConnectingRealtimeSession, !isAwaitingMicrophonePermission {
+            session.startDictation(outputMode: mode)
+            if !session.isDictating, !session.isConnectingRealtimeSession, !session.isAwaitingMicrophonePermission {
                 hasActivePushToTalkShortcutSession = false
             }
         }
@@ -38,18 +107,18 @@ extension DictationViewModel {
         // warning icon must end with it (owner field feedback on #90). The
         // popover line stays as the explanation until the next start
         // re-samples.
-        clearSecureInputRefusalSignalsIfAttemptEnded()
+        session.clearSecureInputRefusalSignalsIfAttemptEnded()
         // Modifier-only hold release
         if isModifierOnlyHoldActive {
             isModifierOnlyHoldActive = false
             isPushToTalkShortcutHeld = false
-            if isDictating {
-                stopDictation(reason: "modifier hold release")
-            } else if isConnectingRealtimeSession {
-                statusText = StatusStrings.connectingRealtimeBackend
+            if session.isDictating {
+                session.endDictation(reason: "modifier hold release")
+            } else if session.isConnectingRealtimeSession {
+                session.statusText = DictationViewModel.StatusStrings.connectingRealtimeBackend
                 return
-            } else if isAwaitingMicrophonePermission {
-                statusText = StatusStrings.ready
+            } else if session.isAwaitingMicrophonePermission {
+                session.statusText = DictationViewModel.StatusStrings.ready
                 return
             }
             clearPushToTalkShortcutSessionAttempt()
@@ -65,17 +134,17 @@ extension DictationViewModel {
         }
         guard hasActivePushToTalkShortcutSession else { return }
 
-        if isConnectingRealtimeSession {
+        if session.isConnectingRealtimeSession {
             // Keep the connection attempt alive so timeout/errors surface to the user
             // instead of silently resetting to Ready on key release.
-            statusText = StatusStrings.connectingRealtimeBackend
+            session.statusText = DictationViewModel.StatusStrings.connectingRealtimeBackend
             return
-        } else if isDictating {
-            stopDictation(reason: "push-to-talk release")
-        } else if isAwaitingMicrophonePermission {
+        } else if session.isDictating {
+            session.endDictation(reason: "push-to-talk release")
+        } else if session.isAwaitingMicrophonePermission {
             // Keep the pending-session flag until the permission callback resolves so we can
             // suppress starting if the key was released before permission was granted.
-            statusText = StatusStrings.ready
+            session.statusText = DictationViewModel.StatusStrings.ready
             return
         }
         clearPushToTalkShortcutSessionAttempt()
@@ -83,12 +152,12 @@ extension DictationViewModel {
 
     /// Modifier-only hold gesture started — use push-to-talk semantics with live auto-paste.
     func handleModifierOnlyHoldStart() {
-        guard !isDictating, !isConnectingRealtimeSession, !isFinalizingStop else { return }
+        guard !session.isDictating, !session.isConnectingRealtimeSession, !session.isFinalizingStop else { return }
         isModifierOnlyHoldActive = true
         isPushToTalkShortcutHeld = true
         hasActivePushToTalkShortcutSession = true
-        startDictation(outputMode: .liveAutoPaste)
-        if !isDictating, !isConnectingRealtimeSession, !isAwaitingMicrophonePermission {
+        session.startDictation(outputMode: .liveAutoPaste)
+        if !session.isDictating, !session.isConnectingRealtimeSession, !session.isAwaitingMicrophonePermission {
             hasActivePushToTalkShortcutSession = false
             isModifierOnlyHoldActive = false
             isPushToTalkShortcutHeld = false
@@ -99,7 +168,7 @@ extension DictationViewModel {
     /// shortcut behavior: taps have no release event, so routing them through
     /// push-to-talk semantics latches dictation on with no way to stop it.
     func handleModifierOnlyTap(mode: DictationOutputMode) {
-        toggleDictation(outputMode: mode)
+        session.toggleDictation(outputMode: mode)
     }
 
     func shouldCancelPushToTalkStartAfterConnect() -> Bool {
@@ -116,16 +185,16 @@ extension DictationViewModel {
     func applyHotKeySettingsChange() {
         switch registerCurrentHotKeys() {
         case .success:
-            if !isDictating, !isFinalizingStop,
-               (currentStatusToken == .hotKeyHandlerRegistrationFailure
-                || currentStatusToken == .hotKeyShortcutUnavailable)
+            if !session.isDictating, !session.isFinalizingStop,
+               (session.currentStatusToken == .hotKeyHandlerRegistrationFailure
+                || session.currentStatusToken == .hotKeyShortcutUnavailable)
             {
-                statusText = StatusStrings.ready
+                session.statusText = DictationViewModel.StatusStrings.ready
             }
-            if currentErrorToken == .hotKeyShortcutUnavailable
-                || currentErrorToken == .hotKeyHandlerRegistrationFailure
+            if session.currentErrorToken == .hotKeyShortcutUnavailable
+                || session.currentErrorToken == .hotKeyHandlerRegistrationFailure
             {
-                lastError = nil
+                session.lastError = nil
             }
         case .failure(let reason):
             applyHotKeyRegistrationFailure(reason)
@@ -140,7 +209,7 @@ extension DictationViewModel {
     /// registration.
     func retryModifierOnlyHotKeyRegistrationIfNeeded() {
         guard settings.modifierOnlyHotKeyEnabled,
-              textInsertion.isAccessibilityTrusted,
+              session.isAccessibilityTrusted,
               !hotKeyManager.isModifierOnlyRegistrationActive
         else { return }
         Log.modifierKeys.notice(
@@ -157,7 +226,7 @@ extension DictationViewModel {
         let wasReachable = settings.isOverlayBufferSessionReachable
         settings.modifierOnlyHotKeyEnabled = modifierOnlyEnabled
         applyHotKeySettingsChange()
-        engines.handleOverlayReachabilityTransition(wasReachable: wasReachable)
+        session.overlayReachabilityDidChange(wasReachable: wasReachable)
     }
 
     /// Register hotkeys based on current settings.
@@ -189,17 +258,17 @@ extension DictationViewModel {
 
         switch registerCurrentHotKeys() {
         case .success:
-            if !isDictating, !isFinalizingStop,
-               (currentStatusToken == .hotKeyHandlerRegistrationFailure
-                || currentStatusToken == .hotKeyShortcutUnavailable)
+            if !session.isDictating, !session.isFinalizingStop,
+               (session.currentStatusToken == .hotKeyHandlerRegistrationFailure
+                || session.currentStatusToken == .hotKeyShortcutUnavailable)
             {
-                statusText = StatusStrings.ready
+                session.statusText = DictationViewModel.StatusStrings.ready
             }
 
-            if currentErrorToken == .hotKeyShortcutUnavailable
-                || currentErrorToken == .hotKeyHandlerRegistrationFailure
+            if session.currentErrorToken == .hotKeyShortcutUnavailable
+                || session.currentErrorToken == .hotKeyHandlerRegistrationFailure
             {
-                lastError = nil
+                session.lastError = nil
             }
             return
         case .failure(let reason):
@@ -258,7 +327,7 @@ extension DictationViewModel {
         settings.setOverlayBufferShortcut(shortcut)
 
         finishShortcutMove(restore: restore)
-        engines.handleOverlayReachabilityTransition(wasReachable: wasReachable)
+        session.overlayReachabilityDidChange(wasReachable: wasReachable)
     }
 
     func moveShortcutToLivePaste(_ shortcut: DictationShortcut) {
@@ -269,7 +338,7 @@ extension DictationViewModel {
         settings.setLivePasteShortcut(shortcut)
 
         finishShortcutMove(restore: restore)
-        engines.handleOverlayReachabilityTransition(wasReachable: wasReachable)
+        session.overlayReachabilityDidChange(wasReachable: wasReachable)
     }
 
     /// Captures both slots as they stand, and returns the closure that puts
@@ -313,7 +382,7 @@ extension DictationViewModel {
             _ = registerCurrentHotKeys()
             applyHotKeyRegistrationFailure(reason)
         }
-        engines.handleOverlayReachabilityTransition(wasReachable: wasReachable)
+        session.overlayReachabilityDidChange(wasReachable: wasReachable)
     }
 
     func updateLivePasteShortcut(_ shortcut: DictationShortcut?) {
@@ -337,73 +406,62 @@ extension DictationViewModel {
     }
 
     private func clearHotKeyErrors() {
-        if !isDictating, !isFinalizingStop,
-           (currentStatusToken == .hotKeyHandlerRegistrationFailure
-            || currentStatusToken == .hotKeyShortcutUnavailable)
+        if !session.isDictating, !session.isFinalizingStop,
+           (session.currentStatusToken == .hotKeyHandlerRegistrationFailure
+            || session.currentStatusToken == .hotKeyShortcutUnavailable)
         {
-            statusText = StatusStrings.ready
+            session.statusText = DictationViewModel.StatusStrings.ready
         }
-        if currentErrorToken == .hotKeyShortcutUnavailable
-            || currentErrorToken == .hotKeyHandlerRegistrationFailure
+        if session.currentErrorToken == .hotKeyShortcutUnavailable
+            || session.currentErrorToken == .hotKeyHandlerRegistrationFailure
         {
-            lastError = nil
+            session.lastError = nil
         }
     }
 
     private func applyHotKeyRegistrationFailure(_ reason: HotKeyManager.RegistrationFailure) {
         switch reason {
         case .handlerInstallFailed:
-            statusText = HotKeyManager.handlerRegistrationErrorMessage
-            lastError = HotKeyManager.handlerRegistrationErrorMessage
+            session.statusText = HotKeyManager.handlerRegistrationErrorMessage
+            session.lastError = HotKeyManager.handlerRegistrationErrorMessage
         case .shortcutUnavailable:
-            statusText = HotKeyManager.registrationErrorStatus
-            lastError = HotKeyManager.unavailableErrorMessage
+            session.statusText = HotKeyManager.registrationErrorStatus
+            session.lastError = HotKeyManager.unavailableErrorMessage
         case .livePasteShortcutUnavailable:
-            statusText = HotKeyManager.registrationErrorStatus
-            lastError = HotKeyManager.livePasteUnavailableErrorMessage
+            session.statusText = HotKeyManager.registrationErrorStatus
+            session.lastError = HotKeyManager.livePasteUnavailableErrorMessage
         case .modifierOnlyHotKeyUnavailable:
-            statusText = HotKeyManager.registrationErrorStatus
-            lastError = HotKeyManager.modifierOnlyUnavailableErrorMessage
+            session.statusText = HotKeyManager.registrationErrorStatus
+            session.lastError = HotKeyManager.modifierOnlyUnavailableErrorMessage
         }
     }
 }
 
-#if DEBUG
-extension DictationViewModel {
-    func debugHandleDictationShortcutPressForTesting(mode: DictationOutputMode? = nil) {
-        handleDictationShortcutPress(mode: mode)
+/// Where a gesture lands with no session to drive. Nothing happens, loudly.
+@MainActor
+private final class DetachedShortcutSession: ShortcutSessionControlling {
+    var isDictating: Bool { false }
+    var isConnectingRealtimeSession: Bool { false }
+    var isFinalizingStop: Bool { false }
+    var isAwaitingMicrophonePermission: Bool { false }
+    var isAccessibilityTrusted: Bool { false }
+    var statusText: String {
+        get { "" }
+        set { note("statusText") }
     }
-
-    func debugHandleDictationShortcutReleaseForTesting() {
-        handleDictationShortcutRelease()
+    var lastError: String? {
+        get { nil }
+        set { note("lastError") }
     }
+    var currentStatusToken: DictationViewModel.StatusToken { .from("") }
+    var currentErrorToken: DictationViewModel.ErrorToken? { nil }
+    func startDictation(outputMode _: DictationOutputMode?) { note("startDictation") }
+    func endDictation(reason _: String) { note("endDictation") }
+    func toggleDictation(outputMode _: DictationOutputMode?) { note("toggleDictation") }
+    func clearSecureInputRefusalSignalsIfAttemptEnded() { note("clearSecureInputRefusalSignals") }
+    func overlayReachabilityDidChange(wasReachable _: Bool) { note("overlayReachabilityDidChange") }
 
-    func debugHandleModifierOnlyTapForTesting(mode: DictationOutputMode) {
-        handleModifierOnlyTap(mode: mode)
-    }
-
-    func debugHandleModifierOnlyHoldStartForTesting() {
-        handleModifierOnlyHoldStart()
-    }
-
-    var debugIsPushToTalkShortcutHeldForTesting: Bool {
-        isPushToTalkShortcutHeld
-    }
-
-    func debugSetPushToTalkShortcutStateForTesting(
-        isHeld: Bool,
-        hasActiveSession: Bool
-    ) {
-        isPushToTalkShortcutHeld = isHeld
-        hasActivePushToTalkShortcutSession = hasActiveSession
-    }
-
-    func debugSetModifierOnlyHoldStateForTesting(isActive: Bool) {
-        isModifierOnlyHoldActive = isActive
-    }
-
-    var debugCurrentHotKeyRegistrationKindForTesting: HotKeyManager.DebugRegistrationKind {
-        hotKeyManager.debugCurrentRegistrationKind
+    private func note(_ what: String) {
+        Log.dictation.error("shortcut: \(what, privacy: .public) reached no session owner; nothing happened")
     }
 }
-#endif

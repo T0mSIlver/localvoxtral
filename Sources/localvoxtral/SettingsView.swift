@@ -90,7 +90,7 @@ struct SettingsView: View {
                 settings.dictationShortcut
             },
             set: { newValue in
-                viewModel.updateDictationShortcut(newValue)
+                viewModel.shortcuts.updateDictationShortcut(newValue)
             }
         )
     }
@@ -1057,11 +1057,11 @@ private struct DictationSettingsPane: View {
     /// the recorder, so routing it anywhere else is how the conflict this pane
     /// exists to prevent gets back in.
     private func assignOverlayBufferShortcut(_ shortcut: DictationShortcut?) {
-        apply(viewModel.requestOverlayBufferShortcut(shortcut), target: .overlayBuffer)
+        apply(viewModel.shortcuts.requestOverlayBufferShortcut(shortcut), target: .overlayBuffer)
     }
 
     private func assignLivePasteShortcut(_ shortcut: DictationShortcut?) {
-        apply(viewModel.requestLivePasteShortcut(shortcut), target: .liveAutoPaste)
+        apply(viewModel.shortcuts.requestLivePasteShortcut(shortcut), target: .liveAutoPaste)
     }
 
     private func apply(
@@ -1101,7 +1101,7 @@ private struct DictationSettingsPane: View {
                     Picker("", selection: Binding(
                         get: { settings.modifierOnlyHotKeyEnabled },
                         set: { newValue in
-                            viewModel.applyDictationTriggerModeChange(
+                            viewModel.shortcuts.applyDictationTriggerModeChange(
                                 modifierOnlyEnabled: newValue
                             )
                         }
@@ -1122,7 +1122,7 @@ private struct DictationSettingsPane: View {
                             get: { settings.modifierOnlyHotKeyModifier },
                             set: { newValue in
                                 settings.modifierOnlyHotKeyModifier = newValue
-                                viewModel.applyHotKeySettingsChange()
+                                viewModel.shortcuts.applyHotKeySettingsChange()
                             }
                         )) {
                             ForEach(ModifierOnlyHotKeyManager.ModifierKey.allCases) { key in
@@ -1140,7 +1140,7 @@ private struct DictationSettingsPane: View {
                                     get: { settings.modifierOnlyHoldDelay },
                                     set: { newValue in
                                         settings.modifierOnlyHoldDelay = newValue
-                                        viewModel.applyHotKeySettingsChange()
+                                        viewModel.shortcuts.applyHotKeySettingsChange()
                                     }
                                 ),
                                 in: 0.1...0.8,
@@ -1347,9 +1347,9 @@ private struct DictationSettingsPane: View {
             Button("Move") {
                 switch move.target {
                 case .overlayBuffer:
-                    viewModel.moveShortcutToOverlayBuffer(move.shortcut)
+                    viewModel.shortcuts.moveShortcutToOverlayBuffer(move.shortcut)
                 case .liveAutoPaste:
-                    viewModel.moveShortcutToLivePaste(move.shortcut)
+                    viewModel.shortcuts.moveShortcutToLivePaste(move.shortcut)
                 }
                 pendingShortcutMove = nil
             }

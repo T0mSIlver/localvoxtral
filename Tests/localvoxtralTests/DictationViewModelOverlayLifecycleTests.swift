@@ -160,10 +160,11 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         viewModel.isShowingConnectionFailureAlert = true
         viewModel.isConnectingRealtimeSession = true
         viewModel.statusText = "Connecting to realtime backend..."
-        viewModel.debugSetPushToTalkShortcutStateForTesting(isHeld: true, hasActiveSession: true)
+        viewModel.shortcuts.isPushToTalkShortcutHeld = true
+        viewModel.shortcuts.hasActivePushToTalkShortcutSession = true
         viewModel.scheduleConnectTimeout()
 
-        viewModel.debugHandleDictationShortcutReleaseForTesting()
+        viewModel.shortcuts.handleDictationShortcutRelease()
 
         XCTAssertTrue(viewModel.isConnectingRealtimeSession)
         XCTAssertEqual(viewModel.statusText, "Connecting to realtime backend...")
@@ -197,9 +198,10 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         viewModel.isConnectingRealtimeSession = true
         viewModel.statusText = "Connecting to realtime backend..."
-        viewModel.debugSetPushToTalkShortcutStateForTesting(isHeld: true, hasActiveSession: true)
+        viewModel.shortcuts.isPushToTalkShortcutHeld = true
+        viewModel.shortcuts.hasActivePushToTalkShortcutSession = true
 
-        viewModel.debugHandleDictationShortcutReleaseForTesting()
+        viewModel.shortcuts.handleDictationShortcutRelease()
         viewModel.handle(event: .connected)
 
         XCTAssertFalse(viewModel.isConnectingRealtimeSession)
@@ -222,10 +224,11 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         viewModel.sessionOutputMode = .liveAutoPaste
         viewModel.isConnectingRealtimeSession = true
         viewModel.statusText = "Connecting to realtime backend..."
-        viewModel.debugSetPushToTalkShortcutStateForTesting(isHeld: true, hasActiveSession: true)
-        viewModel.debugSetModifierOnlyHoldStateForTesting(isActive: true)
+        viewModel.shortcuts.isPushToTalkShortcutHeld = true
+        viewModel.shortcuts.hasActivePushToTalkShortcutSession = true
+        viewModel.shortcuts.isModifierOnlyHoldActive = true
 
-        viewModel.debugHandleDictationShortcutReleaseForTesting()
+        viewModel.shortcuts.handleDictationShortcutRelease()
         viewModel.handle(event: .connected)
 
         XCTAssertFalse(viewModel.isConnectingRealtimeSession)
@@ -258,9 +261,9 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.applyHotKeySettingsChange()
+        viewModel.shortcuts.applyHotKeySettingsChange()
 
-        XCTAssertEqual(viewModel.debugCurrentHotKeyRegistrationKindForTesting, .none)
+        XCTAssertEqual(viewModel.shortcuts.hotKeyManager.debugCurrentRegistrationKind, .none)
         XCTAssertNil(viewModel.lastError)
     }
 

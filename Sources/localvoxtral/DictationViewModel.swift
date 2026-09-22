@@ -605,7 +605,6 @@ final class DictationViewModel {
     var socketPaneStartCapture: SocketPaneScreenCapture?
 
     @ObservationIgnored
-    let hotKeyManager = HotKeyManager()
 
     // Mutable state — internal so extension files can access.
     @ObservationIgnored
@@ -797,25 +796,12 @@ final class DictationViewModel {
     /// path stays production-shaped.
     @ObservationIgnored
     private let suppressStartupPermissionPrompts: Bool
+    /// The keyboard triggers: gestures, hotkey registration, the shortcut
+    /// slots. Views bind to `viewModel.shortcuts`; the session reads its
+    /// gesture flags through it.
     @ObservationIgnored
-    // Tracks physical key state so repeat key-down events do not retrigger actions.
-    @ObservationIgnored
-    var isPushToTalkShortcutHeld = false
-
-    /// True while the user is still physically holding the dictation
-    /// shortcut/modifier — a release event is still coming, and it owns
-    /// ending the attempt's refusal signals. The managed-startup path in
-    /// DictationViewModel+Session.swift consults this: a secure-input
-    /// refusal that fires after backend boot may land with no gesture-end
-    /// event left to clear it.
-    var isDictationAttemptGestureActive: Bool { isPushToTalkShortcutHeld }
-    // True only when a start attempt was initiated by push-to-talk and may still need
-    // to be cancelled if the user releases before dictation actually begins.
-    @ObservationIgnored
-    var hasActivePushToTalkShortcutSession = false
-    // True when a modifier-only hold gesture started dictation (push-to-talk semantics).
-    @ObservationIgnored
-    var isModifierOnlyHoldActive = false
+    let shortcuts: ShortcutController
+    typealias ShortcutAssignment = ShortcutController.ShortcutAssignment
 
     init(
         settings: SettingsStore,
@@ -829,6 +815,7 @@ final class DictationViewModel {
     ) {
         self.settings = settings
         self.dependencies = dependencies
+        self.shortcuts = ShortcutController(settings: settings)
         self.backendManager =
             backendManager
             ?? BackendManager(
@@ -940,7 +927,7 @@ final class DictationViewModel {
 
         textInsertion.onAccessibilityTrustChanged = { [weak self] in
             guard let self else { return }
-            self.retryModifierOnlyHotKeyRegistrationIfNeeded()
+            self.shortcuts.retryModifierOnlyHotKeyRegistrationIfNeeded()
             if self.currentErrorToken == .accessibilityPermissionRequired {
                 self.lastError = nil
             }
@@ -967,13 +954,9 @@ final class DictationViewModel {
             networkMonitor.start()
         }
 
-        hotKeyManager.onPressWithMode = { [weak self] mode in self?.handleDictationShortcutPress(mode: mode) }
-        hotKeyManager.onPress = { [weak self] in self?.handleDictationShortcutPress() }
-        hotKeyManager.onRelease = { [weak self] in self?.handleDictationShortcutRelease() }
-        hotKeyManager.onHoldStart = { [weak self] in self?.handleModifierOnlyHoldStart() }
-        hotKeyManager.onModifierOnlyTap = { [weak self] mode in self?.handleModifierOnlyTap(mode: mode) }
+        shortcuts.install(session: self)
         if startRuntimeServices {
-            registerCurrentHotKeys()
+            shortcuts.registerAtLaunch()
         }
 
         escapeCancelHandler.onCancel = { [weak self] in self?.cancelDictation() }
@@ -1073,7 +1056,7 @@ final class DictationViewModel {
             stopMicrophoneIfInitialized()
             networkMonitor.stop()
             activeRealtimeClient.disconnect()
-            hotKeyManager.unregister()
+            shortcuts.unregister()
         }
     }
 
@@ -1276,7 +1259,7 @@ final class DictationViewModel {
     // MARK: - Public API
 
     func toggleDictation(outputMode: DictationOutputMode? = nil) {
-        hasActivePushToTalkShortcutSession = false
+        shortcuts.clearPushToTalkShortcutSessionAttempt()
         defer {
             // Toggle starts (modifier tap, popover button) have no release
             // event, so a refused live start would latch the warning icon
@@ -1496,14 +1479,12 @@ final class DictationViewModel {
                     guard granted else {
                         self.statusText = StatusStrings.microphoneAccessDenied
                         self.lastError = Self.microphoneDeniedMessage
-                        self.hasActivePushToTalkShortcutSession = false
+                        self.shortcuts.clearPushToTalkShortcutSessionAttempt()
                         return
                     }
-                    if self.hasActivePushToTalkShortcutSession,
-                        !self.isPushToTalkShortcutHeld
-                    {
+                    if self.shortcuts.shouldCancelPushToTalkStartAfterConnect() {
                         self.statusText = StatusStrings.ready
-                        self.hasActivePushToTalkShortcutSession = false
+                        self.shortcuts.clearPushToTalkShortcutSessionAttempt()
                         return
                     }
                     self.beginDictationAfterManagedBackendIfNeeded(outputMode: outputMode)
@@ -1513,7 +1494,7 @@ final class DictationViewModel {
                     // above just refused — with no gesture-end event left,
                     // the signals would wedge (Codex finding, round 9; same
                     // shape as the managed-startup wedge in round 8).
-                    if !self.isDictationAttemptGestureActive {
+                    if !self.shortcuts.isDictationAttemptGestureActive {
                         self.clearSecureInputRefusalSignalsIfAttemptEnded()
                     }
                 }
@@ -1523,8 +1504,8 @@ final class DictationViewModel {
                 guard let self, self.isAwaitingMicrophonePermission else { return }
                 self.isAwaitingMicrophonePermission = false
                 self.statusText = StatusStrings.ready
-                if self.hasActivePushToTalkShortcutSession && !self.isPushToTalkShortcutHeld {
-                    self.hasActivePushToTalkShortcutSession = false
+                if self.shortcuts.shouldCancelPushToTalkStartAfterConnect() {
+                    self.shortcuts.clearPushToTalkShortcutSessionAttempt()
                 }
                 self.debugLog("microphone permission prompt timed out")
             }
@@ -1567,7 +1548,7 @@ final class DictationViewModel {
     func stopDictation(reason: String = "unspecified", finalizeRemainingAudio: Bool = true) {
         guard isDictating else { return }
         debugLog("stopDictation reason=\(reason)")
-        hasActivePushToTalkShortcutSession = false
+        shortcuts.clearPushToTalkShortcutSessionAttempt()
 
         // Before anything else: a reconnect run still in flight must not be
         // allowed to hand this session a socket after the user stopped it.
@@ -2237,14 +2218,9 @@ extension DictationViewModel {
     /// subject to — the Secure Keyboard Entry refusal, the Accessibility state,
     /// the microphone gate, managed-backend readiness — and must report a
     /// refusal rather than override one. It mirrors
-    /// `debugHandleModifierOnlyTapForTesting`, which cannot be reused here: a
-    /// dogfood bundle is built `-c release`, so `#if DEBUG` is off in exactly
-    /// the binary the owner runs.
-    ///
-    /// The handler is `private` to this file, which is why the seam lives here
-    /// rather than beside the rest of the control-socket code.
+    /// the same handler the tests drive through `shortcuts`.
     func dogfoodHandleModifierOnlyTap(mode: DictationOutputMode) {
-        handleModifierOnlyTap(mode: mode)
+        shortcuts.handleModifierOnlyTap(mode: mode)
     }
 
     /// Snapshot the resolved join for `join report`, with the abstention chain
@@ -2262,3 +2238,13 @@ extension DictationViewModel {
     }
 }
 #endif
+
+extension DictationViewModel: ShortcutSessionControlling {
+    func endDictation(reason: String) {
+        stopDictation(reason: reason)
+    }
+
+    func overlayReachabilityDidChange(wasReachable: Bool) {
+        engines.handleOverlayReachabilityTransition(wasReachable: wasReachable)
+    }
+}

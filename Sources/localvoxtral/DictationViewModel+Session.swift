@@ -178,7 +178,7 @@ extension DictationViewModel {
             // wedge (Codex finding, round 8). Mirror the refused-tap
             // contract: the sound fired and the popover line stays; the
             // icon and "Blocked" status end with the attempt.
-            if !self.isDictationAttemptGestureActive {
+            if !self.shortcuts.isDictationAttemptGestureActive {
                 self.clearSecureInputRefusalSignalsIfAttemptEnded()
             }
         }
@@ -2305,7 +2305,7 @@ extension DictationViewModel {
         cancelRealtimeReconnect()
         finalizationWatchdogTask?.cancel()
         finalizationWatchdogTask = nil
-        clearPushToTalkShortcutSessionAttempt()
+        shortcuts.clearPushToTalkShortcutSessionAttempt()
         isConnectingRealtimeSession = false
         isDictating = false
         // An aborted connect never reaches stopped-session cleanup, so the
