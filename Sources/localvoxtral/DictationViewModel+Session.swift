@@ -671,7 +671,11 @@ extension DictationViewModel {
             // occurrence count before the real payload is substituted at
             // commit. No marker or setting off: a no-op that never touches the
             // pasteboard.
-            let clipboardMacro = applyClipboardPayloadMacroIfEnabled(to: replacementAppliedText)
+            let clipboardMacro = StopCommitCoordinator.clipboardPayloadMacro(
+                applyingTo: replacementAppliedText,
+                settings: settings,
+                pasteboardReader: dependencies.pasteboardReader
+            )
             let workingText = clipboardMacro.placeholderText
             let clipboardPayload = clipboardMacro.payload
             let payloadProvenanceSummary = clipboardMacro.summary
@@ -692,7 +696,7 @@ extension DictationViewModel {
 
             // Display the payload-substituted text (placeholder never shown to
             // the user); with no macro this is exactly `workingText`.
-            let displayWorkingText = clipboardPayloadSubstituted(
+            let displayWorkingText = StopCommitCoordinator.substitutingPayload(
                 workingText, payload: clipboardPayload
             )
             if currentDictationEventText != displayWorkingText {
@@ -719,52 +723,14 @@ extension DictationViewModel {
                 statusText = StatusStrings.polishing
                 debugLog("LLM polishing started for \(workingText.count) chars")
 
-                // Opt-in clipboard grounding is read HERE, pre-Task, right next
-                // to the payload-macro clipboard read above, so both features
-                // observe the SAME pasteboard state — the repo-vocabulary await
-                // inside the Task can take up to ~2 s, and a copy landing during
-                // that window must not make the context ground against different
-                // text than the payload macro substitutes. When the setting is
-                // off OR the polishing endpoint is not permitted (loopback-only
-                // without the trusted-endpoint opt-in), the pasteboard
-                // is never read (privacy).
-                let capturedClipboardContext: PolishClipboardContext?
-                let capturedScreenDecision: TerminalScreenContextDecision
-                let capturedClaudeJoin: ClaudeSessionJoin?
-                let capturedSocketPaneStart: SocketPaneScreenCapture?
-                if let endpointURL = polishingConfig?.endpointURL {
-                    capturedClipboardContext = polishClipboardContextIfEnabled(
-                        endpointURL: endpointURL
-                    )
-                    // Reconciled HERE, pre-Task, for the same reason as the
-                    // clipboard read above: the stop-time re-read must sample
-                    // the screen at commit, not after the repo-vocabulary await
-                    // has let ~2 s of agent output scroll past — which would
-                    // report every session as mutated.
-                    capturedScreenDecision = context.terminalScreenContextDecision(
-                        endpointURL: endpointURL
-                    )
-                    // AFTER the screen decision, never before: that call is what
-                    // asks the authorizer about the join, and consuming it first
-                    // would clear it out from under the question and silently
-                    // withdraw every raw screen attachment.
-                    capturedClaudeJoin = context.consumeClaudeSessionJoin()
-                    capturedSocketPaneStart = context.consumeSocketPaneStartCapture()
-                } else {
-                    capturedClipboardContext = nil
-                    capturedScreenDecision = .drop(reason: .noStartCapture)
-                    capturedClaudeJoin = nil
-                    capturedSocketPaneStart = nil
-                    // No endpoint: nothing to ground for, and neither the
-                    // capture nor the join must survive into a later session's
-                    // reconciliation. Nothing will read this join's remote
-                    // herdr tunnel either, so it goes now rather than at the
-                    // handle's deinit.
-                    context.terminalScreenStartCapture = nil
-                    context.claudeSessionJoin = nil
-                    context.socketPaneStartCapture = nil
-                    context.closeRemoteHerdrForwards()
-                }
+                // The world as it was at stop: clipboard, screen, join and
+                // pane, sampled together before the task's awaits.
+                let capture = StopCommitCoordinator.capture(
+                    endpointURL: polishingConfig?.endpointURL,
+                    settings: settings,
+                    context: context,
+                    pasteboardReader: dependencies.pasteboardReader
+                )
 
                 // Repo vocabulary rides in the `{{replacement_dictionary}}`
                 // slot; a user template without that placeholder (removing it is
@@ -781,9 +747,9 @@ extension DictationViewModel {
                 // the repo result has no consumer and the expensive pipeline is
                 // skipped entirely.
                 let needsRepoGroundingForConflictSafety =
-                    capturedClipboardContext != nil
-                    || capturedScreenDecision.vocabularyGroundingText != nil
-                    || capturedClaudeJoin != nil
+                    capture.clipboardContext != nil
+                    || capture.screenDecision.vocabularyGroundingText != nil
+                    || capture.claudeJoin != nil
 
                 polishAndCommitTask = Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -799,32 +765,23 @@ extension DictationViewModel {
                         learnedTermStore: self.learnedTermStore,
                         endpointURL: polishingConfig?.endpointURL,
                         workingText: workingText,
-                        capturedScreenDecision: capturedScreenDecision,
-                        capturedSocketPaneStart: capturedSocketPaneStart,
-                        capturedClaudeJoin: capturedClaudeJoin,
-                        capturedClipboardContext: capturedClipboardContext,
+                        capturedScreenDecision: capture.screenDecision,
+                        capturedSocketPaneStart: capture.socketPaneStart,
+                        capturedClaudeJoin: capture.claudeJoin,
+                        capturedClipboardContext: capture.clipboardContext,
                         templateCarriesDictionarySlot: templateCarriesDictionarySlot,
                         needsRepoGroundingForConflictSafety: needsRepoGroundingForConflictSafety
                     )) else { return }
                     let screenDecision = material.screenDecision
-                    let repoVocabularyOutcome = material.repoVocabularyOutcome
                     let claudeRepoSnapshot = material.claudeRepoSnapshot
-                    let claudeSessionText = material.claudeSessionText
-                    let screenRenderDemand = material.screenRenderDemand
-                    let repoRenderDemand = material.repoRenderDemand
-                    let allocation = material.allocation
                     let clipboardRenderBudget = material.clipboardRenderBudget
                     let screenRenderBudget = material.screenRenderBudget
                     let repoRenderBudget = material.repoRenderBudget
                     let claudeRenderBudget = material.claudeRenderBudget
                     let claudeRepoPreparation = material.claudeRepoPreparation
-                    let claudeRepoOutcome = material.claudeRepoOutcome
                     let claudeSessionPreparation = material.claudeSessionPreparation
-                    let claudeSessionOutcome = material.claudeSessionOutcome
                     let clipboardPreparation = material.clipboardPreparation
-                    let clipboardVocabularyOutcome = material.clipboardVocabularyOutcome
                     let screenPreparation = material.screenPreparation
-                    let screenVocabularyOutcome = material.screenVocabularyOutcome
                     let learnedProject = material.learnedProject
                     let merged = material.merged
 
@@ -853,8 +810,8 @@ extension DictationViewModel {
                         claudeSessionPreparation: claudeSessionPreparation,
                         clipboardPreparation: clipboardPreparation,
                         screenPreparation: screenPreparation,
-                        capturedClaudeJoin: capturedClaudeJoin,
-                        capturedClipboardContext: capturedClipboardContext,
+                        capturedClaudeJoin: capture.claudeJoin,
+                        capturedClipboardContext: capture.clipboardContext,
                         repoRenderBudget: repoRenderBudget,
                         screenRenderBudget: screenRenderBudget,
                         claudeRenderBudget: claudeRenderBudget,
@@ -863,10 +820,6 @@ extension DictationViewModel {
                     let polishingRequest = assembly.request
                     let groundedWorkingText = assembly.groundedWorkingText
                     let capturedPolishContextSummary = assembly.polishContextSummary
-                    let repoBlock = assembly.repoBlock
-                    let screenBlock = assembly.screenBlock
-                    let claudeBlock = assembly.claudeBlock
-                    let clipboardBlock = assembly.clipboardBlock
                     let repoVocabularyCount = assembly.repoVocabularyCount
                     let clipboardVocabularyCount = assembly.clipboardVocabularyCount
 
@@ -896,21 +849,20 @@ extension DictationViewModel {
                             // Trust the polishing model for both prompt profiles.
                             // Human evaluation found deterministic token repair
                             // could undo useful formatting and reconstruction.
-                            // Placeholder-count integrity for an explicit paste
-                            // macro remains independent below.
-                            var committedText = PolishOutcomeClassifier.committedText(
+                            //
+                            // Placeholder-count integrity stays independent of
+                            // that trust: a duplicated placeholder would paste
+                            // the payload twice, while dropping one of two
+                            // would lose a requested paste. It is the classifier
+                            // that compares standalone counts against the
+                            // grounded pre-polish text and, on mismatch,
+                            // discards the polish and returns that
+                            // placeholder-bearing text.
+                            let committedText = PolishOutcomeClassifier.committedText(
                                 polished: result.polishedText,
                                 groundedWorkingText: groundedWorkingText,
                                 clipboardPayload: clipboardPayload
                             )
-
-                            // Placeholder-count integrity stays independent of
-                            // trusting model text: a duplicated placeholder
-                            // would paste the payload twice, while dropping one
-                            // of two would lose a requested paste. Compare
-                            // standalone counts against the grounded pre-polish
-                            // text; on mismatch, discard the polish and keep
-                            // that placeholder-bearing text.
 
                             // Persist the PLACEHOLDER-bearing committed text —
                             // the clipboard payload must never enter the session
@@ -925,7 +877,7 @@ extension DictationViewModel {
 
                             guard !Task.isCancelled else { return }
 
-                            self.currentDictationEventText = self.clipboardPayloadSubstituted(
+                            self.currentDictationEventText = StopCommitCoordinator.substitutingPayload(
                                 committedText, payload: clipboardPayload
                             )
                             // Polish-changed iff the guarded/verified committed
@@ -964,21 +916,18 @@ extension DictationViewModel {
 
                     guard !Task.isCancelled else { return }
 
-                    let overlayCommitOutcome = self.overlayBufferCoordinator.commitIfNeeded(
-                        using: self.textInsertion,
+                    let overlayCommit = StopCommitCoordinator.commit(
+                        overlay: self.overlayBufferCoordinator,
+                        textInsertion: self.textInsertion,
                         autoCopyEnabled: self.settings.autoCopyEnabled
                     )
-                    let commitSucceeded: Bool
-                    if case .failed(let failureMessage) = overlayCommitOutcome {
-                        commitSucceeded = false
+                    if let failureMessage = overlayCommit.failureMessage {
                         self.lastError = failureMessage
-                    } else {
-                        commitSucceeded = true
                     }
 
                     self.completeStoppedSessionCleanup(
                         sessionMode: sessionMode,
-                        overlayCommitOutcome: overlayCommitOutcome,
+                        overlayCommitOutcome: overlayCommit.outcome,
                         shouldCommitOverlay: true
                     )
 
@@ -992,20 +941,15 @@ extension DictationViewModel {
                         outputMode: capturedOutputMode,
                         targetAppBundleID: capturedTargetBundleID,
                         status: sessionStatus,
-                        commitSucceeded: commitSucceeded,
+                        commitSucceeded: overlayCommit.succeeded,
                         polishProfile: capturedPolishProfile,
                         polishContextSummary: self.mergedPolishProvenanceSummary(
                             context: capturedPolishContextSummary,
                             payload: payloadProvenanceSummary,
-                            vocabulary: {
-                                let parts = [
-                                    repoVocabularyCount > 0
-                                        ? "vocab:\(repoVocabularyCount)" : nil,
-                                    clipboardVocabularyCount > 0
-                                        ? "clipboard-vocab:\(clipboardVocabularyCount)" : nil,
-                                ].compactMap { $0 }
-                                return parts.isEmpty ? nil : parts.joined(separator: "+")
-                            }()
+                            vocabulary: StopCommitCoordinator.vocabularyProvenance(
+                                repoVocabularyCount: repoVocabularyCount,
+                                clipboardVocabularyCount: clipboardVocabularyCount
+                            )
                         )
                     )
 
@@ -1015,81 +959,27 @@ extension DictationViewModel {
                     // user's paste. `writeDogfoodCaptureIfArmed` checks the
                     // runtime opt-in before doing any work.
                     await self.writeDogfoodCaptureIfArmed(
-                        DogfoodCaptureInputs(
-                        session: DogfoodCaptureRecord.Session(
+                        StopCommitCoordinator.dogfoodCaptureInputs(
+                            material: material,
+                            assembly: assembly,
+                            capture: capture,
                             targetBundleID: capturedTargetBundleID,
-                            targetKind: self.sessionTargetIsTerminalLike
-                                ? "terminal-like" : "other",
+                            targetIsTerminalLike: self.sessionTargetIsTerminalLike,
                             outputMode: capturedOutputMode,
                             promptProfile: capturedPolishProfile,
-                            endpointClass: polishingConfig.map {
-                                DogfoodCaptureBuilder.endpointClass(of: $0.endpointURL)
-                            },
-                            polishModel: polishingConfig?.model
-                        ),
-                        join: capturedClaudeJoin,
-                        // Filled from the tap inside writeDogfoodCaptureIfArmed.
-                        joinAbstentions: [],
-                        screenDecision: screenDecision,
-                        // Value inequality is the swap signal: only the herdr
-                        // reconcile above ever reassigns `screenDecision`, and
-                        // a failed pane.read returns the fallback (equal). A
-                        // successful pane.read that happens to EQUAL the
-                        // fallback mislabels only the route — the decision and
-                        // cause still tell the true story. Intentional.
-                        socketPaneSwapApplied: capturedSocketPaneStart != nil
-                            && screenDecision != capturedScreenDecision,
-                        targetBundleID: capturedTargetBundleID,
-                        demands: [
-                            .repository: repoRenderDemand,
-                            .terminal: screenRenderDemand,
-                            .claude: claudeSessionText.count,
-                            .clipboard: capturedClipboardContext?.retainedCharacterCount ?? 0,
-                        ],
-                        grants: allocation,
-                        rendered: [
-                            .repository: repoBlock != nil
-                                ? claudeRepoPreparation.excerpt.count : 0,
-                            .terminal: screenBlock != nil
-                                ? screenPreparation.excerpt.count : 0,
-                            .claude: claudeBlock != nil
-                                ? claudeSessionPreparation.excerpt.count : 0,
-                            .clipboard: clipboardBlock != nil
-                                ? clipboardPreparation.excerpt.count : 0,
-                        ],
-                        repoVocabularyHarvest: nil,
-                        repoVocabularyOutcome: repoVocabularyOutcome,
-                        claudeRepoSnapshot: claudeRepoSnapshot,
-                        claudeRepoOutcome: claudeRepoOutcome,
-                        claudeRepoRenderedExcerpt: repoBlock != nil
-                            ? claudeRepoPreparation.excerpt : nil,
-                        claudeSessionText: claudeSessionText.isEmpty ? nil : claudeSessionText,
-                        claudeSessionOutcome: claudeSessionOutcome,
-                        claudeSessionRenderedExcerpt: claudeBlock != nil
-                            ? claudeSessionPreparation.excerpt : nil,
-                        clipboardRetainedText: capturedClipboardContext?.retainedText,
-                        clipboardOutcome: clipboardVocabularyOutcome,
-                        clipboardRenderedExcerpt: clipboardBlock != nil
-                            ? clipboardPreparation.excerpt : nil,
-                        screenOutcome: screenVocabularyOutcome,
-                        screenRenderedExcerpt: screenBlock != nil
-                            ? screenPreparation.excerpt : nil,
-                        text: DogfoodCaptureRecord.Text(
+                            polishingEndpointURL: polishingConfig?.endpointURL,
+                            polishModel: polishingConfig?.model,
                             rawTranscript: originalText,
                             workingText: workingText,
-                            groundedText: groundedWorkingText,
-                            systemPrompt: polishingRequest.systemPrompt,
-                            userPrompts: polishingRequest.userPrompts,
                             polishedOutput: dogfoodPolishedOutput,
-                            committedText: dogfoodCommittedText
+                            committedText: dogfoodCommittedText,
+                            polishSeconds: polishingDuration
                         ),
-                        polishSeconds: polishingDuration
-                        ),
-                        commitOutcome: overlayCommitOutcome,
+                        commitOutcome: overlayCommit.outcome,
                         // Substituted for MEASUREMENT only (the watch window
                         // scales with what was inserted); the record keeps the
                         // placeholder-bearing text above.
-                        committedTextForWatch: self.clipboardPayloadSubstituted(
+                        committedTextForWatch: StopCommitCoordinator.substitutingPayload(
                             dogfoodCommittedText ?? groundedWorkingText,
                             payload: clipboardPayload
                         )
@@ -1108,21 +998,18 @@ extension DictationViewModel {
             }
 
             // Non-polishing overlay commit path
-            let overlayCommitOutcome = overlayBufferCoordinator.commitIfNeeded(
-                using: textInsertion,
+            let overlayCommit = StopCommitCoordinator.commit(
+                overlay: overlayBufferCoordinator,
+                textInsertion: textInsertion,
                 autoCopyEnabled: settings.autoCopyEnabled
             )
-            let commitSucceeded: Bool
-            if case .failed(let failureMessage) = overlayCommitOutcome {
-                commitSucceeded = false
+            if let failureMessage = overlayCommit.failureMessage {
                 lastError = failureMessage
-            } else {
-                commitSucceeded = true
             }
 
             completeStoppedSessionCleanup(
                 sessionMode: sessionMode,
-                overlayCommitOutcome: overlayCommitOutcome,
+                overlayCommitOutcome: overlayCommit.outcome,
                 shouldCommitOverlay: true
             )
 
@@ -1138,7 +1025,7 @@ extension DictationViewModel {
                 outputMode: capturedOutputMode,
                 targetAppBundleID: capturedTargetBundleID,
                 status: llmConfigurationFailure == nil ? .sttCompleted : .llmFailed,
-                commitSucceeded: commitSucceeded,
+                commitSucceeded: overlayCommit.succeeded,
                 polishContextSummary: payloadProvenanceSummary
             )
 
@@ -1287,80 +1174,6 @@ extension DictationViewModel {
     func resolveTargetAppBundleID() -> String? {
         guard let pid = overlayBufferCoordinator.commitTargetAppPID else { return nil }
         return dependencies.bundleIdentifier(pid)
-    }
-
-    /// Reads a capped clipboard excerpt for polish grounding, but ONLY when the
-    /// opt-in setting is on AND the polishing endpoint is loopback. Both guards
-    /// short-circuit BEFORE the reader resolves, so a disabled toggle or a
-    /// remote endpoint means the pasteboard is never touched at all (privacy:
-    /// no read). The endpoint gate keeps the Settings promise honest: the
-    /// polishing endpoint is user-configurable and may point at a cloud
-    /// provider, which must never receive clipboard content.
-    func polishClipboardContextIfEnabled(endpointURL: URL) -> PolishClipboardContext? {
-        guard settings.polishClipboardContextEnabled else { return nil }
-        guard PolishContextClipboardReader.isPermittedContextEndpoint(
-            endpointURL,
-            trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
-        ) else {
-            Log.polishing.info(
-                "Polish clipboard context skipped: polishing endpoint is not permitted (loopback-only without the trusted-endpoint opt-in)"
-            )
-            return nil
-        }
-        return PolishContextClipboardReader.readClipboardContext(
-            from: dependencies.pasteboardReader()
-        )
-    }
-
-    /// Result of the spoken clipboard-paste macro over the (replacement-applied)
-    /// working text: `placeholderText` carries the placeholder in place of each
-    /// marker when the macro fired (else it is the input unchanged), `payload`
-    /// is the sanitized clipboard string to substitute back at commit (nil when
-    /// the macro did not fire), and `summary` is the count-only provenance note
-    /// for the session record (nil when the macro did not fire).
-    struct ClipboardPayloadMacroOutcome {
-        let placeholderText: String
-        let payload: String?
-        let summary: String?
-    }
-
-    /// Applies the spoken clipboard-paste macro to `text` when the setting is on
-    /// AND a marker phrase is present. Reads the clipboard exactly ONCE (through
-    /// the shared `PolishContextClipboardReader` readability rules — concealed/
-    /// transient/empty are skipped). An unreadable clipboard leaves the
-    /// transcript unchanged and logs one content-free line. When the setting is
-    /// off or no marker was spoken, the pasteboard is never touched.
-    func applyClipboardPayloadMacroIfEnabled(to text: String) -> ClipboardPayloadMacroOutcome {
-        guard settings.clipboardPayloadMacroEnabled else {
-            return ClipboardPayloadMacroOutcome(placeholderText: text, payload: nil, summary: nil)
-        }
-        guard !ClipboardPayloadMacro.detectMarkers(in: text).isEmpty else {
-            return ClipboardPayloadMacroOutcome(placeholderText: text, payload: nil, summary: nil)
-        }
-        guard let payload = PolishContextClipboardReader.readableSanitizedString(
-            from: dependencies.pasteboardReader()
-        ) else {
-            Log.polishing.info(
-                "Clipboard payload macro: marker spoken but clipboard unreadable; transcript left unchanged"
-            )
-            return ClipboardPayloadMacroOutcome(placeholderText: text, payload: nil, summary: nil)
-        }
-        let replaced = ClipboardPayloadMacro.replaceMarkersWithPlaceholder(in: text)
-        Log.polishing.info(
-            "Clipboard payload macro fired: \(replaced.count, privacy: .public) marker(s), payload:\(payload.count, privacy: .public)ch"
-        )
-        return ClipboardPayloadMacroOutcome(
-            placeholderText: replaced.text,
-            payload: payload,
-            summary: "payload:\(payload.count)ch"
-        )
-    }
-
-    /// Substitutes the clipboard payload back into `text` (replacing the macro
-    /// placeholder). A no-op when the macro did not fire (`payload == nil`).
-    func clipboardPayloadSubstituted(_ text: String, payload: String?) -> String {
-        guard let payload else { return text }
-        return ClipboardPayloadMacro.substitutePayload(in: text, payload: payload)
     }
 
     /// Combines the clipboard polish-context, payload-macro, and repo-vocabulary

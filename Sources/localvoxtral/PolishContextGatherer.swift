@@ -99,7 +99,7 @@ enum PolishContextGatherer {
         // read. FIRST await in the Task, before the
         // repo-vocabulary hop, for the same reason the AX
         // reconcile runs pre-Task: the stop re-read must sample
-        // the pane at commit, not after ~2 s of agent output has
+        // the pane at commit, not after up to 3 s of agent output has
         // scrolled past. Everything downstream (render demand,
         // vocab grounding, the rendered block, provenance) reads
         // this decision, so the swap is complete or not at all —

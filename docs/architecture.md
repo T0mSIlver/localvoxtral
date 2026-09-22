@@ -1,17 +1,37 @@
 # Architecture map
 
-Everything routes through `DictationViewModel` (`@MainActor`, split across
-three files totaling ~2.3k lines — the main refactor target):
+Everything routes through `DictationViewModel` (`@MainActor`, four files
+totaling ~4.2k lines — still the main refactor target, #432):
 
 - `DictationViewModel.swift` — state, wiring, hotkey press/release dispatch
-- `EnginesModel.swift` — the Engines pane behind `viewModel.engines`: backend
-  modes, the Mistral key check and model catalog, managed warmup/shutdown,
-  download controls (no session path)
 - `DictationViewModel+Session.swift` — session lifecycle, stop-finalization
   state machine, LLM polishing + commit path
 - `DictationViewModel+RealtimeEvents.swift` — transcript event routing/merge
 - `DictationViewModel+Reconnect.swift` — the bounded retry run behind a socket
   that drops mid-dictation
+
+Jobs already lifted out of it, each reached through the view model or called
+as a pure step (#432 steps 1–7):
+
+- `EnginesModel.swift` — the Engines pane behind `viewModel.engines`: backend
+  modes, the Mistral key check and model catalog, managed warmup/shutdown,
+  download controls (no session path)
+- `ShortcutController.swift` — `viewModel.shortcuts`: hotkey registration and
+  the push-to-talk gesture
+- `PermissionsCoordinator.swift` — `viewModel.permissions`: accessibility and
+  microphone authorization, and the startup probe
+- `SessionContextResolver.swift` — `viewModel.context`: what the session may
+  capture (screen, Claude join, socket pane) and the gates on each
+- `PolishContextGatherer.swift` + `RepoVocabularyGrounding.swift` — everything
+  the commit gathers before it builds the request: budgets, preparations, the
+  repository vocabulary and the cross-source merge
+- `PolishRequestAssembler.swift` — the request itself: sections,
+  pre-application, prompts, context blocks, provenance
+- `PolishOutcomeClassifier.swift` — what a reply means for the commit:
+  placeholder integrity, and the failure copy for each error
+- `StopCommitCoordinator.swift` — the commit's dealings with the world: the
+  pre-task sample (clipboard, screen, join, pane), the clipboard gates, the
+  overlay commit, and the dogfood capture record
 
 Key subsystems:
 

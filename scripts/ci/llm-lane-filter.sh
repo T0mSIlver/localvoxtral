@@ -87,6 +87,7 @@ PATTERNS=(
   '*PolishOutcomeClassifier*'                       # placeholder integrity, failure copy (#432 step 5)
   '*PolishContextGatherer*'                         # the gather step: budgets, preparations, merge (#432 step 6)
   '*RepoVocabularyGrounding*'                       # the repository-vocabulary pipeline and its gates (#432 step 6)
+  '*StopCommitCoordinator*'                         # the clipboard gates and the commit's prologue (#432 step 7)
   '*LLMPolishEvalSupport*'                           # shared eval corpus + scorer
   '*PolishHelperIntegrationTests*'                   # the lane's own suite
   '*AgentDictationE2EEval*'                          # agent-dictation E2E eval harness (suite + support + its unit tests)
