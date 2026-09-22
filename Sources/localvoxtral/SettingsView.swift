@@ -108,6 +108,10 @@ struct SettingsView: View {
             detailColumn
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Declared to SwiftUI as well as corrected by the chrome, like the
+        // titlebar (see `SettingsWindowChrome`): the Window menu, Mission
+        // Control and the AX drills read the title, which is never drawn.
+        .navigationTitle(SettingsWindowChromeView.windowTitle)
         // Both columns run under the transparent titlebar, so the sidebar's
         // fill reaches the window's top edge. `SettingsSidebarMetrics.topInset`
         // clears the traffic lights.

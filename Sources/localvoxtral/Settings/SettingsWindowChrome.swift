@@ -42,6 +42,16 @@ struct SettingsWindowChrome: NSViewRepresentable {
 }
 
 final class SettingsWindowChromeView: NSView {
+    /// The app's one window is named after the app, not after the Settings
+    /// scene that hosts it: History and Insights live in it too (owner
+    /// decision, 2026-09-22). The scene's own default is "localvoxtral
+    /// Settings" (the field report above), so the title is corrected here
+    /// with the rest of the chrome rather than trusted to a SwiftUI modifier.
+    /// `scripts/ui-smoke.sh` and `scripts/capture-readme-assets.sh` address
+    /// the window by this string (`SETTINGS_WINDOW_TITLE`), and
+    /// `SettingsTabTests` holds them equal.
+    static let windowTitle = "localvoxtral"
+
     private var observedWindow: NSWindow?
     private var titleVisibilityObservation: NSKeyValueObservation?
 
@@ -158,20 +168,21 @@ final class SettingsWindowChromeView: NSView {
     /// `titleVisibility`, so it stays a field comparison — the assignments in
     /// `applyChrome` are what cost, not this.
     static func chromeIsStale(_ window: NSWindow) -> Bool {
-        window.titleVisibility != .hidden
+        window.title != windowTitle
+            || window.titleVisibility != .hidden
             || !window.titlebarAppearsTransparent
             || window.titlebarSeparatorStyle != .none
             || !window.styleMask.contains(.fullSizeContentView)
     }
 
-    /// The window title itself is deliberately left alone: `scripts/ui-smoke.sh`
-    /// pins every AX probe to the window named "Settings", so hiding the title
-    /// is a titlebar setting, never an empty `window.title`.
+    /// Hiding the title is a titlebar setting, never an empty `window.title`:
+    /// the AX drills find the window by `windowTitle`.
     ///
     /// Each setting is written only when it is wrong. A window property
     /// notifies its observers whether or not the value changed, and this runs
     /// on every window update pass.
     static func applyChrome(to window: NSWindow) {
+        if window.title != windowTitle { window.title = windowTitle }
         if !window.titlebarAppearsTransparent { window.titlebarAppearsTransparent = true }
         if window.titleVisibility != .hidden { window.titleVisibility = .hidden }
         if window.titlebarSeparatorStyle != .none { window.titlebarSeparatorStyle = .none }

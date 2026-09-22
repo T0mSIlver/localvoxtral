@@ -24,7 +24,7 @@ final class SettingsWindowChromeTests: XCTestCase {
 
     func testApplyChromeHidesTheTitleAndOpensUpTheTitlebar() {
         let window = makeWindow()
-        window.title = "Settings"
+        window.title = "localvoxtral Settings"
 
         SettingsWindowChromeView.applyChrome(to: window)
 
@@ -34,15 +34,22 @@ final class SettingsWindowChromeTests: XCTestCase {
         XCTAssertTrue(window.styleMask.contains(.fullSizeContentView))
     }
 
-    /// `scripts/ui-smoke.sh` pins every AX probe to the window named
-    /// "Settings", so the fix for a visible title is never an empty title.
-    func testApplyChromeLeavesTheWindowTitleAlone() {
+    /// The scene names the window "localvoxtral Settings" (macOS 26 field
+    /// report); the chrome names it after the app. `scripts/ui-smoke.sh` pins
+    /// every AX probe to that name, so the fix for a visible title is never an
+    /// empty title, and a title SwiftUI puts back counts as stale chrome.
+    func testApplyChromeNamesTheWindowAfterTheApp() {
         let window = makeWindow()
         window.title = "localvoxtral Settings"
 
         SettingsWindowChromeView.applyChrome(to: window)
 
-        XCTAssertEqual(window.title, "localvoxtral Settings")
+        XCTAssertEqual(window.title, SettingsWindowChromeView.windowTitle)
+        XCTAssertFalse(window.title.isEmpty)
+        XCTAssertFalse(SettingsWindowChromeView.chromeIsStale(window))
+
+        window.title = "localvoxtral Settings"
+        XCTAssertTrue(SettingsWindowChromeView.chromeIsStale(window))
     }
 
     func testChromeIsStaleOnlyWhenSomethingWasPutBack() {

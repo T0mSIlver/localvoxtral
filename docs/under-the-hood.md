@@ -22,7 +22,7 @@ the Mistral key) is stored in your login Keychain under the service
 in a backup or `defaults export` of it.
 
 A key is read back only when something needs it: the engines you have selected
-(at launch, or when you switch to one) and the Settings window, which shows the
+(at launch, or when you switch to one) and the Engines pane, which shows the
 fields. Managed local mode authenticates with nothing, so that setup never
 opens the Keychain at all. This matters because localvoxtral is not signed with
 an Apple Developer identity: macOS ties each stored item to the exact build that

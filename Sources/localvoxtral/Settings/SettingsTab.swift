@@ -58,7 +58,8 @@ struct SettingsTab: Hashable, Sendable {
     /// Every pane a static drill can name, in presentation order. User-added
     /// terminal panes are NOT here — they have no script-drilled contract.
     static var allKnownPanes: [SettingsTab] {
-        primarySidebarItems
+        historySidebarItems
+            + primarySidebarItems
             + integrationsSidebarItems
             + TerminalAppCatalog.builtIn.map(terminal)
     }
@@ -80,14 +81,18 @@ extension SettingsTab {
     /// the kind enum: raw values are frozen for the scripts, presentation
     /// order is not.
     ///
-    /// Context sits with the app's own panes: it is a polishing feature that
-    /// every harness feeds, not a harness. Its raw value predates the move.
-    /// History and Insights lead: they are the rows that are not settings, and
-    /// the menu bar opens the window on History.
-    /// About closes the section as an ordinary row that scrolls with the rest
-    /// (CodexBar's idiom), not a row pinned to the sidebar's bottom.
+    /// The window is the app's one window (owner decision, 2026-09-22): the
+    /// dictations first, then the settings. History and Insights sit above
+    /// the Settings section, and the menu bar opens the window on History.
+    static let historySidebarItems: [SettingsTab] = [.history, .insights]
+
+    /// The Settings section. Context sits with the app's own panes: it is a
+    /// polishing feature that every harness feeds, not a harness. Its raw
+    /// value predates the move. About closes the section as an ordinary row
+    /// that scrolls with the rest (CodexBar's idiom), not a row pinned to the
+    /// sidebar's bottom.
     static let primarySidebarItems: [SettingsTab] = [
-        .history, .insights, .general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about,
+        .general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about,
     ]
 
     /// The Integrations section (owner decision, 2026-09-07): one row per

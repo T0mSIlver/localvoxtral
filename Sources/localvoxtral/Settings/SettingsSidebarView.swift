@@ -106,10 +106,11 @@ extension SettingsStatusDot {
 /// keep the window chrome under our control and give the AX drills a stable
 /// `AXButton` + identifier to press.
 ///
-/// Sections (owner decision, 2026-09-07, modelled on CodexBar's Providers
-/// group): the main panes, then a small-caps grey **Integrations** header over
-/// one row per harness, then **Terminals** over one row per terminal plus the
-/// Add app… row. Rows keep the row idiom — icon, name, trailing dot.
+/// Sections (owner decisions, 2026-09-07 and 2026-09-22, modelled on
+/// CodexBar's Providers group): History and Insights, then a small-caps grey
+/// **Settings** header over the app's own panes, **Integrations** over one row
+/// per harness, and **Terminals** over one row per terminal plus the Add app…
+/// row. Rows keep the row idiom — icon, name, trailing dot.
 struct SettingsSidebarView: View {
     @Binding var selection: SettingsTab
     /// Full Terminals section list (built-ins + user-added), from
@@ -135,6 +136,19 @@ struct SettingsSidebarView: View {
             // main section (CodexBar's idiom), not a footer pinned over the list.
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
+                    ForEach(SettingsTab.historySidebarItems, id: \.self) { tab in
+                        SettingsSidebarRow(
+                            tab: tab,
+                            isSelected: selection == tab,
+                            dot: statusDot(tab),
+                            badgeCount: badgeCount(tab)
+                        ) {
+                            selection = tab
+                        }
+                    }
+
+                    SettingsSidebarSectionHeader(title: "Settings")
+
                     ForEach(SettingsTab.primarySidebarItems, id: \.self) { tab in
                         SettingsSidebarRow(
                             tab: tab,

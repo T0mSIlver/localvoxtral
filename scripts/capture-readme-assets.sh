@@ -71,7 +71,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AX_PROBE="${SCRIPT_DIR}/lib/ax-probe.swift"
 # Pins the probe's shape-matched fallbacks to the Settings window; the app has
 # other windows the wrong AXButton/AXScrollArea could be found in.
-SETTINGS_WINDOW_TITLE="Settings"
+SETTINGS_WINDOW_TITLE="localvoxtral"
 
 [[ -d "$APP_PATH" ]] || { echo "App bundle not found: $APP_PATH (build with ./scripts/package_app.sh)" >&2; exit 1; }
 [[ -d "$ASSETS_DIR" ]] || { echo "Run from the repo root ($ASSETS_DIR/ not found)." >&2; exit 1; }
