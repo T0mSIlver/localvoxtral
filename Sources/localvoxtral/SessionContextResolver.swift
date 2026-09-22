@@ -1,12 +1,63 @@
 import Foundation
 
-// The session-context half of the view model, moved here verbatim from
-// DictationViewModel.swift ahead of its extraction into
-// `SessionContextResolver` (#432 step 4b): the start-time screen capture and
-// Claude join, the remote herdr forward leases, the stop-time decision and
-// consumes, and the two commit-time gates. Three members drop `private` so
-// this file can reach them.
-extension DictationViewModel {
+/// The context a dictation carries from start to commit: the terminal screen
+/// as it looked when the user began speaking, the Claude Code session the
+/// focused pane joined, that pane's socket sample, and the leases on any
+/// remote herdr tunnel the join opened. Owned by `DictationViewModel` and
+/// reached as `viewModel.context`; captured at session start, decided and
+/// consumed at commit, discarded on every other exit.
+///
+/// Every gate here is what keeps repository contents, prior prompts and
+/// screen text away from an endpoint the user has not consented to. Read
+/// docs/agent/invariants.md ("Claude Code context reaches the prompt only
+/// through a positive join") before changing any of it.
+@MainActor
+final class SessionContextResolver {
+    let settings: SettingsStore
+    let textInsertion: TextInsertionService
+
+    /// The Ghostty screen as it looked when the user started speaking, sampled
+    /// at session start before the overlay can take focus. Nil whenever the
+    /// opt-in gate rejected (setting off, remote endpoint, non-Ghostty app,
+    /// no Accessibility trust), in which case no AX call was made at all.
+    /// Consumed at commit by `terminalScreenContextDecision()`.
+    var terminalScreenStartCapture: TerminalScreenCapture?
+
+    /// Resolves the focused pane to a live Claude Code session. Installed by
+    /// `AppDelegate` once the broker is actually listening, and nil otherwise,
+    /// so a build where broker startup failed simply never joins.
+    var claudeSessionJoinResolver: ClaudeSessionJoinResolver?
+
+    /// THE session join for the current dictation, resolved once at start.
+    /// Read by three consumers (raw screen attachment, the session block,
+    /// repository collection), which is why it is stored rather than
+    /// re-derived: they must all describe the same session. Nil whenever the
+    /// pane did not positively join. Cleared on every session exit.
+    var claudeSessionJoin: ClaudeSessionJoin?
+    /// Panel indicators own their associated remote forward until an explicit
+    /// token clear has completed, so teardown cannot close the tunnel before
+    /// the clear request reaches herdr.
+    var liveRemoteHerdrIndicators: [HerdrPanelMicIndicator] = []
+    /// Remote herdr `ssh -L` leases this dictation has open. See
+    /// `retainRemoteHerdrForward(of:)` for why they are owned here and not by
+    /// the join that travels.
+    private var liveRemoteHerdrForwards: [ClaudeRemoteHerdrForwardHandle] = []
+
+    /// The JOINED pane's visible text at dictation start, read over its own
+    /// multiplexer socket. Non-nil only for a socket-routed pane join with the
+    /// screen-context consent gate cleared at start. At commit it replaces the
+    /// AX screen decision; cleared on every session exit.
+    var socketPaneStartCapture: SocketPaneScreenCapture?
+
+    /// Collects the joined Claude session's repository. A stored property so
+    /// tests drive the whole commit path against an in-memory tree.
+    var claudeRepoCollector: any ClaudeRepoCollecting = ClaudeRepoCollector()
+
+    init(settings: SettingsStore, textInsertion: TextInsertionService) {
+        self.settings = settings
+        self.textInsertion = textInsertion
+    }
+
     /// Samples the focused terminal's screen for polish grounding (Ghostty
     /// over AX, iTerm2/Terminal.app over AppleScript contents), at the same
     /// moment and
@@ -20,15 +71,12 @@ extension DictationViewModel {
     /// an opted-out user, a remote polishing endpoint, or an unlisted app
     /// means the screen is never read. A nil polishing configuration also means
     /// no read: with no endpoint there is nothing to ground for.
-    func captureTerminalScreenContextForSession() async {
+    func captureAtStart() async -> OverlayClaudeJoinBadge {
         #if LOCALVOXTRAL_DOGFOOD
         // A fresh dictation gets fresh tap slots: an abandoned pipeline's late
-        // note from the PREVIOUS session must not describe this one.
+        // note from the PREVIOUS session must not describe this one. (The
+        // owner supersedes its post-commit edit watch before calling here.)
         DogfoodCaptureTap.shared.beginSession()
-        // Same rule for the post-commit edit watch: the previous dictation's
-        // window closes here rather than reading this session's keys. It still
-        // flushes its own record, as `superseded`.
-        dogfoodEditSignalWatcher.supersede()
         #endif
         guard let endpointURL = settings.llmPolishingConfiguration?.endpointURL else {
             terminalScreenStartCapture = nil
@@ -38,14 +86,13 @@ extension DictationViewModel {
             // there is no grounding to report on either way. Saying "no Claude
             // session" here would be true and useless — nothing would have used
             // one.
-            sessionClaudeJoinBadge = .hidden
             #if LOCALVOXTRAL_DOGFOOD
             // Recorded even though no arm ran: `join report` answering with the
             // PREVIOUS dictation's join would be the worst possible answer here
             // — a stale arm name for a dictation that never resolved one.
             dogfoodNoteResolvedJoin(nil, extraCause: "gate: no polishing endpoint")
             #endif
-            return
+            return .hidden
         }
         terminalScreenStartCapture = TerminalScreenContextSource.captureAtStart(
             settingEnabled: settings.terminalScreenContextEnabled,
@@ -71,7 +118,7 @@ extension DictationViewModel {
         // Read from the ONE resolved join, never by asking again. The badge is
         // a description of `claudeSessionJoin`, so it cannot disagree with the
         // context that actually ships.
-        sessionClaudeJoinBadge = OverlayClaudeJoinBadge.resolve(
+        let badge = OverlayClaudeJoinBadge.resolve(
             join: claudeSessionJoin,
             contextFeatureEnabled: settings.terminalScreenContextEnabled
                 || settings.claudeRepoContextEnabled,
@@ -93,6 +140,7 @@ extension DictationViewModel {
             isAccessibilityTrusted: textInsertion.isAccessibilityTrusted,
             trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
         )
+        return badge
     }
 
     /// Resolves this dictation's Claude session join, ONCE, here at start.
@@ -361,7 +409,7 @@ extension DictationViewModel {
 }
 
 #if LOCALVOXTRAL_DOGFOOD
-extension DictationViewModel {
+extension SessionContextResolver {
     /// Snapshot the resolved join for `join report`, with the abstention chain
     /// as it stands at resolution time.
     ///

@@ -541,20 +541,7 @@ final class DictationViewModel {
         let secureKeyboardEntryEnabled: Bool
     }
 
-    /// The Ghostty screen as it looked when the user started speaking, sampled
-    /// in `beginDictationSession` before the overlay can take focus. Nil
-    /// whenever the opt-in gate rejected (setting off, remote endpoint,
-    /// non-Ghostty app, no Accessibility trust) — in which case no AX call was
-    /// made at all. Consumed at commit by `terminalScreenContextDecision()`.
-    @ObservationIgnored
-    var terminalScreenStartCapture: TerminalScreenCapture?
 
-    /// Resolves the focused pane to a live Claude Code session. Installed by
-    /// `AppDelegate` once the broker is actually listening, and nil otherwise —
-    /// so a build where broker startup failed simply never joins, rather than
-    /// joining against a registry nothing feeds.
-    @ObservationIgnored
-    var claudeSessionJoinResolver: ClaudeSessionJoinResolver?
 
     /// Settings surface for the two Claude Code integrations.
     ///
@@ -567,36 +554,7 @@ final class DictationViewModel {
     /// NOT `@ObservationIgnored`: the pane re-renders when the model swaps in.
     var claudeIntegrationSettings: ClaudeIntegrationSettingsModel?
 
-    /// THE session join for the current dictation, resolved once at start.
-    ///
-    /// Read by three consumers — raw screen attachment, the session block, and
-    /// repository collection — which is exactly why it is stored rather than
-    /// re-derived: they must all describe the same session. Nil whenever the
-    /// pane did not positively join (no arm answered, or unknown/stale/
-    /// ambiguous), which
-    /// is the abstention that keeps an unrelated terminal's repo out of the
-    /// prompt. Cleared on every session exit, like the screen capture.
-    @ObservationIgnored
-    var claudeSessionJoin: ClaudeSessionJoin?
-    /// Panel indicators own their associated remote forward until an explicit
-    /// token clear has completed, so teardown cannot close the tunnel before
-    /// the clear request reaches herdr.
-    @ObservationIgnored
-    var liveRemoteHerdrIndicators: [HerdrPanelMicIndicator] = []
-    /// Remote herdr `ssh -L` leases this dictation has open. See
-    /// `retainRemoteHerdrForward(of:)` for why they are owned here and not by
-    /// the join that travels.
-    var liveRemoteHerdrForwards: [ClaudeRemoteHerdrForwardHandle] = []
 
-    /// The JOINED pane's visible text at dictation start, read over its own
-    /// multiplexer socket (herdr `pane.read` / cmux `surface.read_text`,
-    /// sanitized + capped like an AX read). Non-nil only when the session's
-    /// join is a `.herdrPane`/`.cmuxSurface` join AND the screen-context consent
-    /// gate cleared at start. At commit it replaces the AX screen decision (see
-    /// `SocketPaneScreenContext.reconcileAtStop`); cleared on every session
-    /// exit, exactly like the screen capture and the join above.
-    @ObservationIgnored
-    var socketPaneStartCapture: SocketPaneScreenCapture?
 
     @ObservationIgnored
 
@@ -741,12 +699,6 @@ final class DictationViewModel {
     /// commits fast-skip vocabulary instead of stacking more blocked threads.
     @ObservationIgnored
     let repoVocabularyPipelineInFlight = RepoVocabularyFlightGate()
-    /// Collects the joined Claude session's repository. A stored property (not
-    /// a static call) so tests drive the whole commit path against an in-memory
-    /// tree and a stub git runner — the repo conventions' DI seam, not a
-    /// singleton.
-    @ObservationIgnored
-    var claudeRepoCollector: any ClaudeRepoCollecting = ClaudeRepoCollector()
     /// Test seam: invoked after the managed-startup status mirror finishes
     /// handling each status update (including updates its guard skips), so
     /// tests can await mirror processing deterministically instead of
@@ -786,6 +738,10 @@ final class DictationViewModel {
     /// the rows' requests and refreshes. Views bind to `viewModel.permissions`.
     @ObservationIgnored
     let permissions: PermissionsCoordinator
+    /// What a dictation carries from start to commit: the screen capture, the
+    /// Claude join, the pane sample and the remote forward leases.
+    @ObservationIgnored
+    let context: SessionContextResolver
     /// The keyboard triggers: gestures, hotkey registration, the shortcut
     /// slots. Views bind to `viewModel.shortcuts`; the session reads its
     /// gesture flags through it.
@@ -814,6 +770,7 @@ final class DictationViewModel {
                 speechdStepCadenceProvider: { settings.speechdStepCadence.milliseconds }
             )
         self.managesRuntimeServices = startRuntimeServices
+        self.context = SessionContextResolver(settings: settings, textInsertion: textInsertion)
         self.permissions = PermissionsCoordinator(
             settings: settings,
             textInsertion: textInsertion,
@@ -1215,7 +1172,7 @@ final class DictationViewModel {
         // capture, so without this the user's screen text would sit in memory
         // until the next session start — text from a session they explicitly
         // threw away.
-        discardTerminalScreenCapture()
+        context.discardTerminalScreenCapture()
         cancelManagedStartupTask()
         if isDictating {
             stopDictation(reason: "cancelled", finalizeRemainingAudio: false)
@@ -1759,3 +1716,18 @@ extension DictationViewModel: ShortcutSessionControlling {
 }
 
 extension DictationViewModel: PermissionSessionControlling {}
+
+extension DictationViewModel {
+    /// Start-of-session capture, through the resolver; the badge it returns
+    /// describes the one resolved join, so the overlay cannot disagree with
+    /// the context that ships.
+    func captureTerminalScreenContextForSession() async {
+        #if LOCALVOXTRAL_DOGFOOD
+        // The previous dictation's post-commit edit watch closes here rather
+        // than reading this session's keys. It still flushes its own record,
+        // as `superseded`.
+        dogfoodEditSignalWatcher.supersede()
+        #endif
+        sessionClaudeJoinBadge = await context.captureAtStart()
+    }
+}

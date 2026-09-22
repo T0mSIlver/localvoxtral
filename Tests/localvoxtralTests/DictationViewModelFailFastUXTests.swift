@@ -705,12 +705,12 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
             )
         )
         XCTAssertNotNil(join)
-        viewModel.claudeSessionJoin = join
+        viewModel.context.claudeSessionJoin = join
 
         _ = await staleTask?.value
 
         XCTAssertEqual(
-            viewModel.claudeSessionJoin, join,
+            viewModel.context.claudeSessionJoin, join,
             "a stale startup task must not wipe the successor's join"
         )
     }

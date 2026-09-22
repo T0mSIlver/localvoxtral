@@ -88,7 +88,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
     ) async -> (DictationViewModel, GateSpyCollector, ClaudeSessionJoin?) {
         let viewModel = makeViewModel()
         let collector = GateSpyCollector()
-        viewModel.claudeRepoCollector = collector
+        viewModel.context.claudeRepoCollector = collector
 
         let registry = ClaudeSessionRegistry(
             now: { Date(timeIntervalSince1970: 1_000) },
@@ -108,9 +108,9 @@ final class ClaudeRepoContextGateTests: XCTestCase {
             focusedTerminalTTY: { _ in Self.surfaceTTY },
             focusedWindowID: { _ in 101 }
         )
-        viewModel.claudeSessionJoinResolver = resolver
+        viewModel.context.claudeSessionJoinResolver = resolver
         let join = await resolver.resolve(target: ghostty)
-        viewModel.claudeSessionJoin = join
+        viewModel.context.claudeSessionJoin = join
         return (viewModel, collector, join)
     }
 
@@ -121,7 +121,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
     func testEnabledLoopbackLiveLocalJoinReachesTheCollector() async {
         let (viewModel, collector, join) = await wired()
         viewModel.settings.claudeRepoContextEnabled = true
-        let snapshot = await viewModel.claudeRepoSnapshotIfEnabled(
+        let snapshot = await viewModel.context.claudeRepoSnapshotIfEnabled(
             join: join, endpointURL: loopback, transcript: "hello"
         )
         XCTAssertNotNil(snapshot)
@@ -141,7 +141,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
     func testSettingOffMakesNoFilesystemCall() async {
         let (viewModel, collector, join) = await wired()
         viewModel.settings.claudeRepoContextEnabled = false
-        let snapshot = await viewModel.claudeRepoSnapshotIfEnabled(
+        let snapshot = await viewModel.context.claudeRepoSnapshotIfEnabled(
             join: join, endpointURL: loopback, transcript: "hello"
         )
         XCTAssertNil(snapshot)
@@ -159,7 +159,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         viewModel.settings.claudeRepoContextEnabled = true
         XCTAssertNotNil(join, "precondition: the join resolved while the setting was on")
         viewModel.settings.claudeRepoContextEnabled = false
-        _ = await viewModel.claudeRepoSnapshotIfEnabled(
+        _ = await viewModel.context.claudeRepoSnapshotIfEnabled(
             join: join, endpointURL: loopback, transcript: "hello"
         )
         XCTAssertTrue(collector.collectedPaths.isEmpty)
@@ -172,7 +172,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
     func testRemoteEndpointMakesNoFilesystemCall() async {
         let (viewModel, collector, join) = await wired()
         viewModel.settings.claudeRepoContextEnabled = true
-        let snapshot = await viewModel.claudeRepoSnapshotIfEnabled(
+        let snapshot = await viewModel.context.claudeRepoSnapshotIfEnabled(
             join: join, endpointURL: remote, transcript: "hello"
         )
         XCTAssertNil(snapshot)
@@ -189,7 +189,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         let (viewModel, collector, join) = await wired()
         viewModel.settings.claudeRepoContextEnabled = true
         viewModel.settings.polishContextTrustedEndpointEnabled = true
-        let snapshot = await viewModel.claudeRepoSnapshotIfEnabled(
+        let snapshot = await viewModel.context.claudeRepoSnapshotIfEnabled(
             join: join, endpointURL: remote, transcript: "hello"
         )
         XCTAssertNotNil(snapshot)
@@ -203,7 +203,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         let (viewModel, collector, join) = await wired()
         viewModel.settings.claudeRepoContextEnabled = false
         viewModel.settings.polishContextTrustedEndpointEnabled = true
-        let snapshot = await viewModel.claudeRepoSnapshotIfEnabled(
+        let snapshot = await viewModel.context.claudeRepoSnapshotIfEnabled(
             join: join, endpointURL: remote, transcript: "hello"
         )
         XCTAssertNil(snapshot)
@@ -219,7 +219,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
     func testNoJoinMakesNoFilesystemCall() async {
         let (viewModel, collector, _) = await wired()
         viewModel.settings.claudeRepoContextEnabled = true
-        let snapshot = await viewModel.claudeRepoSnapshotIfEnabled(
+        let snapshot = await viewModel.context.claudeRepoSnapshotIfEnabled(
             join: nil, endpointURL: loopback, transcript: "hello"
         )
         XCTAssertNil(snapshot)
@@ -234,7 +234,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
     func testSessionThatEndedSinceStartMakesNoFilesystemCall() async {
         let viewModel = makeViewModel()
         let collector = GateSpyCollector()
-        viewModel.claudeRepoCollector = collector
+        viewModel.context.claudeRepoCollector = collector
         viewModel.settings.claudeRepoContextEnabled = true
 
         let dead = Mutex(false)
@@ -256,12 +256,12 @@ final class ClaudeRepoContextGateTests: XCTestCase {
             focusedTerminalTTY: { _ in Self.surfaceTTY },
             focusedWindowID: { _ in 101 }
         )
-        viewModel.claudeSessionJoinResolver = resolver
+        viewModel.context.claudeSessionJoinResolver = resolver
         let join = await resolver.resolve(target: ghostty)
         XCTAssertNotNil(join, "precondition: live at join time")
 
         dead.withLock { $0 = true }
-        let snapshot = await viewModel.claudeRepoSnapshotIfEnabled(
+        let snapshot = await viewModel.context.claudeRepoSnapshotIfEnabled(
             join: join, endpointURL: loopback, transcript: "hello"
         )
         XCTAssertNil(snapshot)
@@ -273,8 +273,8 @@ final class ClaudeRepoContextGateTests: XCTestCase {
     func testNoResolverMakesNoFilesystemCall() async {
         let (viewModel, collector, join) = await wired()
         viewModel.settings.claudeRepoContextEnabled = true
-        viewModel.claudeSessionJoinResolver = nil
-        _ = await viewModel.claudeRepoSnapshotIfEnabled(
+        viewModel.context.claudeSessionJoinResolver = nil
+        _ = await viewModel.context.claudeRepoSnapshotIfEnabled(
             join: join, endpointURL: loopback, transcript: "hello"
         )
         XCTAssertTrue(collector.collectedPaths.isEmpty)
@@ -293,7 +293,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
     func testRemoteSessionMakesNoFilesystemCall() async {
         let viewModel = makeViewModel()
         let collector = GateSpyCollector()
-        viewModel.claudeRepoCollector = collector
+        viewModel.context.claudeRepoCollector = collector
 
         let registry = ClaudeSessionRegistry(
             now: { Date(timeIntervalSince1970: 1_000) },
@@ -311,18 +311,18 @@ final class ClaudeRepoContextGateTests: XCTestCase {
             focusedBrowserTabURL: { _ in "https://claude.ai/code/session_abc123" },
             focusedWindowID: { _ in 101 }
         )
-        viewModel.claudeSessionJoinResolver = resolver
+        viewModel.context.claudeSessionJoinResolver = resolver
         let join = await resolver.resolve(
             target: TerminalScreenTarget(
                 pid: 4242, bundleID: BrowserTabAllowlist.chromeBundleID
             )
         )
-        viewModel.claudeSessionJoin = join
+        viewModel.context.claudeSessionJoin = join
 
         viewModel.settings.claudeRepoContextEnabled = true
         XCTAssertNotNil(join, "precondition: a remote session still joins")
         XCTAssertNil(join?.localWorkspacePath)
-        let snapshot = await viewModel.claudeRepoSnapshotIfEnabled(
+        let snapshot = await viewModel.context.claudeRepoSnapshotIfEnabled(
             join: join, endpointURL: loopback, transcript: "hello"
         )
         XCTAssertNil(snapshot)
@@ -336,7 +336,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
     func testSessionWithNoWorkspaceMakesNoFilesystemCall() async {
         let (viewModel, collector, join) = await wired(cwd: nil)
         viewModel.settings.claudeRepoContextEnabled = true
-        _ = await viewModel.claudeRepoSnapshotIfEnabled(
+        _ = await viewModel.context.claudeRepoSnapshotIfEnabled(
             join: join, endpointURL: loopback, transcript: "hello"
         )
         XCTAssertTrue(collector.collectedPaths.isEmpty)
@@ -360,7 +360,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         join: ClaudeSessionJoin?,
         endpointURL: URL
     ) async -> (text: String, block: PolishContextBlock?, groundingCount: Int) {
-        let text = viewModel.claudeSessionTextIfEnabled(join: join, endpointURL: endpointURL)
+        let text = viewModel.context.claudeSessionTextIfEnabled(join: join, endpointURL: endpointURL)
         let preparation = await PolishContextPreparation.prepared(
             text: text,
             transcript: "check the migration script",
@@ -404,9 +404,9 @@ final class ClaudeRepoContextGateTests: XCTestCase {
             focusedTerminalTTY: { _ in Self.surfaceTTY },
             focusedWindowID: { _ in 101 }
         )
-        viewModel.claudeSessionJoinResolver = resolver
+        viewModel.context.claudeSessionJoinResolver = resolver
         let join = await resolver.resolve(target: ghostty)
-        viewModel.claudeSessionJoin = join
+        viewModel.context.claudeSessionJoin = join
         return (viewModel, join)
     }
 
@@ -489,7 +489,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
             focusedTerminalTTY: { _ in Self.surfaceTTY },
             focusedWindowID: { _ in 101 }
         )
-        viewModel.claudeSessionJoinResolver = resolver
+        viewModel.context.claudeSessionJoinResolver = resolver
         let join = await resolver.resolve(target: ghostty)
         XCTAssertNotNil(join, "precondition: live at join time")
 
@@ -505,7 +505,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
     func testNoResolverAttachesNoSessionBlock() async {
         let (viewModel, join) = await wiredWithPriorPrompt()
         viewModel.settings.claudeRepoContextEnabled = true
-        viewModel.claudeSessionJoinResolver = nil
+        viewModel.context.claudeSessionJoinResolver = nil
 
         let outcome = await sessionBlockOutcome(viewModel, join: join, endpointURL: loopback)
         XCTAssertEqual(outcome.text, "")
@@ -519,22 +519,22 @@ final class ClaudeRepoContextGateTests: XCTestCase {
     // attached to an unrelated sentence.
     func testDiscardingTheScreenCaptureAlsoDropsTheJoin() async {
         let (viewModel, _, join) = await wired()
-        viewModel.claudeSessionJoin = join
-        viewModel.discardTerminalScreenCapture()
-        XCTAssertNil(viewModel.claudeSessionJoin)
+        viewModel.context.claudeSessionJoin = join
+        viewModel.context.discardTerminalScreenCapture()
+        XCTAssertNil(viewModel.context.claudeSessionJoin)
     }
 
     // Consuming hands the join over exactly once, so a later session cannot
     // inherit it.
     func testConsumingTheJoinClearsIt() async {
         let (viewModel, _, join) = await wired()
-        viewModel.claudeSessionJoin = join
+        viewModel.context.claudeSessionJoin = join
         XCTAssertEqual(
-            viewModel.consumeClaudeSessionJoin()?.snapshot.sessionID,
+            viewModel.context.consumeClaudeSessionJoin()?.snapshot.sessionID,
             join?.snapshot.sessionID
         )
-        XCTAssertNil(viewModel.claudeSessionJoin)
-        XCTAssertNil(viewModel.consumeClaudeSessionJoin())
+        XCTAssertNil(viewModel.context.claudeSessionJoin)
+        XCTAssertNil(viewModel.context.consumeClaudeSessionJoin())
     }
 
     // MARK: - Start-time resolution gating
@@ -545,7 +545,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
     func testStartResolutionNeverReadsTheSurfaceWhenBothFeaturesAreOff() async {
         let viewModel = makeViewModel()
         let reads = Mutex(0)
-        viewModel.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
+        viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
             registry: registry(),
             focusedTerminalTTY: { _ in
                 reads.withLock { $0 += 1 }
@@ -559,7 +559,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
 
         await viewModel.captureTerminalScreenContextForSession()
 
-        XCTAssertNil(viewModel.claudeSessionJoin)
+        XCTAssertNil(viewModel.context.claudeSessionJoin)
         XCTAssertEqual(
             reads.withLock { $0 }, 0,
             "an opted-out user's terminal must never be asked anything"
@@ -579,7 +579,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         viewModel.textInsertion.debugSetAccessibilityTrusted(true)
         addTeardownBlock { viewModel.textInsertion.debugSetAccessibilityTrusted(nil) }
         let reads = Mutex(0)
-        viewModel.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
+        viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
             registry: registry(),
             focusedTerminalTTY: { _ in
                 reads.withLock { $0 += 1 }
@@ -591,7 +591,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
 
         viewModel.settings.polishContextTrustedEndpointEnabled = false
         await viewModel.captureTerminalScreenContextForSession()
-        XCTAssertNil(viewModel.claudeSessionJoin)
+        XCTAssertNil(viewModel.context.claudeSessionJoin)
         XCTAssertEqual(
             reads.withLock { $0 }, 0,
             "a remote endpoint without the opt-in must not even ask the terminal"
@@ -599,7 +599,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
 
         viewModel.settings.polishContextTrustedEndpointEnabled = true
         await viewModel.captureTerminalScreenContextForSession()
-        XCTAssertNotNil(viewModel.claudeSessionJoin, "the opt-in admits the join")
+        XCTAssertNotNil(viewModel.context.claudeSessionJoin, "the opt-in admits the join")
         XCTAssertEqual(reads.withLock { $0 }, 1)
     }
 
@@ -614,7 +614,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
     ) -> (DictationViewModel, GateSpyCollector) {
         let viewModel = makeViewModel()
         let collector = GateSpyCollector()
-        viewModel.claudeRepoCollector = collector
+        viewModel.context.claudeRepoCollector = collector
         let registry = ClaudeSessionRegistry(
             now: { Date(timeIntervalSince1970: 1_000) },
             isProcessAlive: { _ in true })
@@ -636,7 +636,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
             environment: isLocal
                 ? nil : ClaudeRemoteSessionEnvironment(bridgeSessionID: "session_abc123")
         )
-        viewModel.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
+        viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
             registry: registry,
             focusedTerminalTTY: { _ in nil },
             focusedBrowserTabURL: { _ in
@@ -664,13 +664,13 @@ final class ClaudeRepoContextGateTests: XCTestCase {
 
         await viewModel.captureTerminalScreenContextForSession()
 
-        XCTAssertNil(viewModel.claudeSessionJoin)
+        XCTAssertNil(viewModel.context.claudeSessionJoin)
         XCTAssertEqual(reads.count, 0, "the browser must not be automated for this")
 
         // The setting the browser arm actually serves admits it.
         viewModel.settings.claudeRepoContextEnabled = true
         await viewModel.captureTerminalScreenContextForSession()
-        XCTAssertEqual(viewModel.claudeSessionJoin?.mechanism, .browserTab)
+        XCTAssertEqual(viewModel.context.claudeSessionJoin?.mechanism, .browserTab)
         XCTAssertEqual(reads.count, 1)
     }
 
@@ -686,11 +686,11 @@ final class ClaudeRepoContextGateTests: XCTestCase {
 
         await viewModel.captureTerminalScreenContextForSession()
 
-        let join = try XCTUnwrap(viewModel.claudeSessionJoin)
+        let join = try XCTUnwrap(viewModel.context.claudeSessionJoin)
         XCTAssertEqual(join.mechanism, .browserTab)
         XCTAssertEqual(join.snapshot.sessionID, "s1")
         XCTAssertNil(
-            viewModel.terminalScreenStartCapture,
+            viewModel.context.terminalScreenStartCapture,
             "a browser is not screen-readable: nothing may be captured for it"
         )
     }
@@ -705,9 +705,9 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         addTeardownBlock { viewModel.textInsertion.debugSetAccessibilityTrusted(nil) }
         TerminalScreenContextSource.debugFrontmostTargetOverride = { self.chrome }
         await viewModel.captureTerminalScreenContextForSession()
-        let join = try XCTUnwrap(viewModel.claudeSessionJoin)
+        let join = try XCTUnwrap(viewModel.context.claudeSessionJoin)
 
-        let snapshot = await viewModel.claudeRepoSnapshotIfEnabled(
+        let snapshot = await viewModel.context.claudeRepoSnapshotIfEnabled(
             join: join, endpointURL: loopback, transcript: "hello"
         )
 
@@ -727,16 +727,16 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         addTeardownBlock { viewModel.textInsertion.debugSetAccessibilityTrusted(nil) }
         TerminalScreenContextSource.debugFrontmostTargetOverride = { self.chrome }
         await viewModel.captureTerminalScreenContextForSession()
-        let join = try XCTUnwrap(viewModel.claudeSessionJoin)
+        let join = try XCTUnwrap(viewModel.context.claudeSessionJoin)
 
-        let snapshot = await viewModel.claudeRepoSnapshotIfEnabled(
+        let snapshot = await viewModel.context.claudeRepoSnapshotIfEnabled(
             join: join, endpointURL: loopback, transcript: "hello"
         )
 
         XCTAssertNil(snapshot)
         XCTAssertEqual(collector.collectedPaths, [], "no file of a remote host may be opened")
         XCTAssertFalse(
-            viewModel.claudeSessionTextIfEnabled(join: join, endpointURL: loopback).isEmpty,
+            viewModel.context.claudeSessionTextIfEnabled(join: join, endpointURL: loopback).isEmpty,
             "the session's own off-screen facts are exactly what the block is for"
         )
     }

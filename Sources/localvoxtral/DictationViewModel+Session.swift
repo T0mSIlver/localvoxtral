@@ -364,7 +364,7 @@ extension DictationViewModel {
             managedStartupTaskID == ownerTaskID || managedStartupTaskID == nil
         guard !Task.isCancelled, isConnectingRealtimeSession, ownsSharedSessionState else {
             if ownsSharedSessionState {
-                discardTerminalScreenCapture()
+                context.discardTerminalScreenCapture()
                 clearLatchedSessionMetadata()
                 isConnectingRealtimeSession = false
             }
@@ -741,15 +741,15 @@ extension DictationViewModel {
                     // the screen at commit, not after the repo-vocabulary await
                     // has let ~2 s of agent output scroll past — which would
                     // report every session as mutated.
-                    capturedScreenDecision = terminalScreenContextDecision(
+                    capturedScreenDecision = context.terminalScreenContextDecision(
                         endpointURL: endpointURL
                     )
                     // AFTER the screen decision, never before: that call is what
                     // asks the authorizer about the join, and consuming it first
                     // would clear it out from under the question and silently
                     // withdraw every raw screen attachment.
-                    capturedClaudeJoin = consumeClaudeSessionJoin()
-                    capturedSocketPaneStart = consumeSocketPaneStartCapture()
+                    capturedClaudeJoin = context.consumeClaudeSessionJoin()
+                    capturedSocketPaneStart = context.consumeSocketPaneStartCapture()
                 } else {
                     capturedClipboardContext = nil
                     capturedScreenDecision = .drop(reason: .noStartCapture)
@@ -760,10 +760,10 @@ extension DictationViewModel {
                     // reconciliation. Nothing will read this join's remote
                     // herdr tunnel either, so it goes now rather than at the
                     // handle's deinit.
-                    terminalScreenStartCapture = nil
-                    claudeSessionJoin = nil
-                    socketPaneStartCapture = nil
-                    closeRemoteHerdrForwards()
+                    context.terminalScreenStartCapture = nil
+                    context.claudeSessionJoin = nil
+                    context.socketPaneStartCapture = nil
+                    context.closeRemoteHerdrForwards()
                 }
 
                 // Repo vocabulary rides in the `{{replacement_dictionary}}`
@@ -806,7 +806,7 @@ extension DictationViewModel {
                         screenDecision = await SocketPaneScreenContext.reconcileAtStop(
                             start: capturedSocketPaneStart,
                             join: capturedClaudeJoin,
-                            resolver: self.claudeSessionJoinResolver,
+                            resolver: self.context.claudeSessionJoinResolver,
                             fallback: capturedScreenDecision,
                             settingEnabled: self.settings.terminalScreenContextEnabled,
                             endpointURL: endpointURL,
@@ -821,7 +821,7 @@ extension DictationViewModel {
                     // which OWNS the handle — the join was consumed pre-Task,
                     // so closing "the join's" tunnel here would leave the owner
                     // holding a closed handle it still had to forget.
-                    self.closeRemoteHerdrForwards()
+                    self.context.closeRemoteHerdrForwards()
 
                     // The polish request is assembled HERE, inside the Task, so
                     // the opt-in repo-vocabulary indexing — whose git subprocess
@@ -892,7 +892,7 @@ extension DictationViewModel {
                     // all, not a collector that reads and then discards.
                     var claudeRepoSnapshot: ClaudeRepoSnapshot?
                     if let endpointURL = polishingConfig?.endpointURL {
-                        claudeRepoSnapshot = await self.claudeRepoSnapshotIfEnabled(
+                        claudeRepoSnapshot = await self.context.claudeRepoSnapshotIfEnabled(
                             join: capturedClaudeJoin,
                             endpointURL: endpointURL,
                             transcript: workingText
@@ -916,7 +916,7 @@ extension DictationViewModel {
                     // configured, including a remote one.
                     var claudeSessionText = ""
                     if let endpointURL = polishingConfig?.endpointURL {
-                        claudeSessionText = self.claudeSessionTextIfEnabled(
+                        claudeSessionText = self.context.claudeSessionTextIfEnabled(
                             join: capturedClaudeJoin,
                             endpointURL: endpointURL
                         )
@@ -1763,7 +1763,7 @@ extension DictationViewModel {
         // spawning the polish Task), so this is a no-op there — it exists to
         // catch the stop paths that never reach the commit block at all: empty
         // transcript, polishing disabled, cancelled overlay.
-        discardTerminalScreenCapture()
+        context.discardTerminalScreenCapture()
         clearLatchedSessionMetadata()
         if holdFailureIndicatorUntilStopCompletes {
             holdFailureIndicatorUntilStopCompletes = false
@@ -2300,7 +2300,7 @@ extension DictationViewModel {
         // left to read from it (review finding 4). Every abort route — the
         // connect timeout, a mic-start failure, a thrown connect, the escape
         // cancel — funnels through here.
-        closeRemoteHerdrForwards()
+        context.closeRemoteHerdrForwards()
         cancelConnectTimeout()
         cancelRealtimeReconnect()
         finalizationWatchdogTask?.cancel()
