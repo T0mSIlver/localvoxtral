@@ -17,6 +17,7 @@ final class LoginItemControllerTests: XCTestCase {
         var unregisterError: Error?
         private(set) var registerCount = 0
         private(set) var unregisterCount = 0
+        private(set) var openSystemSettingsCount = 0
 
         init(state: LoginItemState) {
             self.state = state
@@ -34,6 +35,10 @@ final class LoginItemControllerTests: XCTestCase {
             unregisterCount += 1
             if let unregisterError { throw unregisterError }
             state = .disabled
+        }
+
+        func openSystemSettings() {
+            openSystemSettingsCount += 1
         }
     }
 
@@ -75,6 +80,11 @@ final class LoginItemControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .requiresApproval)
         XCTAssertTrue(controller.isOn)
         XCTAssertEqual(controller.statusMessage, "Needs your approval in System Settings.")
+        // The one state with somewhere to send the user — and the only one
+        // whose row offers the button that takes them there.
+        XCTAssertTrue(controller.needsApproval)
+        controller.openSystemSettings()
+        XCTAssertEqual(registrar.openSystemSettingsCount, 1)
     }
 
     func testARefusedRegistrationLeavesTheSwitchOffAndExplains() {
@@ -124,6 +134,7 @@ final class LoginItemControllerTests: XCTestCase {
 
         XCTAssertFalse(controller.isAvailable)
         XCTAssertFalse(controller.isOn)
+        XCTAssertFalse(controller.needsApproval)
         XCTAssertEqual(controller.statusMessage, "Only an installed copy can do this.")
     }
 }
