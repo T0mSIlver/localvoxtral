@@ -107,13 +107,18 @@ extension DictationViewModel {
         reconnectAttemptDidFail = false
         reconnectTask?.cancel()
         reconnectTask = nil
+        // The session gives up whatever socket the last attempt opened, so it
+        // is on no connection: a socket that opens after this cannot turn the
+        // menu bar icon green behind a session that ended (#417).
+        sessionConnectionGeneration = .none
         // Cancelling the task does not cancel the socket the attempt opened.
         // Left alone, a socket still in `connecting` can open after the stop
         // and transmit the audio the stop flushed into its pending queue — the
         // stop-finalization path takes its `!isConnected` shortcut and never
-        // closes it, and its late `.connected` turns the menu bar icon green
-        // with no session behind it. A run is only ever in flight when the
-        // session has no healthy socket, so there is nothing here to protect.
+        // closes it. The connection stamp refuses everything that socket says
+        // (the cleared generation above), but it cannot stop it from SENDING;
+        // only closing it does. A run is only ever in flight when the session
+        // has no healthy socket, so there is nothing here to protect.
         // Emission is queued to the main queue, so the `.disconnected` this
         // raises cannot re-enter before the caller finishes tearing down.
         activeRealtimeClient.disconnect()
@@ -144,6 +149,10 @@ extension DictationViewModel {
                 // never calls `disconnect` itself: that would emit a
                 // `.disconnected` of its own and read as the new socket failing.
                 try activeRealtimeClient.connect(configuration: configuration)
+                // The session moves onto the socket this attempt opened. The
+                // one it left behind can still emit — a transcript above all —
+                // and is refused from here by name, not by guesswork (#417).
+                sessionConnectionGeneration = activeRealtimeClient.connectionGeneration
             } catch {
                 Log.backends.error(
                     "realtime reconnect attempt \(attempt, privacy: .public) could not open a socket: \(error.localizedDescription, privacy: .public)"

@@ -26,19 +26,26 @@ final class MistralRealtimeClientTests: XCTestCase {
     }
 
     private final class EventCollector: @unchecked Sendable {
-        private var events: [RealtimeEvent] = []
+        private var events: [(event: RealtimeEvent, generation: RealtimeConnectionGeneration)] = []
         private let lock = NSLock()
 
-        func append(_ event: RealtimeEvent) {
+        func append(_ event: RealtimeEvent, from generation: RealtimeConnectionGeneration) {
             lock.lock()
-            events.append(event)
+            events.append((event, generation))
             lock.unlock()
         }
 
         func snapshot() -> [RealtimeEvent] {
             lock.lock()
             defer { lock.unlock() }
-            return events
+            return events.map(\.event)
+        }
+
+        /// The socket each collected event named, in the same order.
+        func generations() -> [RealtimeConnectionGeneration] {
+            lock.lock()
+            defer { lock.unlock() }
+            return events.map(\.generation)
         }
     }
 
@@ -289,11 +296,11 @@ final class MistralRealtimeClientTests: XCTestCase {
         // streaming synchronously inside that callback, so its audio must land
         // BEHIND session.update and the replayed queue, never ahead of them.
         let framesEncodedAtStatus = LockedInts()
-        client.setEventHandler { event in
+        client.setEventHandler { event, generation in
             if case .status = event {
                 framesEncodedAtStatus.append(client.debugRecordedFrames().count)
             }
-            collector.append(event)
+            collector.append(event, from: generation)
         }
 
         client.sendAudioChunk(Data([0xFF]))
@@ -303,7 +310,7 @@ final class MistralRealtimeClientTests: XCTestCase {
             "Priming queues one placeholder; the audio frame must queue behind it"
         )
 
-        client.handle(json: ["type": "session.created", "session": ["model": "m"]])
+        client.debugHandleFrameForTesting(json: ["type": "session.created", "session": ["model": "m"]])
 
         XCTAssertEqual(
             framesEncodedAtStatus.snapshot(), [2],
@@ -339,13 +346,13 @@ final class MistralRealtimeClientTests: XCTestCase {
             session.invalidateAndCancel()
         }
         client.debugPrimeConnectedStateForTesting(task: task)
-        client.handle(json: ["type": "session.created", "session": ["request_id": "ws-abc"]])
+        client.debugHandleFrameForTesting(json: ["type": "session.created", "session": ["request_id": "ws-abc"]])
 
         for tick in 1...40 {
             clock.value = Double(tick) / 10
             client.sendAudioChunk(Data(repeating: 0, count: 3_200))
         }
-        client.handle(json: ["type": "transcription.text.delta", "text": "Look"])
+        client.debugHandleFrameForTesting(json: ["type": "transcription.text.delta", "text": "Look"])
         XCTAssertTrue(client.debugStallReportsForTesting().isEmpty, "4 s of silence is speech")
 
         for tick in 41...120 {
@@ -366,7 +373,7 @@ final class MistralRealtimeClientTests: XCTestCase {
             session.invalidateAndCancel()
         }
 
-        client.handle(json: ["type": "session.created"])
+        client.debugHandleFrameForTesting(json: ["type": "session.created"])
 
         XCTAssertEqual(
             client.debugRecordedFrames(),
@@ -383,9 +390,9 @@ final class MistralRealtimeClientTests: XCTestCase {
             session.invalidateAndCancel()
         }
 
-        client.handle(json: ["type": "session.created"])
+        client.debugHandleFrameForTesting(json: ["type": "session.created"])
         client.debugClearRecordedFrames()
-        client.handle(json: ["type": "session.created"])
+        client.debugHandleFrameForTesting(json: ["type": "session.created"])
 
         XCTAssertTrue(client.debugRecordedFrames().isEmpty)
     }
@@ -397,9 +404,9 @@ final class MistralRealtimeClientTests: XCTestCase {
         _ frames: [[String: Any]]
     ) -> [RealtimeEvent] {
         let collector = EventCollector()
-        client.setEventHandler { collector.append($0) }
+        client.setEventHandler { collector.append($0, from: $1) }
         for frame in frames {
-            client.handle(json: frame)
+            client.debugHandleFrameForTesting(json: frame)
         }
         return collector.snapshot()
     }
@@ -468,8 +475,8 @@ final class MistralRealtimeClientTests: XCTestCase {
         let collector = EventCollector()
 
         client.sendCommit(final: true)
-        client.setEventHandler { collector.append($0) }
-        client.handle(json: ["type": "transcription.done", "text": "final text"])
+        client.setEventHandler { collector.append($0, from: $1) }
+        client.debugHandleFrameForTesting(json: ["type": "transcription.done", "text": "final text"])
 
         let events = collector.snapshot()
         XCTAssertEqual(events.count, 2)
@@ -493,9 +500,9 @@ final class MistralRealtimeClientTests: XCTestCase {
         let collector = EventCollector()
 
         client.sendCommit(final: true)
-        client.setEventHandler { collector.append($0) }
-        client.handle(json: ["type": "transcription.done", "text": "final text"])
-        client.handle(json: ["type": "transcription.done", "text": "final text"])
+        client.setEventHandler { collector.append($0, from: $1) }
+        client.debugHandleFrameForTesting(json: ["type": "transcription.done", "text": "final text"])
+        client.debugHandleFrameForTesting(json: ["type": "transcription.done", "text": "final text"])
 
         let finalizedCount = collector.snapshot().filter { event in
             if case .transcriptionFinalized = event { return true }
@@ -513,8 +520,8 @@ final class MistralRealtimeClientTests: XCTestCase {
         let collector = EventCollector()
 
         client.sendCommit(final: true)
-        client.setEventHandler { collector.append($0) }
-        client.handle(json: ["type": "transcription.done", "text": ""])
+        client.setEventHandler { collector.append($0, from: $1) }
+        client.debugHandleFrameForTesting(json: ["type": "transcription.done", "text": ""])
 
         let events = collector.snapshot()
         XCTAssertEqual(events.count, 1)
@@ -593,7 +600,7 @@ final class MistralRealtimeClientTests: XCTestCase {
         client.sendCommit(final: true)
         XCTAssertTrue(client.debugStateSnapshot().isAwaitingFinalCommitDone)
 
-        client.handle(json: ["type": "error", "error": ["message": "boom"] as [String: Any]])
+        client.debugHandleFrameForTesting(json: ["type": "error", "error": ["message": "boom"] as [String: Any]])
 
         XCTAssertFalse(
             client.debugStateSnapshot().isAwaitingFinalCommitDone,
@@ -652,7 +659,7 @@ final class MistralRealtimeClientTests: XCTestCase {
     func testTerminalErrorCleansSubclassStateAndEmitsErrorThenDisconnected() {
         let client = MistralRealtimeWebSocketClient()
         let collector = EventCollector()
-        client.setEventHandler { collector.append($0) }
+        client.setEventHandler { collector.append($0, from: $1) }
 
         let (session, task) = makeWebSocketTask()
         defer {
@@ -696,7 +703,7 @@ final class MistralRealtimeClientTests: XCTestCase {
     func testTerminalErrorSuppressesErrorForUserInitiatedDisconnect() {
         let client = MistralRealtimeWebSocketClient()
         let collector = EventCollector()
-        client.setEventHandler { collector.append($0) }
+        client.setEventHandler { collector.append($0, from: $1) }
 
         let (session, task) = makeWebSocketTask()
         defer {
@@ -718,7 +725,7 @@ final class MistralRealtimeClientTests: XCTestCase {
     func testTerminalErrorWithStaleTaskIsNoOp() {
         let client = MistralRealtimeWebSocketClient()
         let collector = EventCollector()
-        client.setEventHandler { collector.append($0) }
+        client.setEventHandler { collector.append($0, from: $1) }
 
         let (session1, task1) = makeWebSocketTask()
         let (session2, task2) = makeWebSocketTask()
@@ -738,7 +745,7 @@ final class MistralRealtimeClientTests: XCTestCase {
     func testDoubleTerminalErrorIsNoOp() {
         let client = MistralRealtimeWebSocketClient()
         let collector = EventCollector()
-        client.setEventHandler { collector.append($0) }
+        client.setEventHandler { collector.append($0, from: $1) }
 
         let (session, task) = makeWebSocketTask()
         defer {
@@ -762,7 +769,7 @@ final class MistralRealtimeClientTests: XCTestCase {
     func testDisconnectEmitsDisconnectedOnceAndClearsState() {
         let client = MistralRealtimeWebSocketClient()
         let collector = EventCollector()
-        client.setEventHandler { collector.append($0) }
+        client.setEventHandler { collector.append($0, from: $1) }
 
         let (session, task) = makeWebSocketTask()
         defer {

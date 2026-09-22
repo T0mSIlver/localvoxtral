@@ -120,6 +120,11 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         viewModel.isFinalizingStop = true
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.realtimeAPIClient.debugPrimeConnectedStateForTesting(task: task)
+        // The priming stands in for a real connect, so the session has to be on
+        // the socket it produced: the `.disconnected` this test drives comes
+        // back through the production handler, which refuses any other one.
+        viewModel.sessionConnectionGeneration =
+            viewModel.realtimeAPIClient.connectionGeneration
 
         viewModel.handle(event: .transcriptionFinalized)
 

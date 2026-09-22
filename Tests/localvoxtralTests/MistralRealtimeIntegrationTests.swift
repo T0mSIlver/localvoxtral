@@ -87,7 +87,7 @@ final class MistralRealtimeIntegrationTests: XCTestCase {
         let realtimeError = expectation(description: "realtime error")
         realtimeError.isInverted = true
 
-        client.setEventHandler { event in
+        client.setEventHandler { event, _ in
             switch event {
             case .connected:
                 connected.fulfill()
@@ -142,7 +142,7 @@ final class MistralRealtimeIntegrationTests: XCTestCase {
         let sessionReady = expectation(description: "session ready")
         let finalized = expectation(description: "transcription finalized")
 
-        client.setEventHandler { event in
+        client.setEventHandler { event, _ in
             switch event {
             case .status(let message):
                 guard message.localizedCaseInsensitiveContains("session ready") else { return }
@@ -255,7 +255,7 @@ final class MistralRealtimeIntegrationTests: XCTestCase {
         let failed = expectation(description: "realtime error")
         failed.assertForOverFulfill = false
 
-        client.setEventHandler { event in
+        client.setEventHandler { event, _ in
             guard case .error(let message) = event else { return }
             errors.append(message)
             failed.fulfill()

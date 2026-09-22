@@ -149,7 +149,7 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
         let realtimeError = expectation(description: "realtime error")
         realtimeError.isInverted = true
 
-        client.setEventHandler { event in
+        client.setEventHandler { event, _ in
             switch event {
             case .connected:
                 connected.fulfill()
@@ -192,7 +192,7 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
         let realtimeError = expectation(description: "realtime error")
         realtimeError.isInverted = true
 
-        client.setEventHandler { event in
+        client.setEventHandler { event, _ in
             switch event {
             case .connected:
                 connected.fulfill()
@@ -248,7 +248,7 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
         let realtimeError = expectation(description: "realtime error")
         realtimeError.isInverted = true
 
-        client.setEventHandler { event in
+        client.setEventHandler { event, _ in
             switch event {
             case .connected:
                 connected.fulfill()
@@ -325,7 +325,7 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
         let firstReady = expectation(description: "first session ready")
         let firstTranscript = expectation(description: "first transcript")
         firstTranscript.assertForOverFulfill = false
-        client.setEventHandler { event in
+        client.setEventHandler { event, _ in
             switch event {
             case .connected:
                 for chunk in beforeChunks {
@@ -350,7 +350,7 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
         // The drop. From the session's side a socket that died and one that was
         // closed look the same: a `.disconnected` it did not ask for.
         let dropped = expectation(description: "dropped")
-        client.setEventHandler { event in
+        client.setEventHandler { event, _ in
             if case .disconnected = event { dropped.fulfill() }
         }
         client.disconnect()
@@ -361,7 +361,7 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
         let secondReady = expectation(description: "second session ready")
         let replayTranscript = expectation(description: "replayed transcript")
         replayTranscript.assertForOverFulfill = false
-        client.setEventHandler { event in
+        client.setEventHandler { event, _ in
             switch event {
             case .connected:
                 client.sendAudioChunk(gapAudio)
@@ -407,7 +407,7 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
         let realtimeError = expectation(description: "realtime error")
         realtimeError.isInverted = true
 
-        client.setEventHandler { event in
+        client.setEventHandler { event, _ in
             switch event {
             case .connected:
                 connected.fulfill()

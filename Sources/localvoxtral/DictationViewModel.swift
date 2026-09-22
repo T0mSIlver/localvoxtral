@@ -625,6 +625,14 @@ final class DictationViewModel {
     /// Cleared with the rest of the latched session metadata.
     @ObservationIgnored
     var sessionRealtimeConfiguration: RealtimeSessionConfiguration?
+    /// The socket this session is on (#417). Set from the client right after
+    /// every successful `connect`, and cleared the moment that socket reports
+    /// itself gone — between a drop and the next dial the session is on no
+    /// connection at all. Every realtime event names the socket that raised it;
+    /// one naming any other generation is a retired socket still talking, and
+    /// `handle(event:from:)` refuses it.
+    @ObservationIgnored
+    var sessionConnectionGeneration: RealtimeConnectionGeneration = .none
     @ObservationIgnored
     var reconnectTask: Task<Void, Never>?
     /// True from an unexpected drop until the reconnect run behind it either
@@ -907,13 +915,16 @@ final class DictationViewModel {
         // one is ever connected, so which client an event came from carries no
         // information the session path needs — and wiring both here means a
         // mode switch can never leave a client emitting into nothing.
-        let realtimeEventHandler: @Sendable (RealtimeEvent) -> Void = { [weak self] event in
+        let realtimeEventHandler: @Sendable (RealtimeEvent, RealtimeConnectionGeneration) -> Void = {
+            [weak self] event, generation in
             // Preserve callback order for back-to-back events (e.g. final transcript
             // followed by transcription finalized) by routing through main-queue FIFO.
+            // The generation rides in the same call as the event, so the FIFO orders
+            // the pair exactly as it orders the event alone.
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 MainActor.assumeIsolated {
-                    self.handle(event: event)
+                    self.handle(event: event, from: generation)
                 }
             }
         }

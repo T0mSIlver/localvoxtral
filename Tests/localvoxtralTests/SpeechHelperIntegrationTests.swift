@@ -344,7 +344,7 @@ final class SpeechHelperIntegrationTests: XCTestCase {
         let realtimeError = expectation(description: "realtime error")
         realtimeError.isInverted = true
 
-        client.setEventHandler { event in
+        client.setEventHandler { event, _ in
             switch event {
             case .connected:
                 connected.fulfill()
@@ -466,7 +466,7 @@ final class SpeechHelperIntegrationTests: XCTestCase {
         finalTranscript.assertForOverFulfill = false
         let disconnected = expectation(description: "disconnected")
 
-        client.setEventHandler { event in
+        client.setEventHandler { event, _ in
             switch event {
             case .connected:
                 connected.fulfill()
