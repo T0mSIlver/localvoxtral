@@ -23,9 +23,14 @@ final class EnginesModel {
     private let localNetworkPermissionPreflight: any LocalNetworkPermissionPreflighting
     /// Installed by the owner once it exists (a closure over the view model
     /// cannot be formed inside its own init). Cancels the managed startup task
-    /// and aborts the session waiting on it, if one is.
+    /// and aborts the session waiting on it, if one is. Until then a call
+    /// logs instead of silently leaving that session latched.
     @ObservationIgnored
-    var interruptConnectingSession: () -> Void = {}
+    var interruptConnectingSession: () -> Void = {
+        Log.backends.error(
+            "engines: a backend stop reached no session owner; nothing was unwound"
+        )
+    }
 
     /// Result of the Engines pane's "Check key" row. Observable so the row's
     /// one-line label follows it; reset to `.idle` is the caller's business.
