@@ -68,7 +68,9 @@ jobs:
 
   swift:
     name: Analyse Swift
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # TEMP (reverted in the next commit): prove this lane on the PR, since
+    # workflow_dispatch only exists once the file is on the default branch.
+    if: true
     runs-on: macos-latest
     timeout-minutes: 45
     permissions:
