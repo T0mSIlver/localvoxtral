@@ -49,7 +49,7 @@ final class DogfoodControlBuildBoundaryTests: XCTestCase {
         "Sources/localvoxtral/Dogfood/DogfoodControlService.swift",
         "Sources/localvoxtral/Dogfood/DogfoodControlSocket.swift",
         "Sources/localvoxtral/Dogfood/DogfoodAudioFileSource.swift",
-        "Sources/localvoxtral/Dogfood/DictationViewModel+DogfoodAudioFile.swift",
+        "Sources/localvoxtral/Dogfood/SessionAudioPipeline+DogfoodAudioFile.swift",
     ]
 
     func testEveryControlSocketFileIsGatedFromItsFirstLine() throws {
