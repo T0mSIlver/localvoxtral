@@ -1093,14 +1093,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openWindow(on tab: SettingsTab) {
         settingsNavigator.selectedTab = tab
         Task { @MainActor in
-            // The Dock icon goes up FIRST, and with it the app's main menu:
-            // `showSettingsWindow:` is answered through that menu, so an
-            // accessory app — which is what a launch is, before any window —
-            // gets the action accepted and no window (#449). Released below,
-            // by which point the window that opened has registered itself and
-            // holds the icon on its own.
-            dockIconPolicy.beginWindowOpening()
-            defer { dockIconPolicy.endWindowOpening() }
             let opener = AppWindowOpener(
                 show: { [weak self] in self?.askForTheWindow() },
                 isOnScreen: { AppDelegate.windowIsOnScreen() },
@@ -1124,36 +1116,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Asks for the window, by every route the app has, best first.
+    /// Asks for the window, by the two routes the app has, the one that works
+    /// at launch first.
     ///
     /// `NSApp.sendAction(showSettingsWindow:)` — the route the onboarding
     /// Engines link has always used — is ACCEPTED at launch and opens nothing
-    /// (#449, measured on the packaged build, and not for want of a main menu:
-    /// it fails with the Dock icon up too). SwiftUI's own `openSettings` is
-    /// what the menu bar item's Settings… uses, and that one works; the label
-    /// hands it over at launch.
+    /// (#449, measured on the packaged build over eight asks in 1.75 s, and
+    /// not for want of the main menu: it fails with the Dock icon up too).
+    /// SwiftUI's own `openSettings` is what the menu bar item's Settings…
+    /// uses, and that one works; the label hands it over at launch.
+    ///
+    /// The send stays behind it, addressed through the main menu's own item
+    /// when the app has one, since `to: nil` walks a responder chain that
+    /// answers without acting.
     private func askForTheWindow() {
         NSApp.activate(ignoringOtherApps: true)
         if let settingsOpener {
             settingsOpener()
             return
         }
-        // AppKit entry point for the SwiftUI `Settings` scene on macOS 14+.
-        // Addressed through the main menu's own item when there is one, since
-        // `to: nil` walks a responder chain that answers without acting.
-        if let item = AppDelegate.settingsMenuItem() {
-            NSApp.sendAction(item.action!, to: item.target, from: item)
+        let selector = Selector(("showSettingsWindow:"))
+        if let item = AppDelegate.mainMenuItem(for: selector) {
+            NSApp.sendAction(selector, to: item.target, from: item)
             return
         }
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        NSApp.sendAction(selector, to: nil, from: nil)
     }
 
-    /// The app menu's Settings… item, which exists only while the process is
-    /// `.regular` — AppKit synthesizes no main menu for an accessory app.
-    private static func settingsMenuItem() -> NSMenuItem? {
-        let selector = Selector(("showSettingsWindow:"))
+    /// A main-menu item by its action. There is a main menu only while the
+    /// process is `.regular` — AppKit synthesizes none for an accessory app.
+    private static func mainMenuItem(for action: Selector) -> NSMenuItem? {
         for top in NSApp.mainMenu?.items ?? [] {
-            for item in top.submenu?.items ?? [] where item.action == selector {
+            for item in top.submenu?.items ?? [] where item.action == action {
                 return item
             }
         }
