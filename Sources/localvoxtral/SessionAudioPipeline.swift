@@ -159,7 +159,10 @@ final class SessionAudioPipeline {
 
     // MARK: - Send and commit loops
 
-    func restartCommitTask(client: any RealtimeClient) {
+    func restartCommitTask(
+        client: any RealtimeClient,
+        sleep: @escaping @Sendable (Duration) async -> Void
+    ) {
         commitTask?.cancel()
         commitTask = nil
 
@@ -167,14 +170,18 @@ final class SessionAudioPipeline {
         guard client.supportsPeriodicCommit else { return }
         commitTask = Task(priority: .utility) {
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(interval))
+                await sleep(.seconds(interval))
                 guard !Task.isCancelled else { break }
                 client.sendCommit(final: false)
             }
         }
     }
 
-    func restartAudioSendTask(client: any RealtimeClient, debugLoggingEnabled: Bool) {
+    func restartAudioSendTask(
+        client: any RealtimeClient,
+        debugLoggingEnabled: Bool,
+        sleep: @escaping @Sendable (Duration) async -> Void
+    ) {
         audioSendTask?.cancel()
 
         let interval = TimingConstants.audioSendInterval
@@ -182,7 +189,7 @@ final class SessionAudioPipeline {
         audioSendTask = Task(priority: .utility) {
             var emptyBufferTicks = 0
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(interval))
+                await sleep(.seconds(interval))
                 guard !Task.isCancelled else { break }
 
                 // Read before draining: between the socket dying and the

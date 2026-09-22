@@ -320,6 +320,9 @@ final class DictationSessionController {
     var realtimeFinalizationLastActivityAt: Date?
     @ObservationIgnored
     var isAwaitingMicrophonePermission = false
+    /// Gives up on a microphone prompt nobody answers.
+    @ObservationIgnored
+    var microphonePermissionTimeoutTask: Task<Void, Never>?
     @ObservationIgnored
     var sessionOutputMode: DictationOutputMode?
     @ObservationIgnored
@@ -595,8 +598,9 @@ final class DictationSessionController {
                     }
                 }
             }
-            Task { [weak self] in
-                try? await Task.sleep(for: .seconds(120))
+            microphonePermissionTimeoutTask?.cancel()
+            microphonePermissionTimeoutTask = Task { [weak self, clock = dependencies.clock] in
+                await clock.sleep(.seconds(120))
                 guard let self, self.isAwaitingMicrophonePermission else { return }
                 self.isAwaitingMicrophonePermission = false
                 self.statusText = StatusStrings.ready

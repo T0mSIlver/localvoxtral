@@ -438,9 +438,10 @@ extension DictationSessionController {
             statusText = "Listening..."
             audio.restartAudioSendTask(
                 client: activeRealtimeClient,
-                debugLoggingEnabled: debugLoggingEnabled
+                debugLoggingEnabled: debugLoggingEnabled,
+                sleep: dependencies.clock.sleep
             )
-            audio.restartCommitTask(client: activeRealtimeClient)
+            audio.restartCommitTask(client: activeRealtimeClient, sleep: dependencies.clock.sleep)
             if isLiveAutoPasteModeEnabled {
                 textInsertion.restartInsertionRetryTask { [weak self] in
                     self?.acceptsRealtimeEvents ?? false
@@ -530,7 +531,8 @@ extension DictationSessionController {
                 self.finishStoppedSession(promotePendingSegment: true)
                 return
             }
-            let startedAt = Date()
+            let clock = self.dependencies.clock
+            let startedAt = clock.now()
             self.realtimeFinalizationLastActivityAt = startedAt
             self.activeRealtimeClient.sendCommit(final: true)
             while self.isFinalizingStop {
@@ -540,7 +542,7 @@ extension DictationSessionController {
                     return
                 }
 
-                let now = Date()
+                let now = clock.now()
                 let elapsed = now.timeIntervalSince(startedAt)
                 let lastActivity = self.realtimeFinalizationLastActivityAt ?? startedAt
                 let inactivity = now.timeIntervalSince(lastActivity)
@@ -563,7 +565,7 @@ extension DictationSessionController {
                     return
                 }
 
-                try? await Task.sleep(for: .seconds(TimingConstants.finalizationPollInterval))
+                await clock.sleep(.seconds(TimingConstants.finalizationPollInterval))
             }
         }
     }
@@ -1157,11 +1159,15 @@ extension DictationSessionController {
     func scheduleConnectTimeout() {
         cancelConnectTimeout()
         let timeout = TimingConstants.connectTimeout
+        let clock = dependencies.clock
         connectTimeoutTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(timeout))
+            await clock.sleep(.seconds(timeout))
             guard let self, self.isConnectingRealtimeSession else { return }
 
-            await self.resolveConnectTimeout(timeoutSeconds: timeout)
+            await self.resolveConnectTimeout(
+                timeoutSeconds: timeout,
+                sleepFor: { await clock.sleep(.seconds($0)) }
+            )
         }
     }
 
@@ -1237,8 +1243,8 @@ extension DictationSessionController {
         recentFailureResetTask?.cancel()
         realtimeSessionIndicatorState = .recentFailure
         let indicatorDuration = TimingConstants.recentFailureIndicatorDuration
-        recentFailureResetTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(indicatorDuration))
+        recentFailureResetTask = Task { [weak self, clock = dependencies.clock] in
+            await clock.sleep(.seconds(indicatorDuration))
             guard let self else { return }
             guard self.realtimeSessionIndicatorState == .recentFailure else { return }
             guard !self.isConnectingRealtimeSession, !self.isDictating, !self.isFinalizingStop else { return }
@@ -1492,10 +1498,10 @@ extension DictationSessionController {
         finalizationWatchdogTask?.cancel()
         let timeout: TimeInterval = TimingConstants.stopFinalizationTimeout + 2.0
 
-        finalizationWatchdogTask = Task { [weak self] in
-            let startedAt = Date()
+        finalizationWatchdogTask = Task { [weak self, clock = dependencies.clock] in
+            let startedAt = clock.now()
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(TimingConstants.finalizationPollInterval))
+                await clock.sleep(.seconds(TimingConstants.finalizationPollInterval))
                 guard let self else { return }
                 guard self.isFinalizingStop else { return }
 
@@ -1505,7 +1511,7 @@ extension DictationSessionController {
                     return
                 }
 
-                if Date().timeIntervalSince(startedAt) >= timeout {
+                if clock.now().timeIntervalSince(startedAt) >= timeout {
                     self.debugLog("finalization watchdog fired after \(timeout)s; forcing stop cleanup")
                     self.activeRealtimeClient.disconnect()
                     self.finishStoppedSession(promotePendingSegment: true)

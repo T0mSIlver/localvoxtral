@@ -305,6 +305,9 @@ final class DictationViewModel {
         /// "never called with the toggle off" proves the path was not
         /// entered. Nothing in the app observes; tests do.
         var onRealtimeDeltaLogRecord: ((DebugRealtimeDeltaLogRecord) -> Void)?
+        /// The time every session timer runs on. A test passes a clock it
+        /// advances by hand.
+        var clock: SessionClock
 
         init(
             microphone: (() -> any MicrophoneCapturing)? = nil,
@@ -319,7 +322,8 @@ final class DictationViewModel {
             connectionFailurePresenter: any ConnectionFailurePresenting = ModalConnectionFailurePresenter(),
             onSessionRecord: ((DictationSessionRecord) -> Void)? = nil,
             repoVocabularyGrounding: (any RepoVocabularyGrounding)? = nil,
-            onRealtimeDeltaLogRecord: ((DebugRealtimeDeltaLogRecord) -> Void)? = nil
+            onRealtimeDeltaLogRecord: ((DebugRealtimeDeltaLogRecord) -> Void)? = nil,
+            clock: SessionClock = .live
         ) {
             self.microphone = microphone
             self.pasteboardReader = pasteboardReader
@@ -331,6 +335,7 @@ final class DictationViewModel {
             self.onSessionRecord = onSessionRecord
             self.repoVocabularyGrounding = repoVocabularyGrounding
             self.onRealtimeDeltaLogRecord = onRealtimeDeltaLogRecord
+            self.clock = clock
         }
     }
     /// Warms the managed polishing helper's prompt-prefix cache on every
@@ -646,6 +651,7 @@ final class DictationViewModel {
         session.reconnectTask?.cancel()
         session.recentFailureResetTask?.cancel()
         session.finalizationWatchdogTask?.cancel()
+        session.microphonePermissionTimeoutTask?.cancel()
         permissions.cancelTasks()
         session.polishAndCommitTask?.cancel()
         polishPromptWarmupCoordinator?.cancelTasks()
