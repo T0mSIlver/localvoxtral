@@ -200,7 +200,335 @@ enum StopCommitCoordinator {
         return CommitResult(outcome: outcome, succeeded: true, failureMessage: nil)
     }
 
+    // MARK: - Polish inputs
+
+    /// Everything applied to the transcript without a model: the file's rules
+    /// when exact replacement is on, then the casing rules of the user's
+    /// terms. Nil when there is nothing to apply.
+    @MainActor
+    static func effectiveReplacementDictionary(
+        settings: SettingsStore,
+        appConfigStore: any AppConfigServing
+    ) -> ReplacementDictionary? {
+        let fileEntries = settings.replacementDictionaryEnabled
+            ? appConfigStore.loadReplacementDictionary()
+            : ReplacementDictionary(entries: [])
+        let effective = fileEntries.adding(speakerTerms: settings.polishSpeakerTerms)
+        return effective.entries.isEmpty ? nil : effective
+    }
+
+    /// Polishing prompt profile for a stop-commit: `.agent` iff the user has the
+    /// agent profile enabled AND the captured target bundle ID is terminal-like
+    /// (built-in terminal allowlist, or the user's Settings → Terminals list —
+    /// the successor of `terminal_apps.toml`). Mirrors the live-mode target
+    /// combination (allowlist + user bundle IDs); the AX-probe verdict is
+    /// deliberately not consulted here — the polish switch keys off the app
+    /// identity, not the focused field's writability.
+    @MainActor
+    static func polishProfile(
+        forTargetBundleID bundleID: String?,
+        settings: SettingsStore
+    ) -> PolishPromptProfile {
+        guard settings.agentPolishProfileEnabled else { return .standard }
+        guard let bundleID, !bundleID.isEmpty else { return .standard }
+        if TerminalTargetDetector.isTerminalLikeBundleID(bundleID) { return .agent }
+        if settings.userTerminalAppBundleIDs.contains(bundleID) { return .agent }
+        return .standard
+    }
+
+    /// Folds one dictation's resolved spellings into the learned terms.
+    ///
+    /// Cheap enough for the commit path: an in-memory merge. The file write is
+    /// the store's own background work.
+    /// A nil `project` means the app could not establish which project this
+    /// dictation belongs to, and nothing is learned from it — see
+    /// `LearnedTermProjectResolver.resolve`.
+    static func recordLearnedTerms(
+        merged: PolishContextGrounding.Merged,
+        project: LearnedTermProjectResolver.Identity?,
+        store learnedTermStore: LearnedTermStore?
+    ) {
+        guard let learnedTermStore, let project else { return }
+        let observations = PolishContextSource.allCases.flatMap { source in
+            merged.entries(from: source).map {
+                LearnedTermObservation(term: $0.replaceWith, source: source)
+            }
+        }
+        guard !observations.isEmpty else { return }
+        learnedTermStore.record(observations, project: project)
+    }
+
+    /// The transcript on its way to the polisher, and what the commit keeps
+    /// back from it.
+    struct Preparation {
+        /// Nil when polishing is off or has no configuration.
+        let polishingConfig: LLMPolishingConfiguration?
+        /// The transcript as recognized: the record's `rawText`.
+        let originalText: String
+        /// After the replacement dictionary and the payload macro. Carries the
+        /// placeholder, never the payload.
+        let workingText: String
+        let clipboardPayload: String?
+        let payloadProvenanceSummary: String?
+        /// Set when polishing is on but has no configuration to send to.
+        let configurationFailure: (message: String, technicalDetails: String?)?
+    }
+
+    @MainActor
+    static func prepare(
+        originalText: String,
+        replacementDictionary: ReplacementDictionary?,
+        settings: SettingsStore,
+        pasteboardReader: @MainActor () -> any PasteboardReading
+    ) -> Preparation {
+        let polishingConfig = settings.llmPolishingConfiguration
+        let replacementAppliedText =
+            replacementDictionary?.apply(to: originalText) ?? originalText
+        // Spoken clipboard-paste macro (Overlay Buffer only): after the
+        // replacement dictionary and BEFORE the polish request is built,
+        // swap each spoken marker for the env-var-shaped placeholder and
+        // read the clipboard once. The placeholder — not the payload —
+        // flows through polish and persistence. Both profiles enforce its
+        // occurrence count before the real payload is substituted at
+        // commit. No marker or setting off: a no-op that never touches the
+        // pasteboard.
+        let clipboardMacro = clipboardPayloadMacro(
+            applyingTo: replacementAppliedText,
+            settings: settings,
+            pasteboardReader: pasteboardReader
+        )
+        // In Mistral mode the endpoint is pinned, so the only way to get no
+        // configuration is a missing key — and "set a valid endpoint URL"
+        // would send the user hunting for a field that is not on the pane.
+        let configurationFailure: (message: String, technicalDetails: String?)? =
+            settings.llmPolishingEnabled && polishingConfig == nil
+            ? (
+                settings.polishingBackendMode == .mistralAPI
+                    ? "Mistral API key missing. Add it in Settings → Engines."
+                    : "Set a valid LLM polishing endpoint URL in Settings.",
+                settings.polishingBackendMode == .mistralAPI
+                    ? "No Mistral API key is configured; the polish request was not sent."
+                    : "Settings value could not be normalized to an HTTP endpoint URL."
+            )
+            : nil
+        return Preparation(
+            polishingConfig: polishingConfig,
+            originalText: originalText,
+            workingText: clipboardMacro.placeholderText,
+            clipboardPayload: clipboardMacro.payload,
+            payloadProvenanceSummary: clipboardMacro.summary,
+            configurationFailure: configurationFailure
+        )
+    }
+
+    /// The templates the request is rendered from: the profile's pair, with
+    /// the user's About-you block and terms.
+    @MainActor
+    static func promptTemplates(
+        profile: PolishPromptProfile,
+        settings: SettingsStore,
+        appConfigStore: any AppConfigServing
+    ) -> LLMPromptTemplates {
+        appConfigStore.loadLLMPromptTemplates(profile: profile)
+            .withSpeakerProfile(settings.polishSpeakerProfile, terms: settings.polishSpeakerTerms)
+    }
+
+    // MARK: - Polish
+
+    /// What one polish produced: the gathered material and the assembled
+    /// request (the dogfood capture reads both), and the reply.
+    struct PolishOutcome {
+        struct Polished {
+            /// The model's reply as it came back.
+            let polishedText: String
+            /// What the classifier let through. Carries the placeholder,
+            /// never the payload.
+            let committedText: String
+            let durationSeconds: Double
+        }
+
+        enum Reply {
+            /// The working text was blank, so no request was sent.
+            case notSent
+            case polished(Polished)
+            /// The request failed. A nil failure is one the commit path only
+            /// logs.
+            case failed(PolishOutcomeClassifier.Failure?)
+        }
+
+        let material: PolishContextMaterial
+        let assembly: PolishRequestAssembler.Assembly
+        let reply: Reply
+    }
+
+    /// Everything one polish reads besides the prepared transcript.
+    struct PolishInput {
+        let preparation: Preparation
+        let configuration: LLMPolishingConfiguration
+        let promptTemplates: LLMPromptTemplates
+        let capture: Capture
+        let settings: SettingsStore
+        let textInsertion: TextInsertionService
+        let context: SessionContextResolver
+        let repoVocabularyGrounding: any RepoVocabularyGrounding
+        let learnedTermStore: LearnedTermStore?
+        let service: any LLMPolishingServicing
+    }
+
+    /// Gathers, records what the dictation taught, assembles, and sends. Nil
+    /// means the commit was cancelled at one of the checkpoints, and the caller
+    /// must change nothing.
+    @MainActor
+    static func polish(_ input: PolishInput) async -> PolishOutcome? {
+        let workingText = input.preparation.workingText
+        let clipboardPayload = input.preparation.clipboardPayload
+        let capture = input.capture
+        // The polisher never sees replacement_dictionary.toml (owner
+        // ruling 2026-09-18): its `matches` are predictions of recognizer
+        // errors, and the model is better off with the user's terms in the
+        // About-you block. The file's rules still apply locally, in
+        // `prepare`. The `{{replacement_dictionary}}` slot stays: the
+        // vocabulary sections ride in it.
+        let replacementDictionaryPrompt = ""
+        // Repo vocabulary rides in the `{{replacement_dictionary}}`
+        // slot; a user template without that placeholder (removing it is
+        // explicitly supported) silently drops the section in
+        // renderTemplate, so the whole vocabulary path — AX read, git
+        // subprocess, provenance — is skipped up front when the ACTIVE
+        // template can't carry it.
+        let templateCarriesDictionarySlot =
+            input.promptTemplates.supportsReplacementDictionary
+        // A repo match also votes against every other grounding source.
+        // Even without a render slot, keep that vote when another source
+        // can pre-apply an exact spelling; otherwise a contested span can
+        // be edited unopposed. With no slot and no independent source,
+        // the repo result has no consumer and the expensive pipeline is
+        // skipped entirely.
+        let needsRepoGroundingForConflictSafety =
+            capture.clipboardContext != nil
+            || capture.screenDecision.vocabularyGroundingText != nil
+            || capture.claudeJoin != nil
+
+        // Everything the request is built from, gathered in one
+        // step with the same off-actor hops and checkpoints; nil
+        // means the commit was cancelled at one of them.
+        guard let material = await PolishContextGatherer.gather(PolishContextGatherer.Input(
+            settings: input.settings,
+            textInsertion: input.textInsertion,
+            context: input.context,
+            repoVocabularyGrounding: input.repoVocabularyGrounding,
+            learnedTermStore: input.learnedTermStore,
+            endpointURL: input.configuration.endpointURL,
+            workingText: workingText,
+            capturedScreenDecision: capture.screenDecision,
+            capturedSocketPaneStart: capture.socketPaneStart,
+            capturedClaudeJoin: capture.claudeJoin,
+            capturedClipboardContext: capture.clipboardContext,
+            templateCarriesDictionarySlot: templateCarriesDictionarySlot,
+            needsRepoGroundingForConflictSafety: needsRepoGroundingForConflictSafety
+        )) else { return nil }
+
+        guard !Task.isCancelled else { return nil }
+
+        // What this dictation taught, remembered for the next one
+        // in the same project. Recorded from the MERGED entries
+        // and nowhere else: a span the merge abstained on is not
+        // evidence of a spelling, and a verification pair is a
+        // question put to the model, not an answer.
+        recordLearnedTerms(
+            merged: material.merged,
+            project: material.learnedProject,
+            store: input.learnedTermStore
+        )
+
+        // Sections, pre-application, prompts, blocks and provenance
+        // are one pure step over the merged material; the request
+        // it builds is pinned by PolishRequestGoldenTests.
+        let assembly = PolishRequestAssembler.assemble(PolishRequestAssembler.Input(
+            merged: material.merged,
+            templateCarriesDictionarySlot: templateCarriesDictionarySlot,
+            replacementDictionaryPrompt: replacementDictionaryPrompt,
+            workingText: workingText,
+            clipboardPayload: clipboardPayload,
+            promptTemplates: input.promptTemplates,
+            screenDecision: material.screenDecision,
+            claudeRepoSnapshot: material.claudeRepoSnapshot,
+            claudeRepoPreparation: material.claudeRepoPreparation,
+            claudeSessionPreparation: material.claudeSessionPreparation,
+            clipboardPreparation: material.clipboardPreparation,
+            screenPreparation: material.screenPreparation,
+            capturedClaudeJoin: capture.claudeJoin,
+            capturedClipboardContext: capture.clipboardContext,
+            repoRenderBudget: material.repoRenderBudget,
+            screenRenderBudget: material.screenRenderBudget,
+            claudeRenderBudget: material.claudeRenderBudget,
+            clipboardRenderBudget: material.clipboardRenderBudget
+        ))
+
+        guard !workingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return PolishOutcome(material: material, assembly: assembly, reply: .notSent)
+        }
+        do {
+            let result = try await input.service.polish(
+                request: assembly.request,
+                configuration: input.configuration
+            )
+
+            // Trust the polishing model for both prompt profiles.
+            // Human evaluation found deterministic token repair
+            // could undo useful formatting and reconstruction.
+            //
+            // Placeholder-count integrity stays independent of
+            // that trust: a duplicated placeholder would paste
+            // the payload twice, while dropping one of two
+            // would lose a requested paste. It is the classifier
+            // that compares standalone counts against the
+            // grounded pre-polish text and, on mismatch,
+            // discards the polish and returns that
+            // placeholder-bearing text.
+            let committedText = PolishOutcomeClassifier.committedText(
+                polished: result.polishedText,
+                groundedWorkingText: assembly.groundedWorkingText,
+                clipboardPayload: clipboardPayload
+            )
+
+            guard !Task.isCancelled else { return nil }
+
+            return PolishOutcome(
+                material: material,
+                assembly: assembly,
+                reply: .polished(PolishOutcome.Polished(
+                    polishedText: result.polishedText,
+                    committedText: committedText,
+                    durationSeconds: result.durationSeconds
+                ))
+            )
+        } catch {
+            guard !Task.isCancelled else { return nil }
+            let failure = PolishOutcomeClassifier.failure(
+                for: error,
+                endpointURL: input.configuration.endpointURL
+            )
+            Log.polishing.error(
+                "LLM polishing failed: \(error.localizedDescription, privacy: .public)"
+            )
+            return PolishOutcome(material: material, assembly: assembly, reply: .failed(failure))
+        }
+    }
+
     // MARK: - Record provenance
+
+    /// Combines the clipboard polish-context, payload-macro, and repo-vocabulary
+    /// provenance notes into the single `polishContextSummary` record field
+    /// (counts only): `clipboard:24ch+payload:1532ch+vocab:3`, any subset, or nil.
+    static func mergedPolishProvenanceSummary(
+        context: String?,
+        payload: String?,
+        vocabulary: String? = nil
+    ) -> String? {
+        let parts = [context, payload, vocabulary].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: "+")
+    }
 
     /// The vocabulary half of the record's `polishContextSummary` (counts
     /// only): `vocab:3`, `clipboard-vocab:2`, both joined by `+`, or nil.
