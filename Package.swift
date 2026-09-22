@@ -39,7 +39,10 @@ let dogfoodSwiftSettings: [SwiftSetting] =
 /// product and runs the core's tests.
 var products: [Product] = [
     // The Claude Code hook publisher. Dependency-free (Foundation +
-    // Darwin/Glibc) so the same source builds for a remote Linux host.
+    // Darwin/Glibc), meant to build for a remote Linux host too; with Swift
+    // 6.2 ClaudeHookPublisherCore does not compile there (Darwin-only
+    // sysctl/kinfo_proc/devname), which is why the Linux script builds only
+    // the test product.
     .executable(name: "localvoxtral-claude-hook", targets: ["localvoxtral-claude-hook"]),
 ]
 var dependencies: [Package.Dependency] = []

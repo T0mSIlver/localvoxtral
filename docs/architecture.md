@@ -31,14 +31,16 @@ pure step (#432 steps 1–8):
   repository vocabulary and the cross-source merge
 - `PolishRequestAssembler.swift` — the request itself: sections,
   pre-application, prompts, context blocks, provenance
-- `PolishOutcomeClassifier.swift` — what a reply means for the commit:
-  placeholder integrity, and the failure copy for each error
+- `PolishOutcomeClassifier.swift` (in `localvoxtralCore`) — what a reply
+  means for the commit: placeholder integrity, and the failure copy for each
+  error
 - `StopCommitCoordinator.swift` — everything in the stop-commit that decides
   what reaches the polisher: the transcript's preparation, the profile and
   templates, the pre-task sample (clipboard, screen, join, pane), the
   gather-assemble-send step, the overlay commit, the dogfood capture record
-- `TranscriptAccumulator.swift` — the transcript the realtime events build:
-  partials, finals, the live insertion a final still owes, promotion
+- `TranscriptAccumulator.swift` (in `localvoxtralCore`) — the transcript the
+  realtime events build: partials, finals, the live insertion a final still
+  owes, promotion
 - `SessionAudioPipeline.swift` — `viewModel.audio`: capture, the send and
   commit loops, ducking, the input device selection
 
