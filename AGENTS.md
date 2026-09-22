@@ -71,10 +71,11 @@ This is a real app with daily users. Nothing ships on "it compiles".
 - No wall-clock in tests (`Date()` / real `Task.sleep` polling) — inject
   clocks. `OverlayBufferSessionCoordinator` (`now:` / `sleepFor:` seams) is
   the reference pattern.
-- Any test that reaches `beginDictationSession` arms the REAL 10s
-  connect-timeout on a process-retained view model and MUST set
-  `viewModel.isShowingConnectionFailureAlert = true`, or the timer's alert
-  fires inside whatever test runs ~10s later and SIGTRAPs the suite (PR #66).
+- Any test that reaches `beginDictationSession` arms the REAL connect
+  timeout (`TimingConstants.connectTimeout`, 1.0 s) on a process-retained
+  view model and MUST set `viewModel.isShowingConnectionFailureAlert = true`,
+  or the timer's alert fires inside whatever test runs next and SIGTRAPs the
+  suite (PR #66).
   Known debt: session code arms wall-clock timers; new code must not add more.
 - UI-affecting changes: until the automated UI tier exists, state in the PR
   exactly what was verified by hand and how.
