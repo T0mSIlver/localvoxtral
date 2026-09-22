@@ -653,272 +653,331 @@ extension DictationViewModel {
             return
         }
 
-        if shouldCommitOverlay, !wasCancelled {
-            let preparation = StopCommitCoordinator.prepare(
-                originalText: currentDictationEventText,
-                replacementDictionary: sessionReplacementDictionary
-                    ?? StopCommitCoordinator.effectiveReplacementDictionary(
-                        settings: settings,
-                        appConfigStore: appConfigStore
-                    ),
-                settings: settings,
-                pasteboardReader: dependencies.pasteboardReader
-            )
-            let originalText = preparation.originalText
-            let workingText = preparation.workingText
-            let clipboardPayload = preparation.clipboardPayload
-            let payloadProvenanceSummary = preparation.payloadProvenanceSummary
-            let llmConfigurationFailure = preparation.configurationFailure
+        if shouldCommitOverlay {
+            commitOverlayBufferSession(sessionMode: sessionMode)
+            return
+        }
 
-            // Display the payload-substituted text (placeholder never shown to
-            // the user); with no macro this is exactly `workingText`.
-            let displayWorkingText = StopCommitCoordinator.substitutingPayload(
-                workingText, payload: clipboardPayload
-            )
-            if currentDictationEventText != displayWorkingText {
-                currentDictationEventText = displayWorkingText
-            }
-            refreshOverlayBufferSession()
+        finishLiveAutoPasteSession(sessionMode: sessionMode)
+    }
 
-            let capturedSessionStartedAt = sessionStartedAt ?? Date()
-            let capturedProvider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
-            let capturedModel = sessionModelName ?? settings.effectiveModelName
-            let capturedOutputMode = sessionMode.rawValue
-            let capturedTargetBundleID = resolveTargetAppBundleID()
-            if let polishingConfig = preparation.polishingConfig {
-                let polishProfile = StopCommitCoordinator.polishProfile(
-                    forTargetBundleID: capturedTargetBundleID,
-                    settings: settings
-                )
-                Log.polishing.info(
-                    "Polish profile: \(polishProfile.rawValue, privacy: .public)"
-                )
-                let capturedPolishProfile = polishProfile.rawValue
-                let promptTemplates = StopCommitCoordinator.promptTemplates(
-                    profile: polishProfile,
+    /// The record fields a stopped session samples at stop.
+    private struct StoppedSessionRecordFields {
+        let startedAt: Date
+        let provider: String
+        let model: String
+        let outputMode: String
+        let targetAppBundleID: String?
+    }
+
+    /// An Overlay Buffer session that was not cancelled: polished and
+    /// committed by a task when polishing has a configuration, committed
+    /// as-is otherwise.
+    private func commitOverlayBufferSession(sessionMode: DictationOutputMode) {
+        let preparation = StopCommitCoordinator.prepare(
+            originalText: currentDictationEventText,
+            replacementDictionary: sessionReplacementDictionary
+                ?? StopCommitCoordinator.effectiveReplacementDictionary(
                     settings: settings,
                     appConfigStore: appConfigStore
-                )
+                ),
+            settings: settings,
+            pasteboardReader: dependencies.pasteboardReader
+        )
+        let originalText = preparation.originalText
+        let workingText = preparation.workingText
+        let clipboardPayload = preparation.clipboardPayload
+        let payloadProvenanceSummary = preparation.payloadProvenanceSummary
+        let llmConfigurationFailure = preparation.configurationFailure
 
-                statusText = StatusStrings.polishing
-                debugLog("LLM polishing started for \(workingText.count) chars")
+        // Display the payload-substituted text (placeholder never shown to
+        // the user); with no macro this is exactly `workingText`.
+        let displayWorkingText = StopCommitCoordinator.substitutingPayload(
+            workingText, payload: clipboardPayload
+        )
+        if currentDictationEventText != displayWorkingText {
+            currentDictationEventText = displayWorkingText
+        }
+        refreshOverlayBufferSession()
 
-                // The world as it was at stop: clipboard, screen, join and
-                // pane, sampled together before the task's awaits.
-                let capture = StopCommitCoordinator.capture(
-                    endpointURL: polishingConfig.endpointURL,
-                    settings: settings,
-                    context: context,
-                    pasteboardReader: dependencies.pasteboardReader
-                )
+        let capturedSessionStartedAt = sessionStartedAt ?? Date()
+        let capturedProvider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
+        let capturedModel = sessionModelName ?? settings.effectiveModelName
+        let capturedOutputMode = sessionMode.rawValue
+        let capturedTargetBundleID = resolveTargetAppBundleID()
+        if let polishingConfig = preparation.polishingConfig {
+            let polishProfile = StopCommitCoordinator.polishProfile(
+                forTargetBundleID: capturedTargetBundleID,
+                settings: settings
+            )
+            Log.polishing.info(
+                "Polish profile: \(polishProfile.rawValue, privacy: .public)"
+            )
+            let capturedPolishProfile = polishProfile.rawValue
+            let promptTemplates = StopCommitCoordinator.promptTemplates(
+                profile: polishProfile,
+                settings: settings,
+                appConfigStore: appConfigStore
+            )
 
-                polishAndCommitTask = Task { @MainActor [weak self] in
-                    guard let self else { return }
+            statusText = StatusStrings.polishing
+            debugLog("LLM polishing started for \(workingText.count) chars")
 
-                    // Gather, assemble and send, with the same checkpoints; nil
-                    // means the commit was cancelled at one of them.
-                    guard let outcome = await StopCommitCoordinator.polish(
-                        StopCommitCoordinator.PolishInput(
-                            preparation: preparation,
-                            configuration: polishingConfig,
-                            promptTemplates: promptTemplates,
-                            capture: capture,
-                            settings: self.settings,
-                            textInsertion: self.textInsertion,
-                            context: self.context,
-                            repoVocabularyGrounding: self.repoVocabularyGrounding,
-                            learnedTermStore: self.learnedTermStore,
-                            service: self.llmPolishingService
-                        )
-                    ) else { return }
-                    let assembly = outcome.assembly
+            // The world as it was at stop: clipboard, screen, join and
+            // pane, sampled together before the task's awaits.
+            let capture = StopCommitCoordinator.capture(
+                endpointURL: polishingConfig.endpointURL,
+                settings: settings,
+                context: context,
+                pasteboardReader: dependencies.pasteboardReader
+            )
 
-                    var processedTextForPersistence: String? =
-                        workingText != originalText ? workingText : nil
-                    var polishingDuration: Double? = nil
-                    var sessionStatus: DictationSessionStatus = .completed
-                    var llmConnectionFailure: PolishOutcomeClassifier.Failure?
-                    #if LOCALVOXTRAL_DOGFOOD
-                    // The model's raw reply and the (placeholder-bearing)
-                    // committed text, for the capture record below.
-                    // Placeholder-bearing on purpose: the clipboard PAYLOAD
-                    // follows the session-record rule and never enters a
-                    // persisted record.
-                    var dogfoodPolishedOutput: String?
-                    var dogfoodCommittedText: String?
-                    #endif
-
-                    switch outcome.reply {
-                    case .notSent:
-                        break
-                    case .polished(let polished):
-                        polishingDuration = polished.durationSeconds
-                        let committedText = polished.committedText
-
-                        // Persist the PLACEHOLDER-bearing committed text —
-                        // the clipboard payload must never enter the session
-                        // record. Substitution happens only for the display/
-                        // commit copy below.
-                        processedTextForPersistence =
-                            committedText != originalText ? committedText : nil
-                        #if LOCALVOXTRAL_DOGFOOD
-                        dogfoodPolishedOutput = polished.polishedText
-                        dogfoodCommittedText = committedText
-                        #endif
-
-                        self.currentDictationEventText = StopCommitCoordinator.substitutingPayload(
-                            committedText, payload: clipboardPayload
-                        )
-                        // Polish-changed iff the guarded/verified committed
-                        // text differs from the pre-grounding working text.
-                        // This intentionally counts an evidence-backed
-                        // deterministic spelling correction even when the
-                        // model otherwise returns its input unchanged.
-                        // Drives the overlay badge (during hold) and the
-                        // "Copy raw transcript" popover affordance.
-                        let polishChanged = committedText != workingText
-                        self.overlayBufferCoordinator.markPolished(polishChanged)
-                        // Retain the RAW (pre-everything) transcript for the
-                        // one-line popover copy affordance — but only when the
-                        // commit visibly changed it, so a no-op polish leaves
-                        // no stale affordance. Persisted `rawText` uses the
-                        // same `originalText`.
-                        self.lastPolishChangedRawTranscript =
-                            (polishChanged && originalText != committedText)
-                            ? originalText : nil
-                        self.refreshOverlayBufferSession()
-                        Log.polishing.info(
-                            "LLM polishing succeeded in \(String(format: "%.2f", polished.durationSeconds))s"
-                        )
-                    case .failed(let failure):
-                        sessionStatus = .llmFailed
-                        llmConnectionFailure = failure
-                    }
-
-                    guard !Task.isCancelled else { return }
-
-                    let overlayCommit = StopCommitCoordinator.commit(
-                        overlay: self.overlayBufferCoordinator,
-                        textInsertion: self.textInsertion,
-                        autoCopyEnabled: self.settings.autoCopyEnabled
-                    )
-                    if let failureMessage = overlayCommit.failureMessage {
-                        self.lastError = failureMessage
-                    }
-
-                    self.completeStoppedSessionCleanup(
-                        sessionMode: sessionMode,
-                        overlayCommitOutcome: overlayCommit.outcome,
-                        shouldCommitOverlay: true
-                    )
-
-                    self.saveSessionRecord(
+            polishAndCommitTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.polishAndCommitOverlayBuffer(
+                    sessionMode: sessionMode,
+                    preparation: preparation,
+                    polishingConfig: polishingConfig,
+                    promptTemplates: promptTemplates,
+                    capture: capture,
+                    record: StoppedSessionRecordFields(
                         startedAt: capturedSessionStartedAt,
-                        rawText: originalText,
-                        polishedText: processedTextForPersistence,
-                        polishingDuration: polishingDuration,
                         provider: capturedProvider,
                         model: capturedModel,
                         outputMode: capturedOutputMode,
-                        targetAppBundleID: capturedTargetBundleID,
-                        status: sessionStatus,
-                        commitSucceeded: overlayCommit.succeeded,
-                        polishProfile: capturedPolishProfile,
-                        polishContextSummary: StopCommitCoordinator.mergedPolishProvenanceSummary(
-                            context: assembly.polishContextSummary,
-                            payload: payloadProvenanceSummary,
-                            vocabulary: StopCommitCoordinator.vocabularyProvenance(
-                                repoVocabularyCount: assembly.repoVocabularyCount,
-                                clipboardVocabularyCount: assembly.clipboardVocabularyCount
-                            )
-                        )
-                    )
-
-                    #if LOCALVOXTRAL_DOGFOOD
-                    // AFTER the commit and the session record: capture latency
-                    // can only ever land on the tail of this task, never on the
-                    // user's paste. `writeDogfoodCaptureIfArmed` checks the
-                    // runtime opt-in before doing any work.
-                    await self.writeDogfoodCaptureIfArmed(
-                        StopCommitCoordinator.dogfoodCaptureInputs(
-                            material: outcome.material,
-                            assembly: assembly,
-                            capture: capture,
-                            targetBundleID: capturedTargetBundleID,
-                            targetIsTerminalLike: self.sessionTargetIsTerminalLike,
-                            outputMode: capturedOutputMode,
-                            promptProfile: capturedPolishProfile,
-                            polishingEndpointURL: polishingConfig.endpointURL,
-                            polishModel: polishingConfig.model,
-                            rawTranscript: originalText,
-                            workingText: workingText,
-                            polishedOutput: dogfoodPolishedOutput,
-                            committedText: dogfoodCommittedText,
-                            polishSeconds: polishingDuration
-                        ),
-                        commitOutcome: overlayCommit.outcome,
-                        // Substituted for MEASUREMENT only (the watch window
-                        // scales with what was inserted); the record keeps the
-                        // placeholder-bearing text above.
-                        committedTextForWatch: StopCommitCoordinator.substitutingPayload(
-                            dogfoodCommittedText ?? assembly.groundedWorkingText,
-                            payload: clipboardPayload
-                        )
-                    )
-                    #endif
-
-                    if let llmConnectionFailure {
-                        self.handleLLMPolishingConnectionFailure(
-                            title: llmConnectionFailure.title,
-                            message: llmConnectionFailure.message,
-                            technicalDetails: llmConnectionFailure.technicalDetails
-                        )
-                    }
-                }
-                return
-            }
-
-            // Non-polishing overlay commit path
-            let overlayCommit = StopCommitCoordinator.commit(
-                overlay: overlayBufferCoordinator,
-                textInsertion: textInsertion,
-                autoCopyEnabled: settings.autoCopyEnabled
-            )
-            if let failureMessage = overlayCommit.failureMessage {
-                lastError = failureMessage
-            }
-
-            completeStoppedSessionCleanup(
-                sessionMode: sessionMode,
-                overlayCommitOutcome: overlayCommit.outcome,
-                shouldCommitOverlay: true
-            )
-
-            saveSessionRecord(
-                startedAt: capturedSessionStartedAt,
-                rawText: originalText,
-                // Persist the PLACEHOLDER-bearing working text, never the
-                // payload; the payload lives only in the substituted commit copy.
-                polishedText: workingText != originalText ? workingText : nil,
-                polishingDuration: nil,
-                provider: capturedProvider,
-                model: capturedModel,
-                outputMode: capturedOutputMode,
-                targetAppBundleID: capturedTargetBundleID,
-                status: llmConfigurationFailure == nil ? .sttCompleted : .llmFailed,
-                commitSucceeded: overlayCommit.succeeded,
-                polishContextSummary: payloadProvenanceSummary
-            )
-
-            if let llmConfigurationFailure {
-                handleLLMPolishingConnectionFailure(
-                    message: llmConfigurationFailure.message,
-                    technicalDetails: llmConfigurationFailure.technicalDetails
+                        targetAppBundleID: capturedTargetBundleID
+                    ),
+                    polishProfile: capturedPolishProfile
                 )
             }
             return
         }
 
+        // Non-polishing overlay commit path
+        let overlayCommit = StopCommitCoordinator.commit(
+            overlay: overlayBufferCoordinator,
+            textInsertion: textInsertion,
+            autoCopyEnabled: settings.autoCopyEnabled
+        )
+        if let failureMessage = overlayCommit.failureMessage {
+            lastError = failureMessage
+        }
+
+        completeStoppedSessionCleanup(
+            sessionMode: sessionMode,
+            overlayCommitOutcome: overlayCommit.outcome,
+            shouldCommitOverlay: true
+        )
+
+        saveSessionRecord(
+            startedAt: capturedSessionStartedAt,
+            rawText: originalText,
+            // Persist the PLACEHOLDER-bearing working text, never the
+            // payload; the payload lives only in the substituted commit copy.
+            polishedText: workingText != originalText ? workingText : nil,
+            polishingDuration: nil,
+            provider: capturedProvider,
+            model: capturedModel,
+            outputMode: capturedOutputMode,
+            targetAppBundleID: capturedTargetBundleID,
+            status: llmConfigurationFailure == nil ? .sttCompleted : .llmFailed,
+            commitSucceeded: overlayCommit.succeeded,
+            polishContextSummary: payloadProvenanceSummary
+        )
+
+        if let llmConfigurationFailure {
+            handleLLMPolishingConnectionFailure(
+                message: llmConfigurationFailure.message,
+                technicalDetails: llmConfigurationFailure.technicalDetails
+            )
+        }
+    }
+
+    /// The polish-and-commit task's body: polish, apply the reply, commit,
+    /// record. Returns early, changing nothing, when the commit is cancelled.
+    private func polishAndCommitOverlayBuffer(
+        sessionMode: DictationOutputMode,
+        preparation: StopCommitCoordinator.Preparation,
+        polishingConfig: LLMPolishingConfiguration,
+        promptTemplates: LLMPromptTemplates,
+        capture: StopCommitCoordinator.Capture,
+        record: StoppedSessionRecordFields,
+        polishProfile capturedPolishProfile: String
+    ) async {
+        let originalText = preparation.originalText
+        let workingText = preparation.workingText
+        let clipboardPayload = preparation.clipboardPayload
+        let payloadProvenanceSummary = preparation.payloadProvenanceSummary
+        let capturedSessionStartedAt = record.startedAt
+        let capturedProvider = record.provider
+        let capturedModel = record.model
+        let capturedOutputMode = record.outputMode
+        let capturedTargetBundleID = record.targetAppBundleID
+
+        // Gather, assemble and send, with the same checkpoints; nil
+        // means the commit was cancelled at one of them.
+        guard let outcome = await StopCommitCoordinator.polish(
+            StopCommitCoordinator.PolishInput(
+                preparation: preparation,
+                configuration: polishingConfig,
+                promptTemplates: promptTemplates,
+                capture: capture,
+                settings: self.settings,
+                textInsertion: self.textInsertion,
+                context: self.context,
+                repoVocabularyGrounding: self.repoVocabularyGrounding,
+                learnedTermStore: self.learnedTermStore,
+                service: self.llmPolishingService
+            )
+        ) else { return }
+        let assembly = outcome.assembly
+
+        var processedTextForPersistence: String? =
+            workingText != originalText ? workingText : nil
+        var polishingDuration: Double? = nil
+        var sessionStatus: DictationSessionStatus = .completed
+        var llmConnectionFailure: PolishOutcomeClassifier.Failure?
+        #if LOCALVOXTRAL_DOGFOOD
+        // The model's raw reply and the (placeholder-bearing)
+        // committed text, for the capture record below.
+        // Placeholder-bearing on purpose: the clipboard PAYLOAD
+        // follows the session-record rule and never enters a
+        // persisted record.
+        var dogfoodPolishedOutput: String?
+        var dogfoodCommittedText: String?
+        #endif
+
+        switch outcome.reply {
+        case .notSent:
+            break
+        case .polished(let polished):
+            polishingDuration = polished.durationSeconds
+            let committedText = polished.committedText
+
+            // Persist the PLACEHOLDER-bearing committed text —
+            // the clipboard payload must never enter the session
+            // record. Substitution happens only for the display/
+            // commit copy below.
+            processedTextForPersistence =
+                committedText != originalText ? committedText : nil
+            #if LOCALVOXTRAL_DOGFOOD
+            dogfoodPolishedOutput = polished.polishedText
+            dogfoodCommittedText = committedText
+            #endif
+
+            self.currentDictationEventText = StopCommitCoordinator.substitutingPayload(
+                committedText, payload: clipboardPayload
+            )
+            // Polish-changed iff the guarded/verified committed
+            // text differs from the pre-grounding working text.
+            // This intentionally counts an evidence-backed
+            // deterministic spelling correction even when the
+            // model otherwise returns its input unchanged.
+            // Drives the overlay badge (during hold) and the
+            // "Copy raw transcript" popover affordance.
+            let polishChanged = committedText != workingText
+            self.overlayBufferCoordinator.markPolished(polishChanged)
+            // Retain the RAW (pre-everything) transcript for the
+            // one-line popover copy affordance — but only when the
+            // commit visibly changed it, so a no-op polish leaves
+            // no stale affordance. Persisted `rawText` uses the
+            // same `originalText`.
+            self.lastPolishChangedRawTranscript =
+                (polishChanged && originalText != committedText)
+                ? originalText : nil
+            self.refreshOverlayBufferSession()
+            Log.polishing.info(
+                "LLM polishing succeeded in \(String(format: "%.2f", polished.durationSeconds))s"
+            )
+        case .failed(let failure):
+            sessionStatus = .llmFailed
+            llmConnectionFailure = failure
+        }
+
+        guard !Task.isCancelled else { return }
+
+        let overlayCommit = StopCommitCoordinator.commit(
+            overlay: self.overlayBufferCoordinator,
+            textInsertion: self.textInsertion,
+            autoCopyEnabled: self.settings.autoCopyEnabled
+        )
+        if let failureMessage = overlayCommit.failureMessage {
+            self.lastError = failureMessage
+        }
+
+        self.completeStoppedSessionCleanup(
+            sessionMode: sessionMode,
+            overlayCommitOutcome: overlayCommit.outcome,
+            shouldCommitOverlay: true
+        )
+
+        self.saveSessionRecord(
+            startedAt: capturedSessionStartedAt,
+            rawText: originalText,
+            polishedText: processedTextForPersistence,
+            polishingDuration: polishingDuration,
+            provider: capturedProvider,
+            model: capturedModel,
+            outputMode: capturedOutputMode,
+            targetAppBundleID: capturedTargetBundleID,
+            status: sessionStatus,
+            commitSucceeded: overlayCommit.succeeded,
+            polishProfile: capturedPolishProfile,
+            polishContextSummary: StopCommitCoordinator.mergedPolishProvenanceSummary(
+                context: assembly.polishContextSummary,
+                payload: payloadProvenanceSummary,
+                vocabulary: StopCommitCoordinator.vocabularyProvenance(
+                    repoVocabularyCount: assembly.repoVocabularyCount,
+                    clipboardVocabularyCount: assembly.clipboardVocabularyCount
+                )
+            )
+        )
+
+        #if LOCALVOXTRAL_DOGFOOD
+        // AFTER the commit and the session record: capture latency
+        // can only ever land on the tail of this task, never on the
+        // user's paste. `writeDogfoodCaptureIfArmed` checks the
+        // runtime opt-in before doing any work.
+        await self.writeDogfoodCaptureIfArmed(
+            StopCommitCoordinator.dogfoodCaptureInputs(
+                material: outcome.material,
+                assembly: assembly,
+                capture: capture,
+                targetBundleID: capturedTargetBundleID,
+                targetIsTerminalLike: self.sessionTargetIsTerminalLike,
+                outputMode: capturedOutputMode,
+                promptProfile: capturedPolishProfile,
+                polishingEndpointURL: polishingConfig.endpointURL,
+                polishModel: polishingConfig.model,
+                rawTranscript: originalText,
+                workingText: workingText,
+                polishedOutput: dogfoodPolishedOutput,
+                committedText: dogfoodCommittedText,
+                polishSeconds: polishingDuration
+            ),
+            commitOutcome: overlayCommit.outcome,
+            // Substituted for MEASUREMENT only (the watch window
+            // scales with what was inserted); the record keeps the
+            // placeholder-bearing text above.
+            committedTextForWatch: StopCommitCoordinator.substitutingPayload(
+                dogfoodCommittedText ?? assembly.groundedWorkingText,
+                payload: clipboardPayload
+            )
+        )
+        #endif
+
+        if let llmConnectionFailure {
+            self.handleLLMPolishingConnectionFailure(
+                title: llmConnectionFailure.title,
+                message: llmConnectionFailure.message,
+                technicalDetails: llmConnectionFailure.technicalDetails
+            )
+        }
+    }
+
+    /// A Live Auto-Paste session: the text is already typed, so what is left
+    /// is the final flush and the record.
+    private func finishLiveAutoPasteSession(sessionMode: DictationOutputMode) {
         // Non-overlay path (live auto-paste)
         let capturedSessionStartedAt = sessionStartedAt ?? Date()
         let capturedProvider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
