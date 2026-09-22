@@ -43,7 +43,7 @@ final class OnboardingViewModelTests: XCTestCase {
         )
         // The wizard's key check must never reach api.mistral.ai from a test
         // or a preview.
-        viewModel.mistralAPIKeyVerifier = FakeOnboardingKeyVerifier(result: keyVerification)
+        viewModel.engines.mistralAPIKeyVerifier = FakeOnboardingKeyVerifier(result: keyVerification)
         let driver = PreviewOnboardingBootstrapDriver()
         let model = OnboardingViewModel(settings: settings, viewModel: viewModel, driver: driver)
 

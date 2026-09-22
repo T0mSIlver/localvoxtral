@@ -59,16 +59,16 @@ final class LocalNetworkPermissionPreflightTests: XCTestCase {
         settings.polishingBackendMode = .externalURL
         settings.llmPolishingEnabled = false
         let preflight = RecordingLocalNetworkPermissionPreflight()
-        let viewModel = DictationViewModel(
+        let engines = EnginesModel(
             settings: settings,
-            localNetworkPermissionPreflight: preflight,
-            startRuntimeServices: false
+            backendManager: OnboardingTestBackendManager(),
+            localNetworkPermissionPreflight: preflight
         )
 
-        viewModel.applyRealtimeEndpointChange("ws://192.168.1.20:8000/v1/realtime")
-        viewModel.applyLLMPolishingEndpointChange("http://10.0.0.9:8080/v1/chat/completions")
-        viewModel.applyRealtimeEndpointChange("ws://127.0.0.1:8000/v1/realtime")
-        viewModel.applyLLMPolishingEndpointChange("https://api.example.com/v1/chat/completions")
+        engines.applyRealtimeEndpointChange("ws://192.168.1.20:8000/v1/realtime")
+        engines.applyLLMPolishingEndpointChange("http://10.0.0.9:8080/v1/chat/completions")
+        engines.applyRealtimeEndpointChange("ws://127.0.0.1:8000/v1/realtime")
+        engines.applyLLMPolishingEndpointChange("https://api.example.com/v1/chat/completions")
 
         XCTAssertEqual(
             preflight.requests.map(\.endpoint.absoluteString),
@@ -89,18 +89,18 @@ final class LocalNetworkPermissionPreflightTests: XCTestCase {
         settings.polishingBackendMode = .managedLocal
         settings.llmPolishingEnabled = false
         let preflight = RecordingLocalNetworkPermissionPreflight()
-        let viewModel = DictationViewModel(
+        let engines = EnginesModel(
             settings: settings,
-            localNetworkPermissionPreflight: preflight,
-            startRuntimeServices: false
+            backendManager: OnboardingTestBackendManager(),
+            localNetworkPermissionPreflight: preflight
         )
 
-        viewModel.applyRealtimeEndpointChange("ws://192.168.2.30:8000/v1/realtime")
-        viewModel.applyLLMPolishingEndpointChange("http://10.2.0.4:8080/v1/chat/completions")
+        engines.applyRealtimeEndpointChange("ws://192.168.2.30:8000/v1/realtime")
+        engines.applyLLMPolishingEndpointChange("http://10.2.0.4:8080/v1/chat/completions")
         XCTAssertTrue(preflight.requests.isEmpty)
 
-        viewModel.applyDictationBackendModeChange(.externalURL)
-        viewModel.applyPolishingBackendModeChange(.externalURL)
+        engines.applyDictationBackendModeChange(.externalURL)
+        engines.applyPolishingBackendModeChange(.externalURL)
 
         XCTAssertEqual(
             preflight.requests.map(\.endpoint.absoluteString),
@@ -119,13 +119,13 @@ final class LocalNetworkPermissionPreflightTests: XCTestCase {
         settings.llmPolishingEndpointURL = "http://polisher.local:8080/v1/chat/completions"
         settings.llmPolishingEnabled = false
         let preflight = RecordingLocalNetworkPermissionPreflight()
-        let viewModel = DictationViewModel(
+        let engines = EnginesModel(
             settings: settings,
-            localNetworkPermissionPreflight: preflight,
-            startRuntimeServices: false
+            backendManager: OnboardingTestBackendManager(),
+            localNetworkPermissionPreflight: preflight
         )
 
-        viewModel.preflightConfiguredLocalNetworkEndpoints()
+        engines.preflightConfiguredLocalNetworkEndpoints()
 
         XCTAssertEqual(
             preflight.requests.map(\.endpoint.absoluteString),
@@ -176,21 +176,5 @@ final class LocalNetworkPermissionPreflightTests: XCTestCase {
 
         XCTAssertEqual(probed.map(\.host), ["192.168.50.4", "192.168.50.4"])
         XCTAssertEqual(probed.map(\.port), [8000, 8080])
-    }
-}
-
-@MainActor
-private final class RecordingLocalNetworkPermissionPreflight:
-    LocalNetworkPermissionPreflighting
-{
-    struct Request {
-        let endpoint: URL
-        let reason: String
-    }
-
-    private(set) var requests: [Request] = []
-
-    func preflight(endpoint: URL, reason: String) {
-        requests.append(Request(endpoint: endpoint, reason: reason))
     }
 }

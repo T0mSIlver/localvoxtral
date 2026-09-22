@@ -68,7 +68,7 @@ struct SettingsView: View {
                 settings.endpointURL(for: settings.realtimeProvider)
             },
             set: { newValue in
-                viewModel.applyRealtimeEndpointChange(newValue)
+                viewModel.engines.applyRealtimeEndpointChange(newValue)
             }
         )
     }
@@ -404,7 +404,7 @@ private struct ConnectionSettingsPane: View {
     private var polishingEndpointBinding: Binding<String> {
         Binding(
             get: { settings.llmPolishingEndpointURL },
-            set: { viewModel.applyLLMPolishingEndpointChange($0) }
+            set: { viewModel.engines.applyLLMPolishingEndpointChange($0) }
         )
     }
 
@@ -412,7 +412,7 @@ private struct ConnectionSettingsPane: View {
         Binding(
             get: { settings.dictationBackendMode },
             set: { newValue in
-                viewModel.applyDictationBackendModeChange(newValue)
+                viewModel.engines.applyDictationBackendModeChange(newValue)
             }
         )
     }
@@ -421,7 +421,7 @@ private struct ConnectionSettingsPane: View {
         Binding(
             get: { settings.polishingBackendMode },
             set: { newValue in
-                viewModel.applyPolishingBackendModeChange(newValue)
+                viewModel.engines.applyPolishingBackendModeChange(newValue)
             }
         )
     }
@@ -429,21 +429,21 @@ private struct ConnectionSettingsPane: View {
     private var managedPolishingModelBinding: Binding<String> {
         Binding(
             get: { settings.resolvedManagedLLMPolishingModel },
-            set: { viewModel.applyLLMPolishingModelChange($0) }
+            set: { viewModel.engines.applyLLMPolishingModelChange($0) }
         )
     }
 
     private var speechdCacheLimitBinding: Binding<SpeechdCacheLimit> {
         Binding(
             get: { settings.speechdCacheLimit },
-            set: { viewModel.applySpeechdCacheLimitChange($0) }
+            set: { viewModel.engines.applySpeechdCacheLimitChange($0) }
         )
     }
 
     private var speechdStepCadenceBinding: Binding<SpeechdStepCadence> {
         Binding(
             get: { settings.speechdStepCadence },
-            set: { viewModel.applySpeechdStepCadenceChange($0) }
+            set: { viewModel.engines.applySpeechdStepCadenceChange($0) }
         )
     }
 
@@ -571,7 +571,7 @@ private struct ConnectionSettingsPane: View {
                     MistralModelPickerRow(
                         entries: mistralDictationModelEntries,
                         selection: mistralDictationModelBinding,
-                        status: viewModel.mistralModelListState.statusLine,
+                        status: viewModel.engines.mistralModelListState.statusLine,
                         identifier: "engines.dictation.mistralModel"
                     )
 
@@ -608,9 +608,9 @@ private struct ConnectionSettingsPane: View {
                         title: "Status",
                         status: backendManager.speechdStatus,
                         identifierPrefix: "engines.dictation",
-                        onPause: { viewModel.pauseManagedModelDownload(for: BackendCatalog.speechd) },
-                        onResume: { viewModel.resumeManagedModelDownload(for: BackendCatalog.speechd) },
-                        onCancel: { viewModel.cancelManagedModelDownload(for: BackendCatalog.speechd) }
+                        onPause: { viewModel.engines.pauseManagedModelDownload(for: BackendCatalog.speechd) },
+                        onResume: { viewModel.engines.resumeManagedModelDownload(for: BackendCatalog.speechd) },
+                        onCancel: { viewModel.engines.cancelManagedModelDownload(for: BackendCatalog.speechd) }
                     )
                 }
             }
@@ -666,7 +666,7 @@ private struct ConnectionSettingsPane: View {
                     MistralModelPickerRow(
                         entries: mistralPolishingModelEntries,
                         selection: mistralPolishingModelBinding,
-                        status: viewModel.mistralModelListState.statusLine,
+                        status: viewModel.engines.mistralModelListState.statusLine,
                         identifier: "engines.polishing.mistralModel"
                     )
 
@@ -695,9 +695,9 @@ private struct ConnectionSettingsPane: View {
                         title: "Status",
                         status: backendManager.polishdStatus,
                         identifierPrefix: "engines.polishing",
-                        onPause: { viewModel.pauseManagedModelDownload(for: BackendCatalog.polishd) },
-                        onResume: { viewModel.resumeManagedModelDownload(for: BackendCatalog.polishd) },
-                        onCancel: { viewModel.cancelManagedModelDownload(for: BackendCatalog.polishd) }
+                        onPause: { viewModel.engines.pauseManagedModelDownload(for: BackendCatalog.polishd) },
+                        onResume: { viewModel.engines.resumeManagedModelDownload(for: BackendCatalog.polishd) },
+                        onCancel: { viewModel.engines.cancelManagedModelDownload(for: BackendCatalog.polishd) }
                     )
                 }
             }
@@ -722,20 +722,20 @@ private struct ConnectionSettingsPane: View {
 
                 SettingsFieldRow(
                     title: "Verify",
-                    status: viewModel.mistralAPIKeyCheckState.statusLine,
+                    status: viewModel.engines.mistralAPIKeyCheckState.statusLine,
                     statusAccessibilityIdentifier: "engines.mistral.verify.status"
                 ) {
-                    Button("Check key") { viewModel.checkMistralAPIKey() }
+                    Button("Check key") { viewModel.engines.checkMistralAPIKey() }
                         .disabled(
                             !settings.isMistralAPIConfigured
-                                || viewModel.mistralAPIKeyCheckState.isChecking
+                                || viewModel.engines.mistralAPIKeyCheckState.isChecking
                         )
                         .accessibilityIdentifier("engines.mistral.verify")
                 }
 
                 SettingsFieldRow(title: "Quick setup") {
                     Button("Use Mistral for dictation and polishing") {
-                        viewModel.applyMistralQuickSetup(apiKey: settings.mistralAPIKey)
+                        viewModel.engines.applyMistralQuickSetup(apiKey: settings.mistralAPIKey)
                     }
                     .disabled(!settings.isMistralAPIConfigured)
                     .accessibilityIdentifier("engines.mistral.quickSetup")
@@ -746,7 +746,7 @@ private struct ConnectionSettingsPane: View {
         }
         .task(id: mistralModelListTrigger) {
             guard !mistralModelListTrigger.isEmpty else { return }
-            viewModel.refreshMistralModelCatalog()
+            viewModel.engines.refreshMistralModelCatalog()
         }
     }
 }
@@ -767,8 +767,8 @@ private struct MistralUsageRow: View {
 
     private var summary: MistralUsageSummary {
         // Read so a ledger write re-renders the row.
-        _ = viewModel.mistralUsageRevision
-        return viewModel.mistralUsageLedger?.summary(for: period.wrappedValue)
+        _ = viewModel.engines.mistralUsageRevision
+        return viewModel.engines.mistralUsageLedger?.summary(for: period.wrappedValue)
             ?? MistralUsageSummary()
     }
 
@@ -1029,7 +1029,7 @@ private struct DictationSettingsPane: View {
         Binding(
             get: { settings.dictationOutputMode },
             set: { newValue in
-                viewModel.applyDictationOutputModeChange(newValue)
+                viewModel.engines.applyDictationOutputModeChange(newValue)
             }
         )
     }
@@ -1405,7 +1405,7 @@ private struct TextProcessingSettingsPane: View {
                 // Turning polishing off stops the managed polishd process
                 // (Managed local mode only). External URL mode owns no local
                 // process, and re-enabling starts managed polishd eagerly.
-                viewModel.llmPolishingEnabledDidChange(newValue)
+                viewModel.engines.llmPolishingEnabledDidChange(newValue)
             }
         )
     }
@@ -2801,7 +2801,7 @@ private struct AboutSettingsPane: View {
                     help: "Writes a redacted report to the Desktop. Review before sharing."
                 ) {
                     Button("Export diagnostics…") {
-                        viewModel.exportDiagnostics()
+                        viewModel.engines.exportDiagnostics()
                     }
                 }
             }

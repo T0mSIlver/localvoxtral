@@ -226,7 +226,7 @@ final class DictationViewModel {
         {
             return false
         }
-        if isManagedPolishingWarmupWanted,
+        if engines.isManagedPolishingWarmupWanted,
            !isReady(backendManager.polishdStatus)
         {
             return false
@@ -260,37 +260,15 @@ final class DictationViewModel {
     let settings: SettingsStore
     let textInsertion = TextInsertionService()
 
-    /// Result of the Engines pane's "Check key" row. Observable so the row's
-    /// one-line label follows it; reset to `.idle` is the caller's business.
-    var mistralAPIKeyCheckState: MistralAPIKeyCheckState = .idle
-    /// The local record of Mistral requests Settings → Engines sums. Nil
-    /// without runtime services (tests), so a unit test never writes the
-    /// user's ledger.
+    /// The Engines pane: backend modes, the Mistral key check and model
+    /// catalog, managed warmup and shutdown, the download controls. Views
+    /// bind to `viewModel.engines`; nothing on the session path goes
+    /// through it.
     @ObservationIgnored
-    private(set) var mistralUsageLedger: MistralUsageLedger?
-    /// Bumped on every ledger write so the Usage row re-reads the ledger.
-    private(set) var mistralUsageRevision = 0
+    let engines: EnginesModel
     /// Bumped after every history write that landed, so the History pane
     /// reads the store again.
     private(set) var dictationHistoryRevision = 0
-
-    /// The in-flight key check. Kept awaitable so the unit suite observes the
-    /// result without polling a clock.
-    @ObservationIgnored
-    private(set) var mistralAPIKeyCheckTask: Task<Void, Never>?
-
-    /// The Mistral model pickers' fetch state.
-    var mistralModelListState: MistralModelListState = .idle
-
-    /// The in-flight model list fetch, awaitable for the same reason as
-    /// `mistralAPIKeyCheckTask`.
-    @ObservationIgnored
-    private(set) var mistralModelListTask: Task<Void, Never>?
-
-    /// The key the model list was last loaded with, so reopening the pane
-    /// does not refetch a list it already has.
-    @ObservationIgnored
-    var mistralModelListLoadedKey: String?
 
     /// Secure Keyboard Entry state sampled for the CURRENT session — drives
     /// the menu bar warning icon independently of `lastError` (whose popover
@@ -424,12 +402,6 @@ final class DictationViewModel {
     var llmPolishingService: any LLMPolishingServicing = LLMPolishingService()
     @ObservationIgnored
     var appConfigStore: any AppConfigServing = AppConfigStore()
-    /// `var` for the same reason `llmPolishingService` is: tests and previews
-    /// point it at a fake so nothing reaches api.mistral.ai off a button press.
-    @ObservationIgnored
-    var mistralAPIKeyVerifier: any MistralAPIKeyVerifying = MistralAPIKeyVerifier()
-    @ObservationIgnored
-    var mistralModelLister: any MistralModelListing = MistralModelLister()
     #if LOCALVOXTRAL_DOGFOOD
     /// `var` for the same reason `llmPolishingService` is: tests point it at a
     /// temp directory. Production uses the Application Support default.
@@ -591,25 +563,6 @@ final class DictationViewModel {
     var managedStartupTask: Task<Void, Never>?
     @ObservationIgnored
     var managedStartupTaskID: UUID?
-    // Stops the managed polishd (polishing) process when LLM polishing is turned
-    // off in Managed local mode. Kept awaitable so tests can await the shutdown.
-    // Shutdown tasks are tracked (never fire-and-forget) so a warmup requested
-    // right after a stop can cancel a still-queued stop and serialize behind a
-    // running one — otherwise a stale stop lands after the fresh warmup and
-    // kills the backend the settings now require.
-    @ObservationIgnored
-    var polishingShutdownTask: Task<Void, Never>?
-    @ObservationIgnored
-    var dictationShutdownTask: Task<Void, Never>?
-    // Eagerly installs/downloads/starts required managed backends so the user
-    // watches inline progress in Settings instead of waiting for dictation.
-    // One slot per backend (mirroring BackendManager's per-backend single-flight
-    // rationale): a polishing toggle/mode flip must never cancel an in-flight
-    // speechd warmup, and vice versa. Kept awaitable for tests.
-    @ObservationIgnored
-    var dictationWarmupTask: Task<Void, Never>?
-    @ObservationIgnored
-    var polishingWarmupTask: Task<Void, Never>?
     @ObservationIgnored
     var audioSendTask: Task<Void, Never>?
     @ObservationIgnored
@@ -833,7 +786,6 @@ final class DictationViewModel {
     @ObservationIgnored
     private let suppressStartupPermissionPrompts: Bool
     @ObservationIgnored
-    private let localNetworkPermissionPreflight: any LocalNetworkPermissionPreflighting
     // Tracks physical key state so repeat key-down events do not retrigger actions.
     @ObservationIgnored
     private var isPushToTalkShortcutHeld = false
@@ -872,8 +824,12 @@ final class DictationViewModel {
             )
         self.managesRuntimeServices = startRuntimeServices
         self.suppressStartupPermissionPrompts = suppressStartupPermissionPrompts
-        self.localNetworkPermissionPreflight =
-            localNetworkPermissionPreflight ?? LocalNetworkPermissionPreflight()
+        self.engines = EnginesModel(
+            settings: settings,
+            backendManager: self.backendManager,
+            localNetworkPermissionPreflight:
+                localNetworkPermissionPreflight ?? LocalNetworkPermissionPreflight()
+        )
         // The real control only in the running app: a unit suite that reached
         // it would move the volume of the Mac running the tests, and the build
         // host is the owner's own machine. `startRuntimeServices` is the gate
@@ -909,6 +865,17 @@ final class DictationViewModel {
                 ),
                 anchorResolver: anchorResolver
             )
+        }
+
+        engines.interruptConnectingSession = { [weak self] in
+            guard let self else { return }
+            // Cancelling the startup task mid-connect without aborting would
+            // leave the connecting flag latched and block every later start.
+            self.cancelManagedStartupTask()
+            if self.isConnectingRealtimeSession {
+                self.abortConnectingSession()
+                self.statusText = StatusStrings.ready
+            }
         }
 
         // BOTH realtime clients report into the same handler. Only the latched
@@ -1026,7 +993,7 @@ final class DictationViewModel {
             installMistralUsageLedger(
                 MistralUsageLedger(fileURL: MistralUsageLedger.defaultFileURL()) {
                     [weak self] in
-                    Task { @MainActor in self?.mistralUsageRevision += 1 }
+                    Task { @MainActor in self?.engines.noteUsageLedgerChanged() }
                 }
             )
             refreshMicrophoneInputs()
@@ -1049,7 +1016,7 @@ final class DictationViewModel {
             )
             polishPromptWarmupCoordinator = promptWarmup
             promptWarmup.observe(self.backendManager.statusUpdates)
-            warmUpManagedBackendsAtLaunchIfNeeded()
+            engines.warmUpManagedBackendsAtLaunchIfNeeded()
         }
     }
 
@@ -1057,7 +1024,7 @@ final class DictationViewModel {
     /// service — at `ledger`. Replaces `llmPolishingService`, so a test that
     /// substitutes a fake does so after this.
     func installMistralUsageLedger(_ ledger: MistralUsageLedger) {
-        mistralUsageLedger = ledger
+        engines.installUsageLedger(ledger)
         mistralRealtimeClient.setUsageRecorder(ledger)
         llmPolishingService = LLMPolishingService(usageRecorder: ledger)
     }
@@ -1071,10 +1038,7 @@ final class DictationViewModel {
         commitTask?.cancel()
         managedStartupTask?.cancel()
         managedStartupTaskID = nil
-        polishingShutdownTask?.cancel()
-        dictationShutdownTask?.cancel()
-        dictationWarmupTask?.cancel()
-        polishingWarmupTask?.cancel()
+        engines.cancelTasks()
         audioSendTask?.cancel()
         stopFinalizationTask?.cancel()
         connectTimeoutTask?.cancel()
@@ -1524,7 +1488,7 @@ final class DictationViewModel {
         let wasReachable = settings.isOverlayBufferSessionReachable
         settings.modifierOnlyHotKeyEnabled = modifierOnlyEnabled
         applyHotKeySettingsChange()
-        handleOverlayReachabilityTransition(wasReachable: wasReachable)
+        engines.handleOverlayReachabilityTransition(wasReachable: wasReachable)
     }
 
     /// Register hotkeys based on current settings.
@@ -1625,7 +1589,7 @@ final class DictationViewModel {
         settings.setOverlayBufferShortcut(shortcut)
 
         finishShortcutMove(restore: restore)
-        handleOverlayReachabilityTransition(wasReachable: wasReachable)
+        engines.handleOverlayReachabilityTransition(wasReachable: wasReachable)
     }
 
     func moveShortcutToLivePaste(_ shortcut: DictationShortcut) {
@@ -1636,7 +1600,7 @@ final class DictationViewModel {
         settings.setLivePasteShortcut(shortcut)
 
         finishShortcutMove(restore: restore)
-        handleOverlayReachabilityTransition(wasReachable: wasReachable)
+        engines.handleOverlayReachabilityTransition(wasReachable: wasReachable)
     }
 
     /// Captures both slots as they stand, and returns the closure that puts
@@ -1680,7 +1644,7 @@ final class DictationViewModel {
             _ = registerCurrentHotKeys()
             applyHotKeyRegistrationFailure(reason)
         }
-        handleOverlayReachabilityTransition(wasReachable: wasReachable)
+        engines.handleOverlayReachabilityTransition(wasReachable: wasReachable)
     }
 
     func updateLivePasteShortcut(_ shortcut: DictationShortcut?) {

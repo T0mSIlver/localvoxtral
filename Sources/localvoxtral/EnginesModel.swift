@@ -1,13 +1,123 @@
 import AppKit
 import Foundation
+import Observation
 
-// The Engines pane's half of the view model, moved here verbatim from
-// DictationViewModel.swift ahead of its extraction into `EnginesModel`
-// (#432 step 1). Backend mode changes, the Mistral key check and model
-// catalog, endpoint preflights, managed speechd settings, the polishing
-// warmup and shutdown slots, the download controls and the diagnostics
-// export.
-extension DictationViewModel {
+/// The Engines pane's state and actions: backend modes, the Mistral key check
+/// and model catalog, endpoint preflights, the managed engines' settings,
+/// their warmup and shutdown, the download controls and the diagnostics
+/// export. Owned by `DictationViewModel` and reached as `viewModel.engines`;
+/// no dictation runs through it.
+///
+/// The one thing it asks of the session is `interruptConnectingSession`: a
+/// backend the user stops from the pane (a mode switch, Pause, Cancel) is the
+/// backend a connecting session may be waiting on, and that session has to
+/// unwind or its connecting flag stays latched and blocks every later start.
+@MainActor
+@Observable
+final class EnginesModel {
+    @ObservationIgnored
+    let settings: SettingsStore
+    @ObservationIgnored
+    let backendManager: any ManagedBackendManaging
+    @ObservationIgnored
+    private let localNetworkPermissionPreflight: any LocalNetworkPermissionPreflighting
+    /// Installed by the owner once it exists (a closure over the view model
+    /// cannot be formed inside its own init). Cancels the managed startup task
+    /// and aborts the session waiting on it, if one is.
+    @ObservationIgnored
+    var interruptConnectingSession: () -> Void = {}
+
+    /// Result of the Engines pane's "Check key" row. Observable so the row's
+    /// one-line label follows it; reset to `.idle` is the caller's business.
+    var mistralAPIKeyCheckState: MistralAPIKeyCheckState = .idle
+    /// The local record of Mistral requests Settings → Engines sums. Nil
+    /// without runtime services (tests), so a unit test never writes the
+    /// user's ledger.
+    @ObservationIgnored
+    private(set) var mistralUsageLedger: MistralUsageLedger?
+    /// Bumped on every ledger write so the Usage row re-reads the ledger.
+    private(set) var mistralUsageRevision = 0
+
+    /// The in-flight key check. Kept awaitable so the unit suite observes the
+    /// result without polling a clock.
+    @ObservationIgnored
+    private(set) var mistralAPIKeyCheckTask: Task<Void, Never>?
+
+    /// The Mistral model pickers' fetch state.
+    var mistralModelListState: MistralModelListState = .idle
+
+    /// The in-flight model list fetch, awaitable for the same reason as
+    /// `mistralAPIKeyCheckTask`.
+    @ObservationIgnored
+    private(set) var mistralModelListTask: Task<Void, Never>?
+
+    /// The key the model list was last loaded with, so reopening the pane
+    /// does not refetch a list it already has.
+    @ObservationIgnored
+    private var mistralModelListLoadedKey: String?
+
+    /// Asks Mistral whether a key works. A stored property so tests never
+    /// reach api.mistral.ai.
+    @ObservationIgnored
+    var mistralAPIKeyVerifier: any MistralAPIKeyVerifying = MistralAPIKeyVerifier()
+    /// Lists the models a key can use; substituted by tests like the verifier.
+    @ObservationIgnored
+    var mistralModelLister: any MistralModelListing = MistralModelLister()
+
+    // Stops the managed polishd (polishing) process when LLM polishing is turned
+    // off in Managed local mode. Kept awaitable so tests can await the shutdown.
+    // Shutdown tasks are tracked (never fire-and-forget) so a warmup requested
+    // right after a stop can cancel a still-queued stop and serialize behind a
+    // running one — otherwise a stale stop lands after the fresh warmup and
+    // kills the backend the settings now require.
+    @ObservationIgnored
+    var polishingShutdownTask: Task<Void, Never>?
+    @ObservationIgnored
+    var dictationShutdownTask: Task<Void, Never>?
+    // Eagerly installs/downloads/starts required managed backends so the user
+    // watches inline progress in Settings instead of waiting for dictation.
+    // One slot per backend (mirroring BackendManager's per-backend single-flight
+    // rationale): a polishing toggle/mode flip must never cancel an in-flight
+    // speechd warmup, and vice versa. Kept awaitable for tests.
+    @ObservationIgnored
+    var dictationWarmupTask: Task<Void, Never>?
+    @ObservationIgnored
+    var polishingWarmupTask: Task<Void, Never>?
+
+    init(
+        settings: SettingsStore,
+        backendManager: any ManagedBackendManaging,
+        localNetworkPermissionPreflight: any LocalNetworkPermissionPreflighting = LocalNetworkPermissionPreflight()
+    ) {
+        self.settings = settings
+        self.backendManager = backendManager
+        self.localNetworkPermissionPreflight = localNetworkPermissionPreflight
+    }
+
+    @MainActor
+    deinit {
+        cancelTasks()
+    }
+
+    /// Cancels every warmup and shutdown in flight. Called on the owner's way
+    /// out as well, so nothing lands on a backend after the view model is gone.
+    func cancelTasks() {
+        polishingShutdownTask?.cancel()
+        dictationShutdownTask?.cancel()
+        dictationWarmupTask?.cancel()
+        polishingWarmupTask?.cancel()
+    }
+
+    /// The ledger the Usage row sums. The owner wires the same ledger into the
+    /// two Mistral request paths it holds.
+    func installUsageLedger(_ ledger: MistralUsageLedger) {
+        mistralUsageLedger = ledger
+    }
+
+    /// A ledger write landed: the Usage row reads the ledger again.
+    func noteUsageLedgerChanged() {
+        mistralUsageRevision += 1
+    }
     func applyDictationBackendModeChange(_ mode: BackendMode) {
         let previousMode = settings.dictationBackendMode
         settings.dictationBackendMode = mode
@@ -28,12 +138,8 @@ extension DictationViewModel {
             Log.backends.info(
                 "dictation backend mode switched to \(mode.rawValue, privacy: .public); stopping managed speechd"
             )
-            cancelManagedStartupTask()
+            interruptConnectingSession()
             dictationWarmupTask?.cancel()
-            if isConnectingRealtimeSession {
-                abortConnectingSession()
-                statusText = StatusStrings.ready
-            }
             dictationShutdownTask?.cancel()
             dictationShutdownTask = Task { @MainActor [backendManager] in
                 guard !Task.isCancelled else { return }
@@ -61,14 +167,7 @@ extension DictationViewModel {
             Log.backends.info(
                 "polishing backend mode switched to \(mode.rawValue, privacy: .public); stopping managed polishd"
             )
-            cancelManagedStartupTask()
-            // Mirror the dictation sibling above: cancelling the startup task
-            // mid-connect without aborting would leave the connecting flag
-            // latched and block every later start.
-            if isConnectingRealtimeSession {
-                abortConnectingSession()
-                statusText = StatusStrings.ready
-            }
+            interruptConnectingSession()
             polishingWarmupTask?.cancel()
             polishingShutdownTask?.cancel()
             polishingShutdownTask = Task { @MainActor [backendManager] in
@@ -345,11 +444,7 @@ extension DictationViewModel {
         // so retire it here the way a mode switch does — otherwise its await
         // throws, its own task is not cancelled, and the user's Pause is
         // reported back to them as "Managed backend failed".
-        cancelManagedStartupTask()
-        if isConnectingRealtimeSession {
-            abortConnectingSession()
-            statusText = StatusStrings.ready
-        }
+        interruptConnectingSession()
         if spec.id == BackendCatalog.speechd.id {
             dictationWarmupTask?.cancel()
             dictationShutdownTask?.cancel()

@@ -51,7 +51,7 @@ final class MistralAPIModeTests: XCTestCase {
 
         // Settings changed while the session runs: the latch is what keeps the
         // session's audio, its stop, and its disconnect on one client.
-        viewModel.applyDictationBackendModeChange(.externalURL)
+        viewModel.engines.applyDictationBackendModeChange(.externalURL)
 
         XCTAssertTrue(
             viewModel.activeRealtimeClient === viewModel.mistralRealtimeClient,
@@ -75,11 +75,11 @@ final class MistralAPIModeTests: XCTestCase {
     // MARK: - Mode changes and the managed engines
 
     func testSwitchingDictationFromManagedToMistralStopsTheManagedEngine() async {
-        let (viewModel, settings, backendManager) = makeViewModel()
+        let (engines, settings, backendManager) = makeEngines()
         settings.dictationBackendMode = .managedLocal
 
-        viewModel.applyDictationBackendModeChange(.mistralAPI)
-        await Self.awaitBackendLifecycle(viewModel)
+        engines.applyDictationBackendModeChange(.mistralAPI)
+        await Self.awaitBackendLifecycle(engines)
 
         XCTAssertEqual(settings.dictationBackendMode, .mistralAPI)
         XCTAssertEqual(backendManager.stopDictationCallCount, 1)
@@ -87,11 +87,11 @@ final class MistralAPIModeTests: XCTestCase {
     }
 
     func testSwitchingPolishingFromManagedToMistralStopsTheManagedEngine() async {
-        let (viewModel, settings, backendManager) = makeViewModel()
+        let (engines, settings, backendManager) = makeEngines()
         settings.polishingBackendMode = .managedLocal
 
-        viewModel.applyPolishingBackendModeChange(.mistralAPI)
-        await Self.awaitBackendLifecycle(viewModel)
+        engines.applyPolishingBackendModeChange(.mistralAPI)
+        await Self.awaitBackendLifecycle(engines)
 
         XCTAssertEqual(settings.polishingBackendMode, .mistralAPI)
         XCTAssertEqual(backendManager.stopPolishingCallCount, 1)
@@ -99,15 +99,15 @@ final class MistralAPIModeTests: XCTestCase {
     }
 
     func testSwitchingBetweenExternalAndMistralNeverTouchesTheManagedEngines() async {
-        let (viewModel, settings, backendManager) = makeViewModel()
+        let (engines, settings, backendManager) = makeEngines()
         settings.dictationBackendMode = .externalURL
         settings.polishingBackendMode = .externalURL
 
-        viewModel.applyDictationBackendModeChange(.mistralAPI)
-        viewModel.applyPolishingBackendModeChange(.mistralAPI)
-        viewModel.applyDictationBackendModeChange(.externalURL)
-        viewModel.applyPolishingBackendModeChange(.externalURL)
-        await Self.awaitBackendLifecycle(viewModel)
+        engines.applyDictationBackendModeChange(.mistralAPI)
+        engines.applyPolishingBackendModeChange(.mistralAPI)
+        engines.applyDictationBackendModeChange(.externalURL)
+        engines.applyPolishingBackendModeChange(.externalURL)
+        await Self.awaitBackendLifecycle(engines)
 
         XCTAssertEqual(backendManager.stopDictationCallCount, 0)
         XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
@@ -115,12 +115,12 @@ final class MistralAPIModeTests: XCTestCase {
     }
 
     func testSwitchingBackFromMistralToManagedWarmsTheEngineUp() async {
-        let (viewModel, settings, backendManager) = makeViewModel()
+        let (engines, settings, backendManager) = makeEngines()
         settings.onboardingCompleted = true
         settings.dictationBackendMode = .mistralAPI
 
-        viewModel.applyDictationBackendModeChange(.managedLocal)
-        await Self.awaitBackendLifecycle(viewModel)
+        engines.applyDictationBackendModeChange(.managedLocal)
+        await Self.awaitBackendLifecycle(engines)
 
         XCTAssertEqual(
             backendManager.ensureCalls,
@@ -129,14 +129,14 @@ final class MistralAPIModeTests: XCTestCase {
     }
 
     func testMistralModeRequestsNoLocalNetworkPreflight() {
-        let preflight = RecordingPreflight()
-        let (viewModel, settings, _) = makeViewModel(preflight: preflight)
+        let preflight = RecordingLocalNetworkPermissionPreflight()
+        let (engines, settings, _) = makeEngines(preflight: preflight)
         settings.dictationBackendMode = .managedLocal
         settings.polishingBackendMode = .managedLocal
 
-        viewModel.applyDictationBackendModeChange(.mistralAPI)
-        viewModel.applyPolishingBackendModeChange(.mistralAPI)
-        viewModel.preflightConfiguredLocalNetworkEndpoints()
+        engines.applyDictationBackendModeChange(.mistralAPI)
+        engines.applyPolishingBackendModeChange(.mistralAPI)
+        engines.preflightConfiguredLocalNetworkEndpoints()
 
         // api.mistral.ai is not on the local network, so asking macOS for the
         // local-network permission would be a prompt with nothing behind it.
@@ -157,16 +157,16 @@ final class MistralAPIModeTests: XCTestCase {
         settings.polishingBackendMode = .mistralAPI
 
         XCTAssertFalse(viewModel.isManagedPolishingRequired(outputMode: .overlayBuffer))
-        XCTAssertFalse(viewModel.isManagedPolishingWarmupWanted)
+        XCTAssertFalse(viewModel.engines.isManagedPolishingWarmupWanted)
 
         // Same answer External URL gets, which is the point.
         settings.polishingBackendMode = .externalURL
         XCTAssertFalse(viewModel.isManagedPolishingRequired(outputMode: .overlayBuffer))
-        XCTAssertFalse(viewModel.isManagedPolishingWarmupWanted)
+        XCTAssertFalse(viewModel.engines.isManagedPolishingWarmupWanted)
     }
 
     func testPolishPromptWarmupPlansNothingForMistralMode() {
-        let (_, settings, _) = makeViewModel()
+        let (_, settings, _) = makeEngines()
         settings.llmPolishingEnabled = true
         settings.polishingBackendMode = .mistralAPI
         settings.mistralAPIKey = "mk-mistral"
@@ -182,13 +182,13 @@ final class MistralAPIModeTests: XCTestCase {
     // MARK: - Quick setup
 
     func testQuickSetupStoresTheKeySwitchesBothEnginesAndEnablesPolishing() async {
-        let (viewModel, settings, backendManager) = makeViewModel()
+        let (engines, settings, backendManager) = makeEngines()
         settings.dictationBackendMode = .managedLocal
         settings.polishingBackendMode = .managedLocal
         XCTAssertFalse(settings.llmPolishingEnabled)
 
-        viewModel.applyMistralQuickSetup(apiKey: "  mk-mistral  ")
-        await Self.awaitBackendLifecycle(viewModel)
+        engines.applyMistralQuickSetup(apiKey: "  mk-mistral  ")
+        await Self.awaitBackendLifecycle(engines)
 
         XCTAssertEqual(settings.mistralAPIKey, "mk-mistral")
         XCTAssertEqual(settings.dictationBackendMode, .mistralAPI)
@@ -201,9 +201,9 @@ final class MistralAPIModeTests: XCTestCase {
     }
 
     func testQuickSetupProducesAUsablePolishingConfiguration() {
-        let (viewModel, settings, _) = makeViewModel()
+        let (engines, settings, _) = makeEngines()
 
-        viewModel.applyMistralQuickSetup(apiKey: "mk-mistral")
+        engines.applyMistralQuickSetup(apiKey: "mk-mistral")
 
         let configuration = settings.llmPolishingConfiguration
         XCTAssertEqual(configuration?.endpointURL, MistralPolishDefaults.endpoint)
@@ -219,12 +219,12 @@ final class MistralAPIModeTests: XCTestCase {
     // MARK: - Key verification
 
     func testCheckKeyReportsAcceptance() async {
-        let (viewModel, settings, _) = makeViewModel()
+        let (engines, settings, _) = makeEngines()
         let verifier = FakeMistralAPIKeyVerifier(result: .accepted)
-        viewModel.mistralAPIKeyVerifier = verifier
+        engines.mistralAPIKeyVerifier = verifier
         settings.mistralAPIKey = "mk-mistral"
 
-        let verification = await viewModel.verifyMistralAPIKey(settings.mistralAPIKey)
+        let verification = await engines.verifyMistralAPIKey(settings.mistralAPIKey)
 
         XCTAssertEqual(verification, .accepted)
         XCTAssertEqual(verifier.checkedKeys, ["mk-mistral"])
@@ -232,21 +232,21 @@ final class MistralAPIModeTests: XCTestCase {
     }
 
     func testCheckKeyButtonDrivesTheEnginesPaneState() async {
-        let (viewModel, settings, _) = makeViewModel()
-        viewModel.mistralAPIKeyVerifier = FakeMistralAPIKeyVerifier(
+        let (engines, settings, _) = makeEngines()
+        engines.mistralAPIKeyVerifier = FakeMistralAPIKeyVerifier(
             result: .rejected(statusCode: 401)
         )
         settings.mistralAPIKey = "mk-wrong"
-        XCTAssertNil(viewModel.mistralAPIKeyCheckState.statusLine)
+        XCTAssertNil(engines.mistralAPIKeyCheckState.statusLine)
 
-        viewModel.checkMistralAPIKey()
-        XCTAssertEqual(viewModel.mistralAPIKeyCheckState, .checking)
-        await viewModel.mistralAPIKeyCheckTask?.value
+        engines.checkMistralAPIKey()
+        XCTAssertEqual(engines.mistralAPIKeyCheckState, .checking)
+        await engines.mistralAPIKeyCheckTask?.value
 
         XCTAssertEqual(
-            viewModel.mistralAPIKeyCheckState, .finished(.rejected(statusCode: 401))
+            engines.mistralAPIKeyCheckState, .finished(.rejected(statusCode: 401))
         )
-        XCTAssertEqual(viewModel.mistralAPIKeyCheckState.statusLine, "Rejected (HTTP 401)")
+        XCTAssertEqual(engines.mistralAPIKeyCheckState.statusLine, "Rejected (HTTP 401)")
     }
 
     func testCheckKeyStateLinesStayOneLine() {
@@ -293,48 +293,48 @@ final class MistralAPIModeTests: XCTestCase {
     // MARK: - Model list
 
     func testModelListLoadsOncePerKeyIntoSettings() async {
-        let (viewModel, settings, _) = makeViewModel()
+        let (engines, settings, _) = makeEngines()
         let glm = MistralModel(
             id: "zai-glm-5-3", ids: ["zai-glm-5-3", "zai-glm-latest"], supportsChat: true,
             supportsRealtimeTranscription: false, supportsReasoning: true, isDeprecated: false
         )
         let lister = FakeMistralModelLister(result: .loaded([glm]))
-        viewModel.mistralModelLister = lister
+        engines.mistralModelLister = lister
         settings.mistralAPIKey = " mk-mistral "
 
-        viewModel.refreshMistralModelCatalog()
-        XCTAssertEqual(viewModel.mistralModelListState, .loading)
-        XCTAssertEqual(viewModel.mistralModelListState.statusLine, "Loading models…")
-        await viewModel.mistralModelListTask?.value
+        engines.refreshMistralModelCatalog()
+        XCTAssertEqual(engines.mistralModelListState, .loading)
+        XCTAssertEqual(engines.mistralModelListState.statusLine, "Loading models…")
+        await engines.mistralModelListTask?.value
 
         XCTAssertEqual(settings.mistralModelCatalog, [glm])
-        XCTAssertEqual(viewModel.mistralModelListState, .loaded)
-        XCTAssertNil(viewModel.mistralModelListState.statusLine)
+        XCTAssertEqual(engines.mistralModelListState, .loaded)
+        XCTAssertNil(engines.mistralModelListState.statusLine)
         XCTAssertEqual(lister.requestedKeys, ["mk-mistral"])
 
         // Reopening the pane with the same key costs no request.
-        viewModel.refreshMistralModelCatalog()
-        await viewModel.mistralModelListTask?.value
+        engines.refreshMistralModelCatalog()
+        await engines.mistralModelListTask?.value
         XCTAssertEqual(lister.requestedKeys, ["mk-mistral"])
     }
 
     /// A failed fetch says so in one line and keeps the list it had: the
     /// pickers must not empty out because Wi-Fi dropped.
     func testAFailedModelListKeepsTheCachedList() async {
-        let (viewModel, settings, _) = makeViewModel()
+        let (engines, settings, _) = makeEngines()
         let cached = MistralModel(
             id: "mistral-small-2603", ids: ["mistral-small-2603"], supportsChat: true,
             supportsRealtimeTranscription: false, supportsReasoning: true, isDeprecated: false
         )
         settings.mistralModelCatalog = [cached]
         settings.mistralAPIKey = "mk-wrong"
-        viewModel.mistralModelLister = FakeMistralModelLister(result: .rejected(statusCode: 401))
+        engines.mistralModelLister = FakeMistralModelLister(result: .rejected(statusCode: 401))
 
-        viewModel.refreshMistralModelCatalog()
-        await viewModel.mistralModelListTask?.value
+        engines.refreshMistralModelCatalog()
+        await engines.mistralModelListTask?.value
 
         XCTAssertEqual(settings.mistralModelCatalog, [cached])
-        XCTAssertEqual(viewModel.mistralModelListState.statusLine, "Key rejected")
+        XCTAssertEqual(engines.mistralModelListState.statusLine, "Key rejected")
         XCTAssertEqual(
             MistralModelListState.failed(.failed("A long\nsystem error")).statusLine,
             "Could not load models"
@@ -342,15 +342,15 @@ final class MistralAPIModeTests: XCTestCase {
     }
 
     func testModelListWithoutAKeyNeverAsks() async {
-        let (viewModel, _, _) = makeViewModel()
+        let (engines, _, _) = makeEngines()
         let lister = FakeMistralModelLister(result: .loaded([]))
-        viewModel.mistralModelLister = lister
+        engines.mistralModelLister = lister
 
-        viewModel.refreshMistralModelCatalog()
+        engines.refreshMistralModelCatalog()
 
-        XCTAssertNil(viewModel.mistralModelListTask)
+        XCTAssertNil(engines.mistralModelListTask)
         XCTAssertEqual(lister.requestedKeys, [])
-        XCTAssertEqual(viewModel.mistralModelListState, .idle)
+        XCTAssertEqual(engines.mistralModelListState, .idle)
     }
 
     // MARK: - Usage ledger
@@ -360,10 +360,10 @@ final class MistralAPIModeTests: XCTestCase {
     /// calls. A path left unwired would under-report without any error.
     func testInstalledUsageLedgerReceivesBothMistralPaths() async throws {
         let (viewModel, _, _) = makeViewModel()
-        XCTAssertNil(viewModel.mistralUsageLedger, "tests never write the user's ledger")
+        XCTAssertNil(viewModel.engines.mistralUsageLedger, "tests never write the user's ledger")
         let ledger = MistralUsageLedger(fileURL: nil)
         viewModel.installMistralUsageLedger(ledger)
-        XCTAssertTrue(viewModel.mistralUsageLedger === ledger)
+        XCTAssertTrue(viewModel.engines.mistralUsageLedger === ledger)
 
         #if DEBUG
         let session = URLSession(configuration: .ephemeral)
@@ -388,48 +388,47 @@ final class MistralAPIModeTests: XCTestCase {
 
     /// Drain the backend-lifecycle tasks a mode change starts. No polling and
     /// no wall-clock: the tasks are kept awaitable exactly for this.
-    private static func awaitBackendLifecycle(_ viewModel: DictationViewModel) async {
-        await viewModel.dictationShutdownTask?.value
-        await viewModel.polishingShutdownTask?.value
-        await viewModel.dictationWarmupTask?.value
-        await viewModel.polishingWarmupTask?.value
+    private static func awaitBackendLifecycle(_ engines: EnginesModel) async {
+        await engines.dictationShutdownTask?.value
+        await engines.polishingShutdownTask?.value
+        await engines.dictationWarmupTask?.value
+        await engines.polishingWarmupTask?.value
     }
 
-    private func makeViewModel(
-        preflight: RecordingPreflight? = nil
-    ) -> (DictationViewModel, SettingsStore, OnboardingTestBackendManager) {
-        let suiteName = "localvoxtral.MistralAPIModeTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
+    private func makeTestSettings() -> SettingsStore {
+        let settings = makeSettings()
         settings.onboardingCompleted = true
+        return settings
+    }
+
+    /// The Engines pane alone: what the mode changes, the key check and the
+    /// model list do needs no session, so no view model is built.
+    private func makeEngines(
+        preflight: RecordingLocalNetworkPermissionPreflight? = nil
+    ) -> (EnginesModel, SettingsStore, OnboardingTestBackendManager) {
+        let settings = makeTestSettings()
+        let backendManager = OnboardingTestBackendManager()
+        let engines = EnginesModel(
+            settings: settings,
+            backendManager: backendManager,
+            localNetworkPermissionPreflight: preflight ?? RecordingLocalNetworkPermissionPreflight()
+        )
+        return (engines, settings, backendManager)
+    }
+
+    /// The tests of the realtime client latch and the usage ledger, which the
+    /// view model owns.
+    private func makeViewModel() -> (DictationViewModel, SettingsStore, OnboardingTestBackendManager) {
+        let settings = makeTestSettings()
         let backendManager = OnboardingTestBackendManager()
         let viewModel = DictationViewModel(
             settings: settings,
             backendManager: backendManager,
             overlayBufferCoordinator: MockOverlayCoordinator(),
-            localNetworkPermissionPreflight: preflight,
             startRuntimeServices: false
         )
         retainForTestProcessLifetime(viewModel)
         return (viewModel, settings, backendManager)
-    }
-}
-
-@MainActor
-private final class RecordingPreflight: LocalNetworkPermissionPreflighting {
-    struct Request {
-        let endpoint: URL
-        let reason: String
-    }
-
-    private(set) var requests: [Request] = []
-
-    func preflight(endpoint: URL, reason: String) {
-        requests.append(Request(endpoint: endpoint, reason: reason))
     }
 }
 
