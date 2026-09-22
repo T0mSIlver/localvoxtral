@@ -358,7 +358,9 @@ command_pgid=$command_pid
 (
   trap 'exit 0' HUP INT TERM
   if [[ -n "${LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO:-}" ]]; then
-    read -r _ <"$LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO"
+    # Opened read-write so the open() cannot block, and so cannot fail with
+    # EINTR under bash 3.2 (no SA_RESTART, no retry); read() itself is retried.
+    read -r _ 0<>"$LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO"
   else
     sleep "$timeout_seconds"
   fi

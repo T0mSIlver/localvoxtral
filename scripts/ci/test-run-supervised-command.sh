@@ -42,6 +42,17 @@ open_pid_fifo() {
   exec 3<>"$pid_fifo"
 }
 
+# The timeout trigger is the same shape on fd 4: held open read-write here, so
+# neither this shell's write nor the supervisor's watcher read blocks in
+# open(). The supervisor is spawned with 4<&- so the descriptor is this
+# shell's alone; it stays open until the supervisor is waited for, which is
+# what keeps a line written before the watcher opened the FIFO in the buffer.
+open_timeout_fifo() {
+  timeout_fifo="$1"
+  mkfifo "$timeout_fifo"
+  exec 4<>"$timeout_fifo"
+}
+
 success_log="$TMP_DIR/success.log"
 "$SUPERVISOR" 30 "$success_log" -- /bin/bash -c 'echo supervised-output'
 [[ "$(cat "$success_log")" == "supervised-output" ]] || fail "success output was not captured"
@@ -59,22 +70,23 @@ grep -q '^failed-output$' "$failure_log" || fail "failure output was not capture
 pid_fifo="$TMP_DIR/timeout-pids"
 timeout_fifo="$TMP_DIR/timeout-trigger"
 open_pid_fifo "$pid_fifo"
-mkfifo "$timeout_fifo"
+open_timeout_fifo "$timeout_fifo"
 LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO="$timeout_fifo" \
 LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
-  "$SUPERVISOR" 999 "$TMP_DIR/timeout.log" -- "$FIXTURE" "$pid_fifo" &
+  "$SUPERVISOR" 999 "$TMP_DIR/timeout.log" -- "$FIXTURE" "$pid_fifo" 4<&- &
 supervisor_pid=$!
 read -r fixture_pid stubborn_pid <&3
 exec 3<&-
 /bin/bash -c 'exec sleep 300' &
 sibling_pid=$!
-printf 'fire\n' >"$timeout_fifo"
+printf 'fire\n' >&4
 if wait "$supervisor_pid"; then
   fail "timed-out command unexpectedly succeeded"
 else
   status=$?
 fi
 supervisor_pid=""
+exec 4<&-
 [[ "$status" == "124" ]] || fail "timeout status changed from 124 to $status"
 is_live_non_zombie "$fixture_pid" && fail "timed-out leader survived"
 is_live_non_zombie "$stubborn_pid" && fail "timed-out descendant survived"
@@ -103,7 +115,7 @@ stubborn_pid=""
 pid_fifo="$TMP_DIR/forensics-pids"
 timeout_fifo="$TMP_DIR/forensics-trigger"
 open_pid_fifo "$pid_fifo"
-mkfifo "$timeout_fifo"
+open_timeout_fifo "$timeout_fifo"
 mkdir -p "$TMP_DIR/bin"
 cat >"$TMP_DIR/bin/sample" <<'STUB'
 #!/usr/bin/env bash
@@ -113,17 +125,18 @@ chmod +x "$TMP_DIR/bin/sample"
 PATH="$TMP_DIR/bin:$PATH" \
 LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO="$timeout_fifo" \
 LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
-  "$SUPERVISOR" 999 "$TMP_DIR/forensics.log" -- "$FIXTURE" "$pid_fifo" &
+  "$SUPERVISOR" 999 "$TMP_DIR/forensics.log" -- "$FIXTURE" "$pid_fifo" 4<&- &
 supervisor_pid=$!
 read -r fixture_pid stubborn_pid <&3
 exec 3<&-
-printf 'fire\n' >"$timeout_fifo"
+printf 'fire\n' >&4
 if wait "$supervisor_pid"; then
   fail "forensics-run command unexpectedly succeeded"
 else
   status=$?
 fi
 supervisor_pid=""
+exec 4<&-
 [[ "$status" == "124" ]] || fail "forensics run: timeout status changed from 124 to $status"
 grep -q 'supervisor timeout forensics' "$TMP_DIR/forensics.log" \
   || fail "timeout log is missing the forensics marker"
@@ -140,7 +153,7 @@ stubborn_pid=""
 pid_fifo="$TMP_DIR/hung-sampler-pids"
 timeout_fifo="$TMP_DIR/hung-sampler-trigger"
 open_pid_fifo "$pid_fifo"
-mkfifo "$timeout_fifo"
+open_timeout_fifo "$timeout_fifo"
 cat >"$TMP_DIR/bin/sample" <<'STUB'
 #!/usr/bin/env bash
 echo "stub-sample-hanging-on-pid-$1"
@@ -151,17 +164,18 @@ PATH="$TMP_DIR/bin:$PATH" \
 LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO="$timeout_fifo" \
 LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
 LOCALVOXTRAL_SUPERVISOR_SAMPLE_POLLS=3 \
-  "$SUPERVISOR" 999 "$TMP_DIR/hung-sampler.log" -- "$FIXTURE" "$pid_fifo" &
+  "$SUPERVISOR" 999 "$TMP_DIR/hung-sampler.log" -- "$FIXTURE" "$pid_fifo" 4<&- &
 supervisor_pid=$!
 read -r fixture_pid stubborn_pid <&3
 exec 3<&-
-printf 'fire\n' >"$timeout_fifo"
+printf 'fire\n' >&4
 if wait "$supervisor_pid"; then
   fail "hung-sampler run unexpectedly succeeded"
 else
   status=$?
 fi
 supervisor_pid=""
+exec 4<&-
 [[ "$status" == "124" ]] || fail "hung-sampler run: timeout status changed from 124 to $status"
 grep -q 'killed at the 300 ms cap' "$TMP_DIR/hung-sampler.log" \
   || fail "hung sampler was not killed at the cap"
@@ -182,7 +196,7 @@ stubborn_pid=""
 pid_fifo="$TMP_DIR/tree-pids"
 timeout_fifo="$TMP_DIR/tree-trigger"
 open_pid_fifo "$pid_fifo"
-mkfifo "$timeout_fifo"
+open_timeout_fifo "$timeout_fifo"
 cat >"$TMP_DIR/bin/sample" <<'STUB'
 #!/usr/bin/env bash
 echo "stub-sample-of-pid-$1"
@@ -192,7 +206,7 @@ PATH="$TMP_DIR/bin:$PATH" \
 LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO="$timeout_fifo" \
 LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
 LOCALVOXTRAL_SUPERVISOR_LSOF_POLLS=10 \
-  "$SUPERVISOR" 999 "$TMP_DIR/tree.log" -- "$FIXTURE" "$pid_fifo" &
+  "$SUPERVISOR" 999 "$TMP_DIR/tree.log" -- "$FIXTURE" "$pid_fifo" 4<&- &
 supervisor_pid=$!
 read -r fixture_pid stubborn_pid <&3
 exec 3<&-
@@ -216,13 +230,14 @@ case " \$* " in
 esac
 STUB
 chmod +x "$TMP_DIR/bin/lsof"
-printf 'fire\n' >"$timeout_fifo"
+printf 'fire\n' >&4
 if wait "$supervisor_pid"; then
   fail "tree-forensics run unexpectedly succeeded"
 else
   status=$?
 fi
 supervisor_pid=""
+exec 4<&-
 [[ "$status" == "124" ]] || fail "tree-forensics run: timeout status changed from 124 to $status"
 grep -q 'supervisor timeout forensics: process tree and pipes' "$TMP_DIR/tree.log" \
   || fail "tree dump header missing from the timeout log"
@@ -251,7 +266,7 @@ stubborn_pid=""
 pid_fifo="$TMP_DIR/escape-pids"
 timeout_fifo="$TMP_DIR/escape-trigger"
 open_pid_fifo "$pid_fifo"
-mkfifo "$timeout_fifo"
+open_timeout_fifo "$timeout_fifo"
 cat >"$TMP_DIR/bin/sample" <<'STUB'
 #!/usr/bin/env bash
 echo "stub-sample-of-pid-$1"
@@ -262,20 +277,21 @@ PATH="$TMP_DIR/bin:$PATH" \
 LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO="$timeout_fifo" \
 LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
 LOCALVOXTRAL_SUPERVISOR_LSOF_POLLS=10 \
-  "$SUPERVISOR" 999 "$TMP_DIR/escape.log" -- "$FIXTURE" "$pid_fifo" escape-group &
+  "$SUPERVISOR" 999 "$TMP_DIR/escape.log" -- "$FIXTURE" "$pid_fifo" escape-group 4<&- &
 supervisor_pid=$!
 read -r fixture_pid stubborn_pid <&3
 exec 3<&-
 escaped_pgid="$(ps -o pgid= -p "$stubborn_pid" | tr -d '[:space:]')"
 [[ -n "$escaped_pgid" && "$escaped_pgid" != "$fixture_pid" ]] \
   || fail "escape-group fixture did not leave the leader's process group (pgid $escaped_pgid)"
-printf 'fire\n' >"$timeout_fifo"
+printf 'fire\n' >&4
 if wait "$supervisor_pid"; then
   fail "escape-group run unexpectedly succeeded"
 else
   status=$?
 fi
 supervisor_pid=""
+exec 4<&-
 [[ "$status" == "124" ]] || fail "escape-group run: timeout status changed from 124 to $status"
 grep -q "DESCENDANT $stubborn_pid .* \[left pgroup\]" "$TMP_DIR/escape.log" \
   || fail "tree dump does not tag the escaped descendant as having left the group"
@@ -293,7 +309,7 @@ stubborn_pid=""
 # still alive after sampling (PR #160 review: the marker used to be written
 # before sampling, widening the 124-mislabel race to seconds).
 timeout_fifo="$TMP_DIR/natural-finish-trigger"
-mkfifo "$timeout_fifo"
+open_timeout_fifo "$timeout_fifo"
 flag_file="$TMP_DIR/natural-finish-flag"
 cat >"$TMP_DIR/bin/sample" <<STUB
 #!/usr/bin/env bash
@@ -307,11 +323,12 @@ LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO="$timeout_fifo" \
 LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
 LOCALVOXTRAL_SUPERVISOR_SAMPLE_POLLS=50 \
   "$SUPERVISOR" 999 "$TMP_DIR/natural-finish.log" -- \
-  /bin/bash -c "while [[ ! -f '$flag_file' ]]; do sleep 0.05; done; echo finished-naturally; exit 0" &
+  /bin/bash -c "while [[ ! -f '$flag_file' ]]; do sleep 0.05; done; echo finished-naturally; exit 0" 4<&- &
 supervisor_pid=$!
-printf 'fire\n' >"$timeout_fifo"
+printf 'fire\n' >&4
 wait "$supervisor_pid" || fail "natural finish during forensics was mislabeled as status $?"
 supervisor_pid=""
+exec 4<&-
 grep -q '^finished-naturally$' "$TMP_DIR/natural-finish.log" \
   || fail "natural-finish output missing from the log"
 
