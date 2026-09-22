@@ -355,11 +355,22 @@ jobs:
         # built instead of relinking the whole test bundle.
         if: steps.ci_scope.outputs.docs_only != 'true'
         run: |
+          set -euo pipefail
           NSUnbufferedIO=YES ./scripts/ci/run-supervised-command.sh \
             300 "$RUNNER_TEMP/localvoxtral-cost-budget-tests.log" -- \
             swift test \
             --filter PolishContextPreparationTests \
             --enable-code-coverage
+          # A --filter that matches nothing runs zero tests and exits 0, so a
+          # renamed or split suite would leave this required step green and
+          # empty while the unit step's --skip quietly stopped skipping
+          # anything. The log is complete (NSUnbufferedIO=YES above), so the
+          # suite has to appear in it by name.
+          if ! grep -q "Test Suite 'PolishContextPreparationTests'" \
+            "$RUNNER_TEMP/localvoxtral-cost-budget-tests.log"; then
+            echo "PolishContextPreparationTests ran no cases: the --filter here and the --skip in the unit step must name the suite as it is spelled now" >&2
+            exit 1
+          fi
 
       - name: Upload complete unit-test log
         if: ${{ always() && steps.ci_scope.outputs.docs_only != 'true' }}

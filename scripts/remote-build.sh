@@ -294,6 +294,10 @@ case "$CMD" in
     ;;
 esac
 
+# A suite name that must appear in the remote log for the run to count as
+# having proved anything (empty = no such requirement). See test-cost-budgets.
+REQUIRE_SUITE_IN_LOG=""
+
 UNIT_TEST_SKIPS=(--skip RealtimeAPIVLLMIntegrationTests --skip LLMPolishPromptEvalTests
   --skip PolishHelperIntegrationTests --skip SpeechHelperIntegrationTests
   --skip SpeechdStreamingBenchTests --skip AgentDictationE2EEvalTests
@@ -315,6 +319,11 @@ case "$CMD" in
     # CI runs them in their own required step of `build-test`; this is how you
     # run them here.
     REMOTE_CMD=(swift test --filter PolishContextPreparationTests "$@")
+    # A --filter that matches nothing runs zero tests and exits 0, so a renamed
+    # or split suite would make this lane vacuously green while the `test`
+    # lane's --skip quietly stopped skipping anything. The remote output is
+    # tee'd to $REMOTE_LOG, so the suite has to appear there by name.
+    REQUIRE_SUITE_IN_LOG="PolishContextPreparationTests"
     ;;
   integration)
     ENSURE_SERVER="speechd"
@@ -730,6 +739,15 @@ TREE_SYNCED=1
 PAYLOAD_STATUS=0
 run_remote_payload "cd $(printf '%q' "$DIR") && $(printf '%q ' "${REMOTE_CMD[@]}")" \
   || PAYLOAD_STATUS=$?
+
+# A lane that names a suite it must have run checks the log for it. Only on an
+# otherwise-successful run: a failing run already says what went wrong.
+if [[ "$PAYLOAD_STATUS" -eq 0 && -n "$REQUIRE_SUITE_IN_LOG" ]]; then
+  if ! grep -q "Test Suite '$REQUIRE_SUITE_IN_LOG'" "$REMOTE_LOG"; then
+    echo "$CMD ran no cases of $REQUIRE_SUITE_IN_LOG: the --filter here and the --skip in the test lane must name the suite as it is spelled now" >&2
+    PAYLOAD_STATUS=1
+  fi
+fi
 
 # Opportunistic remote work-dir GC (gate v4 `gc` verb): reclaim stale sibling
 # dirs while the host is known awake — the disk only fills when agents build,
