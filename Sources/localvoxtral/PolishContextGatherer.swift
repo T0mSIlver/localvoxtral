@@ -10,7 +10,6 @@ import Foundation
 struct PolishContextMaterial {
     let screenDecision: TerminalScreenContextDecision
     let repoVocabularyOutcome: RepoVocabularyMatcher.GroundingOutcome
-    let repositoryRoot: LearnedTermProjectResolver.RepositoryRoot
     let claudeRepoSnapshot: ClaudeRepoSnapshot?
     let claudeSessionText: String
     let screenRenderDemand: Int
@@ -146,9 +145,9 @@ enum PolishContextGatherer {
         if (templateCarriesDictionarySlot || needsRepoGroundingForConflictSafety),
            let endpointURL = endpointURL,
            let outcome = await Self.repoVocabularyGroundingIfEnabled(
-                   settings: settings,
-                   grounding: repoVocabularyGrounding,
-                   endpointURL: endpointURL,
+               settings: settings,
+               grounding: repoVocabularyGrounding,
+               endpointURL: endpointURL,
                transcript: workingText,
                repositoryRoot: repositoryRootBox
            )
@@ -323,7 +322,7 @@ enum PolishContextGatherer {
             repositoryRoot: repositoryRootBox.value,
             workspace: capturedClaudeJoin?.snapshot.workspace
         )
-        let learnedVocabularyOutcome = await Self.learnedTermGrounding(store: learnedTermStore, 
+        let learnedVocabularyOutcome = await Self.learnedTermGrounding(store: learnedTermStore,
             project: learnedProject,
             transcript: workingText
         )
@@ -407,7 +406,6 @@ enum PolishContextGatherer {
         return PolishContextMaterial(
             screenDecision: screenDecision,
             repoVocabularyOutcome: repoVocabularyOutcome,
-            repositoryRoot: repositoryRootBox.value,
             claudeRepoSnapshot: claudeRepoSnapshot,
             claudeSessionText: claudeSessionText,
             screenRenderDemand: screenRenderDemand,

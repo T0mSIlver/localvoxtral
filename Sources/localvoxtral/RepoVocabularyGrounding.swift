@@ -58,26 +58,30 @@ final class RepoVocabularyPipeline: RepoVocabularyGrounding {
         self.targetBundleID = targetBundleID
     }
 
-    /// Opt-in repo-vocabulary grounding: harvests file names / path components /
+    /// Repo-vocabulary grounding: harvests file names / path components /
     /// the branch from the git repo in the focused terminal and returns the
-    /// transcript-relevant ones as replacement entries — but ONLY when the
-    /// setting is on AND the polishing endpoint is permitted — loopback, or any
-    /// endpoint under the explicit trusted-endpoint opt-in (repo file names
-    /// never ride to an endpoint the user has not consented to, same privacy
-    /// stance as clipboard context). Both gates short-circuit before any AX read or subprocess.
+    /// transcript-relevant ones as replacement entries.
+    ///
+    /// The consent gates (setting on, permitted endpoint) are NOT here: they
+    /// sit above, in `PolishContextGatherer.repoVocabularyGroundingIfEnabled`,
+    /// which is the only way into this method. Repo file names never ride to
+    /// an endpoint the user has not consented to, so nothing may call this
+    /// method around that gate.
+    ///
     /// Only the AX title and captured-app identity reads happen on the main
     /// actor (with a 0.5 s AX messaging timeout); everything blocking-ish — FS
     /// stats on the title/process CWD candidates (possibly a stale network
     /// mount), the process-table/CWD reads, the git subprocess (2 s timeout),
     /// and the n-gram match over a possibly-20k-term vocabulary — runs in one
-    /// detached hop RACED against
-    /// `repoVocabularyPipelineDeadline`, so no blocked syscall can ever wedge
-    /// the commit. A single-flight gate caps the cost of abandonment at one
-    /// blocked pool thread: while an abandoned pipeline is still wedged,
-    /// subsequent commits fast-skip vocabulary instead of stacking more
-    /// blocked threads until the pool (and the deadline itself) starves.
-    /// Returns nil (silent skip) when off, remote, no trustworthy terminal
-    /// repo signal, no transcript-relevant match, deadline expiry, or in-flight
+    /// detached hop RACED against `Self.deadline`, so no blocked syscall can
+    /// ever wedge the commit. A single-flight gate caps the cost of
+    /// abandonment at one blocked pool thread: while an abandoned pipeline is
+    /// still wedged, subsequent commits fast-skip vocabulary instead of
+    /// stacking more blocked threads until the pool (and the deadline itself)
+    /// starves.
+    ///
+    /// Returns nil (silent skip) when there is no trustworthy terminal repo
+    /// signal, no transcript-relevant match, deadline expiry, or an in-flight
     /// skip.
     ///
     /// - Parameter repositoryRoot: filled with the git root the pipeline

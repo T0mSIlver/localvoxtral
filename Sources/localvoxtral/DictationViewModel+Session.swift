@@ -1375,13 +1375,6 @@ extension DictationViewModel {
         return parts.isEmpty ? nil : parts.joined(separator: "+")
     }
 
-    /// Folds one dictation's resolved spellings into the learned terms.
-    ///
-    /// Cheap enough for the commit path: an in-memory merge. The file write is
-    /// the store's own background work.
-    /// A nil `project` means the app could not establish which project this
-    /// dictation belongs to, and nothing is learned from it — see
-    /// `LearnedTermProjectResolver.resolve`.
     /// The repository vocabulary for this commit, through the injected or
     /// production grounding.
     func repoVocabularyGroundingIfEnabled(
@@ -1398,6 +1391,13 @@ extension DictationViewModel {
         )
     }
 
+    /// Folds one dictation's resolved spellings into the learned terms.
+    ///
+    /// Cheap enough for the commit path: an in-memory merge. The file write is
+    /// the store's own background work.
+    /// A nil `project` means the app could not establish which project this
+    /// dictation belongs to, and nothing is learned from it — see
+    /// `LearnedTermProjectResolver.resolve`.
     func recordLearnedTerms(
         merged: PolishContextGrounding.Merged,
         project: LearnedTermProjectResolver.Identity?
@@ -1913,6 +1913,3 @@ extension DictationViewModel {
     }
 }
 
-/// Winner of the repo-vocabulary race in `repoVocabularyGroundingIfEnabled`:
-/// either the detached pipeline finished (with or without entries) or the
-/// deadline expired first and the pipeline was abandoned.
