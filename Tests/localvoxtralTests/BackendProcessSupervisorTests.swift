@@ -352,13 +352,18 @@ final class BackendProcessSupervisorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let pidFile = directory.appendingPathComponent("pid")
+        // The pid file is the ready marker, written only once TERM is ignored:
+        // written first, a TERM landing between the two lines killed the
+        // shell outright, nothing escalated, and the 2 ms grace sleep was
+        // never requested (seen with suites in parallel, #442). Same
+        // handshake as `testStopHonorsTERMWithoutRestarting`'s.
         let script = try writeScript(
             in: directory,
             name: "backend.sh",
             body: """
             #!/bin/sh
-            echo $$ > "\(pidFile.path)"
             trap '' TERM
+            echo $$ > "\(pidFile.path)"
             while true; do sleep 1; done
             """
         )
@@ -366,9 +371,17 @@ final class BackendProcessSupervisorTests: XCTestCase {
         let sleeps = ControlledSleep()
         let supervisor = makeSupervisor(
             executableURL: script,
+            readinessPollInterval: .milliseconds(10),
+            readinessTimeout: .seconds(600),
             terminationGracePeriod: .milliseconds(2),
-            probe: { _ in probe.value },
-            sleepFor: { duration in try await sleeps.sleep(duration) }
+            probe: { _ in probe.value && FileManager.default.fileExists(atPath: pidFile.path) },
+            sleepFor: { duration in
+                if duration == .milliseconds(10) {
+                    await TerminationAwareSleep.waitForFile(pidFile)
+                    return
+                }
+                try await sleeps.sleep(duration)
+            }
         )
         let watcher = StateWatcher(stream: supervisor.stateUpdates)
         defer { watcher.cancel() }
@@ -786,7 +799,7 @@ private final class TerminationAwareSleep: @unchecked Sendable {
 
     /// Returns once `url` exists, driven by a directory write event rather than
     /// by polling.
-    private static func waitForFile(_ url: URL) async {
+    static func waitForFile(_ url: URL) async {
         if FileManager.default.fileExists(atPath: url.path) { return }
 
         let directory = url.deletingLastPathComponent()

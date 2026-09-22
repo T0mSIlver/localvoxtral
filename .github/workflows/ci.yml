@@ -231,6 +231,7 @@ jobs:
             ./scripts/ci/test-remote-build-reap.sh \
             ./scripts/ci/test-remote-build-gc.sh \
             ./scripts/ci/test-remote-build-gate-args.sh \
+            ./scripts/ci/test-remote-build-shards.sh \
             ./scripts/ci/test-run-supervised-command.sh \
             ./scripts/ci/test-ui-smoke-guard.sh \
             ./scripts/ci/test-ui-smoke-owner-app.sh \
@@ -253,7 +254,8 @@ jobs:
             ./scripts/ci/test-render-cask.sh \
             ./scripts/ci/test-restore-mtimes.sh \
             ./scripts/ci/test-watch-checks.sh \
-            ./scripts/ci/test-ui-gate-suite-filter.sh
+            ./scripts/ci/test-ui-gate-suite-filter.sh \
+            ./scripts/ci/test-unit-test-shards.sh
 
       - name: Record hosted toolchain
         id: hosted_toolchain
@@ -350,15 +352,18 @@ jobs:
           # hosted hangs "always right after PolishModelCatalogTests" were
           # that boundary, not that suite. Xcode sets the same variable for
           # its own test runs.
+          #
+          # One xctest process per core, each running whole test classes
+          # (scripts/lib/unit-test-shards.sh, #442): the same shape as
+          # `remote-build.sh test`, and one complete log.
           NSUnbufferedIO=YES ./scripts/ci/run-supervised-command.sh \
             900 "$RUNNER_TEMP/localvoxtral-unit-tests.log" -- \
-            swift test \
-            --skip RealtimeAPIVLLMIntegrationTests \
-            --skip SpeechHelperIntegrationTests \
-            --skip AgentDictationE2EEvalTests \
-            --skip HerdrIntegrationTests \
-            --skip PolishContextPreparationTests \
-            --enable-code-coverage
+            ./scripts/ci/run-unit-shards.sh --coverage "$(sysctl -n hw.ncpu)" \
+            RealtimeAPIVLLMIntegrationTests \
+            SpeechHelperIntegrationTests \
+            AgentDictationE2EEvalTests \
+            HerdrIntegrationTests \
+            PolishContextPreparationTests
 
       - name: Upload complete unit-test log
         if: ${{ always() && steps.ci_scope.outputs.docs_only != 'true' }}

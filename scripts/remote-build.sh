@@ -9,7 +9,10 @@ set -euo pipefail
 #   ./scripts/remote-build.sh [build|test|test-cost-budgets|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|eval-llm|eval-e2e|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
 #     build        swift build
 #     test         swift build + unit tests (default; skips live-backend suites
-#                  and the cost-budget suite below)
+#                  and the cost-budget suite below). With no extra arguments
+#                  it runs LV_TEST_SHARDS (default 6) xctest processes at once
+#                  and merges their output into one log; any argument (e.g.
+#                  --filter) runs one plain `swift test`
 #     test-cost-budgets
 #                  PolishContextPreparationTests, the suite whose assertions
 #                  are about how much work a preparation costs (#430)
@@ -348,11 +351,19 @@ esac
 # having proved anything (empty = no such requirement). See test-cost-budgets.
 REQUIRE_SUITE_IN_LOG=""
 
-UNIT_TEST_SKIPS=(--skip RealtimeAPIVLLMIntegrationTests --skip LLMPolishPromptEvalTests
-  --skip PolishHelperIntegrationTests --skip SpeechHelperIntegrationTests
-  --skip SpeechdStreamingBenchTests --skip AgentDictationE2EEvalTests
-  --skip HerdrIntegrationTests --skip MistralRealtimeSoakTests
-  --skip PolishContextPreparationTests)
+UNIT_TEST_SKIP_NAMES=(RealtimeAPIVLLMIntegrationTests LLMPolishPromptEvalTests
+  PolishHelperIntegrationTests SpeechHelperIntegrationTests
+  SpeechdStreamingBenchTests AgentDictationE2EEvalTests
+  HerdrIntegrationTests MistralRealtimeSoakTests
+  PolishContextPreparationTests)
+UNIT_TEST_SKIPS=()
+for name in "${UNIT_TEST_SKIP_NAMES[@]}"; do UNIT_TEST_SKIPS+=(--skip "$name"); done
+
+# Plain `test` runs the unit suite as this many xctest processes at once
+# (scripts/lib/unit-test-shards.sh, #442). 1, or any extra argument such as
+# --filter, runs one plain `swift test` instead.
+UNIT_TEST_SHARDS="${LV_TEST_SHARDS:-6}"
+RUN_UNIT_SHARDS=0
 
 # On-demand test server to warm before the suite runs (empty = none). The
 # build host's speechd/polishd launchd test services are launch-on-demand to
@@ -362,7 +373,12 @@ ENSURE_SERVER=""
 
 case "$CMD" in
   build)   REMOTE_CMD=(swift build "$@") ;;
-  test)    REMOTE_CMD=(swift test "${UNIT_TEST_SKIPS[@]}" "$@") ;;
+  test)
+    REMOTE_CMD=(swift test "${UNIT_TEST_SKIPS[@]}" "$@")
+    if [[ $# -eq 0 && "$UNIT_TEST_SHARDS" =~ ^[0-9]+$ && "$UNIT_TEST_SHARDS" -gt 1 ]]; then
+      RUN_UNIT_SHARDS=1
+    fi
+    ;;
   test-cost-budgets)
     # PolishContextPreparationTests asserts how much work a preparation costs,
     # so its cases are slow on purpose (#430) and are out of the `test` lane.
@@ -791,8 +807,30 @@ rsync -az --delete \
 TREE_SYNCED=1
 
 PAYLOAD_STATUS=0
-run_remote_payload "cd $(printf '%q' "$DIR") && $(printf '%q ' "${REMOTE_CMD[@]}")" \
-  || PAYLOAD_STATUS=$?
+if [[ "$RUN_UNIT_SHARDS" == "1" ]]; then
+  # shellcheck source=lib/unit-test-shards.sh
+  . "$ROOT_DIR/scripts/lib/unit-test-shards.sh"
+  # One ssh session per swift command: the gate admits only `swift build …`
+  # and `swift test …`, and runs each in a process group of its own. -n keeps
+  # the shards that run side by side off this terminal's stdin.
+  lv_shard_swift() {
+    ssh -n "$HOST" "cd $(printf '%q' "$DIR") && $(quote_remote_command swift "$@")"
+  }
+  echo "==> Running the unit suite on $HOST:$DIR in $UNIT_TEST_SHARDS shards"
+  REMOTE_PAYLOAD_ACTIVE=1
+  lv_run_unit_shards "$UNIT_TEST_SHARDS" "$REMOTE_LOG" "${UNIT_TEST_SKIP_NAMES[@]}" \
+    || PAYLOAD_STATUS=$?
+  REMOTE_PAYLOAD_ACTIVE=0
+  echo "==> Full output: $REMOTE_LOG"
+  # Only once every shard has ended: the reap takes all of the work dir's
+  # processes, so reaping after the first red shard would kill the others.
+  if (( PAYLOAD_STATUS != 0 )); then
+    reap_remote_workdir
+  fi
+else
+  run_remote_payload "cd $(printf '%q' "$DIR") && $(printf '%q ' "${REMOTE_CMD[@]}")" \
+    || PAYLOAD_STATUS=$?
+fi
 
 # A lane that names a suite it must have run checks the log for it. Only on an
 # otherwise-successful run: a failing run already says what went wrong.
