@@ -5,8 +5,10 @@ import Foundation
 /// two clipboard gates, the overlay commit, the record's vocabulary
 /// provenance, and — in a dogfood build — the capture record.
 ///
-/// Pure over its arguments. Nothing here reads or writes the view model, so
-/// the ordering rules below hold wherever the commit is driven from.
+/// It touches nothing but what it is handed — `capture` clears the
+/// context's captures, `commit` inserts through the overlay — and it never
+/// reads or writes the view model, so the ordering rules below hold
+/// wherever the commit is driven from.
 enum StopCommitCoordinator {
     // MARK: - Prologue
 
@@ -14,7 +16,8 @@ enum StopCommitCoordinator {
     /// the polish task.
     ///
     /// These four are taken TOGETHER and pre-Task on purpose: the repo-
-    /// vocabulary await inside the task can take up to ~2 s, and anything
+    /// vocabulary await inside the task runs to `RepoVocabularyPipeline.deadline`
+    /// (3 s) in the worst case, and anything
     /// re-read after it would describe a different moment than the one the
     /// user stopped in.
     struct Capture {
@@ -65,7 +68,7 @@ enum StopCommitCoordinator {
         )
         // Reconciled HERE, pre-Task, for the same reason as the clipboard read
         // above: the stop-time re-read must sample the screen at commit, not
-        // after the repo-vocabulary await has let ~2 s of agent output scroll
+        // after the repo-vocabulary await has let up to 3 s of agent output scroll
         // past — which would report every session as mutated.
         let screenDecision = context.terminalScreenContextDecision(
             endpointURL: endpointURL

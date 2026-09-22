@@ -724,7 +724,7 @@ extension DictationViewModel {
                 debugLog("LLM polishing started for \(workingText.count) chars")
 
                 // The world as it was at stop: clipboard, screen, join and
-                // pane, sampled together before the task's ~2 s of awaits.
+                // pane, sampled together before the task's awaits.
                 let capture = StopCommitCoordinator.capture(
                     endpointURL: polishingConfig?.endpointURL,
                     settings: settings,
