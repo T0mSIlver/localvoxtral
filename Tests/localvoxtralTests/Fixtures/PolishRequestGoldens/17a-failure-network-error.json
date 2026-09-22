@@ -1,0 +1,38 @@
+{
+  "committedText" : "please fix localvoxtral before the release",
+  "configuration" : {
+    "apiKeyLength" : 0,
+    "endpointURL" : "http://127.0.0.1:8080/v1/chat/completions",
+    "model" : "qwen35-4b",
+    "passthroughExtraParameters" : false,
+    "requestShape" : "openAICompatible"
+  },
+  "contextPasteboardReads" : 0,
+  "lastError" : "The request timed out. [endpoint: http://127.0.0.1:8080/v1/chat/completions]",
+  "learnedTermsRecorded" : [
+
+  ],
+  "payloadPasteboardReads" : 0,
+  "record" : {
+    "commitSucceeded" : true,
+    "model" : "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead",
+    "outputMode" : "overlay_buffer",
+    "polishProfile" : "standard",
+    "polishedText" : "please fix localvoxtral before the release",
+    "provider" : "realtime_api",
+    "rawText" : "please fix local vox trawl before the release",
+    "status" : "llm_failed",
+    "targetAppBundleID" : "com.acme.notes"
+  },
+  "repoVocabularyPipelineRuns" : 0,
+  "request" : {
+    "inputText" : "please fix localvoxtral before the release",
+    "prefersDeepReasoning" : false,
+    "systemPrompt" : "You polish dictated text.",
+    "userPrompts" : [
+      "Clean this up.\n",
+      "Working text:\nplease fix localvoxtral before the release"
+    ]
+  },
+  "statusText" : "LLM polishing failed."
+}

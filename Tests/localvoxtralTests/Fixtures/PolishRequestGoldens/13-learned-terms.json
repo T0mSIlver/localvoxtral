@@ -1,0 +1,38 @@
+{
+  "committedText" : "open useAuth.ts please",
+  "configuration" : {
+    "apiKeyLength" : 0,
+    "endpointURL" : "http://127.0.0.1:8080/v1/chat/completions",
+    "model" : "qwen35-4b",
+    "passthroughExtraParameters" : false,
+    "requestShape" : "openAICompatible"
+  },
+  "contextPasteboardReads" : 0,
+  "learnedTermsRecorded" : [
+    "useAuth.ts"
+  ],
+  "payloadPasteboardReads" : 0,
+  "record" : {
+    "commitSucceeded" : true,
+    "model" : "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead",
+    "outputMode" : "overlay_buffer",
+    "polishProfile" : "standard",
+    "polishedText" : "open useAuth.ts please",
+    "polishingDurationSeconds" : 0.01,
+    "provider" : "realtime_api",
+    "rawText" : "open useauth.ts please",
+    "status" : "completed",
+    "targetAppBundleID" : "com.apple.Terminal"
+  },
+  "repoVocabularyPipelineRuns" : 1,
+  "request" : {
+    "inputText" : "open useAuth.ts please",
+    "prefersDeepReasoning" : false,
+    "systemPrompt" : "You polish dictated text.",
+    "userPrompts" : [
+      "Clean this up.\n",
+      "Learned vocabulary (exact spellings the speaker has used before in this project; use them to correct near-miss spellings of the terms below, never to add new content):\n- useAuth.ts: useauth.ts\nWorking text:\nopen useAuth.ts please"
+    ]
+  },
+  "statusText" : "Ready"
+}

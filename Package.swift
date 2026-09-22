@@ -85,6 +85,8 @@ let package = Package(
                 "ClaudeContextWire",
                 "ClaudeHookPublisherCore",
             ],
+            // Golden fixtures are read through `#filePath`, not the bundle.
+            exclude: ["Fixtures"],
             swiftSettings: dogfoodSwiftSettings
         ),
     ]
