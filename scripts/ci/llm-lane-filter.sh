@@ -83,6 +83,8 @@ PATTERNS=(
   '*DictationViewModel+Session.swift'                # polish-and-commit path
   'Sources/localvoxtral/DictationViewModel.swift'    # context capture/gate call sites feeding the commit path
   '*SessionContextResolver*'                        # the context gates themselves (#432 step 4b)
+  '*PolishRequestAssembler*'                        # sections, pre-application, prompts, blocks (#432 step 5)
+  '*PolishOutcomeClassifier*'                       # placeholder integrity, failure copy (#432 step 5)
   '*LLMPolishEvalSupport*'                           # shared eval corpus + scorer
   '*PolishHelperIntegrationTests*'                   # the lane's own suite
   '*AgentDictationE2EEval*'                          # agent-dictation E2E eval harness (suite + support + its unit tests)
