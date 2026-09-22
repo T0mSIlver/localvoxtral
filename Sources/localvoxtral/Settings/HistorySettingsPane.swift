@@ -70,11 +70,15 @@ struct HistorySettingsPane: View {
 
     // MARK: - Storage
 
-    private var storageStatus: String {
+    /// Nil under Don't keep once the delete went through: the picker already
+    /// says it. A count left there means that delete failed.
+    private var storageStatus: String? {
         guard settings.dictationHistoryRetention.savesDictations else {
-            // Off deleted everything. A count here means that delete failed.
-            return model.totalCount == 0
-                ? "Nothing is saved." : "\(model.totalCount.formatted()) not deleted yet."
+            switch model.totalCount {
+            case 0: return nil
+            case 1: return "1 dictation still to delete."
+            default: return "\(model.totalCount.formatted()) dictations still to delete."
+            }
         }
         switch model.totalCount {
         case 0: return "Nothing saved yet."
@@ -257,7 +261,7 @@ struct HistorySettingsPane: View {
         if !model.hasLoaded { return "Loading…" }
         if model.isFiltering { return "No dictation matches." }
         return settings.dictationHistoryRetention.savesDictations
-            ? "Dictations you make appear here."
+            ? "No dictations yet."
             : "History is off."
     }
 }
