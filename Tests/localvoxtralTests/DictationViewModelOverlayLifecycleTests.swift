@@ -444,7 +444,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
             ])
         )
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -647,7 +647,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         var written: [String] = []
-        viewModel.debugPasteboardWriteOverride = { written.append($0) }
+        viewModel.dependencies.pasteboardWriter = { written.append($0) }
 
         // Nothing retained: the action is a no-op and writes nothing.
         XCTAssertFalse(viewModel.canCopyRawTranscript)

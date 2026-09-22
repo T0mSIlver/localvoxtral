@@ -565,7 +565,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.appConfigStore = MockAppConfigStore()
         viewModel.llmPolishingService = polishingService
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -611,7 +611,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         )
         viewModel.llmPolishingService = polishingService
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -647,9 +647,9 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         )
         viewModel.appConfigStore = MockAppConfigStore()
         viewModel.llmPolishingService = polishingService
-        viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
+        viewModel.stubCommitTarget { "com.apple.Terminal" }
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -753,9 +753,9 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         )
         viewModel.appConfigStore = appConfigStore
         viewModel.llmPolishingService = FakePolishingService()
-        viewModel.debugResolveTargetAppBundleIDOverride = { capturedBundleID }
+        viewModel.stubCommitTarget { capturedBundleID }
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -1013,10 +1013,10 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             )
         )
         viewModel.llmPolishingService = FakePolishingService(returning: modelOutput)
-        viewModel.debugResolveTargetAppBundleIDOverride = {
+        viewModel.stubCommitTarget {
             agentProfile ? "com.apple.Terminal" : "com.acme.notes"
         }
-        viewModel.debugPolishContextPasteboardReaderOverride = {
+        viewModel.dependencies.pasteboardReader = {
             PasteboardStub(string: clipboard)
         }
         retainForTestProcessLifetime(viewModel)
@@ -1069,10 +1069,10 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.llmPolishingService = service
         // Non-terminal target keeps the standard profile (the static-prefix
         // template above), so the assertions read against a known prompt shape.
-        viewModel.debugResolveTargetAppBundleIDOverride = { "com.acme.notes" }
-        viewModel.debugPolishContextPasteboardReaderOverride = { pasteboard }
+        viewModel.stubCommitTarget { "com.acme.notes" }
+        viewModel.dependencies.pasteboardReader = { pasteboard }
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -1183,18 +1183,16 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
     }
 
     /// F3 clipboard context + the macro in one session: both features fire, each
-    /// reads its clipboard exactly once (≤ 2 reads total), the polish request
+    /// reads the clipboard exactly once (2 reads total), the polish request
     /// carries the placeholder AND the reference-context message, the committed
     /// text carries the payload, and the summary carries both counts.
     func testClipboardContextAndMacroBothFireWithBoundedReads() async throws {
         let clipboardText = "UserSessionManager.swift error at retry"
-        let payloadStub = PasteboardStub(string: clipboardText)
-        let contextStub = PasteboardStub(string: clipboardText)
+        let pasteboard = PasteboardStub(string: clipboardText)
         let result = await runClipboardPayloadMacroSession(
             transcript: "fix this paste clipboard thanks",
             contextEnabled: true,
-            payloadPasteboard: payloadStub,
-            contextPasteboard: contextStub
+            payloadPasteboard: pasteboard
         )
 
         let request = try XCTUnwrap(result.request)
@@ -1206,8 +1204,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         )
         XCTAssertTrue(result.committedText.contains(clipboardText))
 
-        XCTAssertEqual(payloadStub.stringCallCount, 1)
-        XCTAssertEqual(contextStub.stringCallCount, 1)
+        XCTAssertEqual(pasteboard.stringCallCount, 2, "one read for the payload, one for the context")
 
         XCTAssertEqual(
             result.record?.polishContextSummary,
@@ -1223,8 +1220,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         let result = await runClipboardPayloadMacroSession(
             transcript: "paste clipboard",
             contextEnabled: true,
-            payloadPasteboard: PasteboardStub(string: clipboardText),
-            contextPasteboard: PasteboardStub(string: clipboardText)
+            payloadPasteboard: PasteboardStub(string: clipboardText)
         )
 
         XCTAssertEqual(result.request?.inputText, ClipboardPayloadMacro.placeholder)
@@ -1322,11 +1318,11 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         )
     }
 
-    /// Drives an overlay stop-commit for the clipboard-paste macro. The payload
-    /// pasteboard is injected via the macro's debug seam; when `contextPasteboard`
-    /// is supplied it is injected via the polish-context seam so the two features
-    /// can be exercised together. Endpoint defaults to loopback (managed polishd)
-    /// so the context feature's local-endpoint gate passes.
+    /// Drives an overlay stop-commit for the clipboard-paste macro. The one
+    /// pasteboard serves the macro and, with `contextEnabled`, the polish
+    /// context too, so the two features can be exercised together. Endpoint
+    /// defaults to loopback (managed polishd) so the context feature's
+    /// local-endpoint gate passes.
     private func runClipboardPayloadMacroSession(
         transcript: String,
         macroEnabled: Bool = true,
@@ -1334,7 +1330,6 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         agentProfile: Bool = false,
         contextEnabled: Bool = false,
         payloadPasteboard: PasteboardStub,
-        contextPasteboard: PasteboardStub? = nil,
         endpointURL: String = "http://127.0.0.1:8472/v1/chat/completions",
         polishTransform: @escaping @Sendable (String) -> String = { $0 }
     ) async -> ClipboardMacroSessionResult {
@@ -1354,15 +1349,12 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         )
         viewModel.appConfigStore = MockAppConfigStore()
         viewModel.llmPolishingService = service
-        viewModel.debugResolveTargetAppBundleIDOverride = {
+        viewModel.stubCommitTarget {
             agentProfile ? "com.apple.Terminal" : "com.acme.notes"
         }
-        viewModel.debugClipboardPayloadPasteboardReaderOverride = { payloadPasteboard }
-        if let contextPasteboard {
-            viewModel.debugPolishContextPasteboardReaderOverride = { contextPasteboard }
-        }
+        viewModel.dependencies.pasteboardReader = { payloadPasteboard }
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -1515,8 +1507,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             agentPromptTemplates: template
         )
         let service = FakePolishingService()
-        let contextStub = PasteboardStub(string: "UserSessionManager.swift")
-        let payloadStub = PasteboardStub(string: "err.log payload")
+        let pasteboard = PasteboardStub(string: "UserSessionManager.swift err.log payload")
 
         let viewModel = DictationViewModel(
             settings: settings,
@@ -1525,18 +1516,15 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         )
         viewModel.appConfigStore = mockConfig
         viewModel.llmPolishingService = service
-        viewModel.debugResolveTargetAppBundleIDOverride = { "com.acme.notes" }
-        viewModel.debugPolishContextPasteboardReaderOverride = { contextStub }
-        viewModel.debugClipboardPayloadPasteboardReaderOverride = { payloadStub }
-        var contextReadsWhenVocabRan = -1
-        var payloadReadsWhenVocabRan = -1
+        viewModel.stubCommitTarget { "com.acme.notes" }
+        viewModel.dependencies.pasteboardReader = { pasteboard }
+        var readsWhenVocabRan = -1
         viewModel.debugRepoVocabularyEntriesOverride = { _ in
-            contextReadsWhenVocabRan = contextStub.stringCallCount
-            payloadReadsWhenVocabRan = payloadStub.stringCallCount
+            readsWhenVocabRan = pasteboard.stringCallCount
             return nil
         }
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -1547,8 +1535,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         await awaitStoppedSessionCommit(viewModel)
 
         // The vocab seam ran, and by then BOTH clipboard reads had happened.
-        XCTAssertEqual(contextReadsWhenVocabRan, 1)
-        XCTAssertEqual(payloadReadsWhenVocabRan, 1)
+        XCTAssertEqual(readsWhenVocabRan, 2)
         // Both features still landed in the request/record as usual.
         let capturedRequest = await service.lastRequest
         let request = try XCTUnwrap(capturedRequest)
@@ -1588,7 +1575,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         )
         viewModel.appConfigStore = mockConfig
         viewModel.llmPolishingService = service
-        viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
+        viewModel.stubCommitTarget { "com.apple.Terminal" }
         viewModel.debugRepoVocabularyEntriesOverride = { _ in
             RepoVocabularyMatcher.GroundingOutcome(
                 entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["useauth.ts"])],
@@ -1642,12 +1629,12 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         )
         viewModel.appConfigStore = mockConfig
         viewModel.llmPolishingService = service
-        viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
-        viewModel.debugPolishContextPasteboardReaderOverride = {
+        viewModel.stubCommitTarget { "com.apple.Terminal" }
+        viewModel.dependencies.pasteboardReader = {
             PasteboardStub(string: "UserSessionManager.swift")
         }
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -1705,8 +1692,8 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         )
         viewModel.appConfigStore = mockConfig
         viewModel.llmPolishingService = service
-        viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
-        viewModel.debugPolishContextPasteboardReaderOverride = {
+        viewModel.stubCommitTarget { "com.apple.Terminal" }
+        viewModel.dependencies.pasteboardReader = {
             PasteboardStub(string: "UserSessionManager.swift")
         }
         retainForTestProcessLifetime(viewModel)
@@ -1763,7 +1750,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         )
         viewModel.appConfigStore = mockConfig
         viewModel.llmPolishingService = service
-        viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
+        viewModel.stubCommitTarget { "com.apple.Terminal" }
         // Pipeline seam (NOT the entries seam, which bypasses the race):
         // suspends forever, like an uncancelable syscall. Deliberately leaked
         // for the test process lifetime, mirroring the production abandonment.
@@ -1775,7 +1762,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         // before the pipeline can ever win.
         viewModel.debugRepoVocabularyDeadlineSleepOverride = {}
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -1899,7 +1886,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         )
         viewModel.appConfigStore = mockConfig
         viewModel.llmPolishingService = service
-        viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
+        viewModel.stubCommitTarget { "com.apple.Terminal" }
         viewModel.debugRepoVocabularyEntriesOverride = { _ in
             overrideCounter.count += 1
             return vocabularyEntries.map {
@@ -1907,7 +1894,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             }
         }
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -1957,14 +1944,14 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         )
         viewModel.appConfigStore = mockConfig
         viewModel.llmPolishingService = service
-        viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
+        viewModel.stubCommitTarget { "com.apple.Terminal" }
         viewModel.debugRepoVocabularyEntriesOverride = { _ in repoOutcome }
         if let clipboard {
             let stub = PasteboardStub(string: clipboard)
-            viewModel.debugPolishContextPasteboardReaderOverride = { stub }
+            viewModel.dependencies.pasteboardReader = { stub }
         }
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer

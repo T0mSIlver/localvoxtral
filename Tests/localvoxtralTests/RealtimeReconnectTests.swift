@@ -8,7 +8,7 @@ import XCTest
 /// retries on a bounded backoff instead of ending the dictation.
 ///
 /// Every run here is driven through the injected sleep seam
-/// (`debugReconnectSleepOverride`), so the suite waits on no wall clock and a
+/// (`dependencies.reconnectSleep`), so the suite waits on no wall clock and a
 /// stop can be landed at an exact point inside an attempt.
 @MainActor
 final class RealtimeReconnectTests: XCTestCase {
@@ -69,7 +69,7 @@ final class RealtimeReconnectTests: XCTestCase {
         viewModel.audioChunkBuffer.append(Data(count: 3_200))
 
         // The socket opens on the first poll of the first attempt.
-        viewModel.debugReconnectSleepOverride = { _ in client.setConnected(true) }
+        viewModel.dependencies.reconnectSleep = { _ in client.setConnected(true) }
 
         viewModel.handle(event: .disconnected)
 
@@ -105,7 +105,7 @@ final class RealtimeReconnectTests: XCTestCase {
         // somewhere it never agreed to go.
         viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:9/elsewhere"
 
-        viewModel.debugReconnectSleepOverride = { _ in client.setConnected(true) }
+        viewModel.dependencies.reconnectSleep = { _ in client.setConnected(true) }
         viewModel.handle(event: .disconnected)
         await viewModel.reconnectTask?.value
 
@@ -117,7 +117,7 @@ final class RealtimeReconnectTests: XCTestCase {
 
     func testReconnectNeverCommitsAcrossTheGap() async {
         let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
-        viewModel.debugReconnectSleepOverride = { _ in client.setConnected(true) }
+        viewModel.dependencies.reconnectSleep = { _ in client.setConnected(true) }
 
         viewModel.handle(event: .disconnected)
         await viewModel.reconnectTask?.value
@@ -146,7 +146,7 @@ final class RealtimeReconnectTests: XCTestCase {
         viewModel.handle(event: .partialTranscript(" world"))
         XCTAssertEqual(insertedChunks, ["hello", " world"])
 
-        viewModel.debugReconnectSleepOverride = { _ in client.setConnected(true) }
+        viewModel.dependencies.reconnectSleep = { _ in client.setConnected(true) }
         viewModel.handle(event: .disconnected)
         await viewModel.reconnectTask?.value
 
@@ -168,7 +168,7 @@ final class RealtimeReconnectTests: XCTestCase {
         let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
         // Fail the first two attempts the way a refused socket does, then let
         // the third one open.
-        viewModel.debugReconnectSleepOverride = { [weak viewModel] _ in
+        viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in
             guard let viewModel else { return }
             if client.connectCount >= 3 {
                 client.setConnected(true)
@@ -194,7 +194,7 @@ final class RealtimeReconnectTests: XCTestCase {
         let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
         let volume = await duckedVolumeControl(for: viewModel)
         volume.clearWrites()
-        viewModel.debugReconnectSleepOverride = { _ in client.setConnected(true) }
+        viewModel.dependencies.reconnectSleep = { _ in client.setConnected(true) }
 
         viewModel.handle(event: .disconnected)
         XCTAssertTrue(viewModel.isReconnectingRealtimeSession)
@@ -215,7 +215,7 @@ final class RealtimeReconnectTests: XCTestCase {
         // user at a fifth of their volume with no dictation running.
         let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
         let volume = await duckedVolumeControl(for: viewModel)
-        viewModel.debugReconnectSleepOverride = { [weak viewModel] _ in
+        viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in
             guard let viewModel, client.connectCount > 0 else { return }
             viewModel.handle(event: .error("WebSocket failed: refused"))
         }
@@ -259,7 +259,7 @@ final class RealtimeReconnectTests: XCTestCase {
         viewModel.currentDictationEventText = "hello"
         let escapeStopsBefore = EscapeCancelHandler.stopCallCount
         // Every attempt's socket reports back a failure.
-        viewModel.debugReconnectSleepOverride = { [weak viewModel] _ in
+        viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in
             guard let viewModel, client.connectCount > 0 else { return }
             viewModel.handle(event: .error("WebSocket failed: refused"))
         }
@@ -285,7 +285,7 @@ final class RealtimeReconnectTests: XCTestCase {
 
     func testAnExhaustedRunsOwnClosingSocketDoesNotClearTheFailureIndicator() async {
         let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
-        viewModel.debugReconnectSleepOverride = { [weak viewModel] _ in
+        viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in
             guard let viewModel, client.connectCount > 0 else { return }
             viewModel.handle(event: .error("WebSocket failed: refused"))
         }
@@ -317,7 +317,7 @@ final class RealtimeReconnectTests: XCTestCase {
 
     func testStopDuringAReconnectEndsItAndStopsDialing() async {
         let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
-        viewModel.debugReconnectSleepOverride = { [weak viewModel] _ in
+        viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in
             guard let viewModel, viewModel.isDictating else { return }
             viewModel.stopDictation(reason: "manual toggle")
         }
@@ -335,7 +335,7 @@ final class RealtimeReconnectTests: XCTestCase {
         let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
         // Escape lands inside the first attempt; the socket opens a moment too
         // late. The run must notice it no longer owns the session.
-        viewModel.debugReconnectSleepOverride = { [weak viewModel] _ in
+        viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in
             guard let viewModel else { return }
             if viewModel.isDictating {
                 viewModel.cancelDictation()
@@ -355,7 +355,7 @@ final class RealtimeReconnectTests: XCTestCase {
 
     func testCancellingARunStopsItBeforeItDials() async {
         let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
-        viewModel.debugReconnectSleepOverride = { _ in }
+        viewModel.dependencies.reconnectSleep = { _ in }
 
         viewModel.handle(event: .disconnected)
         XCTAssertTrue(viewModel.isReconnectingRealtimeSession)
@@ -375,7 +375,7 @@ final class RealtimeReconnectTests: XCTestCase {
         // still in `connecting` could open after the stop and transmit the
         // audio the stop flushed into its pending queue.
         let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
-        viewModel.debugReconnectSleepOverride = { [weak viewModel] _ in
+        viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in
             guard let viewModel, client.connectCount > 0 else { return }
             viewModel.stopDictation(reason: "manual toggle")
         }
@@ -395,7 +395,7 @@ final class RealtimeReconnectTests: XCTestCase {
         // open socket: `isConnected` is true on a session that will never
         // transcribe, so the failure signal has to win.
         let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
-        viewModel.debugReconnectSleepOverride = { [weak viewModel] _ in
+        viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in
             guard let viewModel, client.connectCount > 0 else { return }
             client.setConnected(true)
             viewModel.handle(event: .error("session rejected while the socket stayed open"))
@@ -422,7 +422,7 @@ final class RealtimeReconnectTests: XCTestCase {
         viewModel.handle(event: .partialTranscript("hello world"), from: dyingSocket)
         XCTAssertEqual(insertedChunks, ["hello world"])
 
-        viewModel.debugReconnectSleepOverride = { _ in }
+        viewModel.dependencies.reconnectSleep = { _ in }
         viewModel.handle(event: .disconnected, from: dyingSocket)
         let task = viewModel.reconnectTask
 
@@ -454,7 +454,7 @@ final class RealtimeReconnectTests: XCTestCase {
         viewModel.handle(event: .partialTranscript("hello world"), from: retiredSocket)
         XCTAssertEqual(insertedChunks, ["hello world"])
 
-        viewModel.debugReconnectSleepOverride = { _ in client.setConnected(true) }
+        viewModel.dependencies.reconnectSleep = { _ in client.setConnected(true) }
         viewModel.handle(event: .disconnected, from: retiredSocket)
         await viewModel.reconnectTask?.value
 
@@ -497,7 +497,7 @@ final class RealtimeReconnectTests: XCTestCase {
         // The socket an attempt opens is the live connection, so the stamp
         // admits what it says. The run still owns the status line until it ends.
         let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
-        viewModel.debugReconnectSleepOverride = { [weak viewModel] _ in
+        viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in
             guard let viewModel, client.connectCount > 0,
                 viewModel.isReconnectingRealtimeSession
             else { return }
@@ -515,7 +515,7 @@ final class RealtimeReconnectTests: XCTestCase {
 
     func testTheSocketErrorBehindTheDropIsNotLeftStandingAsAnError() async {
         let (viewModel, _) = makeDictatingViewModel(outputMode: .overlayBuffer)
-        viewModel.debugReconnectSleepOverride = { _ in }
+        viewModel.dependencies.reconnectSleep = { _ in }
 
         viewModel.handle(event: .error("WebSocket receive failed: [NSPOSIXErrorDomain:57]"))
         viewModel.handle(event: .disconnected)

@@ -75,21 +75,11 @@ extension DictationViewModel {
 
         reconnectTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            #if DEBUG
-            if let sleep = self.debugReconnectSleepOverride {
-                await self.runRealtimeReconnect(
-                    runID: runID,
-                    configuration: configuration,
-                    policy: policy,
-                    sleepFor: sleep
-                )
-                return
-            }
-            #endif
             await self.runRealtimeReconnect(
                 runID: runID,
                 configuration: configuration,
-                policy: policy
+                policy: policy,
+                sleepFor: self.dependencies.reconnectSleep
             )
         }
         return true
@@ -253,7 +243,7 @@ extension DictationViewModel {
         markRecentConnectionFailureIndicator()
     }
 
-    private static func sleepForReconnect(_ duration: TimeInterval) async {
+    nonisolated static func sleepForReconnect(_ duration: TimeInterval) async {
         try? await Task.sleep(for: .seconds(duration))
     }
 }

@@ -326,38 +326,13 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     }
 
     func availableInputDevices() -> [MicrophoneInputDevice] {
-        #if DEBUG
-        if let override = debugDeviceEnumeration.withLock({ $0 }) {
-            return override.devices
-                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        }
-        #endif
         return AudioDeviceManager.allInputDevices()
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     func defaultInputDeviceID() -> String? {
-        #if DEBUG
-        if let override = debugDeviceEnumeration.withLock({ $0 }) {
-            return override.defaultInputDeviceID
-        }
-        #endif
         return AudioDeviceManager.defaultInputDeviceID()
     }
-
-    #if DEBUG
-    private let debugDeviceEnumeration =
-        Mutex<(devices: [MicrophoneInputDevice], defaultInputDeviceID: String?)?>(nil)
-
-    /// Replaces the CoreAudio device list with a fixed one, so tests can
-    /// plug and unplug microphones without hardware.
-    func debugConfigureDeviceEnumeration(
-        devices: [MicrophoneInputDevice],
-        defaultInputDeviceID: String?
-    ) {
-        debugDeviceEnumeration.withLock { $0 = (devices, defaultInputDeviceID) }
-    }
-    #endif
 
     func isCapturing() -> Bool {
         withState { $0.auHAL != nil && $0.auHALRunning }

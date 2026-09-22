@@ -16,7 +16,7 @@ final class AudioCaptureHealthMonitor {
     }
 
     private var callbacks: Callbacks?
-    private var microphone: MicrophoneCaptureService?
+    private var microphone: (any MicrophoneCapturing)?
     /// The input the running capture was started on. The selection cannot
     /// stand in for it: a device refresh moves the selection to a fallback
     /// as soon as the selected mic disappears.
@@ -45,7 +45,7 @@ final class AudioCaptureHealthMonitor {
 
     var isMonitoring: Bool { callbacks != nil }
 
-    func start(microphone: MicrophoneCaptureService, callbacks: Callbacks) {
+    func start(microphone: any MicrophoneCapturing, callbacks: Callbacks) {
         self.microphone = microphone
         self.callbacks = callbacks
         captureInputID = callbacks.selectedInputDeviceID()

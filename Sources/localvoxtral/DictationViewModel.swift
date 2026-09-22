@@ -172,10 +172,6 @@ final class DictationViewModel {
     // Kept separate from lastError, which holds user-facing UI state (e.g. the
     // Accessibility warning) that must never leak into connection-failure details.
     var lastSocketErrorMessage: String?
-    #if DEBUG
-    // Test seam: technicalDetails otherwise only reaches the log and the alert.
-    var debugLastConnectFailureTechnicalDetails: String?
-    #endif
     var lastFinalSegment = ""
 
     /// Raw (pre-polish) transcript of the most recent stop-commit whose LLM
@@ -313,13 +309,71 @@ final class DictationViewModel {
     @ObservationIgnored
     var secureInputWarningSound: () -> Void = { NSSound(named: "Basso")?.play() }
 
+    /// The collaborators a view model is built from. Production defaults;
+    /// a test replaces the ones it has to observe or hold still. Each field
+    /// retires a `debug…` seam (#432 step 2).
+    struct Dependencies {
+        /// Built on first use, so a mere permission read never registers
+        /// CoreAudio device listeners. Nil is the CoreAudio service.
+        var microphone: (() -> any MicrophoneCapturing)?
+        /// The pasteboard the polish context and the payload macro read. Both
+        /// read the one clipboard; a counting stub proves the no-read paths.
+        var pasteboardReader: @MainActor () -> any PasteboardReading
+        /// Where the copy actions write.
+        var pasteboardWriter: @MainActor (String) -> Void
+        /// The bundle identifier of a running process, for the app the
+        /// overlay commits into.
+        var bundleIdentifier: (pid_t) -> String?
+        /// The center the sleep and terminate observers register on. Nil is
+        /// the default center, registered only when runtime services run; a
+        /// private center is registered on regardless, so a test posts
+        /// through the real wiring without reaching every retained view
+        /// model in the process.
+        var lifecycleNotificationCenter: NotificationCenter?
+        /// The clock a mid-dictation reconnect run (#380) sleeps on.
+        var reconnectSleep: @MainActor (TimeInterval) async -> Void
+        /// Where a connection failure the popover cannot carry is shown.
+        var connectionFailurePresenter: any ConnectionFailurePresenting
+        /// Every record a session writes, before retention decides whether
+        /// the store keeps it. Nothing in the app observes; tests do.
+        var onSessionRecord: ((DictationSessionRecord) -> Void)?
+
+        init(
+            microphone: (() -> any MicrophoneCapturing)? = nil,
+            pasteboardReader: @escaping @MainActor () -> any PasteboardReading = { SystemPasteboardReader() },
+            pasteboardWriter: @escaping @MainActor (String) -> Void = DictationViewModel.writeToSystemPasteboard,
+            bundleIdentifier: @escaping (pid_t) -> String? = {
+                NSRunningApplication(processIdentifier: $0)?.bundleIdentifier
+            },
+            lifecycleNotificationCenter: NotificationCenter? = nil,
+            reconnectSleep: @escaping @MainActor (TimeInterval) async -> Void =
+                DictationViewModel.sleepForReconnect,
+            connectionFailurePresenter: any ConnectionFailurePresenting = ModalConnectionFailurePresenter(),
+            onSessionRecord: ((DictationSessionRecord) -> Void)? = nil
+        ) {
+            self.microphone = microphone
+            self.pasteboardReader = pasteboardReader
+            self.pasteboardWriter = pasteboardWriter
+            self.bundleIdentifier = bundleIdentifier
+            self.lifecycleNotificationCenter = lifecycleNotificationCenter
+            self.reconnectSleep = reconnectSleep
+            self.connectionFailurePresenter = connectionFailurePresenter
+            self.onSessionRecord = onSessionRecord
+        }
+    }
+
+    /// `var` so a test can replace one collaborator after construction; the
+    /// lifecycle center is read at init and the rest when a session uses them.
+    @ObservationIgnored
+    var dependencies: Dependencies
+
     // Services — internal so extension files can access them.
     @ObservationIgnored
     private(set) var hasInitializedMicrophone = false
     @ObservationIgnored
-    lazy var microphone: MicrophoneCaptureService = {
+    lazy var microphone: any MicrophoneCapturing = {
         hasInitializedMicrophone = true
-        return MicrophoneCaptureService()
+        return dependencies.microphone?() ?? MicrophoneCaptureService()
     }()
 
     /// Ducks other audio for the length of a session. Assigned in `init` so
@@ -377,9 +431,6 @@ final class DictationViewModel {
         microphone.stop()
     }
 
-    #if DEBUG
-    var debugHasInitializedMicrophoneForTesting: Bool { hasInitializedMicrophone }
-    #endif
     @ObservationIgnored
     let networkMonitor = NetworkMonitor()
     @ObservationIgnored
@@ -662,30 +713,6 @@ final class DictationViewModel {
     /// the exact pre-processing payload the Logger would emit.
     @ObservationIgnored
     var debugDeltaLogSink: ((DebugRealtimeDeltaLogRecord) -> Void)?
-    @ObservationIgnored
-    var debugSavedSessionRecordSink: ((DictationSessionRecord) -> Void)?
-    /// Test seam: overrides the commit-time target bundle ID resolution
-    /// (`resolveTargetAppBundleID`), which otherwise reads a live
-    /// `NSRunningApplication` from the overlay commit PID — unreachable in unit
-    /// tests. Lets profile-selection tests drive a terminal vs non-terminal
-    /// captured target deterministically.
-    @ObservationIgnored
-    var debugResolveTargetAppBundleIDOverride: (() -> String?)?
-    /// Test seam: injects the pasteboard the polish-context reader consults,
-    /// replacing `SystemPasteboardReader` over `NSPasteboard.general` (global /
-    /// unavailable in unit tests). Only resolved when the clipboard-context
-    /// setting is on AND the polishing endpoint is permitted, so a stub whose
-    /// read methods were never called proves the no-read privacy guarantee for
-    /// both the disabled toggle and a remote endpoint.
-    @ObservationIgnored
-    var debugPolishContextPasteboardReaderOverride: (() -> any PasteboardReading)?
-    /// Test seam: injects the pasteboard the spoken clipboard-paste macro reads,
-    /// replacing `SystemPasteboardReader`. Only resolved when the macro setting
-    /// is on AND a marker phrase is present, so a stub whose read methods were
-    /// never called proves the no-read guarantee when the setting is off or no
-    /// marker was spoken.
-    @ObservationIgnored
-    var debugClipboardPayloadPasteboardReaderOverride: (() -> any PasteboardReading)?
     /// Test seam: replaces the whole AX-title/process-cwd -> git-index -> match
     /// pipeline of
     /// `repoVocabularyGroundingIfEnabled` with a closure returning the grounding for
@@ -737,32 +764,13 @@ final class DictationViewModel {
     /// guessing with `Task.yield()`.
     @ObservationIgnored
     var debugManagedStatusMirrorEventSink: (() -> Void)?
-    /// Test seam: replaces the `NSPasteboard.general` write used by the copy
-    /// actions (`copyLatestSegment`, `copyRawTranscript`) so tests assert what
-    /// gets copied without a pasteboard server or clobbering the host clipboard.
     #if DEBUG
-    @ObservationIgnored
-    var debugPasteboardWriteOverride: ((String) -> Void)?
     /// Test seam: awaited by `beginDictationSession` after its capture awaits
     /// and immediately before the socket opens — the one window in which a
     /// real session can observe Settings changing under it.
     @ObservationIgnored
     var debugBeforeConnectHookForTesting: (@MainActor () async -> Void)?
-    /// Test seam: the clock a mid-dictation reconnect run (#380) sleeps on.
-    /// Set it and a run started by a real `.disconnected` event advances only
-    /// when the test says so — the reconnect adds no wall-clock timer of its
-    /// own, and a test can land a stop inside an attempt.
-    @ObservationIgnored
-    var debugReconnectSleepOverride: (@MainActor (TimeInterval) async -> Void)?
     #endif
-    @ObservationIgnored
-    var debugMicrophoneAuthorizationStatusOverride: MicrophoneAuthorizationStatus?
-    /// Test seam: replaces `microphone.requestAccess` in the session-start
-    /// permission gate so tests can hold and fire the grant continuation
-    /// deterministically (the real call shows a TCC prompt and touches the
-    /// microphone service).
-    @ObservationIgnored
-    var debugMicrophoneRequestAccessOverride: ((@escaping @Sendable (Bool) -> Void) -> Void)?
     @ObservationIgnored
     var debugHasRequestedStartupPermissions: Bool { hasRequestedStartupPermissions }
 
@@ -771,6 +779,10 @@ final class DictationViewModel {
 
     @ObservationIgnored
     private var lifecycleObservers: [NSObjectProtocol] = []
+    /// The center `lifecycleObservers` were registered on, so deinit removes
+    /// them from the same one.
+    @ObservationIgnored
+    private var lifecycleNotificationCenter: NotificationCenter = .default
     @ObservationIgnored
     private let managesRuntimeServices: Bool
     /// When true, the startup permission-prompt pass (microphone +
@@ -812,9 +824,11 @@ final class DictationViewModel {
         localNetworkPermissionPreflight: (any LocalNetworkPermissionPreflighting)? = nil,
         startRuntimeServices: Bool = true,
         suppressStartupPermissionPrompts: Bool =
-            DictationViewModel.startupPermissionPromptsSuppressed()
+            DictationViewModel.startupPermissionPromptsSuppressed(),
+        dependencies: Dependencies = Dependencies()
     ) {
         self.settings = settings
+        self.dependencies = dependencies
         self.backendManager =
             backendManager
             ?? BackendManager(
@@ -997,7 +1011,7 @@ final class DictationViewModel {
                 }
             )
             refreshMicrophoneInputs()
-            registerLifecycleObservers()
+            registerLifecycleObservers(on: dependencies.lifecycleNotificationCenter ?? .default)
             requestStartupPermissionsIfNeeded()
             importSpeakerTermsFromReplacementDictionaryIfNeeded()
             // Subscribe BEFORE the launch warmup below so the very first
@@ -1017,6 +1031,8 @@ final class DictationViewModel {
             polishPromptWarmupCoordinator = promptWarmup
             promptWarmup.observe(self.backendManager.statusUpdates)
             engines.warmUpManagedBackendsAtLaunchIfNeeded()
+        } else if let center = dependencies.lifecycleNotificationCenter {
+            registerLifecycleObservers(on: center)
         }
     }
 
@@ -1032,7 +1048,7 @@ final class DictationViewModel {
     @MainActor
     deinit {
         for observer in lifecycleObservers {
-            NotificationCenter.default.removeObserver(observer)
+            lifecycleNotificationCenter.removeObserver(observer)
         }
         lifecycleObservers.removeAll()
         commitTask?.cancel()
@@ -1062,20 +1078,6 @@ final class DictationViewModel {
     }
 
     // MARK: - Lifecycle Observers
-
-    private func registerLifecycleObservers() {
-        registerLifecycleObservers(on: .default)
-    }
-
-    #if DEBUG
-    /// Test seam: registers the REAL lifecycle observers on a private center,
-    /// so a suite can post `willTerminateNotification` through the actual
-    /// wiring without broadcasting to every retained view model in the
-    /// process.
-    func debugRegisterLifecycleObservers(on center: NotificationCenter) {
-        registerLifecycleObservers(on: center)
-    }
-    #endif
 
     private func registerLifecycleObservers(on nc: NotificationCenter) {
 
@@ -1125,6 +1127,7 @@ final class DictationViewModel {
         }
 
         lifecycleObservers = [sleepObserver, terminateObserver]
+        lifecycleNotificationCenter = nc
     }
 
     /// True when `LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS=1` — the
@@ -1879,25 +1882,16 @@ final class DictationViewModel {
     private func requestMicrophoneAccessForSessionStart(
         completion: @escaping @Sendable (Bool) -> Void
     ) {
-        if let debugMicrophoneRequestAccessOverride {
-            debugMicrophoneRequestAccessOverride(completion)
-            return
-        }
         microphone.requestAccess(completion: completion)
     }
 
     func currentMicrophoneAuthorizationStatus() -> MicrophoneAuthorizationStatus {
-        #if DEBUG
-        if let debugMicrophoneAuthorizationStatusOverride {
-            return debugMicrophoneAuthorizationStatusOverride
-        }
-        #endif
         guard capturesFromMicrophone else { return .authorized }
         // A mere status read (the onboarding/General permission rows) must
-        // not force the lazy capture service into existence; but once the
-        // service exists, ask it, so any injected replacement stays
-        // authoritative.
-        guard hasInitializedMicrophone else {
+        // not force the lazy CoreAudio service into existence; once the
+        // service exists, or when one was injected, ask it, so the injected
+        // replacement stays authoritative.
+        guard hasInitializedMicrophone || dependencies.microphone != nil else {
             switch AVCaptureDevice.authorizationStatus(for: .audio) {
             case .authorized:
                 return .authorized
@@ -1997,16 +1991,14 @@ final class DictationViewModel {
         statusText = "Raw transcript copied."
     }
 
-    /// Single pasteboard-write seam. In DEBUG a test can substitute the write to
-    /// avoid touching (and clobbering) `NSPasteboard.general` — headless CI has
-    /// no pasteboard server, and clobbering the host clipboard is antisocial.
     private func writeToPasteboard(_ text: String) {
-        #if DEBUG
-        if let override = debugPasteboardWriteOverride {
-            override(text)
-            return
-        }
-        #endif
+        dependencies.pasteboardWriter(text)
+    }
+
+    /// The production `Dependencies.pasteboardWriter`: the general pasteboard,
+    /// which a test never reaches (headless CI has no pasteboard server, and
+    /// clobbering the host clipboard is antisocial).
+    static func writeToSystemPasteboard(_ text: String) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)

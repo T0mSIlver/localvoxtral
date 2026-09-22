@@ -155,7 +155,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         // from lastSocketErrorMessage (nil here), never from lastError, which
         // may hold unrelated UI state such as the Accessibility warning.
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        viewModel.isShowingConnectionFailureAlert = true
+        let presenter = RecordingConnectionFailurePresenter()
+        viewModel.dependencies.connectionFailurePresenter = presenter
         retainForTestProcessLifetime(viewModel)
 
         viewModel.lastError = DictationViewModel.liveAutoPasteAccessibilityWarningMessage
@@ -163,9 +164,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
         viewModel.handle(event: .disconnected)
 
+        let details = presenter.presented.last?.technicalDetails
+        XCTAssertEqual(presenter.presented.count, 1, "the failure reaches the presenter once")
         XCTAssertFalse(
-            viewModel.debugLastConnectFailureTechnicalDetails?.contains("Accessibility") == true,
-            "failure details must not embed the AX warning, got: \(viewModel.debugLastConnectFailureTechnicalDetails ?? "nil")"
+            details?.contains("Accessibility") == true,
+            "failure details must not embed the AX warning, got: \(details ?? "nil")"
         )
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
     }
@@ -362,7 +365,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         // this suppression the timer's failure alert fires ~10s later inside
         // whatever test is then running (field flake, 2026-07-05).
         viewModel.isShowingConnectionFailureAlert = true
-        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
         viewModel.startDictation()
@@ -383,7 +386,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.dictationBackendMode = .managedLocal
         viewModel.settings.polishingBackendMode = .externalURL
         viewModel.isShowingConnectionFailureAlert = true
-        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
         viewModel.startDictation()
@@ -421,8 +424,9 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.dictationBackendMode = .externalURL
         viewModel.settings.polishingBackendMode = .managedLocal
         viewModel.settings.llmPolishingEnabled = true
-        viewModel.isShowingConnectionFailureAlert = true
-        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        let presenter = RecordingConnectionFailurePresenter()
+        viewModel.dependencies.connectionFailurePresenter = presenter
+        viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
         viewModel.startDictation()
@@ -435,7 +439,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(viewModel.lastError, "mlx-lm failed to start.")
         XCTAssertFalse(viewModel.lastError?.contains("exited 5 consecutive times") == true)
         XCTAssertFalse(viewModel.lastError?.contains(marker) == true)
-        XCTAssertTrue(viewModel.debugLastConnectFailureTechnicalDetails?.contains(marker) == true)
+        XCTAssertTrue(presenter.presented.last?.technicalDetails?.contains(marker) == true)
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
     }
 
@@ -446,7 +450,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.dictationBackendMode = .managedLocal
         viewModel.settings.polishingBackendMode = .externalURL
         viewModel.isShowingConnectionFailureAlert = true
-        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
         viewModel.startDictation()
@@ -473,7 +477,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.polishingBackendMode = .managedLocal
         viewModel.settings.llmPolishingEnabled = true
         viewModel.isShowingConnectionFailureAlert = true
-        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
         viewModel.startDictation()
@@ -499,7 +503,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.polishingBackendMode = .externalURL
         viewModel.settings.realtimeAPIEndpointURL = ""
         viewModel.isShowingConnectionFailureAlert = true
-        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
         viewModel.startDictation()
@@ -526,7 +530,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.llmPolishingEnabled = true
         viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:65535/realtime"
         viewModel.isShowingConnectionFailureAlert = true
-        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
         viewModel.startDictation()
@@ -553,7 +557,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.polishingBackendMode = .externalURL
         viewModel.settings.llmPolishingEnabled = true
         viewModel.isShowingConnectionFailureAlert = true
-        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
         viewModel.startDictation()
@@ -575,7 +579,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.dictationShortcutMode = .pushToTalk
         viewModel.settings.realtimeAPIEndpointURL = ""
         viewModel.isShowingConnectionFailureAlert = true
-        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
         viewModel.debugHandleDictationShortcutPressForTesting()
@@ -660,7 +664,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.polishingBackendMode = .externalURL
         viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:65535/realtime"
         viewModel.isShowingConnectionFailureAlert = true
-        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
         // Spawn the startup task but do not let it run yet — the test holds
@@ -1336,7 +1340,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         // This test reaches beginDictationSession, which arms the real
         // connect-timeout timer on a process-retained view model (AGENTS.md).
         viewModel.isShowingConnectionFailureAlert = true
-        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
         viewModel.startDictation()
@@ -1369,7 +1373,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.llmPolishingEnabled = true
         viewModel.settings.onboardingCompleted = true
         viewModel.isShowingConnectionFailureAlert = true
-        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
         viewModel.startDictation()
@@ -1554,7 +1558,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .managedLocal
         viewModel.isShowingConnectionFailureAlert = true
-        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        viewModel.fakeMicrophone.authorization = .authorized
         var soundPlays = 0
         viewModel.secureInputWarningSound = { soundPlays += 1 }
         retainForTestProcessLifetime(viewModel)
@@ -1601,9 +1605,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .managedLocal
         viewModel.isShowingConnectionFailureAlert = true
-        viewModel.debugMicrophoneAuthorizationStatusOverride = .notDetermined
-        var permissionCompletion: (@Sendable (Bool) -> Void)?
-        viewModel.debugMicrophoneRequestAccessOverride = { permissionCompletion = $0 }
+        viewModel.fakeMicrophone.authorization = .notDetermined
         var soundPlays = 0
         viewModel.secureInputWarningSound = { soundPlays += 1 }
         retainForTestProcessLifetime(viewModel)
@@ -1612,13 +1614,14 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         // the start behind the permission dialog, and the tap gesture ends.
         viewModel.startDictation()
         XCTAssertTrue(viewModel.isAwaitingMicrophonePermission)
-        guard let grantPermission = permissionCompletion else {
-            return XCTFail("the permission request must route through the test seam")
-        }
+        XCTAssertEqual(
+            viewModel.fakeMicrophone.pendingAccessRequestCount, 1,
+            "the permission request must reach the microphone"
+        )
 
         // Secure input turns on while the dialog is up; then the user grants.
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
-        grantPermission(true)
+        viewModel.fakeMicrophone.resolvePendingAccess(granted: true)
         // The continuation hops to the main actor and runs synchronously to
         // completion once started; drain the hop without wall-clock waits.
         var spins = 0
@@ -1651,7 +1654,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
             settings: settings,
             backendManager: backendManager,
             overlayBufferCoordinator: MockOverlayCoordinator(),
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(microphone: { FakeMicrophoneCaptureService() })
         )
         // Keep tests hermetic: session start reads config (terminal apps,
         // replacement dictionary) through the store — never the real
