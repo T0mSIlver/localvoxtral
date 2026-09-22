@@ -31,6 +31,17 @@ is_live_non_zombie() {
   [[ -n "$state" && "$state" != Z* ]]
 }
 
+# Each pid FIFO is held open read-write on fd 3 before the supervisor starts,
+# so no open() blocks on either side: under bash 3.2 a blocking `read <fifo`
+# fails with EINTR when a signal lands, and in the leader-exit case the
+# supervisor's SIGCHLD can arrive first (test-build-gate-process-cleanup.sh
+# has the full account). The read builtin retries read() on EINTR.
+open_pid_fifo() {
+  pid_fifo="$1"
+  mkfifo "$pid_fifo"
+  exec 3<>"$pid_fifo"
+}
+
 success_log="$TMP_DIR/success.log"
 "$SUPERVISOR" 30 "$success_log" -- /bin/bash -c 'echo supervised-output'
 [[ "$(cat "$success_log")" == "supervised-output" ]] || fail "success output was not captured"
@@ -47,12 +58,14 @@ grep -q '^failed-output$' "$failure_log" || fail "failure output was not capture
 # A FIFO triggers the timeout path deterministically; no wall-clock polling.
 pid_fifo="$TMP_DIR/timeout-pids"
 timeout_fifo="$TMP_DIR/timeout-trigger"
-mkfifo "$pid_fifo" "$timeout_fifo"
+open_pid_fifo "$pid_fifo"
+mkfifo "$timeout_fifo"
 LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO="$timeout_fifo" \
 LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
   "$SUPERVISOR" 999 "$TMP_DIR/timeout.log" -- "$FIXTURE" "$pid_fifo" &
 supervisor_pid=$!
-read -r fixture_pid stubborn_pid <"$pid_fifo"
+read -r fixture_pid stubborn_pid <&3
+exec 3<&-
 /bin/bash -c 'exec sleep 300' &
 sibling_pid=$!
 printf 'fire\n' >"$timeout_fifo"
@@ -71,11 +84,12 @@ stubborn_pid=""
 
 # If the leader exits normally, the wrapper must still drain its descendant.
 pid_fifo="$TMP_DIR/leader-exit-pids"
-mkfifo "$pid_fifo"
+open_pid_fifo "$pid_fifo"
 LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
   "$SUPERVISOR" 30 "$TMP_DIR/leader-exit.log" -- "$FIXTURE" "$pid_fifo" exit-leader &
 supervisor_pid=$!
-read -r fixture_pid stubborn_pid <"$pid_fifo"
+read -r fixture_pid stubborn_pid <&3
+exec 3<&-
 wait "$supervisor_pid" || fail "leader-exit command should preserve status zero"
 supervisor_pid=""
 is_live_non_zombie "$stubborn_pid" && fail "descendant survived its leader"
@@ -88,7 +102,8 @@ stubborn_pid=""
 # sampled pid belongs to the command's group and its output lands in the log.
 pid_fifo="$TMP_DIR/forensics-pids"
 timeout_fifo="$TMP_DIR/forensics-trigger"
-mkfifo "$pid_fifo" "$timeout_fifo"
+open_pid_fifo "$pid_fifo"
+mkfifo "$timeout_fifo"
 mkdir -p "$TMP_DIR/bin"
 cat >"$TMP_DIR/bin/sample" <<'STUB'
 #!/usr/bin/env bash
@@ -100,7 +115,8 @@ LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO="$timeout_fifo" \
 LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
   "$SUPERVISOR" 999 "$TMP_DIR/forensics.log" -- "$FIXTURE" "$pid_fifo" &
 supervisor_pid=$!
-read -r fixture_pid stubborn_pid <"$pid_fifo"
+read -r fixture_pid stubborn_pid <&3
+exec 3<&-
 printf 'fire\n' >"$timeout_fifo"
 if wait "$supervisor_pid"; then
   fail "forensics-run command unexpectedly succeeded"
@@ -123,7 +139,8 @@ stubborn_pid=""
 # would recreate the blind hang the forensics exist to diagnose).
 pid_fifo="$TMP_DIR/hung-sampler-pids"
 timeout_fifo="$TMP_DIR/hung-sampler-trigger"
-mkfifo "$pid_fifo" "$timeout_fifo"
+open_pid_fifo "$pid_fifo"
+mkfifo "$timeout_fifo"
 cat >"$TMP_DIR/bin/sample" <<'STUB'
 #!/usr/bin/env bash
 echo "stub-sample-hanging-on-pid-$1"
@@ -136,7 +153,8 @@ LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
 LOCALVOXTRAL_SUPERVISOR_SAMPLE_POLLS=3 \
   "$SUPERVISOR" 999 "$TMP_DIR/hung-sampler.log" -- "$FIXTURE" "$pid_fifo" &
 supervisor_pid=$!
-read -r fixture_pid stubborn_pid <"$pid_fifo"
+read -r fixture_pid stubborn_pid <&3
+exec 3<&-
 printf 'fire\n' >"$timeout_fifo"
 if wait "$supervisor_pid"; then
   fail "hung-sampler run unexpectedly succeeded"
@@ -163,7 +181,8 @@ stubborn_pid=""
 # does not hold.
 pid_fifo="$TMP_DIR/tree-pids"
 timeout_fifo="$TMP_DIR/tree-trigger"
-mkfifo "$pid_fifo" "$timeout_fifo"
+open_pid_fifo "$pid_fifo"
+mkfifo "$timeout_fifo"
 cat >"$TMP_DIR/bin/sample" <<'STUB'
 #!/usr/bin/env bash
 echo "stub-sample-of-pid-$1"
@@ -175,7 +194,8 @@ LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
 LOCALVOXTRAL_SUPERVISOR_LSOF_POLLS=10 \
   "$SUPERVISOR" 999 "$TMP_DIR/tree.log" -- "$FIXTURE" "$pid_fifo" &
 supervisor_pid=$!
-read -r fixture_pid stubborn_pid <"$pid_fifo"
+read -r fixture_pid stubborn_pid <&3
+exec 3<&-
 # Written after the pids are known, before the timeout fires: the stub needs
 # the REAL tree pids plus this script's pid ($$) as the outside holder.
 cat >"$TMP_DIR/bin/lsof" <<STUB
@@ -230,7 +250,8 @@ stubborn_pid=""
 # the tree, not just the group.
 pid_fifo="$TMP_DIR/escape-pids"
 timeout_fifo="$TMP_DIR/escape-trigger"
-mkfifo "$pid_fifo" "$timeout_fifo"
+open_pid_fifo "$pid_fifo"
+mkfifo "$timeout_fifo"
 cat >"$TMP_DIR/bin/sample" <<'STUB'
 #!/usr/bin/env bash
 echo "stub-sample-of-pid-$1"
@@ -243,7 +264,8 @@ LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
 LOCALVOXTRAL_SUPERVISOR_LSOF_POLLS=10 \
   "$SUPERVISOR" 999 "$TMP_DIR/escape.log" -- "$FIXTURE" "$pid_fifo" escape-group &
 supervisor_pid=$!
-read -r fixture_pid stubborn_pid <"$pid_fifo"
+read -r fixture_pid stubborn_pid <&3
+exec 3<&-
 escaped_pgid="$(ps -o pgid= -p "$stubborn_pid" | tr -d '[:space:]')"
 [[ -n "$escaped_pgid" && "$escaped_pgid" != "$fixture_pid" ]] \
   || fail "escape-group fixture did not leave the leader's process group (pgid $escaped_pgid)"
@@ -295,11 +317,12 @@ grep -q '^finished-naturally$' "$TMP_DIR/natural-finish.log" \
 
 # Signal cancellation preserves the conventional status and drains the tree.
 pid_fifo="$TMP_DIR/signal-pids"
-mkfifo "$pid_fifo"
+open_pid_fifo "$pid_fifo"
 LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
   "$SUPERVISOR" 300 "$TMP_DIR/signal.log" -- "$FIXTURE" "$pid_fifo" &
 supervisor_pid=$!
-read -r fixture_pid stubborn_pid <"$pid_fifo"
+read -r fixture_pid stubborn_pid <&3
+exec 3<&-
 kill -TERM "$supervisor_pid"
 if wait "$supervisor_pid"; then
   fail "signal-cancelled supervisor unexpectedly succeeded"
