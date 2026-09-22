@@ -643,7 +643,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
             viewModel.isConnectingRealtimeSession,
             "overlay sessions proceed: the pipeline still produces text and the commit falls back to the clipboard"
         )
-        // This path DOES arm the real 10s connect timeout (PR #66 rule).
+        // This path DOES arm the real 1 s connect timeout (PR #66 rule).
         viewModel.isShowingConnectionFailureAlert = true
         viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
     }

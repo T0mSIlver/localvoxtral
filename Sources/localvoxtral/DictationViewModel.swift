@@ -144,7 +144,7 @@ final class DictationViewModel {
     static let connectionLostMessage = "Connection lost. Dictation stopped."
 
     static let microphoneDisconnectedMessage = "Mic disconnected."
-    private static let microphoneDeniedMessage =
+    static let microphoneDeniedMessage =
         "Grant microphone access in System Settings > Privacy & Security > Microphone."
 
     /// Surfaced at dictation start (and in the popover) when Live Auto-Paste is
@@ -197,12 +197,6 @@ final class DictationViewModel {
     private(set) var availableInputDevices: [MicrophoneInputDevice] = []
     private(set) var selectedInputDeviceID = ""
 
-    /// Observable mirror of the live microphone authorization status, refreshed
-    /// on demand via `refreshMicrophonePermissionState()`. Stored (rather than
-    /// read live) so permission UI re-renders when the grant changes while the
-    /// app is foregrounded. Seeded lazily — reading the real status touches the
-    /// microphone service, so it stays `.notDetermined` until the first refresh.
-    private(set) var microphoneAuthorizationStatus: MicrophoneAuthorizationStatus = .notDetermined
 
     /// Set by the app delegate so the General settings pane can re-present the
     /// onboarding wizard. Kept as a seam rather than a singleton reference.
@@ -667,10 +661,6 @@ final class DictationViewModel {
     @ObservationIgnored
     var isAwaitingMicrophonePermission = false
     @ObservationIgnored
-    private var startupPermissionTask: Task<Void, Never>?
-    @ObservationIgnored
-    private var hasRequestedStartupPermissions = false
-    @ObservationIgnored
     var pendingSegmentText = ""
     @ObservationIgnored
     var currentDictationEventText = ""
@@ -771,9 +761,6 @@ final class DictationViewModel {
     var debugBeforeConnectHookForTesting: (@MainActor () async -> Void)?
     #endif
     @ObservationIgnored
-    var debugHasRequestedStartupPermissions: Bool { hasRequestedStartupPermissions }
-
-    @ObservationIgnored
     let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
 
     @ObservationIgnored
@@ -783,7 +770,7 @@ final class DictationViewModel {
     @ObservationIgnored
     private var lifecycleNotificationCenter: NotificationCenter = .default
     @ObservationIgnored
-    private let managesRuntimeServices: Bool
+    let managesRuntimeServices: Bool
     /// When true, the startup permission-prompt pass (microphone +
     /// Accessibility) is skipped entirely. Driven by
     /// `LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS=1` in production;
@@ -795,7 +782,10 @@ final class DictationViewModel {
     /// (2026-07-24). The env override silences only the prompts; the launch
     /// path stays production-shaped.
     @ObservationIgnored
-    private let suppressStartupPermissionPrompts: Bool
+    /// Microphone and Accessibility permissions: the startup prompt pass and
+    /// the rows' requests and refreshes. Views bind to `viewModel.permissions`.
+    @ObservationIgnored
+    let permissions: PermissionsCoordinator
     /// The keyboard triggers: gestures, hotkey registration, the shortcut
     /// slots. Views bind to `viewModel.shortcuts`; the session reads its
     /// gesture flags through it.
@@ -824,7 +814,12 @@ final class DictationViewModel {
                 speechdStepCadenceProvider: { settings.speechdStepCadence.milliseconds }
             )
         self.managesRuntimeServices = startRuntimeServices
-        self.suppressStartupPermissionPrompts = suppressStartupPermissionPrompts
+        self.permissions = PermissionsCoordinator(
+            settings: settings,
+            textInsertion: textInsertion,
+            managesRuntimeServices: startRuntimeServices,
+            suppressStartupPermissionPrompts: suppressStartupPermissionPrompts
+        )
         self.engines = EnginesModel(
             settings: settings,
             backendManager: self.backendManager,
@@ -955,6 +950,7 @@ final class DictationViewModel {
         }
 
         shortcuts.install(session: self)
+        permissions.install(session: self)
         if startRuntimeServices {
             shortcuts.registerAtLaunch()
         }
@@ -995,7 +991,7 @@ final class DictationViewModel {
             )
             refreshMicrophoneInputs()
             registerLifecycleObservers(on: dependencies.lifecycleNotificationCenter ?? .default)
-            requestStartupPermissionsIfNeeded()
+            permissions.requestStartupPermissionsIfNeeded()
             importSpeakerTermsFromReplacementDictionaryIfNeeded()
             // Subscribe BEFORE the launch warmup below so the very first
             // polishd ready edge is observed and prompt-prefix-warmed.
@@ -1044,7 +1040,7 @@ final class DictationViewModel {
         reconnectTask?.cancel()
         recentFailureResetTask?.cancel()
         finalizationWatchdogTask?.cancel()
-        startupPermissionTask?.cancel()
+        permissions.cancelTasks()
         polishAndCommitTask?.cancel()
         polishPromptWarmupCoordinator?.cancelTasks()
         textInsertion.stopAllTasks()
@@ -1147,81 +1143,11 @@ final class DictationViewModel {
         Log.config.info("Speaker terms imported from replacement dictionary: \(imported.count, privacy: .public)")
     }
 
-    private func requestStartupPermissionsIfNeeded() {
-        guard managesRuntimeServices else { return }
-        guard !suppressStartupPermissionPrompts else {
-            // .notice so the line persists in the unified log archive: it is
-            // the after-the-fact field proof that a CI smoke launch skipped
-            // the prompt pass (.info survives only in the memory buffer).
-            Log.dictation.notice(
-                "startup permission prompts suppressed (LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS=1)"
-            )
-            return
-        }
-        guard settings.onboardingCompleted else {
-            debugLog("startup permission prompts skipped until onboarding completes")
-            return
-        }
-        guard !hasRequestedStartupPermissions else { return }
-        hasRequestedStartupPermissions = true
-
-        startupPermissionTask?.cancel()
-        startupPermissionTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.prepareLLMPolishingPromptAccessIfNeeded()
-            guard !Task.isCancelled else { return }
-            await self.requestStartupMicrophonePermissionIfNeeded()
-            guard !Task.isCancelled else { return }
-            self.requestStartupAccessibilityPermissionIfNeeded()
-        }
-    }
-
     func prepareLLMPolishingPromptAccessIfNeeded() {
         guard settings.llmPolishingEnabled else { return }
 
         debugLog("preloading LLM polishing prompt/config files")
         _ = appConfigStore.loadLLMPromptTemplates()
-    }
-
-    private func requestStartupAccessibilityPermissionIfNeeded() {
-        refreshAccessibilityTrustState()
-        guard !textInsertion.isAccessibilityTrusted else { return }
-
-        debugLog("startup accessibility permission prompt requested")
-        textInsertion.requestAccessibilityPermissionIfNeeded()
-    }
-
-    private func requestStartupMicrophonePermissionIfNeeded() async {
-        guard !isAwaitingMicrophonePermission else { return }
-        guard capturesFromMicrophone else { return }
-        guard microphone.authorizationStatus() == .notDetermined else { return }
-
-        isAwaitingMicrophonePermission = true
-        debugLog("startup microphone permission prompt requested")
-
-        let granted = await withCheckedContinuation { continuation in
-            microphone.requestAccess { granted in
-                continuation.resume(returning: granted)
-            }
-        }
-
-        guard !Task.isCancelled else { return }
-        isAwaitingMicrophonePermission = false
-        debugLog("startup microphone permission result granted=\(granted)")
-
-        guard granted else {
-            if !isDictating, !isFinalizingStop, !isConnectingRealtimeSession {
-                statusText = StatusStrings.microphoneAccessDenied
-            }
-            lastError = Self.microphoneDeniedMessage
-            return
-        }
-
-        if !isDictating, !isFinalizingStop, !isConnectingRealtimeSession,
-           currentStatusToken == .awaitingMicrophonePermission
-        {
-            statusText = StatusStrings.ready
-        }
     }
 
     // MARK: - Network
@@ -1641,26 +1567,6 @@ final class DictationViewModel {
         pasteboard.setString(text, forType: .string)
     }
 
-    func requestAccessibilityPermission() {
-        textInsertion.requestAccessibilityPermission()
-
-        if textInsertion.isAccessibilityTrusted {
-            statusText = StatusStrings.ready
-        } else {
-            statusText = StatusStrings.waitingForAccessibilityPermission
-        }
-    }
-
-    /// Re-read the live microphone authorization status into the observable
-    /// mirror. Reading only — never prompts. Call on appear / app activation so
-    /// permission rows reflect grants made in System Settings.
-    func refreshMicrophonePermissionState() {
-        let status = currentMicrophoneAuthorizationStatus()
-        if microphoneAuthorizationStatus != status {
-            microphoneAuthorizationStatus = status
-        }
-    }
-
     /// Samples the terminal-like verdict and Secure Keyboard Entry state for
     /// the app focused right now. Called from `beginDictationSession` before
     /// the socket opens (see `preCapturedSessionTargetVerdict`).
@@ -2071,43 +1977,11 @@ final class DictationViewModel {
         }
     }
 
-    /// Prompt for microphone access if it has not been decided yet. When access
-    /// was already denied/restricted the system dialog no longer appears, so the
-    /// permission UI routes the user to System Settings instead. Refreshes the
-    /// observable status once the request resolves.
-    func requestMicrophonePermission() {
-        microphone.requestAccess { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.refreshMicrophonePermissionState()
-            }
-        }
-    }
-
     /// Reset the first-launch flag and ask the app delegate to re-present the
     /// onboarding wizard. Invoked by the General settings pane's "Re-run setup…".
     func reRunOnboarding() {
         settings.onboardingCompleted = false
         onRequestReRunOnboarding?()
-    }
-
-    func refreshAccessibilityTrustState() {
-        let wasTrusted = textInsertion.isAccessibilityTrusted
-        textInsertion.refreshAccessibilityTrustState()
-
-        if textInsertion.isAccessibilityTrusted, !wasTrusted, !isDictating,
-           (currentStatusToken == .waitingForAccessibilityPermission
-               || currentStatusToken == .pasteBlockedByAccessibilityPermission)
-        {
-            statusText = StatusStrings.ready
-        }
-
-        if let axError = textInsertion.lastAccessibilityError {
-            if lastError == nil || currentErrorToken == .accessibilityPermissionRequired {
-                lastError = axError
-            }
-        } else if currentErrorToken == .accessibilityPermissionRequired {
-            lastError = nil
-        }
     }
 
     func openConfigFolder() {
@@ -2248,3 +2122,5 @@ extension DictationViewModel: ShortcutSessionControlling {
         engines.handleOverlayReachabilityTransition(wasReachable: wasReachable)
     }
 }
+
+extension DictationViewModel: PermissionSessionControlling {}

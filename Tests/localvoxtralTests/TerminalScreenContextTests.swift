@@ -940,7 +940,7 @@ final class TerminalScreenContextTests: XCTestCase {
 
 /// View-model lifecycle: who captures, who consumes, and who cleans up.
 ///
-/// These never call `beginDictationSession` — it arms the real 10 s
+/// These never call `beginDictationSession` — it arms the real 1 s
 /// connect-timeout on a process-retained view model, which SIGTRAPs a later
 /// test (PR #66). The capture/consume/discard entry points are exercised
 /// directly instead.
