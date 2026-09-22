@@ -349,10 +349,10 @@ jobs:
         # PolishContextPreparationTests measures how much work a preparation
         # costs, so its cases are slow ON PURPOSE and cannot be made faster
         # without deleting what they assert (#430). It stays a required part of
-        # this job and runs on every non-docs event; it is only out of the step
-        # above so that the default unit suite stays an inner-loop-speed lane.
-        # Same --enable-code-coverage, so this reuses the binary the step above
-        # built instead of relinking the whole test bundle.
+        # this job and runs on every non-docs event; it is only out of the unit
+        # suite so that that lane stays inner-loop speed.
+        # Same --enable-code-coverage as the unit suite, so this reuses the
+        # binary that step built instead of relinking the whole test bundle.
         if: steps.ci_scope.outputs.docs_only != 'true'
         run: |
           set -euo pipefail
