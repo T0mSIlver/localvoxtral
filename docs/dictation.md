@@ -106,7 +106,10 @@ Open **Settings…** from the menu bar popover. It is the same window as
 History; the panes sit under the sidebar's Settings header:
 
 - **General** — permission status for Microphone and Accessibility (with
-  grant buttons), and Re-run setup
+  grant buttons), Re-run setup, and two startup switches: **Open localvoxtral
+  at login** starts the app when you log in, and **Open the window at launch**
+  brings the window up on History every time the app starts. Both are off, and
+  a first launch shows the setup wizard rather than the window.
 - **Engines** — Dictation and Polishing each switch independently between
   `Managed local` (a model picker for polishing, plus a status light),
   `External URL` (server URL, model name, API key), and `Mistral API`

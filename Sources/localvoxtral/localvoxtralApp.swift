@@ -13,6 +13,10 @@ struct localvoxtralApp: App {
             StatusPopoverView(
                 viewModel: appDelegate.viewModel, navigator: appDelegate.settingsNavigator)
         } label: {
+            // The label is the one view that exists from launch, so it is
+            // where the app can be handed SwiftUI's own way to open the
+            // window — see `SettingsOpenerHandoff`.
+            SettingsOpenerHandoff { appDelegate.settingsOpener = $0 }
             let viewModel = appDelegate.viewModel
             let state = viewModel.menuBarIndicatorState
             if let idleIcon = MenuBarIconAsset.idleIcon {
@@ -107,7 +111,8 @@ struct localvoxtralApp: App {
                 settings: appDelegate.settingsStore,
                 viewModel: appDelegate.viewModel,
                 backendManager: appDelegate.backendManager,
-                navigator: appDelegate.settingsNavigator
+                navigator: appDelegate.settingsNavigator,
+                loginItem: appDelegate.loginItemController
             )
             // Fixed width, resizable height: the two-column layout has a fixed
             // 208pt sidebar and dense right-hand rows, so horizontal resizing
@@ -139,6 +144,24 @@ struct localvoxtralApp: App {
     }
 }
 
+/// Hands the app delegate SwiftUI's `openSettings` action.
+///
+/// The delegate has to open the window at launch ("Open the window at launch",
+/// #449) and is not a view, so the action has to be captured by one. The menu
+/// bar item's label is the only view alive at launch — it is rendered into the
+/// status item before anything else exists — and it renders nothing itself.
+struct SettingsOpenerHandoff: View {
+    @Environment(\.openSettings) private var openSettings
+    let hand: @MainActor (@escaping @MainActor () -> Void) -> Void
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+            .onAppear { hand { openSettings() } }
+    }
+}
+
 /// Owns the shared model graph and presents the first-launch onboarding wizard.
 /// A menu-bar (LSUIElement) app has no launch window scene, so the wizard is
 /// shown here from `applicationDidFinishLaunching`.
@@ -148,6 +171,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let backendManager: BackendManager
     let viewModel: DictationViewModel
     let settingsNavigator = SettingsNavigator()
+    /// "Open localvoxtral at login". Built here so the pane reads the login
+    /// item once per launch rather than on every view update.
+    let loginItemController = LoginItemController()
+    /// SwiftUI's own `openSettings`, handed over by the menu bar label
+    /// (`SettingsOpenerHandoff`). Nil until the label has appeared.
+    var settingsOpener: (@MainActor () -> Void)?
     let dockIconPolicy = DockIconPolicy(apply: AppDelegate.applyActivationPolicy)
 
     private var onboardingController: OnboardingWindowController?
@@ -287,8 +316,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
         reconcileBundledConfigDefaults()
         viewModel.preflightConfiguredLocalNetworkEndpoints()
-        guard !settingsStore.onboardingCompleted else { return }
-        presentOnboarding()
+        switch LaunchWindowPolicy.decide(
+            onboardingCompleted: settingsStore.onboardingCompleted,
+            opensWindowAtLaunch: settingsStore.opensWindowAtLaunch
+        ) {
+        case .onboarding:
+            presentOnboarding()
+        case .window:
+            openWindow(on: .history)
+        case .nothing:
+            break
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -1035,7 +1073,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             viewModel: viewModel,
             backendManager: backendManager,
             dockIconPolicy: dockIconPolicy,
-            openEndpointsSettings: { [weak self] in self?.openEndpointsSettings() }
+            openEndpointsSettings: { [weak self] in self?.openWindow(on: .endpoints) }
         )
         controller.onFinished = { [weak self] in
             self?.onboardingController = nil
@@ -1049,12 +1087,92 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.present()
     }
 
-    private func openEndpointsSettings() {
-        settingsNavigator.selectedTab = .endpoints
-        NSApp.activate(ignoringOtherApps: true)
-        // AppKit entry point for the SwiftUI `Settings` scene on macOS 14+.
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    /// Brings up the app's one window on `tab`. The Settings scene hosts it,
+    /// History and Insights included, so this is also how the window opens on
+    /// a pane that is not a settings pane.
+    private func openWindow(on tab: SettingsTab) {
+        settingsNavigator.selectedTab = tab
+        Task { @MainActor in
+            let opener = AppWindowOpener(
+                show: { [weak self] in self?.askForTheWindow() },
+                isOnScreen: { AppDelegate.windowIsOnScreen() },
+                sleepFor: { try? await Task.sleep(for: $0) }
+            )
+            guard let attempt = await opener.open() else {
+                Log.diagnostics.error(
+                    """
+                    The localvoxtral window never opened; showSettingsWindow: was answered \
+                    but no window appeared. Windows now: \
+                    \(AppDelegate.windowSummary(), privacy: .public)
+                    """
+                )
+                return
+            }
+            if attempt > 1 {
+                Log.diagnostics.notice(
+                    "The localvoxtral window opened on attempt \(attempt, privacy: .public)."
+                )
+            }
+        }
     }
+
+    /// Asks for the window, by the two routes the app has, the one that works
+    /// at launch first.
+    ///
+    /// `NSApp.sendAction(showSettingsWindow:)` — the route the onboarding
+    /// Engines link has always used — is ACCEPTED at launch and opens nothing
+    /// (#449, measured on the packaged build over eight asks in 1.75 s, and
+    /// not for want of the main menu: it fails with the Dock icon up too).
+    /// SwiftUI's own `openSettings` is what the menu bar item's Settings…
+    /// uses, and that one works; the label hands it over at launch.
+    ///
+    /// The send stays behind it, addressed through the main menu's own item
+    /// when the app has one, since `to: nil` walks a responder chain that
+    /// answers without acting.
+    private func askForTheWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        if let settingsOpener {
+            settingsOpener()
+            return
+        }
+        let selector = Selector(("showSettingsWindow:"))
+        if let item = AppDelegate.mainMenuItem(for: selector) {
+            NSApp.sendAction(selector, to: item.target, from: item)
+            return
+        }
+        NSApp.sendAction(selector, to: nil, from: nil)
+    }
+
+    /// A main-menu item by its action. There is a main menu only while the
+    /// process is `.regular` — AppKit synthesizes none for an accessory app.
+    private static func mainMenuItem(for action: Selector) -> NSMenuItem? {
+        for top in NSApp.mainMenu?.items ?? [] {
+            for item in top.submenu?.items ?? [] where item.action == action {
+                return item
+            }
+        }
+        return nil
+    }
+
+    /// Every window the process has, for the one log line that has to explain
+    /// why the window the user asked for is not on screen.
+    private static func windowSummary() -> String {
+        let windows = NSApp.windows.map { window in
+            "\(window.title.isEmpty ? "<untitled>" : window.title)"
+                + "[\(type(of: window)) visible=\(window.isVisible)]"
+        }
+        return windows.isEmpty ? "none" : windows.joined(separator: ", ")
+    }
+
+    /// The scene's window, by the title `SettingsWindowChromeView` keeps on it.
+    /// Hidden-title chrome does not clear `window.title`, precisely so the AX
+    /// drills — and this — can find it.
+    private static func windowIsOnScreen() -> Bool {
+        NSApp.windows.contains {
+            $0.title == SettingsWindowChromeView.windowTitle && $0.isVisible
+        }
+    }
+
 }
 
 @MainActor

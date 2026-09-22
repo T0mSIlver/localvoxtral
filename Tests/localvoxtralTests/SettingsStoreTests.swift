@@ -33,6 +33,19 @@ final class SettingsStoreTests: XCTestCase {
         SettingsStore(defaults: defaults, environment: [:], secretStore: secrets)
     }
 
+    // MARK: - Open the window at launch (#449)
+
+    func testTheWindowDoesNotOpenAtLaunchUntilItIsTurnedOn() {
+        XCTAssertFalse(makeStore().opensWindowAtLaunch)
+    }
+
+    func testOpeningTheWindowAtLaunchSurvivesAReload() {
+        let store = makeStore()
+        store.opensWindowAtLaunch = true
+
+        XCTAssertTrue(makeStore().opensWindowAtLaunch)
+    }
+
     // A stored value for the removed "Local Claude title fallback" toggle is
     // simply IGNORED — there is no migration, because there is no longer any
     // behaviour for it to select. Pinned so a future reader does not go looking

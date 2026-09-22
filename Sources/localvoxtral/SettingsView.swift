@@ -23,6 +23,9 @@ struct SettingsView: View {
     var viewModel: DictationViewModel
     var backendManager: BackendManager
     @Bindable var navigator: SettingsNavigator
+    /// The login item's system registration, read once per launch by the app
+    /// delegate and re-read whenever the General pane appears.
+    var loginItem: LoginItemController
     @State private var shortcutValidationError: String?
 
     /// Terminal rows, installed-state cache, and the user-added list. The
@@ -40,12 +43,14 @@ struct SettingsView: View {
         settings: SettingsStore,
         viewModel: DictationViewModel,
         backendManager: BackendManager,
-        navigator: SettingsNavigator
+        navigator: SettingsNavigator,
+        loginItem: LoginItemController
     ) {
         self.settings = settings
         self.viewModel = viewModel
         self.backendManager = backendManager
         self.navigator = navigator
+        self.loginItem = loginItem
         _terminalAppsModel = State(
             initialValue: TerminalAppsSettingsModel(
                 settings: settings,
@@ -231,7 +236,8 @@ struct SettingsView: View {
 
             switch navigator.selectedTab.kind {
             case .general:
-                GeneralSettingsPane(settings: settings, viewModel: viewModel)
+                GeneralSettingsPane(
+                    settings: settings, viewModel: viewModel, loginItem: loginItem)
             case .endpoints:
                 ConnectionSettingsPane(
                     settings: settings,
@@ -290,6 +296,16 @@ struct SettingsView: View {
 private struct GeneralSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
+    let loginItem: LoginItemController
+
+    /// Writes through to the system registration, and reads back from it: the
+    /// switch follows what macOS ended up doing, not what was asked for.
+    private var loginItemBinding: Binding<Bool> {
+        Binding(
+            get: { loginItem.isOn },
+            set: { loginItem.setOn($0) }
+        )
+    }
 
     var body: some View {
         SettingsPage(tab: .general) {
@@ -303,6 +319,26 @@ private struct GeneralSettingsPane: View {
 
             SettingsGroup(title: "App") {
                 SettingsFieldRow(
+                    title: "Open localvoxtral at login",
+                    status: loginItem.statusMessage,
+                    statusAccessibilityIdentifier: "settings.general.loginItemStatus"
+                ) {
+                    Toggle("", isOn: loginItemBinding)
+                        .labelsHidden()
+                        .disabled(!loginItem.isAvailable)
+                        .accessibilityIdentifier("settings.general.loginItem")
+                }
+
+                SettingsFieldRow(
+                    title: "Open the window at launch",
+                    help: "It opens on History."
+                ) {
+                    Toggle("", isOn: $settings.opensWindowAtLaunch)
+                        .labelsHidden()
+                        .accessibilityIdentifier("settings.general.openWindowAtLaunch")
+                }
+
+                SettingsFieldRow(
                     title: "Setup wizard"
                 ) {
                     Button("Re-run setup…") {
@@ -310,6 +346,16 @@ private struct GeneralSettingsPane: View {
                     }
                 }
             }
+        }
+        // System Settings can turn the login item off while the app runs, so
+        // the switch is re-read from the system every time the pane appears —
+        // and again when the app comes back to the front, which is how the
+        // user returns from turning it off over there.
+        .onAppear { loginItem.refresh() }
+        .onReceive(
+            NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+        ) { _ in
+            loginItem.refresh()
         }
     }
 }
