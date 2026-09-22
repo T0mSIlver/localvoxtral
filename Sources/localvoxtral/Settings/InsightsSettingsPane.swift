@@ -122,8 +122,7 @@ struct InsightsSettingsPane: View {
                 title: "Pace",
                 value: insights.wordsPerMinute.map { "\(Int($0.rounded())) words per minute" } ?? "—")
             InsightRow(
-                title: "Saved over typing",
-                help: "Against \(Int(DictationInsights.typingWordsPerMinute)) words per minute.",
+                title: "Saved over typing at \(Int(DictationInsights.typingWordsPerMinute)) words per minute",
                 value: insights.dictations == 0
                     ? "—" : DictationInsightsText.duration(insights.secondsSavedOverTyping))
         }
@@ -133,12 +132,10 @@ struct InsightsSettingsPane: View {
         SettingsGroup(title: "Reliability") {
             InsightRow(
                 title: "Not inserted",
-                help: "The text never reached the app. History still has it.",
                 value: count(insights.notInserted),
                 action: insights.notInserted > 0 ? { showHistory(.notInserted) } : nil)
             InsightRow(
                 title: "Polish failed",
-                help: "The transcript went in unpolished.",
                 value: count(insights.polishFailed),
                 action: insights.polishFailed > 0 ? { showHistory(.polishFailed) } : nil)
         }
@@ -155,8 +152,7 @@ struct InsightsSettingsPane: View {
                 title: "Typical wait",
                 value: insights.medianPolishSeconds.map(Self.seconds) ?? "—")
             InsightRow(
-                title: "Slow wait",
-                help: "One polish in ten takes longer.",
+                title: "One in ten waits over",
                 value: insights.slowPolishSeconds.map(Self.seconds) ?? "—")
         }
     }
@@ -165,10 +161,7 @@ struct InsightsSettingsPane: View {
         SettingsGroup(title: "What polishing keeps fixing") {
             if insights.recurringFixes.isEmpty {
                 SettingsGroupRow {
-                    Text(
-                        isCounting
-                            ? "—"
-                            : "Nothing in \(DictationInsights.recurringFixMinimumDictations) dictations or more.")
+                    Text(isCounting ? "—" : "No repeated fix yet.")
                         .foregroundStyle(.secondary)
                 }
             } else {
@@ -213,12 +206,11 @@ struct InsightsSettingsPane: View {
 /// dictations the number counted.
 private struct InsightRow: View {
     let title: String
-    var help: String?
     let value: String
     var action: (() -> Void)?
 
     var body: some View {
-        SettingsFieldRow(title: title, help: help) {
+        SettingsFieldRow(title: title) {
             HStack(spacing: 8) {
                 Text(value)
                     .foregroundStyle(.secondary)

@@ -86,8 +86,8 @@ the last 7 days, the last 30, or all of them:
   from the shortcut to the inserted text, with the polishing wait taken out.
 - **Reliability**: dictations that were never inserted and polishes that
   failed. **Show** opens History filtered to them.
-- **Polishing**: how often it changed the text, the median wait, and the wait
-  one polish in ten exceeds.
+- **Polishing**: how often it changed the text, the typical wait (the
+  median), and the wait one polish in ten exceeds.
 - **What polishing keeps fixing**: replacements of up to four words that
   polishing made in three dictations or more, such as `quen → Qwen`. These are
   the words the recognizer gets wrong for you. A spelling added to Names and
