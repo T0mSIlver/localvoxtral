@@ -87,9 +87,13 @@ enum StopCommitCoordinator {
 
     // MARK: - Clipboard gates
 
-    /// The opt-in polish clipboard context, or nil when the setting is off or
-    /// the endpoint is not one the user consented to send clipboard text to.
-    /// Both gates short-circuit before the pasteboard is touched.
+    /// Reads a capped clipboard excerpt for polish grounding, but ONLY when the
+    /// opt-in setting is on AND the polishing endpoint is loopback. Both guards
+    /// short-circuit BEFORE the reader resolves, so a disabled toggle or a
+    /// remote endpoint means the pasteboard is never touched at all (privacy:
+    /// no read). The endpoint gate keeps the Settings promise honest: the
+    /// polishing endpoint is user-configurable and may point at a cloud
+    /// provider, which must never receive clipboard content.
     @MainActor
     static func polishClipboardContext(
         endpointURL: URL,
