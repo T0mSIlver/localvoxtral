@@ -129,7 +129,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         harness.viewModel.dependencies.pasteboardReader = {
             WiringPasteboardStub(text: "error in PolishContextBudget.swift line 40")
         }
-        harness.viewModel.debugRepoVocabularyEntriesOverride = { _ in
+        harness.viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding { _ in
             RepoVocabularyMatcher.GroundingOutcome(
                 entries: [ReplacementEntry(replaceWith: "herdr", matches: ["herder"])],
                 isFallbackOnly: false
@@ -211,7 +211,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         harness.viewModel.dependencies.pasteboardReader = {
             WiringPasteboardStub(text: "clipboard text")
         }
-        harness.viewModel.debugRepoVocabularyPipelineOverride = { _ in
+        harness.viewModel.repoVocabularyPipeline.pipeline = { _ in
             DogfoodCaptureTap.shared.noteRepoVocabularyHarvest(["pipeline-term"])
             return .empty
         }
@@ -238,7 +238,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         harness.viewModel.dependencies.pasteboardReader = {
             WiringPasteboardStub(text: "clipboard text")
         }
-        harness.viewModel.debugRepoVocabularyPipelineOverride = { _ in
+        harness.viewModel.repoVocabularyPipeline.pipeline = { _ in
             // The next dictation begins while this pipeline is still running…
             DogfoodCaptureTap.shared.beginSession()
             // …so its late note is stale and must be dropped.

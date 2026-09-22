@@ -1519,7 +1519,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.stubCommitTarget { "com.acme.notes" }
         viewModel.dependencies.pasteboardReader = { pasteboard }
         var readsWhenVocabRan = -1
-        viewModel.debugRepoVocabularyEntriesOverride = { _ in
+        viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding { _ in
             readsWhenVocabRan = pasteboard.stringCallCount
             return nil
         }
@@ -1576,7 +1576,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.appConfigStore = mockConfig
         viewModel.llmPolishingService = service
         viewModel.stubCommitTarget { "com.apple.Terminal" }
-        viewModel.debugRepoVocabularyEntriesOverride = { _ in
+        viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding { _ in
             RepoVocabularyMatcher.GroundingOutcome(
                 entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["useauth.ts"])],
                 isFallbackOnly: false
@@ -1754,13 +1754,13 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         // Pipeline seam (NOT the entries seam, which bypasses the race):
         // suspends forever, like an uncancelable syscall. Deliberately leaked
         // for the test process lifetime, mirroring the production abandonment.
-        viewModel.debugRepoVocabularyPipelineOverride = { _ in
+        viewModel.repoVocabularyPipeline.pipeline = { _ in
             await withUnsafeContinuation { (_: UnsafeContinuation<Void, Never>) in }
             return nil
         }
         // Deadline sleep seam: returns immediately — the deadline expires
         // before the pipeline can ever win.
-        viewModel.debugRepoVocabularyDeadlineSleepOverride = {}
+        viewModel.repoVocabularyPipeline.deadlineSleep = {}
         var savedRecord: DictationSessionRecord?
         viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
@@ -1808,13 +1808,13 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         // Wedged pipeline: signals that it started, then suspends forever
         // (deliberately leaked for the test process lifetime, mirroring the
         // production abandonment).
-        viewModel.debugRepoVocabularyPipelineOverride = { _ in
+        viewModel.repoVocabularyPipeline.pipeline = { _ in
             pipelineCalls.increment()
             startSignal.yield()
             await withUnsafeContinuation { (_: UnsafeContinuation<Void, Never>) in }
             return nil
         }
-        viewModel.debugRepoVocabularyDeadlineSleepOverride = {}
+        viewModel.repoVocabularyPipeline.deadlineSleep = {}
 
         let endpoint = URL(string: "http://127.0.0.1:8472/v1/chat/completions")!
         let first = await viewModel.repoVocabularyGroundingIfEnabled(
@@ -1887,7 +1887,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.appConfigStore = mockConfig
         viewModel.llmPolishingService = service
         viewModel.stubCommitTarget { "com.apple.Terminal" }
-        viewModel.debugRepoVocabularyEntriesOverride = { _ in
+        viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding { _ in
             overrideCounter.count += 1
             return vocabularyEntries.map {
                 RepoVocabularyMatcher.GroundingOutcome(entries: $0, isFallbackOnly: false)
@@ -1945,7 +1945,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.appConfigStore = mockConfig
         viewModel.llmPolishingService = service
         viewModel.stubCommitTarget { "com.apple.Terminal" }
-        viewModel.debugRepoVocabularyEntriesOverride = { _ in repoOutcome }
+        viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding { _ in repoOutcome }
         if let clipboard {
             let stub = PasteboardStub(string: clipboard)
             viewModel.dependencies.pasteboardReader = { stub }

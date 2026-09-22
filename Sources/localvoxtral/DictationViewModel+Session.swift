@@ -788,312 +788,46 @@ extension DictationViewModel {
                 polishAndCommitTask = Task { @MainActor [weak self] in
                     guard let self else { return }
 
-                    // A herdr- or cmux-joined dictation swaps the AX screen
-                    // decision for the JOINED pane's clean per-pane socket
-                    // read. FIRST await in the Task, before the
-                    // repo-vocabulary hop, for the same reason the AX
-                    // reconcile runs pre-Task: the stop re-read must sample
-                    // the pane at commit, not after ~2 s of agent output has
-                    // scrolled past. Everything downstream (render demand,
-                    // vocab grounding, the rendered block, provenance) reads
-                    // this decision, so the swap is complete or not at all —
-                    // on any pane-read failure it IS `capturedScreenDecision`,
-                    // which for these joins is vocabulary-only at best (the
-                    // authorizer still refuses raw AX attachment).
-                    var screenDecision = capturedScreenDecision
-                    if capturedSocketPaneStart != nil,
-                       let endpointURL = polishingConfig?.endpointURL {
-                        screenDecision = await SocketPaneScreenContext.reconcileAtStop(
-                            start: capturedSocketPaneStart,
-                            join: capturedClaudeJoin,
-                            resolver: self.context.claudeSessionJoinResolver,
-                            fallback: capturedScreenDecision,
-                            settingEnabled: self.settings.terminalScreenContextEnabled,
-                            endpointURL: endpointURL,
-                            isAccessibilityTrusted: self.textInsertion.isAccessibilityTrusted,
-                            trustedEndpointEnabled:
-                                self.settings.polishContextTrustedEndpointEnabled
-                        )
-                    }
-                    // The stop-side pane read above was the LAST reader of a
-                    // remote herdr join's `ssh -L`; everything downstream works
-                    // from text already in hand. Closed through the view model,
-                    // which OWNS the handle — the join was consumed pre-Task,
-                    // so closing "the join's" tunnel here would leave the owner
-                    // holding a closed handle it still had to forget.
-                    self.context.closeRemoteHerdrForwards()
+                    // Everything the request is built from, gathered in one
+                    // step with the same off-actor hops and checkpoints; nil
+                    // means the commit was cancelled at one of them.
+                    guard let material = await PolishContextGatherer.gather(PolishContextGatherer.Input(
+                        settings: self.settings,
+                        textInsertion: self.textInsertion,
+                        context: self.context,
+                        repoVocabularyGrounding: self.repoVocabularyGrounding,
+                        learnedTermStore: self.learnedTermStore,
+                        endpointURL: polishingConfig?.endpointURL,
+                        workingText: workingText,
+                        capturedScreenDecision: capturedScreenDecision,
+                        capturedSocketPaneStart: capturedSocketPaneStart,
+                        capturedClaudeJoin: capturedClaudeJoin,
+                        capturedClipboardContext: capturedClipboardContext,
+                        templateCarriesDictionarySlot: templateCarriesDictionarySlot,
+                        needsRepoGroundingForConflictSafety: needsRepoGroundingForConflictSafety
+                    )) else { return }
+                    let screenDecision = material.screenDecision
+                    let repoVocabularyOutcome = material.repoVocabularyOutcome
+                    let claudeRepoSnapshot = material.claudeRepoSnapshot
+                    let claudeSessionText = material.claudeSessionText
+                    let screenRenderDemand = material.screenRenderDemand
+                    let repoRenderDemand = material.repoRenderDemand
+                    let allocation = material.allocation
+                    let clipboardRenderBudget = material.clipboardRenderBudget
+                    let screenRenderBudget = material.screenRenderBudget
+                    let repoRenderBudget = material.repoRenderBudget
+                    let claudeRenderBudget = material.claudeRenderBudget
+                    let claudeRepoPreparation = material.claudeRepoPreparation
+                    let claudeRepoOutcome = material.claudeRepoOutcome
+                    let claudeSessionPreparation = material.claudeSessionPreparation
+                    let claudeSessionOutcome = material.claudeSessionOutcome
+                    let clipboardPreparation = material.clipboardPreparation
+                    let clipboardVocabularyOutcome = material.clipboardVocabularyOutcome
+                    let screenPreparation = material.screenPreparation
+                    let screenVocabularyOutcome = material.screenVocabularyOutcome
+                    let learnedProject = material.learnedProject
+                    let merged = material.merged
 
-                    // The polish request is assembled HERE, inside the Task, so
-                    // the opt-in repo-vocabulary indexing — whose git subprocess
-                    // runs OFF the main actor with a 2 s timeout — can complete
-                    // before the request is built without stalling the commit. On
-                    // timeout / no repo / feature off it is a fast no-op and the
-                    // request is byte-identical to the no-vocabulary path.
-                    var repoVocabularyOutcome = RepoVocabularyMatcher.GroundingOutcome.empty
-                    // The git root that pipeline resolves is also the
-                    // learned-terms project key. Scoped to THIS commit: an
-                    // abandoned pipeline that reports a root after its
-                    // deadline writes into a box nobody reads again, instead
-                    // of attributing a later dictation to the wrong project.
-                    let repositoryRootBox = RepoVocabularyRootBox()
-                    if (templateCarriesDictionarySlot || needsRepoGroundingForConflictSafety),
-                       let endpointURL = polishingConfig?.endpointURL,
-                       let outcome = await self.repoVocabularyGroundingIfEnabled(
-                           endpointURL: endpointURL,
-                           transcript: workingText,
-                           repositoryRoot: repositoryRootBox
-                       )
-                    {
-                        repoVocabularyOutcome = outcome
-                    }
-
-                    // Clipboard vocabulary is grounded in the already
-                    // privacy-gated clipboard text (feature toggle ON + permitted
-                    // endpoint + never concealed/transient — all enforced when
-                    // it was captured; nil context means none of it runs).
-                    //
-                    // Matching runs over the COMPLETE retained text, never the
-                    // rendered excerpt: a term the user copied grounds the
-                    // transcript whether or not it survived excerpt selection.
-                    // Grounding is input-side and costs no prompt characters,
-                    // so it has no reason to inherit the render budget.
-                    //
-                    // Both the matching and the excerpt selection happen here,
-                    // together, and move OFF the main actor when the buffer is
-                    // large enough to be worth the hop — see
-                    // `PolishContextPreparation`. The render budget is resolved
-                    // first because it is also the inline/detached threshold.
-                    //
-                    // ONE allocation across ALL populated sources, not one per
-                    // source: they share a single request's prompt, so they must
-                    // share a single budget. Two sources each allocating from
-                    // `totalCharacterBudget` would each believe they had all of
-                    // it and together spend double.
-                    //
-                    // Only text that can actually RENDER declares a demand. The
-                    // screen demands nothing unless the decision is `.render`
-                    // (see below): `vocabularyOnly` and `drop` cost no prompt
-                    // characters, and letting them reserve some would starve the
-                    // clipboard of budget to render nothing with.
-                    let screenRenderDemand: Int = {
-                        guard case let .render(excerpt, _, _) = screenDecision else { return 0 }
-                        return excerpt.count
-                    }()
-
-                    // The joined Claude session's repository. Collected inside
-                    // the Task, like the repo vocabulary above and for the same
-                    // reason: its git subprocesses and file reads run OFF the
-                    // main actor under their own deadline, so a slow repo yields
-                    // a smaller snapshot rather than a late commit. Every gate
-                    // (setting, permitted endpoint, live join, LOCAL workspace)
-                    // is inside `claudeRepoSnapshotIfEnabled`, ahead of the
-                    // collector — an unjoined pane means no filesystem call at
-                    // all, not a collector that reads and then discards.
-                    var claudeRepoSnapshot: ClaudeRepoSnapshot?
-                    if let endpointURL = polishingConfig?.endpointURL {
-                        claudeRepoSnapshot = await self.context.claudeRepoSnapshotIfEnabled(
-                            join: capturedClaudeJoin,
-                            endpointURL: endpointURL,
-                            transcript: workingText
-                        )
-                    }
-                    guard !Task.isCancelled else { return }
-
-                    // The session block's text (workspace, the PRIOR prompt, the
-                    // files the agent touched, and a remote session's tool
-                    // excerpts) is flat, so it rides the shared preparation like
-                    // the clipboard and the screen.
-                    //
-                    // Gated through `claudeSessionTextIfEnabled` on ALL THREE of
-                    // the repo block's gates — current setting, currently permitted
-                    // endpoint, this exact join still live — not just the
-                    // setting. Both blocks attach the session's content, and
-                    // consenting to one is consenting to both; it follows that
-                    // withdrawing consent, or a session dying mid-sentence, must
-                    // stop both too. Checking only the setting here meant a dead
-                    // session's PRIOR PROMPT still rode to whatever endpoint was
-                    // configured, including a remote one.
-                    var claudeSessionText = ""
-                    if let endpointURL = polishingConfig?.endpointURL {
-                        claudeSessionText = self.context.claudeSessionTextIfEnabled(
-                            join: capturedClaudeJoin,
-                            endpointURL: endpointURL
-                        )
-                    }
-
-                    // Only RENDERABLE material declares a demand — the repo's
-                    // demand is what it could show, never `groundingText.count`.
-                    // That string is mostly `trackedPaths`, which ground but
-                    // never render, so counting it made a monorepo bid hundreds
-                    // of thousands of characters for content it would not
-                    // attach, and take that space from sources that would. It is
-                    // also computed off-actor: it walks the harvest, and this is
-                    // the `@MainActor` commit path.
-                    var repoRenderDemand = 0
-                    if let claudeRepoSnapshot {
-                        repoRenderDemand = await ClaudeRepoContextPreparation.renderDemand(
-                            snapshot: claudeRepoSnapshot
-                        )
-                    }
-
-                    let allocation = PolishContextBudget.allocate(demands: [
-                        .repository: repoRenderDemand,
-                        .terminal: screenRenderDemand,
-                        .claude: claudeSessionText.count,
-                        .clipboard: capturedClipboardContext?.retainedCharacterCount ?? 0,
-                    ])
-                    let clipboardRenderBudget = allocation[.clipboard] ?? 0
-                    let screenRenderBudget = allocation[.terminal] ?? 0
-                    let repoRenderBudget = allocation[.repository] ?? 0
-                    let claudeRenderBudget = allocation[.claude] ?? 0
-
-                    // Prepared exactly like every other source: matching over
-                    // the COMPLETE harvest, rendering within the grant. The gap
-                    // is widest here — a monorepo's tracked path list alone can
-                    // exceed the whole prompt budget — which is precisely why
-                    // grounding must not inherit the render budget. Every
-                    // harvested term votes; only what fits is shown.
-                    var claudeRepoPreparation = ClaudeRepoContextPreparation.empty
-                    if let claudeRepoSnapshot {
-                        claudeRepoPreparation = await ClaudeRepoContextPreparation.prepared(
-                            snapshot: claudeRepoSnapshot,
-                            transcript: workingText,
-                            renderBudget: repoRenderBudget
-                        )
-                    }
-                    let claudeRepoOutcome = claudeRepoPreparation.grounding
-
-                    var claudeSessionPreparation = PolishContextPreparation.empty
-                    if !claudeSessionText.isEmpty {
-                        claudeSessionPreparation = await PolishContextPreparation.prepared(
-                            text: claudeSessionText,
-                            transcript: workingText,
-                            renderBudget: claudeRenderBudget
-                        )
-                    }
-                    let claudeSessionOutcome = claudeSessionPreparation.grounding
-
-                    var clipboardPreparation = PolishContextPreparation.empty
-                    if let clipboardContext = capturedClipboardContext {
-                        clipboardPreparation = await PolishContextPreparation.prepared(
-                            text: clipboardContext.retainedText,
-                            transcript: workingText,
-                            renderBudget: clipboardRenderBudget
-                        )
-                    }
-                    let clipboardVocabularyOutcome = clipboardPreparation.grounding
-
-                    // Terminal screen context. Grounded in the screen the user
-                    // was looking at when they started speaking, which both
-                    // surviving reconciliation outcomes preserve — `.render`
-                    // may also show it to the model, `.vocabularyOnly` withholds
-                    // the excerpt but the terms the user could SEE while
-                    // choosing their words are still the right spellings to
-                    // match against. `.drop` yields nil and none of this runs.
-                    //
-                    // Matching runs over the COMPLETE sanitized screen, never
-                    // the excerpt: the budget can cut the rendered excerpt to
-                    // nothing (or bar it entirely) and the full screen still
-                    // grounds the transcript, exactly as it does for the
-                    // clipboard.
-                    var screenPreparation = PolishContextPreparation.empty
-                    if let screenText = screenDecision.vocabularyGroundingText {
-                        screenPreparation = await PolishContextPreparation.prepared(
-                            text: screenText,
-                            transcript: workingText,
-                            renderBudget: screenRenderBudget
-                        )
-                    }
-                    let screenVocabularyOutcome = screenPreparation.grounding
-
-                    // What earlier dictations in this project taught. No
-                    // harvest and no I/O beyond resolving the project: the
-                    // terms are already in memory, and matching them is the
-                    // same matcher every other source runs.
-                    let learnedProject = LearnedTermProjectResolver.resolve(
-                        repositoryRoot: repositoryRootBox.value,
-                        workspace: capturedClaudeJoin?.snapshot.workspace
-                    )
-                    let learnedVocabularyOutcome = await self.learnedTermGrounding(
-                        project: learnedProject,
-                        transcript: workingText
-                    )
-
-                    guard !Task.isCancelled else { return }
-
-                    // Sources matched independently; the merge is what resolves
-                    // them against each other (agreement collapses, conflicting
-                    // spans abstain, and a sound-alike term is not offered for
-                    // a span or a term another source already rewrote).
-                    //
-                    // The terminal votes HERE, in the same single merge, rather
-                    // than appending its entries downstream. That is the whole
-                    // point: a span the screen and the clipboard read differently
-                    // must ABSTAIN, and a span they agree on must collapse to one
-                    // entry. A source that appends after the merge has silently
-                    // opted out of both rules and pre-applies its own reading of
-                    // a contested span unopposed — editing words the user did not
-                    // say.
-                    //
-                    // The Claude repo and session sources vote HERE too, in the
-                    // same single merge, for exactly the reason the terminal
-                    // does. They are the strongest sources on the list — a file
-                    // the agent just edited is better evidence of a spelling
-                    // than anything on the clipboard — but "strongest" is not
-                    // "unopposed": when the repo and the clipboard read the same
-                    // heard span as two DIFFERENT terms, neither is pre-applied,
-                    // because pre-applying the wrong bytes edits the user's words
-                    // into something they did not say. Both `.repository`
-                    // candidates share one bucket by design: the terminal-cwd
-                    // vocabulary and the joined session's repo are both "the repo
-                    // the speaker is working in", and they render under one
-                    // header.
-                    let merged = PolishContextGrounding.merge([
-                        PolishContextGrounding.Candidate(
-                            source: .repository,
-                            entries: repoVocabularyOutcome.entries,
-                            isFallbackOnly: repoVocabularyOutcome.isFallbackOnly,
-                            phoneticEntries: repoVocabularyOutcome.phoneticEntries,
-                            verificationEntries: repoVocabularyOutcome.verificationCandidates
-                        ),
-                        PolishContextGrounding.Candidate(
-                            source: .repository,
-                            entries: claudeRepoOutcome.entries,
-                            isFallbackOnly: claudeRepoOutcome.isFallbackOnly,
-                            phoneticEntries: claudeRepoOutcome.phoneticEntries,
-                            verificationEntries: claudeRepoOutcome.verificationCandidates
-                        ),
-                        PolishContextGrounding.Candidate(
-                            source: .terminal,
-                            entries: screenVocabularyOutcome.entries,
-                            isFallbackOnly: screenVocabularyOutcome.isFallbackOnly,
-                            phoneticEntries: screenVocabularyOutcome.phoneticEntries,
-                            verificationEntries: screenVocabularyOutcome.verificationCandidates
-                        ),
-                        PolishContextGrounding.Candidate(
-                            source: .claude,
-                            entries: claudeSessionOutcome.entries,
-                            isFallbackOnly: claudeSessionOutcome.isFallbackOnly,
-                            phoneticEntries: claudeSessionOutcome.phoneticEntries,
-                            verificationEntries: claudeSessionOutcome.verificationCandidates
-                        ),
-                        PolishContextGrounding.Candidate(
-                            source: .clipboard,
-                            entries: clipboardVocabularyOutcome.entries,
-                            isFallbackOnly: clipboardVocabularyOutcome.isFallbackOnly,
-                            phoneticEntries: clipboardVocabularyOutcome.phoneticEntries,
-                            verificationEntries: clipboardVocabularyOutcome.verificationCandidates
-                        ),
-                        PolishContextGrounding.Candidate(
-                            source: .learned,
-                            entries: learnedVocabularyOutcome.entries,
-                            isFallbackOnly: learnedVocabularyOutcome.isFallbackOnly,
-                            phoneticEntries: learnedVocabularyOutcome.phoneticEntries,
-                            verificationEntries: learnedVocabularyOutcome.verificationCandidates
-                        ),
-                    ], maxVerificationPairs: RepoVocabularyMatcher.nominationCap(
-                        forTranscript: workingText
-                    ))
                     guard !Task.isCancelled else { return }
 
                     // What this dictation taught, remembered for the next one
@@ -1641,43 +1375,6 @@ extension DictationViewModel {
         return parts.isEmpty ? nil : parts.joined(separator: "+")
     }
 
-    /// Overall deadline on the detached vocabulary pipeline. The git wait is
-    /// internally bounded, but a `fileExists` stat on a stale network mount in
-    /// the cwd resolution can block indefinitely — and the polish Task awaits
-    /// this, so without a deadline that session's commit would wedge at
-    /// "Polishing…". Vocabulary is best-effort; the commit is not.
-    static let repoVocabularyPipelineDeadline: Duration = .seconds(3)
-
-    /// What this project's earlier dictations already taught, matched against
-    /// the transcript by the same matcher every live source runs.
-    ///
-    /// No gate beyond polishing itself: a term the speaker has said three
-    /// times in this project is their vocabulary, and it travels with the
-    /// request the way the hand-written Names and terms list does (owner
-    /// ruling, 2026-09-20 — `docs/agent/invariants.md`).
-    ///
-    /// Reading the terms touches no disk (`LearnedTermStore.snapshot`), and the
-    /// index build and match move off the main actor like every other source's
-    /// (`PolishContextPreparation`) — bounded work, but the commit path is not
-    /// where bounded work belongs either.
-    ///
-    /// A nil `project` means the app could not establish one, so there is
-    /// nothing to read: see `LearnedTermProjectResolver.resolve`.
-    func learnedTermGrounding(
-        project: LearnedTermProjectResolver.Identity?,
-        transcript: String
-    ) async -> RepoVocabularyMatcher.GroundingOutcome {
-        guard let learnedTermStore, let project else { return .empty }
-        let terms = learnedTermStore.confirmedTerms(projectKey: project.key)
-        guard !terms.isEmpty else { return .empty }
-        return await Task.detached(priority: .userInitiated) {
-            RepoVocabularyMatcher.groundedCandidates(
-                transcript: transcript,
-                vocabulary: RepoVocabulary(terms: terms, branch: nil)
-            )
-        }.value
-    }
-
     /// Folds one dictation's resolved spellings into the learned terms.
     ///
     /// Cheap enough for the commit path: an in-memory merge. The file write is
@@ -1685,6 +1382,22 @@ extension DictationViewModel {
     /// A nil `project` means the app could not establish which project this
     /// dictation belongs to, and nothing is learned from it — see
     /// `LearnedTermProjectResolver.resolve`.
+    /// The repository vocabulary for this commit, through the injected or
+    /// production grounding.
+    func repoVocabularyGroundingIfEnabled(
+        endpointURL: URL,
+        transcript: String,
+        repositoryRoot: RepoVocabularyRootBox? = nil
+    ) async -> RepoVocabularyMatcher.GroundingOutcome? {
+        await PolishContextGatherer.repoVocabularyGroundingIfEnabled(
+            settings: settings,
+            grounding: repoVocabularyGrounding,
+            endpointURL: endpointURL,
+            transcript: transcript,
+            repositoryRoot: repositoryRoot
+        )
+    }
+
     func recordLearnedTerms(
         merged: PolishContextGrounding.Merged,
         project: LearnedTermProjectResolver.Identity?
@@ -1697,203 +1410,6 @@ extension DictationViewModel {
         }
         guard !observations.isEmpty else { return }
         learnedTermStore.record(observations, project: project)
-    }
-
-    /// Opt-in repo-vocabulary grounding: harvests file names / path components /
-    /// the branch from the git repo in the focused terminal and returns the
-    /// transcript-relevant ones as replacement entries — but ONLY when the
-    /// setting is on AND the polishing endpoint is permitted — loopback, or any
-    /// endpoint under the explicit trusted-endpoint opt-in (repo file names
-    /// never ride to an endpoint the user has not consented to, same privacy
-    /// stance as clipboard context). Both gates short-circuit before any AX read or subprocess.
-    /// Only the AX title and captured-app identity reads happen on the main
-    /// actor (with a 0.5 s AX messaging timeout); everything blocking-ish — FS
-    /// stats on the title/process CWD candidates (possibly a stale network
-    /// mount), the process-table/CWD reads, the git subprocess (2 s timeout),
-    /// and the n-gram match over a possibly-20k-term vocabulary — runs in one
-    /// detached hop RACED against
-    /// `repoVocabularyPipelineDeadline`, so no blocked syscall can ever wedge
-    /// the commit. A single-flight gate caps the cost of abandonment at one
-    /// blocked pool thread: while an abandoned pipeline is still wedged,
-    /// subsequent commits fast-skip vocabulary instead of stacking more
-    /// blocked threads until the pool (and the deadline itself) starves.
-    /// Returns nil (silent skip) when off, remote, no trustworthy terminal
-    /// repo signal, no transcript-relevant match, deadline expiry, or in-flight
-    /// skip.
-    ///
-    /// - Parameter repositoryRoot: filled with the git root the pipeline
-    ///   resolved, when it gets that far. The caller owns the box and reads it
-    ///   after this returns; a late write from an abandoned pipeline is
-    ///   therefore discarded rather than carried into the next dictation.
-    func repoVocabularyGroundingIfEnabled(
-        endpointURL: URL,
-        transcript: String,
-        repositoryRoot: RepoVocabularyRootBox? = nil
-    ) async -> RepoVocabularyMatcher.GroundingOutcome? {
-        guard settings.repoVocabularyEnabled else { return nil }
-        guard PolishContextClipboardReader.isPermittedContextEndpoint(
-            endpointURL,
-            trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
-        ) else {
-            Log.polishing.info("Repo vocabulary skipped: polishing endpoint is not local")
-            return nil
-        }
-        #if DEBUG
-        if let override = debugRepoVocabularyEntriesOverride {
-            // The seam stands in for the whole pipeline, root report included:
-            // without this a test could never exercise a resolved project, and
-            // the box's meaning would differ between tests and production.
-            repositoryRoot?.report(debugRepoVocabularyRootOverride)
-            return override(transcript)
-        }
-        #endif
-        guard repoVocabularyPipelineInFlight.acquire() else {
-            Log.polishing.info("Repo vocabulary skipped: a previous pipeline is still in flight")
-            return nil
-        }
-        guard let pipelineTask = makeRepoVocabularyPipelineTask(
-            transcript: transcript, repositoryRoot: repositoryRoot
-        ) else {
-            repoVocabularyPipelineInFlight.release()
-            return nil
-        }
-
-        let deadlineSleep = resolveRepoVocabularyDeadlineSleep()
-        // Race via a resume-once continuation, NOT a task group: a group
-        // awaits ALL its children before returning, and the pipeline child —
-        // awaiting a possibly-forever-blocked task's value, which is not
-        // cancellation-responsive — would wedge the group (and the commit)
-        // in exactly the case the deadline exists for. The losing side is
-        // abandoned; its late resumeOnce call is a guarded no-op.
-        let raceOutcome = await withCheckedContinuation {
-            (continuation: CheckedContinuation<RepoVocabularyRaceOutcome, Never>) in
-            let resumed = Mutex(false)
-            let resumeOnce: @Sendable (RepoVocabularyRaceOutcome) -> Void = { outcome in
-                let shouldResume = resumed.withLock { alreadyResumed in
-                    if alreadyResumed { return false }
-                    alreadyResumed = true
-                    return true
-                }
-                if shouldResume { continuation.resume(returning: outcome) }
-            }
-            // The continuation propagates no priority to the race children
-            // (unlike the previous direct `await .value`, which escalated the
-            // pipeline to the awaiting task's priority). Deliberate for the
-            // pipeline — vocabulary is best-effort background work — but the
-            // deadline's whole job is timeliness, so it runs `.userInitiated`
-            // to keep its resumption from being starved under CPU pressure.
-            Task.detached(priority: .utility) { [gate = repoVocabularyPipelineInFlight] in
-                let entries = await pipelineTask.value
-                // Release the single-flight gate only when the pipeline truly
-                // finished — on the abandonment path this runs arbitrarily
-                // late, and until then new commits fast-skip vocabulary.
-                gate.release()
-                resumeOnce(.pipeline(entries))
-            }
-            Task.detached(priority: .userInitiated) {
-                await deadlineSleep()
-                resumeOnce(.deadlineExpired)
-            }
-        }
-
-        switch raceOutcome {
-        case .pipeline(let entries):
-            return entries
-        case .deadlineExpired:
-            // Abandonment is safe by construction: the detached pipeline only
-            // ever RETURNS a value — it never mutates view-model state — so
-            // when it eventually completes its result is simply discarded.
-            // (Its only shared side effects are inserting into the
-            // Mutex-guarded RepoVocabularyCache, which only makes a later
-            // session faster, and releasing the single-flight gate.) Until it
-            // completes it holds the gate, so a genuinely wedged pipeline
-            // costs at most ONE blocked pool thread across any number of
-            // subsequent commits.
-            Log.polishing.info("Repo vocabulary skipped: pipeline exceeded deadline")
-            return nil
-        }
-    }
-
-    /// The detached focused-title/terminal-PID -> cwd -> index -> match
-    /// pipeline as a task. A title is optional because foreground terminal
-    /// programs commonly overwrite it; the captured terminal app PID enables
-    /// the conservative descendant-CWD fallback. Split out so the deadline
-    /// race above stays readable and the DEBUG pipeline seam replaces exactly
-    /// the detached section (keeping the race in play for deadline tests).
-    private func makeRepoVocabularyPipelineTask(
-        transcript: String,
-        repositoryRoot: RepoVocabularyRootBox? = nil
-    ) -> Task<RepoVocabularyMatcher.GroundingOutcome?, Never>? {
-        #if DEBUG
-        if let override = debugRepoVocabularyPipelineOverride {
-            return Self.detachedRepoVocabularyPipeline { await override(transcript) }
-        }
-        #endif
-        guard let terminalApplicationPID = overlayBufferCoordinator.commitTargetAppPID else {
-            Log.polishing.info("Repo vocabulary: no terminal application PID available")
-            return nil
-        }
-        let title = TerminalWorkingDirectoryResolver.windowTitle(
-            forApplicationPID: terminalApplicationPID
-        )
-        let targetBundleID = resolveTargetAppBundleID()
-        let processFallbackPID: pid_t?
-        if let targetBundleID,
-            TerminalTargetDetector.isTerminalLikeBundleID(targetBundleID)
-                || settings.userTerminalAppBundleIDs.contains(targetBundleID)
-        {
-            processFallbackPID = terminalApplicationPID
-        } else {
-            // Descendant CWDs only have the intended meaning for terminal
-            // emulators. Other apps (IDEs especially) may own build helpers in
-            // unrelated repos; never treat those as a focused-terminal signal.
-            processFallbackPID = nil
-        }
-        let cache = repoVocabularyCache
-        return Self.detachedRepoVocabularyPipeline {
-            await RepoVocabularyService.entries(
-                forWindowTitle: title,
-                terminalApplicationPID: processFallbackPID,
-                transcript: transcript,
-                cache: cache,
-                rootSink: { root in repositoryRoot?.report(root) }
-            )
-        }
-    }
-
-    /// The detached pipeline task, with the ONE dogfood obligation both the
-    /// live pipeline and the DEBUG override seam must share: in a dogfood
-    /// build, the body runs under the tap generation read at creation time
-    /// (synchronously, in the caller's main-actor context — ordered against
-    /// `beginSession`). Task-locals do not cross `Task.detached`, so the
-    /// binding happens inside the closure; see `DogfoodCaptureTap.noteGeneration`
-    /// for why an abandoned pipeline's late harvest note must be rejectable.
-    /// Routing the seam through here too is what makes the binding testable —
-    /// a pipeline path that skipped it would accept stale notes unchecked.
-    private static func detachedRepoVocabularyPipeline(
-        _ body: @escaping @Sendable () async -> RepoVocabularyMatcher.GroundingOutcome?
-    ) -> Task<RepoVocabularyMatcher.GroundingOutcome?, Never> {
-        #if LOCALVOXTRAL_DOGFOOD
-        let dogfoodGeneration = DogfoodCaptureTap.shared.currentGeneration
-        return Task.detached(priority: .utility) {
-            await DogfoodCaptureTap.$noteGeneration.withValue(dogfoodGeneration) {
-                await body()
-            }
-        }
-        #else
-        return Task.detached(priority: .utility) { await body() }
-        #endif
-    }
-
-    private func resolveRepoVocabularyDeadlineSleep() -> @Sendable () async -> Void {
-        #if DEBUG
-        if let override = debugRepoVocabularyDeadlineSleepOverride {
-            return override
-        }
-        #endif
-        return {
-            try? await Task.sleep(for: Self.repoVocabularyPipelineDeadline)
-        }
     }
 
 
@@ -2397,29 +1913,6 @@ extension DictationViewModel {
     }
 }
 
-/// One-slot handoff for the git root the repo-vocabulary pipeline resolves,
-/// off the main actor, on its way to the vocabulary index.
-///
-/// A class because `Mutex` is noncopyable and this crosses a detached task.
-/// One is created per commit: an abandoned pipeline that reports its root
-/// after the deadline writes into a box nobody will read again, rather than
-/// attributing the next dictation's terms to the wrong project.
-final class RepoVocabularyRootBox: @unchecked Sendable {
-    private let outcome = Mutex(LearnedTermProjectResolver.RepositoryRoot.unknown)
-
-    var value: LearnedTermProjectResolver.RepositoryRoot { outcome.withLock { $0 } }
-
-    /// Nil means the pipeline resolved no repository, which is not the same as
-    /// never reporting — see `LearnedTermProjectResolver.RepositoryRoot`.
-    func report(_ root: String?) {
-        outcome.withLock { $0 = root.map { .root($0) } ?? .noRepository }
-    }
-}
-
 /// Winner of the repo-vocabulary race in `repoVocabularyGroundingIfEnabled`:
 /// either the detached pipeline finished (with or without entries) or the
 /// deadline expired first and the pipeline was abandoned.
-private enum RepoVocabularyRaceOutcome: Sendable {
-    case pipeline(RepoVocabularyMatcher.GroundingOutcome?)
-    case deadlineExpired
-}
