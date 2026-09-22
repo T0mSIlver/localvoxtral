@@ -385,7 +385,7 @@ fi
 # fallbacks match by shape (an AXButton with this title; the first AXScrollArea),
 # and the app has other windows — the enrollment sheet alone contains two scroll
 # views — so an unpinned fallback could answer from the wrong window.
-SETTINGS_WINDOW_TITLE="Settings"
+SETTINGS_WINDOW_TITLE="localvoxtral"
 
 # Asserts <needle> inside the subtree identified by <scope-identifier>, so a
 # sidebar row label (AXStaticText, present on every pane) can never satisfy a

@@ -60,7 +60,8 @@ Every dictation is saved on this Mac, in plain text, in
 machine, except that the term suggestion pass sends recent dictations to your
 hosted polishing model when you have one.
 
-**History** in the menu bar popover opens the list, newest first:
+**History** in the menu bar popover opens the localvoxtral window on the
+list, newest first:
 
 - Search covers the transcript and the polished text. The filter keeps the
   dictations that were **Not inserted** (the text never reached the app, so
@@ -101,7 +102,8 @@ the pane is empty.
 
 ## Settings
 
-Open **Settings** from the menu bar popover:
+Open **Settings…** from the menu bar popover. It is the same window as
+History; the panes sit under the sidebar's Settings header:
 
 - **General** — permission status for Microphone and Accessibility (with
   grant buttons), and Re-run setup

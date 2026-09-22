@@ -14,7 +14,8 @@ import XCTest
 /// script-drilled contract.
 final class SettingsTabTests: XCTestCase {
     private var sidebarItems: [SettingsTab] {
-        SettingsTab.primarySidebarItems
+        SettingsTab.historySidebarItems
+            + SettingsTab.primarySidebarItems
             + SettingsTab.integrationsSidebarItems
             + TerminalAppCatalog.builtIn.map(SettingsTab.terminal)
     }
@@ -32,6 +33,7 @@ final class SettingsTabTests: XCTestCase {
 
     func testSidebarArraysDoNotOverlap() {
         let sections: [[SettingsTab]] = [
+            SettingsTab.historySidebarItems,
             SettingsTab.primarySidebarItems,
             SettingsTab.integrationsSidebarItems,
             TerminalAppCatalog.builtIn.map(SettingsTab.terminal),
@@ -415,6 +417,26 @@ final class SettingsTabTests: XCTestCase {
         XCTAssertTrue(terminal.contains("ClaudeCmuxPasswordSettingsRow("))
     }
 
+    /// The window is named after the app (owner decision, 2026-09-22): History
+    /// and Insights live in it, so "Settings" would name a third of it. Both AX
+    /// drills address the window by title, so the three strings are held equal
+    /// here rather than found apart in the evening ui-smoke slot.
+    func testWindowTitleIsTheAppNameAndTheDrillsAddressIt() throws {
+        XCTAssertEqual(SettingsView.windowTitle, "localvoxtral")
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // SettingsTabTests.swift
+            .deletingLastPathComponent()  // localvoxtralTests
+            .deletingLastPathComponent()  // Tests
+        for script in ["scripts/ui-smoke.sh", "scripts/capture-readme-assets.sh"] {
+            let source = try String(
+                contentsOf: repoRoot.appendingPathComponent(script), encoding: .utf8)
+            XCTAssertTrue(
+                source.contains("SETTINGS_WINDOW_TITLE=\"\(SettingsView.windowTitle)\""),
+                "\(script) must address the window by its title, \(SettingsView.windowTitle)"
+            )
+        }
+    }
+
     func testEndpointsTabKeepsRawValueWhileDisplayingEngines() {
         XCTAssertEqual(SettingsTab.endpoints.title, "Engines")
         XCTAssertEqual(SettingsTab.endpoints.rawValue, "endpoints")
@@ -425,12 +447,10 @@ final class SettingsTabTests: XCTestCase {
     /// careless merge) would pass every other test while moving rows the user
     /// has already built muscle memory for.
     func testSidebarOrderIsThePresentationContract() {
+        XCTAssertEqual(SettingsTab.historySidebarItems, [.history, .insights])
         XCTAssertEqual(
             SettingsTab.primarySidebarItems,
-            [
-                .history, .insights, .general, .dictation, .endpoints, .textProcessing,
-                .integrationsContext, .about,
-            ]
+            [.general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about]
         )
         XCTAssertEqual(
             SettingsTab.integrationsSidebarItems,

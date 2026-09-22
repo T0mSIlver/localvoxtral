@@ -24,7 +24,7 @@ final class SettingsWindowChromeTests: XCTestCase {
 
     func testApplyChromeHidesTheTitleAndOpensUpTheTitlebar() {
         let window = makeWindow()
-        window.title = "Settings"
+        window.title = "localvoxtral"
 
         SettingsWindowChromeView.applyChrome(to: window)
 
@@ -35,7 +35,7 @@ final class SettingsWindowChromeTests: XCTestCase {
     }
 
     /// `scripts/ui-smoke.sh` pins every AX probe to the window named
-    /// "Settings", so the fix for a visible title is never an empty title.
+    /// "localvoxtral", so the fix for a visible title is never an empty title.
     func testApplyChromeLeavesTheWindowTitleAlone() {
         let window = makeWindow()
         window.title = "localvoxtral Settings"

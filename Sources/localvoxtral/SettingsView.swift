@@ -19,6 +19,8 @@ final class SettingsNavigator {
 }
 
 struct SettingsView: View {
+    static let windowTitle = "localvoxtral"
+
     @Bindable var settings: SettingsStore
     var viewModel: DictationViewModel
     var backendManager: BackendManager
@@ -108,6 +110,13 @@ struct SettingsView: View {
             detailColumn
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The app's one window, so it is named after the app, not after the
+        // Settings scene that hosts it: History and Insights live here too.
+        // The title is never drawn (`SettingsWindowChrome`); the Window menu,
+        // Mission Control and the AX drills read it. `scripts/ui-smoke.sh` and
+        // `scripts/capture-readme-assets.sh` pin their probes to this string
+        // (`SETTINGS_WINDOW_TITLE`), and `SettingsTabTests` holds them equal.
+        .navigationTitle(Self.windowTitle)
         // Both columns run under the transparent titlebar, so the sidebar's
         // fill reaches the window's top edge. `SettingsSidebarMetrics.topInset`
         // clears the traffic lights.
