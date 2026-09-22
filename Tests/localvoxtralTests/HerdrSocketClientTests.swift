@@ -69,6 +69,7 @@ private final class HerdrOneShotServer: @unchecked Sendable {
                 shutdown(state.listenerFD, SHUT_RDWR)
             }
         }
+        wakeBlockedUnixListener(atPath: socketPath)
         // Cleanup-only wall clock, same precedent as the broker tests: no
         // assertion depends on it, it just bounds a hung serve thread so one
         // broken fixture cannot wedge the suite.

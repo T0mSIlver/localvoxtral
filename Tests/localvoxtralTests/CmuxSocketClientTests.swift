@@ -74,6 +74,7 @@ private final class CmuxTestServer: @unchecked Sendable {
                 shutdown(state.listenerFD, SHUT_RDWR)
             }
         }
+        wakeBlockedUnixListener(atPath: socketPath)
         // Cleanup-only wall clock, same precedent as the herdr fixture: no
         // assertion depends on it, it just bounds a hung serve thread so one
         // broken fixture cannot wedge the suite.

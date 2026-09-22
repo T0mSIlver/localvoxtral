@@ -948,6 +948,16 @@ final class RepoVocabularyMatcherTests: XCTestCase {
         XCTAssertTrue(entries.isEmpty, "entries: \(entries)")
     }
 
+    /// 20k generated terms plus one real one, indexed once for both scale
+    /// cases: building the index (exact, fuzzy, phonetic and n-gram tiers) is
+    /// what a 20k-term vocabulary costs, not matching against it, and neither
+    /// case mutates it. The extra term is inert for the abstain case: nothing
+    /// in that transcript resembles it.
+    private static let largeVocabulary = RepoVocabulary(
+        terms: (0..<20_000).map { "GeneratedFile\($0).swift" } + ["useAuth.ts"],
+        branch: nil
+    )
+
     func testMatcherHandlesLargeVocabulary() {
         // 20k technical terms x a 300-word transcript. No wall-clock assertion
         // (repo rule) — the guarantee is the complexity restructure (exact tier
@@ -955,9 +965,7 @@ final class RepoVocabularyMatcherTests: XCTestCase {
         // most once per distinct gram); this pins CORRECTNESS at that scale and
         // acts as a canary: a return to O(grams x terms) Levenshtein would make
         // it obviously pathological.
-        var terms = (0..<20_000).map { "GeneratedFile\($0).swift" }
-        terms.append("useAuth.ts")
-        let vocab = RepoVocabulary(terms: terms, branch: nil)
+        let vocab = Self.largeVocabulary
         let filler = Array(
             repeating: "please improve overall code quality generally",
             count: 50
@@ -970,10 +978,9 @@ final class RepoVocabularyMatcherTests: XCTestCase {
     }
 
     func testAlignedFallbackAbstainsCleanlyWithLargeAmbiguousVocabulary() {
-        let terms = (0..<20_000).map { "GeneratedFile\($0).swift" }
         let result = RepoVocabularyMatcher.groundedCandidateEntries(
             transcript: "please improve overall error handling for generated files",
-            vocabulary: RepoVocabulary(terms: terms, branch: nil)
+            vocabulary: Self.largeVocabulary
         )
         XCTAssertTrue(result.isEmpty, "entries: \(result)")
     }

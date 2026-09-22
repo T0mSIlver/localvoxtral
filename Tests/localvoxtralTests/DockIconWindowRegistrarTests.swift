@@ -11,6 +11,28 @@ import XCTest
 final class DockIconWindowRegistrarTests: XCTestCase {
     private var applied: [NSApplication.ActivationPolicy] = []
 
+    /// A window that keeps its own on-screen state. Ordering a real window
+    /// front with no window server (the build host) leaves about half a second
+    /// of AppKit work on the main queue per window, which the next suite with an
+    /// async `setUp` then paid for: 5.6 s for the eleven windows here. What the
+    /// registrar reads is `isVisible` and the notifications, so the ordering
+    /// calls move that flag and never reach the window server. `close()` still
+    /// runs AppKit's, which posts `willClose` while the window reads visible,
+    /// as it does on a real session.
+    private final class TestWindow: NSWindow {
+        private var isOrderedIn = false
+
+        override var isVisible: Bool { isOrderedIn }
+        override func orderFront(_ sender: Any?) { isOrderedIn = true }
+        override func makeKeyAndOrderFront(_ sender: Any?) { isOrderedIn = true }
+        override func orderOut(_ sender: Any?) { isOrderedIn = false }
+
+        override func close() {
+            super.close()
+            isOrderedIn = false
+        }
+    }
+
     /// `isReleasedWhenClosed` defaults to true, which makes `close()` release a
     /// window the test still holds — SIGSEGV, not a failure. The app's own
     /// windows are equally long-lived: `OnboardingWindowController` turns it
@@ -19,7 +41,7 @@ final class DockIconWindowRegistrarTests: XCTestCase {
     /// Ordered front because registration follows the window being on screen,
     /// which is the state a Settings window is in when it matters.
     private func makeWindow() -> NSWindow {
-        let window = NSWindow(
+        let window = TestWindow(
             contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
