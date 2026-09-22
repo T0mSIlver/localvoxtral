@@ -1,239 +1,185 @@
-# localvoxtral — agent guide
+# localvoxtral agent guide
 
-Native macOS menu bar app for realtime dictation (Swift 6.2 strict concurrency,
-SwiftPM, macOS 15+). Streams mic audio to an OpenAI Realtime-compatible backend
-(the bundled `localvoxtral-speechd` helper in managed mode; vLLM or any
-compatible server in External URL mode), merges partial transcripts, and
-inserts text into the focused app — either live ("Live Auto-Paste") or via an
-overlay committed on stop ("Overlay Buffer", supports replacement dictionary +
-LLM polishing). Subsystem map: `docs/architecture.md`.
+Native macOS menu bar app for realtime dictation: Swift 6.2 strict
+concurrency, SwiftPM, macOS 15+. It streams mic audio to an OpenAI
+Realtime-compatible backend (the bundled `localvoxtral-speechd` helper, or any
+compatible server in External URL mode) and inserts text into the focused app,
+either live (Live Auto-Paste) or through an overlay committed on stop (Overlay
+Buffer, with LLM polishing). Subsystem map: `docs/architecture.md`. It has
+daily users, so nothing ships on "it compiles".
 
-## Build & test — read this first on a non-Mac dev box
+## Build and test
 
-This repo only compiles on macOS. From a Linux box, the inner loop is the Mac
-build host over SSH (no commit needed — it rsyncs the working tree). The host
-is machine-local config, set once per clone (never committed):
-`git config localvoxtral.buildhost <ssh-destination>`.
+The app only compiles on macOS. From Linux, `./scripts/remote-build.sh` rsyncs
+the working tree to the Mac build host and runs the toolchain there; no commit
+needed. Set the host once per clone: `git config localvoxtral.buildhost
+<ssh-destination>`. The script's header lists every verb; the usual ones are
+`test` (the default), `test --filter <Suite>` and `package`.
 
-```bash
-./scripts/remote-build.sh                 # build + unit tests
-./scripts/remote-build.sh test --filter TextMergingAlgorithmsTests
-./scripts/remote-build.sh integration     # realtime pipeline vs the live speechd STT service
-./scripts/remote-build.sh eval-llm        # default polish prompt eval vs a live chat/completions server
-./scripts/remote-build.sh package         # build the .app bundle (also builds both MLX helpers)
-./scripts/remote-build.sh integration-polishd [hf-repo]  # bundled polish helper vs real model + eval baseline (run package first)
-./scripts/remote-build.sh integration-speechd [hf-repo]  # packaged speech helper vs real audio/model (run package first)
-./scripts/remote-build.sh integration-mistral  # realtime client vs the LIVE hosted Mistral API (needs MISTRAL_API_KEY)
-./scripts/remote-build.sh integration-keychain  # KeychainSecretStore vs the REAL login keychain (GUI session only; SSH writes get -60008)
-./scripts/remote-build.sh integration-herdr [ssh-dest]   # remote-herdr join vs a LIVE herdr over a real ssh -L (hermetic by default)
-./scripts/remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]  # agent-dictation E2E eval (run package first)
-./scripts/remote-build.sh dogfood          # build the instrumented tree + run the context-capture suite
-./scripts/remote-build.sh dogfood-package  # package an instrumented .app for hand-dogfooding
-./scripts/remote-build.sh build --package-path PolishHelper   # compile a helper package alone (no Metal kernels)
-./scripts/remote-build.sh test  --package-path PolishHelper   # helper unit tests (Metal-free); same for SpeechHelper
-```
+- Run `./scripts/mac-health.sh` before long remote work. A sleeping Mac makes
+  rsync hang instead of fail.
+- `--filter` takes no `|`; the host's SSH gate refuses it. Repeat the flag,
+  once per suite.
+- Never pipe `remote-build.sh` through grep: a crash eats the failing test's
+  name. The full output is in `.build/last-remote.log`.
+- An interrupted run can leave a stale SwiftPM lock. Switch to a fresh
+  `LV_BUILD_DIR` instead of debugging it. Never hand-clean `~/work` on the
+  Mac; abandoned build dirs are garbage-collected.
+- On a Mac, bare `swift test` needs `--skip HerdrIntegrationTests`: that suite
+  starts a live herdr and has no skip condition by design.
+- Only `package_app.sh` produces working Metal kernels for the two MLX
+  helpers. Read `PolishHelper/AGENTS.md` or `SpeechHelper/AGENTS.md` before
+  touching either.
 
-On a Mac, just `swift build` / `swift test` (but only `package_app.sh` can
-produce working Metal kernels for the helpers — see `PolishHelper/AGENTS.md`
-/ `SpeechHelper/AGENTS.md` before touching either). Add
-`--skip HerdrIntegrationTests` to a bare `swift test`: that lane starts a live
-herdr and carries no `XCTSkip` by design, so every scripted lane skips it by
-name instead.
+## Working an issue
 
-- Before starting long remote work, `./scripts/mac-health.sh` — it fails fast
-  when the Mac is asleep/unreachable instead of letting rsync hang.
-- Parallel agents are isolated automatically (per-worktree remote dir;
-  `LV_BUILD_DIR` overrides). Abandoned dirs are garbage-collected — never
-  hand-clean `~/work` on the Mac. `./scripts/remote-build.sh disk` shows
-  sizes/ages.
-- An interrupted remote run can leave a stale SwiftPM lock in its remote dir —
-  don't debug it, switch to a fresh `LV_BUILD_DIR`.
-- Every run's full remote output lands in `.build/last-remote.log`. Never pipe
-  the script itself through grep (a crash eats the failing test's name) — let
-  it print, then grep the log file.
-- The SSH gate refuses shell metacharacters in a payload, so `--filter` takes no
-  `|` — pass it once per suite: `--filter SuiteA --filter SuiteB`.
-  `remote-build.sh` catches those locally, before the sync.
+1. **Claim it.** `gh pr list --state open --search <n>` before you start and
+   again before you open the PR; parallel sessions have duplicated work. If
+   another open PR carries the same area label and touches the same files,
+   stop and report instead of racing it.
+2. **Check the spec.** Work starts from an issue that states scope,
+   constraints and the proof its PR must carry. If one is missing, write it
+   into the issue and wait for the maintainer's OK.
+3. **Iterate on the build host** with `remote-build.sh test --filter`, and run
+   `scripts/ci/test-*.sh` locally; they all run on Linux. CI is for a
+   finished change.
+4. **Open the PR as a draft** (`gh pr create --draft`) with `Closes #<n>` in
+   the body. The link moves the issue's card on the project board
+   (github.com/users/T0mSIlver/projects/1) to In progress, and the merge moves
+   it to Done.
+5. **Mark it ready** (`gh pr ready <n>`) only once `build-test` is green and
+   none of your other PRs is waiting on `mac-lanes`. Ready starts the Mac
+   lanes; see CI below.
+6. **After the merge**, list what your issue was blocking
+   (`gh api repos/T0mSIlver/localvoxtral/issues/<n>/dependencies/blocking`)
+   and move each issue whose blockers are now all closed from Blocked to Todo
+   on the board; GitHub does not. If you stop before the merge, leave a
+   handoff comment on the issue: state, what's left, decisions made.
 
-## Proof culture — non-negotiable
+New issues get one area label (`asr`, `polish`, `ci`, `claude-join`,
+`mistral`, `session`) plus `bug` or `enhancement`. Group work with sub-issues
+and order it with blocked-by links, not prose.
 
-This is a real app with daily users. Nothing ships on "it compiles".
+## Proof
 
-- Every PR fills in the Proof section of the PR template with real command
-  output. "CI is green" alone is not proof for a behavior change — name the
-  test that demonstrates the new/fixed behavior.
-- Bug fixes MUST add a regression test. Show it failing before the fix and
-  passing after (two runs, both in the PR body).
-- Never weaken a test to get green: no raising/lowering accuracy thresholds,
-  no deleting assertions, no adding `XCTSkip`, no widening timing tolerances.
-  If a test blocks you, it is telling you something — investigate or stop and
-  report.
-- No wall-clock in tests (`Date()` / real `Task.sleep` polling) — inject
-  clocks. `OverlayBufferSessionCoordinator` (`now:` / `sleepFor:` seams) is
-  the reference pattern.
-- Any test that reaches `beginDictationSession` arms the REAL connect
-  timeout (`TimingConstants.connectTimeout`, 1.0 s) on a process-retained
-  view model and MUST set `viewModel.isShowingConnectionFailureAlert = true`,
-  or the timer's alert fires inside whatever test runs next and SIGTRAPs the
-  suite (PR #66).
-  Known debt: session code arms wall-clock timers; new code must not add more.
-- UI-affecting changes: until the automated UI tier exists, state in the PR
-  exactly what was verified by hand and how.
-- Session-path changes (view model start/stop, realtime clients, merging,
-  insertion, overlay commit): dispatch the e2e dictation check and paste its
-  lines — `docs/agent/test-tiers.md` "Proving a change with the e2e dictation
-  check". It is the only check where the packaged app dictates.
-
-## Test tiers — the short version
-
-Tier 0 (unit suites; packaging + launch smoke once a PR is not a draft) runs
-on every non-fast-path PR/push. Every live lane is CONDITIONAL, the tier-1 speechd realtime
-integration included: they run only for lane-filter path matches
-(`scripts/ci/stt-lane-filter.sh` / `llm-lane-filter.sh` /
-`speechd-lane-filter.sh` / `herdr-lane-filter.sh`) or the literal markers
-`[run-stt-integration]` / `[run-llm-eval]` / `[run-speechd-integration]` /
-`[run-herdr-integration]` in the PR body or head commit; the realtime
-integration also runs on every push to main — and the marker must be present when the run is created (rerun reuses
-the old payload; push after adding it). Tier 2 (UI smoke, nightly E2E eval)
-is scheduled, never per-PR.
-
-The binding rule: changes to prompts, model pins/catalog, sampling, the
-polish request shape or anything that alters what reaches the model, the
-helper engines, or the eval corpus/scorer REQUIRE the matching lane, and the
-PR's Proof section carries either the scoreboard or a one-line justification
-for skipping. Anything that changes what the app says to herdr, what it
-believes herdr answered, or how the ssh forward reaching it is opened
-REQUIRES `integration-herdr` on the same terms — that lane is what holds the
-EXTERNAL herdr assumptions in `docs/agent/remote-herdr-panel-binding.md` to a
-live server. Model/prompt changes — and changes to the TTS→ASR→polish
-harness itself — additionally paste the eval-e2e scoreboard
-(`remote-build.sh eval-e2e`) or justify skipping it; "tier 2 is scheduled"
-does not waive that duty. Full tier table, lane details, eval-recording and
-ablation workflows: `docs/agent/test-tiers.md`.
-
-## CI / shipping
-
-- CI is two parallel jobs, both required checks on main: `build-test`
-  (tier 0, GitHub-hosted, EVERY event and contributor) and `mac-lanes`
-  (self-hosted, never for fork PRs, and for a DRAFT only when its body held
-  `[mac-lanes]` when the run was created). Open PRs as drafts
-  (`gh pr create --draft`), iterate on `build-test`, and `gh pr ready <n>`
-  once it is green: that starts `mac-lanes`. The marker is for a draft that
-  needs the signed `try-pr.sh` artifact or a live lane. A new lane goes in
-  `build-test` unless you can name what on the owner's Mac it needs — signing
-  identity, STT service, Metal, herdr fixture, GUI session. Never move
-  fork-PR work to the self-hosted runner.
-- ONE Mac runs `mac-lanes` for every agent, one job at a time; in a burst the
-  queue, not the job, is what everyone waits for (#418). Spend it sparingly:
-  - Find the failure before you push: `remote-build.sh test --filter <Suite>`;
-    every `scripts/ci/test-*.sh` runs on Linux.
-  - Push a finished change, not each fix. A push to a ready PR cancels its
-    running Mac job and queues another.
-  - More than one push still to come on a ready PR: `gh pr ready <n> --undo`
-    first, `gh pr ready <n>` when done.
-  - In a stack, keep the upper layers draft until the one below is about to
-    merge; a rebase reruns every ready layer.
-  - A PR body that QUOTES a lane marker uses it. Name markers without their
-    brackets unless you mean them.
-  - Editing a PR body starts no run, so paste Proof after the run
-    (`gh api -X PATCH repos/<owner>/<repo>/pulls/<n> -F body=@file`;
-    `gh pr edit` fails on this repo).
-  - Red run: read its log before anything else. `gh run rerun <id> --failed`
-    reruns only the failed job, and a hosted `build-test` rerun costs the Mac
-    nothing. Never dispatch a ref that already has a run queued.
-- Docs-only diffs take a fast path (`scripts/ci/docs-only-filter.sh`,
-  conservative allowlist; unknown paths fail open to the full run). Only
-  `ci.yml` fast-paths, in both of its jobs; release and every other workflow
-  stay fully gated.
-- Watch a PR's checks with `./scripts/watch-checks.sh <n>` (or `--run
-  <run-id>` for a push/rerun) — unlike bare `gh`, it probes the build host
-  and fail-fasts when the Mac stops answering.
-- One runner, so a dispatch behind a queued run costs everyone: check `gh run
-  list --branch <ref>` first — `docs/agent/test-tiers.md` "Dispatching a run
-  without deepening the queue".
-- Releases: `./scripts/release.sh [patch|minor|major|X.Y.Z]` — the pipeline
-  gates and owns the tags. Never push release tags by hand. Stable stays
-  deliberate; nightly ships main as a prerelease nightly (cron /
-  `release.sh nightly`), and `release.sh rehearse` gates any ref without tagging.
-- NEVER patch SwiftPM-generated DerivedSources (regenerated clean every
-  build; shipped launch-broken artifacts, #87). App resources resolve via
-  `Bundle.localvoxtralResources` (`AppResourceBundle.swift`); dependency
-  checkouts are still source-patched by `package_app.sh` because checkouts
-  persist.
-- CI's launch smoke runs the packaged app COPIED outside the workspace with
-  `.build` hidden — same-tree launches mask exactly the #87 class of
-  breakage; don't "simplify" that step.
-
-## Deep guides — read the one that matches your work, BEFORE the work
-
-- **Any change to the Claude Code context path** (join arms, screen capture,
-  remote listener/enrollment/forwards — `Sources/ClaudeContext*`,
-  `Sources/localvoxtral/ClaudeContext/`, `integrations/claude-code/`), and
-  any change to text insertion or polish-commit semantics:
-  `docs/agent/invariants.md`. The trust boundaries there are load-bearing;
-  several encode measured failures. Do not infer intent from the code alone.
-- **A field bug on the owner's Mac; hand-testing a build; signing/TCC
-  weirdness; dogfood capture**: `docs/agent/field-debugging.md` — dispatch
-  `mac-crashlog.yml` FIRST, theorize second; install builds with
-  `./scripts/try-pr.sh`, never manual steps.
-- **Adding/gating CI lanes, running or judging evals**:
+- Fill the PR template's Proof section with real command output, and name the
+  test that demonstrates the change. "CI is green" is not proof of a behavior
+  change.
+- A bug fix adds a regression test, shown failing before the fix and passing
+  after: two runs, both in the PR body.
+- Never weaken a test to get green: no moved thresholds, deleted assertions,
+  new `XCTSkip` or wider timing tolerances. Investigate, or stop and report.
+- No wall-clock in tests: no `Date()`, no real `Task.sleep` polling. Inject
+  clocks; `OverlayBufferSessionCoordinator`'s `now:` / `sleepFor:` seams are
+  the reference. Session code still arms wall-clock timers; add no more.
+- A test that reaches `beginDictationSession` arms the real 1 s connect
+  timeout on a process-retained view model. It must set
+  `viewModel.isShowingConnectionFailureAlert = true`, or the alert fires
+  inside the next test and SIGTRAPs the suite (#66).
+- UI change: say exactly what you verified by hand and how.
+- Session-path change (view model start/stop, realtime clients, merging,
+  insertion, overlay commit): run the e2e dictation check and paste its lines
+  (`docs/agent/test-tiers.md`). It is the only check where the packaged app
+  dictates.
+- Live lanes run only on a lane-filter path match or a marker
+  (`[run-stt-integration]`, `[run-llm-eval]`, `[run-speechd-integration]`,
+  `[run-herdr-integration]`) in the PR body or head commit when the run is
+  created; a rerun reuses the old payload. Changes to prompts, model pins or
+  the catalog, sampling, the polish request shape, the helper engines, or the
+  eval corpus, scorer or TTS→ASR→polish harness REQUIRE the matching lane
+  plus the eval-e2e scoreboard, or a one-line justification for skipping.
+  Changes to what the app sends herdr, what it believes herdr answered, or how
+  its ssh forward opens REQUIRE `integration-herdr`. Details:
   `docs/agent/test-tiers.md`.
-- **Touching either MLX helper**: `PolishHelper/AGENTS.md` /
-  `SpeechHelper/AGENTS.md` (and `SpeechHelper/DEPENDENCY.md` for the pin).
-- **Eval corpus edits**: `EvalCorpus/agent-dictation/AGENTS.md` + its README.
-- **Claude Code / opencode / Vibe integration work**:
-  `integrations/claude-code/AGENTS.md`, `integrations/claude-code/README.md`,
-  `integrations/opencode/README.md`, `integrations/vibe/README.md`.
-- **Build-host / launchd / runner operations**: owner runbook
-  `scripts/mac/README.md`. Per-workflow notes: `.github/workflows/README.md`.
 
-## Conventions
+## CI
 
-- Concurrency: `@MainActor` for stateful UI/controller types; low-level types
-  use `Mutex` + `@unchecked Sendable` (no custom actors). Keep new code
-  warning-free under Swift 6.2 strict concurrency.
-- Tests are XCTest. Prefer the existing DI seams (protocols + `#if DEBUG`
-  hooks like `debugConfigureInsertionHooks`) over adding singletons.
-- Shared test doubles and helpers live in `Tests/localvoxtralTests/TestSupport`
-  (`MockOverlayCoordinator`, `MockAppConfigStore`, `FakePolishingService`,
-  `makeSettings`, `retainForTestProcessLifetime`, `awaitStoppedSessionCommit`).
-  Extend those; a `private` copy in a test file is how #402 happened.
-- Settings panes (owner rule, 2026-07-04): the group structure of a pane is
-  constant — a mode picker or toggle may switch a group's CONTENT (status row
-  vs config fields), never the number or identity of the groups themselves.
-- Menu bar popover (owner rule, 2026-07-04): NEVER render long text there —
-  no raw errors, stderr, or URLs. Anything shown in the popover is one short
-  sentence; full details belong in the alert popup and the log, and Settings
-  shows the one-line failure summary only.
-  `StatusPopoverView.statusDetailView` line-limits as a backstop — keep it.
-- Pipes from child processes: never read with `FileHandle.availableData` —
-  it raises an uncatchable ObjC exception on descriptor errors and aborts the
-  app (field crash, PR #60). Use `POSIXPipeRead.nextChunk(fromDescriptor:)`.
-- Bundled config TOMLs (`Sources/localvoxtral/Resources/Config`): any content
-  change must append the new file's SHA-256 to `BundledConfigDefaultHistory`
-  (keep the old hashes). A tier-0 test fails with the exact hash if you forget.
-- Backend/lifecycle code paths log their requests, completions, and failures
-  (`Log.backends`). Keep new paths loud — silent failure paths have cost
-  hours of remote probing.
+- Two required jobs: `build-test` (GitHub-hosted, every event) and
+  `mac-lanes` (the owner's MacBook, the only self-hosted runner). `mac-lanes`
+  never runs fork PRs, and runs a draft only when its body held `[mac-lanes]`
+  at run creation. Never move fork-PR work onto that Mac. New lanes go in
+  `build-test` unless they need something only that Mac has: signing
+  identity, Metal, the STT service, the herdr fixture, a GUI session.
+- One Mac runs every agent's `mac-lanes`, one job at a time, so the queue is
+  what everyone waits for. A push to a ready PR cancels its running Mac job
+  and queues another: `gh pr ready <n> --undo` before a series of pushes. Keep
+  upper layers of a stack draft until the one below is about to merge. Never
+  dispatch a ref that already has a run queued: the two land in different
+  concurrency groups and both run. Queue rules: `docs/agent/test-tiers.md`,
+  "Dispatching a run without deepening the queue".
+- A PR body that quotes a lane marker runs it. Name markers without brackets
+  unless you mean them.
+- `gh pr edit` fails on this repo. Edit a body with
+  `gh api -X PATCH repos/<owner>/<repo>/pulls/<n> -F body=@file`; editing
+  starts no run, so paste Proof after the run finishes.
+- Red run: read its log first. `gh run rerun <id> --failed` reruns only the
+  failed job. Watch checks with `./scripts/watch-checks.sh <n>`; unlike bare
+  `gh`, it notices when the Mac stops answering.
+- Releases go through `./scripts/release.sh`. Never push a release tag by hand.
+- Never patch SwiftPM-generated DerivedSources; that shipped launch-broken
+  builds (#87). App resources resolve through `Bundle.localvoxtralResources`.
+- The launch smoke copies the packaged app outside the workspace with
+  `.build` hidden, because same-tree launches mask the #87 class of breakage.
+  Don't simplify it.
 
-## Docs — where things live, and sync duties
+## Code
 
-- `README.md` is a landing page; user documentation lives in `docs/`
-  (committed, user + contributor facing), agent deep guides in `docs/agent/`.
-  Machine-local scratch goes in the gitignored `local-notes/`, never `docs/`.
-- Model pins or backend copy changed? Update `docs/under-the-hood.md` in the
-  same PR (it is the human-facing statement of `BackendManager`'s pins).
-- Moved or renamed a section a comment points at? Fix the pointer in the same
-  PR — `ci.yml`, the lane filters, and several scripts reference these docs
-  by name.
+- Concurrency: `@MainActor` for stateful UI and controller types; low-level
+  types use `Mutex` + `@unchecked Sendable`. No custom actors.
+- Prefer the existing DI seams (protocols, `#if DEBUG` hooks such as
+  `debugConfigureInsertionHooks`) over new singletons. Shared test doubles
+  live in `Tests/localvoxtralTests/TestSupport`; extend them, never copy one
+  into a test file as `private` (#402).
+- Never read a child process pipe with `FileHandle.availableData`. It raises an
+  uncatchable ObjC exception on a descriptor error and aborts the app (#60).
+  Use `POSIXPipeRead.nextChunk(fromDescriptor:)`.
+- Backend and lifecycle paths log requests, completions and failures to
+  `Log.backends`. Keep new paths loud; silent failures have cost hours of
+  remote probing.
+- A content change to a bundled config TOML in
+  `Sources/localvoxtral/Resources/Config` appends the new file's SHA-256 to
+  `BundledConfigDefaultHistory`, keeping the old hashes. A tier-0 test fails
+  with the exact hash if you forget.
+- Settings panes: a mode picker or toggle may switch a group's content, never
+  the number or identity of the groups.
+- Menu bar popover: one short sentence at most, never raw errors, stderr or
+  URLs. Full details go to the alert and the log.
+  `StatusPopoverView.statusDetailView`'s line limit is the backstop; keep it.
+
+## Read first, when your work touches
+
+- The Claude Code context path (`Sources/ClaudeContext*`,
+  `Sources/localvoxtral/ClaudeContext/`, `integrations/claude-code/`), text
+  insertion, or polish-commit semantics: `docs/agent/invariants.md`. Its
+  trust boundaries encode measured failures; don't infer intent from the code.
+  Also `Sources/localvoxtral/ClaudeContext/AGENTS.md`.
+- A field bug, a hand-test build, signing or TCC trouble:
+  `docs/agent/field-debugging.md`. Dispatch `mac-crashlog.yml` before
+  theorizing; install builds with `./scripts/try-pr.sh`.
+- CI lanes and evals: `docs/agent/test-tiers.md`.
+- Either MLX helper: `PolishHelper/AGENTS.md`, `SpeechHelper/AGENTS.md`.
+- The eval corpus: `EvalCorpus/agent-dictation/AGENTS.md`.
+- Claude Code, opencode or Vibe integrations: `integrations/claude-code/AGENTS.md`
+  and the READMEs under `integrations/`.
+- Build host, launchd, runner: `scripts/mac/README.md`. Per-workflow notes:
+  `.github/workflows/README.md`.
+
+## Docs
+
+- `README.md` is a landing page. User docs live in `docs/`, agent guides in
+  `docs/agent/`, machine-local scratch in the gitignored `local-notes/`.
+- Changed a model pin or backend copy? Update `docs/under-the-hood.md` in the
+  same PR.
+- Moved or renamed a section that a comment points at? Fix the pointer in the
+  same PR; `ci.yml`, the lane filters and several scripts cite docs by
+  section name.
 
 ## Rules for editing THIS file
 
-- This file is always-loaded context for every agent and silently truncated
-  by some tools at 32 KiB — a tier-0 test (`AgentsGuideSizeTests`) enforces
-  the byte budget. Deep or situational material goes in `docs/agent/` or a
-  colocated `AGENTS.md`, reached through the router above.
-- A new line must be (1) non-obvious, (2) repeatedly relevant, and
-  (3) specific enough to act on. Traps to avoid, not maps to follow: no
-  architecture prose here (that's `docs/architecture.md`), no restating what
-  the code or a linked doc already says.
+Every agent loads this file, and Codex silently truncates it past 32 KiB
+(`AgentsGuideSizeTests` enforces the budget). A line earns its place by what
+the model could not have guessed: a trap, a rule that contradicts the obvious
+choice, a command it would not find. Anything a model would do anyway goes.
+Situational depth goes in `docs/agent/` or a colocated `AGENTS.md`, routed
+from the list above. This file says how to work on the repo, not how one
+maintainer likes to work.
