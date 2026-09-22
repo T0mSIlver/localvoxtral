@@ -266,6 +266,7 @@ jobs:
           echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
 
       - name: Restore SwiftPM build cache
+        id: build_cache
         if: steps.ci_scope.outputs.docs_only != 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -293,9 +294,20 @@ jobs:
         # "Cache restored successfully" (run 35708695284, 2026-09-22), about
         # 150 s of the 242 s unit-test step. Commit times are the same on
         # every checkout, so with them restored an unchanged file matches its
-        # record and only what a newer commit touched rebuilds.
+        # record and only what a newer commit touched rebuilds. The matched
+        # key ends in the main commit the cache was saved from; every file
+        # whose content differs from that commit is touched to now, so two
+        # branches committing one file in the same second cannot share an
+        # mtime the driver would take for "unchanged" (the script explains).
         if: steps.ci_scope.outputs.docs_only != 'true'
-        run: ./scripts/ci/restore-mtimes.sh
+        env:
+          MATCHED_KEY: ${{ steps.build_cache.outputs.cache-matched-key }}
+        run: |
+          CACHE_BASE=""
+          if [[ "$MATCHED_KEY" =~ -([0-9a-f]{40})$ ]]; then
+            CACHE_BASE="${BASH_REMATCH[1]}"
+          fi
+          ./scripts/ci/restore-mtimes.sh . "$CACHE_BASE"
 
       - name: Installer asset-resolution regression test (issue #131)
         # Pure bash against a stubbed curl — no network, sub-second.

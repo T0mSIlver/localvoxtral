@@ -133,4 +133,35 @@ OUT="$("$RESTORE" "$BIG")" || fail "a history longer than the pipe buffer made t
   || fail "the long history's file should carry its last commit time"
 pass "a history longer than the pipe buffer is read to the end"
 
+# --- the cache base argument ------------------------------------------------
+#
+# Two branches committing different content to one file in the same second
+# give it the same mtime; the driver compares mtimes for equality and would
+# skip the file. Given the commit the cache was built from, every file whose
+# content differs from it is touched to now instead.
+cd "$REPO"
+BASE_SHA="$(git rev-parse HEAD)"
+git checkout -q -b same-second "HEAD~1"
+echo forty >c.txt
+git add c.txt
+commit "$T4" "a sibling of fourth: c differs, same second"
+touch a.txt c.txt
+"$RESTORE" "$REPO" >/dev/null
+[[ "$(mtime c.txt)" == "$T4" ]] || fail "test setup: c.txt should carry $T4 on both branches"
+pass "the collision exists: same commit second, different content, same mtime"
+
+BEFORE="$(mtime c.txt)"
+OUT="$("$RESTORE" "$REPO" "$BASE_SHA")" || fail "script exited non-zero with a cache base"
+[[ "$OUT" == *"touched 1 file(s) changed since cache base $BASE_SHA"* ]] \
+  || fail "unexpected output with a cache base: '$OUT'"
+[[ "$(mtime c.txt)" -gt "$BEFORE" ]] || fail "c.txt (changed since the base) should be touched to now"
+[[ "$(mtime a.txt)" == "$T2" ]] || fail "a.txt (unchanged since the base) should keep its commit time"
+pass "a file whose content differs from the cache base is touched to now; the others keep their commit time"
+
+OUT="$("$RESTORE" "$REPO" "0000000000000000000000000000000000000000")" || fail "script exited non-zero with an unknown base"
+[[ "$OUT" == *"is not a commit here; touched all 4 tracked files"* ]] \
+  || fail "unexpected output with an unknown base: '$OUT'"
+[[ "$(mtime a.txt)" -gt "$T2" ]] || fail "an unknown base should touch every file"
+pass "an unknown cache base touches every tracked file (full rebuild, never a stale one)"
+
 echo "all restore-mtimes checks passed"
