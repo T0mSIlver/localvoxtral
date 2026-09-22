@@ -316,7 +316,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
             startRuntimeServices: true
         )
 
-        XCTAssertFalse(viewModel.debugHasRequestedStartupPermissions)
+        XCTAssertFalse(viewModel.permissions.hasRequestedStartupPermissions)
     }
 
     func testStartupPermissionPromptSuppressionParsesEnvironment() {
@@ -347,7 +347,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         )
 
         XCTAssertFalse(
-            viewModel.debugHasRequestedStartupPermissions,
+            viewModel.permissions.hasRequestedStartupPermissions,
             "suppression must return before the latch — no prompt task may be spawned")
     }
 

@@ -197,12 +197,6 @@ final class DictationViewModel {
     private(set) var availableInputDevices: [MicrophoneInputDevice] = []
     private(set) var selectedInputDeviceID = ""
 
-    /// Observable mirror of the live microphone authorization status, refreshed
-    /// on demand via `refreshMicrophonePermissionState()`. Stored (rather than
-    /// read live) so permission UI re-renders when the grant changes while the
-    /// app is foregrounded. Seeded lazily — reading the real status touches the
-    /// microphone service, so it stays `.notDetermined` until the first refresh.
-    var microphoneAuthorizationStatus: MicrophoneAuthorizationStatus = .notDetermined
 
     /// Set by the app delegate so the General settings pane can re-present the
     /// onboarding wizard. Kept as a seam rather than a singleton reference.
@@ -667,10 +661,6 @@ final class DictationViewModel {
     @ObservationIgnored
     var isAwaitingMicrophonePermission = false
     @ObservationIgnored
-    var startupPermissionTask: Task<Void, Never>?
-    @ObservationIgnored
-    var hasRequestedStartupPermissions = false
-    @ObservationIgnored
     var pendingSegmentText = ""
     @ObservationIgnored
     var currentDictationEventText = ""
@@ -792,7 +782,10 @@ final class DictationViewModel {
     /// (2026-07-24). The env override silences only the prompts; the launch
     /// path stays production-shaped.
     @ObservationIgnored
-    let suppressStartupPermissionPrompts: Bool
+    /// Microphone and Accessibility permissions: the startup prompt pass and
+    /// the rows' requests and refreshes. Views bind to `viewModel.permissions`.
+    @ObservationIgnored
+    let permissions: PermissionsCoordinator
     /// The keyboard triggers: gestures, hotkey registration, the shortcut
     /// slots. Views bind to `viewModel.shortcuts`; the session reads its
     /// gesture flags through it.
@@ -821,7 +814,12 @@ final class DictationViewModel {
                 speechdStepCadenceProvider: { settings.speechdStepCadence.milliseconds }
             )
         self.managesRuntimeServices = startRuntimeServices
-        self.suppressStartupPermissionPrompts = suppressStartupPermissionPrompts
+        self.permissions = PermissionsCoordinator(
+            settings: settings,
+            textInsertion: textInsertion,
+            managesRuntimeServices: startRuntimeServices,
+            suppressStartupPermissionPrompts: suppressStartupPermissionPrompts
+        )
         self.engines = EnginesModel(
             settings: settings,
             backendManager: self.backendManager,
@@ -952,6 +950,7 @@ final class DictationViewModel {
         }
 
         shortcuts.install(session: self)
+        permissions.install(session: self)
         if startRuntimeServices {
             shortcuts.registerAtLaunch()
         }
@@ -992,7 +991,7 @@ final class DictationViewModel {
             )
             refreshMicrophoneInputs()
             registerLifecycleObservers(on: dependencies.lifecycleNotificationCenter ?? .default)
-            requestStartupPermissionsIfNeeded()
+            permissions.requestStartupPermissionsIfNeeded()
             importSpeakerTermsFromReplacementDictionaryIfNeeded()
             // Subscribe BEFORE the launch warmup below so the very first
             // polishd ready edge is observed and prompt-prefix-warmed.
@@ -1041,7 +1040,7 @@ final class DictationViewModel {
         reconnectTask?.cancel()
         recentFailureResetTask?.cancel()
         finalizationWatchdogTask?.cancel()
-        startupPermissionTask?.cancel()
+        permissions.cancelTasks()
         polishAndCommitTask?.cancel()
         polishPromptWarmupCoordinator?.cancelTasks()
         textInsertion.stopAllTasks()
@@ -2123,3 +2122,5 @@ extension DictationViewModel: ShortcutSessionControlling {
         engines.handleOverlayReachabilityTransition(wasReachable: wasReachable)
     }
 }
+
+extension DictationViewModel: PermissionSessionControlling {}

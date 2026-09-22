@@ -136,7 +136,7 @@ struct StatusPopoverView: View {
 
             if !viewModel.isAccessibilityTrusted {
                 Button("Enable Accessibility…") {
-                    viewModel.requestAccessibilityPermission()
+                    viewModel.permissions.requestAccessibilityPermission()
                     openAccessibilitySettings()
                 }
             }
@@ -176,10 +176,10 @@ struct StatusPopoverView: View {
         }
         .onAppear {
             viewModel.refreshMicrophoneInputs()
-            viewModel.refreshAccessibilityTrustState()
+            viewModel.permissions.refreshAccessibilityTrustState()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            viewModel.refreshAccessibilityTrustState()
+            viewModel.permissions.refreshAccessibilityTrustState()
         }
         .frame(width: Self.contentWidth, alignment: .leading)
     }

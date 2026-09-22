@@ -55,11 +55,11 @@ struct PermissionRowsView: View {
     // MARK: - Microphone state
 
     private var microphoneGranted: Bool {
-        viewModel.microphoneAuthorizationStatus == .authorized
+        viewModel.permissions.microphoneAuthorizationStatus == .authorized
     }
 
     private var microphoneStatusText: String {
-        switch viewModel.microphoneAuthorizationStatus {
+        switch viewModel.permissions.microphoneAuthorizationStatus {
         case .authorized: return "Granted"
         case .denied: return "Denied"
         case .restricted: return "Restricted"
@@ -68,12 +68,12 @@ struct PermissionRowsView: View {
     }
 
     private var microphoneAction: PermissionRow.Action? {
-        switch viewModel.microphoneAuthorizationStatus {
+        switch viewModel.permissions.microphoneAuthorizationStatus {
         case .authorized:
             return nil
         case .notDetermined:
             return PermissionRow.Action(label: "Allow microphone…") {
-                viewModel.requestMicrophonePermission()
+                viewModel.permissions.requestMicrophonePermission()
             }
         case .denied, .restricted:
             return PermissionRow.Action(label: "Open System Settings") {
@@ -87,14 +87,14 @@ struct PermissionRowsView: View {
     private var accessibilityAction: PermissionRow.Action? {
         guard !viewModel.isAccessibilityTrusted else { return nil }
         return PermissionRow.Action(label: "Grant access") {
-            viewModel.requestAccessibilityPermission()
+            viewModel.permissions.requestAccessibilityPermission()
             Self.openSettings(Self.accessibilitySettingsURL)
         }
     }
 
     private func refresh() {
-        viewModel.refreshAccessibilityTrustState()
-        viewModel.refreshMicrophonePermissionState()
+        viewModel.permissions.refreshAccessibilityTrustState()
+        viewModel.permissions.refreshMicrophonePermissionState()
     }
 
     private static func openSettings(_ urlString: String) {
