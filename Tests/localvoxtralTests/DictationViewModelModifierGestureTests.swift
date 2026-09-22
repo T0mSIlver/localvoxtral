@@ -17,11 +17,11 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isDictating = true
 
-        viewModel.debugHandleModifierOnlyTapForTesting(mode: .overlayBuffer)
+        viewModel.shortcuts.handleModifierOnlyTap(mode: .overlayBuffer)
 
         XCTAssertFalse(viewModel.isDictating, "tap during dictation must stop it")
         XCTAssertFalse(
-            viewModel.debugIsPushToTalkShortcutHeldForTesting,
+            viewModel.shortcuts.isPushToTalkShortcutHeld,
             "a tap must never latch the push-to-talk held flag"
         )
     }
@@ -37,7 +37,7 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         viewModel.sessionOutputMode = .liveAutoPaste
         viewModel.isDictating = true
 
-        viewModel.debugHandleModifierOnlyTapForTesting(mode: .overlayBuffer)
+        viewModel.shortcuts.handleModifierOnlyTap(mode: .overlayBuffer)
 
         XCTAssertFalse(viewModel.isDictating)
         XCTAssertEqual(
@@ -56,14 +56,14 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isDictating = true
 
-        viewModel.debugHandleModifierOnlyHoldStartForTesting()
+        viewModel.shortcuts.handleModifierOnlyHoldStart()
 
         XCTAssertEqual(
             viewModel.sessionOutputMode, .overlayBuffer,
             "a hold during an active session must not rewrite its output mode"
         )
         XCTAssertFalse(
-            viewModel.debugIsPushToTalkShortcutHeldForTesting,
+            viewModel.shortcuts.isPushToTalkShortcutHeld,
             "no push-to-talk state may latch when the hold is ignored"
         )
     }
@@ -74,7 +74,7 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
 
         viewModel.isAwaitingMicrophonePermission = true
 
-        viewModel.debugHandleModifierOnlyHoldStartForTesting()
+        viewModel.shortcuts.handleModifierOnlyHoldStart()
 
         XCTAssertNil(
             viewModel.sessionOutputMode,
@@ -112,9 +112,9 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         let viewModel = makeViewModel(settings: settings)
         viewModel.textInsertion.debugSetAccessibilityTrusted(false)
 
-        viewModel.applyHotKeySettingsChange()
+        viewModel.shortcuts.applyHotKeySettingsChange()
         XCTAssertNotEqual(
-            viewModel.debugCurrentHotKeyRegistrationKindForTesting, .modifierOnly,
+            viewModel.shortcuts.hotKeyManager.debugCurrentRegistrationKind, .modifierOnly,
             "sanity: the launch-time registration attempt must have failed"
         )
 
@@ -122,7 +122,7 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         viewModel.textInsertion.debugSetAccessibilityTrusted(true)
 
         XCTAssertEqual(
-            viewModel.debugCurrentHotKeyRegistrationKindForTesting, .modifierOnly,
+            viewModel.shortcuts.hotKeyManager.debugCurrentRegistrationKind, .modifierOnly,
             "trust arrival must re-register the modifier-only hotkey"
         )
         XCTAssertNil(
@@ -143,8 +143,8 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         let viewModel = makeViewModel(settings: settings)
         viewModel.textInsertion.debugSetAccessibilityTrusted(false)
 
-        viewModel.applyHotKeySettingsChange()
-        XCTAssertEqual(viewModel.debugCurrentHotKeyRegistrationKindForTesting, .modifierOnly)
+        viewModel.shortcuts.applyHotKeySettingsChange()
+        XCTAssertEqual(viewModel.shortcuts.hotKeyManager.debugCurrentRegistrationKind, .modifierOnly)
         let startCallsAfterRegistration = ModifierOnlyHotKeyManager.startCallCount
 
         viewModel.textInsertion.debugSetAccessibilityTrusted(true)

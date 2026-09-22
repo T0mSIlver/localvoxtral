@@ -14,38 +14,38 @@ final class ShortcutSlotConflictTests: XCTestCase {
     // MARK: - Asking
 
     func testRecordingTheLivePasteKeyIntoOverlayAsksFirstAndChangesNothing() {
-        let viewModel = makeViewModel()
-        viewModel.settings.setOverlayBufferShortcut(bareF14)
-        viewModel.settings.setLivePasteShortcut(bareF13)
+        let shortcuts = makeShortcuts()
+        shortcuts.settings.setOverlayBufferShortcut(bareF14)
+        shortcuts.settings.setLivePasteShortcut(bareF13)
 
-        let outcome = viewModel.requestOverlayBufferShortcut(bareF13)
+        let outcome = shortcuts.requestOverlayBufferShortcut(bareF13)
 
         XCTAssertEqual(outcome, .needsMoveConfirmation(shortcut: bareF13, from: .liveAutoPaste))
         XCTAssertEqual(
-            viewModel.settings.overlayBufferShortcut, bareF14,
+            shortcuts.settings.overlayBufferShortcut, bareF14,
             "the question is asked before anything is written"
         )
-        XCTAssertEqual(viewModel.settings.livePasteShortcut, bareF13)
+        XCTAssertEqual(shortcuts.settings.livePasteShortcut, bareF13)
     }
 
     func testRecordingTheOverlayKeyIntoLivePasteAsksFirst() {
-        let viewModel = makeViewModel()
-        viewModel.settings.setOverlayBufferShortcut(bareF13)
-        viewModel.settings.setLivePasteShortcut(bareF14)
+        let shortcuts = makeShortcuts()
+        shortcuts.settings.setOverlayBufferShortcut(bareF13)
+        shortcuts.settings.setLivePasteShortcut(bareF14)
 
-        let outcome = viewModel.requestLivePasteShortcut(bareF13)
+        let outcome = shortcuts.requestLivePasteShortcut(bareF13)
 
         XCTAssertEqual(outcome, .needsMoveConfirmation(shortcut: bareF13, from: .overlayBuffer))
-        XCTAssertEqual(viewModel.settings.overlayBufferShortcut, bareF13)
-        XCTAssertEqual(viewModel.settings.livePasteShortcut, bareF14)
+        XCTAssertEqual(shortcuts.settings.overlayBufferShortcut, bareF13)
+        XCTAssertEqual(shortcuts.settings.livePasteShortcut, bareF14)
     }
 
     /// The recorder hands over what ShortcutRecorder reported, which carries
     /// `NSFunctionKeyMask` for F1-F20. A conflict is a conflict once both
     /// sides are normalized, or the same physical key would be accepted twice.
     func testConflictIsDetectedThroughTheRecorderFunctionKeyBit() {
-        let viewModel = makeViewModel()
-        viewModel.settings.setLivePasteShortcut(bareF13)
+        let shortcuts = makeShortcuts()
+        shortcuts.settings.setLivePasteShortcut(bareF13)
 
         let asRecorded = DictationShortcut(
             keyCode: UInt32(kVK_F13),
@@ -53,7 +53,7 @@ final class ShortcutSlotConflictTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            viewModel.requestOverlayBufferShortcut(asRecorded),
+            shortcuts.requestOverlayBufferShortcut(asRecorded),
             .needsMoveConfirmation(shortcut: bareF13, from: .liveAutoPaste),
             "the fn bit is stripped before the question is asked, so the answer names the bare key"
         )
@@ -61,51 +61,51 @@ final class ShortcutSlotConflictTests: XCTestCase {
 
     func testAFreeShortcutIsRecordedWithoutAsking() {
         forceRegistrationSuccess()
-        let viewModel = makeViewModel()
-        viewModel.settings.setLivePasteShortcut(bareF13)
+        let shortcuts = makeShortcuts()
+        shortcuts.settings.setLivePasteShortcut(bareF13)
 
-        XCTAssertEqual(viewModel.requestOverlayBufferShortcut(bareF14), .applied)
-        XCTAssertEqual(viewModel.settings.overlayBufferShortcut, bareF14)
-        XCTAssertEqual(viewModel.settings.livePasteShortcut, bareF13)
+        XCTAssertEqual(shortcuts.requestOverlayBufferShortcut(bareF14), .applied)
+        XCTAssertEqual(shortcuts.settings.overlayBufferShortcut, bareF14)
+        XCTAssertEqual(shortcuts.settings.livePasteShortcut, bareF13)
     }
 
     /// A disabled slot registers nothing, so its stored key is not taken.
     func testADisabledOtherSlotIsNotAConflict() {
         forceRegistrationSuccess()
-        let viewModel = makeViewModel()
-        viewModel.settings.setLivePasteShortcut(bareF13)
-        viewModel.settings.livePasteShortcutEnabled = false
+        let shortcuts = makeShortcuts()
+        shortcuts.settings.setLivePasteShortcut(bareF13)
+        shortcuts.settings.livePasteShortcutEnabled = false
 
-        XCTAssertEqual(viewModel.requestOverlayBufferShortcut(bareF13), .applied)
-        XCTAssertEqual(viewModel.settings.overlayBufferShortcut, bareF13)
+        XCTAssertEqual(shortcuts.requestOverlayBufferShortcut(bareF13), .applied)
+        XCTAssertEqual(shortcuts.settings.overlayBufferShortcut, bareF13)
     }
 
     func testClearingASlotNeverAsks() {
         forceRegistrationSuccess()
-        let viewModel = makeViewModel()
-        viewModel.settings.setLivePasteShortcut(bareF13)
+        let shortcuts = makeShortcuts()
+        shortcuts.settings.setLivePasteShortcut(bareF13)
 
-        XCTAssertEqual(viewModel.requestLivePasteShortcut(nil), .applied)
-        XCTAssertNil(viewModel.settings.livePasteShortcut)
+        XCTAssertEqual(shortcuts.requestLivePasteShortcut(nil), .applied)
+        XCTAssertNil(shortcuts.settings.livePasteShortcut)
     }
 
     // MARK: - Answering yes
 
     func testConfirmedMoveTakesTheKeyFromLivePaste() {
         forceRegistrationSuccess()
-        let viewModel = makeViewModel()
-        viewModel.settings.setOverlayBufferShortcut(bareF14)
-        viewModel.settings.setLivePasteShortcut(bareF13)
+        let shortcuts = makeShortcuts()
+        shortcuts.settings.setOverlayBufferShortcut(bareF14)
+        shortcuts.settings.setLivePasteShortcut(bareF13)
 
-        viewModel.moveShortcutToOverlayBuffer(bareF13)
+        shortcuts.moveShortcutToOverlayBuffer(bareF13)
 
-        XCTAssertEqual(viewModel.settings.overlayBufferShortcut, bareF13)
+        XCTAssertEqual(shortcuts.settings.overlayBufferShortcut, bareF13)
         XCTAssertNil(
-            viewModel.settings.livePasteShortcut,
+            shortcuts.settings.livePasteShortcut,
             "the key cannot be registered twice, so the slot it came from is cleared"
         )
         XCTAssertEqual(
-            viewModel.debugCurrentHotKeyRegistrationKindForTesting,
+            shortcuts.hotKeyManager.debugCurrentRegistrationKind,
             .dual(overlay: true, livePaste: false),
             "the move re-registers — settings alone would leave the old hotkey live"
         )
@@ -113,16 +113,16 @@ final class ShortcutSlotConflictTests: XCTestCase {
 
     func testConfirmedMoveTakesTheKeyFromOverlay() {
         forceRegistrationSuccess()
-        let viewModel = makeViewModel()
-        viewModel.settings.setOverlayBufferShortcut(bareF13)
-        viewModel.settings.setLivePasteShortcut(bareF14)
+        let shortcuts = makeShortcuts()
+        shortcuts.settings.setOverlayBufferShortcut(bareF13)
+        shortcuts.settings.setLivePasteShortcut(bareF14)
 
-        viewModel.moveShortcutToLivePaste(bareF13)
+        shortcuts.moveShortcutToLivePaste(bareF13)
 
-        XCTAssertEqual(viewModel.settings.livePasteShortcut, bareF13)
-        XCTAssertNil(viewModel.settings.overlayBufferShortcut)
+        XCTAssertEqual(shortcuts.settings.livePasteShortcut, bareF13)
+        XCTAssertNil(shortcuts.settings.overlayBufferShortcut)
         XCTAssertEqual(
-            viewModel.debugCurrentHotKeyRegistrationKindForTesting,
+            shortcuts.hotKeyManager.debugCurrentRegistrationKind,
             .dual(overlay: false, livePaste: true)
         )
     }
@@ -136,16 +136,16 @@ final class ShortcutSlotConflictTests: XCTestCase {
             hotKeyID: .overlay, status: OSStatus(eventHotKeyExistsErr))
         defer { HotKeyManager.debugResetOverridesForTesting() }
 
-        let viewModel = makeViewModel()
-        viewModel.settings.setOverlayBufferShortcut(bareF14)
-        viewModel.settings.setLivePasteShortcut(bareF13)
+        let shortcuts = makeShortcuts()
+        shortcuts.settings.setOverlayBufferShortcut(bareF14)
+        shortcuts.settings.setLivePasteShortcut(bareF13)
 
         let unregisterCallsBefore = HotKeyManager.debugUnregisterCallCount
 
-        viewModel.moveShortcutToOverlayBuffer(bareF13)
+        shortcuts.moveShortcutToOverlayBuffer(bareF13)
 
-        XCTAssertEqual(viewModel.settings.overlayBufferShortcut, bareF14)
-        XCTAssertEqual(viewModel.settings.livePasteShortcut, bareF13)
+        XCTAssertEqual(shortcuts.settings.overlayBufferShortcut, bareF14)
+        XCTAssertEqual(shortcuts.settings.livePasteShortcut, bareF13)
         // Two registration passes: the one that failed, and the one that puts
         // the old shortcuts back. Counted rather than read off the resulting
         // registration kind, because the restore pass reaches REAL Carbon (the
@@ -163,20 +163,20 @@ final class ShortcutSlotConflictTests: XCTestCase {
     /// so it has to ask the same question. It is the one control that could
     /// put the old silent-collision behaviour back.
     func testResettingOverlayToADefaultLivePasteHoldsAsksFirst() {
-        let viewModel = makeViewModel()
-        viewModel.settings.setOverlayBufferShortcut(bareF13)
-        viewModel.settings.setLivePasteShortcut(SettingsStore.defaultDictationShortcut)
+        let shortcuts = makeShortcuts()
+        shortcuts.settings.setOverlayBufferShortcut(bareF13)
+        shortcuts.settings.setLivePasteShortcut(SettingsStore.defaultDictationShortcut)
 
-        let outcome = viewModel.requestOverlayBufferShortcut(SettingsStore.defaultDictationShortcut)
+        let outcome = shortcuts.requestOverlayBufferShortcut(SettingsStore.defaultDictationShortcut)
 
         XCTAssertEqual(
             outcome,
             .needsMoveConfirmation(
                 shortcut: SettingsStore.defaultDictationShortcut, from: .liveAutoPaste)
         )
-        XCTAssertEqual(viewModel.settings.overlayBufferShortcut, bareF13)
+        XCTAssertEqual(shortcuts.settings.overlayBufferShortcut, bareF13)
         XCTAssertEqual(
-            viewModel.settings.livePasteShortcut, SettingsStore.defaultDictationShortcut)
+            shortcuts.settings.livePasteShortcut, SettingsStore.defaultDictationShortcut)
     }
 
     // MARK: - Restoring exactly what was there
@@ -193,8 +193,8 @@ final class ShortcutSlotConflictTests: XCTestCase {
             hotKeyID: .overlay, status: OSStatus(eventHotKeyExistsErr))
         defer { HotKeyManager.debugResetOverridesForTesting() }
 
-        let viewModel = makeViewModel()
-        viewModel.settings.restoreShortcutSlots(
+        let shortcuts = makeShortcuts()
+        shortcuts.settings.restoreShortcutSlots(
             SettingsStore.ShortcutSlotSnapshot(
                 overlayKeyCode: 0,
                 overlayCarbonModifierFlags: 0,
@@ -204,18 +204,18 @@ final class ShortcutSlotConflictTests: XCTestCase {
                 livePasteEnabled: true
             )
         )
-        let before = viewModel.settings.shortcutSlotSnapshot
-        XCTAssertNil(viewModel.settings.overlayBufferShortcut, "stored, enabled, and invalid")
-        XCTAssertFalse(viewModel.settings.isOverlayBufferSessionReachable)
+        let before = shortcuts.settings.shortcutSlotSnapshot
+        XCTAssertNil(shortcuts.settings.overlayBufferShortcut, "stored, enabled, and invalid")
+        XCTAssertFalse(shortcuts.settings.isOverlayBufferSessionReachable)
 
-        viewModel.moveShortcutToOverlayBuffer(bareF13)
+        shortcuts.moveShortcutToOverlayBuffer(bareF13)
 
         XCTAssertEqual(
-            viewModel.settings.shortcutSlotSnapshot, before,
+            shortcuts.settings.shortcutSlotSnapshot, before,
             "both slots come back byte for byte, invalid value included"
         )
         XCTAssertFalse(
-            viewModel.settings.isOverlayBufferSessionReachable,
+            shortcuts.settings.isOverlayBufferSessionReachable,
             "a failed move must not make Overlay Buffer reachable — that starts polishd"
         )
     }
@@ -232,7 +232,7 @@ final class ShortcutSlotConflictTests: XCTestCase {
         }
     }
 
-    private func makeViewModel() -> DictationViewModel {
+    private func makeShortcuts() -> ShortcutController {
         let suiteName = "localvoxtral.ShortcutSlotConflictTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
@@ -246,8 +246,8 @@ final class ShortcutSlotConflictTests: XCTestCase {
         // two slots, and would make every registration here a no-op.
         settings.modifierOnlyHotKeyEnabled = false
 
-        let viewModel = DictationViewModel(settings: settings, startRuntimeServices: false)
-        retainForTestProcessLifetime(viewModel)
-        return viewModel
+        let shortcuts = ShortcutController(settings: settings)
+        shortcuts.install(session: FakeShortcutSession())
+        return shortcuts
     }
 }

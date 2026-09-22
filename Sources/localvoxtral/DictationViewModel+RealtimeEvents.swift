@@ -74,7 +74,7 @@ extension DictationViewModel {
             return
         }
         if isConnectingRealtimeSession {
-            if shouldCancelPushToTalkStartAfterConnect() {
+            if shortcuts.shouldCancelPushToTalkStartAfterConnect() {
                 abortConnectingSession()
                 setRealtimeIndicatorIdle()
                 statusText = "Ready"

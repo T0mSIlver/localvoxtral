@@ -660,11 +660,11 @@ final class TerminalTargetDetectorTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
         viewModel.secureInputWarningSound = {}
 
-        viewModel.debugHandleModifierOnlyHoldStartForTesting()
+        viewModel.shortcuts.handleModifierOnlyHoldStart()
         XCTAssertFalse(viewModel.isDictating, "start is refused under secure input")
         XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
 
-        viewModel.debugHandleDictationShortcutReleaseForTesting()
+        viewModel.shortcuts.handleDictationShortcutRelease()
 
         XCTAssertNotEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
         XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready)
@@ -688,7 +688,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         var soundPlays = 0
         viewModel.secureInputWarningSound = { soundPlays += 1 }
 
-        viewModel.debugHandleModifierOnlyTapForTesting(mode: .liveAutoPaste)
+        viewModel.shortcuts.handleModifierOnlyTap(mode: .liveAutoPaste)
 
         XCTAssertFalse(viewModel.isDictating, "start is refused under secure input")
         XCTAssertEqual(soundPlays, 1, "the audible cue fired")
