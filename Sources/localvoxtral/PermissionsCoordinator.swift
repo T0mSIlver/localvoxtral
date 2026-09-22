@@ -47,7 +47,7 @@ final class PermissionsCoordinator {
     /// microphone service, so it stays `.notDetermined` until the first refresh.
     var microphoneAuthorizationStatus: MicrophoneAuthorizationStatus = .notDetermined
     @ObservationIgnored
-    var startupPermissionTask: Task<Void, Never>?
+    private(set) var startupPermissionTask: Task<Void, Never>?
     @ObservationIgnored
     private(set) var hasRequestedStartupPermissions = false
 
@@ -96,7 +96,9 @@ final class PermissionsCoordinator {
 
         startupPermissionTask?.cancel()
         startupPermissionTask = Task { @MainActor [weak self] in
-            guard let self else { return }
+            // The owner is looked up when the task runs, not when it is
+            // queued: a view model released in between stays released.
+            guard let self, let session = self.owner else { return }
             session.prepareLLMPolishingPromptAccessIfNeeded()
             guard !Task.isCancelled else { return }
             await self.requestStartupMicrophonePermissionIfNeeded()
