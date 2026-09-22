@@ -8,11 +8,6 @@ import XCTest
 /// asks, and only a confirmed answer moves it.
 @MainActor
 final class ShortcutSlotConflictTests: XCTestCase {
-    // DictationViewModel owns several app-lifetime services. Retain test
-    // instances for the process duration so teardown does not race service
-    // shutdown.
-    private static var retainedViewModels: [DictationViewModel] = []
-
     private let bareF13 = DictationShortcut(keyCode: UInt32(kVK_F13), carbonModifierFlags: 0)
     private let bareF14 = DictationShortcut(keyCode: UInt32(kVK_F14), carbonModifierFlags: 0)
 
@@ -252,7 +247,7 @@ final class ShortcutSlotConflictTests: XCTestCase {
         settings.modifierOnlyHotKeyEnabled = false
 
         let viewModel = DictationViewModel(settings: settings, startRuntimeServices: false)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         return viewModel
     }
 }

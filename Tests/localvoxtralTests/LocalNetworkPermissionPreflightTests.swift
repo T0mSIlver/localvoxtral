@@ -54,8 +54,7 @@ final class LocalNetworkPermissionPreflightTests: XCTestCase {
     }
 
     func testEndpointEditsProbeOnlyEligibleActiveExternalBackends() {
-        let (settings, suiteName) = makeSettings()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+        let settings = makeSettings()
         settings.dictationBackendMode = .externalURL
         settings.polishingBackendMode = .externalURL
         settings.llmPolishingEnabled = false
@@ -85,8 +84,7 @@ final class LocalNetworkPermissionPreflightTests: XCTestCase {
     }
 
     func testEndpointEditWhileManagedWaitsUntilExternalModeSwitch() {
-        let (settings, suiteName) = makeSettings()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+        let settings = makeSettings()
         settings.dictationBackendMode = .managedLocal
         settings.polishingBackendMode = .managedLocal
         settings.llmPolishingEnabled = false
@@ -114,8 +112,7 @@ final class LocalNetworkPermissionPreflightTests: XCTestCase {
     }
 
     func testConfiguredExternalEndpointsArePreflightedBeforeUse() {
-        let (settings, suiteName) = makeSettings()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+        let settings = makeSettings()
         settings.dictationBackendMode = .externalURL
         settings.polishingBackendMode = .externalURL
         settings.realtimeAPIEndpointURL = "ws://192.168.3.5:8000/v1/realtime"
@@ -162,13 +159,6 @@ final class LocalNetworkPermissionPreflightTests: XCTestCase {
         ] {
             XCTAssertTrue(source.contains("<key>\(key)</key>"), "missing \(key)")
         }
-    }
-
-    private func makeSettings() -> (SettingsStore, String) {
-        let suiteName = "localvoxtral.LocalNetworkPreflight.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        return (SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore()), suiteName)
     }
 
     func testProductionPreflightDedupesRepeatedTargetsWithoutOpeningConnections() throws {

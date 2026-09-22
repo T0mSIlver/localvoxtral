@@ -190,6 +190,10 @@ ablation workflows: `docs/agent/test-tiers.md`.
   warning-free under Swift 6.2 strict concurrency.
 - Tests are XCTest. Prefer the existing DI seams (protocols + `#if DEBUG`
   hooks like `debugConfigureInsertionHooks`) over adding singletons.
+- Shared test doubles and helpers live in `Tests/localvoxtralTests/TestSupport`
+  (`MockOverlayCoordinator`, `MockAppConfigStore`, `FakePolishingService`,
+  `makeSettings`, `retainForTestProcessLifetime`, `awaitStoppedSessionCommit`).
+  Extend those; a `private` copy in a test file is how #402 happened.
 - Settings panes (owner rule, 2026-07-04): the group structure of a pane is
   constant — a mode picker or toggle may switch a group's CONTENT (status row
   vs config fields), never the number or identity of the groups themselves.

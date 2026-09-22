@@ -12,8 +12,6 @@ import XCTest
 /// replacement was deferred by the old guarded corrector and dropped at stop).
 @MainActor
 final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
-    private static var retainedViewModels: [DictationViewModel] = []
-
     override func tearDown() async throws {
         TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
         TerminalTargetDetector.debugFocusedElementProbeOverride = nil
@@ -285,7 +283,7 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
             startRuntimeServices: false
         )
         viewModel.appConfigStore = configStore ?? MockAppConfigStore(replacementDictionary: dictionary)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
 
         viewModel.textInsertion.debugConfigureInsertionHooks(
             unicodePoster: unicodePoster ?? { chunk in
@@ -329,56 +327,4 @@ private final class Box<Value> {
     }
 }
 
-@MainActor
-private final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitOutcome: OverlayBufferCommitOutcome = .succeeded
-    var commitTargetAppPID: pid_t? = nil
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(targetRect: CGRect(x: 0, y: 0, width: 100, height: 24), source: .windowCenter)
-    }
-    func startSession(preResolvedAnchor: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
-    func beginFinalizing(displayBufferText: String, commitBufferText: String) {}
-    func refresh(displayBufferText: String, commitBufferText: String) {}
-    func commitIfNeeded(
-        using textCommitter: OverlayTextCommitting,
-        autoCopyEnabled: Bool
-    ) -> OverlayBufferCommitOutcome {
-        commitOutcome
-    }
-    func reset() {}
-    func dismissAfterHold(minimumVisibility: TimeInterval) {}
-    func captureLiveCommitTargetAppPID() {}
-}
-
-private final class MockAppConfigStore: AppConfigServing {
-    private let replacementDictionary: ReplacementDictionary
-    private let terminalAppBundleIDs: [String]
-    private(set) var loadReplacementDictionaryCallCount = 0
-
-    init(
-        replacementDictionary: ReplacementDictionary,
-        terminalAppBundleIDs: [String] = []
-    ) {
-        self.replacementDictionary = replacementDictionary
-        self.terminalAppBundleIDs = terminalAppBundleIDs
-    }
-
-    func configDirectoryURL() -> URL {
-        URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-    }
-
-    func loadReplacementDictionary() -> ReplacementDictionary {
-        loadReplacementDictionaryCallCount += 1
-        return replacementDictionary
-    }
-
-    func loadLLMPromptTemplates() -> LLMPromptTemplates {
-        LLMPromptTemplates(systemContent: "{{input_text}}", userContent: "{{input_text}}")
-    }
-
-    func loadTerminalAppBundleIDs() -> [String] {
-        terminalAppBundleIDs
-    }
-}
 #endif

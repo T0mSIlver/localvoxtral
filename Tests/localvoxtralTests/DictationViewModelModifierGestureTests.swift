@@ -6,10 +6,6 @@ import XCTest
 /// adversarial review of the tap-vs-hold rework.
 @MainActor
 final class DictationViewModelModifierGestureTests: XCTestCase {
-    // DictationViewModel owns several app-lifetime services. Retain test instances
-    // for the process duration so teardown does not race service shutdown.
-    private static var retainedViewModels: [DictationViewModel] = []
-
     func testModifierTapTogglesOffEvenInPushToTalkShortcutMode() {
         // A tap has no release event: routing it through push-to-talk press
         // semantics set isPushToTalkShortcutHeld with nothing to ever clear
@@ -35,7 +31,7 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         // finalizes using sessionOutputMode; the tap's mode applies only when
         // it STARTS a session.
         let settings = makeSettings(outputMode: .liveAutoPaste)
-        let coordinator = GestureTestOverlayCoordinator()
+        let coordinator = MockOverlayCoordinator()
         let viewModel = makeViewModel(settings: settings, coordinator: coordinator)
 
         viewModel.sessionOutputMode = .liveAutoPaste
@@ -159,22 +155,9 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         )
     }
 
-    private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {
-        let suiteName = "localvoxtral.DictationViewModelModifierGestureTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-
-        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
-        settings.dictationOutputMode = outputMode
-        return settings
-    }
-
     private func makeViewModel(
         settings: SettingsStore,
-        coordinator: GestureTestOverlayCoordinator = GestureTestOverlayCoordinator()
+        coordinator: MockOverlayCoordinator = MockOverlayCoordinator()
     ) -> DictationViewModel {
         let viewModel = DictationViewModel(
             settings: settings,
@@ -184,49 +167,8 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         // Keep tests hermetic: session start reads config (terminal apps,
         // replacement dictionary) through the store — never the real
         // config directory.
-        viewModel.appConfigStore = GestureTestHermeticConfigStore()
-        Self.retainedViewModels.append(viewModel)
+        viewModel.appConfigStore = MockAppConfigStore()
+        retainForTestProcessLifetime(viewModel)
         return viewModel
     }
-}
-
-private final class GestureTestHermeticConfigStore: AppConfigServing {
-    func configDirectoryURL() -> URL {
-        FileManager.default.temporaryDirectory
-    }
-
-    func loadReplacementDictionary() -> ReplacementDictionary {
-        ReplacementDictionary(entries: [])
-    }
-
-    func loadLLMPromptTemplates() -> LLMPromptTemplates {
-        LLMPromptTemplates(systemContent: "system", userContent: "{{input_text}}")
-    }
-
-    func loadTerminalAppBundleIDs() -> [String] {
-        []
-    }
-}
-
-@MainActor
-private final class GestureTestOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitTargetAppPID: pid_t? = nil
-    var commitCallCount = 0
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(targetRect: CGRect(x: 0, y: 0, width: 100, height: 24), source: .windowCenter)
-    }
-    func startSession(preResolvedAnchor: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
-    func beginFinalizing(displayBufferText: String, commitBufferText: String) {}
-    func refresh(displayBufferText: String, commitBufferText: String) {}
-    func commitIfNeeded(
-        using textCommitter: OverlayTextCommitting,
-        autoCopyEnabled: Bool
-    ) -> OverlayBufferCommitOutcome {
-        commitCallCount += 1
-        return .succeeded
-    }
-    func dismissAfterHold(minimumVisibility: TimeInterval) {}
-    func reset() {}
-    func captureLiveCommitTargetAppPID() {}
 }

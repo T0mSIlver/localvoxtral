@@ -6,10 +6,6 @@ import XCTest
 
 @MainActor
 final class TerminalTargetDetectorTests: XCTestCase {
-    // DictationViewModel owns app-lifetime services. Retain test instances for
-    // the process duration so teardown does not race service shutdown.
-    private static var retainedViewModels: [DictationViewModel] = []
-
     override func tearDown() async throws {
         TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
         TerminalTargetDetector.debugFocusedElementProbeOverride = nil
@@ -238,7 +234,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         }
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        viewModel.appConfigStore = TargetDetectorMockConfigStore(
+        viewModel.appConfigStore = MockAppConfigStore(
             terminalAppBundleIDs: [],
             configDirectory: configDir
         )
@@ -273,7 +269,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         let viewModel = makeViewModel(outputMode: .overlayBuffer)
         viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:1/realtime"
         viewModel.isShowingConnectionFailureAlert = true
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
 
         await viewModel.beginDictationSession(outputMode: .overlayBuffer)
         XCTAssertFalse(
@@ -360,7 +356,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         // Regression: session end must release the warning (mirrors the
         // websocketReceiveFailed clearing), not leave it in the popover.
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.lastError = DictationViewModel.secureKeyboardEntryWarningMessage
         viewModel.sessionOutputMode = .liveAutoPaste
         viewModel.isDictating = true
@@ -374,7 +370,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
     func testSessionEndKeepsUnrelatedErrors() {
         // The session-end clear is token-scoped: other errors must survive.
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.lastError = "mlx-lm failed to start."
         viewModel.sessionOutputMode = .liveAutoPaste
         viewModel.isDictating = true
@@ -455,7 +451,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
         let viewModel = makeViewModel(outputMode: .overlayBuffer)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.secureInputWarningSound = {}
         viewModel.captureSessionTargetVerdict()
         viewModel.applyPreCapturedSessionTargetVerdict()
@@ -485,7 +481,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.secureInputWarningSound = {}
         viewModel.captureSessionTargetVerdict()
         viewModel.applyPreCapturedSessionTargetVerdict()
@@ -508,7 +504,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         var soundPlays = 0
         viewModel.secureInputWarningSound = { soundPlays += 1 }
 
@@ -530,7 +526,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.secureInputWarningSound = {}
         await viewModel.beginDictationSession()
         XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
@@ -557,7 +553,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         // below just pin the early-exit failure surface it must still reach.
         _ = NSApplication.shared
         let viewModel = makeViewModel(outputMode: .overlayBuffer)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.settings.dictationBackendMode = .externalURL
         viewModel.settings.realtimeAPIEndpointURL = ""
         await viewModel.beginDictationSession()
@@ -593,7 +589,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.secureInputWarningSound = {}
         await viewModel.beginDictationSession()
         XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
@@ -621,9 +617,9 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
-        let coordinator = TargetDetectorNoopOverlayCoordinator()
+        let coordinator = MockOverlayCoordinator()
         let viewModel = makeViewModel(outputMode: .liveAutoPaste, coordinator: coordinator)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.secureInputWarningSound = {}
 
         await viewModel.beginDictationSession()
@@ -638,7 +634,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
         let viewModel = makeViewModel(outputMode: .overlayBuffer)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.secureInputWarningSound = {}
 
         await viewModel.beginDictationSession()
@@ -661,7 +657,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.secureInputWarningSound = {}
 
         viewModel.debugHandleModifierOnlyHoldStartForTesting()
@@ -688,7 +684,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         var soundPlays = 0
         viewModel.secureInputWarningSound = { soundPlays += 1 }
 
@@ -716,7 +712,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         var soundPlays = 0
         viewModel.secureInputWarningSound = { soundPlays += 1 }
 
@@ -733,10 +729,10 @@ final class TerminalTargetDetectorTests: XCTestCase {
         // Owner field feedback on #90: the overlay stayed on after ending the
         // session when text was in the buffer — the clipboard fallback is not
         // a real failure and must not keep its panel like one.
-        let coordinator = TargetDetectorNoopOverlayCoordinator()
+        let coordinator = MockOverlayCoordinator()
         coordinator.commitOutcome = .copiedToClipboard(message: "copied")
         let viewModel = makeViewModel(outputMode: .overlayBuffer, coordinator: coordinator)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isDictating = true
 
@@ -757,10 +753,10 @@ final class TerminalTargetDetectorTests: XCTestCase {
     func testFailedCommitOutcomeStillKeepsOverlayPanel() {
         // The generic failure contract is unchanged: the buffered text may
         // exist nowhere else, so the panel persists.
-        let coordinator = TargetDetectorNoopOverlayCoordinator()
+        let coordinator = MockOverlayCoordinator()
         coordinator.commitOutcome = .failed(message: "nope")
         let viewModel = makeViewModel(outputMode: .overlayBuffer, coordinator: coordinator)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isDictating = true
 
@@ -775,7 +771,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
     private func makeViewModel(
         outputMode: DictationOutputMode,
         terminalAppBundleIDs: [String] = [],
-        coordinator: TargetDetectorNoopOverlayCoordinator = TargetDetectorNoopOverlayCoordinator()
+        coordinator: MockOverlayCoordinator = MockOverlayCoordinator()
     ) -> DictationViewModel {
         let suiteName = "localvoxtral.TerminalTargetDetectorTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -806,64 +802,9 @@ final class TerminalTargetDetectorTests: XCTestCase {
         viewModel.realtimeAPIClient.debugSkipSocketCreationForTesting()
         // Keep tests hermetic: capture reads the terminal-apps config through
         // the store, which must never touch the real config directory here.
-        viewModel.appConfigStore = TargetDetectorMockConfigStore(
+        viewModel.appConfigStore = MockAppConfigStore(
             terminalAppBundleIDs: terminalAppBundleIDs
         )
         return viewModel
     }
-}
-
-private final class TargetDetectorMockConfigStore: AppConfigServing {
-    private let terminalAppBundleIDs: [String]
-    private let configDirectory: URL
-
-    init(
-        terminalAppBundleIDs: [String],
-        configDirectory: URL = FileManager.default.temporaryDirectory
-    ) {
-        self.terminalAppBundleIDs = terminalAppBundleIDs
-        self.configDirectory = configDirectory
-    }
-
-    func configDirectoryURL() -> URL {
-        configDirectory
-    }
-
-    func loadReplacementDictionary() -> ReplacementDictionary {
-        ReplacementDictionary(entries: [])
-    }
-
-    func loadLLMPromptTemplates() -> LLMPromptTemplates {
-        LLMPromptTemplates(systemContent: "system", userContent: "{{input_text}}")
-    }
-
-    func loadTerminalAppBundleIDs() -> [String] {
-        terminalAppBundleIDs
-    }
-}
-
-@MainActor
-private final class TargetDetectorNoopOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitTargetAppPID: pid_t? = nil
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(targetRect: .zero, source: .windowCenter)
-    }
-    func startSession(preResolvedAnchor: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
-    func beginFinalizing(displayBufferText: String, commitBufferText: String) {}
-    func refresh(displayBufferText: String, commitBufferText: String) {}
-    var commitOutcome: OverlayBufferCommitOutcome = .succeeded
-    @discardableResult
-    func commitIfNeeded(
-        using textCommitter: OverlayTextCommitting, autoCopyEnabled: Bool
-    ) -> OverlayBufferCommitOutcome {
-        commitOutcome
-    }
-    private(set) var dismissHoldVisibilities: [TimeInterval] = []
-    func dismissAfterHold(minimumVisibility: TimeInterval) {
-        dismissHoldVisibilities.append(minimumVisibility)
-    }
-    private(set) var resetCallCount = 0
-    func reset() { resetCallCount += 1 }
-    func captureLiveCommitTargetAppPID() {}
 }

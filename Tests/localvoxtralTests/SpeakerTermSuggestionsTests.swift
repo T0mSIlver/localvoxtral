@@ -177,14 +177,8 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         }
     }
 
-    private func makeSettings() -> SettingsStore {
-        let suiteName = "localvoxtral.SpeakerTermSuggestionModelTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
-        let settings = SettingsStore(
-            defaults: defaults, environment: [:], secretStore: InMemorySecretStore()
-        )
+    private func makePolishingSettings() -> SettingsStore {
+        let settings = makeSettings()
         settings.llmPolishingEnabled = true
         settings.llmPolishingEndpointURL = "http://127.0.0.1:9/v1/chat/completions"
         return settings
@@ -209,7 +203,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
     /// The free half of the row: what the app has watched polishing fix is
     /// offered without a model call, and still only added by a click.
     func testLearnedTermsAreOfferedWithoutAskingAModel() {
-        let settings = makeSettings()
+        let settings = makePolishingSettings()
         let service = Service()
         let model = makeModel(settings: settings, service: service, learned: ["Voxtral", "polishd"])
 
@@ -221,7 +215,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
     }
 
     func testLearnedTermAlreadyKnownOrRefusedIsNotOffered() {
-        let settings = makeSettings()
+        let settings = makePolishingSettings()
         settings.polishSpeakerTerms = ["Voxtral"]
         settings.dismissTermSuggestion("polishd")
         let model = makeModel(
@@ -236,7 +230,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
     /// Re-opening the pane must not resurrect a chip the user just refused,
     /// and must not duplicate one already on screen.
     func testRefreshingIsAdditiveAndSkipsWhatIsShown() {
-        let settings = makeSettings()
+        let settings = makePolishingSettings()
         let model = makeModel(settings: settings, service: Service(), learned: ["Voxtral", "polishd"])
 
         model.refreshLearnedSuggestions()
@@ -250,7 +244,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
     /// it started. Its completion is the app's next chance to show the free
     /// chips, so it takes it.
     func testHostedRunFillsInLearnedChipsItNeverShowed() async {
-        let settings = makeSettings()
+        let settings = makePolishingSettings()
         let service = Service()
         service.reply = .success(#"["Qwen"]"#)
         let model = makeModel(settings: settings, service: service, learned: ["Voxtral"])
@@ -263,7 +257,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
     /// A chip on screen that the user added to their list while the run was
     /// going must not come back as a suggestion when the run lands.
     func testChipAddedDuringARunIsNotReofferedWhenItEnds() async {
-        let settings = makeSettings()
+        let settings = makePolishingSettings()
         let service = Service()
         service.reply = .success(#"["Qwen"]"#)
         let model = makeModel(settings: settings, service: service, learned: ["Voxtral"])
@@ -278,7 +272,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
     /// A hosted run costs minutes, so its findings lead — but the free chips
     /// the user has not acted on are not thrown away behind them.
     func testHostedRunLeadsAndKeepsUnactedLearnedChips() async {
-        let settings = makeSettings()
+        let settings = makePolishingSettings()
         let service = Service()
         service.reply = .success(#"["Qwen"]"#)
         let model = makeModel(settings: settings, service: service, learned: ["Voxtral"])
@@ -290,7 +284,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
     }
 
     func testNothingIsAddedWithoutAClick() async {
-        let settings = makeSettings()
+        let settings = makePolishingSettings()
         let service = Service()
         service.reply = .success(#"["Qwen", "MCP"]"#)
         let model = makeModel(settings: settings, service: service)
@@ -306,7 +300,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
     }
 
     func testDismissedSuggestionNeverReturnsEvenIfTheModelRepeatsIt() async {
-        let settings = makeSettings()
+        let settings = makePolishingSettings()
         let service = Service()
         service.reply = .success(#"["SessionStart", "MCP"]"#)
         let model = makeModel(settings: settings, service: service)
@@ -324,7 +318,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
     }
 
     func testAddingARefusedTermByHandForgetsTheRefusal() {
-        let settings = makeSettings()
+        let settings = makePolishingSettings()
         settings.dismissTermSuggestion("SessionStart")
         settings.dismissTermSuggestion("session start")
         XCTAssertEqual(settings.polishDismissedTermSuggestions, ["SessionStart"])
@@ -334,7 +328,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
     }
 
     func testAddAllMovesEverySuggestionIntoTheTerms() async {
-        let settings = makeSettings()
+        let settings = makePolishingSettings()
         let service = Service()
         service.reply = .success(#"["Qwen", "MCP"]"#)
         let model = makeModel(settings: settings, service: service)
@@ -347,7 +341,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
     }
 
     func testFailureAndEmptyHistoryAreReportedInOneShortSentence() async {
-        let settings = makeSettings()
+        let settings = makePolishingSettings()
         let service = Service()
         service.reply = .failure(LLMPolishingError.invalidResponse)
         let failing = makeModel(settings: settings, service: service)
@@ -361,7 +355,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
     }
 
     func testAFullTermsListKeepsTheChipAndSaysWhy() async {
-        let settings = makeSettings()
+        let settings = makePolishingSettings()
         settings.polishSpeakerTerms = (0..<SpeakerTerms.maxTerms).map { "Known\($0)x" }
         let service = Service()
         service.reply = .success(#"["Qwen"]"#)
@@ -376,7 +370,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
     }
 
     func testTheOldestRefusalIsTheOneTheCapDrops() {
-        let settings = makeSettings()
+        let settings = makePolishingSettings()
         for index in 0...SpeakerTermSuggestions.maxDismissed {
             settings.dismissTermSuggestion("Refused\(index)x")
         }
@@ -388,7 +382,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
     /// What the progress line shows, and the Stop button: the late answer of
     /// a stopped run is ignored and the row goes back to its button.
     func testARunReportsWhatItReadsSinceWhenAndCanBeStopped() async {
-        let settings = makeSettings()
+        let settings = makePolishingSettings()
         let service = GatedService()
         let start = Date(timeIntervalSince1970: 1_000)
         let model = SpeakerTermSuggestionModel(
@@ -416,7 +410,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
 
     /// The bundled 4B cannot do this (measured): no request is ever sent.
     func testNothingIsSentWhenSuggestionsAreUnavailable() async {
-        let settings = makeSettings()
+        let settings = makePolishingSettings()
         let service = Service()
         let model = SpeakerTermSuggestionModel(
             settings: settings, recentTexts: { ["a text"] }, service: { service },
@@ -428,7 +422,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
     }
 
     func testShowsAtMostTwelve() async {
-        let settings = makeSettings()
+        let settings = makePolishingSettings()
         let service = Service()
         let many = (0..<40).map { "Term\($0)x" }
         service.reply = .success(String(data: try! JSONSerialization.data(withJSONObject: many), encoding: .utf8)!)

@@ -5,10 +5,6 @@ import XCTest
 
 @MainActor
 final class DictationViewModelOverlayLifecycleTests: XCTestCase {
-    // DictationViewModel owns several app-lifetime services. Retain test instances
-    // for the process duration so teardown does not race service shutdown.
-    private static var retainedViewModels: [DictationViewModel] = []
-
     func testSessionOutputModeIsLatchedWhileSessionIsActive() {
         let settings = makeSettings(outputMode: .overlayBuffer)
         let overlayCoordinator = MockOverlayCoordinator()
@@ -472,7 +468,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
 
         let overlayCoordinator = MockOverlayCoordinator()
-        let polishingService = CapturingMockLLMPolishingService(resultText: "Hello world.")
+        let polishingService = FakePolishingService(returning: "Hello world.")
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
@@ -509,7 +505,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         let overlayCoordinator = MockOverlayCoordinator()
         // The model returns the input verbatim — no visible change to annotate.
-        let polishingService = CapturingMockLLMPolishingService(resultText: "hello world")
+        let polishingService = FakePolishingService(returning: "hello world")
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
@@ -568,7 +564,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
 
         let overlayCoordinator = MockOverlayCoordinator()
-        let polishingService = CapturingMockLLMPolishingService(resultText: "Polished text")
+        let polishingService = FakePolishingService(returning: "Polished text")
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
@@ -594,7 +590,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         await awaitStoppedSessionCommit(viewModel)
 
-        let request = await polishingService.lastRequest()
+        let request = await polishingService.lastRequest
         XCTAssertEqual(request?.inputText, "PostgreSQL rocks")
         XCTAssertEqual(request?.systemPrompt, "system instructions")
         XCTAssertEqual(
@@ -612,7 +608,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
 
         let overlayCoordinator = MockOverlayCoordinator()
-        let polishingService = CapturingMockLLMPolishingService(resultText: "Polished text")
+        let polishingService = FakePolishingService(returning: "Polished text")
         let configStore = MockAppConfigStore(
             replacementDictionary: ReplacementDictionary(entries: [
                 ReplacementEntry(replaceWith: "PostgreSQL", matches: ["postgres"]),
@@ -639,7 +635,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         await awaitStoppedSessionCommit(viewModel)
 
-        let request = await polishingService.lastRequest()
+        let request = await polishingService.lastRequest
         XCTAssertEqual(configStore.loadReplacementDictionaryCallCount, 0)
         XCTAssertEqual(request?.inputText, "postgres rocks")
         XCTAssertEqual(request?.userPrompts, ["Working text:\npostgres rocks"])
@@ -652,7 +648,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
 
         let overlayCoordinator = MockOverlayCoordinator()
-        let polishingService = FailingMockLLMPolishingService()
+        let polishingService = FakePolishingService(failing: MockPolishingError())
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
@@ -693,7 +689,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         settings.polishingBackendMode = .externalURL
 
         let overlayCoordinator = MockOverlayCoordinator()
-        let polishingService = NetworkFailingMockLLMPolishingService()
+        let polishingService = FakePolishingService(failing: LLMPolishingError.networkError("Connection refused"))
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
@@ -1052,50 +1048,6 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(viewModel.currentDictationEventText, "hello")
     }
 
-    /// Returns when the stop-commit has actually finished, by awaiting the
-    /// commit's own task.
-    ///
-    /// Call it directly after `finishStoppedSession`, with no suspension in
-    /// between: the task is read while the value that call just stored is
-    /// still there, and the task clears it on its own way out. A stop that
-    /// commits synchronously (nothing to polish) leaves it nil and is already
-    /// over by the time it returns.
-    ///
-    /// The deadline poll this replaces returned whichever way it went, so a
-    /// loaded runner asserted on a session still in flight — a wrong value on
-    /// a rerun-green test (#392/#395/#398).
-    private func awaitStoppedSessionCommit(
-        _ viewModel: DictationViewModel,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) async {
-        let commitTask = viewModel.polishAndCommitTask
-        await commitTask?.value
-        XCTAssertFalse(
-            viewModel.isCompletingStoppedSession,
-            "the commit must be over before anything reads what it wrote",
-            file: file,
-            line: line
-        )
-    }
-
-    private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {
-        let suiteName = "localvoxtral.DictationViewModelOverlayLifecycleTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-
-        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
-        settings.dictationOutputMode = outputMode
-        return settings
-    }
-
-    private func retainForTestProcessLifetime(_ viewModel: DictationViewModel) {
-        Self.retainedViewModels.append(viewModel)
-    }
-
     private static func formattedTimeout(_ timeout: TimeInterval) -> String {
         let seconds = max(1, Int(timeout.rounded()))
         return "\(seconds) \(seconds == 1 ? "second" : "seconds")"
@@ -1145,152 +1097,4 @@ private actor BlockingMockLLMPolishingService: LLMPolishingServicing {
     }
 }
 
-private actor CapturingMockLLMPolishingService: LLMPolishingServicing {
-    private let resultText: String
-    private var requests: [LLMPolishingRequest] = []
-
-    init(resultText: String) {
-        self.resultText = resultText
-    }
-
-    func polish(
-        request: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        requests.append(request)
-        return LLMPolishingResult(
-            rawText: request.inputText,
-            polishedText: resultText,
-            durationSeconds: 0.01
-        )
-    }
-
-    func lastRequest() -> LLMPolishingRequest? {
-        requests.last
-    }
-}
-
-private actor FailingMockLLMPolishingService: LLMPolishingServicing {
-    func polish(
-        request _: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        throw MockPolishingError()
-    }
-}
-
-private actor NetworkFailingMockLLMPolishingService: LLMPolishingServicing {
-    func polish(
-        request _: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        throw LLMPolishingError.networkError("Connection refused")
-    }
-}
-
 private struct MockPolishingError: Error {}
-
-private final class MockAppConfigStore: AppConfigServing {
-    private let replacementDictionary: ReplacementDictionary
-    private let promptTemplates: LLMPromptTemplates
-    private(set) var loadReplacementDictionaryCallCount = 0
-    private(set) var loadLLMPromptTemplatesCallCount = 0
-
-    init(
-        replacementDictionary: ReplacementDictionary = ReplacementDictionary(entries: []),
-        promptTemplates: LLMPromptTemplates = LLMPromptTemplates(
-            systemContent: "system",
-            userContent: "{{input_text}}"
-        )
-    ) {
-        self.replacementDictionary = replacementDictionary
-        self.promptTemplates = promptTemplates
-    }
-
-    func configDirectoryURL() -> URL {
-        FileManager.default.temporaryDirectory
-    }
-
-    func loadReplacementDictionary() -> ReplacementDictionary {
-        loadReplacementDictionaryCallCount += 1
-        return replacementDictionary
-    }
-
-    func loadLLMPromptTemplates() -> LLMPromptTemplates {
-        loadLLMPromptTemplatesCallCount += 1
-        return promptTemplates
-    }
-
-    func loadTerminalAppBundleIDs() -> [String] {
-        []
-    }
-}
-
-private struct BufferCall {
-    let displayText: String
-    let commitText: String
-}
-
-@MainActor
-private final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitOutcome: OverlayBufferCommitOutcome = .succeeded
-
-    var startSessionAnchors: [OverlayAnchor?] = []
-    var beginFinalizingCalls: [BufferCall] = []
-    var refreshCalls: [BufferCall] = []
-    var commitCallCount = 0
-    var dismissAfterHoldCallCount = 0
-    var lastDismissAfterHoldMinimumVisibility: TimeInterval?
-    var resetCallCount = 0
-    var captureLiveCommitTargetAppPIDCallCount = 0
-    var commitTargetAppPID: pid_t? = nil
-    var markPolishedCalls: [Bool] = []
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(
-            targetRect: CGRect(x: 0, y: 0, width: 100, height: 24),
-            source: .windowCenter
-        )
-    }
-
-    func startSession(preResolvedAnchor: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {
-        startSessionAnchors.append(preResolvedAnchor)
-    }
-
-    func beginFinalizing(displayBufferText: String, commitBufferText: String) {
-        beginFinalizingCalls.append(
-            BufferCall(displayText: displayBufferText, commitText: commitBufferText)
-        )
-    }
-
-    func refresh(displayBufferText: String, commitBufferText: String) {
-        refreshCalls.append(
-            BufferCall(displayText: displayBufferText, commitText: commitBufferText)
-        )
-    }
-
-    func commitIfNeeded(
-        using textCommitter: OverlayTextCommitting,
-        autoCopyEnabled: Bool
-    ) -> OverlayBufferCommitOutcome {
-        commitCallCount += 1
-        return commitOutcome
-    }
-
-    func dismissAfterHold(minimumVisibility: TimeInterval) {
-        dismissAfterHoldCallCount += 1
-        lastDismissAfterHoldMinimumVisibility = minimumVisibility
-    }
-
-    func reset() {
-        resetCallCount += 1
-    }
-
-    func captureLiveCommitTargetAppPID() {
-        captureLiveCommitTargetAppPIDCallCount += 1
-    }
-
-    func markPolished(_ polished: Bool) {
-        markPolishedCalls.append(polished)
-    }
-}

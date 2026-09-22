@@ -946,10 +946,6 @@ final class TerminalScreenContextTests: XCTestCase {
 /// directly instead.
 @MainActor
 final class TerminalScreenContextLifecycleTests: XCTestCase {
-    // DictationViewModel owns app-lifetime services; retain for the process
-    // duration so teardown does not race service shutdown.
-    private static var retainedViewModels: [DictationViewModel] = []
-
     private let loopback = URL(string: "http://127.0.0.1:8472/v1/chat/completions")!
 
     override func tearDown() async throws {
@@ -970,7 +966,7 @@ final class TerminalScreenContextLifecycleTests: XCTestCase {
         addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         let viewModel = DictationViewModel(settings: settings, startRuntimeServices: false)
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         return viewModel
     }
 

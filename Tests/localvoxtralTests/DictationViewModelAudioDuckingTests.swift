@@ -9,8 +9,6 @@ import XCTest
 /// so each abort route gets its own test rather than trusting one funnel.
 @MainActor
 final class DictationViewModelAudioDuckingTests: XCTestCase {
-    private static var retainedViewModels: [DictationViewModel] = []
-
     private static let deviceA = "device-a"
     private static let original: Float = 0.8
     private static var duckTarget: Float {
@@ -130,10 +128,10 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
 
         let viewModel = DictationViewModel(
             settings: settings,
-            overlayBufferCoordinator: DuckingNoopOverlayCoordinator(),
+            overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: false
         )
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
 
         let volume = FakeOutputVolumeControl(volume: Self.original)
         // A pinned clock and a sleep that does not sleep: this suite asserts
@@ -151,24 +149,4 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
         )
         return (viewModel, volume)
     }
-}
-
-private final class DuckingNoopOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitTargetAppPID: pid_t?
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(targetRect: .zero, source: .windowCenter)
-    }
-    func startSession(preResolvedAnchor: OverlayAnchor?, claudeJoin: OverlayClaudeJoinBadge) {}
-    func beginFinalizing(displayBufferText: String, commitBufferText: String) {}
-    func refresh(displayBufferText: String, commitBufferText: String) {}
-    @discardableResult
-    func commitIfNeeded(
-        using textCommitter: OverlayTextCommitting, autoCopyEnabled: Bool
-    ) -> OverlayBufferCommitOutcome {
-        .succeeded
-    }
-    func dismissAfterHold(minimumVisibility: TimeInterval) {}
-    func reset() {}
-    func captureLiveCommitTargetAppPID() {}
 }

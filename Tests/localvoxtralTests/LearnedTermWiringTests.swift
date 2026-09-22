@@ -7,14 +7,12 @@ import XCTest
 /// nothing else.
 @MainActor
 final class LearnedTermWiringTests: XCTestCase {
-    private static var retainedViewModels: [DictationViewModel] = []
-
     private func makeViewModel(
         outcome: RepoVocabularyMatcher.GroundingOutcome?,
         repositoryRoot: String? = nil,
-        service: any LLMPolishingServicing = IdentityPolishingService()
+        service: any LLMPolishingServicing = FakePolishingService()
     ) -> (DictationViewModel, LearnedTermStore) {
-        let settings = makeSettings()
+        let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = true
         settings.agentPolishProfileEnabled = false
         settings.polishingBackendMode = .externalURL
@@ -40,29 +38,22 @@ final class LearnedTermWiringTests: XCTestCase {
         viewModel.debugRepoVocabularyRootOverride = repositoryRoot
         let store = LearnedTermStore(fileURL: nil)
         viewModel.learnedTermStore = store
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
         return (viewModel, store)
     }
 
-    /// Returns when the commit has actually finished, by awaiting the commit's
-    /// own task rather than a deadline: grounding, the merge and the learned
-    /// terms all land inside `polishAndCommitTask`, and a poll that gives up
-    /// after a second lets a loaded runner assert on a session still in flight
-    /// (#395). The task is read before the first suspension, while the value
-    /// `finishStoppedSession` just stored is still there — the task clears it
-    /// on its own way out.
+    /// Grounding, the merge and the learned terms all land inside
+    /// `polishAndCommitTask`, so the commit is awaited before anything is read.
     private func commit(_ viewModel: DictationViewModel, text: String) async {
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.currentDictationEventText = text
         viewModel.finishStoppedSession(promotePendingSegment: false)
-        let commitTask = viewModel.polishAndCommitTask
-        XCTAssertNotNil(commitTask, "the commit these tests assert on is the polish task")
-        await commitTask?.value
-        XCTAssertFalse(
-            viewModel.isCompletingStoppedSession,
-            "the commit must be over before anything reads what it wrote"
+        XCTAssertNotNil(
+            viewModel.polishAndCommitTask,
+            "the commit these tests assert on is the polish task"
         )
+        await awaitStoppedSessionCommit(viewModel)
         viewModel.learnedTermStore?.waitForPendingWrites()
     }
 
@@ -179,13 +170,13 @@ final class LearnedTermWiringTests: XCTestCase {
     /// The point of the whole feature: a spelling confirmed in this project
     /// corrects a later dictation with no repo, screen or session hit at all.
     func testConfirmedTermGroundsALaterDictationWithNoLiveSource() async {
-        let recording = RecordingPolishingService()
+        let recording = FakePolishingService()
         let (viewModel, store) = makeViewModel(outcome: nil, service: recording)
         seed(store, term: "useAuth.ts", dictations: 3)
 
         await commit(viewModel, text: "open useauth.ts please")
 
-        let request = await recording.request
+        let request = await recording.lastRequest
         XCTAssertEqual(
             request?.inputText, "open useAuth.ts please",
             "the remembered spelling is placed before the model call, like any other source"
@@ -195,13 +186,13 @@ final class LearnedTermWiringTests: XCTestCase {
     /// Below the bar, nothing is used: two sightings can be the same mistake
     /// twice, and a mistake that grounds is a mistake that spreads.
     func testUnconfirmedTermDoesNotGroundADictation() async {
-        let recording = RecordingPolishingService()
+        let recording = FakePolishingService()
         let (viewModel, store) = makeViewModel(outcome: nil, service: recording)
         seed(store, term: "useAuth.ts", dictations: 2)
 
         await commit(viewModel, text: "open useauth.ts please")
 
-        let request = await recording.request
+        let request = await recording.lastRequest
         XCTAssertEqual(request?.inputText, "open useauth.ts please")
     }
 
@@ -222,97 +213,4 @@ final class LearnedTermWiringTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func makeSettings() -> SettingsStore {
-        let suiteName = "localvoxtral.LearnedTermWiringTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-        let settings = SettingsStore(
-            defaults: defaults, environment: [:], secretStore: InMemorySecretStore()
-        )
-        settings.dictationOutputMode = .overlayBuffer
-        return settings
-    }
-}
-
-@MainActor
-private final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitTargetAppPID: pid_t? = nil
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(
-            targetRect: CGRect(x: 0, y: 0, width: 100, height: 24),
-            source: .windowCenter
-        )
-    }
-
-    func startSession(preResolvedAnchor _: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
-    func beginFinalizing(displayBufferText _: String, commitBufferText _: String) {}
-    func refresh(displayBufferText _: String, commitBufferText _: String) {}
-
-    func commitIfNeeded(
-        using _: OverlayTextCommitting,
-        autoCopyEnabled _: Bool
-    ) -> OverlayBufferCommitOutcome {
-        .succeeded
-    }
-
-    func dismissAfterHold(minimumVisibility _: TimeInterval) {}
-    func reset() {}
-    func captureLiveCommitTargetAppPID() {}
-}
-
-private final class MockAppConfigStore: AppConfigServing {
-    private let promptTemplates: LLMPromptTemplates
-    private let agentPromptTemplates: LLMPromptTemplates
-
-    init(promptTemplates: LLMPromptTemplates, agentPromptTemplates: LLMPromptTemplates) {
-        self.promptTemplates = promptTemplates
-        self.agentPromptTemplates = agentPromptTemplates
-    }
-
-    func configDirectoryURL() -> URL { FileManager.default.temporaryDirectory }
-    func loadReplacementDictionary() -> ReplacementDictionary { ReplacementDictionary(entries: []) }
-    func loadLLMPromptTemplates() -> LLMPromptTemplates { promptTemplates }
-
-    func loadLLMPromptTemplates(profile: PolishPromptProfile) -> LLMPromptTemplates {
-        profile == .agent ? agentPromptTemplates : promptTemplates
-    }
-
-    func loadTerminalAppBundleIDs() -> [String] { [] }
-}
-
-/// Keeps the request the session built, which is where a grounding decision
-/// becomes observable.
-private actor RecordingPolishingService: LLMPolishingServicing {
-    private(set) var request: LLMPolishingRequest?
-
-    func polish(
-        request: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        self.request = request
-        return LLMPolishingResult(
-            rawText: request.inputText,
-            polishedText: request.inputText,
-            durationSeconds: 0.01
-        )
-    }
-}
-
-/// Returns the input unchanged: what the model does with the prompt is not
-/// this file's subject.
-private actor IdentityPolishingService: LLMPolishingServicing {
-    func polish(
-        request: LLMPolishingRequest,
-        configuration _: LLMPolishingConfiguration
-    ) async throws -> LLMPolishingResult {
-        LLMPolishingResult(
-            rawText: request.inputText,
-            polishedText: request.inputText,
-            durationSeconds: 0.01
-        )
-    }
 }

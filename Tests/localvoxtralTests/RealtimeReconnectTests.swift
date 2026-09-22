@@ -12,10 +12,6 @@ import XCTest
 /// stop can be landed at an exact point inside an attempt.
 @MainActor
 final class RealtimeReconnectTests: XCTestCase {
-    // DictationViewModel owns app-lifetime services; retain test instances for
-    // the process duration so teardown does not race service shutdown.
-    private static var retainedViewModels: [DictationViewModel] = []
-
     // MARK: - Policy
 
     func testBackoffGrowsAndIsCapped() {
@@ -520,17 +516,17 @@ final class RealtimeReconnectTests: XCTestCase {
 
         let viewModel = DictationViewModel(
             settings: settings,
-            overlayBufferCoordinator: ReconnectNoopOverlayCoordinator(),
+            overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: false
         )
         // Session start reads config through the store — never the real config
         // directory.
-        viewModel.appConfigStore = ReconnectHermeticConfigStore()
+        viewModel.appConfigStore = MockAppConfigStore()
         // Any test reaching a session teardown arms the real connect-timeout
         // alert on a process-retained view model; suppress it or it fires
         // inside whatever test runs ~10 s later.
         viewModel.isShowingConnectionFailureAlert = true
-        Self.retainedViewModels.append(viewModel)
+        retainForTestProcessLifetime(viewModel)
 
         let client = FakeReconnectRealtimeClient()
         viewModel.activeRealtimeClient = client
@@ -599,44 +595,4 @@ private final class FakeReconnectRealtimeClient: RealtimeClient, @unchecked Send
     func sendCommit(final: Bool) {
         state.withLock { $0.commits.append(final) }
     }
-}
-
-private final class ReconnectHermeticConfigStore: AppConfigServing {
-    func configDirectoryURL() -> URL {
-        FileManager.default.temporaryDirectory
-    }
-
-    func loadReplacementDictionary() -> ReplacementDictionary {
-        ReplacementDictionary(entries: [])
-    }
-
-    func loadLLMPromptTemplates() -> LLMPromptTemplates {
-        LLMPromptTemplates(systemContent: "system", userContent: "{{input_text}}")
-    }
-
-    func loadTerminalAppBundleIDs() -> [String] {
-        []
-    }
-}
-
-@MainActor
-private final class ReconnectNoopOverlayCoordinator: OverlayBufferSessionCoordinating {
-    var commitTargetAppPID: pid_t? = nil
-
-    func resolveAnchorNow() -> OverlayAnchor {
-        OverlayAnchor(targetRect: .zero, source: .windowCenter)
-    }
-    func startSession(preResolvedAnchor: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
-    func beginFinalizing(displayBufferText: String, commitBufferText: String) {}
-    func refresh(displayBufferText: String, commitBufferText: String) {}
-    @discardableResult
-    func commitIfNeeded(
-        using textCommitter: OverlayTextCommitting,
-        autoCopyEnabled: Bool
-    ) -> OverlayBufferCommitOutcome {
-        .succeeded
-    }
-    func dismissAfterHold(minimumVisibility: TimeInterval) {}
-    func reset() {}
-    func captureLiveCommitTargetAppPID() {}
 }
