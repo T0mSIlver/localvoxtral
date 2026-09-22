@@ -325,6 +325,26 @@ jobs:
             --skip PolishContextPreparationTests \
             --enable-code-coverage
 
+      - name: Coverage summary
+        # Visibility, not a gate: lets a PR's Proof section cite real coverage
+        # of the changed files instead of "a test exists".
+        #
+        # BEFORE the cost-budget step, not after it: SwiftPM writes the profile
+        # to one fixed path under .build/debug/codecov, so the second `swift
+        # test` of the job overwrites the first's counters. Read here, this
+        # reports the unit suite; read after the cost budgets it would silently
+        # report their 16 filtered cases instead, and nothing would go red.
+        if: steps.ci_scope.outputs.docs_only != 'true'
+        run: |
+          set -euo pipefail
+          BIN="$(find .build -type f -name localvoxtralPackageTests -path '*.xctest/Contents/MacOS/*' | head -n 1)"
+          PROF="$(find .build -type f -name default.profdata -path '*debug*' | head -n 1)"
+          if [[ -z "$BIN" || -z "$PROF" ]]; then
+            echo "coverage data not found under .build"; exit 1
+          fi
+          xcrun llvm-cov report "$BIN" -instr-profile "$PROF" \
+            -ignore-filename-regex '(Tests|\.build)/'
+
       - name: Test (cost budgets)
         # PolishContextPreparationTests measures how much work a preparation
         # costs, so its cases are slow ON PURPOSE and cannot be made faster
@@ -360,20 +380,6 @@ jobs:
           path: ${{ runner.temp }}/localvoxtral-cost-budget-tests.log
           if-no-files-found: warn
           retention-days: 7
-
-      - name: Coverage summary
-        # Visibility, not a gate: lets a PR's Proof section cite real coverage
-        # of the changed files instead of "a test exists".
-        if: steps.ci_scope.outputs.docs_only != 'true'
-        run: |
-          set -euo pipefail
-          BIN="$(find .build -type f -name localvoxtralPackageTests -path '*.xctest/Contents/MacOS/*' | head -n 1)"
-          PROF="$(find .build -type f -name default.profdata -path '*debug*' | head -n 1)"
-          if [[ -z "$BIN" || -z "$PROF" ]]; then
-            echo "coverage data not found under .build"; exit 1
-          fi
-          xcrun llvm-cov report "$BIN" -instr-profile "$PROF" \
-            -ignore-filename-regex '(Tests|\.build)/'
 
       - name: Package app bundle
         # FORK PRs ONLY. A fork gets no mac-lanes job, so this is the only
