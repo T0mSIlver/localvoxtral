@@ -70,7 +70,19 @@ there is not.
   (3) the session is on `.none` whenever it holds no socket — before a dial,
   from a `.disconnected` until the reconnect's next `connect()`, and after a
   cancel. That window is what refuses a straggler emitted before the
-  generation has moved on.
+  generation has moved on;
+  (4) stamping the events is only HALF the job, and the half a reviewer had to
+  find (Codex review of #448). A frame handler also mutates handshake and
+  finalization state, under a different lock acquisition from the one that
+  admitted the frame — so every such mutation re-checks the frame's generation
+  through `isCurrentConnectionLocked`, inside the lock that makes it. Applied
+  to the socket that REPLACED it, a stale `session.created` marks the new
+  socket handshaked and drains its pending queue onto the wire ahead of its own
+  `session.update`, and a stale `transcription.done` clears a commit gate the
+  new socket is still waiting on. Neither shows up as a wrong event, so the
+  view model's check cannot see either. `RealtimeAPIWebSocketClient`'s
+  session-ready timer carries the same re-check: cancelling a
+  `DispatchSourceTimer` does not unqueue a handler already on its way.
   This replaced three guards that stood in for the missing identity (Codex
   review of #415): the `.disconnected` ignored when
   `activeRealtimeClient.isConnected`, and the wholesale refusal of transcript

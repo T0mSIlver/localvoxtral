@@ -174,6 +174,90 @@ final class WebSocketClientLifecycleTests: XCTestCase {
         XCTAssertEqual(collector.generations(), [first, second])
     }
 
+    func testAStaleSessionCreatedDoesNotHandTheNewSocketAHandshakeItNeverGot() {
+        // Stamping the events is only half the job. `session.created` also
+        // mutates handshake state and drains the pending queue onto the wire —
+        // applied to the socket that replaced it, that sends the new socket's
+        // queued audio ahead of its own session.update, which the emitted
+        // status being dropped later does nothing about.
+        let client = RealtimeAPIWebSocketClient()
+        let collector = EventCollector()
+        client.setEventHandler { collector.append($0, from: $1) }
+
+        let (session1, task1) = makeWebSocketTask()
+        let (session2, task2) = makeWebSocketTask()
+        defer {
+            task1.cancel(); session1.invalidateAndCancel()
+            task2.cancel(); session2.invalidateAndCancel()
+        }
+
+        client.debugPrimeConnectedStateForTesting(task: task1)
+        let retired = client.connectionGeneration
+
+        // The swap: the socket the frame was read from is gone, its
+        // replacement is up and has its own queued frame, unsent.
+        client.debugPrimeConnectedStateForTesting(task: task2)
+        XCTAssertNotEqual(client.connectionGeneration, retired)
+        XCTAssertEqual(client.debugStateSnapshot().pendingMessageCount, 1)
+
+        // The delayed handler for the retired socket's frame.
+        client.debugHandleFrameForTesting(
+            json: ["type": "session.created"], from: retired)
+
+        let after = client.debugStateSnapshot()
+        XCTAssertFalse(
+            after.hasReceivedSessionCreated,
+            "the new socket has not had its own session.created"
+        )
+        XCTAssertEqual(
+            after.pendingMessageCount, 1,
+            "and its queue must still be waiting for it"
+        )
+        XCTAssertTrue(
+            after.hasSessionReadyTimer,
+            "nor may the stale frame cancel the new socket's readiness gate"
+        )
+    }
+
+    func testAStaleTranscriptionDoneDoesNotClearTheNewSocketsCommitGate() {
+        // The stop path waits for `transcriptionFinalized` before it
+        // disconnects. A `done` read off the retiring socket, applied here,
+        // would close that gate and let the stop finish on a socket that has
+        // not answered its final commit.
+        let client = RealtimeAPIWebSocketClient()
+        let collector = EventCollector()
+        client.setEventHandler { collector.append($0, from: $1) }
+
+        let (session1, task1) = makeWebSocketTask()
+        let (session2, task2) = makeWebSocketTask()
+        defer {
+            task1.cancel(); session1.invalidateAndCancel()
+            task2.cancel(); session2.invalidateAndCancel()
+        }
+
+        client.debugPrimeConnectedStateForTesting(task: task1)
+        let retired = client.connectionGeneration
+
+        client.debugPrimeConnectedStateForTesting(task: task2)
+        client.debugPrimeFinalCommitGateForTesting()
+        XCTAssertTrue(client.debugStateSnapshot().isAwaitingFinalCommitDone)
+
+        client.debugHandleFrameForTesting(
+            json: ["type": "transcription.done", "text": "from the retired socket"],
+            from: retired
+        )
+
+        XCTAssertTrue(
+            client.debugStateSnapshot().isAwaitingFinalCommitDone,
+            "the live socket still owes its own transcription.done"
+        )
+        XCTAssertFalse(
+            collector.snapshot().contains { if case .transcriptionFinalized = $0 { return true }
+                return false },
+            "and the stop must not be told finalization happened"
+        )
+    }
+
     // MARK: - Stale Task Identity
 
     func testRealtimeTerminalErrorWithStaleTaskIsNoOp() {

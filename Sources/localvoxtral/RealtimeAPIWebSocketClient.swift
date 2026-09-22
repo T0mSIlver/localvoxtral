@@ -197,6 +197,11 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
             emit(.status("Session ready."), from: generation)
             let startup: (modelName: String, shouldSendUpdate: Bool, queuedMessages: [String])? =
                 state.withLock { s in
+                    // The socket this frame was read from, not whichever one
+                    // the client holds now: a stale handshake applied here
+                    // drains the NEW socket's queue ahead of its own
+                    // session.update.
+                    guard isCurrentConnectionLocked(s.base, generation) else { return nil }
                     guard s.base.socketState == .connected else { return nil }
                     guard !s.hasReceivedSessionCreated else { return nil }
                     s.hasReceivedSessionCreated = true
@@ -238,6 +243,9 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
             }
 
             let doneAction: DoneAction = state.withLock { s in
+                // A `done` the retiring socket was read for must not clear the
+                // commit gate its replacement is still waiting on.
+                guard isCurrentConnectionLocked(s.base, generation) else { return .none }
                 s.isGenerationInProgress = false
 
                 switch s.finalCommitCompletionGate {
@@ -258,7 +266,10 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
                 emit(.transcriptionFinalized, from: generation)
             }
         case "error":
-            state.withLock { $0.isGenerationInProgress = false }
+            state.withLock { s in
+                guard isCurrentConnectionLocked(s.base, generation) else { return }
+                s.isGenerationInProgress = false
+            }
             let message =
                 findString(in: json, matching: ["message", "error", "detail"])
                 ?? "Unknown realtime error."
@@ -390,6 +401,11 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
             let startup:
                 (modelName: String, shouldSendUpdate: Bool, queuedMessages: [String])? = self.state
                     .withLock { s in
+                        // Cancelling a DispatchSourceTimer does not unqueue a
+                        // handler already on its way: without this, a timer
+                        // armed for the previous socket puts the NEW one into
+                        // compatibility mode and flushes its queue early.
+                        guard self.isCurrentConnectionLocked(s.base, generation) else { return nil }
                         guard s.base.socketState == .connected else { return nil }
                         guard !s.hasReceivedSessionCreated else { return nil }
                         self.stopSessionReadyTimerLocked(&s)
@@ -513,6 +529,8 @@ extension RealtimeAPIWebSocketClient {
         let pendingMessageCount: Int
         let hasUncommittedAudio: Bool
         let isGenerationInProgress: Bool
+        let hasReceivedSessionCreated: Bool
+        let isAwaitingFinalCommitDone: Bool
     }
 
     /// Keeps view-model unit tests on the complete session-start path without
@@ -551,6 +569,12 @@ extension RealtimeAPIWebSocketClient {
         handleTerminalSocketError(for: task, errorMessage: errorMessage)
     }
 
+    /// Put the client where a stop-finalization leaves it: the final commit is
+    /// out and the socket owes a `transcription.done` for it.
+    func debugPrimeFinalCommitGateForTesting() {
+        state.withLock { $0.finalCommitCompletionGate = .awaitingFinalCommitTranscriptionDone }
+    }
+
     func debugSetGenerationTrackingState(
         hasUncommittedAudio: Bool,
         isGenerationInProgress: Bool
@@ -570,7 +594,10 @@ extension RealtimeAPIWebSocketClient {
                 hasSessionReadyTimer: s.sessionReadyTimer != nil,
                 pendingMessageCount: s.pendingMessages.count,
                 hasUncommittedAudio: s.hasUncommittedAudio,
-                isGenerationInProgress: s.isGenerationInProgress
+                isGenerationInProgress: s.isGenerationInProgress,
+                hasReceivedSessionCreated: s.hasReceivedSessionCreated,
+                isAwaitingFinalCommitDone: s.finalCommitCompletionGate
+                    == .awaitingFinalCommitTranscriptionDone
             )
         }
     }

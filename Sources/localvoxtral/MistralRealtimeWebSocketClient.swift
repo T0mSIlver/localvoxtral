@@ -336,7 +336,13 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
             debugLog("recv event type=\(type)")
         }
         let receivedAt = now()
-        if let silence = state.withLock({ $0.health?.serverEvent(at: receivedAt) ?? nil }) {
+        // Every mutation below is judged against the socket the frame was read
+        // from, never against whichever one the client holds by now.
+        let silenceReport: Double? = state.withLock { s in
+            guard isCurrentConnectionLocked(s.base, generation) else { return nil }
+            return s.health?.serverEvent(at: receivedAt) ?? nil
+        }
+        if let silence = silenceReport {
             logger.notice(
                 "mistral realtime server resumed after \(String(format: "%.1f", silence), privacy: .public)s of silence (\(type, privacy: .public))"
             )
@@ -361,6 +367,7 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         case "error":
             let message = Self.errorMessage(from: json)
             state.withLock { s in
+                guard isCurrentConnectionLocked(s.base, generation) else { return }
                 s.finalCommitCompletionGate = .idle
             }
             logger.notice("mistral realtime error: \(message, privacy: .public)")
@@ -380,6 +387,9 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         requestID: String?, from generation: RealtimeConnectionGeneration
     ) {
         let queuedMessages: [PendingFrame]? = state.withLock { s in
+            // A stale handshake applied here would replay the NEW socket's
+            // queue ahead of the audio-format declaration it owes the server.
+            guard isCurrentConnectionLocked(s.base, generation) else { return nil }
             guard s.base.socketState == .connected else { return nil }
             guard !s.hasReceivedSessionCreated else { return nil }
             s.hasReceivedSessionCreated = true
@@ -415,6 +425,9 @@ final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchec
         }
 
         let doneAction: DoneAction = state.withLock { s in
+            // A `done` the retiring socket was read for must not clear the
+            // commit gate its replacement is still waiting on.
+            guard isCurrentConnectionLocked(s.base, generation) else { return .none }
             switch s.finalCommitCompletionGate {
             case .idle:
                 return .none

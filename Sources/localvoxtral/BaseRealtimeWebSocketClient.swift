@@ -86,6 +86,23 @@ class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSes
         withBaseState { $0.connectionGeneration }
     }
 
+    /// Whether `generation` is still the socket this client holds.
+    ///
+    /// Call it INSIDE the lock that is about to mutate state on a frame's
+    /// behalf. Stamping the events is only half the job: `emit(_:from:)` keeps
+    /// a retired socket's events off the session, but a frame handler also
+    /// mutates handshake and finalization state, and the lock it does that
+    /// under is a different acquisition from the one that admitted the frame.
+    /// Applied to the socket that REPLACED it, a stale `session.created` drains
+    /// the new socket's pending queue onto the wire ahead of its own
+    /// `session.update`, and a stale `transcription.done` clears a commit gate
+    /// the new socket is still waiting on. Neither shows up as a wrong event.
+    func isCurrentConnectionLocked(
+        _ s: BaseState, _ generation: RealtimeConnectionGeneration
+    ) -> Bool {
+        s.connectionGeneration == generation
+    }
+
     func debugLog(_ message: String) {
         guard debugLoggingEnabled else { return }
         logger.debug("\(message)")
@@ -215,6 +232,15 @@ class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSes
     /// read from, which is the whole point of the stamp.
     func debugHandleFrameForTesting(json: [String: Any]) {
         handle(json: json, from: currentConnectionGeneration)
+    }
+
+    /// Drive one parsed frame as if a socket that is no longer current had been
+    /// read for it — the delayed-handler case a live swap cannot be made to
+    /// reproduce on demand.
+    func debugHandleFrameForTesting(
+        json: [String: Any], from generation: RealtimeConnectionGeneration
+    ) {
+        handle(json: json, from: generation)
     }
     #endif
 
