@@ -460,6 +460,108 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
     }
 
+    // MARK: - History retention on the save path
+
+    /// Finishes one overlay dictation of `text` against `store`.
+    private func finishDictation(
+        _ text: String, retention: DictationHistoryRetention, store: DictationSessionStore
+    ) -> DictationViewModel {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.dictationHistoryRetention = retention
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = MockAppConfigStore()
+        viewModel.sessionStore = store
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = text
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+        return viewModel
+    }
+
+    func testADictationIsSavedAndOlderOnesPastTheRetentionAreTrimmed() async throws {
+        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let longAgo = Date(timeIntervalSince1970: 1_000_000)
+        store.save(
+            DictationSessionRecord(
+                startedAt: longAgo, finishedAt: longAgo, rawText: "from 1970",
+                provider: "p", model: "m", outputMode: "overlay_buffer",
+                status: .sttCompleted, commitSucceeded: true))
+
+        _ = finishDictation("hello world", retention: .days7, store: store)
+
+        let entries = await store.entries()
+        XCTAssertEqual(entries.map(\.rawText), ["hello world"])
+    }
+
+    /// Turning history off deletes what is saved. A dictation made under off
+    /// runs that delete again, so one that failed does not leave the archive
+    /// on disk until the next launch.
+    func testUnderOffADictationIsNotSavedAndWhatWasLeftIsDeleted() async throws {
+        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let longAgo = Date(timeIntervalSince1970: 1_000_000)
+        store.save(
+            DictationSessionRecord(
+                startedAt: longAgo, finishedAt: longAgo, rawText: "from 1970",
+                provider: "p", model: "m", outputMode: "overlay_buffer",
+                status: .sttCompleted, commitSucceeded: true))
+
+        _ = finishDictation("hello world", retention: .off, store: store)
+
+        let remaining = await store.count()
+        XCTAssertEqual(remaining, 0)
+    }
+
+    func testTurningHistoryOffStopsATermSuggestionPassThatIsReadingIt() async throws {
+        /// Never answers: the pass stays in flight until something cancels it.
+        final class SilentService: LLMPolishingServicing {
+            func polish(
+                request: LLMPolishingRequest, configuration: LLMPolishingConfiguration
+            ) async throws -> LLMPolishingResult {
+                // Never waited out: the test cancels it.
+                try await Task.sleep(for: .seconds(86_400))
+                throw CancellationError()
+            }
+        }
+
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.polishingBackendMode = .externalURL
+        settings.llmPolishingEnabled = true
+        settings.llmPolishingEndpointURL = "http://127.0.0.1:9/v1/chat/completions"
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false
+        )
+        viewModel.llmPolishingService = SilentService()
+        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let longAgo = Date(timeIntervalSince1970: 1_000_000)
+        store.save(
+            DictationSessionRecord(
+                startedAt: longAgo, finishedAt: longAgo, rawText: "something I said",
+                provider: "p", model: "m", outputMode: "overlay_buffer",
+                status: .sttCompleted, commitSucceeded: true))
+        viewModel.sessionStore = store
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.termSuggestions.start()
+        for _ in 0..<1_000 where viewModel.termSuggestions.phase != .loading {
+            await Task.yield()
+        }
+        XCTAssertEqual(viewModel.termSuggestions.phase, .loading)
+
+        settings.dictationHistoryRetention = .off
+        viewModel.applyDictationHistoryRetention(now: longAgo)
+
+        XCTAssertEqual(viewModel.termSuggestions.phase, .idle)
+        XCTAssertEqual(viewModel.termSuggestions.unavailableReason, "Needs dictation history.")
+    }
+
     // MARK: - F6: polished badge flag + raw-transcript copy affordance
 
     func testPolishChangedCommitFlagsBadgeAndRetainsRawTranscript() async {
