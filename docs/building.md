@@ -24,5 +24,6 @@ kernels — only the xcodebuild lane inside `package_app.sh` can, which is why
 
 Working from a non-Mac machine, wanting to run the integration or eval
 lanes, or contributing a change? See [CONTRIBUTING.md](../CONTRIBUTING.md)
-and the agent guide ([AGENTS.md](../AGENTS.md)) — the latter documents the
-remote-build workflow and the full test-tier matrix.
+and the agent guide ([AGENTS.md](../AGENTS.md)), which documents the
+remote-build workflow. The full test-tier matrix is in
+[docs/agent/test-tiers.md](agent/test-tiers.md).
