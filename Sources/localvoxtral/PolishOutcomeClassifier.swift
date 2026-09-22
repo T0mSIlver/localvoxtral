@@ -96,6 +96,12 @@ enum PolishOutcomeClassifier {
         }
     }
 
+    /// One line for a polish request that outlived its timeout. The overlay commits the
+    /// unpolished transcript on any polish failure, so nothing dictated is lost.
+    static func llmPolishingTimeoutMessage(seconds: TimeInterval) -> String {
+        "Polishing took longer than \(Int(seconds.rounded())) seconds, so the transcript was not polished."
+    }
+
     /// ONE LINE for a polish request the endpoint answered with a non-2xx
     /// status — the hosted-provider failure mode (a wrong API key, a body
     /// field the provider does not accept, an exhausted quota). It names the
@@ -109,12 +115,6 @@ enum PolishOutcomeClassifier {
     /// The RAW body never appears here — this text reaches the alert and (via
     /// the technical details) `lastError`, which Settings renders as the
     /// one-line failure summary. The body goes to the log.
-    /// One line for a polish request that outlived its timeout. The overlay commits the
-    /// unpolished transcript on any polish failure, so nothing dictated is lost.
-    static func llmPolishingTimeoutMessage(seconds: TimeInterval) -> String {
-        "Polishing took longer than \(Int(seconds.rounded())) seconds, so the transcript was not polished."
-    }
-
     static func llmPolishingRejectionMessage(statusCode: Int, body: String) -> String {
         let reason: String
         switch statusCode {

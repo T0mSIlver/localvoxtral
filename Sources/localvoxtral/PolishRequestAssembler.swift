@@ -165,7 +165,6 @@ enum PolishRequestAssembler {
             )
         }
 
-
         // Exact repo/clipboard bytes and their ASR spans have
         // already been selected by the deterministic matcher. Put
         // those bytes into the working text before the single LLM
