@@ -107,7 +107,8 @@ struct localvoxtralApp: App {
                 settings: appDelegate.settingsStore,
                 viewModel: appDelegate.viewModel,
                 backendManager: appDelegate.backendManager,
-                navigator: appDelegate.settingsNavigator
+                navigator: appDelegate.settingsNavigator,
+                loginItem: appDelegate.loginItemController
             )
             // Fixed width, resizable height: the two-column layout has a fixed
             // 208pt sidebar and dense right-hand rows, so horizontal resizing
@@ -148,6 +149,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let backendManager: BackendManager
     let viewModel: DictationViewModel
     let settingsNavigator = SettingsNavigator()
+    /// "Open localvoxtral at login". Built here so the pane reads the system's
+    /// registration once per launch rather than on every view update.
+    let loginItemController = LoginItemController()
     let dockIconPolicy = DockIconPolicy(apply: AppDelegate.applyActivationPolicy)
 
     private var onboardingController: OnboardingWindowController?
@@ -287,8 +291,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
         reconcileBundledConfigDefaults()
         viewModel.preflightConfiguredLocalNetworkEndpoints()
-        guard !settingsStore.onboardingCompleted else { return }
-        presentOnboarding()
+        switch LaunchWindowPolicy.decide(
+            onboardingCompleted: settingsStore.onboardingCompleted,
+            opensWindowAtLaunch: settingsStore.opensWindowAtLaunch
+        ) {
+        case .onboarding:
+            presentOnboarding()
+        case .window:
+            openWindow(on: .history)
+        case .nothing:
+            break
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -1035,7 +1048,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             viewModel: viewModel,
             backendManager: backendManager,
             dockIconPolicy: dockIconPolicy,
-            openEndpointsSettings: { [weak self] in self?.openEndpointsSettings() }
+            openEndpointsSettings: { [weak self] in self?.openWindow(on: .endpoints) }
         )
         controller.onFinished = { [weak self] in
             self?.onboardingController = nil
@@ -1049,8 +1062,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.present()
     }
 
-    private func openEndpointsSettings() {
-        settingsNavigator.selectedTab = .endpoints
+    /// Brings up the app's one window on `tab`. The Settings scene hosts it,
+    /// History and Insights included, so this is also how the window opens on
+    /// a pane that is not a settings pane.
+    private func openWindow(on tab: SettingsTab) {
+        settingsNavigator.selectedTab = tab
         NSApp.activate(ignoringOtherApps: true)
         // AppKit entry point for the SwiftUI `Settings` scene on macOS 14+.
         NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)

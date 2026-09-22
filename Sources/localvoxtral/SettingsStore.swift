@@ -337,6 +337,7 @@ final class SettingsStore {
         // Legacy global backend mode. Read only for one-time migration.
         static let backendMode = "settings.backend_mode"
         static let onboardingCompleted = "settings.onboarding_completed"
+        static let opensWindowAtLaunch = "settings.opens_window_at_launch"
         static let dictationOutputMode = "settings.dictation_output_mode"
         static let dictationShortcutMode = "settings.dictation_shortcut_mode"
         static let autoCopyEnabled = "settings.auto_copy_enabled"
@@ -496,6 +497,14 @@ final class SettingsStore {
     /// The General settings pane's "Re-run setup…" resets it to false.
     var onboardingCompleted: Bool {
         didSet { defaults.set(onboardingCompleted, forKey: Keys.onboardingCompleted) }
+    }
+
+    /// Whether a finished launch opens the localvoxtral window on History.
+    /// Off by default: the app is a menu bar app, and a login-item launch
+    /// would otherwise put a window on screen at every login (#449). A first
+    /// launch ignores it — the onboarding wizard is the only window it shows.
+    var opensWindowAtLaunch: Bool {
+        didSet { defaults.set(opensWindowAtLaunch, forKey: Keys.opensWindowAtLaunch) }
     }
 
     var realtimeAPIEndpointURL: String {
@@ -1257,6 +1266,8 @@ final class SettingsStore {
         )
         mistralModelCatalog = Self.loadMistralModelCatalog(from: defaults)
 
+        opensWindowAtLaunch = Self.loadBool(
+            defaults: defaults, key: Keys.opensWindowAtLaunch, fallback: false)
         autoCopyEnabled = Self.loadBool(
             defaults: defaults, key: Keys.autoCopyEnabled, fallback: false)
         audioDuckingEnabled = Self.loadBool(
