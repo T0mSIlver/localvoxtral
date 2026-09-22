@@ -794,7 +794,6 @@ extension DictationSessionController {
     ) async {
         let originalText = preparation.originalText
         let workingText = preparation.workingText
-        let clipboardPayload = preparation.clipboardPayload
         let payloadProvenanceSummary = preparation.payloadProvenanceSummary
         let capturedSessionStartedAt = record.startedAt
         let capturedProvider = record.provider
@@ -853,30 +852,7 @@ extension DictationSessionController {
             dogfoodCommittedText = committedText
             #endif
 
-            self.transcript.currentDictationEventText = StopCommitCoordinator.substitutingPayload(
-                committedText, payload: clipboardPayload
-            )
-            // Polish-changed iff the guarded/verified committed
-            // text differs from the pre-grounding working text.
-            // This intentionally counts an evidence-backed
-            // deterministic spelling correction even when the
-            // model otherwise returns its input unchanged.
-            // Drives the overlay badge (during hold) and the
-            // "Copy raw transcript" popover affordance.
-            let polishChanged = committedText != workingText
-            self.overlayBufferCoordinator.markPolished(polishChanged)
-            // Retain the RAW (pre-everything) transcript for the
-            // one-line popover copy affordance — but only when the
-            // commit visibly changed it, so a no-op polish leaves
-            // no stale affordance. Persisted `rawText` uses the
-            // same `originalText`.
-            self.lastPolishChangedRawTranscript =
-                (polishChanged && originalText != committedText)
-                ? originalText : nil
-            self.refreshOverlayBufferSession()
-            Log.polishing.info(
-                "LLM polishing succeeded in \(String(format: "%.2f", polished.durationSeconds))s"
-            )
+            showPolishedText(polished, preparation: preparation)
         case .failed(let failure):
             sessionStatus = .llmFailed
             llmConnectionFailure = failure
@@ -949,7 +925,7 @@ extension DictationSessionController {
             // placeholder-bearing text above.
             committedTextForWatch: StopCommitCoordinator.substitutingPayload(
                 dogfoodCommittedText ?? assembly.groundedWorkingText,
-                payload: clipboardPayload
+                payload: preparation.clipboardPayload
             )
         )
         #endif
@@ -961,6 +937,42 @@ extension DictationSessionController {
                 technicalDetails: llmConnectionFailure.technicalDetails
             )
         }
+    }
+
+    /// What the user sees of a polished reply before the commit: the text in
+    /// the overlay (payload substituted), the polished badge, and the raw
+    /// transcript "Copy raw transcript" offers.
+    private func showPolishedText(
+        _ polished: StopCommitCoordinator.PolishOutcome.Polished,
+        preparation: StopCommitCoordinator.Preparation
+    ) {
+        let committedText = polished.committedText
+        let originalText = preparation.originalText
+        let workingText = preparation.workingText
+        self.transcript.currentDictationEventText = StopCommitCoordinator.substitutingPayload(
+            committedText, payload: preparation.clipboardPayload
+        )
+        // Polish-changed iff the guarded/verified committed
+        // text differs from the pre-grounding working text.
+        // This intentionally counts an evidence-backed
+        // deterministic spelling correction even when the
+        // model otherwise returns its input unchanged.
+        // Drives the overlay badge (during hold) and the
+        // "Copy raw transcript" popover affordance.
+        let polishChanged = committedText != workingText
+        self.overlayBufferCoordinator.markPolished(polishChanged)
+        // Retain the RAW (pre-everything) transcript for the
+        // one-line popover copy affordance — but only when the
+        // commit visibly changed it, so a no-op polish leaves
+        // no stale affordance. Persisted `rawText` uses the
+        // same `originalText`.
+        self.lastPolishChangedRawTranscript =
+            (polishChanged && originalText != committedText)
+            ? originalText : nil
+        self.refreshOverlayBufferSession()
+        Log.polishing.info(
+            "LLM polishing succeeded in \(String(format: "%.2f", polished.durationSeconds))s"
+        )
     }
 
     /// A Live Auto-Paste session: the text is already typed, so what is left
