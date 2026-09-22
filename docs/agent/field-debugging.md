@@ -57,7 +57,13 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   stop && ./svc.sh start`). Identity-signed builds keep their Accessibility
   (TCC) grant across rebuilds; ad-hoc builds get a fresh signature each time
   and macOS silently invalidates the old grant (fix: toggle the app off/on in
-  System Settings → Accessibility). First codesign with a new key needs one
+  System Settings → Accessibility). Microphone is gentler: a copy with
+  another signature (an ad-hoc `/Applications` copy against an
+  identity-signed `try-pr.sh` copy) is simply asked again, and the dialog
+  can open on another display, so **Allow microphone…** looks like it did
+  nothing (owner, 2026-09-22). tccd's `Failed to match existing code
+  requirement … kTCCServiceMicrophone` line before `AUTHREQ_PROMPTING` is
+  that re-prompt, not a fault. First codesign with a new key needs one
   GUI "Always Allow" keychain prompt — trigger it with a local
   `package_app.sh` run before relying on CI, or the runner job hangs.
   The same identity-vs-hash rule protects the tier-2 lanes' TCC grants: the
