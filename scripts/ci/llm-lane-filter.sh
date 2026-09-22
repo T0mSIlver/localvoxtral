@@ -82,6 +82,7 @@ PATTERNS=(
   '*ClaudeDesktopSessionReader*'                     # Claude Desktop focused web view address: which session the context comes from
   '*DictationViewModel+Session.swift'                # polish-and-commit path
   'Sources/localvoxtral/DictationViewModel.swift'    # context capture/gate call sites feeding the commit path
+  '*SessionContextResolver*'                        # the context gates themselves (#432 step 4b)
   '*LLMPolishEvalSupport*'                           # shared eval corpus + scorer
   '*PolishHelperIntegrationTests*'                   # the lane's own suite
   '*AgentDictationE2EEval*'                          # agent-dictation E2E eval harness (suite + support + its unit tests)

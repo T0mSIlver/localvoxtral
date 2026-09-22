@@ -959,15 +959,13 @@ final class TerminalScreenContextLifecycleTests: XCTestCase {
         try await super.tearDown()
     }
 
-    private func makeViewModel() -> DictationViewModel {
+    private func makeContext() -> SessionContextResolver {
         let suiteName = "localvoxtral.TerminalScreenContextLifecycleTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
-        let viewModel = DictationViewModel(settings: settings, startRuntimeServices: false)
-        retainForTestProcessLifetime(viewModel)
-        return viewModel
+        return SessionContextResolver(settings: settings, textInsertion: TextInsertionService())
     }
 
     private var sampleCapture: TerminalScreenCapture {
@@ -980,10 +978,10 @@ final class TerminalScreenContextLifecycleTests: XCTestCase {
     // The default install must never read a screen, and under XCTest the live
     // seams are pinned off regardless.
     func testSessionStartCaptureIsNilWithSettingOff() async {
-        let viewModel = makeViewModel()
-        XCTAssertFalse(viewModel.settings.terminalScreenContextEnabled)
-        await viewModel.captureTerminalScreenContextForSession()
-        XCTAssertNil(viewModel.terminalScreenStartCapture)
+        let context = makeContext()
+        XCTAssertFalse(context.settings.terminalScreenContextEnabled)
+        _ = await context.captureAtStart()
+        XCTAssertNil(context.terminalScreenStartCapture)
     }
 
     func testSessionStartCaptureNeverCallsAXWhenSettingIsOff() async {
@@ -995,48 +993,48 @@ final class TerminalScreenContextLifecycleTests: XCTestCase {
         TerminalScreenContextSource.debugFrontmostTargetOverride = {
             TerminalScreenTarget(pid: 4242, bundleID: TerminalScreenAllowlist.ghosttyBundleID)
         }
-        let viewModel = makeViewModel()
-        viewModel.settings.terminalScreenContextEnabled = false
-        await viewModel.captureTerminalScreenContextForSession()
+        let context = makeContext()
+        context.settings.terminalScreenContextEnabled = false
+        _ = await context.captureAtStart()
         XCTAssertEqual(reads, 0)
-        XCTAssertNil(viewModel.terminalScreenStartCapture)
+        XCTAssertNil(context.terminalScreenStartCapture)
     }
 
     // Consumption must clear: a capture reconciled once must not be reusable by
     // a later session.
     func testDecisionConsumesAndClearsTheCapture() {
-        let viewModel = makeViewModel()
-        viewModel.terminalScreenStartCapture = sampleCapture
-        _ = viewModel.terminalScreenContextDecision(endpointURL: loopback)
-        XCTAssertNil(viewModel.terminalScreenStartCapture)
+        let context = makeContext()
+        context.terminalScreenStartCapture = sampleCapture
+        _ = context.terminalScreenContextDecision(endpointURL: loopback)
+        XCTAssertNil(context.terminalScreenStartCapture)
     }
 
     // A cancelled session never reaches the commit path, so cancel must be what
     // drops the retained screen text.
     func testCancelDiscardsRetainedScreenText() {
-        let viewModel = makeViewModel()
-        viewModel.terminalScreenStartCapture = sampleCapture
-        viewModel.discardTerminalScreenCapture()
-        XCTAssertNil(viewModel.terminalScreenStartCapture)
+        let context = makeContext()
+        context.terminalScreenStartCapture = sampleCapture
+        context.discardTerminalScreenCapture()
+        XCTAssertNil(context.terminalScreenStartCapture)
     }
 
     func testDiscardIsIdempotent() {
-        let viewModel = makeViewModel()
-        viewModel.discardTerminalScreenCapture()
-        viewModel.discardTerminalScreenCapture()
-        XCTAssertNil(viewModel.terminalScreenStartCapture)
+        let context = makeContext()
+        context.discardTerminalScreenCapture()
+        context.discardTerminalScreenCapture()
+        XCTAssertNil(context.terminalScreenStartCapture)
     }
 
     // Stale-capture guard: with no capture, a stop reconciliation can only ever
     // drop — there is no path that invents stop-only context.
     func testDecisionWithoutCaptureDropsAndGroundsNothing() {
-        let viewModel = makeViewModel()
+        let context = makeContext()
         TerminalScreenAXReader.debugScreenReadOverride = { _ in "fresh output after speaking" }
         TerminalScreenContextSource.debugTargetForPIDOverride = { pid in
             TerminalScreenTarget(pid: pid, bundleID: TerminalScreenAllowlist.ghosttyBundleID)
         }
-        viewModel.settings.terminalScreenContextEnabled = true
-        let decision = viewModel.terminalScreenContextDecision(endpointURL: loopback)
+        context.settings.terminalScreenContextEnabled = true
+        let decision = context.terminalScreenContextDecision(endpointURL: loopback)
         XCTAssertEqual(decision, .drop(reason: .noStartCapture))
         XCTAssertNil(decision.vocabularyGroundingText)
     }

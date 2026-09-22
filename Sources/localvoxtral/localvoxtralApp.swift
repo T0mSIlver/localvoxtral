@@ -367,13 +367,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         TerminalScreenRawAttachmentPolicy.configure(authorizer: nil)
         // The resolver holds the registry; the view model must not keep
         // resolving joins against sessions nothing is feeding any more.
-        viewModel.claudeSessionJoinResolver = nil
-        viewModel.claudeSessionJoin = nil
+        viewModel.context.claudeSessionJoinResolver = nil
+        viewModel.context.claudeSessionJoin = nil
         claudeSessionRegistry.flushPersistence()
         // Drop any dictation leases after the app-owned service has stopped all
         // persistent `ssh -L` children. During polish the join has already been
         // consumed, so the explicit service owner is what makes quit complete.
-        viewModel.closeRemoteHerdrForwards()
+        viewModel.context.closeRemoteHerdrForwards()
     }
 
     /// Spin the run loop until every forward teardown has finished, or the
@@ -449,7 +449,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // question from the one a dictation asks, which is the whole
             // reason this verb exists.
             resolveSurface: { [weak viewModel] target in
-                guard let resolver = viewModel?.claudeSessionJoinResolver else { return nil }
+                guard let resolver = viewModel?.context.claudeSessionJoinResolver else { return nil }
                 return await resolver.resolve(target: target)
             }
         )
@@ -588,7 +588,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     viewModel?.claudeIntegrationSettings?.herdrPanelStatus = status
                 }
             )
-            viewModel.claudeSessionJoinResolver = resolver
+            viewModel.context.claudeSessionJoinResolver = resolver
             // Pre-warm the Automation consent sheet OFF the dictation-start
             // path: the first Apple event to a terminal blocks in TCC until
             // the user answers, and that freeze must not land mid-dictation.
@@ -664,7 +664,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             TerminalScreenRawAttachmentPolicy.configure(
                 authorizer: TerminalScreenClaudeJoinAuthorizer(
                     resolver: resolver,
-                    currentJoin: { [weak viewModel] in viewModel?.claudeSessionJoin }
+                    currentJoin: { [weak viewModel] in viewModel?.context.claudeSessionJoin }
                 )
             )
         } catch {

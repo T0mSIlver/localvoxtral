@@ -1916,26 +1916,26 @@ final class RemoteHerdrJoinTests: XCTestCase {
         // the ssh child stayed up for the rest of the app's life.
         let (join, forwards) = try await makeJoinWithForward()
         let viewModel = makeViewModel()
-        viewModel.claudeSessionJoin = join
-        viewModel.retainRemoteHerdrForward(of: join)
-        XCTAssertEqual(viewModel.openRemoteHerdrForwardCount, 1)
+        viewModel.context.claudeSessionJoin = join
+        viewModel.context.retainRemoteHerdrForward(of: join)
+        XCTAssertEqual(viewModel.context.openRemoteHerdrForwardCount, 1)
 
         viewModel.abortConnectingSession()
 
         XCTAssertEqual(forwards.closeCount, 1)
         XCTAssertEqual(forwards.process.terminations.withLock { $0 }, 1)
-        XCTAssertEqual(viewModel.openRemoteHerdrForwardCount, 0)
+        XCTAssertEqual(viewModel.context.openRemoteHerdrForwardCount, 0)
     }
 
     func testDiscardingTheStartCaptureClosesTheTunnel() async throws {
         let (join, forwards) = try await makeJoinWithForward()
         let viewModel = makeViewModel()
-        viewModel.claudeSessionJoin = join
-        viewModel.retainRemoteHerdrForward(of: join)
+        viewModel.context.claudeSessionJoin = join
+        viewModel.context.retainRemoteHerdrForward(of: join)
 
-        viewModel.discardTerminalScreenCapture()
+        viewModel.context.discardTerminalScreenCapture()
 
-        XCTAssertNil(viewModel.claudeSessionJoin)
+        XCTAssertNil(viewModel.context.claudeSessionJoin)
         XCTAssertEqual(forwards.closeCount, 1)
     }
 
@@ -1945,16 +1945,16 @@ final class RemoteHerdrJoinTests: XCTestCase {
         // and the ssh survived app exit.
         let (join, forwards) = try await makeJoinWithForward()
         let viewModel = makeViewModel()
-        viewModel.claudeSessionJoin = join
-        viewModel.retainRemoteHerdrForward(of: join)
+        viewModel.context.claudeSessionJoin = join
+        viewModel.context.retainRemoteHerdrForward(of: join)
 
-        let consumed = viewModel.consumeClaudeSessionJoin()
+        let consumed = viewModel.context.consumeClaudeSessionJoin()
         XCTAssertNotNil(consumed)
-        XCTAssertNil(viewModel.claudeSessionJoin)
+        XCTAssertNil(viewModel.context.claudeSessionJoin)
         XCTAssertEqual(forwards.closeCount, 0, "the stop-side pane read still needs it")
 
         // What `applicationWillTerminate` now does.
-        viewModel.closeRemoteHerdrForwards()
+        viewModel.context.closeRemoteHerdrForwards()
 
         XCTAssertEqual(forwards.closeCount, 1)
     }
@@ -1962,11 +1962,11 @@ final class RemoteHerdrJoinTests: XCTestCase {
     func testClosingTunnelsIsIdempotentAndSurvivesHavingNone() async throws {
         let (join, forwards) = try await makeJoinWithForward()
         let viewModel = makeViewModel()
-        viewModel.retainRemoteHerdrForward(of: join)
+        viewModel.context.retainRemoteHerdrForward(of: join)
 
-        viewModel.closeRemoteHerdrForwards()
-        viewModel.closeRemoteHerdrForwards()
-        viewModel.discardTerminalScreenCapture()
+        viewModel.context.closeRemoteHerdrForwards()
+        viewModel.context.closeRemoteHerdrForwards()
+        viewModel.context.discardTerminalScreenCapture()
 
         XCTAssertEqual(forwards.closeCount, 1)
         XCTAssertEqual(forwards.process.terminations.withLock { $0 }, 1)
@@ -1994,18 +1994,18 @@ final class RemoteHerdrJoinTests: XCTestCase {
         let indicator = try XCTUnwrap(join.remoteHerdrIndicator)
         let viewModel = makeViewModel()
 
-        viewModel.retainRemoteHerdrForward(of: join)
-        XCTAssertEqual(viewModel.openRemoteHerdrForwardCount, 1)
+        viewModel.context.retainRemoteHerdrForward(of: join)
+        XCTAssertEqual(viewModel.context.openRemoteHerdrForwardCount, 1)
         XCTAssertEqual(
-            viewModel.liveRemoteHerdrIndicators,
+            viewModel.context.liveRemoteHerdrIndicators,
             [indicator],
             "the view model must retain the indicator owner, not only its raw forward"
         )
-        viewModel.closeRemoteHerdrForwards()
+        viewModel.context.closeRemoteHerdrForwards()
         await indicator.stopAndWait()
         tickContinuation.finish()
 
-        XCTAssertEqual(viewModel.openRemoteHerdrForwardCount, 0)
+        XCTAssertEqual(viewModel.context.openRemoteHerdrForwardCount, 0)
         XCTAssertTrue(
             panes.panelReports.withLock { $0 }.contains {
                 $0.socketPath == forwards.localSocketPath
@@ -2021,8 +2021,8 @@ final class RemoteHerdrJoinTests: XCTestCase {
 
     func testAJoinWithNoTunnelIsNotRetained() {
         let viewModel = makeViewModel()
-        viewModel.retainRemoteHerdrForward(of: nil)
-        XCTAssertEqual(viewModel.openRemoteHerdrForwardCount, 0)
+        viewModel.context.retainRemoteHerdrForward(of: nil)
+        XCTAssertEqual(viewModel.context.openRemoteHerdrForwardCount, 0)
     }
 
     // MARK: Pane screen context over the forward

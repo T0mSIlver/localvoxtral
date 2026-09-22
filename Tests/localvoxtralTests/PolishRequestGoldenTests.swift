@@ -450,7 +450,7 @@ final class PolishRequestGoldenTests: XCTestCase {
         viewModel.debugRepoVocabularyRootOverride = scenario.repoVocabularyRoot
 
         if let capture = scenario.screenCapture {
-            viewModel.terminalScreenStartCapture = capture
+            viewModel.context.terminalScreenStartCapture = capture
             let target = capture.target
             let text = capture.text
             let windowID = capture.windowID
@@ -480,7 +480,7 @@ final class PolishRequestGoldenTests: XCTestCase {
         var savedRecord: DictationSessionRecord?
         viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         // Read before the commit consumes the join.
-        let joinWorkspace = viewModel.claudeSessionJoin?.snapshot.workspace
+        let joinWorkspace = viewModel.context.claudeSessionJoin?.snapshot.workspace
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
@@ -564,11 +564,11 @@ final class PolishRequestGoldenTests: XCTestCase {
                 focusedTerminalTTY: { _ in Self.surfaceTTY },
                 focusedWindowID: { _ in 101 }
             )
-            viewModel.claudeSessionJoinResolver = resolver
-            viewModel.claudeRepoCollector = StubClaudeRepoCollector(snapshot: repoSnapshot)
+            viewModel.context.claudeSessionJoinResolver = resolver
+            viewModel.context.claudeRepoCollector = StubClaudeRepoCollector(snapshot: repoSnapshot)
             let join = await resolver.resolve(target: ghostty)
             XCTAssertNotNil(join, "the local tty arm must resolve the seeded session")
-            viewModel.claudeSessionJoin = join
+            viewModel.context.claudeSessionJoin = join
         case .remote:
             let origin = ClaudeTransportOrigin.remote(channel: "ssh:devbox")
             registry.ingest(
@@ -601,8 +601,8 @@ final class PolishRequestGoldenTests: XCTestCase {
                 ]
             )
             let snapshot = try XCTUnwrap(registry.snapshot(sessionID: "r1"))
-            viewModel.claudeSessionJoinResolver = ClaudeSessionJoinResolver(registry: registry)
-            viewModel.claudeSessionJoin = ClaudeSessionJoin(
+            viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(registry: registry)
+            viewModel.context.claudeSessionJoin = ClaudeSessionJoin(
                 target: ghostty,
                 snapshot: snapshot,
                 windowID: 101,
