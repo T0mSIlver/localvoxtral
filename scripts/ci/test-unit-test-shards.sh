@@ -38,11 +38,11 @@ WEIGHTS
 plan="$(LV_SHARD_SKIP_PATTERNS="Skipped" lv_plan_unit_shards 2 "$TMP_DIR/weights" <"$TMP_DIR/list")"
 # Beta (9) alone; Gamma (4) + Alpha (3) + Delta (1 test at the known
 # classes' 16 s / 6 tests) on the other. Skipped is gone.
-[[ "$plan" == $'1 Beta\n6 Gamma Alpha Delta' ]] || fail "plan with weights: $plan"
+[[ "$plan" == $'1 Mod.Beta\n6 Mod.Gamma Mod.Alpha Mod.Delta' ]] || fail "plan with weights: $plan"
 
 plan="$(lv_plan_unit_shards 2 "$TMP_DIR/no-such-file" <"$TMP_DIR/list")"
 # No weights: each class weighs its test count, ties go by name.
-[[ "$plan" == $'4 Gamma Delta\n4 Alpha Beta Skipped' ]] || fail "plan without weights: $plan"
+[[ "$plan" == $'4 Mod.Gamma Mod.Delta\n4 Mod.Alpha Mod.Beta Mod.Skipped' ]] || fail "plan without weights: $plan"
 
 plan="$(lv_plan_unit_shards 20 "$TMP_DIR/weights" <"$TMP_DIR/list" | wc -l | tr -d ' ')"
 [[ "$plan" == "5" ]] || fail "more shards than classes should give one shard per class, got $plan"
@@ -100,7 +100,7 @@ lv_shard_swift() {
   local arg class total=0 status=0 previous=""
   for arg in "$@"; do
     if [[ "$previous" == "--filter" ]]; then
-      class="${arg#Mod.}"
+      class="${arg#*.}"
       class="${class%/}"
       [[ "$class" == "${STUB_DROP:-}" ]] && { previous="$arg"; continue; }
       [[ "$class" == "${STUB_FAIL:-}" ]] && status=1
@@ -134,6 +134,20 @@ grep -q "Test Suite 'Alpha'" "$log" && grep -q "Test Suite 'Beta'" "$log" \
 grep -q "^swift test --skip-build --ignore-lock --skip Skipped --filter Mod.Beta/ --enable-code-coverage$" \
   "$TMP_DIR/calls" || fail "shard command: $(cat "$TMP_DIR/calls")"
 if grep -q "Mod.Skipped/" "$TMP_DIR/calls"; then fail "a skipped class got a filter"; fi
+# Two test modules (the app's and the core's): each class is filtered under
+# its own module, and the weights file's bare names still weigh them.
+: >"$TMP_DIR/calls"
+printf 'Mod.Alpha/testOne\nCore.Zeta/testOne\n' >"$TMP_DIR/list"
+lv_run_unit_shards 2 "$TMP_DIR/two-modules.log" -- >/dev/null \
+  || fail "a run over two modules must pass: $(cat "$TMP_DIR/two-modules.log")"
+grep -q "^==> Unit shards: 2 of 2 tests ran in 2 shards" "$TMP_DIR/two-modules.log" \
+  || fail "two-module summary: $(cat "$TMP_DIR/two-modules.log")"
+grep -q -- "--filter Core.Zeta/" "$TMP_DIR/calls" || fail "the core class kept no module: $(cat "$TMP_DIR/calls")"
+grep -q -- "--filter Mod.Alpha/" "$TMP_DIR/calls" || fail "the app class kept no module: $(cat "$TMP_DIR/calls")"
+plan="$(lv_plan_unit_shards 1 "$TMP_DIR/weights" <"$TMP_DIR/list")"
+[[ "$plan" == "2 Core.Zeta Mod.Alpha" ]] || fail "two-module plan: $plan"
+printf 'Mod.Alpha/testOne\nMod.Beta/testOne\nMod.Gamma/testOne\nMod.Skipped/testOne\n' >"$TMP_DIR/list"
+
 # Shard 1 comes before shard 2 in the log, whatever order they ended in.
 [[ "$(grep -n '^==> Shard 1/2: exit' "$log" | cut -d: -f1)" -lt \
   "$(grep -n '^==> Shard 2/2: [0-9]* classes' "$log" | cut -d: -f1)" ]] \
