@@ -114,23 +114,12 @@ extension DictationSessionController {
             guard let self else { return }
             let statusUpdates = self.backendManager.statusUpdates
             let statusMirrorTask = Task { @MainActor [weak self, startupTaskID] in
-                guard let self else { return }
-                for await _ in statusUpdates {
-                    if Task.isCancelled || self.managedStartupTaskID != startupTaskID {
-                        return
-                    }
-                    defer { self.debugManagedStatusMirrorEventSink?() }
-                    guard (!needsManagedDictation || self.settings.dictationBackendMode == .managedLocal),
-                          (!needsManagedPolishing
-                              || (self.settings.llmPolishingEnabled
-                                  && self.settings.polishingBackendMode == .managedLocal)),
-                          self.isConnectingRealtimeSession
-                    else { continue }
-                    self.statusText = self.managedBackendStartupStatusText(
-                        dictation: needsManagedDictation,
-                        polishing: needsManagedPolishing
-                    )
-                }
+                await self?.mirrorManagedStartupStatus(
+                    statusUpdates,
+                    startupTaskID: startupTaskID,
+                    dictation: needsManagedDictation,
+                    polishing: needsManagedPolishing
+                )
             }
             await Task.yield()
             defer {
@@ -181,6 +170,32 @@ extension DictationSessionController {
             if !self.shortcuts.isDictationAttemptGestureActive {
                 self.clearSecureInputRefusalSignalsIfAttemptEnded()
             }
+        }
+    }
+
+    /// Shows the managed backends' progress (a model download, a start) on
+    /// the status line while a start waits for them. Ends when the start it
+    /// belongs to ends or is superseded.
+    private func mirrorManagedStartupStatus(
+        _ statusUpdates: AsyncStream<ManagedBackendStatusUpdate>,
+        startupTaskID: UUID,
+        dictation needsManagedDictation: Bool,
+        polishing needsManagedPolishing: Bool
+    ) async {
+        for await _ in statusUpdates {
+            if Task.isCancelled || managedStartupTaskID != startupTaskID {
+                return
+            }
+            guard (!needsManagedDictation || settings.dictationBackendMode == .managedLocal),
+                  (!needsManagedPolishing
+                      || (settings.llmPolishingEnabled
+                          && settings.polishingBackendMode == .managedLocal)),
+                  isConnectingRealtimeSession
+            else { continue }
+            statusText = managedBackendStartupStatusText(
+                dictation: needsManagedDictation,
+                polishing: needsManagedPolishing
+            )
         }
     }
 
@@ -240,7 +255,152 @@ extension DictationSessionController {
         )
     }
 
+    /// A session start: prepare, then connect. Nothing suspends between the
+    /// two halves, so the socket dials exactly the configuration the start
+    /// snapshotted.
     func beginDictationSession(outputMode: DictationOutputMode? = nil) async {
+        guard let configuration = await prepareDictationSession(outputMode: outputMode) else {
+            return
+        }
+        connectDictationSession(configuration)
+    }
+
+    /// Everything a start does before the socket opens: the resets, the
+    /// settings snapshot the connect dials (endpoint, key, model), the checks
+    /// that can refuse the start, and the samples taken while the app the
+    /// user dictates into is still frontmost. Nil means the start ended here,
+    /// after reporting why and cleaning up.
+    func prepareDictationSession(
+        outputMode: DictationOutputMode? = nil
+    ) async -> RealtimeSessionConfiguration? {
+        let requestedOutputMode = outputMode ?? settings.dictationOutputMode
+        resetForNewSessionAttempt(outputMode: requestedOutputMode)
+
+        let provider = settings.realtimeProvider
+        guard let endpoint = settings.resolvedWebSocketURL(for: provider) else {
+            handleConnectFailure(reason: .invalidEndpoint)
+            clearLatchedSessionMetadata()
+            return nil
+        }
+
+        if !selectedInputDeviceID.isEmpty,
+           !availableInputDevices.contains(where: { $0.id == selectedInputDeviceID })
+        {
+            statusText = "Selected microphone unavailable."
+            lastError = "Selected microphone is unavailable. Reconnect it or choose another input."
+            clearLatchedSessionMetadata()
+            return nil
+        }
+
+        let model = settings.effectiveModelName(for: provider)
+        // The bearer token is part of the same snapshot as endpoint and model:
+        // `trimmedAPIKey` resolves by the CURRENT dictation mode, and the
+        // screen-context capture below suspends (AppleScript, ssh) long enough
+        // for Settings to flip the mode. Read at connect time, an External URL
+        // session would carry the Mistral key to the user's own server, or a
+        // Mistral session the external key to api.mistral.ai (GLM review,
+        // 2026-09-16). One mode, one snapshot: client, endpoint, model, key.
+        let apiKey = settings.trimmedAPIKey
+        // Pick THIS session's client before anything else touches one: from
+        // here to the stop, every send, poll and disconnect goes to the latched
+        // client, whatever Settings does in the meantime.
+        latchActiveRealtimeClient()
+        // Reset the realtime client from any prior session before reconnecting.
+        activeRealtimeClient.disconnect()
+        let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
+        sessionProvider = provider
+        sessionModelName = model
+
+        let accessibilityBlockedAtStart = surfaceLiveAutoPasteAccessibilityWarningIfNeeded()
+
+        // Capture the AX anchor now, while the user's text field still has focus.
+        // By the time the WebSocket connects and startOverlayBufferSession() runs,
+        // our app may have taken focus and the original AX element will be gone.
+        preResolvedOverlayAnchor = isOverlayBufferModeEnabled
+            ? overlayBufferCoordinator.resolveAnchorNow()
+            : nil
+
+        // Same timing rationale as the anchor: sample the terminal-like
+        // verdict and Secure Keyboard Entry state while the app the user
+        // started dictation in is still frontmost, not after connect.
+        // Re-checked here as well as at the managed-backend entry: secure
+        // input may have turned ON while a cold backend was booting, and
+        // direct callers skip that entry point entirely.
+        if refuseLiveStartForSecureInputIfNeeded(outputMode: requestedOutputMode) {
+            return nil
+        }
+        captureSessionTargetVerdict()
+        // Same timing rationale again, and the last chance to take it: the
+        // overlay takes focus once the socket connects, and screen context must
+        // record what the user could see as they chose their words.
+        let ownerTaskID = managedStartupTaskID
+        isConnectingRealtimeSession = true
+        await captureTerminalScreenContextForSession()
+        // Both spawn paths register their managedStartupTaskID before this
+        // method runs, so a changed (non-nil) ID means a NEWER session start
+        // owns the shared capture/metadata now — a cancelled predecessor must
+        // not wipe the successor's state, and must not proceed either. A nil
+        // ID means the canceller merely cleared the slot: cleanup is ours, and
+        // resetting the connecting flag here also heals any cancel path that
+        // never called abortConnectingSession.
+        let ownsSharedSessionState =
+            managedStartupTaskID == ownerTaskID || managedStartupTaskID == nil
+        guard !Task.isCancelled, isConnectingRealtimeSession, ownsSharedSessionState else {
+            if ownsSharedSessionState {
+                context.discardTerminalScreenCapture()
+                clearLatchedSessionMetadata()
+                isConnectingRealtimeSession = false
+            }
+            return nil
+        }
+        refreshInsertionScalarTracingForSession()
+
+        audio.audioChunkBuffer.clear()
+        transcript.resetForNewSession()
+        firstChunkPreprocessor.reset()
+        overlayBufferCoordinator.reset()
+        realtimeFinalizationLastActivityAt = nil
+        textInsertion.clearPendingText()
+        textInsertion.resetDiagnostics()
+
+        // Keep the Accessibility warning as the status line when it applies, so
+        // the warning isn't clobbered by the generic "Connecting..." text.
+        if !accessibilityBlockedAtStart {
+            statusText = "Connecting to realtime backend..."
+        }
+        debugLog(
+            "beginDictationSession endpoint=\(endpoint.absoluteString) model=\(model) input=\(preferredInputID ?? "default")"
+        )
+
+        return RealtimeSessionConfiguration(
+            endpoint: endpoint,
+            apiKey: apiKey,
+            model: model
+        )
+    }
+
+    /// Opens the socket for a prepared start, and arms its timeout.
+    func connectDictationSession(_ configuration: RealtimeSessionConfiguration) {
+        // Latched, not rebuilt: a mid-session reconnect (#380) dials exactly
+        // what this session opened with, even if Settings moved on since.
+        sessionRealtimeConfiguration = configuration
+
+        do {
+            try activeRealtimeClient.connect(configuration: configuration)
+            // Read back with no suspension in between, so the socket this call
+            // opened cannot report in before the session knows its name.
+            sessionConnectionGeneration = activeRealtimeClient.connectionGeneration
+            scheduleConnectTimeout()
+        } catch {
+            abortConnectingSession(disconnectSocket: false)
+            handleConnectFailure(reason: .connectThrew(rawError: error.localizedDescription))
+            debugLog("beginDictationSession failed error=\(error.localizedDescription)")
+        }
+    }
+
+    /// Clears what the previous attempt left behind, and latches this one's
+    /// output mode, start time and replacement dictionary.
+    private func resetForNewSessionAttempt(outputMode requestedOutputMode: DictationOutputMode) {
         lastSocketErrorMessage = nil
         // A new session starts: retire any prior "Copy raw transcript"
         // affordance so it never references a stale, unrelated transcript.
@@ -267,7 +427,6 @@ extension DictationSessionController {
         // in a session it never resolved. An attempt that exits before the
         // capture runs (invalid endpoint, missing mic) must show nothing.
         sessionClaudeJoinBadge = .hidden
-        let requestedOutputMode = outputMode ?? settings.dictationOutputMode
         clearLatchedSessionMetadata()
         sessionOutputMode = requestedOutputMode
         sessionStartedAt = Date()
@@ -276,49 +435,17 @@ extension DictationSessionController {
             appConfigStore: appConfigStore
         )
         setRealtimeIndicatorIdle()
+    }
 
-        let provider = settings.realtimeProvider
-        guard let endpoint = settings.resolvedWebSocketURL(for: provider) else {
-            handleConnectFailure(reason: .invalidEndpoint)
-            clearLatchedSessionMetadata()
-            return
-        }
-
-        if !selectedInputDeviceID.isEmpty,
-           !availableInputDevices.contains(where: { $0.id == selectedInputDeviceID })
-        {
-            statusText = "Selected microphone unavailable."
-            lastError = "Selected microphone is unavailable. Reconnect it or choose another input."
-            clearLatchedSessionMetadata()
-            return
-        }
-
-        let model = settings.effectiveModelName(for: provider)
-        // The bearer token is part of the same snapshot as endpoint and model:
-        // `trimmedAPIKey` resolves by the CURRENT dictation mode, and the
-        // screen-context capture below suspends (AppleScript, ssh) long enough
-        // for Settings to flip the mode. Read at connect time, an External URL
-        // session would carry the Mistral key to the user's own server, or a
-        // Mistral session the external key to api.mistral.ai (GLM review,
-        // 2026-09-16). One mode, one snapshot: client, endpoint, model, key.
-        let apiKey = settings.trimmedAPIKey
-        // Pick THIS session's client before anything else touches one: from
-        // here to the stop, every send, poll and disconnect goes to the latched
-        // client, whatever Settings does in the meantime.
-        latchActiveRealtimeClient()
-        // Reset the realtime client from any prior session before reconnecting.
-        activeRealtimeClient.disconnect()
-        let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
-        sessionProvider = provider
-        sessionModelName = model
-
-        // Fail fast on Live Auto-Paste without Accessibility trust: transcribed
-        // text would have nowhere to go. Refresh trust once (the user may have
-        // just granted it), then warn + prompt before opening the socket. We do
-        // NOT abort — the keyboard-event fallback can still type into some apps,
-        // and the prompt's polling clears the warning once Accessibility lands.
-        // The warning is surfaced both as the status line and the red error in
-        // the popover, so it can't be missed before the user speaks.
+    /// Fail fast on Live Auto-Paste without Accessibility trust: transcribed
+    /// text would have nowhere to go. Refresh trust once (the user may have
+    /// just granted it), then warn + prompt before opening the socket. We do
+    /// NOT abort — the keyboard-event fallback can still type into some apps,
+    /// and the prompt's polling clears the warning once Accessibility lands.
+    /// The warning is surfaced both as the status line and the red error in
+    /// the popover, so it can't be missed before the user speaks.
+    /// Returns whether the warning is up.
+    private func surfaceLiveAutoPasteAccessibilityWarningIfNeeded() -> Bool {
         let accessibilityBlockedAtStart: Bool
         if isLiveAutoPasteModeEnabled, !textInsertion.isAccessibilityTrusted {
             textInsertion.refreshAccessibilityTrustState()
@@ -332,92 +459,7 @@ extension DictationSessionController {
             textInsertion.requestAccessibilityPermissionIfNeeded()
             debugLog("live auto-paste started without accessibility trust; surfacing warning")
         }
-
-        // Capture the AX anchor now, while the user's text field still has focus.
-        // By the time the WebSocket connects and startOverlayBufferSession() runs,
-        // our app may have taken focus and the original AX element will be gone.
-        preResolvedOverlayAnchor = isOverlayBufferModeEnabled
-            ? overlayBufferCoordinator.resolveAnchorNow()
-            : nil
-
-        // Same timing rationale as the anchor: sample the terminal-like
-        // verdict and Secure Keyboard Entry state while the app the user
-        // started dictation in is still frontmost, not after connect.
-        // Re-checked here as well as at the managed-backend entry: secure
-        // input may have turned ON while a cold backend was booting, and
-        // direct callers skip that entry point entirely.
-        if refuseLiveStartForSecureInputIfNeeded(outputMode: requestedOutputMode) {
-            return
-        }
-        captureSessionTargetVerdict()
-        // Same timing rationale again, and the last chance to take it: the
-        // overlay takes focus once the socket connects, and screen context must
-        // record what the user could see as they chose their words.
-        let ownerTaskID = managedStartupTaskID
-        isConnectingRealtimeSession = true
-        await captureTerminalScreenContextForSession()
-        // Both spawn paths register their managedStartupTaskID before this
-        // method runs, so a changed (non-nil) ID means a NEWER session start
-        // owns the shared capture/metadata now — a cancelled predecessor must
-        // not wipe the successor's state, and must not proceed either. A nil
-        // ID means the canceller merely cleared the slot: cleanup is ours, and
-        // resetting the connecting flag here also heals any cancel path that
-        // never called abortConnectingSession.
-        let ownsSharedSessionState =
-            managedStartupTaskID == ownerTaskID || managedStartupTaskID == nil
-        guard !Task.isCancelled, isConnectingRealtimeSession, ownsSharedSessionState else {
-            if ownsSharedSessionState {
-                context.discardTerminalScreenCapture()
-                clearLatchedSessionMetadata()
-                isConnectingRealtimeSession = false
-            }
-            return
-        }
-        refreshInsertionScalarTracingForSession()
-
-        audio.audioChunkBuffer.clear()
-        transcript.resetForNewSession()
-        firstChunkPreprocessor.reset()
-        overlayBufferCoordinator.reset()
-        realtimeFinalizationLastActivityAt = nil
-        textInsertion.clearPendingText()
-        textInsertion.resetDiagnostics()
-
-        // Keep the Accessibility warning as the status line when it applies, so
-        // the warning isn't clobbered by the generic "Connecting..." text.
-        if !accessibilityBlockedAtStart {
-            statusText = "Connecting to realtime backend..."
-        }
-        debugLog(
-            "beginDictationSession endpoint=\(endpoint.absoluteString) model=\(model) input=\(preferredInputID ?? "default")"
-        )
-
-        #if DEBUG
-        // Lets a test mutate Settings at the one point a real session can be
-        // interrupted (after the capture awaits, before the socket opens).
-        await debugBeforeConnectHookForTesting?()
-        #endif
-
-        // Latched, not rebuilt: a mid-session reconnect (#380) dials exactly
-        // what this session opened with, even if Settings moved on since.
-        let configuration = RealtimeSessionConfiguration(
-            endpoint: endpoint,
-            apiKey: apiKey,
-            model: model
-        )
-        sessionRealtimeConfiguration = configuration
-
-        do {
-            try activeRealtimeClient.connect(configuration: configuration)
-            // Read back with no suspension in between, so the socket this call
-            // opened cannot report in before the session knows its name.
-            sessionConnectionGeneration = activeRealtimeClient.connectionGeneration
-            scheduleConnectTimeout()
-        } catch {
-            abortConnectingSession(disconnectSocket: false)
-            handleConnectFailure(reason: .connectThrew(rawError: error.localizedDescription))
-            debugLog("beginDictationSession failed error=\(error.localizedDescription)")
-        }
+        return accessibilityBlockedAtStart
     }
 
     func startAudioCaptureAfterConnection() {

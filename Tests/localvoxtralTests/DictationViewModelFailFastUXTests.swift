@@ -276,16 +276,18 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.mistralAPIKey = "mistral-account-key"
         viewModel.session.realtimeAPIClient.debugSkipSocketCreationForTesting()
         viewModel.session.mistralRealtimeClient.debugSkipSocketCreationForTesting()
-        // This test reaches beginDictationSession, which arms the real 10s
-        // connect timeout on a process-retained view model (PR #66).
+        // This test reaches the connect, which arms the 1.0 s connect timeout
+        // on the wall clock of a process-retained view model (PR #66).
         viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.session.debugBeforeConnectHookForTesting = { [weak viewModel] in
-            viewModel?.engines.applyDictationBackendModeChange(.mistralAPI)
+        // The window a real start can be interrupted in: after the capture
+        // awaits, before the socket opens.
+        guard let configuration = await viewModel.session.prepareDictationSession() else {
+            return XCTFail("the start ended before the connect")
         }
-
-        await viewModel.session.beginDictationSession()
+        viewModel.engines.applyDictationBackendModeChange(.mistralAPI)
+        viewModel.session.connectDictationSession(configuration)
 
         let dialled = viewModel.session.realtimeAPIClient.debugLastConnectConfigurationForTesting()
         XCTAssertEqual(
@@ -1676,22 +1678,19 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         return settings
     }
 
-    /// Emits a fake backend status and suspends until the view model's
-    /// managed-startup status mirror has processed it. A bare `Task.yield()`
-    /// after `emitStatus` is a scheduling race: the mirror's `for await` loop
-    /// may not have run yet when the test asserts on `statusText` (flaked on
-    /// main, CI run 28752686491).
+    /// Emits a fake backend status and returns once the view model's
+    /// managed-startup status mirror has written the status line. A bare
+    /// `Task.yield()` after `emitStatus` is a scheduling race: the mirror's
+    /// `for await` loop may not have run yet when the test asserts on
+    /// `statusText` (flaked on main, CI run 28752686491). The status must be
+    /// one the mirror shows; one it skips would never return.
     private func emitStatusAndAwaitMirror(
         _ backendManager: FakeManagedBackendManager,
         viewModel: DictationViewModel,
         spec: ManagedBackendSpec,
         status: ManagedBackendStatus
     ) async {
-        await withCheckedContinuation { continuation in
-            viewModel.session.debugManagedStatusMirrorEventSink = {
-                viewModel.session.debugManagedStatusMirrorEventSink = nil
-                continuation.resume()
-            }
+        await awaitNextWrite(of: { viewModel.statusText }) {
             backendManager.emitStatus(spec: spec, status: status)
         }
     }

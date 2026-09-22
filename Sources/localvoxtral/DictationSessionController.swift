@@ -349,19 +349,6 @@ final class DictationSessionController {
     /// The opt-in raw-delta log (`SettingsStore.debugLogRealtimeDeltas`).
     @ObservationIgnored
     var realtimeDeltaLog = RealtimeDeltaLog()
-    /// Test seam: invoked after the managed-startup status mirror finishes
-    /// handling each status update (including updates its guard skips), so
-    /// tests can await mirror processing deterministically instead of
-    /// guessing with `Task.yield()`.
-    @ObservationIgnored
-    var debugManagedStatusMirrorEventSink: (() -> Void)?
-    #if DEBUG
-    /// Test seam: awaited by `beginDictationSession` after its capture awaits
-    /// and immediately before the socket opens — the one window in which a
-    /// real session can observe Settings changing under it.
-    @ObservationIgnored
-    var debugBeforeConnectHookForTesting: (@MainActor () async -> Void)?
-    #endif
     @ObservationIgnored
     let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
 
