@@ -6,9 +6,13 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|eval-llm|eval-e2e|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
+#   ./scripts/remote-build.sh [build|test|test-cost-budgets|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|eval-llm|eval-e2e|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
 #     build        swift build
-#     test         swift build + unit tests (default; skips live-backend suites)
+#     test         swift build + unit tests (default; skips live-backend suites
+#                  and the cost-budget suite below)
+#     test-cost-budgets
+#                  PolishContextPreparationTests, the suite whose assertions
+#                  are about how much work a preparation costs (#430)
 #     integration  realtime pipeline tests against the live speechd STT service
 #     integration-keychain
 #                  KeychainSecretStore against the REAL login keychain
@@ -290,10 +294,15 @@ case "$CMD" in
     ;;
 esac
 
+# A suite name that must appear in the remote log for the run to count as
+# having proved anything (empty = no such requirement). See test-cost-budgets.
+REQUIRE_SUITE_IN_LOG=""
+
 UNIT_TEST_SKIPS=(--skip RealtimeAPIVLLMIntegrationTests --skip LLMPolishPromptEvalTests
   --skip PolishHelperIntegrationTests --skip SpeechHelperIntegrationTests
   --skip SpeechdStreamingBenchTests --skip AgentDictationE2EEvalTests
-  --skip HerdrIntegrationTests --skip MistralRealtimeSoakTests)
+  --skip HerdrIntegrationTests --skip MistralRealtimeSoakTests
+  --skip PolishContextPreparationTests)
 
 # On-demand test server to warm before the suite runs (empty = none). The
 # build host's speechd/polishd launchd test services are launch-on-demand to
@@ -304,6 +313,18 @@ ENSURE_SERVER=""
 case "$CMD" in
   build)   REMOTE_CMD=(swift build "$@") ;;
   test)    REMOTE_CMD=(swift test "${UNIT_TEST_SKIPS[@]}" "$@") ;;
+  test-cost-budgets)
+    # PolishContextPreparationTests asserts how much work a preparation costs,
+    # so its cases are slow on purpose (#430) and are out of the `test` lane.
+    # CI runs them in their own required step of `build-test`; this is how you
+    # run them here.
+    REMOTE_CMD=(swift test --filter PolishContextPreparationTests "$@")
+    # A --filter that matches nothing runs zero tests and exits 0, so a renamed
+    # or split suite would make this lane vacuously green while the `test`
+    # lane's --skip quietly stopped skipping anything. The remote output is
+    # tee'd to $REMOTE_LOG, so the suite has to appear there by name.
+    REQUIRE_SUITE_IN_LOG="PolishContextPreparationTests"
+    ;;
   integration)
     ENSURE_SERVER="speechd"
     REMOTE_CMD=(env VLLM_REALTIME_TEST_ENABLE=1
@@ -689,7 +710,7 @@ case "$CMD" in
     REMOTE_CMD=("$@")
     ;;
   *)
-    echo "Usage: $0 [build|test|integration|integration-polishd|integration-speechd|integration-herdr|speechd-bench|eval-llm|eval-e2e|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
+    echo "Usage: $0 [build|test|test-cost-budgets|integration|integration-polishd|integration-speechd|integration-herdr|speechd-bench|eval-llm|eval-e2e|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
     exit 1
     ;;
 esac
@@ -718,6 +739,15 @@ TREE_SYNCED=1
 PAYLOAD_STATUS=0
 run_remote_payload "cd $(printf '%q' "$DIR") && $(printf '%q ' "${REMOTE_CMD[@]}")" \
   || PAYLOAD_STATUS=$?
+
+# A lane that names a suite it must have run checks the log for it. Only on an
+# otherwise-successful run: a failing run already says what went wrong.
+if [[ "$PAYLOAD_STATUS" -eq 0 && -n "$REQUIRE_SUITE_IN_LOG" ]]; then
+  if ! grep -q "Test Suite '$REQUIRE_SUITE_IN_LOG'" "$REMOTE_LOG"; then
+    echo "$CMD ran no cases of $REQUIRE_SUITE_IN_LOG: the --filter here and the --skip in the test lane must name the suite as it is spelled now" >&2
+    PAYLOAD_STATUS=1
+  fi
+fi
 
 # Opportunistic remote work-dir GC (gate v4 `gc` verb): reclaim stale sibling
 # dirs while the host is known awake — the disk only fills when agents build,

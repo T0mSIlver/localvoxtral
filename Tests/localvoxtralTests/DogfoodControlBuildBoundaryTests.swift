@@ -73,6 +73,23 @@ final class DogfoodControlBuildBoundaryTests: XCTestCase {
     /// an ACTIVE `#if LOCALVOXTRAL_DOGFOOD` branch — never in its `#else`, and
     /// never outside a conditional at all.
     func testNoControlSocketReferenceEscapesTheDogfoodFlag() throws {
+        // The whole-file prefilter below searches `.literal`, which does not
+        // match across canonical equivalence. That is the same thing as
+        // `contains` only while every guarded token is ASCII, and ASCII has no
+        // decompositions — so a non-ASCII token added later would make the
+        // prefilter skip files it should have scanned, silently. Pinned here
+        // rather than left as a comment.
+        for token in Self.guardedTokens {
+            XCTAssertTrue(
+                token.allSatisfy(\.isASCII),
+                """
+                \(token) is not ASCII. The prefilter in this test matches \
+                literally; a non-ASCII token needs a prefilter that folds the \
+                way String.contains does, or no prefilter at all.
+                """
+            )
+        }
+
         let root = try Self.repositoryRoot()
         let sources = root.appendingPathComponent("Sources")
         var escapes: [String] = []
@@ -84,6 +101,19 @@ final class DogfoodControlBuildBoundaryTests: XCTestCase {
         while let url = enumerator?.nextObject() as? URL {
             guard url.pathExtension == "swift" else { continue }
             let source = try String(contentsOf: url, encoding: .utf8)
+            // A file that names no guarded token anywhere has no line that
+            // names one either, so it needs neither the conditional-stack walk
+            // nor the per-line sweep, and almost every file under Sources/ is
+            // in this branch.
+            //
+            // `.literal`, not `contains`: the default is canonical-equivalence
+            // matching, which walks graphemes, and 16 of those over every
+            // source file in the tree was most of this case's runtime. Every
+            // guarded token is ASCII, and ASCII has no decompositions, so a
+            // literal search finds exactly what `contains` would.
+            guard Self.guardedTokens.contains(where: {
+                source.range(of: $0, options: .literal) != nil
+            }) else { continue }
             let relative = url.path.replacingOccurrences(of: root.path + "/", with: "")
             for (number, line) in Self.ungatedLines(in: source) {
                 for token in Self.guardedTokens where line.contains(token) {

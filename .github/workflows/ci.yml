@@ -356,6 +356,7 @@ jobs:
             --skip SpeechHelperIntegrationTests \
             --skip AgentDictationE2EEvalTests \
             --skip HerdrIntegrationTests \
+            --skip PolishContextPreparationTests \
             --enable-code-coverage
 
       - name: Upload complete unit-test log
@@ -381,6 +382,12 @@ jobs:
       - name: Coverage summary
         # Visibility, not a gate: lets a PR's Proof section cite real coverage
         # of the changed files instead of "a test exists".
+        #
+        # BEFORE the cost-budget step, not after it: SwiftPM writes the profile
+        # to one fixed path under .build/debug/codecov, so the second `swift
+        # test` of the job overwrites the first's counters. Read here, this
+        # reports the unit suite; read after the cost budgets it would silently
+        # report their 16 filtered cases instead, and nothing would go red.
         if: steps.ci_scope.outputs.docs_only != 'true'
         run: |
           set -euo pipefail
@@ -391,6 +398,44 @@ jobs:
           fi
           xcrun llvm-cov report "$BIN" -instr-profile "$PROF" \
             -ignore-filename-regex '(Tests|\.build)/'
+
+      - name: Test (cost budgets)
+        # PolishContextPreparationTests measures how much work a preparation
+        # costs, so its cases are slow ON PURPOSE and cannot be made faster
+        # without deleting what they assert (#430). It stays a required part of
+        # this job and runs on every non-docs event; it is only out of the unit
+        # suite so that that lane stays inner-loop speed.
+        # Same --enable-code-coverage as the unit suite, so this reuses the
+        # binary that step built instead of relinking the whole test bundle.
+        if: steps.ci_scope.outputs.docs_only != 'true'
+        run: |
+          set -euo pipefail
+          NSUnbufferedIO=YES ./scripts/ci/run-supervised-command.sh \
+            300 "$RUNNER_TEMP/localvoxtral-cost-budget-tests.log" -- \
+            swift test \
+            --filter PolishContextPreparationTests \
+            --enable-code-coverage
+          # A --filter that matches nothing runs zero tests and exits 0, so a
+          # renamed or split suite would leave this required step green and
+          # empty while the unit step's --skip quietly stopped skipping
+          # anything. The log is complete (NSUnbufferedIO=YES above), so the
+          # suite has to appear in it by name.
+          if ! grep -q "Test Suite 'PolishContextPreparationTests'" \
+            "$RUNNER_TEMP/localvoxtral-cost-budget-tests.log"; then
+            echo "PolishContextPreparationTests ran no cases: the --filter here and the --skip in the unit step must name the suite as it is spelled now" >&2
+            exit 1
+          fi
+
+      - name: Upload complete cost-budget-test log
+        # Not `error` on a missing file: the step that writes it is skipped
+        # when the unit suite above fails, and the job is already red then.
+        if: ${{ always() && steps.ci_scope.outputs.docs_only != 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cost-budget-test-log-${{ runner.os }}
+          path: ${{ runner.temp }}/localvoxtral-cost-budget-tests.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Package app bundle
         # FORK PRs ONLY. A fork gets no mac-lanes job, so this is the only
