@@ -44,7 +44,9 @@ final class DictationSessionController {
     // Kept separate from lastError, which holds user-facing UI state (e.g. the
     // Accessibility warning) that must never leak into connection-failure details.
     var lastSocketErrorMessage: String?
-    /// What the popover's copy and paste rows read.
+    /// What the popover's copy and paste rows read. Reading it registers on
+    /// the whole `transcript`, so a view that reads it re-renders on every
+    /// partial; the popover already does, through `statusText`.
     var lastFinalSegment: String { transcript.lastFinalSegment }
 
     /// Raw (pre-polish) transcript of the most recent stop-commit whose LLM

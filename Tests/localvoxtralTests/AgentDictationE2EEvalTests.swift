@@ -31,7 +31,7 @@ import XCTest
 ///   suite). The live-session transcript MERGE (DictationViewModel+
 ///   RealtimeEvents overlap merge) is NOT in the loop — finals are joined
 ///   directly; a Phase-3 candidate.
-/// - Polish: the REAL `DictationViewModel.finishStoppedSession` stop-commit
+/// - Polish: the REAL `DictationSessionController.finishStoppedSession` stop-commit
 ///   path on a view model built with `startRuntimeServices: false` —
 ///   replacement dictionary -> clipboard-paste macro -> profile selection ->
 ///   clipboard context -> repo vocabulary -> `LLMPolishingRequest` ->

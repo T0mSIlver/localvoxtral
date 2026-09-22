@@ -48,7 +48,7 @@ final class ShortcutController {
     /// True while the user is still physically holding the dictation
     /// shortcut/modifier — a release event is still coming, and it owns
     /// ending the attempt's refusal signals. The managed-startup path in
-    /// DictationViewModel+Session.swift consults this: a secure-input
+    /// DictationSessionController+Session.swift consults this: a secure-input
     /// refusal that fires after backend boot may land with no gesture-end
     /// event left to clear it.
     var isDictationAttemptGestureActive: Bool { isPushToTalkShortcutHeld }
