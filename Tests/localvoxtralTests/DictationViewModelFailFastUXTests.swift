@@ -155,7 +155,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         // from lastSocketErrorMessage (nil here), never from lastError, which
         // may hold unrelated UI state such as the Accessibility warning.
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        viewModel.isShowingConnectionFailureAlert = true
+        let presenter = RecordingConnectionFailurePresenter()
+        viewModel.dependencies.connectionFailurePresenter = presenter
         retainForTestProcessLifetime(viewModel)
 
         viewModel.lastError = DictationViewModel.liveAutoPasteAccessibilityWarningMessage
@@ -163,9 +164,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
         viewModel.handle(event: .disconnected)
 
+        let details = presenter.presented.last?.technicalDetails
+        XCTAssertEqual(presenter.presented.count, 1, "the failure reaches the presenter once")
         XCTAssertFalse(
-            viewModel.debugLastConnectFailureTechnicalDetails?.contains("Accessibility") == true,
-            "failure details must not embed the AX warning, got: \(viewModel.debugLastConnectFailureTechnicalDetails ?? "nil")"
+            details?.contains("Accessibility") == true,
+            "failure details must not embed the AX warning, got: \(details ?? "nil")"
         )
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
     }
@@ -421,7 +424,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.dictationBackendMode = .externalURL
         viewModel.settings.polishingBackendMode = .managedLocal
         viewModel.settings.llmPolishingEnabled = true
-        viewModel.isShowingConnectionFailureAlert = true
+        let presenter = RecordingConnectionFailurePresenter()
+        viewModel.dependencies.connectionFailurePresenter = presenter
         viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
@@ -435,7 +439,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(viewModel.lastError, "mlx-lm failed to start.")
         XCTAssertFalse(viewModel.lastError?.contains("exited 5 consecutive times") == true)
         XCTAssertFalse(viewModel.lastError?.contains(marker) == true)
-        XCTAssertTrue(viewModel.debugLastConnectFailureTechnicalDetails?.contains(marker) == true)
+        XCTAssertTrue(presenter.presented.last?.technicalDetails?.contains(marker) == true)
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
     }
 

@@ -565,7 +565,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.appConfigStore = MockAppConfigStore()
         viewModel.llmPolishingService = polishingService
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -611,7 +611,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         )
         viewModel.llmPolishingService = polishingService
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -649,7 +649,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.llmPolishingService = polishingService
         viewModel.stubCommitTarget { "com.apple.Terminal" }
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -755,7 +755,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.llmPolishingService = FakePolishingService()
         viewModel.stubCommitTarget { capturedBundleID }
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -1072,7 +1072,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.stubCommitTarget { "com.acme.notes" }
         viewModel.dependencies.pasteboardReader = { pasteboard }
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -1354,7 +1354,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         }
         viewModel.dependencies.pasteboardReader = { payloadPasteboard }
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -1524,7 +1524,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             return nil
         }
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -1634,7 +1634,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             PasteboardStub(string: "UserSessionManager.swift")
         }
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -1762,7 +1762,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         // before the pipeline can ever win.
         viewModel.debugRepoVocabularyDeadlineSleepOverride = {}
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -1894,7 +1894,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             }
         }
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer
@@ -1951,7 +1951,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             viewModel.dependencies.pasteboardReader = { stub }
         }
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer

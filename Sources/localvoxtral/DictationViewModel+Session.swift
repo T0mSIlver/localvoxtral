@@ -231,9 +231,6 @@ extension DictationViewModel {
         // lastError renders in the menu-bar popover, which never shows long
         // text (AGENTS.md); the full story goes to the alert and the log.
         lastError = popoverError
-        #if DEBUG
-        debugLastConnectFailureTechnicalDetails = technicalDetails
-        #endif
         logConnectionFailure(message: message, technicalDetails: technicalDetails)
         markRecentConnectionFailureIndicator()
         presentConnectionFailureAlert(
@@ -2230,7 +2227,7 @@ extension DictationViewModel {
             polishProfile: polishProfile,
             polishContextSummary: polishContextSummary
         )
-        debugSavedSessionRecordSink?(record)
+        dependencies.onSessionRecord?(record)
         let retention = settings.dictationHistoryRetention
         guard retention.savesDictations else {
             Log.persistence.debug("Dictation history is off: not saving this dictation")
@@ -2464,9 +2461,6 @@ extension DictationViewModel {
         // Surface the actionable, endpoint-naming message as the primary error so
         // it is visible in the popover; keep the raw system error for logs/alert.
         lastError = description.message
-        #if DEBUG
-        debugLastConnectFailureTechnicalDetails = description.technicalDetails
-        #endif
         logConnectionFailure(
             message: description.message,
             technicalDetails: description.technicalDetails
@@ -2539,48 +2533,11 @@ extension DictationViewModel {
 
         isShowingConnectionFailureAlert = true
         defer { isShowingConnectionFailureAlert = false }
-
-        // NSApp is nil in processes without an NSApplication (unit tests,
-        // headless tools); an alert cannot be presented there and force-
-        // unwrapping aborts the process (field flake: a leaked connect-timeout
-        // timer SIGTRAPed the test runner mid-suite).
-        guard NSApp != nil else {
-            Log.dictation.error("connection-failure alert skipped: no NSApplication in this process")
-            return
-        }
-        // The nil guard above is NOT sufficient in a test process: any earlier
-        // test that touches NSApplication.shared initializes NSApp for the rest
-        // of the suite, and runModal() then stops the whole run dead waiting
-        // for a click that never comes (xctest sample 2026-07-19: this frame
-        // parked in _DPSBlockUntilNextEventMatchingListInMode mid-suite).
-        guard !Self.isTestProcess() else {
-            Log.dictation.error("connection-failure alert skipped: XCTest process")
-            return
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = title
-        // Show the actionable message first; append the raw system error on a new
-        // line when present so a wrong port or NSError code is visible at a glance.
-        if let technicalDetails, !technicalDetails.trimmed.isEmpty,
-           technicalDetails.trimmed != message.trimmed
-        {
-            alert.informativeText = "\(message)\n\n\(technicalDetails)"
-        } else {
-            alert.informativeText = message
-        }
-        if let appIcon = NSApplication.shared.applicationIconImage.copy() as? NSImage {
-            appIcon.size = NSSize(width: 20, height: 20)
-            alert.icon = appIcon
-        }
-
-        alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "Open Console")
-        let response = alert.runModal()
-        if response == .alertSecondButtonReturn {
-            openSystemConsole()
-        }
+        dependencies.connectionFailurePresenter.present(
+            title: title,
+            message: message,
+            technicalDetails: technicalDetails
+        )
     }
 
     func logConnectionFailure(message: String, technicalDetails: String?) {
@@ -2611,13 +2568,6 @@ extension DictationViewModel {
     }
 
     // MARK: - Helpers
-
-    private func openSystemConsole() {
-        guard let consoleURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Console") else {
-            return
-        }
-        _ = NSWorkspace.shared.open(consoleURL)
-    }
 
     /// Strips credentials, query, and fragment from a URL for safe logging.
     private func sanitizedURLForLogging(_ url: URL) -> String {

@@ -51,7 +51,7 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
         // the observer's synchronous return is the last execution the process
         // guarantees, so the volume must be back when `post` returns.
         let center = NotificationCenter()
-        let (viewModel, volume) = await makeDuckedSession(lifecycleCenter: center)
+        let (_, volume) = await makeDuckedSession(lifecycleCenter: center)
 
         center.post(name: NSApplication.willTerminateNotification, object: nil)
 

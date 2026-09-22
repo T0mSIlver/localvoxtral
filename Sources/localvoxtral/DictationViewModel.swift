@@ -172,10 +172,6 @@ final class DictationViewModel {
     // Kept separate from lastError, which holds user-facing UI state (e.g. the
     // Accessibility warning) that must never leak into connection-failure details.
     var lastSocketErrorMessage: String?
-    #if DEBUG
-    // Test seam: technicalDetails otherwise only reaches the log and the alert.
-    var debugLastConnectFailureTechnicalDetails: String?
-    #endif
     var lastFinalSegment = ""
 
     /// Raw (pre-polish) transcript of the most recent stop-commit whose LLM
@@ -336,6 +332,11 @@ final class DictationViewModel {
         var lifecycleNotificationCenter: NotificationCenter?
         /// The clock a mid-dictation reconnect run (#380) sleeps on.
         var reconnectSleep: @MainActor (TimeInterval) async -> Void
+        /// Where a connection failure the popover cannot carry is shown.
+        var connectionFailurePresenter: any ConnectionFailurePresenting
+        /// Every record a session writes, before retention decides whether
+        /// the store keeps it. Nothing in the app observes; tests do.
+        var onSessionRecord: ((DictationSessionRecord) -> Void)?
 
         init(
             microphone: (() -> any MicrophoneCapturing)? = nil,
@@ -346,7 +347,9 @@ final class DictationViewModel {
             },
             lifecycleNotificationCenter: NotificationCenter? = nil,
             reconnectSleep: @escaping @MainActor (TimeInterval) async -> Void =
-                DictationViewModel.sleepForReconnect
+                DictationViewModel.sleepForReconnect,
+            connectionFailurePresenter: any ConnectionFailurePresenting = ModalConnectionFailurePresenter(),
+            onSessionRecord: ((DictationSessionRecord) -> Void)? = nil
         ) {
             self.microphone = microphone
             self.pasteboardReader = pasteboardReader
@@ -354,6 +357,8 @@ final class DictationViewModel {
             self.bundleIdentifier = bundleIdentifier
             self.lifecycleNotificationCenter = lifecycleNotificationCenter
             self.reconnectSleep = reconnectSleep
+            self.connectionFailurePresenter = connectionFailurePresenter
+            self.onSessionRecord = onSessionRecord
         }
     }
 
@@ -708,8 +713,6 @@ final class DictationViewModel {
     /// the exact pre-processing payload the Logger would emit.
     @ObservationIgnored
     var debugDeltaLogSink: ((DebugRealtimeDeltaLogRecord) -> Void)?
-    @ObservationIgnored
-    var debugSavedSessionRecordSink: ((DictationSessionRecord) -> Void)?
     /// Test seam: replaces the whole AX-title/process-cwd -> git-index -> match
     /// pipeline of
     /// `repoVocabularyGroundingIfEnabled` with a closure returning the grounding for

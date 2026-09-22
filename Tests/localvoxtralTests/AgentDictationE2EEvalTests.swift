@@ -540,7 +540,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         }
 
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.sessionOutputMode = .overlayBuffer

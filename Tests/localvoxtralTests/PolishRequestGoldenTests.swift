@@ -478,7 +478,7 @@ final class PolishRequestGoldenTests: XCTestCase {
         store.waitForPendingWrites()
 
         var savedRecord: DictationSessionRecord?
-        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         // Read before the commit consumes the join.
         let joinWorkspace = viewModel.claudeSessionJoin?.snapshot.workspace
 
