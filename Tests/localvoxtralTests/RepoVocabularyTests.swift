@@ -34,7 +34,7 @@ final class TerminalWorkingDirectoryResolverTests: XCTestCase {
 
     /// `existing` lists the only paths the injected existence check accepts.
     func testResolveWorkingDirectory() {
-        let cases: [(name: String, title: String, home: String, existing: [String], expected: String?)] = [
+        let cases: [(name: String, title: String, homeDirectory: String, existing: [String], expected: String?)] = [
             (
                 "ResolveReturnsFirstExistingDirectory",
                 "cd /nope then ~/yes", home, ["/Users/tester/yes"], "/Users/tester/yes"
@@ -82,10 +82,10 @@ final class TerminalWorkingDirectoryResolverTests: XCTestCase {
             ),
             ("AbbreviatedTitleWithNothingExistingResolvesNil", "../foo", home, [], nil),
         ]
-        for (name, title, home, existing, expected) in cases {
+        for (name, title, homeDirectory, existing, expected) in cases {
             let resolved = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
                 fromWindowTitle: title,
-                homeDirectory: home,
+                homeDirectory: homeDirectory,
                 isDirectory: { existing.contains($0) }
             )
             XCTAssertEqual(resolved, expected, name)

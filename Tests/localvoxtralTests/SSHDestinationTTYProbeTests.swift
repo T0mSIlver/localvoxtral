@@ -297,7 +297,7 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
 
     /// The surface client (pid 501) next to one ssh on another terminal: does
     /// that neighbor count as a competing herdr view?
-    func testNeighborOnAnotherTerminal() throws {
+    func testNeighborOnAnotherTerminal() {
         let cases: [(name: String, surface: [String], neighbor: SSHClientProcess, competes: Bool)] = [
             (
                 "GhosttyWrappedHerdrInAnotherTabDoesNotCompete",
@@ -387,9 +387,10 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
             ),
         ]
         for (name, surface, neighbor, competes) in cases {
-            let value = try XCTUnwrap(
-                connection(probe(processes: [ssh(surface, pid: 501), neighbor])), name
-            )
+            guard let value = connection(probe(processes: [ssh(surface, pid: 501), neighbor])) else {
+                XCTFail("\(name): no connection")
+                continue
+            }
             XCTAssertEqual(value.hasCompetingHerdrClient, competes, name)
         }
     }
