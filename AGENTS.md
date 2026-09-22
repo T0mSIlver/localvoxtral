@@ -71,14 +71,16 @@ and order it with blocked-by links, not prose.
   new `XCTSkip` or wider timing tolerances. Investigate, or stop and report.
 - No wall-clock in tests: no `Date()`, no real `Task.sleep` polling. Inject
   clocks; `OverlayBufferSessionCoordinator`'s `now:` / `sleepFor:` seams are
-  the reference. Session code still arms wall-clock timers; add no more.
+  the reference.
 - Test classes run in several xctest processes at once (#442). A test that
   listens binds port 0 or takes `unusedLoopbackPort()`, never a fixed port
   or a counter from one. Files and sockets get unique names.
-- A test that reaches `beginDictationSession` arms the real 1 s connect
-  timeout on a process-retained view model. It must set
-  `viewModel.session.isShowingConnectionFailureAlert = true`, or the alert fires
-  inside the next test and SIGTRAPs the suite (#66).
+- The session's timers (connect timeout, mic prompt, finalization poll and
+  watchdog, the audio loops, the failure-icon reset) sleep on
+  `Dependencies.clock`, the reconnect run on `Dependencies.reconnectSleep`. A
+  test that starts or stops a session passes a `ManualSessionClock` and
+  advances it; on the default wall clock the timers fire into the
+  process-retained view model after the test ends. New timers go on the clock.
 - UI change: say exactly what you verified by hand and how.
 - Session-path change (view model start/stop, realtime clients, merging,
   insertion, overlay commit): run the e2e dictation check and paste its lines
