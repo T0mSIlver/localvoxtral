@@ -119,6 +119,13 @@ expect false "top-level docs do not run the lane" \
   README.md AGENTS.md
 expect false "UI-only Swift change does not run the lane" \
   Sources/localvoxtral/SettingsView.swift
+# Nothing that shapes the polish request is left in the view model files
+# (#432 step 7b): what the request is built from lives in the coordinator.
+expect false "a view model change does not run the lane" \
+  Sources/localvoxtral/DictationViewModel.swift \
+  Sources/localvoxtral/DictationViewModel+Session.swift
+expect true "the stop-commit's polish step runs the lane" \
+  Sources/localvoxtral/StopCommitCoordinator.swift
 expect false "empty changed-file list decides run=false (caller owns fail-open)" \
   ""
 
