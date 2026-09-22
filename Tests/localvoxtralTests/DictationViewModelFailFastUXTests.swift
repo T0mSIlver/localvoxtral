@@ -9,13 +9,13 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     func testSocketConnectionRefusedSurfacesRefusedStatusAndEndpoint() {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
 
         let endpoint = viewModel.sanitizedRealtimeEndpointForMessageReference()
         XCTAssertTrue(endpoint.contains("ws://"), "sanity: endpoint resolved, got \(endpoint)")
 
-        viewModel.handleConnectFailure(
+        viewModel.session.handleConnectFailure(
             reason: .socketError(
                 message: "WebSocket failed: [NSURLErrorDomain:-1004] url=ws://127.0.0.1:8000/v1/realtime"
             )
@@ -29,10 +29,10 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     func testSocketHostUnreachableSurfacesDistinctStatus() {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.handleConnectFailure(
+        viewModel.session.handleConnectFailure(
             reason: .socketError(message: "WebSocket failed: [NSURLErrorDomain:-1003] url=ws://x/realtime")
         )
 
@@ -42,12 +42,12 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     func testTimeoutReasonKeepsStableStatusAndEndpointPhrase() {
         let viewModel = makeViewModel(outputMode: .overlayBuffer)
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
 
         let endpoint = viewModel.sanitizedRealtimeEndpointForMessageReference()
 
-        viewModel.handleConnectFailure(reason: .timedOut(timeoutSeconds: TimingConstants.connectTimeout))
+        viewModel.session.handleConnectFailure(reason: .timedOut(timeoutSeconds: TimingConstants.connectTimeout))
 
         XCTAssertEqual(viewModel.statusText, "Connection timed out.")
         XCTAssertTrue(
@@ -60,13 +60,13 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     func testRefusedSocketErrorDuringTimeoutResolutionWinsOverTimeout() async {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.isConnectingRealtimeSession = true
         viewModel.statusText = "Connecting to realtime backend..."
         retainForTestProcessLifetime(viewModel)
 
-        await viewModel.resolveConnectTimeout(timeoutSeconds: TimingConstants.connectTimeout) { _ in
-            viewModel.handle(
+        await viewModel.session.resolveConnectTimeout(timeoutSeconds: TimingConstants.connectTimeout) { _ in
+            viewModel.session.handle(
                 event: .error(
                     "WebSocket failed: The operation couldn't be completed. [NSURLErrorDomain:-1004] url=ws://127.0.0.1:8001/v1/realtimeaa"
                 )
@@ -82,10 +82,10 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     func testEndpointRejectedSocketErrorSurfacesPathStatus() {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.handleConnectFailure(
+        viewModel.session.handleConnectFailure(
             reason: .socketError(
                 message: "WebSocket failed: bad server response [NSURLErrorDomain:-1011] url=ws://127.0.0.1:8000/v1/realtimeaa"
             )
@@ -97,10 +97,10 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     func testInvalidEndpointReasonSurfacesSettingsGuidance() {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.handleConnectFailure(reason: .invalidEndpoint)
+        viewModel.session.handleConnectFailure(reason: .invalidEndpoint)
 
         XCTAssertEqual(viewModel.statusText, "Invalid endpoint URL.")
         XCTAssertTrue(viewModel.lastError?.contains("Settings") == true)
@@ -108,10 +108,10 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     func testNetworkLostReasonSurfacesNetworkLostStatus() {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.handleConnectFailure(reason: .networkLost)
+        viewModel.session.handleConnectFailure(reason: .networkLost)
 
         XCTAssertEqual(viewModel.statusText, "Dictation stopped after the network disconnected.")
         XCTAssertNotNil(viewModel.lastError)
@@ -162,7 +162,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.lastError = DictationViewModel.liveAutoPasteAccessibilityWarningMessage
         viewModel.isConnectingRealtimeSession = true
 
-        viewModel.handle(event: .disconnected)
+        viewModel.session.handle(event: .disconnected)
 
         let details = presenter.presented.last?.technicalDetails
         XCTAssertEqual(presenter.presented.count, 1, "the failure reaches the presenter once")
@@ -189,11 +189,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         // hit a real backend. The AX warning is asserted synchronously, before
         // any connect result can race back.
         viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:65535/realtime"
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.textInsertion.debugSetAccessibilityTrusted(false)
         retainForTestProcessLifetime(viewModel)
 
-        await viewModel.beginDictationSession()
+        await viewModel.session.beginDictationSession()
 
         // Fail-fast warning surfaces at start and is not clobbered by the
         // generic "Connecting..." status.
@@ -201,37 +201,37 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(viewModel.lastError, DictationViewModel.liveAutoPasteAccessibilityWarningMessage)
         XCTAssertTrue(viewModel.isConnectingRealtimeSession, "session still proceeds so AX can be granted mid-session")
 
-        viewModel.abortConnectingSession()
+        viewModel.session.abortConnectingSession()
     }
 
     func testBeginDictationSessionSkipsAccessibilityWarningWhenTrustedInLiveMode() async {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:65535/realtime"
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.textInsertion.debugSetAccessibilityTrusted(true)
         retainForTestProcessLifetime(viewModel)
 
-        await viewModel.beginDictationSession()
+        await viewModel.session.beginDictationSession()
 
         XCTAssertEqual(viewModel.statusText, "Connecting to realtime backend...")
         XCTAssertNil(viewModel.lastError)
 
-        viewModel.abortConnectingSession()
+        viewModel.session.abortConnectingSession()
     }
 
     func testBeginDictationSessionSkipsAccessibilityWarningInOverlayMode() async {
         let viewModel = makeViewModel(outputMode: .overlayBuffer)
         viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:65535/realtime"
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.textInsertion.debugSetAccessibilityTrusted(false)
         retainForTestProcessLifetime(viewModel)
 
-        await viewModel.beginDictationSession()
+        await viewModel.session.beginDictationSession()
 
         XCTAssertEqual(viewModel.statusText, "Connecting to realtime backend...")
         XCTAssertNil(viewModel.lastError)
 
-        viewModel.abortConnectingSession()
+        viewModel.session.abortConnectingSession()
     }
 
     func testMistralModeWithoutAKeyNamesTheMissingKeyAndOpensNoSocket() async {
@@ -240,10 +240,10 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.mistralAPIKey = ""
         // This test reaches beginDictationSession, which arms the real 10s
         // connect timeout on a process-retained view model (PR #66).
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
 
-        await viewModel.beginDictationSession()
+        await viewModel.session.beginDictationSession()
 
         // The endpoint is pinned and fine — "check the endpoint in Settings"
         // would send the user to a field that is not even on the pane.
@@ -254,11 +254,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         )
         XCTAssertFalse(viewModel.isConnectingRealtimeSession)
         // The client throws before creating a URLSession, so nothing was dialled.
-        let snapshot = viewModel.mistralRealtimeClient.debugStateSnapshot()
+        let snapshot = viewModel.session.mistralRealtimeClient.debugStateSnapshot()
         XCTAssertFalse(snapshot.isConnected)
         XCTAssertFalse(snapshot.hasPingTimer)
         XCTAssertTrue(
-            viewModel.activeRealtimeClient === viewModel.mistralRealtimeClient,
+            viewModel.session.activeRealtimeClient === viewModel.session.mistralRealtimeClient,
             "the session latched the Mistral transport"
         )
     }
@@ -274,20 +274,20 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:9/v1/realtime"
         viewModel.settings.apiKey = "external-server-key"
         viewModel.settings.mistralAPIKey = "mistral-account-key"
-        viewModel.realtimeAPIClient.debugSkipSocketCreationForTesting()
-        viewModel.mistralRealtimeClient.debugSkipSocketCreationForTesting()
+        viewModel.session.realtimeAPIClient.debugSkipSocketCreationForTesting()
+        viewModel.session.mistralRealtimeClient.debugSkipSocketCreationForTesting()
         // This test reaches beginDictationSession, which arms the real 10s
         // connect timeout on a process-retained view model (PR #66).
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.debugBeforeConnectHookForTesting = { [weak viewModel] in
+        viewModel.session.debugBeforeConnectHookForTesting = { [weak viewModel] in
             viewModel?.engines.applyDictationBackendModeChange(.mistralAPI)
         }
 
-        await viewModel.beginDictationSession()
+        await viewModel.session.beginDictationSession()
 
-        let dialled = viewModel.realtimeAPIClient.debugLastConnectConfigurationForTesting()
+        let dialled = viewModel.session.realtimeAPIClient.debugLastConnectConfigurationForTesting()
         XCTAssertEqual(
             dialled?.endpoint.absoluteString, "ws://127.0.0.1:9/v1/realtime",
             "the session dials the endpoint it was started for"
@@ -297,11 +297,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
             "the external server must never receive the Mistral account key"
         )
         XCTAssertTrue(
-            viewModel.activeRealtimeClient === viewModel.realtimeAPIClient,
+            viewModel.session.activeRealtimeClient === viewModel.session.realtimeAPIClient,
             "the latch is not swapped under a starting session"
         )
         XCTAssertNil(
-            viewModel.mistralRealtimeClient.debugLastConnectConfigurationForTesting(),
+            viewModel.session.mistralRealtimeClient.debugLastConnectConfigurationForTesting(),
             "the Mistral transport was never dialled by a session started in External URL mode"
         )
     }
@@ -364,14 +364,14 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         // connect-timeout timer on a process-retained view model; without
         // this suppression the timer's failure alert fires ~1 s later inside
         // whatever test is then running (field flake, 2026-07-05).
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
         viewModel.startDictation()
         await backendManager.waitUntilEnsureStarted()
         backendManager.resumeEnsure()
-        await viewModel.managedStartupTask?.value
+        await viewModel.session.managedStartupTask?.value
 
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: true)])
     }
@@ -385,7 +385,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .managedLocal
         viewModel.settings.polishingBackendMode = .externalURL
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
@@ -393,14 +393,14 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         await backendManager.waitUntilEnsureStarted()
 
         XCTAssertTrue(viewModel.isConnectingRealtimeSession)
-        XCTAssertNil(viewModel.sessionProvider, "connection must not start until the managed backend is ready")
+        XCTAssertNil(viewModel.session.sessionProvider, "connection must not start until the managed backend is ready")
         XCTAssertEqual(viewModel.statusText, "Starting dictation backend...")
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: false)])
 
         backendManager.resumeEnsure()
         // A bare Task.yield() races the startup task's failure continuation
         // (seen flaking in CI); await the tracked task instead.
-        await viewModel.managedStartupTask?.value
+        await viewModel.session.managedStartupTask?.value
 
         XCTAssertFalse(viewModel.isConnectingRealtimeSession)
         XCTAssertEqual(viewModel.statusText, "Managed backend failed.")
@@ -433,7 +433,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         await backendManager.waitUntilEnsureStarted()
 
         backendManager.resumeEnsure()
-        await viewModel.managedStartupTask?.value
+        await viewModel.session.managedStartupTask?.value
 
         XCTAssertEqual(viewModel.statusText, "Managed backend failed.")
         XCTAssertEqual(viewModel.lastError, "mlx-lm failed to start.")
@@ -449,7 +449,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .managedLocal
         viewModel.settings.polishingBackendMode = .externalURL
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
@@ -466,7 +466,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
         backendManager.ensureError = FakeManagedBackendFailure(message: "cancelled")
         backendManager.resumeEnsure()
-        await viewModel.managedStartupTask?.value
+        await viewModel.session.managedStartupTask?.value
     }
 
     func testManagedStartupShowsPolishingModelDownloadProgress() async {
@@ -476,7 +476,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.dictationBackendMode = .externalURL
         viewModel.settings.polishingBackendMode = .managedLocal
         viewModel.settings.llmPolishingEnabled = true
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
@@ -493,7 +493,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
         backendManager.ensureError = FakeManagedBackendFailure(message: "cancelled")
         backendManager.resumeEnsure()
-        await viewModel.managedStartupTask?.value
+        await viewModel.session.managedStartupTask?.value
     }
 
     func testStartDictationInExternalModeNeverTouchesManagedBackendManager() async {
@@ -502,7 +502,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.dictationBackendMode = .externalURL
         viewModel.settings.polishingBackendMode = .externalURL
         viewModel.settings.realtimeAPIEndpointURL = ""
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
@@ -510,7 +510,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         // The external path now hops through the startup task before
         // beginDictationSession runs; the endpoint error surfaces when it
         // completes, and the backend manager must still never be touched.
-        await viewModel.managedStartupTask?.value
+        await viewModel.session.managedStartupTask?.value
 
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
         XCTAssertEqual(viewModel.statusText, "Invalid endpoint URL.")
@@ -529,7 +529,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.polishingBackendMode = .managedLocal
         viewModel.settings.llmPolishingEnabled = true
         viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:65535/realtime"
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
@@ -541,7 +541,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
 
         backendManager.resumeEnsure()
-        await viewModel.managedStartupTask?.value
+        await viewModel.session.managedStartupTask?.value
 
         XCTAssertFalse(viewModel.isConnectingRealtimeSession)
         XCTAssertEqual(viewModel.statusText, "Managed backend failed.")
@@ -556,7 +556,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.dictationBackendMode = .managedLocal
         viewModel.settings.polishingBackendMode = .externalURL
         viewModel.settings.llmPolishingEnabled = true
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
@@ -566,8 +566,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: false)])
 
         backendManager.resumeEnsure()
-        await viewModel.managedStartupTask?.value
-        viewModel.abortConnectingSession()
+        await viewModel.session.managedStartupTask?.value
+        viewModel.session.abortConnectingSession()
     }
 
     func testManagedStartupCancelledByModeSwitchDoesNotBeginSessionOrSurfaceError() async {
@@ -578,7 +578,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.polishingBackendMode = .externalURL
         viewModel.settings.dictationShortcutMode = .pushToTalk
         viewModel.settings.realtimeAPIEndpointURL = ""
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
@@ -586,16 +586,16 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         await backendManager.waitUntilEnsureStarted()
 
         XCTAssertTrue(viewModel.isConnectingRealtimeSession)
-        XCTAssertNil(viewModel.sessionProvider)
+        XCTAssertNil(viewModel.session.sessionProvider)
 
         viewModel.engines.applyDictationBackendModeChange(.externalURL)
         viewModel.shortcuts.handleDictationShortcutRelease()
         backendManager.resumeEnsure()
-        await viewModel.managedStartupTask?.value
+        await viewModel.session.managedStartupTask?.value
         await Task.yield()
 
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: false)])
-        XCTAssertNil(viewModel.sessionProvider)
+        XCTAssertNil(viewModel.session.sessionProvider)
         XCTAssertFalse(viewModel.isDictating)
         XCTAssertFalse(viewModel.isConnectingRealtimeSession)
         XCTAssertNil(viewModel.lastError)
@@ -641,7 +641,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .managedLocal
         viewModel.settings.polishingBackendMode = .managedLocal
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
 
         viewModel.isConnectingRealtimeSession = true
@@ -663,21 +663,21 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.dictationBackendMode = .externalURL
         viewModel.settings.polishingBackendMode = .externalURL
         viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:65535/realtime"
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
         // Spawn the startup task but do not let it run yet — the test holds
         // the main actor, so nothing after this line has interleaved.
         viewModel.startDictation()
-        let staleTask = viewModel.managedStartupTask
+        let staleTask = viewModel.session.managedStartupTask
         XCTAssertNotNil(staleTask)
 
         // A canceller retires it, and a successor start takes the slot with a
         // freshly resolved join — all before the stale task ever runs.
         staleTask?.cancel()
-        viewModel.abortConnectingSession()
-        viewModel.managedStartupTaskID = UUID()
+        viewModel.session.abortConnectingSession()
+        viewModel.session.managedStartupTaskID = UUID()
         let registry = ClaudeSessionRegistry(
             now: { Date(timeIntervalSince1970: 1_000) },
             isProcessAlive: { _ in true }
@@ -1339,7 +1339,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         // This test reaches beginDictationSession, which arms the real
         // connect-timeout timer on a process-retained view model (AGENTS.md).
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
@@ -1348,7 +1348,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertTrue(viewModel.isConnectingRealtimeSession)
 
         // Captured before the pause: the fix retires the startup task slot.
-        let startupTask = viewModel.managedStartupTask
+        let startupTask = viewModel.session.managedStartupTask
         viewModel.engines.pauseManagedModelDownload(for: BackendCatalog.speechd)
         await viewModel.engines.dictationShutdownTask?.value
         await startupTask?.value
@@ -1372,7 +1372,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.polishingBackendMode = .managedLocal
         viewModel.settings.llmPolishingEnabled = true
         viewModel.settings.onboardingCompleted = true
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.fakeMicrophone.authorization = .authorized
         retainForTestProcessLifetime(viewModel)
 
@@ -1380,7 +1380,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         await backendManager.waitUntilEnsureStarted()
         XCTAssertTrue(viewModel.isConnectingRealtimeSession)
 
-        let startupTask = viewModel.managedStartupTask
+        let startupTask = viewModel.session.managedStartupTask
         viewModel.engines.cancelManagedModelDownload(for: BackendCatalog.polishd)
         await viewModel.engines.polishingShutdownTask?.value
         await startupTask?.value
@@ -1523,9 +1523,9 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .managedLocal
-        viewModel.secureInputWarningSound = {}
+        viewModel.session.secureInputWarningSound = {}
 
-        viewModel.beginDictationAfterManagedBackendIfNeeded()
+        viewModel.session.beginDictationAfterManagedBackendIfNeeded()
 
         XCTAssertTrue(
             backendManager.ensureCalls.isEmpty,
@@ -1557,13 +1557,13 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         backendManager.suspendEnsure = true
         let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .managedLocal
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.fakeMicrophone.authorization = .authorized
         var soundPlays = 0
-        viewModel.secureInputWarningSound = { soundPlays += 1 }
+        viewModel.session.secureInputWarningSound = { soundPlays += 1 }
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.beginDictationAfterManagedBackendIfNeeded()
+        viewModel.session.beginDictationAfterManagedBackendIfNeeded()
         await backendManager.waitUntilEnsureStarted()
         XCTAssertTrue(viewModel.isConnectingRealtimeSession, "preflight passed; backend boot in flight")
 
@@ -1571,7 +1571,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         // initiating gesture is long over by the time startup completes.
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
         backendManager.resumeEnsure()
-        await viewModel.managedStartupTask?.value
+        await viewModel.session.managedStartupTask?.value
 
         XCTAssertFalse(viewModel.isDictating, "the doomed live session is still refused")
         XCTAssertEqual(soundPlays, 1, "the audible refusal cue fired")
@@ -1604,10 +1604,10 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .managedLocal
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.fakeMicrophone.authorization = .notDetermined
         var soundPlays = 0
-        viewModel.secureInputWarningSound = { soundPlays += 1 }
+        viewModel.session.secureInputWarningSound = { soundPlays += 1 }
         retainForTestProcessLifetime(viewModel)
 
         // Toggle tap: the secure-input preflight passes, the mic gate parks
@@ -1688,8 +1688,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         status: ManagedBackendStatus
     ) async {
         await withCheckedContinuation { continuation in
-            viewModel.debugManagedStatusMirrorEventSink = {
-                viewModel.debugManagedStatusMirrorEventSink = nil
+            viewModel.session.debugManagedStatusMirrorEventSink = {
+                viewModel.session.debugManagedStatusMirrorEventSink = nil
                 continuation.resume()
             }
             backendManager.emitStatus(spec: spec, status: status)

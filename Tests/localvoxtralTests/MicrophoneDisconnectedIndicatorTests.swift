@@ -10,7 +10,7 @@ final class MicrophoneDisconnectedIndicatorTests: XCTestCase {
     func testUnpluggedMicTurnsIconRedThroughFinalization() {
         let viewModel = makeDictatingViewModel()
 
-        viewModel.stopDictationForUnavailableMicrophone()
+        viewModel.session.stopDictationForUnavailableMicrophone()
 
         XCTAssertFalse(viewModel.isDictating)
         XCTAssertEqual(viewModel.lastError, "Mic disconnected.")
@@ -18,7 +18,7 @@ final class MicrophoneDisconnectedIndicatorTests: XCTestCase {
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
         XCTAssertEqual(viewModel.menuBarIndicatorState, .failure)
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
         XCTAssertEqual(
             viewModel.realtimeSessionIndicatorState, .recentFailure,
@@ -29,13 +29,13 @@ final class MicrophoneDisconnectedIndicatorTests: XCTestCase {
 
     func testOrdinaryStopAfterAnUnplugReturnsIconToIdle() {
         let viewModel = makeDictatingViewModel()
-        viewModel.stopDictationForUnavailableMicrophone()
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.stopDictationForUnavailableMicrophone()
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
         viewModel.isDictating = true
-        viewModel.sessionOutputMode = .liveAutoPaste
+        viewModel.session.sessionOutputMode = .liveAutoPaste
         viewModel.stopDictation(reason: "user")
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .idle)
     }
@@ -55,7 +55,7 @@ final class MicrophoneDisconnectedIndicatorTests: XCTestCase {
             startRuntimeServices: false
         )
         retainForTestProcessLifetime(viewModel)
-        viewModel.sessionOutputMode = .liveAutoPaste
+        viewModel.session.sessionOutputMode = .liveAutoPaste
         viewModel.isDictating = true
         return viewModel
     }

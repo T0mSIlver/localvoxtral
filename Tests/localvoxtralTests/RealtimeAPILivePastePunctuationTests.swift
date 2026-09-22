@@ -60,7 +60,7 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
 
     private func sendPartials(_ deltas: [String], to viewModel: DictationViewModel) {
         for delta in deltas {
-            viewModel.handle(event: .partialTranscript(delta))
+            viewModel.session.handle(event: .partialTranscript(delta))
         }
     }
 
@@ -139,7 +139,7 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
         sendPartials(["sparisce"], to: viewModel)
         XCTAssertEqual(insertedChunks, ["sparisce"])
 
-        viewModel.handle(event: .finalTranscript("sparisce."))
+        viewModel.session.handle(event: .finalTranscript("sparisce."))
 
         XCTAssertEqual(insertedChunks, ["sparisce", "."])
         XCTAssertEqual(viewModel.transcript.currentDictationEventText, "sparisce.")
@@ -153,7 +153,7 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
         sendPartials(["you are", " right"], to: viewModel)
         XCTAssertEqual(insertedChunks, ["you are", " right"])
 
-        viewModel.handle(event: .finalTranscript("you are right, right?"))
+        viewModel.session.handle(event: .finalTranscript("you are right, right?"))
 
         XCTAssertEqual(insertedChunks, ["you are", " right", ", right?"])
         XCTAssertEqual(viewModel.transcript.currentDictationEventText, "you are right, right?")
@@ -169,7 +169,7 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
         sendPartials(["sparisce"], to: viewModel)
         XCTAssertEqual(insertedChunks, ["sparisce"])
 
-        viewModel.handle(event: .finalTranscript("sparisci."))
+        viewModel.session.handle(event: .finalTranscript("sparisci."))
 
         // The field keeps the live-typed text; no extra chunk is inserted.
         XCTAssertEqual(insertedChunks, ["sparisce"])
@@ -180,7 +180,7 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
         // No partials and an empty final: nothing is ever inserted.
         let viewModel = makeViewModel()
 
-        viewModel.handle(event: .finalTranscript(""))
+        viewModel.session.handle(event: .finalTranscript(""))
 
         XCTAssertEqual(insertedChunks, [])
         XCTAssertEqual(viewModel.transcript.currentDictationEventText, "")
@@ -194,7 +194,7 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
         sendPartials(["sparisce"], to: viewModel)
         XCTAssertEqual(insertedChunks, ["sparisce"])
 
-        viewModel.handle(event: .finalTranscript("sparisce"))
+        viewModel.session.handle(event: .finalTranscript("sparisce"))
 
         XCTAssertEqual(insertedChunks, ["sparisce"])
         XCTAssertEqual(viewModel.transcript.currentDictationEventText, "sparisce")

@@ -34,14 +34,14 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
         // alert flag makes presentConnectionFailureAlert a no-op (same
         // pattern as the sibling network-failure tests); lastError is still
         // set before the alert gate.
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "polish this text"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
 
         let lastError = try XCTUnwrap(viewModel.lastError)
@@ -99,14 +99,14 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
             )
         )
         // Same modal-alert guard as the sibling tests (AGENTS.md).
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "polish this long answer"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(viewModel.statusText, "LLM polishing failed.")
@@ -174,14 +174,14 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
             )
         )
         // Same modal-alert guard as the sibling tests (AGENTS.md).
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "polish this text"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(viewModel.statusText, "LLM polishing failed.")

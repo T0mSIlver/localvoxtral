@@ -28,7 +28,7 @@ struct ModalConnectionFailurePresenter: ConnectionFailurePresenting {
         // test that touches NSApplication.shared initializes NSApp for the rest
         // of the suite, and runModal() then stops the whole run dead waiting
         // for a click that never comes.
-        guard !DictationViewModel.isTestProcess() else {
+        guard !DictationSessionController.isTestProcess() else {
             Log.dictation.error("connection-failure alert skipped: XCTest process")
             return
         }

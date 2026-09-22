@@ -46,12 +46,12 @@ final class LearnedTermWiringTests: XCTestCase {
     /// Grounding, the merge and the learned terms all land inside
     /// `polishAndCommitTask`, so the commit is awaited before anything is read.
     private func commit(_ viewModel: DictationViewModel, text: String) async {
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = text
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         XCTAssertNotNil(
-            viewModel.polishAndCommitTask,
+            viewModel.session.polishAndCommitTask,
             "the commit these tests assert on is the polish task"
         )
         await awaitStoppedSessionCommit(viewModel)

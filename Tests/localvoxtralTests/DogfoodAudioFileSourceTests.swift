@@ -162,8 +162,8 @@ final class DogfoodAudioFileSourceTests: XCTestCase {
         let gate = SleepGate()
         viewModel.audio.dogfoodAudioFileSleep = { _ in try await gate.sleep() }
 
-        XCTAssertFalse(viewModel.capturesFromMicrophone)
-        XCTAssertEqual(viewModel.currentMicrophoneAuthorizationStatus(), .authorized)
+        XCTAssertFalse(viewModel.session.capturesFromMicrophone)
+        XCTAssertEqual(viewModel.session.currentMicrophoneAuthorizationStatus(), .authorized)
 
         let collector = ChunkCollector()
         try viewModel.audio.startSessionAudioCapture(preferredDeviceID: nil) { collector.append($0) }
@@ -200,7 +200,7 @@ final class DogfoodAudioFileSourceTests: XCTestCase {
     func testWithoutAFileTheMicrophoneStaysTheSource() {
         let viewModel = makeViewModel()
         viewModel.audio.dogfoodAudioFileURL = nil
-        XCTAssertTrue(viewModel.capturesFromMicrophone)
+        XCTAssertTrue(viewModel.session.capturesFromMicrophone)
     }
 
     // MARK: - Helpers

@@ -8,7 +8,7 @@ extension DictationViewModel {
     /// app to ask `NSRunningApplication` about.
     @MainActor
     func stubCommitTarget(_ bundleID: @escaping () -> String?) {
-        guard let overlay = overlayBufferCoordinator as? MockOverlayCoordinator else {
+        guard let overlay = session.overlayBufferCoordinator as? MockOverlayCoordinator else {
             preconditionFailure("stubCommitTarget needs a MockOverlayCoordinator")
         }
         overlay.commitTargetAppPID = 1

@@ -504,7 +504,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         // Never the runner's real pasteboard: the polish-failure alert is also
         // pre-latched (presentConnectionFailureAlert would otherwise run a
         // REAL modal NSAlert — the suite-hang class AGENTS.md warns about).
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
 
         if let features = evalCase.features {
             if features.macro != nil {
@@ -531,7 +531,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                 // production title -> cwd -> git-index -> match pipeline runs
                 // for real against the git-inited fixture.
                 let title = "eval@mac: \(repoURL.path) — zsh"
-                viewModel.repoVocabularyPipeline.pipeline = { transcript in
+                viewModel.session.repoVocabularyPipeline.pipeline = { transcript in
                     await RepoVocabularyService.entries(
                         forWindowTitle: title, transcript: transcript, cache: vocabularyCache
                     )
@@ -543,19 +543,19 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = input
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         // Read before the first suspension, while the value
         // `finishStoppedSession` just stored is still there; the task clears
         // it on its own way out. Live inference sets no bound worth guessing
         // at — the polish client's own timeout is what ends a wedged
         // request, and it reports itself below.
-        let commitTask = viewModel.polishAndCommitTask
+        let commitTask = viewModel.session.polishAndCommitTask
         await commitTask?.value
-        guard !viewModel.isCompletingStoppedSession else {
+        guard !viewModel.session.isCompletingStoppedSession else {
             throw EvalInfraError("polish stop-commit did not complete")
         }
         if savedRecord?.status == DictationSessionStatus.llmFailed.rawValue {
