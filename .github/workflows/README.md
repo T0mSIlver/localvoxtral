@@ -59,7 +59,11 @@ problem, so hosted runners now use it too, same as self-hosted. Neither
 lane pins a version, so `build-test` records `xcodebuild -version` and
 `swift --version` in its step summary and keys the SwiftPM cache on them —
 when the image's default Xcode moves, the log says which build ran and no
-`.build` tree crosses toolchains.
+`.build` tree crosses toolchains. The cache is saved on every push to main
+(key suffixed with the commit SHA) and restored by prefix on PRs, and
+`scripts/ci/restore-mtimes.sh` runs before `swift test`: a fresh checkout
+stamps every file with the checkout time, and swift-driver would otherwise
+recompile every file against the restored build.
 
 Opt-in dogfood artifact: with the literal marker `[dogfood-package]` in the
 PR body / head commit message, or a `workflow_dispatch` with `dogfood=true`,
