@@ -1,17 +1,12 @@
 name: CodeQL
 
-# Two analyses with very different economics, so they run on different
-# schedules and NEVER on the self-hosted Mac:
+# Workflow analysis only. This repo is public and one job runs on the owner's
+# machine with the signing identity and the login keychain, so an injectable
+# `${{ }}` expression or an over-scoped token in a workflow is the expensive
+# mistake here. Ubuntu, seconds, and NEVER the self-hosted Mac (#418).
 #
-# `actions` — Ubuntu, seconds, on any PR that touches a workflow. This repo is
-# public and one job runs on the owner's machine with the signing identity and
-# the login keychain, so an injectable `${{ }}` expression or an over-scoped
-# token in a workflow is the expensive mistake here, not a Swift memory bug.
-#
-# `swift` — hosted macOS, weekly. It needs a full `swift build`, and its query
-# pack is thin for an app like this one, so it is not worth a per-PR check.
-# `macos-latest` is deliberate: `mac-lanes` is the owner's only Mac and every
-# agent queues behind it (#418).
+# There is no Swift job: its first run (PR #470) hung inside a traced
+# `swift build` that takes about 3 minutes untraced, and GitHub kept no log.
 
 on:
   push:
@@ -25,7 +20,8 @@ on:
       - '.github/actions/**'
   schedule:
     # Mondays, 06:23 UTC. Off the hour — GitHub drops scheduled runs that pile
-    # up on a round number.
+    # up on a round number. The weekly run catches new queries against
+    # workflows nobody has touched.
     - cron: '23 6 * * 1'
   workflow_dispatch:
 
@@ -66,35 +62,3 @@ jobs:
         with:
           category: /language:actions
 
-  swift:
-    name: Analyse Swift
-    # TEMP (reverted in the next commit): prove this lane on the PR, since
-    # workflow_dispatch only exists once the file is on the default branch.
-    if: true
-    runs-on: macos-latest
-    timeout-minutes: 45
-    permissions:
-      contents: read
-      actions: read
-      security-events: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
-        with:
-          languages: swift
-          build-mode: manual
-
-      # Explicit rather than autobuild: autobuild reaches for `xcodebuild` and
-      # this is a SwiftPM package. The root package is what ships the app; the
-      # two MLX helpers are separate packages and are not analysed here —
-      # their builds need the Metal kernels only `package_app.sh` produces.
-      - name: Build
-        run: swift build
-
-      - name: Analyze
-        uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
-        with:
-          category: /language:swift

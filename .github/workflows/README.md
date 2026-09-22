@@ -283,27 +283,21 @@ It needs the same one-time Accessibility and Screen Recording TCC grants as
 
 ## `codeql.yml`
 
-Code scanning, split into two analyses that never touch the self-hosted Mac.
+Code scanning of the workflows themselves, on Ubuntu, on every push to main,
+every same-repo PR that changes `.github/workflows/**` or
+`.github/actions/**`, and Mondays at 06:23 UTC. The repo is public,
+`mac-lanes` runs on the owner's machine with the signing identity and the
+login keychain, and `release.yml` holds the token that publishes the DMG, so
+an injectable `${{ }}` expression or an over-scoped `permissions:` block is
+the failure worth catching. A fork PR is skipped: its token cannot write
+security events, so the upload would fail. Workflow changes from a fork are
+analysed by the push run once merged.
 
-**`actions` — Ubuntu, on every push to main and every same-repo PR that
-changes `.github/workflows/**` or `.github/actions/**`.** This is the half
-that earns its keep: the repo is public, `mac-lanes` runs on the owner's
-machine with the signing identity and the login keychain, and `release.yml`
-holds the token that publishes the DMG, so an injectable `${{ }}` expression
-or an over-scoped `permissions:` block is the failure worth catching. A fork
-PR is skipped — its token cannot write security events, so the upload would
-fail; workflow changes from a fork are analysed by the push run once merged.
-
-**`swift` — `macos-latest`, Mondays at 06:23 UTC, plus dispatch.** It needs a
-real `swift build`, and the Swift query pack is thin for an app like this one,
-so it is not worth a per-PR check. It builds the root package only with an
-explicit `swift build` rather than `autobuild`, which reaches for `xcodebuild`
-on a SwiftPM package; the two MLX helpers are out of scope because their
-builds need the Metal kernels only `package_app.sh` produces.
-
-Neither job may move to `[self-hosted, macOS, ARM64]`. Hosted macOS is free
-for public repositories and that one Mac is what every agent queues behind
-(#418).
+Swift is not analysed. On `macos-latest` the traced `swift build` of the root
+package, about 3 minutes untraced, ran past a 45-minute limit and GitHub kept
+no log (#470). Retrying it belongs on a hosted runner too: never move code
+scanning to `[self-hosted, macOS, ARM64]`, the one Mac every agent queues
+behind (#418).
 
 ## Action pins
 
