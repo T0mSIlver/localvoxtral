@@ -531,7 +531,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                 // production title -> cwd -> git-index -> match pipeline runs
                 // for real against the git-inited fixture.
                 let title = "eval@mac: \(repoURL.path) — zsh"
-                viewModel.debugRepoVocabularyPipelineOverride = { transcript in
+                viewModel.repoVocabularyPipeline.pipeline = { transcript in
                     await RepoVocabularyService.entries(
                         forWindowTitle: title, transcript: transcript, cache: vocabularyCache
                     )

@@ -331,6 +331,9 @@ final class DictationViewModel {
         /// Every record a session writes, before retention decides whether
         /// the store keeps it. Nothing in the app observes; tests do.
         var onSessionRecord: ((DictationSessionRecord) -> Void)?
+        /// The repository vocabulary a commit grounds against. Nil is the
+        /// production pipeline over the commit target's working directory.
+        var repoVocabularyGrounding: (any RepoVocabularyGrounding)?
 
         init(
             microphone: (() -> any MicrophoneCapturing)? = nil,
@@ -343,7 +346,8 @@ final class DictationViewModel {
             reconnectSleep: @escaping @MainActor (TimeInterval) async -> Void =
                 DictationViewModel.sleepForReconnect,
             connectionFailurePresenter: any ConnectionFailurePresenting = ModalConnectionFailurePresenter(),
-            onSessionRecord: ((DictationSessionRecord) -> Void)? = nil
+            onSessionRecord: ((DictationSessionRecord) -> Void)? = nil,
+            repoVocabularyGrounding: (any RepoVocabularyGrounding)? = nil
         ) {
             self.microphone = microphone
             self.pasteboardReader = pasteboardReader
@@ -353,6 +357,7 @@ final class DictationViewModel {
             self.reconnectSleep = reconnectSleep
             self.connectionFailurePresenter = connectionFailurePresenter
             self.onSessionRecord = onSessionRecord
+            self.repoVocabularyGrounding = repoVocabularyGrounding
         }
     }
 
@@ -360,6 +365,19 @@ final class DictationViewModel {
     /// lifecycle center is read at init and the rest when a session uses them.
     @ObservationIgnored
     var dependencies: Dependencies
+
+    /// The production repository-vocabulary pipeline, over the app the
+    /// overlay commits into. Built on first use so its closures can reach
+    /// the view model.
+    @ObservationIgnored
+    lazy var repoVocabularyPipeline = RepoVocabularyPipeline(
+        settings: settings,
+        commitTargetAppPID: { [weak self] in self?.overlayBufferCoordinator.commitTargetAppPID },
+        targetBundleID: { [weak self] in self?.resolveTargetAppBundleID() }
+    )
+    var repoVocabularyGrounding: any RepoVocabularyGrounding {
+        dependencies.repoVocabularyGrounding ?? repoVocabularyPipeline
+    }
 
     // Services — internal so extension files can access them.
     @ObservationIgnored
@@ -660,45 +678,6 @@ final class DictationViewModel {
     /// the exact pre-processing payload the Logger would emit.
     @ObservationIgnored
     var debugDeltaLogSink: ((DebugRealtimeDeltaLogRecord) -> Void)?
-    /// Test seam: replaces the whole AX-title/process-cwd -> git-index -> match
-    /// pipeline of
-    /// `repoVocabularyGroundingIfEnabled` with a closure returning the grounding for
-    /// a given transcript, so VM tests exercise the setting + endpoint gates
-    /// without touching live AX or a git subprocess. Consulted only AFTER those
-    /// two gates pass, so "off"/"remote" tests still prove the no-op paths.
-    /// Bypasses the deadline race entirely — to exercise that, use the
-    /// pipeline/deadline-sleep seams below instead. `@MainActor` so ordering
-    /// tests can read main-actor stub state inside it.
-    @ObservationIgnored
-    var debugRepoVocabularyEntriesOverride:
-        (@MainActor (String) -> RepoVocabularyMatcher.GroundingOutcome?)?
-    /// Test seam: the git root the entries seam above reports, standing in for
-    /// what the real pipeline resolves. Nil means "ran, no repository", the
-    /// same as the live path — never "did not run", which only skipping the
-    /// pipeline produces.
-    @ObservationIgnored
-    var debugRepoVocabularyRootOverride: String?
-    /// Test seam: replaces only the DETACHED vocabulary pipeline (AX title /
-    /// process cwd + git index + match) while keeping the deadline race in
-    /// play, so tests can inject a never-completing pipeline and prove the
-    /// commit still proceeds (without vocabulary) when the deadline expires.
-    @ObservationIgnored
-    var debugRepoVocabularyPipelineOverride:
-        (@Sendable (String) async -> RepoVocabularyMatcher.GroundingOutcome?)?
-    /// Test seam: replaces the deadline sleep of the vocabulary race (repo
-    /// reference pattern: injected clock/sleep seams, no wall-clock in tests).
-    /// An immediately-returning closure makes the deadline expire instantly.
-    @ObservationIgnored
-    var debugRepoVocabularyDeadlineSleepOverride: (@Sendable () async -> Void)?
-    /// TTL cache for harvested repo vocabularies, keyed by git root. Held for the
-    /// view model's lifetime so a burst of commits reuses one index.
-    @ObservationIgnored
-    let repoVocabularyCache = RepoVocabularyCache()
-    /// Single-flight gate for the detached vocabulary pipeline (see
-    /// `RepoVocabularyFlightGate`): while a prior pipeline is still in flight,
-    /// commits fast-skip vocabulary instead of stacking more blocked threads.
-    @ObservationIgnored
-    let repoVocabularyPipelineInFlight = RepoVocabularyFlightGate()
     /// Test seam: invoked after the managed-startup status mirror finishes
     /// handling each status update (including updates its guard skips), so
     /// tests can await mirror processing deterministically instead of

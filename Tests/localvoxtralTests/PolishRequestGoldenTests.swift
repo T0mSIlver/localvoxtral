@@ -443,11 +443,12 @@ final class PolishRequestGoldenTests: XCTestCase {
         final class Counter { var runs = 0 }
         let pipelineRuns = Counter()
         let repoOutcome = scenario.repoVocabularyOutcome
-        viewModel.debugRepoVocabularyEntriesOverride = { _ in
+        viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding(
+            root: scenario.repoVocabularyRoot
+        ) { _ in
             pipelineRuns.runs += 1
             return repoOutcome
         }
-        viewModel.debugRepoVocabularyRootOverride = scenario.repoVocabularyRoot
 
         if let capture = scenario.screenCapture {
             viewModel.context.terminalScreenStartCapture = capture

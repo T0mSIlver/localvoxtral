@@ -34,8 +34,9 @@ final class LearnedTermWiringTests: XCTestCase {
         )
         viewModel.llmPolishingService = service
         viewModel.stubCommitTarget { "com.apple.Terminal" }
-        viewModel.debugRepoVocabularyEntriesOverride = { _ in outcome }
-        viewModel.debugRepoVocabularyRootOverride = repositoryRoot
+        viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding(
+            outcome: outcome, root: repositoryRoot
+        )
         let store = LearnedTermStore(fileURL: nil)
         viewModel.learnedTermStore = store
         retainForTestProcessLifetime(viewModel)
