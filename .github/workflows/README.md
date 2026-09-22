@@ -281,6 +281,30 @@ prints a clear skip message and exits successfully.
 It needs the same one-time Accessibility and Screen Recording TCC grants as
 `ui-smoke.yml`.
 
+## `codeql.yml`
+
+Code scanning, split into two analyses that never touch the self-hosted Mac.
+
+**`actions` — Ubuntu, on every push to main and every same-repo PR that
+changes `.github/workflows/**` or `.github/actions/**`.** This is the half
+that earns its keep: the repo is public, `mac-lanes` runs on the owner's
+machine with the signing identity and the login keychain, and `release.yml`
+holds the token that publishes the DMG, so an injectable `${{ }}` expression
+or an over-scoped `permissions:` block is the failure worth catching. A fork
+PR is skipped — its token cannot write security events, so the upload would
+fail; workflow changes from a fork are analysed by the push run once merged.
+
+**`swift` — `macos-latest`, Mondays at 06:23 UTC, plus dispatch.** It needs a
+real `swift build`, and the Swift query pack is thin for an app like this one,
+so it is not worth a per-PR check. It builds the root package only with an
+explicit `swift build` rather than `autobuild`, which reaches for `xcodebuild`
+on a SwiftPM package; the two MLX helpers are out of scope because their
+builds need the Metal kernels only `package_app.sh` produces.
+
+Neither job may move to `[self-hosted, macOS, ARM64]`. Hosted macOS is free
+for public repositories and that one Mac is what every agent queues behind
+(#418).
+
 ## Action pins
 
 Every `uses:` names a 40-character commit SHA with the tag in a trailing

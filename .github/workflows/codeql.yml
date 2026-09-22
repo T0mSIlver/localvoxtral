@@ -1,0 +1,98 @@
+name: CodeQL
+
+# Two analyses with very different economics, so they run on different
+# schedules and NEVER on the self-hosted Mac:
+#
+# `actions` — Ubuntu, seconds, on any PR that touches a workflow. This repo is
+# public and one job runs on the owner's machine with the signing identity and
+# the login keychain, so an injectable `${{ }}` expression or an over-scoped
+# token in a workflow is the expensive mistake here, not a Swift memory bug.
+#
+# `swift` — hosted macOS, weekly. It needs a full `swift build`, and its query
+# pack is thin for an app like this one, so it is not worth a per-PR check.
+# `macos-latest` is deliberate: `mac-lanes` is the owner's only Mac and every
+# agent queues behind it (#418).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+      - '.github/actions/**'
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - '.github/actions/**'
+  schedule:
+    # Mondays, 06:23 UTC. Off the hour — GitHub drops scheduled runs that pile
+    # up on a round number.
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  actions:
+    name: Analyse workflows
+    # A fork PR's token cannot write security events, so the upload would fail
+    # on a contributor's PR. Workflow changes from a fork land on main and get
+    # analysed by the push run.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+        with:
+          languages: actions
+          build-mode: none
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+        with:
+          category: /language:actions
+
+  swift:
+    name: Analyse Swift
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+        with:
+          languages: swift
+          build-mode: manual
+
+      # Explicit rather than autobuild: autobuild reaches for `xcodebuild` and
+      # this is a SwiftPM package. The root package is what ships the app; the
+      # two MLX helpers are separate packages and are not analysed here —
+      # their builds need the Metal kernels only `package_app.sh` produces.
+      - name: Build
+        run: swift build
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+        with:
+          category: /language:swift
