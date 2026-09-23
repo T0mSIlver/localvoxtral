@@ -10,19 +10,19 @@ import Foundation
 ///
 /// If the app is deleted, the `[ -x "$hook" ]` guard skips the indicator
 /// and the user's own status line keeps working.
-public enum ClaudeStatuslineCombine {
+package enum ClaudeStatuslineCombine {
     /// Where the script lives, relative to home.
-    public static let scriptRelativePath = ".claude/localvoxtral-statusline.sh"
+    package static let scriptRelativePath = ".claude/localvoxtral-statusline.sh"
     /// The `statusLine.command` a combined entry holds. Claude Code runs it
     /// through a shell, which expands the tilde.
-    public static let settingsCommand = "~/" + scriptRelativePath
+    package static let settingsCommand = "~/" + scriptRelativePath
 
     static let originalPrefix = "original_command="
     static let hookPrefix = "hook="
 
     /// The script for `original` (the user's command, verbatim) and
     /// `hookPath` (this app's publisher binary).
-    public static func script(original: String, hookPath: String) -> String {
+    package static func script(original: String, hookPath: String) -> String {
         """
         #!/bin/sh
         # Written by localvoxtral: your status line, then its connection indicator.
@@ -46,7 +46,7 @@ public enum ClaudeStatuslineCombine {
 
     /// The pieces of a script this app wrote, or nil when the text is not
     /// exactly what `script(original:hookPath:)` produces for them.
-    public static func parse(_ text: String) -> (original: String, hookPath: String)? {
+    package static func parse(_ text: String) -> (original: String, hookPath: String)? {
         guard
             let parsed = assignments(in: text),
             script(original: parsed.original, hookPath: parsed.hookPath) == text
@@ -56,7 +56,7 @@ public enum ClaudeStatuslineCombine {
 
     /// `path` as one shell word: bare when it needs no quoting, single-quoted
     /// otherwise, so an app under `~/My Apps` still runs.
-    public static func shellWord(_ path: String) -> String {
+    package static func shellWord(_ path: String) -> String {
         let safe = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-+")
         return !path.isEmpty && path.allSatisfy(safe.contains) ? path : shellQuote(path)
     }
