@@ -397,6 +397,13 @@ justify skipping it in one line. Only the 7 migrated punctuation cases are
 across server states (restarts / prompt-cache configurations) to `required` —
 promotion PRs must carry that cross-state evidence.
 
+Its ASR stage talks to a speech test service on the Mac, which runs the helper
+installed there, never the PR's build. Each dictation model in
+`SpeechModelCatalog` has its own service, one row of
+`scripts/mac/test-speech-models.tsv`, and `eval-e2e --asr <name>` scores that
+one (default `voxtral`). To score a helper change, install the PR's packaged
+.app for that row first (`scripts/mac/README.md`, "Speech test services").
+
 Mistral arm of the same eval: `MISTRAL_API_KEY=… ./scripts/remote-build.sh
 eval-e2e --provider mistral [EvalRecordings/agent-dictation/<set>]` moves BOTH
 live stages to Mistral's hosted API — the hosted realtime socket for ASR, and a

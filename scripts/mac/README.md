@@ -67,17 +67,21 @@ Details and the full assumption list: `docs/agent/test-tiers.md` and
 
 ## On-demand test servers (speechd + polishd) — owner runbook
 
-The two build-host model servers used by the integration/eval suites are the
+The build-host model servers used by the integration/eval suites are the
 app's OWN bundled Swift helpers (they replaced the retired Python voxmlx /
 mlx-lm services in the 2026-07 migration — see "Migration" below):
 
-- `com.localvoxtral.testspeechd` — `localvoxtral-speechd` on **port 8000**,
-  tier-1 realtime STT (the same OpenAI-Realtime websocket the app ships).
+- `com.localvoxtral.testspeechd` — `localvoxtral-speechd` serving Voxtral on
+  **port 8000**, tier-1 realtime STT (the same OpenAI-Realtime websocket the
+  app ships).
+- `com.localvoxtral.testspeechd-<name>` — the same helper serving each other
+  dictation model on its own port ("Speech test services" below).
 - `com.localvoxtral.testpolishd` — `localvoxtral-polishd` on **port 8080**,
   the LLM-polish-eval reference chat/completions endpoint.
 
-Short service names are `speechd` / `polishd` (the retired `voxmlx` / `mlxlm`
-are still accepted as deprecated aliases). They run **launch-on-demand with an
+Service names are `speechd-<name>` and `polishd`; `speechd` means
+`speechd-voxtral`, and the retired `voxmlx` / `mlxlm` are still accepted as
+deprecated aliases. They run **launch-on-demand with an
 idle reaper** so RAM is only spent around actual test runs — hands-free for
 both CI and `remote-build.sh`.
 
@@ -114,7 +118,7 @@ How it works (`scripts/mac/lv-test-servers.sh` is the single source of truth):
   in the GUI-owner domain, so the `launchctl kill` is permitted. The
   compromise: warm within a work session / CI burst, RAM freed once the machine
   goes quiet — next use pays one cold model load.
-- **Manual unload:** `lv-test-servers.sh stop [speechd|polishd|all]` frees the
+- **Manual unload:** `lv-test-servers.sh stop [<service>|all]` frees the
   weights NOW without waiting for the idle window — same stop path as reap
   (trigger removed, `SIGTERM`→`SIGKILL`, blocks until the port closes). Default
   target is `all`. Stop signals BOTH the new (`testspeechd`/`testpolishd`) and
@@ -153,8 +157,9 @@ sudo install -d -m 0755 /Users/Shared/localvoxtral        # log dir, if absent
 #    launchd domain runs the services — the one bootstrapping the plists below).
 #    The helpers NEVER auto-download: a missing model makes speechd/polishd log
 #    an error and exit, launchd relaunch-loops it, and `ensure` times out with a
-#    clear message. Keep these pins in sync with SpeechModelCatalog.defaultOption
-#    and PolishModelCatalog.defaultOption in the app source.
+#    clear message. Keep the polish pin in sync with
+#    PolishModelCatalog.defaultOption; `install-speech-models` (below) prints the
+#    download line for each speech model that is missing.
 python3 -m pip install --user -U 'huggingface_hub[cli]'   # or: uv tool install huggingface_hub
 hf download T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead \
   --revision 247f2eeccf962fbcaf85e361731a5e75b2d8cac1     # speechd (STT, 8000)
@@ -208,44 +213,46 @@ PLIST
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.localvoxtral.testpolishd.plist
 ```
 
-### speechd LaunchAgent (on-demand)
+### Speech test services (one per dictation model)
 
-Same as polishd, the trigger path stays `run/voxmlx.want` (retired name) as the
-stable cross-generation rendezvous — the CI warm step (`ensure speechd`), the
-gate, and an un-updated reaper all touch/read exactly this path, so the STT lane
-keeps warming with no gate/reaper reinstall. `StandardOutPath` is the file the
-gate's `voxlog`/`VOXLOG_FILE` reads.
+Each row of `scripts/mac/test-speech-models.tsv` is one on-demand speechd
+service, named `speechd-<name>`, on its own port. The rows must equal
+`SpeechModelCatalog.options`, and `SpeechModelCatalogTests` fails until they
+do. Voxtral keeps port 8000, the label `com.localvoxtral.testspeechd`, the
+trigger `run/voxmlx.want` and the log `speechd.log`, and `speechd` stays its
+name. Every other row gets `com.localvoxtral.testspeechd-<name>`,
+`run/speechd-<name>.want` and `speechd-<name>.log`.
+
+One command writes and bootstraps a plist per row, removes the plists of rows
+that are gone, and installs the list at
+`/Users/Shared/localvoxtral/testservers/speech-models.tsv`, where the build
+gate reads each service's port:
 
 ```bash
-cat > ~/Library/LaunchAgents/com.localvoxtral.testspeechd.plist <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>com.localvoxtral.testspeechd</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/Users/Shared/localvoxtral/testservers/localvoxtral.app/Contents/MacOS/localvoxtral-speechd</string>
-    <string>--model</string><string>T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead</string>
-    <string>--model-revision</string><string>247f2eeccf962fbcaf85e361731a5e75b2d8cac1</string>
-    <string>--port</string><string>8000</string>
-    <string>--cache-limit-mb</string><string>4096</string>
-  </array>
-  <!-- On-demand: launchd starts this while the trigger file exists and stops
-       it (freeing the weights) when lv-test-servers.sh reap removes it. -->
-  <key>RunAtLoad</key><false/>
-  <key>KeepAlive</key>
-  <dict>
-    <key>PathState</key>
-    <dict><key>/Users/Shared/localvoxtral/run/voxmlx.want</key><true/></dict>
-  </dict>
-  <key>StandardOutPath</key><string>/Users/Shared/localvoxtral/speechd.log</string>
-  <key>StandardErrorPath</key><string>/Users/Shared/localvoxtral/speechd.log</string>
-</dict>
-</plist>
-PLIST
+cd ~/work/localvoxtral && git pull
+scripts/mac/lv-test-servers.sh install-speech-models
+# It prints an `hf download` line for each model not yet cached. Run those,
+# then check:
+scripts/mac/lv-test-servers.sh ensure all && scripts/mac/lv-test-servers.sh status
+```
 
-launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.localvoxtral.testspeechd.plist
+Rerun it after any change to the list. A running service restarts on the new
+definition, so pick a moment when no Mac job is using it.
+
+**Adding a dictation model:** add its row with a free port, merge, then run the
+command above on the Mac. Nothing else changes: CI keeps using `speechd`, the
+gate learns the port from the installed list, and `remote-build.sh eval-e2e
+--asr <name>` scores the new service.
+
+**Scoring a helper change before it merges:** the services run the helper in
+the stable .app, so a new engine does not exist there yet. Point one row at a
+PR's packaged .app, score it, then put it back:
+
+```bash
+LV_TEST_SERVER_APP=/path/to/pr/localvoxtral.app \
+  scripts/mac/lv-test-servers.sh install-speech-models <name>
+# ... eval-e2e --asr <name> from the dev box ...
+scripts/mac/lv-test-servers.sh install-speech-models <name>
 ```
 
 ### Idle-reaper LaunchAgent
@@ -277,7 +284,10 @@ launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.localvoxtral.tests
 ```
 
 (Point the script path at a stable checkout of this repo, or copy
-`lv-test-servers.sh` to a fixed location. Override the idle window by adding an
+`lv-test-servers.sh` to a fixed location. A copy without
+`test-speech-models.tsv` beside it reads the list `install-speech-models`
+installed; with neither, the reaper sees only Voxtral and polishd and never
+frees another speech model. Override the idle window by adding an
 `EnvironmentVariables` dict with `LV_TEST_SERVER_IDLE_SECONDS`. During the
 migration, `git pull` that stable checkout so the reaper runs the new script —
 though an OLD reaper still reaps the new services via its port-bound fallback,
@@ -353,13 +363,13 @@ launchctl bootout "gui/$UID/com.localvoxtral.mlxlm"  2>/dev/null || true
 rm -f ~/Library/LaunchAgents/com.localvoxtral.voxmlx.plist \
       ~/Library/LaunchAgents/com.localvoxtral.mlxlm.plist
 
-# 4. Bootstrap the new helper plists (templates above). The bootout lines make
-#    a rerun of this step safe — bootstrap fails with "5: Input/output error"
-#    when the label is already loaded:
-launchctl bootout "gui/$UID/com.localvoxtral.testspeechd" 2>/dev/null || true
+# 4. Bootstrap the new helper plists: the polishd template above, and the
+#    speech services through install-speech-models (it boots out first, so a
+#    rerun is safe). bootstrap fails with "5: Input/output error" when the
+#    label is already loaded, hence the bootout line:
 launchctl bootout "gui/$UID/com.localvoxtral.testpolishd" 2>/dev/null || true
-launchctl bootstrap "gui/$UID" ~/Library/LaunchAgents/com.localvoxtral.testspeechd.plist
 launchctl bootstrap "gui/$UID" ~/Library/LaunchAgents/com.localvoxtral.testpolishd.plist
+scripts/mac/lv-test-servers.sh install-speech-models
 
 # 5. Delete the retired mlx-lm venv/wheel (no longer used by anything):
 rm -rf ~/.local/share/localvoxtral-eval/mlx-lm

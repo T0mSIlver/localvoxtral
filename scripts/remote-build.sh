@@ -63,10 +63,13 @@ set -euo pipefail
 #                                      key from MISTRAL_API_KEY on THIS box, e.g.
 #                                      eval-llm https://api.mistral.ai mistral/mistral-medium-3-5
 #     eval-e2e     agent-dictation end-to-end eval: human WAVs or TTS -> live
-#                  voxmlx ASR -> bundled polishd via the production stop-commit
+#                  speechd ASR -> bundled polishd via the production stop-commit
 #                  path, scored against EvalCorpus/agent-dictation (run
 #                  `package` first; optional arg = a complete recording-set
 #                  directory made by scripts/record-agent-eval.sh).
+#                  `--asr <name>` picks the speech test service by its row in
+#                  scripts/mac/test-speech-models.tsv (default voxtral), e.g.
+#                  eval-e2e --asr nemotron
 #                  `--provider mistral` (or a bare `mistral` argument) runs BOTH
 #                  live stages on Mistral's hosted API instead — no local
 #                  server, no `package` run, needs MISTRAL_API_KEY on THIS box,
@@ -595,8 +598,24 @@ case "$CMD" in
     # run — and it BILLS the owner's Mistral account, so it is by-hand only.
     E2E_RECORDING_DIR=""
     E2E_PROVIDER=""
+    E2E_ASR=""
+    E2E_ASR_GIVEN=0
     while [[ $# -gt 0 ]]; do
       case "$1" in
+        --asr)
+          if [[ $# -lt 2 ]]; then
+            echo "eval-e2e: --asr needs a model name from scripts/mac/test-speech-models.tsv" >&2
+            exit 1
+          fi
+          E2E_ASR="$2"
+          E2E_ASR_GIVEN=1
+          shift 2
+          ;;
+        --asr=*)
+          E2E_ASR="${1#--asr=}"
+          E2E_ASR_GIVEN=1
+          shift
+          ;;
         --provider)
           if [[ $# -lt 2 ]]; then
             echo "eval-e2e: --provider needs a value (mistral)" >&2
@@ -631,6 +650,10 @@ case "$CMD" in
       echo "eval-e2e: unknown provider '$E2E_PROVIDER' (only 'mistral')" >&2
       exit 1
     fi
+    if [[ "$E2E_PROVIDER" == "mistral" && "$E2E_ASR_GIVEN" == 1 ]]; then
+      echo "eval-e2e: --asr picks a speech test service on the Mac; --provider mistral uses none" >&2
+      exit 1
+    fi
     if [[ "$E2E_PROVIDER" == "mistral" && -z "${MISTRAL_API_KEY:-}" ]]; then
       echo "eval-e2e --provider mistral needs MISTRAL_API_KEY in this shell's environment:" >&2
       echo "  export MISTRAL_API_KEY=... && ./scripts/remote-build.sh eval-e2e --provider mistral" >&2
@@ -638,6 +661,24 @@ case "$CMD" in
     fi
     if [[ "$E2E_PROVIDER" == "mistral" ]]; then
       require_mistral_api_key_format
+    fi
+    # The speech service to score: its port and pinned repo come from the same
+    # list the Mac's services are installed from.
+    if [[ "$E2E_ASR_GIVEN" == 0 ]]; then
+      E2E_ASR="voxtral"
+    fi
+    E2E_ASR_PORT=""
+    E2E_ASR_REPO=""
+    if [[ "$E2E_PROVIDER" != "mistral" ]]; then
+      if [[ ! "$E2E_ASR" =~ ^[a-z0-9]+$ ]] \
+        || ! read -r E2E_ASR_PORT E2E_ASR_REPO < <(awk -v n="$E2E_ASR" \
+          '$1 == n { print $2, $3; found = 1 } END { exit !found }' \
+          "${LV_TEST_SPEECH_MODELS:-$ROOT_DIR/scripts/mac/test-speech-models.tsv}") \
+        || [[ ! "$E2E_ASR_PORT" =~ ^80[0-7][0-9]$ \
+              || ! "$E2E_ASR_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+        echo "eval-e2e: no speech model '$E2E_ASR' in scripts/mac/test-speech-models.tsv" >&2
+        exit 1
+      fi
     fi
     if [[ -n "$E2E_RECORDING_DIR" ]]; then
       # Keep the marker JSON trivially safe and make operator mistakes fail
@@ -655,8 +696,14 @@ case "$CMD" in
     fi
     # The hosted arm touches no local server: warming speechd would load 4B
     # weights on the Mac that nothing in the run would ever talk to.
+    # Voxtral goes by `speechd`, which a gate older than the speech model list
+    # also accepts.
     if [[ "$E2E_PROVIDER" != "mistral" ]]; then
-      ENSURE_SERVER="speechd"
+      if [[ "$E2E_ASR" == "voxtral" ]]; then
+        ENSURE_SERVER="speechd"
+      else
+        ENSURE_SERVER="speechd-$E2E_ASR"
+      fi
     fi
     E2E_MARKER="$ROOT_DIR/.agent-eval-e2e-enable.json"
     # Trap registered before the marker exists, so no kill window leaves a
@@ -678,15 +725,17 @@ case "$CMD" in
           >"$E2E_MARKER"
       fi
     elif [[ -n "$E2E_RECORDING_DIR" ]]; then
-      printf '{"helperPath": "%s", "asrModel": "%s", "recordingDirectory": "%s"}\n' \
+      printf '{"helperPath": "%s", "voxmlxEndpoint": "%s", "asrModel": "%s", "recordingDirectory": "%s"}\n' \
         "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
-        "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead" \
+        "ws://127.0.0.1:$E2E_ASR_PORT/v1/realtime" \
+        "$E2E_ASR_REPO" \
         "$E2E_RECORDING_DIR" \
         >"$E2E_MARKER"
     else
-      printf '{"helperPath": "%s", "asrModel": "%s"}\n' \
+      printf '{"helperPath": "%s", "voxmlxEndpoint": "%s", "asrModel": "%s"}\n' \
         "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
-        "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead" \
+        "ws://127.0.0.1:$E2E_ASR_PORT/v1/realtime" \
+        "$E2E_ASR_REPO" \
         >"$E2E_MARKER"
     fi
     REMOTE_CMD=(swift test --filter AgentDictationE2EEvalTests)

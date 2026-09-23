@@ -23,20 +23,30 @@ final class MacTestServerRunbookPinTests: XCTestCase {
         let revision: String
     }
 
-    private var expectedPins: [ServicePin] {
-        [
-            ServicePin(
-                binary: "localvoxtral-speechd",
-                repoID: SpeechModelCatalog.defaultOption.repoID,
-                revision: SpeechModelCatalog.defaultOption.revision
-            ),
-            ServicePin(
-                binary: "localvoxtral-polishd",
-                repoID: PolishModelCatalog.defaultOption.repoID,
-                revision: PolishModelCatalog.defaultOption.revision
-            ),
-        ]
+    private var speechdPin: ServicePin {
+        ServicePin(
+            binary: "localvoxtral-speechd",
+            repoID: SpeechModelCatalog.defaultOption.repoID,
+            revision: SpeechModelCatalog.defaultOption.revision
+        )
     }
+
+    private var polishdPin: ServicePin {
+        ServicePin(
+            binary: "localvoxtral-polishd",
+            repoID: PolishModelCatalog.defaultOption.repoID,
+            revision: PolishModelCatalog.defaultOption.revision
+        )
+    }
+
+    /// Only polishd's plist is embedded in the runbook. The speech services'
+    /// plists are written from `scripts/mac/test-speech-models.tsv` by
+    /// `lv-test-servers.sh install-speech-models`, and
+    /// `SpeechModelCatalogTests.testBuildHostServesEveryCatalogModelAtItsPin`
+    /// pins every row of that list to the catalog (#487).
+    private var embeddedPlistPins: [ServicePin] { [polishdPin] }
+
+    private var downloadPins: [ServicePin] { [speechdPin, polishdPin] }
 
     private func runbook() throws -> String {
         let root = URL(fileURLWithPath: #filePath)
@@ -93,7 +103,7 @@ final class MacTestServerRunbookPinTests: XCTestCase {
         // revision, polishd's block polishd's. A swapped pair, a stale value,
         // and a missing service section each fail on their own line.
         let text = try runbook()
-        for pin in expectedPins {
+        for pin in embeddedPlistPins {
             let window = try serviceWindow(binary: pin.binary, in: text)
             XCTAssertEqual(
                 try plistValue(after: "--model", inWindow: window, service: pin.binary),
@@ -128,7 +138,7 @@ final class MacTestServerRunbookPinTests: XCTestCase {
         }
         XCTAssertEqual(
             downloaded,
-            Dictionary(uniqueKeysWithValues: expectedPins.map { ($0.repoID, $0.revision) }),
+            Dictionary(uniqueKeysWithValues: downloadPins.map { ($0.repoID, $0.revision) }),
             "the runbook's hf download pairs must be exactly the catalog defaults"
         )
     }

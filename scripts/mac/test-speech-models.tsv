@@ -1,0 +1,11 @@
+# Dictation models the build host serves as on-demand test services, one
+# LaunchAgent and one port each. `lv-test-servers.sh install-speech-models`
+# turns every row into a service named speechd-<name>; see scripts/mac/README.md.
+#
+# Keep the rows equal to SpeechModelCatalog.options (repo and revision):
+# SpeechModelCatalogTests fails until they are. The voxtral row keeps port 8000
+# and the pre-list trigger, label and log, and `speechd` stays its alias, so CI
+# and an older build gate keep working.
+#
+# name	port	repo	revision
+voxtral	8000	T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead	247f2eeccf962fbcaf85e361731a5e75b2d8cac1
