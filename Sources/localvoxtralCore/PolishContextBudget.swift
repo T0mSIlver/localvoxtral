@@ -12,7 +12,7 @@ import Foundation
 /// changes rendered output — treat the order as behavior, not cosmetics.
 /// Earliest = most trusted for grounding provenance (the repo the speaker is
 /// working in beats what happens to be on their clipboard).
-enum PolishContextSource: String, CaseIterable, Sendable, Hashable {
+package enum PolishContextSource: String, CaseIterable, Sendable, Hashable {
     case repository
     case terminal
     case claude
@@ -27,7 +27,7 @@ enum PolishContextSource: String, CaseIterable, Sendable, Hashable {
     case learned
 
     /// Position in the fixed allocation order (declaration order).
-    var allocationRank: Int {
+    package var allocationRank: Int {
         PolishContextSource.allCases.firstIndex(of: self) ?? 0
     }
 }
@@ -41,7 +41,7 @@ enum PolishContextSource: String, CaseIterable, Sendable, Hashable {
 /// Pure and synchronous: no I/O, no actor, no clock. The allocation is a
 /// function of the demands alone, so a given set of demands always produces
 /// the same split.
-enum PolishContextBudget {
+package enum PolishContextBudget {
     /// Total characters ALL context sources may render into one polish
     /// request, combined.
     ///
@@ -55,7 +55,7 @@ enum PolishContextBudget {
     /// when a run shows grounding recall still climbing at the cap, or shows
     /// latency headroom, calibrate this constant and paste the paired
     /// scoreboard in the PR. Change it HERE — no source hardcodes its own cap.
-    static let totalCharacterBudget = 6000
+    package static let totalCharacterBudget = 6000
 
     /// Characters a populated source is guaranteed before any other source may
     /// take a second helping. Without a floor, one large source (a 90k-char
@@ -63,7 +63,7 @@ enum PolishContextBudget {
     /// small, highly relevant source (a 300-char terminal tail) would render
     /// nothing. 400 characters is a few lines — enough for a floor to still
     /// carry the entity that made the source worth attaching.
-    static let sourceFloorCharacters = 400
+    package static let sourceFloorCharacters = 400
 
     /// The per-source character caps for `demands`, honoring these invariants:
     ///
@@ -87,7 +87,7 @@ enum PolishContextBudget {
     /// ranks get what is left (possibly nothing): a deliberate, documented
     /// preference for the more trusted source over an even split that would
     /// leave every source below a useful size.
-    static func allocate(
+    package static func allocate(
         demands: [PolishContextSource: Int],
         total: Int = totalCharacterBudget
     ) -> [PolishContextSource: Int] {
@@ -114,7 +114,7 @@ enum PolishContextBudget {
     ///   its floor when the floors alone exceed `total`. A key absent from
     ///   `order` is dropped: an unranked key has no defined place in a
     ///   deterministic split.
-    static func allocate<Key: Hashable>(
+    package static func allocate<Key: Hashable>(
         demands: [Key: Int],
         order: [Key],
         floor: Int,
@@ -172,7 +172,7 @@ enum PolishContextBudget {
 /// Assembles the dynamic context block into the polish request's user
 /// messages. Extracted as a pure function because its ONE hard requirement is
 /// invisible at the call site: it must not disturb the prompt-cache prefix.
-enum PolishContextComposer {
+package enum PolishContextComposer {
     /// Prepends `contextMessage` to the LAST user message, returning the new
     /// messages.
     ///
@@ -189,7 +189,7 @@ enum PolishContextComposer {
     ///    the input text back into its output.
     ///
     /// An empty context message, or an empty message list, is a no-op.
-    static func prepending(contextMessage: String, to userPrompts: [String]) -> [String] {
+    package static func prepending(contextMessage: String, to userPrompts: [String]) -> [String] {
         guard !contextMessage.isEmpty, let lastIndex = userPrompts.indices.last else {
             return userPrompts
         }

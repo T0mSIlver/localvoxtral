@@ -28,9 +28,9 @@ import Foundation
 ///
 /// Pure and deterministic — decisions depend only on the candidates and the
 /// fixed `PolishContextSource` order.
-enum PolishContextGrounding {
+package enum PolishContextGrounding {
     /// One source's proposal.
-    struct Candidate: Sendable {
+    package struct Candidate: Sendable {
         let source: PolishContextSource
         let entries: [ReplacementEntry]
         /// True when `entries` came from the bounded aligned fallback rather
@@ -44,7 +44,7 @@ enum PolishContextGrounding {
         /// pre-application vote directly.
         let verificationEntries: [ReplacementEntry]
 
-        init(
+        package init(
             source: PolishContextSource,
             entries: [ReplacementEntry],
             isFallbackOnly: Bool,
@@ -59,22 +59,27 @@ enum PolishContextGrounding {
         }
     }
 
-    struct VerificationPair: Equatable {
-        let heard: String
-        let exact: String
+    package struct VerificationPair: Equatable {
+        package let heard: String
+        package let exact: String
+
+        package init(heard: String, exact: String) {
+            self.heard = heard
+            self.exact = exact
+        }
     }
 
     /// The merged grounding, retaining which source each surviving entry came
     /// from so each one can still render under its own honest prompt header.
-    struct Merged: Equatable {
+    package struct Merged: Equatable {
         /// Every surviving entry, in source order — what gets pre-applied.
-        let all: [ReplacementEntry]
+        package let all: [ReplacementEntry]
         private let bySource: [PolishContextSource: [ReplacementEntry]]
         /// Bounded prompt-only suggestions whose literal heard bytes survived
         /// pre-application unchanged.
-        let verificationPairs: [VerificationPair]
+        package let verificationPairs: [VerificationPair]
 
-        init(
+        package init(
             all: [ReplacementEntry],
             bySource: [PolishContextSource: [ReplacementEntry]],
             verificationPairs: [VerificationPair] = []
@@ -87,19 +92,19 @@ enum PolishContextGrounding {
         /// The surviving entries attributed to `source`. A term two sources
         /// agreed on is attributed to the earlier `allocationRank` — it appears
         /// exactly once across all sources, never duplicated into both.
-        func entries(from source: PolishContextSource) -> [ReplacementEntry] {
+        package func entries(from source: PolishContextSource) -> [ReplacementEntry] {
             bySource[source] ?? []
         }
     }
 
-    static let maxVerificationPairs = 4
+    package static let maxVerificationPairs = 4
 
     /// Merges `candidates` under the rules documented on this type.
     ///
     /// `maxVerificationPairs` is the dictation's nomination cap
     /// (`RepoVocabularyMatcher.nominationCap(forTranscript:)`); the default is
     /// the floor, for callers with no transcript at hand.
-    static func merge(
+    package static func merge(
         _ candidates: [Candidate],
         maxVerificationPairs: Int = PolishContextGrounding.maxVerificationPairs
     ) -> Merged {

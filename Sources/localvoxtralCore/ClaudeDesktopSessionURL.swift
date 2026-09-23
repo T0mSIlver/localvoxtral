@@ -19,7 +19,7 @@ import Foundation
 /// `/epitaxy/<id>` with at most one trailing slash, query and fragment
 /// ignored, and `<id>` matching `local_[A-Za-z0-9_-]+` on the percent-ENCODED
 /// path. Anything else returns nil, which means "no join", never "guess".
-enum ClaudeDesktopSessionURL {
+package enum ClaudeDesktopSessionURL {
     /// The path prefix the session id follows.
     private static let pathPrefix = "/epitaxy/"
 
@@ -34,7 +34,7 @@ enum ClaudeDesktopSessionURL {
 
     /// The desktop session id named by `rawURL`, or nil when the URL is not
     /// exactly a Claude Desktop Code-tab session address.
-    static func sessionID(inWebAreaURL rawURL: String) -> String? {
+    package static func sessionID(inWebAreaURL rawURL: String) -> String? {
         guard let sessionID = ClaudeSessionPageURL.lastComponent(
             of: rawURL, underPathPrefix: pathPrefix
         ) else { return nil }
@@ -43,7 +43,7 @@ enum ClaudeDesktopSessionURL {
     }
 
     /// `local_[A-Za-z0-9_-]+`, ASCII only, bounded.
-    static func isSessionID(_ candidate: String) -> Bool {
+    package static func isSessionID(_ candidate: String) -> Bool {
         ClaudeSessionPageURL.isIdentifier(
             candidate, prefix: sessionIDPrefix, maxCount: maxSessionIDCount
         )
