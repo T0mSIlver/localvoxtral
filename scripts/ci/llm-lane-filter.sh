@@ -124,6 +124,17 @@ EXEMPT=(
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel.swift'  # Settings pane model
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationLiveIO.swift'         # its process/file seams
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService.swift'   # one-time host setup over ssh
+  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+Types.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+Plan.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+SSHConfig.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteSetup.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+RemotePlugin.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteEnvironment.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteHerdr.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+LocalHerdrPanel.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+Verification.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteSSHConfigFileSystem.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeLocalHerdrConfigFileSystem.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentLiveIO.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudePluginInstallService.swift'      # `claude plugin` install/update
   'Sources/localvoxtral/ClaudeContext/ClaudePluginListing.swift'

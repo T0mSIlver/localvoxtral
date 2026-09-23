@@ -74,6 +74,9 @@ expect false "unrelated marker text does not trigger" \
 # --- The ClaudeContext exemption list (#418) --------------------------------
 expect false "an enrollment change does not run the lane" \
   Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService.swift
+expect false "the enrollment service's split-out files do not run the lane" \
+  Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+Verification.swift \
+  Sources/localvoxtral/ClaudeContext/ClaudeRemoteSSHConfigFileSystem.swift
 expect false "a settings-model plus forward-supervisor change does not run the lane" \
   Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel.swift \
   Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardSupervisor.swift
