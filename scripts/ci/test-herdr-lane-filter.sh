@@ -66,6 +66,12 @@ expect true "ssh -G canonicalization runs the lane" \
   Sources/localvoxtral/ClaudeContext/SSHDestinationCanonicalizer.swift
 expect true "the remote herdr config patch runs the lane" \
   Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService.swift
+expect true "the enrollment service's split-out files run the lane" \
+  Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteHerdr.swift
+expect true "the enrollment service's ssh-config seam runs the lane" \
+  Sources/localvoxtral/ClaudeContext/ClaudeRemoteSSHConfigFileSystem.swift
+expect true "the enrollment service's local herdr-config seam runs the lane" \
+  Sources/localvoxtral/ClaudeContext/ClaudeLocalHerdrConfigFileSystem.swift
 expect true "the join arm that consumes all of it runs the lane" \
   Sources/localvoxtral/ClaudeContext/TerminalScreenClaudeJoin.swift
 expect true "the join resolver runs the lane" \

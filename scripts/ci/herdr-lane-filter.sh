@@ -41,6 +41,8 @@ PATTERNS=(
   '*SSHDestinationCanonicalizer*'                    # ssh -G identity matching for the destination
   '*SSHDestinationTTYProbe*'                         # the argv fallback the panel binding falls through to
   '*ClaudeRemoteEnrollmentService*'                  # the remote herdr config patch + its refusal rules
+  '*ClaudeRemoteSSHConfigFileSystem*'                # its ssh-config seam, split out of the file above
+  '*ClaudeLocalHerdrConfigFileSystem*'               # its local herdr-config seam, split out of the file above
   '*SocketPaneScreenContext*'                        # what a herdr join is allowed to read back
   '*TerminalScreenClaudeJoin*'                       # the arm that consumes all of the above
   '*ClaudeSessionJoinResolver*'                      # the resolver and its per-surface arms
