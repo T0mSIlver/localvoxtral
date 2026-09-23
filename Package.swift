@@ -39,10 +39,8 @@ let dogfoodSwiftSettings: [SwiftSetting] =
 /// product and runs the core's tests.
 var products: [Product] = [
     // The Claude Code hook publisher. Dependency-free (Foundation +
-    // Darwin/Glibc), meant to build for a remote Linux host too; with Swift
-    // 6.2 ClaudeHookPublisherCore does not compile there (Darwin-only
-    // sysctl/kinfo_proc/devname), which is why the Linux script builds only
-    // the test product.
+    // Darwin/Glibc) so it builds for the remote Linux hosts Claude Code runs
+    // on; scripts/core-tests-linux.sh builds it there.
     .executable(name: "localvoxtral-claude-hook", targets: ["localvoxtral-claude-hook"]),
 ]
 var dependencies: [Package.Dependency] = []
@@ -66,6 +64,11 @@ var targets: [Target] = [
     // polish-outcome and connection-failure classifiers, the session clock
     // (#432 step 9). The app re-exports it.
     .target(name: "localvoxtralCore"),
+    // The hook publisher's Linux process-table reader; runs on both platforms.
+    .testTarget(
+        name: "ClaudeHookPublisherCoreTests",
+        dependencies: ["ClaudeHookPublisherCore"]
+    ),
     .testTarget(
         name: "localvoxtralCoreTests",
         dependencies: ["localvoxtralCore"]
