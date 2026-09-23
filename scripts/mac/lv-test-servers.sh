@@ -325,7 +325,10 @@ MSG
     echo "lv-test-servers: refusing symlinked activity stamp $stamp" >&2
     return 1
   fi
-  touch "$stamp" 2>/dev/null || {
+  # Neither step follows a link swapped in after the check: noclobber creates
+  # with O_EXCL, and touch -h updates the path itself.
+  ( set -C; : >"$stamp" ) 2>/dev/null || true
+  touch -h "$stamp" 2>/dev/null || {
     echo "lv-test-servers: cannot write activity stamp $stamp" >&2
     return 1
   }

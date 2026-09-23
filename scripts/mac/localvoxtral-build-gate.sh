@@ -622,7 +622,10 @@ ensure_one_service() {
     printf 'ensure %s: refusing symlinked activity stamp %s\n' "$name" "$stamp" >&2
     return 1
   fi
-  touch "$stamp" 2>/dev/null || {
+  # Neither step follows a link swapped in after the check: noclobber creates
+  # with O_EXCL, and touch -h updates the path itself.
+  ( set -C; : >"$stamp" ) 2>/dev/null || true
+  touch -h "$stamp" 2>/dev/null || {
     printf 'ensure %s: cannot write activity stamp %s\n' "$name" "$stamp" >&2
     return 1
   }
