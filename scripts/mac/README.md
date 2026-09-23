@@ -284,10 +284,10 @@ launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.localvoxtral.tests
 ```
 
 (Point the script path at a stable checkout of this repo, or copy
-`lv-test-servers.sh` to a fixed location together with
-`test-speech-models.tsv`, which it reads from its own directory: without the
-list the reaper sees only Voxtral and polishd, and never frees another speech
-model. Override the idle window by adding an
+`lv-test-servers.sh` to a fixed location. A copy without
+`test-speech-models.tsv` beside it reads the list `install-speech-models`
+installed; with neither, the reaper sees only Voxtral and polishd and never
+frees another speech model. Override the idle window by adding an
 `EnvironmentVariables` dict with `LV_TEST_SERVER_IDLE_SECONDS`. During the
 migration, `git pull` that stable checkout so the reaper runs the new script —
 though an OLD reaper still reaps the new services via its port-bound fallback,

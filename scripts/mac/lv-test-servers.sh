@@ -104,10 +104,18 @@ STABLE_APP="${LV_TEST_SERVER_APP:-/Users/Shared/localvoxtral/testservers/localvo
 
 # The dictation models served for tests, one service each. The list travels
 # with this script; install-speech-models copies it next to the stable .app,
-# where the build gate reads it to learn each service's port.
+# where the build gate reads it to learn each service's port. A copy of this
+# script without the list beside it (the reaper's, per scripts/mac/README.md)
+# reads that installed copy instead.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-SPEECH_MODELS="${LV_TEST_SPEECH_MODELS:-$SCRIPT_DIR/test-speech-models.tsv}"
 INSTALLED_SPEECH_MODELS="${LV_TEST_SPEECH_MODELS_INSTALLED:-$(dirname "$STABLE_APP")/speech-models.tsv}"
+if [[ -n "${LV_TEST_SPEECH_MODELS:-}" ]]; then
+  SPEECH_MODELS="$LV_TEST_SPEECH_MODELS"
+elif [[ -f "$SCRIPT_DIR/test-speech-models.tsv" ]]; then
+  SPEECH_MODELS="$SCRIPT_DIR/test-speech-models.tsv"
+else
+  SPEECH_MODELS="$INSTALLED_SPEECH_MODELS"
+fi
 LAUNCH_AGENTS_DIR="${LV_TEST_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 LOG_DIR="${LV_TEST_SERVER_LOG_DIR:-/Users/Shared/localvoxtral}"
 

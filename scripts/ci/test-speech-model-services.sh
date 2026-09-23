@@ -130,6 +130,16 @@ for line in 'speechd-voxtral' 'speechd-nemotron' 'port 8001: up' 'polishd'; do
   assert_has "$TMP_DIR/out" "$line"
 done
 
+# A copy of the script with no list beside it (the reaper's) reads the
+# installed list.
+mkdir -p "$TMP_DIR/reaper"
+cp "$SERVERS" "$TMP_DIR/reaper/lv-test-servers.sh"
+env PATH="$TMP_DIR/bin:$PATH" HOME="$TMP_DIR/home" \
+  LV_TEST_SPEECH_MODELS_INSTALLED="$INSTALLED" LV_TEST_SERVER_RUN_DIR="$RUN" \
+  bash "$TMP_DIR/reaper/lv-test-servers.sh" status >"$TMP_DIR/out" 2>&1 \
+  || fail "the reaper's copy failed: $(cat "$TMP_DIR/out")"
+assert_has "$TMP_DIR/out" 'speechd-nemotron'
+
 # ---- build gate --------------------------------------------------------------
 
 gate_home="$TMP_DIR/gate-home"
