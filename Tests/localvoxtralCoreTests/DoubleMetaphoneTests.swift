@@ -1,5 +1,5 @@
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 final class DoubleMetaphoneTests: XCTestCase {
     func testPublishedReferenceVectors_includeBothPronunciationsWithoutTruncation() {

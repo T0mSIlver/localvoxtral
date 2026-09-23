@@ -407,21 +407,10 @@ enum PolishContextClipboardReader {
         return output.lowercased()
     }
 
-    /// Drops NUL and other control scalars (which can corrupt the request or the
-    /// LLM's parsing) while preserving newlines and tabs so multi-line snippets
-    /// and indentation survive as spelling context. Shared with the clipboard-
-    /// paste macro through `readableSanitizedString`.
+    /// Drops NUL and other control scalars while preserving newlines and tabs
+    /// (`String.sanitizedControlCharacters` in localvoxtralCore). Shared with
+    /// the clipboard-paste macro through `readableSanitizedString`.
     static func sanitizeControlCharacters(_ raw: String) -> String {
-        var scalars = String.UnicodeScalarView()
-        for scalar in raw.unicodeScalars {
-            if scalar == "\n" || scalar == "\t" {
-                scalars.append(scalar)
-            } else if CharacterSet.controlCharacters.contains(scalar) {
-                continue
-            } else {
-                scalars.append(scalar)
-            }
-        }
-        return String(scalars)
+        raw.sanitizedControlCharacters
     }
 }

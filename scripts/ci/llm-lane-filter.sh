@@ -50,6 +50,8 @@ PATTERNS=(
   '*PolishContextPreparation*'                       # matching + selection over the retained buffer
   '*ClipboardPayloadMacro*'                          # spoken paste-clipboard macro placeholders
   '*RepoVocabulary*'                                 # repo vocabulary hints fed to the polisher
+  '*ClipboardVocabulary*'                            # clipboard identifiers matched like repo vocabulary
+  'Sources/localvoxtralCore/StringExtensions.swift'  # the control-character sanitizer for context and prompt terms
   '*LearnedTerm*'                                    # what earlier dictations taught, fed back into the prompt
   # phonetic grounding tier: feeds what gets pre-applied/suggested
   '*DoubleMetaphone*'
