@@ -151,6 +151,8 @@ expect true "the phonetic keys in the core target run the lane" \
   Sources/localvoxtralCore/DoubleMetaphone.swift
 expect true "the control-character sanitizer in the core target runs the lane" \
   Sources/localvoxtralCore/StringExtensions.swift
+expect false "the statusline combine script, moved to the core target, stays exempt" \
+  Sources/localvoxtralCore/ClaudeStatuslineCombine.swift
 expect false "empty changed-file list decides run=false (caller owns fail-open)" \
   ""
 
