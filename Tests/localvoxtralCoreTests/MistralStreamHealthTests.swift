@@ -1,5 +1,5 @@
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 final class MistralStreamHealthTests: XCTestCase {
     private let frame = 3_200  // 100 ms of 16 kHz s16le

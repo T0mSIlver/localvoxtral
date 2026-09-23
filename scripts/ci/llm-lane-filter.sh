@@ -171,7 +171,7 @@ EXEMPT=(
   'Sources/localvoxtral/ClaudeContext/ClaudePublisherPointer.swift'
   'Sources/localvoxtral/ClaudeContext/OpencodePluginInstallService.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeStatuslineInstallService.swift'  # status line indicator
-  'Sources/localvoxtral/ClaudeContext/ClaudeStatuslineCombine.swift'
+  'Sources/localvoxtralCore/ClaudeStatuslineCombine.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeShellRCSetup.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardCoordinator.swift'  # keeping the ssh forward alive
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardLiveProcess.swift'

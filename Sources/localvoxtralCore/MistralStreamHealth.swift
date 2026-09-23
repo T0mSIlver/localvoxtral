@@ -10,24 +10,24 @@ import Foundation
 /// sends still complete, whether the last ping was answered, and the
 /// server's `request_id`. Times are seconds on a monotonic clock the caller
 /// passes in.
-struct MistralStreamHealth: Equatable {
+package struct MistralStreamHealth: Equatable {
     /// Server silence, with audio still going out, that counts as a stall.
     /// Healthy speech gets a delta at least every ~2 s.
-    static let stallThreshold: TimeInterval = 5.0
+    package static let stallThreshold: TimeInterval = 5.0
 
-    struct StallReport: Equatable {
-        let silentFor: TimeInterval
-        let audioSecondsSinceLastEvent: Double
+    package struct StallReport: Equatable {
+        package let silentFor: TimeInterval
+        package let audioSecondsSinceLastEvent: Double
         /// Loudest 100 ms of that audio (RMS, dBFS): speech reads around
         /// -40 to -20, a quiet room below -50.
-        let loudestDBFSSinceLastEvent: Double?
-        let sendsAwaitingCompletion: Int
+        package let loudestDBFSSinceLastEvent: Double?
+        package let sendsAwaitingCompletion: Int
         /// Seconds since the last ping went out that is still unanswered.
-        let unansweredPingAge: TimeInterval?
-        let requestID: String?
+        package let unansweredPingAge: TimeInterval?
+        package let requestID: String?
     }
 
-    private(set) var requestID: String?
+    package private(set) var requestID: String?
     private var lastServerEventAt: TimeInterval
     private var audioBytesSinceLastEvent = 0
     private var loudestDBFSSinceLastEvent: Double?
@@ -36,17 +36,17 @@ struct MistralStreamHealth: Equatable {
     private var stallReportedAt: TimeInterval?
     private var endSentAt: TimeInterval?
 
-    init(openedAt: TimeInterval) {
+    package init(openedAt: TimeInterval) {
         lastServerEventAt = openedAt
     }
 
-    mutating func sessionCreated(requestID: String?) {
+    package mutating func sessionCreated(requestID: String?) {
         self.requestID = requestID
     }
 
     /// Any frame from the server. Returns how long the stall lasted when this
     /// frame ends one, so the log shows a slow server apart from a dead one.
-    mutating func serverEvent(at now: TimeInterval) -> TimeInterval? {
+    package mutating func serverEvent(at now: TimeInterval) -> TimeInterval? {
         defer {
             lastServerEventAt = now
             audioBytesSinceLastEvent = 0
@@ -58,7 +58,7 @@ struct MistralStreamHealth: Equatable {
 
     /// Called as an audio frame is handed to the socket. Returns a report the
     /// first time the server has been silent past the threshold.
-    mutating func audioSent(bytes: Int, levelDBFS: Double? = nil, at now: TimeInterval)
+    package mutating func audioSent(bytes: Int, levelDBFS: Double? = nil, at now: TimeInterval)
         -> StallReport?
     {
         sendsAwaitingCompletion += 1
@@ -79,26 +79,26 @@ struct MistralStreamHealth: Equatable {
         )
     }
 
-    mutating func audioSendCompleted() {
+    package mutating func audioSendCompleted() {
         sendsAwaitingCompletion = max(0, sendsAwaitingCompletion - 1)
     }
 
-    mutating func pingSent(at now: TimeInterval) {
+    package mutating func pingSent(at now: TimeInterval) {
         if pingSentAt == nil { pingSentAt = now }
     }
 
-    mutating func pongReceived() {
+    package mutating func pongReceived() {
         pingSentAt = nil
     }
 
-    mutating func endSent(at now: TimeInterval) {
+    package mutating func endSent(at now: TimeInterval) {
         endSentAt = now
     }
 
     /// Describes the audio still untranscribed when the user stops: a final
     /// transcript that ends early after loud audio here means the server
     /// dropped speech; quiet audio means the user had stopped talking.
-    func finalCommitSummary(at now: TimeInterval) -> String {
+    package func finalCommitSummary(at now: TimeInterval) -> String {
         String(
             format: "%.1fs of audio since the last server event (loudest %@), last server event %.2fs ago, request_id=%@",
             Double(audioBytesSinceLastEvent) / 32_000,
@@ -106,12 +106,12 @@ struct MistralStreamHealth: Equatable {
             requestID ?? "<none>")
     }
 
-    static func describeLevel(_ dbfs: Double?) -> String {
+    package static func describeLevel(_ dbfs: Double?) -> String {
         dbfs.map { String(format: "%.0f dBFS", $0) } ?? "n/a"
     }
 
     /// RMS level of 16-bit little-endian PCM in dBFS, nil for no samples.
-    static func rmsDBFS(pcm16 data: Data) -> Double? {
+    package static func rmsDBFS(pcm16 data: Data) -> Double? {
         let count = data.count / 2
         guard count > 0 else { return nil }
         var sumOfSquares = 0.0
@@ -127,7 +127,7 @@ struct MistralStreamHealth: Equatable {
     }
 
     /// Describes a socket closed while `transcription.done` was still owed.
-    func closedAwaitingDone(at now: TimeInterval) -> String {
+    package func closedAwaitingDone(at now: TimeInterval) -> String {
         let endAge = endSentAt.map { String(format: "%.2fs", now - $0) } ?? "never"
         return String(
             format: "end sent %@ ago, last server event %.2fs ago, %d sends awaiting completion, request_id=%@",
@@ -136,7 +136,7 @@ struct MistralStreamHealth: Equatable {
 }
 
 extension MistralStreamHealth.StallReport {
-    var logDescription: String {
+    package var logDescription: String {
         let ping = unansweredPingAge.map { String(format: "unanswered for %.1fs", $0) } ?? "answered"
         return String(
             format: "no server event for %.1fs; %.1fs of audio sent since (loudest %@); %d sends awaiting completion; last ping %@; request_id=%@",

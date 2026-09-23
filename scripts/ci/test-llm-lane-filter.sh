@@ -151,6 +151,8 @@ expect true "the phonetic keys in the core target run the lane" \
   Sources/localvoxtralCore/DoubleMetaphone.swift
 expect true "the control-character sanitizer in the core target runs the lane" \
   Sources/localvoxtralCore/StringExtensions.swift
+expect false "the statusline combine script, moved to the core target, stays exempt" \
+  Sources/localvoxtralCore/ClaudeStatuslineCombine.swift
 # The context budget and cross-source grounding merge moved to the core target
 # and still run it: they decide how many characters reach the model and what
 # gets pre-applied.

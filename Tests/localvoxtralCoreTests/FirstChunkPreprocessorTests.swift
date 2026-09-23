@@ -1,5 +1,5 @@
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 final class FirstChunkPreprocessorTests: XCTestCase {
     func testPreprocess_firstNonEmptyChunkTrimsLeadingWhitespaceOnly() {
