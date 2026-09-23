@@ -77,6 +77,10 @@ expect false "an enrollment change does not run the lane" \
 expect false "a settings-model plus forward-supervisor change does not run the lane" \
   Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel.swift \
   Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardSupervisor.swift
+expect false "the settings model's files by area do not run the lane" \
+  "Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+SetupRun.swift" \
+  Sources/localvoxtral/ClaudeContext/ClaudeShellSetupStatus.swift \
+  Sources/localvoxtral/ClaudeContext/HerdrMachineImport.swift
 expect true "an exempt file beside a join change still runs the lane" \
   Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService.swift \
   Sources/localvoxtral/ClaudeContext/SSHDestinationTTYProbe.swift
