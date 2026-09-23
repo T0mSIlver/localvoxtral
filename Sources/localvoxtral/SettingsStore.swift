@@ -4,292 +4,6 @@ import Foundation
 import Observation
 import Synchronization
 
-struct DictationShortcut: Equatable, Sendable {
-    var keyCode: UInt32
-    var carbonModifierFlags: UInt32
-
-    var normalized: DictationShortcut {
-        DictationShortcut(
-            keyCode: keyCode,
-            carbonModifierFlags: DictationShortcutValidation.normalizedModifierFlags(
-                carbonModifierFlags)
-        )
-    }
-}
-
-enum DictationOutputMode: String, CaseIterable, Identifiable, Sendable {
-    case overlayBuffer = "overlay_buffer"
-    case liveAutoPaste = "live_auto_paste"
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .overlayBuffer:
-            return "Overlay Buffer"
-        case .liveAutoPaste:
-            return "Live Auto-Paste"
-        }
-    }
-
-}
-
-enum DictationShortcutMode: String, CaseIterable, Identifiable {
-    case toggle = "toggle"
-    case pushToTalk = "push_to_talk"
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .toggle:
-            return "Toggle"
-        case .pushToTalk:
-            return "Push to Talk"
-        }
-    }
-
-}
-
-enum BackendMode: String, CaseIterable, Identifiable {
-    case managedLocal = "managed_local"
-    case externalURL = "external_url"
-    /// Mistral's hosted API: the realtime transcription socket for dictation
-    /// (`MistralRealtimeWebSocketClient`) and `/v1/chat/completions` for
-    /// polishing, both authenticated with the one shared Mistral API key.
-    case mistralAPI = "mistral_api"
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .managedLocal:
-            return "Managed local"
-        case .externalURL:
-            return "External URL"
-        case .mistralAPI:
-            return "Mistral API"
-        }
-    }
-
-    /// Whether this mode runs on a bundled helper this app supervises. The
-    /// engine lifecycle (warmup, shutdown, readiness) keys off this rather
-    /// than off `.externalURL`, so every hosted mode behaves the same way.
-    var isManaged: Bool { self == .managedLocal }
-}
-
-/// Metal buffer-pool cache limit for the managed dictation helper. `Auto`
-/// omits the `--cache-limit-mb` flag so the helper's built-in default applies;
-/// every other case pins an explicit ceiling.
-enum SpeechdCacheLimit: String, CaseIterable, Identifiable, Sendable {
-    case auto
-    case gb2 = "2gb"
-    case gb4 = "4gb"
-    case gb6 = "6gb"
-    case gb8 = "8gb"
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .auto: return "Auto"
-        case .gb2: return "2 GB"
-        case .gb4: return "4 GB"
-        case .gb6: return "6 GB"
-        case .gb8: return "8 GB"
-        }
-    }
-
-    /// Megabytes to pass via `--cache-limit-mb`, or nil for `Auto` (the flag is
-    /// omitted and the helper's built-in default applies).
-    var megabytes: Int? {
-        switch self {
-        case .auto: return nil
-        case .gb2: return 2048
-        case .gb4: return 4096
-        case .gb6: return 6144
-        case .gb8: return 8192
-        }
-    }
-}
-
-/// How often the hosted "Suggest terms" pass runs by itself, in saved
-/// dictations (`TermSuggestionCadence`). `never` leaves only the button.
-enum TermSuggestionInterval: Int, CaseIterable, Identifiable, Sendable {
-    case every25 = 25
-    case every50 = 50
-    case every100 = 100
-    case every200 = 200
-    case never = 0
-
-    var id: Int { rawValue }
-
-    /// Nil for `never`.
-    var dictations: Int? { self == .never ? nil : rawValue }
-
-    var displayName: String {
-        dictations.map { "Every \($0) dictations" } ?? "Never"
-    }
-}
-
-/// How long a saved dictation stays in the history store
-/// (`DictationSessionStore`). The store holds everything the user said, in
-/// plain text, so the rule is a privacy setting first and a disk one second.
-enum DictationHistoryRetention: String, CaseIterable, Identifiable, Sendable {
-    case forever
-    case days90 = "90d"
-    case days30 = "30d"
-    case days7 = "7d"
-    /// Nothing is saved, and what was saved is deleted.
-    case off
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .forever: return "Forever"
-        case .days90: return "90 days"
-        case .days30: return "30 days"
-        case .days7: return "7 days"
-        case .off: return "Don't keep"
-        }
-    }
-
-    /// Nil for `forever` and `off`, which are not an age.
-    var days: Int? {
-        switch self {
-        case .forever, .off: return nil
-        case .days90: return 90
-        case .days30: return 30
-        case .days7: return 7
-        }
-    }
-
-    var savesDictations: Bool { self != .off }
-
-    /// Dictations that started before this are deleted. Nil keeps everything;
-    /// `off` answers `.distantFuture`, which is every dictation there is.
-    func cutoff(now: Date) -> Date? {
-        if self == .off { return .distantFuture }
-        return days.map { now.addingTimeInterval(-Double($0) * 86_400) }
-    }
-
-    /// Whether moving to `other` deletes dictations this rule would keep.
-    func keepsLonger(than other: DictationHistoryRetention) -> Bool {
-        func reach(_ rule: DictationHistoryRetention) -> Int {
-            switch rule {
-            case .forever: return .max
-            case .off: return 0
-            default: return rule.days ?? 0
-            }
-        }
-        return reach(self) > reach(other)
-    }
-}
-
-/// Streaming step cadence for the managed dictation helper: how much audio is
-/// batched before each incremental transcription step. Lower values show words
-/// sooner; higher values leave more compute headroom. `Auto` omits the
-/// `--step-ms` flag so the helper's built-in default applies.
-enum SpeechdStepCadence: String, CaseIterable, Identifiable, Sendable {
-    case auto
-    case ms100 = "100ms"
-    case ms240 = "240ms"
-    case ms480 = "480ms"
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .auto: return "Auto"
-        case .ms100: return "100 ms"
-        case .ms240: return "240 ms"
-        case .ms480: return "480 ms"
-        }
-    }
-
-    /// Milliseconds to pass via `--step-ms`, or nil for `Auto` (the flag is
-    /// omitted and the helper's built-in default applies).
-    var milliseconds: Int? {
-        switch self {
-        case .auto: return nil
-        case .ms100: return 100
-        case .ms240: return 240
-        case .ms480: return 480
-        }
-    }
-}
-
-enum DictationShortcutValidation {
-    static let allowedModifierFlagsMask = UInt32(cmdKey | optionKey | shiftKey | controlKey)
-
-    static func normalizedModifierFlags(_ flags: UInt32) -> UInt32 {
-        flags & allowedModifierFlagsMask
-    }
-
-    /// The one key class accepted with no modifier at all. The bare-key rule
-    /// exists so nobody binds the letter `a` and loses the ability to type it;
-    /// a function key has no typing role to swallow, and F13-F20 in particular
-    /// are dedicated keys whose only plausible use is a trigger like this one.
-    /// Letters, digits, punctuation, Space and Return still need a modifier.
-    ///
-    /// F1-F12 are included (#377 asks for the whole range) but only fire on a
-    /// keyboard that sends them as function keys: with macOS's default "Use
-    /// F1, F2, etc. keys as standard function keys" OFF, the system claims the
-    /// press for brightness or media and no app sees it. `docs/dictation.md`
-    /// carries that caveat, since a shortcut that registers and never fires
-    /// looks like a bug from the outside.
-    ///
-    /// What arrives here is already `normalized`: ShortcutRecorder reports
-    /// F1-F20 with `NSFunctionKeyMask` set, and the mask above is what turns
-    /// that into "no modifier" (`testValidation_stripsTheRecorderFunctionKeyBit`).
-    static let functionKeyCodes: Set<UInt32> = [
-        UInt32(kVK_F1), UInt32(kVK_F2), UInt32(kVK_F3), UInt32(kVK_F4),
-        UInt32(kVK_F5), UInt32(kVK_F6), UInt32(kVK_F7), UInt32(kVK_F8),
-        UInt32(kVK_F9), UInt32(kVK_F10), UInt32(kVK_F11), UInt32(kVK_F12),
-        UInt32(kVK_F13), UInt32(kVK_F14), UInt32(kVK_F15), UInt32(kVK_F16),
-        UInt32(kVK_F17), UInt32(kVK_F18), UInt32(kVK_F19), UInt32(kVK_F20),
-    ]
-
-    static func isFunctionKey(_ keyCode: UInt32) -> Bool {
-        functionKeyCodes.contains(keyCode)
-    }
-
-    static func persistenceErrorMessage(for shortcut: DictationShortcut) -> String? {
-        if shortcut.keyCode > UInt32(UInt16.max) {
-            return "Shortcut key is not supported."
-        }
-
-        if normalizedModifierFlags(shortcut.carbonModifierFlags) == 0,
-            !isFunctionKey(shortcut.keyCode)
-        {
-            return "Shortcut needs a modifier key. Only function keys work on their own."
-        }
-
-        return nil
-    }
-
-    static func validationErrorMessage(for shortcut: DictationShortcut) -> String? {
-        if let persistenceError = persistenceErrorMessage(for: shortcut) {
-            return persistenceError
-        }
-
-        let normalized = shortcut.normalized
-        switch (normalized.keyCode, normalized.carbonModifierFlags) {
-        case (UInt32(kVK_Space), UInt32(cmdKey)):
-            return "Command-Space is reserved by Spotlight."
-        case (UInt32(kVK_Tab), UInt32(cmdKey)):
-            return "Command-Tab is reserved for app switching."
-        case (UInt32(kVK_ANSI_Q), UInt32(cmdKey)):
-            return "Command-Q is reserved for quitting apps."
-        case (UInt32(kVK_ANSI_W), UInt32(cmdKey)):
-            return "Command-W is reserved for closing windows."
-        default:
-            return nil
-        }
-    }
-}
-
 @MainActor
 @Observable
 final class SettingsStore {
@@ -309,7 +23,7 @@ final class SettingsStore {
         var defaultModelName: String { "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead" }
     }
 
-    private enum Keys {
+    enum Keys {
         static let realtimeProvider = "settings.realtime_provider"
         static let realtimeAPIEndpointURL = "settings.realtime_api_endpoint_url"
         /// LEGACY. The three API keys now live in the login Keychain
@@ -419,11 +133,11 @@ final class SettingsStore {
         static let livePasteShortcutEnabled = "settings.live_paste_shortcut_enabled"
     }
 
-    private let defaults: UserDefaults
+    let defaults: UserDefaults
     /// Where the three API keys live. Injected so tests and previews can never
     /// reach the real login keychain (`KeychainSecretStore.init` traps under
     /// XCTest as a backstop).
-    private let secretStore: any SecretStoring
+    let secretStore: any SecretStoring
     /// Kept past init for the deferred secret reads: an env-provided key has to
     /// resolve the same way later as it does at launch.
     @ObservationIgnored
@@ -431,12 +145,12 @@ final class SettingsStore {
     /// The secrets already read out of the store, whatever the read returned.
     /// A key not in here has never been fetched — see `ensureSecretsLoaded`.
     @ObservationIgnored
-    private var loadedSecretKeys: Set<SecretKey> = []
+    var loadedSecretKeys: Set<SecretKey> = []
     /// True only while a fetched value is being assigned to its property, so
     /// the `didSet` write-through does not push it straight back into the
     /// store (a write prompts exactly like a read).
     @ObservationIgnored
-    private var isApplyingStoredSecret = false
+    var isApplyingStoredSecret = false
 
     /// One short sentence when the secret store refused an operation, else nil.
     /// Rendered in the Engines pane so a locked or broken keychain reads as
@@ -446,7 +160,7 @@ final class SettingsStore {
     /// proves only that ONE key round-tripped, while the others are still blank
     /// in memory, and clearing the warning there would restore the very lie
     /// this property exists to prevent.
-    private(set) var secretStoreFailureSummary: String?
+    var secretStoreFailureSummary: String?
 
     static let defaultDictationShortcut = DictationShortcut(
         keyCode: UInt32(kVK_Space),
@@ -627,11 +341,11 @@ final class SettingsStore {
         didSet { defaults.set(dictationShortcutEnabled, forKey: Keys.dictationShortcutEnabled) }
     }
 
-    private var dictationShortcutKeyCode: UInt32 {
+    var dictationShortcutKeyCode: UInt32 {
         didSet { defaults.set(dictationShortcutKeyCode, forKey: Keys.dictationShortcutKeyCode) }
     }
 
-    private var dictationShortcutCarbonModifierFlags: UInt32 {
+    var dictationShortcutCarbonModifierFlags: UInt32 {
         didSet {
             defaults.set(
                 dictationShortcutCarbonModifierFlags,
@@ -901,69 +615,6 @@ final class SettingsStore {
         Set(userTerminalApps.map(\.bundleID))
     }
 
-    private func persistMistralModelCatalog() {
-        guard let data = try? JSONEncoder().encode(mistralModelCatalog) else { return }
-        defaults.set(data, forKey: Keys.mistralModelCatalog)
-    }
-
-    private static func loadMistralModelCatalog(from defaults: UserDefaults) -> [MistralModel] {
-        guard let data = defaults.data(forKey: Keys.mistralModelCatalog) else { return [] }
-        do {
-            return try JSONDecoder().decode([MistralModel].self, from: data)
-        } catch {
-            // A cache: the next fetch rebuilds it.
-            Log.persistence.error(
-                "Stored Mistral model list is unreadable; starting empty. \(error.localizedDescription, privacy: .public)"
-            )
-            return []
-        }
-    }
-
-    private func persistUserTerminalApps() {
-        guard let data = try? JSONEncoder().encode(userTerminalApps) else { return }
-        defaults.set(data, forKey: Keys.userTerminalApps)
-    }
-
-    /// Appends a user-added terminal app and forgets any recorded removal of
-    /// its id: re-adding is a fresh start for the migration ledger.
-    func addUserTerminalApp(_ app: UserTerminalApp) {
-        userTerminalApps.append(app)
-        var removed = removedUserTerminalAppBundleIDs()
-        guard removed.contains(app.bundleID) else { return }
-        removed.removeAll { $0 == app.bundleID }
-        defaults.set(removed, forKey: UserTerminalAppsMigrator.removedBundleIDsKey)
-    }
-
-    /// Removes a user-added terminal app and records the removal in the
-    /// migration ledger (`UserTerminalAppsMigrator.removedBundleIDsKey`), so
-    /// the launch-time `terminal_apps.toml` import cannot resurrect the id
-    /// even if the imported-ids ledger is lost.
-    func removeUserTerminalApp(bundleID: String) {
-        userTerminalApps.removeAll { $0.bundleID == bundleID }
-        var removed = removedUserTerminalAppBundleIDs()
-        guard !removed.contains(bundleID) else { return }
-        removed.append(bundleID)
-        defaults.set(removed, forKey: UserTerminalAppsMigrator.removedBundleIDsKey)
-    }
-
-    private func removedUserTerminalAppBundleIDs() -> [String] {
-        defaults.stringArray(forKey: UserTerminalAppsMigrator.removedBundleIDsKey) ?? []
-    }
-
-    private static func loadUserTerminalApps(from defaults: UserDefaults) -> [UserTerminalApp] {
-        guard let data = defaults.data(forKey: Keys.userTerminalApps) else { return [] }
-        do {
-            return try JSONDecoder().decode([UserTerminalApp].self, from: data)
-        } catch {
-            // The failure, never the payload: this line must not become the
-            // place a corrupt blob's contents reach the log.
-            Log.persistence.error(
-                "Stored user terminal apps are unreadable; starting from an empty list. \(error.localizedDescription, privacy: .public)"
-            )
-            return []
-        }
-    }
-
     /// The remote listen port this Mac's SSH `RemoteForward` binds on an
     /// enrolled host — derived once from a persisted per-install identity, and
     /// stable from then on (`ClaudeRemoteForwardPort`). Not a preference: there
@@ -1078,11 +729,11 @@ final class SettingsStore {
         didSet { defaults.set(overlayBufferShortcutEnabled, forKey: Keys.overlayBufferShortcutEnabled) }
     }
 
-    private var overlayBufferShortcutKeyCode: UInt32 {
+    var overlayBufferShortcutKeyCode: UInt32 {
         didSet { defaults.set(overlayBufferShortcutKeyCode, forKey: Keys.overlayBufferShortcutKeyCode) }
     }
 
-    private var overlayBufferShortcutCarbonModifierFlags: UInt32 {
+    var overlayBufferShortcutCarbonModifierFlags: UInt32 {
         didSet {
             defaults.set(
                 overlayBufferShortcutCarbonModifierFlags,
@@ -1109,47 +760,15 @@ final class SettingsStore {
         didSet { persistOverlayBufferPlacement() }
     }
 
-    private func persistOverlayBufferPlacement() {
-        guard let placement = overlayBufferPlacement, placement.isWellFormed else {
-            defaults.removeObject(forKey: Keys.overlayBufferPositionScreenID)
-            defaults.removeObject(forKey: Keys.overlayBufferPositionOffsetX)
-            defaults.removeObject(forKey: Keys.overlayBufferPositionOffsetY)
-            return
-        }
-        defaults.set(placement.screenID, forKey: Keys.overlayBufferPositionScreenID)
-        defaults.set(Double(placement.topLeftOffset.x), forKey: Keys.overlayBufferPositionOffsetX)
-        defaults.set(Double(placement.topLeftOffset.y), forKey: Keys.overlayBufferPositionOffsetY)
-    }
-
-    /// Reads a stored placement back, rejecting anything the resolver could not
-    /// clamp: a half-written trio, an empty display id, a NaN offset. A first
-    /// run has none of the three keys and lands here as nil, which is the
-    /// anchored position.
-    static func loadOverlayBufferPlacement(defaults: UserDefaults) -> OverlayManualPlacement? {
-        guard let screenID = defaults.string(forKey: Keys.overlayBufferPositionScreenID),
-              !screenID.isEmpty,
-              defaults.object(forKey: Keys.overlayBufferPositionOffsetX) != nil,
-              defaults.object(forKey: Keys.overlayBufferPositionOffsetY) != nil
-        else { return nil }
-        let placement = OverlayManualPlacement(
-            screenID: screenID,
-            topLeftOffset: CGPoint(
-                x: defaults.double(forKey: Keys.overlayBufferPositionOffsetX),
-                y: defaults.double(forKey: Keys.overlayBufferPositionOffsetY)
-            )
-        )
-        return placement.isWellFormed ? placement : nil
-    }
-
     var livePasteShortcutEnabled: Bool {
         didSet { defaults.set(livePasteShortcutEnabled, forKey: Keys.livePasteShortcutEnabled) }
     }
 
-    private var livePasteShortcutKeyCode: UInt32 {
+    var livePasteShortcutKeyCode: UInt32 {
         didSet { defaults.set(livePasteShortcutKeyCode, forKey: Keys.livePasteShortcutKeyCode) }
     }
 
-    private var livePasteShortcutCarbonModifierFlags: UInt32 {
+    var livePasteShortcutCarbonModifierFlags: UInt32 {
         didSet {
             defaults.set(
                 livePasteShortcutCarbonModifierFlags,
@@ -1519,233 +1138,6 @@ final class SettingsStore {
             : fallback
     }
 
-    // MARK: - API keys (login Keychain)
-
-    /// Engines-pane copy for a secret store that refused. One short sentence
-    /// each: Settings shows the summary, the `Secrets` log carries the OSStatus.
-    static let secretStoreReadFailureSummary =
-        "Keychain unavailable; API keys could not be read."
-    static let secretStoreWriteFailureSummary =
-        "Keychain unavailable; the API key was not saved."
-
-    /// Where each secret used to live in UserDefaults. Read ONLY by the
-    /// one-time migration below — nothing else may touch these keys again.
-    private static func legacyDefaultsKey(for key: SecretKey) -> String {
-        switch key {
-        case .realtimeAPIKey: return Keys.apiKey
-        case .llmPolishingAPIKey: return Keys.llmPolishingAPIKey
-        case .mistralAPIKey: return Keys.mistralAPIKey
-        }
-    }
-
-    /// What the migration sweep learned, plus the sentence the UI must show
-    /// when something refused.
-    private struct ResolvedSecrets {
-        var values: [SecretKey: String] = [:]
-        var failureSummary: String?
-    }
-
-    /// Migrates any plist-era keys into the secret store, once per install.
-    ///
-    /// Returns only what the sweep itself learned — a value it migrated, or one
-    /// it could not migrate and left in the plist. Every other key is read
-    /// later and on demand (`ensureSecretsLoaded`): each read of a stored item
-    /// can cost the user a modal keychain prompt, so launch must not pay for
-    /// engines the user has not selected.
-    ///
-    /// Two rules make the sweep safe to run on a half-migrated install:
-    /// - a plist value is only written when the store has nothing, so a stale
-    ///   copy can never clobber a newer key;
-    /// - a failed write leaves the plist value alone and keeps using it for
-    ///   this process, because losing a user's API key is worse than leaving a
-    ///   copy of it where it already was.
-    private static func migrateLegacySecrets(
-        defaults: UserDefaults,
-        secretStore: any SecretStoring
-    ) -> ResolvedSecrets {
-        var resolved = ResolvedSecrets()
-        var strandedInDefaults: [SecretKey: String] = [:]
-
-        if !defaults.bool(forKey: Keys.apiKeysMigratedToKeychain) {
-            var sweptEverything = true
-            for key in SecretKey.allCases {
-                let defaultsKey = legacyDefaultsKey(for: key)
-                guard
-                    let legacy = defaults.string(forKey: defaultsKey)?.trimmed,
-                    !legacy.isEmpty
-                else {
-                    // Nothing worth keeping; drop any blank leftover so the
-                    // plist stops carrying these keys at all.
-                    defaults.removeObject(forKey: defaultsKey)
-                    continue
-                }
-
-                do {
-                    let existing = try secretStore.secret(for: key) ?? ""
-                    if existing.isEmpty {
-                        try secretStore.setSecret(legacy, for: key)
-                        resolved.values[key] = legacy
-                    } else {
-                        // A newer key is already stored; the plist copy is
-                        // stale, and the store still wins.
-                        resolved.values[key] = existing
-                    }
-                    defaults.removeObject(forKey: defaultsKey)
-                    Log.secrets.notice(
-                        "Migrated \(key.rawValue, privacy: .public) from UserDefaults into the keychain"
-                    )
-                } catch {
-                    sweptEverything = false
-                    strandedInDefaults[key] = legacy
-                    resolved.failureSummary = Self.secretStoreWriteFailureSummary
-                    Log.secrets.error(
-                        "Keychain migration of \(key.rawValue, privacy: .public) failed; the UserDefaults copy stays in place and is used for this launch: \(String(describing: error), privacy: .public)"
-                    )
-                }
-            }
-            if sweptEverything {
-                defaults.set(true, forKey: Keys.apiKeysMigratedToKeychain)
-            }
-        }
-
-        // A key the store refused stays on the plist copy for this launch, and
-        // that copy is the value this process runs with.
-        for (key, stranded) in strandedInDefaults {
-            resolved.values[key] = stranded
-        }
-
-        return resolved
-    }
-
-    /// Reads `keys` out of the secret store, at most once each per process, and
-    /// publishes what it finds on the matching property.
-    ///
-    /// Why this is not done at launch for all three: the app has no Team ID, so
-    /// macOS partitions its keychain items by the build's code-signing hash and
-    /// the first read from a newly installed build raises a modal prompt. A
-    /// user who dictates locally should never see one, so a key is fetched only
-    /// when something can actually use it — the engines selected at launch, an
-    /// engine switched on later, and the Settings window when it opens to show
-    /// the field.
-    ///
-    /// A key whose store read fails or comes back empty keeps whatever the
-    /// environment resolved at init; the store is authoritative only when it
-    /// answers with a value.
-    func ensureSecretsLoaded(_ keys: Set<SecretKey>) {
-        for key in SecretKey.allCases where keys.contains(key) {
-            loadSecretIfNeeded(key)
-        }
-    }
-
-    /// Every key, for the places that display or report all three: the Settings
-    /// window and the diagnostics export.
-    func ensureAllSecretsLoaded() {
-        ensureSecretsLoaded(Set(SecretKey.allCases))
-    }
-
-    /// The secrets the current configuration can actually use. Managed local
-    /// engines authenticate with nothing, so the common setup needs no key at
-    /// all.
-    static func secretsInUse(
-        dictationMode: BackendMode,
-        polishingMode: BackendMode,
-        polishingEnabled: Bool
-    ) -> Set<SecretKey> {
-        var keys: Set<SecretKey> = []
-        switch dictationMode {
-        case .managedLocal: break
-        case .externalURL: keys.insert(.realtimeAPIKey)
-        case .mistralAPI: keys.insert(.mistralAPIKey)
-        }
-        guard polishingEnabled else { return keys }
-        switch polishingMode {
-        case .managedLocal: break
-        case .externalURL: keys.insert(.llmPolishingAPIKey)
-        case .mistralAPI: keys.insert(.mistralAPIKey)
-        }
-        return keys
-    }
-
-    /// Loads whatever the engines currently selected need. Called at the end of
-    /// init and whenever one of those selections changes.
-    func ensureSecretsForSelectedEnginesLoaded() {
-        ensureSecretsLoaded(
-            Self.secretsInUse(
-                dictationMode: dictationBackendMode,
-                polishingMode: polishingBackendMode,
-                polishingEnabled: llmPolishingEnabled
-            )
-        )
-    }
-
-    private func loadSecretIfNeeded(_ key: SecretKey) {
-        guard !loadedSecretKeys.contains(key) else { return }
-        // Inserted before the read, not after: a read that throws must not be
-        // retried on every mode change and every Settings open — one prompt is
-        // the budget.
-        loadedSecretKeys.insert(key)
-
-        let stored: String
-        do {
-            stored = try secretStore.secret(for: key) ?? ""
-        } catch {
-            secretStoreFailureSummary = Self.secretStoreReadFailureSummary
-            Log.secrets.error(
-                "Reading \(key.rawValue, privacy: .public) from the keychain failed; it reads as unset for this launch: \(String(describing: error), privacy: .public)"
-            )
-            return
-        }
-        guard !stored.isEmpty else { return }
-
-        // The write-through in these properties' `didSet` would store the value
-        // that just came out of the store — another keychain operation, and
-        // another chance to prompt.
-        isApplyingStoredSecret = true
-        defer { isApplyingStoredSecret = false }
-        switch key {
-        case .realtimeAPIKey: apiKey = stored
-        case .llmPolishingAPIKey: llmPolishingAPIKey = stored
-        case .mistralAPIKey: mistralAPIKey = stored
-        }
-    }
-
-    /// The precedence `loadString` gave these keys, with the secret store
-    /// standing in for the plist: a stored key wins, then the env override,
-    /// then empty. An env value is never written back — it belongs to the
-    /// process that exported it, not to the user's keychain.
-    private static func resolveSecret(
-        _ secrets: ResolvedSecrets,
-        _ key: SecretKey,
-        envKey: String,
-        environment: [String: String]
-    ) -> String {
-        let stored = secrets.values[key] ?? ""
-        guard stored.isEmpty else { return stored }
-        return environment[envKey] ?? ""
-    }
-
-    /// Write-through for the three key properties. Trimmed, because a pasted
-    /// key routinely carries a trailing newline the wire never wants; empty
-    /// deletes the item rather than storing a blank.
-    private func persistSecret(_ value: String, for key: SecretKey) {
-        // A value the store just handed us is not a change to write back.
-        guard !isApplyingStoredSecret else { return }
-        // Marked loaded either way. On success the store holds exactly this
-        // value, so there is nothing to fetch. On failure the value is still
-        // the one this process runs with ("works this session but is not
-        // saved"), and a later fetch would overwrite what the user just typed
-        // with the stale stored key.
-        loadedSecretKeys.insert(key)
-        do {
-            try secretStore.setSecret(value.trimmed, for: key)
-        } catch {
-            secretStoreFailureSummary = Self.secretStoreWriteFailureSummary
-            Log.secrets.error(
-                "Storing \(key.rawValue, privacy: .public) in the keychain failed: \(String(describing: error), privacy: .public)"
-            )
-        }
-    }
-
     /// What a first-time user gets out of the box: the tap/hold gesture works
     /// without a trip to Settings, instead of the ⌥Space shortcut.
     ///
@@ -1844,357 +1236,5 @@ final class SettingsStore {
         )
         let normalized = normalizedModelName(from: configured)
         return normalized.isEmpty ? provider.defaultModelName : normalized
-    }
-
-    var trimmedAPIKey: String {
-        // `trimmedAPIKey` is only ever used as the realtime connection bearer
-        // token (see RealtimeAPIWebSocketClient, which omits the Authorization
-        // header when it is empty). Managed local servers need no key.
-        switch dictationBackendMode {
-        case .managedLocal:
-            return ""
-        case .externalURL:
-            return apiKey.trimmed
-        case .mistralAPI:
-            return trimmedMistralAPIKey
-        }
-    }
-
-    // MARK: - Mistral API
-
-    var trimmedMistralAPIKey: String { mistralAPIKey.trimmed }
-
-    var resolvedMistralDictationModel: String {
-        let model = mistralDictationModel.trimmed
-        return model.isEmpty ? MistralRealtimeWebSocketClient.defaultModel : model
-    }
-
-    var resolvedMistralPolishingModel: String {
-        let model = mistralPolishingModel.trimmed
-        return model.isEmpty ? MistralPolishDefaults.model : model
-    }
-
-    /// Whether the Mistral engines have everything they need. The key is the
-    /// only thing a user can get wrong here — the endpoints are pinned and the
-    /// models have defaults.
-    var isMistralAPIConfigured: Bool { !trimmedMistralAPIKey.isEmpty }
-
-    /// The Engines pane's one-line Mistral status. Deliberately says nothing
-    /// about reachability: Settings never fires a request of its own, and the
-    /// "Check key" row is where a user asks Mistral anything.
-    var mistralAPIStatusSummary: String {
-        // A keychain that will not answer must never read as "API key missing":
-        // that sends the user to paste a key they already have.
-        if let secretStoreFailureSummary { return secretStoreFailureSummary }
-        return isMistralAPIConfigured ? "Ready" : "API key missing"
-    }
-
-    var effectiveModelName: String {
-        effectiveModelName(for: realtimeProvider)
-    }
-
-    var displayModelName: String {
-        effectiveModelName
-    }
-
-    var endpointPlaceholder: String {
-        realtimeProvider.defaultEndpoint
-    }
-
-    var modelPlaceholder: String {
-        realtimeProvider.defaultModelName
-    }
-
-    var dictationShortcut: DictationShortcut? {
-        guard dictationShortcutEnabled else { return nil }
-
-        let candidate = DictationShortcut(
-            keyCode: dictationShortcutKeyCode,
-            carbonModifierFlags: dictationShortcutCarbonModifierFlags
-        ).normalized
-
-        if DictationShortcutValidation.persistenceErrorMessage(for: candidate) != nil {
-            return Self.defaultDictationShortcut
-        }
-
-        return candidate
-    }
-
-    func setDictationShortcut(_ shortcut: DictationShortcut?) {
-        guard let shortcut else {
-            dictationShortcutEnabled = false
-            return
-        }
-
-        let normalizedShortcut = shortcut.normalized
-        let resolvedShortcut: DictationShortcut
-        if DictationShortcutValidation.persistenceErrorMessage(for: normalizedShortcut) == nil {
-            resolvedShortcut = normalizedShortcut
-        } else {
-            resolvedShortcut = Self.defaultDictationShortcut
-        }
-
-        dictationShortcutKeyCode = resolvedShortcut.keyCode
-        dictationShortcutCarbonModifierFlags = resolvedShortcut.carbonModifierFlags
-        dictationShortcutEnabled = true
-    }
-
-    func resetDictationShortcutToDefault() {
-        setDictationShortcut(Self.defaultDictationShortcut)
-    }
-
-    // MARK: - Dual Shortcuts (per output mode)
-
-    var overlayBufferShortcut: DictationShortcut? {
-        guard overlayBufferShortcutEnabled else { return nil }
-        let candidate = DictationShortcut(
-            keyCode: overlayBufferShortcutKeyCode,
-            carbonModifierFlags: overlayBufferShortcutCarbonModifierFlags
-        ).normalized
-        if DictationShortcutValidation.persistenceErrorMessage(for: candidate) != nil {
-            return nil
-        }
-        return candidate
-    }
-
-    /// True when a keyboard trigger can start an Overlay Buffer session: the
-    /// single-modifier tap gesture, or a dedicated Overlay Buffer shortcut.
-    /// LLM polishing runs only on Overlay Buffer commits, so when this is
-    /// false Settings shows polishing as unavailable and managed polishd is
-    /// kept stopped. The menu-bar Start Dictation button deliberately does
-    /// not count (owner call, 2026-07-06): an overlay session started from
-    /// the popover still polishes via the session-time ensureReady backstop,
-    /// paying the polishd cold start.
-    var isOverlayBufferSessionReachable: Bool {
-        modifierOnlyHotKeyEnabled || overlayBufferShortcut != nil
-    }
-
-    var livePasteShortcut: DictationShortcut? {
-        guard livePasteShortcutEnabled else { return nil }
-        let candidate = DictationShortcut(
-            keyCode: livePasteShortcutKeyCode,
-            carbonModifierFlags: livePasteShortcutCarbonModifierFlags
-        ).normalized
-        if DictationShortcutValidation.persistenceErrorMessage(for: candidate) != nil {
-            return nil
-        }
-        return candidate
-    }
-
-    /// Both shortcut slots exactly as stored, enabled flags included and a
-    /// value the validator rejects kept verbatim.
-    ///
-    /// The getters cannot express this: they return nil both for a disabled
-    /// slot and for a stored value that fails validation, and a caller that
-    /// means to put things back the way they were would restore the default
-    /// shortcut over the second case — installing a trigger the user never
-    /// chose. Anything that writes a slot speculatively takes a snapshot
-    /// first and restores it verbatim.
-    struct ShortcutSlotSnapshot: Equatable {
-        var overlayKeyCode: UInt32
-        var overlayCarbonModifierFlags: UInt32
-        var overlayEnabled: Bool
-        var livePasteKeyCode: UInt32
-        var livePasteCarbonModifierFlags: UInt32
-        var livePasteEnabled: Bool
-    }
-
-    var shortcutSlotSnapshot: ShortcutSlotSnapshot {
-        ShortcutSlotSnapshot(
-            overlayKeyCode: overlayBufferShortcutKeyCode,
-            overlayCarbonModifierFlags: overlayBufferShortcutCarbonModifierFlags,
-            overlayEnabled: overlayBufferShortcutEnabled,
-            livePasteKeyCode: livePasteShortcutKeyCode,
-            livePasteCarbonModifierFlags: livePasteShortcutCarbonModifierFlags,
-            livePasteEnabled: livePasteShortcutEnabled
-        )
-    }
-
-    func restoreShortcutSlots(_ snapshot: ShortcutSlotSnapshot) {
-        overlayBufferShortcutKeyCode = snapshot.overlayKeyCode
-        overlayBufferShortcutCarbonModifierFlags = snapshot.overlayCarbonModifierFlags
-        overlayBufferShortcutEnabled = snapshot.overlayEnabled
-        livePasteShortcutKeyCode = snapshot.livePasteKeyCode
-        livePasteShortcutCarbonModifierFlags = snapshot.livePasteCarbonModifierFlags
-        livePasteShortcutEnabled = snapshot.livePasteEnabled
-    }
-
-    func setOverlayBufferShortcut(_ shortcut: DictationShortcut?) {
-        guard let shortcut else {
-            overlayBufferShortcutEnabled = false
-            return
-        }
-        let normalizedShortcut = shortcut.normalized
-        if DictationShortcutValidation.persistenceErrorMessage(for: normalizedShortcut) == nil {
-            overlayBufferShortcutKeyCode = normalizedShortcut.keyCode
-            overlayBufferShortcutCarbonModifierFlags = normalizedShortcut.carbonModifierFlags
-        } else {
-            overlayBufferShortcutKeyCode = Self.defaultDictationShortcut.keyCode
-            overlayBufferShortcutCarbonModifierFlags = Self.defaultDictationShortcut.carbonModifierFlags
-        }
-        overlayBufferShortcutEnabled = true
-    }
-
-    func setLivePasteShortcut(_ shortcut: DictationShortcut?) {
-        guard let shortcut else {
-            livePasteShortcutEnabled = false
-            return
-        }
-        let normalizedShortcut = shortcut.normalized
-        if DictationShortcutValidation.persistenceErrorMessage(for: normalizedShortcut) == nil {
-            livePasteShortcutKeyCode = normalizedShortcut.keyCode
-            livePasteShortcutCarbonModifierFlags = normalizedShortcut.carbonModifierFlags
-        } else {
-            return
-        }
-        livePasteShortcutEnabled = true
-    }
-
-    func modelName(for provider: RealtimeProvider) -> String {
-        realtimeAPIModelName
-    }
-
-    func effectiveModelName(for provider: RealtimeProvider) -> String {
-        if dictationBackendMode == .mistralAPI {
-            // Hosted Voxtral ids have nothing to do with the external
-            // provider's placeholder or the managed HF repo pin.
-            return resolvedMistralDictationModel
-        }
-        if dictationBackendMode == .managedLocal {
-            // The bundled Swift engine needs its dedicated HF-layout pin.
-            // Keep the external provider's placeholder/default independent:
-            // user-typed external values remain ignored in managed mode, but
-            // an existing external endpoint still sees its historical model.
-            return resolvedManagedSpeechModel.repoID
-        }
-        let normalized = Self.normalizedModelName(from: modelName(for: provider))
-        return normalized.isEmpty ? provider.defaultModelName : normalized
-    }
-
-    func endpointURL(for provider: RealtimeProvider) -> String {
-        realtimeAPIEndpointURL
-    }
-
-    var resolvedWebSocketURL: URL? {
-        resolvedWebSocketURL(for: realtimeProvider)
-    }
-
-    func resolvedWebSocketURL(for provider: RealtimeProvider) -> URL? {
-        if dictationBackendMode == .mistralAPI {
-            // Pinned, not user-editable: the client appends the `?model=` query
-            // item itself, so a hand-typed endpoint could only break it.
-            return MistralRealtimeWebSocketClient.defaultEndpoint
-        }
-        if dictationBackendMode == .managedLocal {
-            return URL(string: ManagedBackendEndpoints.realtimeURLString)
-        }
-        let trimmed = endpointURL(for: provider).trimmed
-        guard !trimmed.isEmpty else { return nil }
-
-        if trimmed.hasPrefix("ws://") || trimmed.hasPrefix("wss://") {
-            return URL(string: trimmed)
-        }
-
-        if trimmed.hasPrefix("http://") {
-            return URL(string: "ws://" + trimmed.dropFirst("http://".count))
-        }
-
-        if trimmed.hasPrefix("https://") {
-            return URL(string: "wss://" + trimmed.dropFirst("https://".count))
-        }
-
-        return URL(string: "ws://\(trimmed)")
-    }
-
-    private static func normalizedModelName(from raw: String) -> String {
-        let trimmed = raw.trimmed
-        guard !trimmed.isEmpty else { return "" }
-
-        let lines =
-            trimmed
-            .split(whereSeparator: \.isNewline)
-            .map { String($0).trimmed }
-            .filter { !$0.isEmpty }
-
-        guard let candidate = lines.last else {
-            return trimmed
-        }
-
-        if candidate.contains(" ") {
-            let tokens = candidate.split(whereSeparator: \.isWhitespace).map(String.init)
-            if let token = tokens.last {
-                return token
-            }
-        }
-
-        return candidate
-    }
-
-    var llmPolishingConfiguration: LLMPolishingConfiguration? {
-        guard llmPolishingEnabled else { return nil }
-        if polishingBackendMode == .managedLocal {
-            guard let url = URL(string: ManagedBackendEndpoints.polishingURLString)
-            else { return nil }
-            let model = resolvedManagedLLMPolishingModel
-            let option = PolishModelCatalog.option(forRepoID: model)
-            return LLMPolishingConfiguration(
-                endpointURL: url,
-                apiKey: "",
-                model: model,
-                samplingDefaults: option?.samplingDefaults,
-                chatTemplateArguments: option?.chatTemplateArguments
-            )
-        }
-        if polishingBackendMode == .mistralAPI {
-            // No key, no request. A polish sent to Mistral without credentials
-            // can only come back 401, and the commit path reports a nil
-            // configuration as one actionable line — which is strictly better
-            // than an HTTP status the user cannot act on.
-            let key = trimmedMistralAPIKey
-            guard !key.isEmpty else { return nil }
-            return LLMPolishingConfiguration(
-                endpointURL: MistralPolishDefaults.endpoint,
-                apiKey: key,
-                model: resolvedMistralPolishingModel,
-                requestShape: .mistral,
-                mistralReasoningEffort: MistralReasoningEffort.forModel(
-                    resolvedMistralPolishingModel, catalog: mistralModelCatalog
-                )
-            )
-        }
-        let trimmedEndpoint = llmPolishingEndpointURL.trimmed
-        guard !trimmedEndpoint.isEmpty, let url = URL(string: trimmedEndpoint) else { return nil }
-        guard
-            let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-            let scheme = components.scheme?.lowercased(),
-            (scheme == "http" || scheme == "https"),
-            components.host != nil
-        else {
-            return nil
-        }
-        return LLMPolishingConfiguration(
-            endpointURL: url,
-            apiKey: llmPolishingAPIKey.trimmed,
-            model: llmPolishingModel.trimmed.isEmpty
-                ? Self.defaultLLMPolishingModel
-                : llmPolishingModel.trimmed
-        )
-    }
-
-    /// The managed picker's stored selection, hardened against an empty env
-    /// override. External mode's `llmPolishingModel` is a server-side model
-    /// NAME; this is an HF repo the helper must download — separate keys so a
-    /// leftover external value can never leak into a managed launch.
-    var resolvedManagedLLMPolishingModel: String {
-        let model = managedLLMPolishingModel.trimmed
-        return model.isEmpty ? Self.defaultLLMPolishingModel : model
-    }
-
-    /// The catalog entry the managed dictation helper runs. Resolves only
-    /// entries the bundled helper knows how to load, so a stale stored repo
-    /// falls back to the default instead of failing the launch.
-    var resolvedManagedSpeechModel: SpeechModelOption {
-        SpeechModelCatalog.option(forRepoID: managedSpeechModel.trimmed)
-            ?? SpeechModelCatalog.defaultOption
     }
 }

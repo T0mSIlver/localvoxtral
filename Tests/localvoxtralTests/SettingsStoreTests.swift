@@ -103,11 +103,11 @@ final class SettingsStoreTests: XCTestCase {
             .deletingLastPathComponent()  // SettingsStoreTests.swift
             .deletingLastPathComponent()  // localvoxtralTests
             .deletingLastPathComponent()  // Tests
-            .appendingPathComponent("Sources/localvoxtral/SettingsStore.swift")
+            .appendingPathComponent("Sources/localvoxtral/SettingsStore+TerminalApps.swift")
         let source = try String(contentsOf: storeURL, encoding: .utf8)
 
         let loader = try XCTUnwrap(
-            source.range(of: "private static func loadUserTerminalApps("),
+            source.range(of: "static func loadUserTerminalApps("),
             "loadUserTerminalApps moved — update this pin"
         )
         let loaderBody = source[loader.upperBound...].prefix(600)
