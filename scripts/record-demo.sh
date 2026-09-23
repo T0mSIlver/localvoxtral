@@ -1307,7 +1307,7 @@ sleep 3 # let the committed text sit on screen
 # capture: a take where the join silently abstained (falling back to
 # no-context) is a lying demo, and "Never fake a running agent" extends to
 # never faking a working join. The two lines asserted are emitted by
-# TerminalScreenClaudeJoin.resolveViaHerdr and
+# ClaudeSessionJoinResolver.resolveViaHerdr and
 # SocketPaneScreenContext.captureAtStart (subsystem com.localvoxtral,
 # category ClaudeContext); every abstention logs its outcome publicly, so the
 # failure path prints whatever the join said instead.

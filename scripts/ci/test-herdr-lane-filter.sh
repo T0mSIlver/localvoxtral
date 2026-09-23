@@ -68,6 +68,14 @@ expect true "the remote herdr config patch runs the lane" \
   Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService.swift
 expect true "the join arm that consumes all of it runs the lane" \
   Sources/localvoxtral/ClaudeContext/TerminalScreenClaudeJoin.swift
+expect true "the join resolver runs the lane" \
+  Sources/localvoxtral/ClaudeContext/ClaudeSessionJoinResolver.swift
+expect true "the remote herdr arm runs the lane" \
+  Sources/localvoxtral/ClaudeContext/ClaudeSessionJoinResolver+RemoteHerdr.swift
+expect true "the federated herdr arm runs the lane" \
+  Sources/localvoxtral/ClaudeContext/ClaudeSessionJoinResolver+FederatedHerdr.swift
+expect true "the join authorizer runs the lane" \
+  Sources/localvoxtral/ClaudeContext/TerminalScreenClaudeJoinAuthorizer.swift
 expect true "the saved-machine catalog reader runs the lane" \
   Sources/localvoxtral/ClaudeContext/HerdrMachineFederation.swift
 

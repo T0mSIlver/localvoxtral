@@ -43,6 +43,7 @@ PATTERNS=(
   '*ClaudeRemoteEnrollmentService*'                  # the remote herdr config patch + its refusal rules
   '*SocketPaneScreenContext*'                        # what a herdr join is allowed to read back
   '*TerminalScreenClaudeJoin*'                       # the arm that consumes all of the above
+  '*ClaudeSessionJoinResolver*'                      # the resolver and its per-surface arms
   'docs/agent/remote-herdr-panel-binding.md'         # the assumptions this lane exists to pin
   'scripts/herdr-integration-fixture.sh'             # the fixture itself
   'scripts/ci/herdr-lane-filter.sh'
