@@ -31,6 +31,7 @@ INPUTS=(
   'scripts/ci/test-ui-gate.sh'
   'scripts/ci/ui-gate-suite-filter.sh'
   'scripts/ci/run-shell-suites.sh'
+  'scripts/ci/background-step.sh'
 )
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then

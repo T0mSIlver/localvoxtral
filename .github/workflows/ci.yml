@@ -186,7 +186,7 @@ jobs:
             echo "CI fast path: full run ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Process-cleanup regression tests
+      - name: Start process-cleanup regression tests
         # Pure shell tests for the workspace selector, the SSH build gate's
         # TERM -> KILL process-group teardown, and the SSH UI gate's allowlist /
         # lock refusal / window-ownership rules. Pure shell against PATH stubs,
@@ -213,6 +213,12 @@ jobs:
         # (scripts/ci/ui-gate-suite-filter.sh); every push to main and every
         # dispatch runs it. The changed-file list is the fast-path step's, and
         # a missing one fails open.
+        #
+        # They need no build, so they run in the background from here while
+        # the cache restore, format lint and unit suite run, and "Process-
+        # cleanup regression tests" below waits for them and fails the job the
+        # same way (scripts/ci/background-step.sh). Run first, they held the
+        # Swift steps back by ~30 s of every run.
         run: |
           set -euo pipefail
           UI_GATE_SUITE=""
@@ -226,7 +232,8 @@ jobs:
             echo "UI gate suite: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
           # $UI_GATE_SUITE unquoted on purpose: empty means no argument.
-          ./scripts/ci/run-shell-suites.sh $UI_GATE_SUITE \
+          ./scripts/ci/background-step.sh start "$RUNNER_TEMP/shell-suites" -- \
+            ./scripts/ci/run-shell-suites.sh $UI_GATE_SUITE \
             ./scripts/ci/test-cleanup-stale-test-processes.sh \
             ./scripts/ci/test-build-gate-process-cleanup.sh \
             ./scripts/ci/test-build-gate-reap-command.sh \
@@ -259,7 +266,8 @@ jobs:
             ./scripts/ci/test-restore-mtimes.sh \
             ./scripts/ci/test-watch-checks.sh \
             ./scripts/ci/test-ui-gate-suite-filter.sh \
-            ./scripts/ci/test-unit-test-shards.sh
+            ./scripts/ci/test-unit-test-shards.sh \
+            ./scripts/ci/test-background-step.sh
 
       - name: Record hosted toolchain
         id: hosted_toolchain
@@ -368,6 +376,15 @@ jobs:
             AgentDictationE2EEvalTests \
             HerdrIntegrationTests \
             PolishContextPreparationTests
+
+      - name: Process-cleanup regression tests
+        # Waits for the suites "Start process-cleanup regression tests" put in
+        # the background and prints their report; red when any suite failed.
+        # `!cancelled()`: a red unit suite must not hide a red shell suite.
+        # 600 s is far above their ~30 s; past it, the step shows what they
+        # printed so far and fails.
+        if: ${{ !cancelled() }}
+        run: ./scripts/ci/background-step.sh finish "$RUNNER_TEMP/shell-suites" 600
 
       - name: Upload complete unit-test log
         if: ${{ always() && steps.ci_scope.outputs.docs_only != 'true' }}
