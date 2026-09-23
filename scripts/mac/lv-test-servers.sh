@@ -108,7 +108,9 @@ STABLE_APP="${LV_TEST_SERVER_APP:-/Users/Shared/localvoxtral/testservers/localvo
 # script without the list beside it (the reaper's, per scripts/mac/README.md)
 # reads that installed copy instead.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-INSTALLED_SPEECH_MODELS="${LV_TEST_SPEECH_MODELS_INSTALLED:-$(dirname "$STABLE_APP")/speech-models.tsv}"
+# A fixed path, not one derived from STABLE_APP: pointing one row at a PR's
+# .app must not move the list the gate and the reaper read.
+INSTALLED_SPEECH_MODELS="${LV_TEST_SPEECH_MODELS_INSTALLED:-/Users/Shared/localvoxtral/testservers/speech-models.tsv}"
 if [[ -n "${LV_TEST_SPEECH_MODELS:-}" ]]; then
   SPEECH_MODELS="$LV_TEST_SPEECH_MODELS"
 elif [[ -f "$SCRIPT_DIR/test-speech-models.tsv" ]]; then
@@ -622,7 +624,11 @@ cmd_install_speech_models() {
     return 1
   fi
   tmp="${INSTALLED_SPEECH_MODELS}.new.$$"
-  cp "$SPEECH_MODELS" "$tmp" && chmod 0644 "$tmp" && mv "$tmp" "$INSTALLED_SPEECH_MODELS"
+  if ! { cp "$SPEECH_MODELS" "$tmp" && chmod 0644 "$tmp" && mv "$tmp" "$INSTALLED_SPEECH_MODELS"; }; then
+    rm -f "$tmp" 2>/dev/null || true
+    echo "install-speech-models: cannot write $INSTALLED_SPEECH_MODELS" >&2
+    return 1
+  fi
   echo "install-speech-models: the build gate now reads $INSTALLED_SPEECH_MODELS"
 }
 
