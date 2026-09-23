@@ -23,4 +23,21 @@ extension String {
     package var caseFoldedForMatching: String {
         folding(options: .caseInsensitive, locale: nil)
     }
+
+    /// Drops NUL and other control scalars (which can corrupt the request or the
+    /// LLM's parsing) while preserving newlines and tabs so multi-line snippets
+    /// and indentation survive as spelling context.
+    package var sanitizedControlCharacters: String {
+        var scalars = String.UnicodeScalarView()
+        for scalar in unicodeScalars {
+            if scalar == "\n" || scalar == "\t" {
+                scalars.append(scalar)
+            } else if CharacterSet.controlCharacters.contains(scalar) {
+                continue
+            } else {
+                scalars.append(scalar)
+            }
+        }
+        return String(scalars)
+    }
 }

@@ -1,5 +1,5 @@
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 final class RepoVocabularyPhoneticTests: XCTestCase {
     private func makeVocabulary(_ terms: [String]) -> RepoVocabulary {

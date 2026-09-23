@@ -49,7 +49,9 @@ pure step (#432 steps 1–8):
 `Sources/localvoxtralCore` (#432 step 9) holds what the app computes without
 AppKit: `TranscriptAccumulator`, `TextMergingAlgorithms`, the overlay text
 assembler, `PolishTokenGuard`, `ClipboardPayloadMacro`,
-`PolishOutcomeClassifier`, the connection-failure classifier, `SessionClock`.
+`PolishOutcomeClassifier`, the connection-failure classifier, `SessionClock`,
+and the vocabulary matching: `RepoVocabulary`, `RepoIndexing`,
+`RepoVocabularyMatcher`, `ClipboardVocabulary`, `DoubleMetaphone`.
 It builds and tests on Linux (`scripts/core-tests-linux.sh`); the app
 re-exports it.
 

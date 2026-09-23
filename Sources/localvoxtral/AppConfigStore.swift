@@ -37,11 +37,6 @@ extension AppConfigServing {
     }
 }
 
-struct ReplacementEntry: Equatable, Sendable {
-    let replaceWith: String
-    let matches: [String]
-}
-
 struct ReplacementDictionary: Equatable, Sendable {
     let entries: [ReplacementEntry]
 
