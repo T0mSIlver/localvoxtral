@@ -117,6 +117,9 @@ final class BackendManager: ManagedBackendManaging {
     /// up has to be noticed here — otherwise the next dictation attaches to the
     /// old model.
     @ObservationIgnored private var speechdLaunchedModel: SpeechModelOption?
+    /// The speech model whose download started and has not finished. Set until
+    /// it completes, so a paused or interrupted download still names its bytes.
+    @ObservationIgnored private var speechdPreparingModel: SpeechModelOption?
     @ObservationIgnored private var polishdSupervisor: (any ManagedBackendSupervising)?
     // Per-backend single-flight slots. A global shared slot (the previous
     // design) let a lingering dictation run swallow a polishing request whose
@@ -333,14 +336,17 @@ final class BackendManager: ManagedBackendManaging {
 
     func cancelModelDownload(for spec: ManagedBackendSpec) async {
         Log.backends.info("\(spec.displayName, privacy: .public) model download cancel requested")
+        // The download being cancelled, which the selection may have moved
+        // away from since it started. Read it before the stop clears it.
+        let interrupted = spec.id == BackendCatalog.speechd.id ? speechdPreparingModel : nil
         // Stop first and await the unwinding: discarding resume data while a
         // downloader is still live would race the transfer that owns it.
         await stopBackend(spec, forceStoppedStatus: true)
-        // nil: the request only names what to discard, and the download the
-        // user is cancelling is the currently selected model's.
+        // nil falls back to the current selection.
         modelPreparer.discardPartialDownloads(
-            for: modelPreparationRequest(for: spec, speechModel: nil)
+            for: modelPreparationRequest(for: spec, speechModel: interrupted)
         )
+        if spec.id == BackendCatalog.speechd.id { speechdPreparingModel = nil }
         Log.backends.info(
             "\(spec.displayName, privacy: .public) model download cancelled; in-flight file discarded"
         )
@@ -414,14 +420,18 @@ final class BackendManager: ManagedBackendManaging {
         // downloads, and the downloader and the helper argv must not disagree.
         let speechModel = spec.id == BackendCatalog.speechd.id ? speechModelProvider() : nil
 
-        if isReady(spec) {
-            if spec.id != BackendCatalog.speechd.id || speechdLaunchedModel == speechModel {
-                setStatus(.ready, for: spec)
-                return
-            }
-            // The selection changed under a running helper. Stop it here rather
-            // than through stopDictation(), which would cancel and await the
-            // ensure task this call is running inside.
+        let launchedForAnotherModel = spec.id == BackendCatalog.speechd.id
+            && supervisorIfCreated(for: spec) != nil
+            && speechdLaunchedModel != speechModel
+        if isReady(spec), !launchedForAnotherModel {
+            setStatus(.ready, for: spec)
+            return
+        }
+        if launchedForAnotherModel {
+            // A supervisor keeps the argv it was created with, whether it is
+            // running or kept after a failed start, so a new selection needs a
+            // new one. Stop it here rather than through stopDictation(), which
+            // would cancel and await the ensure task this call is running inside.
             await stopSupervisorKeepingEnsureTask(for: spec)
         }
 
@@ -464,11 +474,15 @@ final class BackendManager: ManagedBackendManaging {
             .preparingModel(progress: ModelDownloadProgress(downloadedBytes: 0, totalBytes: nil)),
             for: spec
         )
+        if spec.id == BackendCatalog.speechd.id {
+            speechdPreparingModel = speechModel ?? speechModelProvider()
+        }
         do {
             try await modelPreparer.prepare(request) { [weak self] progress in
                 guard let self else { return }
                 self.setStatus(.preparingModel(progress: progress), for: spec)
             }
+            if spec.id == BackendCatalog.speechd.id { speechdPreparingModel = nil }
         } catch is CancellationError {
             // A pause cancels this task too, but keeps the bytes and the last
             // progress reading so the row stays on its bar instead of resetting

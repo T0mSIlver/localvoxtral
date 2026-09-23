@@ -258,6 +258,10 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                 let session = self.ensureSession(ctx)
                 let remainder = ctx.stepBatcher.flushRemainder()
                 if !remainder.isEmpty { session.step(remainder) }
+                // The remainder can be what crosses the limit (Nemotron then drops it).
+                // Check before finish(), which ends every Voxtral stream and would
+                // read as the model stopping early.
+                self.reportEarlyStopIfNeeded(session, connection, ctx)
                 session.finish()
                 let tail = ctx.deltas.emit(fullText: session.text)
                 if !tail.isEmpty { self.sendServer(connection, .transcriptDelta(tail)) }

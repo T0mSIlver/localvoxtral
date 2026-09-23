@@ -140,6 +140,68 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(relaunch[modelIndex + 1], second.repoID)
     }
 
+    /// A helper that failed to start is kept for a retry, but its argv still
+    /// names the model it was launched for. After a model change the retry
+    /// must launch the new selection, not restart the old supervisor.
+    func testSpeechdRetryAfterAFailedLaunchUsesTheNewlySelectedModel() async throws {
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [
+            .failed(summary: "crashed", detail: nil),
+        ]
+        let first = SpeechModelCatalog.defaultOption
+        let second = try XCTUnwrap(
+            SpeechModelCatalog.option(
+                forRepoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
+            )
+        )
+        let selected = SpeechModelBox(first)
+        let manager = makeManager(
+            speechModelProvider: { selected.value },
+            supervisorFactory: supervisorFactory
+        )
+
+        _ = try? await manager.ensureReady(dictation: true, polishing: false)
+        selected.value = second
+        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
+        try await manager.ensureReady(dictation: true, polishing: false)
+
+        XCTAssertEqual(supervisorFactory.createdConfigurations.count, 2)
+        let retry = try XCTUnwrap(supervisorFactory.createdConfigurations.last).arguments
+        let modelIndex = try XCTUnwrap(retry.firstIndex(of: "--model"))
+        XCTAssertEqual(retry[modelIndex + 1], second.repoID)
+    }
+
+    /// Cancel discards the download it interrupts. If the selection changed
+    /// while that download ran, the selected model is not the one whose
+    /// partial bytes are on disk.
+    func testCancelDiscardsTheInFlightModelNotTheNewSelection() async throws {
+        let modelPreparer = FakeModelPreparer(suspendBackendIDs: [BackendCatalog.speechd.id])
+        let first = SpeechModelCatalog.defaultOption
+        let second = try XCTUnwrap(
+            SpeechModelCatalog.option(
+                forRepoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
+            )
+        )
+        let selected = SpeechModelBox(first)
+        let manager = makeManager(
+            modelPreparer: modelPreparer,
+            speechModelProvider: { selected.value },
+            supervisorFactory: FakeSupervisorFactory()
+        )
+
+        let ensure = Task { @MainActor in
+            try await manager.ensureReady(dictation: true, polishing: false)
+        }
+        await modelPreparer.waitUntilPrepareStarted()
+        selected.value = second
+
+        await manager.cancelModelDownload(for: BackendCatalog.speechd)
+
+        XCTAssertEqual(modelPreparer.discardedRepoIDs, [first.repoID])
+        XCTAssertEqual(manager.speechdStatus, .stopped)
+        _ = try? await ensure.value
+    }
+
     /// The counterpart: an unchanged selection must not restart anything.
     func testSpeechdKeepsRunningWhenTheSelectedModelIsUnchanged() async throws {
         let supervisorFactory = FakeSupervisorFactory()
