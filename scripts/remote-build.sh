@@ -49,7 +49,7 @@ set -euo pipefail
 #                  (default 100 = the production step cadence),
 #                  cache-limit-mb (default = the helper's built-in limit),
 #                  and max-utterance-seconds (default = seconds, so a long
-#                  run keeps decoding past the helper's 10-minute limit);
+#                  run keeps decoding past the helper's own utterance limit);
 #                  requires a prior `package`
 #     eval-llm     default-polish-prompt eval against a live chat/completions
 #                  server (the bundled polishd test service by default);

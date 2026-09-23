@@ -20,6 +20,19 @@ final class UtteranceLimitTests: XCTestCase {
         )
     }
 
+    func testDefaultLimitIsAnHourAndPhrasesItselfInOneShortSentence() {
+        // The default guards a session left running; it is no longer the point where
+        // decoding falls behind live speech (Blaizzy/mlx-audio-swift #263-#265, #314).
+        XCTAssertEqual(UtteranceLimit.defaultSeconds, 3_600)
+        XCTAssertEqual(
+            UtteranceLimit().reachedMessage,
+            "60-minute limit reached; start again."
+        )
+        XCTAssertLessThanOrEqual(
+            UtteranceLimit().reachedMessage.count, UtteranceLimit.maxMessageCharacters
+        )
+    }
+
     func testMaxDecodedTokensScalesWithDurationAndKeepsFinishPadding() {
         XCTAssertEqual(
             UtteranceLimit(seconds: 60).maxDecodedTokens(frameRate: voxtralFrameRate),

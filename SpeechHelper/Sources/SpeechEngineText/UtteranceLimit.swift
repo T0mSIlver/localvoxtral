@@ -10,14 +10,18 @@ import Foundation
 /// the app (#314). The helper now sizes the cap from an explicit duration and reports the
 /// stop instead of going quiet.
 public struct UtteranceLimit: Equatable, Sendable {
-    /// Default maximum utterance length: the longest session that stays close to real time.
-    /// Measured with `speechd-bench 1200` on an M-series MacBook Pro at the production
-    /// 100 ms cadence (2026-09-16, #314): the mean step took 63 ms at 1 minute, 96 ms at
-    /// 8 minutes, 107 ms at 10 minutes and plateaued around 100-115 ms once the decoder's
-    /// 8,192-token attention window filled near 11 minutes. Past about 9 minutes each
-    /// 100 ms of audio takes longer than 100 ms to decode, so live text starts lagging the
-    /// speaker. Memory grew from 2.7 GB to 4.6 GB over 20 minutes.
-    public static let defaultSeconds = 600
+    /// Default maximum utterance length: a guard against a session nobody meant to leave
+    /// running, not a performance ceiling.
+    ///
+    /// It used to be a ceiling. Against the engine pinned before Blaizzy/mlx-audio-swift
+    /// #263-#265, decoding fell behind live speech past about 9 minutes — each 100 ms of
+    /// audio took 105 ms at 10 minutes and 147 ms at 60 minutes, and memory climbed about
+    /// 23 MB per minute — so the default was 10 minutes. Those three changes bound the
+    /// streaming buffers, and `speechd-bench 10800` on the same MacBook Pro at the
+    /// production 100 ms cadence holds a mean step of 65-81 ms and active memory flat at
+    /// 4.2 GB from 11 minutes through 3 hours. An hour sits well inside that and still
+    /// stops a session left running by accident.
+    public static let defaultSeconds = 3_600
 
     /// Tokens decoded past the real audio when `finish()` seals the stream: the engine
     /// appends `(delay tokens + 1) + 10` tokens of zero padding, and the delay tops out at
