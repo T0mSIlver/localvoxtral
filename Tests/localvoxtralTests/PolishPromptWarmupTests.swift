@@ -531,6 +531,32 @@ final class PolishPromptWarmupTests: XCTestCase {
         XCTAssertEqual(service.requests.count, 2, "retried once, then warm")
     }
 
+    /// Codex review finding: a warmup left running for a prefix the plan
+    /// dropped (agent profile turned off mid-warmup) held the helper ahead of
+    /// the next real polish. Reconciling to an empty set cancels it.
+    func testWarmupForAPrefixNoLongerPlannedIsCancelled() async {
+        let service = SuspendingPolishService()
+        let planned = LockedBool(true)
+        let coordinator = PolishPromptWarmupCoordinator(
+            serviceProvider: { service },
+            planProvider: { [plan = makePlan(), empty = makePlan(profiles: [])] in
+                planned.value ? plan : empty
+            }
+        )
+        coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .ready))
+        await fulfillment(of: [service.started], timeout: 5)
+
+        // Asserted right after the call, not after awaiting the task: without
+        // the fix the suspended warmup never ends, and awaiting it would hang
+        // the suite instead of failing. `cancel()` runs the fake's handler
+        // synchronously.
+        planned.set(false)
+        coordinator.ensureWarm(reason: "settings change")
+        XCTAssertTrue(service.observedCancellation)
+        XCTAssertNil(coordinator.warmupTask)
+        coordinator.cancelTasks()
+    }
+
     func testDictationStartDoesNothingWhileHelperIsNotReady() async {
         let service = RecordingPolishService()
         let coordinator = PolishPromptWarmupCoordinator(

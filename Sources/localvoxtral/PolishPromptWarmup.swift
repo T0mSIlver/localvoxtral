@@ -167,7 +167,8 @@ final class PolishPromptWarmupCoordinator {
     private var polishdIsReady = false
     /// Prefixes the current helper launch holds because a warmup succeeded.
     private var warmedPrefixes: Set<PolishPromptWarmup.CachedPrefix> = []
-    /// Prefixes the running `warmupTask` is sending, in order.
+    /// Prefixes the running `warmupTask` has not finished yet, in order; each
+    /// leaves the list when its request completes.
     private var inFlightPrefixes: [PolishPromptWarmup.CachedPrefix] = []
     /// Bumped per warmup task, so a superseded task's late completion cannot
     /// mark a prefix warm for a helper launch it did not target.
@@ -264,7 +265,17 @@ final class PolishPromptWarmupCoordinator {
         // been evicted by the time the setting changes back.
         warmedPrefixes.formIntersection(planned.map(\.prefix))
         let missing = planned.filter { !warmedPrefixes.contains($0.prefix) }
-        guard !missing.isEmpty else { return }
+        guard !missing.isEmpty else {
+            // Whatever is still in flight is no longer planned (a profile
+            // turned off, an edit reverted): it would only hold the helper
+            // ahead of a real polish.
+            if warmupTask != nil {
+                warmupTask?.cancel()
+                warmupTask = nil
+                inFlightPrefixes = []
+            }
+            return
+        }
         if warmupTask != nil, inFlightPrefixes == missing.map(\.prefix) { return }
 
         warmupTask?.cancel()
@@ -294,6 +305,13 @@ final class PolishPromptWarmupCoordinator {
                     return
                 }
                 let profile = entry.profiled.profile.rawValue
+                defer {
+                    if let self, self.warmupGeneration == generation,
+                        self.inFlightPrefixes.first == entry.prefix
+                    {
+                        self.inFlightPrefixes.removeFirst()
+                    }
+                }
                 do {
                     let result = try await service.polish(
                         request: entry.profiled.request,

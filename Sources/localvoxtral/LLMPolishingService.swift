@@ -443,16 +443,21 @@ struct LLMPolishingService: LLMPolishingServicing {
     /// Mistral caches the shared start of prompts server-side and bills cached
     /// tokens at 10%; requests carrying the same `prompt_cache_key` are more
     /// likely to land where that start is cached. The key names the fixed
-    /// start itself (every message but the last), hashed, so requests that
-    /// share it share a key and no prompt text leaves in it. Nil when there
-    /// is no fixed start: a one-message request.
+    /// start itself (every message but the last), so requests that share it
+    /// share a key. The fixed start includes About you, so the digest is an
+    /// HMAC under a key drawn at launch: a plain hash would let anyone who
+    /// sees the key test guesses at the speaker's text. Nil when there is no
+    /// fixed start: a one-message request.
     static func mistralPromptCacheKey(for request: LLMPolishingRequest) -> String? {
         let prefixUserPrompts = request.userPrompts.dropLast()
         guard !request.systemPrompt.isEmpty || !prefixUserPrompts.isEmpty else { return nil }
         let prefix = ([request.systemPrompt] + prefixUserPrompts).joined(separator: "\u{0}")
-        let digest = SHA256.hash(data: Data(prefix.utf8))
-        return "lvx-polish-" + digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+        let digest = HMAC<SHA256>.authenticationCode(
+            for: Data(prefix.utf8), using: promptCacheKeySalt)
+        return "lvx-polish-" + Data(digest).prefix(8).map { String(format: "%02x", $0) }.joined()
     }
+
+    private static let promptCacheKeySalt = SymmetricKey(size: .bits256)
 
     static func requestBody(
         request: LLMPolishingRequest,
