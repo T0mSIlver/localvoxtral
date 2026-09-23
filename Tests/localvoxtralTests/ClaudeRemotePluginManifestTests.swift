@@ -33,6 +33,12 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     override func setUpWithError() throws {
         try super.setUpWithError()
         marketplace = try XCTUnwrap(ClaudePluginAssets.developmentMarketplaceURL())
+        // Materialised here, serially, because `concurrently` rows would
+        // otherwise race the exists-check below and could exec a stub that is
+        // written but not yet chmodded. After the first case this is two
+        // `fileExists` calls.
+        _ = try stubCurlDirectory()
+        _ = try fixedDateDirectory()
     }
 
     /// The shared stub lives for the whole class, so it is removed once here
