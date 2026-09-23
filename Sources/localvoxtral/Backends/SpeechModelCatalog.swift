@@ -46,10 +46,10 @@ enum SpeechModelCatalog {
         // language auto-detect the model card reports 8.84 WER at the chunk size we
         // run, against Voxtral's stronger published numbers.
         //
-        // LICENCE: the NVIDIA model card has been OpenMDW 1.1 since 2026-06-05, but
-        // this mlx-community conversion was made a day earlier and still carries the
-        // NVIDIA Open Model License tag. Confirm which one governs the conversion
-        // before a signed build offers it (#463).
+        // LICENCE: OpenMDW 1.1, NVIDIA's licence for this model since 2026-06-05. The
+        // mlx-community conversion was made a day earlier and still tags the NVIDIA Open
+        // Model License; NVIDIA's card is the one we follow. The app downloads the
+        // weights at runtime and never bundles them.
         SpeechModelOption(
             repoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit",
             revision: "7279359e4481b5e9e185a318bd618e429c6d86cd",
