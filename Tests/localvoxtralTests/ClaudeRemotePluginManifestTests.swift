@@ -1,7 +1,16 @@
 import ClaudeContextWire
 import Foundation
+import Synchronization
 import XCTest
 @testable import localvoxtral
+
+/// What `concurrently` hands to its worker threads. `@unchecked`: `body`
+/// captures the test case, whose only state, `marketplace`, is written in
+/// `setUp` before any run and only read during one.
+private struct ConcurrentShimRuns<Input, Output>: @unchecked Sendable {
+    let inputs: [Input]
+    let body: (Input) throws -> Output
+}
 
 /// Validates the `localvoxtral-remote` plugin as an artifact.
 ///
@@ -700,6 +709,29 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         )
     }
 
+    /// Runs `body` once per input, all inputs at the same time, and returns the
+    /// outputs in input order; the first input that threw rethrows here.
+    ///
+    /// For the table-driven cases whose shim runs share no state. One shim run
+    /// forks ~20 short-lived tools (date, mktemp, awk, the stub curl, sed, wc,
+    /// grep…), 150–400 ms per run measured, so a 12-row table run back
+    /// to back was 3–4 s of nothing but process startup. Assertions stay on the
+    /// calling thread: `body` only runs processes and reads files.
+    private func concurrently<Input, Output: Sendable>(
+        _ inputs: [Input], _ body: (Input) throws -> Output
+    ) throws -> [Output] {
+        let results = Mutex<[Int: Result<Output, any Error>]>([:])
+        withoutActuallyEscaping(body) { body in
+            let work = ConcurrentShimRuns(inputs: inputs, body: body)
+            DispatchQueue.concurrentPerform(iterations: inputs.count) { index in
+                let result = Result { try work.body(work.inputs[index]) }
+                results.withLock { $0[index] = result }
+            }
+        }
+        let collected = results.withLock { $0 }
+        return try inputs.indices.map { try XCTUnwrap(collected[$0]).get() }
+    }
+
     /// Where the stub `curl` lives. A path only — computing it touches nothing,
     /// so the class teardown that removes this directory cannot bring the stub
     /// into existence in order to delete it.
@@ -1011,8 +1043,10 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             ("oversized body", Data(String(repeating: "a", count: 300).utf8)),
             ("empty body", Data()),
         ]
-        for (name, body) in hostileBodies {
-            let result = try runShimWithStubCurl(status: "200", body: body)
+        let results = try concurrently(hostileBodies) { _, body in
+            try runShimWithStubCurl(status: "200", body: body)
+        }
+        for ((name, _), result) in zip(hostileBodies, results) {
             XCTAssertEqual(result.exitCode, 0, "\(name): must still exit 0")
             XCTAssertEqual(result.stdout, "", "\(name): must print NOTHING on stdout")
             XCTAssertEqual(result.stderr, "", "\(name): must print NOTHING on stderr")
@@ -1104,6 +1138,33 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         event: String = "Stop",
         workingDirectory: URL? = nil
     ) throws -> String {
+        let run = try runShimCapturingHeaders(
+            environment: environment, event: event, workingDirectory: workingDirectory
+        )
+        assertEnrichmentRunWasQuiet(run.result)
+        return run.headers
+    }
+
+    /// `capturedRequestHeaders(environment:)` for every environment at once,
+    /// in input order.
+    private func capturedRequestHeaders(forEach environments: [[String: String]]) throws -> [String] {
+        let runs = try concurrently(environments) { try runShimCapturingHeaders(environment: $0) }
+        for run in runs { assertEnrichmentRunWasQuiet(run.result) }
+        return runs.map(\.headers)
+    }
+
+    private func assertEnrichmentRunWasQuiet(
+        _ result: (exitCode: Int32, stdout: String, stderr: String)
+    ) {
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stderr, "", "enrichment must not make the shim noisy")
+    }
+
+    private func runShimCapturingHeaders(
+        environment: [String: String],
+        event: String = "Stop",
+        workingDirectory: URL? = nil
+    ) throws -> (result: (exitCode: Int32, stdout: String, stderr: String), headers: String) {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("shim-headers-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -1118,9 +1179,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             extraEnvironment: extra,
             workingDirectory: workingDirectory
         )
-        XCTAssertEqual(result.exitCode, 0)
-        XCTAssertEqual(result.stderr, "", "enrichment must not make the shim noisy")
-        return (try? String(contentsOf: dump, encoding: .utf8)) ?? ""
+        return (result, (try? String(contentsOf: dump, encoding: .utf8)) ?? "")
     }
 
     /// The captured header block, re-parsed by the REAL request-head parser and
@@ -1214,8 +1273,10 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             ("non-ASCII", "pane-\u{e9}"),
             ("over the length cap", String(repeating: "a", count: 201)),
         ]
-        for (name, value) in hostile {
-            let captured = try capturedRequestHeaders(environment: ["HERDR_PANE_ID": value])
+        let capturedPerValue = try capturedRequestHeaders(
+            forEach: hostile.map { ["HERDR_PANE_ID": $0.1] }
+        )
+        for ((name, _), captured) in zip(hostile, capturedPerValue) {
             XCTAssertFalse(
                 captured.contains("X-Lvx-Env-Herdr-Pane-Id"),
                 "\(name): the value must be dropped, not escaped"
@@ -1247,13 +1308,13 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             ("one accented character", "pan\u{c9}7"),
             ("200 accented characters, ~400 bytes", String(repeating: "\u{c9}", count: 200)),
         ]
-        for (name, value) in cases {
-            let captured = try capturedRequestHeaders(environment: [
-                "LANG": "en_US.UTF-8",
-                "LC_ALL": "en_US.UTF-8",
-                "HERDR_PANE_ID": value,
-                "SSH_TTY": "/dev/pts/3",
-            ])
+        let capturedPerValue = try capturedRequestHeaders(forEach: cases.map { _, value in [
+            "LANG": "en_US.UTF-8",
+            "LC_ALL": "en_US.UTF-8",
+            "HERDR_PANE_ID": value,
+            "SSH_TTY": "/dev/pts/3",
+        ] })
+        for ((name, _), captured) in zip(cases, capturedPerValue) {
             XCTAssertFalse(
                 captured.contains("X-Lvx-Env-Herdr-Pane-Id"),
                 "\(name): a multibyte value must be dropped in every locale"
@@ -1390,8 +1451,10 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             "10.0.0.2",
             "   ",
         ]
-        for value in malformed {
-            let captured = try capturedRequestHeaders(environment: ["SSH_CONNECTION": value])
+        let capturedPerValue = try capturedRequestHeaders(
+            forEach: malformed.map { ["SSH_CONNECTION": $0] }
+        )
+        for (value, captured) in zip(malformed, capturedPerValue) {
             XCTAssertFalse(
                 captured.contains("X-Lvx-Env-Ssh-Connection"),
                 "must be dropped, not repaired: \(value)"
@@ -1412,8 +1475,10 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             "a`id` 1 b 2",
             "a\u{e9} 1 b 2",
         ]
-        for value in hostile {
-            let captured = try capturedRequestHeaders(environment: ["SSH_CONNECTION": value])
+        let capturedPerValue = try capturedRequestHeaders(
+            forEach: hostile.map { ["SSH_CONNECTION": $0] }
+        )
+        for (value, captured) in zip(hostile, capturedPerValue) {
             XCTAssertFalse(captured.contains("X-Lvx-Env-Ssh-Connection"), "\(value)")
             XCTAssertFalse(captured.contains("X-Evil"), "\(value)")
             XCTAssertFalse(captured.contains("Bearer stolen"), "\(value)")
@@ -1488,8 +1553,10 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             "/dev/ttys004\u{e9}",
             String(repeating: "a", count: 201),
         ]
-        for value in hostile {
-            let captured = try capturedRequestHeaders(environment: ["LC_LVX_TTY": value])
+        let capturedPerValue = try capturedRequestHeaders(
+            forEach: hostile.map { ["LC_LVX_TTY": $0] }
+        )
+        for (value, captured) in zip(hostile, capturedPerValue) {
             XCTAssertFalse(captured.contains("X-Lvx-Env-Local-Tty"), "\(value)")
             XCTAssertFalse(captured.contains("X-Evil"), "\(value)")
             XCTAssertFalse(captured.contains("Bearer stolen"), "\(value)")
@@ -1563,6 +1630,23 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         port: String?,
         event: String = "Stop"
     ) throws -> [String] {
+        try dialedURLs(forEach: [port], event: event)[0]
+    }
+
+    /// `dialedURLs(port:)` for every port at once, in input order.
+    private func dialedURLs(forEach ports: [String?], event: String = "Stop") throws -> [[String]] {
+        let runs = try concurrently(ports) { try runShimLoggingDials(port: $0, event: event) }
+        for run in runs {
+            XCTAssertEqual(run.result.exitCode, 0)
+            XCTAssertEqual(run.result.stderr, "", "port handling must stay silent on stderr")
+        }
+        return runs.map(\.urls)
+    }
+
+    private func runShimLoggingDials(
+        port: String?,
+        event: String
+    ) throws -> (result: (exitCode: Int32, stdout: String, stderr: String), urls: [String]) {
         let logDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("shim-port-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
@@ -1581,10 +1665,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             body: ClaudeRemoteHTTPCodec.hookResponseBody,
             extraEnvironment: environment
         )
-        XCTAssertEqual(result.exitCode, 0)
-        XCTAssertEqual(result.stderr, "", "port handling must stay silent on stderr")
-        guard let text = try? String(contentsOf: log, encoding: .utf8) else { return [] }
-        return text.split(separator: "\n").map(String.init)
+        guard let text = try? String(contentsOf: log, encoding: .utf8) else { return (result, []) }
+        return (result, text.split(separator: "\n").map(String.init))
     }
 
     func testShimDialsThePortItWasConfiguredWith() throws {
@@ -1603,9 +1685,11 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         // `8473;evil` in a URL is a mangled request, `999999` in `[ … -lt … ]`
         // is an oversized constant some shells refuse WITH OUTPUT ON STDERR,
         // and a leading zero is read as octal by some `test` implementations.
-        for value in [nil, "", "abc", "28500x", "12 34", "-1", "0", "08473", "999999", "65536", "1023", "8473;evil"] {
+        let values: [String?] = [nil, "", "abc", "28500x", "12 34", "-1", "0", "08473", "999999", "65536", "1023", "8473;evil"]
+        let dialedPerValue = try dialedURLs(forEach: values)
+        for (value, dialed) in zip(values, dialedPerValue) {
             XCTAssertEqual(
-                try dialedURLs(port: value), [legacy],
+                dialed, [legacy],
                 "port \(value.map { "\"\($0)\"" } ?? "<unset>") must clamp to the legacy port"
             )
         }
@@ -1614,12 +1698,14 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     func testShimAcceptsTheEdgesOfTheDocumentedAcceptableRange() throws {
         // The Swift side (`ClaudeRemoteForwardPort.acceptableRange`) and this
         // shell validation are one rule written twice; these pin them together.
-        for port in [ClaudeRemoteForwardPort.acceptableRange.lowerBound,
+        let ports = [ClaudeRemoteForwardPort.acceptableRange.lowerBound,
                      ClaudeRemoteForwardPort.rangeLowerBound,
                      ClaudeRemoteForwardPort.rangeUpperBound,
-                     ClaudeRemoteForwardPort.acceptableRange.upperBound] {
+                     ClaudeRemoteForwardPort.acceptableRange.upperBound]
+        let dialedPerPort = try dialedURLs(forEach: ports.map { String($0) })
+        for (port, dialed) in zip(ports, dialedPerPort) {
             XCTAssertEqual(
-                try dialedURLs(port: String(port)),
+                dialed,
                 ["http://127.0.0.1:\(port)\(ClaudeRemoteHTTPCodec.hookPathPrefix)Stop"]
             )
         }
@@ -1764,7 +1850,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             ("future", freshEpochStamp(secondsAgo: -100_000)),
             ("oversized", "99999999999999999999999999\n"),
         ]
-        for (name, contents) in stamps {
+        let runs = try concurrently(stamps) { _, contents in
             let state = try makeBackoffState()
             defer { try? FileManager.default.removeItem(at: state.dir) }
             try writeStamp(contents, at: state.stamp)
@@ -1774,10 +1860,13 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
                 body: ClaudeRemoteHTTPCodec.hookResponseBody,
                 extraEnvironment: state.environment.merging(["FAKE_CURL_LOG": log.path]) { _, new in new }
             )
-            XCTAssertEqual(result.exitCode, 0, "\(name): must still exit 0")
-            XCTAssertEqual(result.stderr, "", "\(name): must never print on stderr")
+            return (result: result, dialed: FileManager.default.fileExists(atPath: log.path))
+        }
+        for ((name, _), run) in zip(stamps, runs) {
+            XCTAssertEqual(run.result.exitCode, 0, "\(name): must still exit 0")
+            XCTAssertEqual(run.result.stderr, "", "\(name): must never print on stderr")
             XCTAssertTrue(
-                FileManager.default.fileExists(atPath: log.path),
+                run.dialed,
                 "\(name): a \(name) stamp must fail toward dialing"
             )
         }
