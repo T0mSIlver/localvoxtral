@@ -6,33 +6,35 @@ import Foundation
 ///
 /// Pure: the view model feeds it the preprocessed deltas and finals and acts
 /// on what it returns (the live insertion, the overlay text).
-struct TranscriptAccumulator: Equatable, Sendable {
+package struct TranscriptAccumulator: Equatable, Sendable {
     /// Every finalized segment of the session, one per line.
-    var transcriptText = ""
+    package var transcriptText = ""
     /// The partial the backend is still revising. Mirrors
     /// `pendingSegmentText` while partials arrive; the fallback when a final
     /// lands with nothing buffered.
-    var livePartialText = ""
+    package var livePartialText = ""
     /// The deltas since the last final, appended in arrival order.
-    var pendingSegmentText = ""
+    package var pendingSegmentText = ""
     /// The finalized segments of the current dictation event, joined: what
     /// the overlay commits and the polisher is handed.
-    var currentDictationEventText = ""
+    package var currentDictationEventText = ""
     /// What "Copy latest segment" and "Paste latest segment" read.
-    var lastFinalSegment = ""
+    package var lastFinalSegment = ""
+
+    package init() {}
 
     /// A final that produced a segment, and what Live Auto-Paste still has
     /// to type for it.
-    struct FinalizedSegment: Equatable, Sendable {
-        let text: String
+    package struct FinalizedSegment: Equatable, Sendable {
+        package let text: String
         /// The whole segment when no partial was typed live; the missing
         /// suffix when the final purely extends what was typed; nil when the
         /// final revises typed text, which live mode cannot rewrite.
-        let liveInsertion: String?
+        package let liveInsertion: String?
     }
 
     /// Appends one preprocessed partial delta.
-    mutating func appendPartial(_ processedDelta: String) {
+    package mutating func appendPartial(_ processedDelta: String) {
         pendingSegmentText.append(processedDelta)
         livePartialText = pendingSegmentText
     }
@@ -40,7 +42,7 @@ struct TranscriptAccumulator: Equatable, Sendable {
     /// Folds a preprocessed final into the dictation event. Nil when the
     /// final and the buffered partials resolve to nothing; the buffers are
     /// cleared either way.
-    mutating func applyFinal(_ processedText: String) -> FinalizedSegment? {
+    package mutating func applyFinal(_ processedText: String) -> FinalizedSegment? {
         let finalizedSegment = resolvedFinalizedSegment(from: processedText)
         let hadLiveDelta = !pendingSegmentText.trimmed.isEmpty
             || !livePartialText.trimmed.isEmpty
@@ -89,7 +91,7 @@ struct TranscriptAccumulator: Equatable, Sendable {
     /// Promotes the buffered partial into the dictation event, as if a final
     /// had delivered it. Returns the promoted segment, or nil when nothing
     /// was buffered.
-    mutating func promotePendingToLatestSegment() -> String? {
+    package mutating func promotePendingToLatestSegment() -> String? {
         let pendingSegment = resolvedFinalizedSegment(from: "")
         guard !pendingSegment.isEmpty else { return nil }
 
@@ -105,7 +107,7 @@ struct TranscriptAccumulator: Equatable, Sendable {
     }
 
     /// Append a finalized segment to the running transcript.
-    mutating func appendToTranscript(_ segment: String) {
+    package mutating func appendToTranscript(_ segment: String) {
         if transcriptText.isEmpty {
             transcriptText = segment
         } else {
@@ -113,7 +115,7 @@ struct TranscriptAccumulator: Equatable, Sendable {
         }
     }
 
-    func resolvedFinalizedSegment(from finalText: String) -> String {
+    package func resolvedFinalizedSegment(from finalText: String) -> String {
         let finalizedText = finalText.trimmed
         let bufferedText = pendingSegmentText.trimmed
         let fallbackBufferedText = livePartialText.trimmed
@@ -148,7 +150,7 @@ struct TranscriptAccumulator: Equatable, Sendable {
     }
 
     /// The overlay's text while the user speaks, before streaming correction.
-    var overlayDisplayText: String {
+    package var overlayDisplayText: String {
         OverlayBufferTextAssembler.displayText(
             committedText: currentDictationEventText,
             pendingText: pendingSegmentText,
@@ -157,7 +159,7 @@ struct TranscriptAccumulator: Equatable, Sendable {
     }
 
     /// The overlay's commit source, before streaming correction.
-    var overlayCommitText: String {
+    package var overlayCommitText: String {
         OverlayBufferTextAssembler.commitText(
             committedText: currentDictationEventText,
             pendingText: pendingSegmentText,
@@ -166,7 +168,7 @@ struct TranscriptAccumulator: Equatable, Sendable {
     }
 
     /// The running transcript with the partial in flight on its last line.
-    var fullTranscript: String {
+    package var fullTranscript: String {
         let finalPart = transcriptText.trimmed
         let livePart = livePartialText.trimmed
 
@@ -176,14 +178,14 @@ struct TranscriptAccumulator: Equatable, Sendable {
     }
 
     /// Drops the partial in flight.
-    mutating func clearPending() {
+    package mutating func clearPending() {
         livePartialText = ""
         pendingSegmentText = ""
     }
 
     /// A new session starts with an empty dictation event. The running
     /// transcript and the latest segment carry over.
-    mutating func resetForNewSession() {
+    package mutating func resetForNewSession() {
         livePartialText = ""
         pendingSegmentText = ""
         currentDictationEventText = ""

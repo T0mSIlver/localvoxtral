@@ -75,9 +75,14 @@ lv_plan_unit_shards() {
         failed = 1
         exit 4
       }
+      # A class is planned as "Module.Class": the package has more than one
+      # test module (localvoxtralTests, localvoxtralCoreTests), and each
+      # shard filter has to name the module its class lives in. The weights
+      # file is keyed by the bare class name.
       split($0, parts, "/")
       class = parts[1]
-      sub(/^[^.]*\./, "", class)
+      bare[class] = class
+      sub(/^[^.]*\./, "", bare[class])
       if (!(class in tests)) { order[++class_count] = class }
       tests[class]++
       test_total++
@@ -88,12 +93,12 @@ lv_plan_unit_shards() {
       # A class the weights file does not know yet is weighed at the known
       # classes average cost per test.
       known_tests = 0
-      for (c in tests) if (c in seconds) known_tests += tests[c]
+      for (c in tests) if (bare[c] in seconds) known_tests += tests[c]
       per_test = (known_tests > 0) ? known_total / known_tests : 0.01
       if (per_test <= 0) per_test = 0.01
       for (i = 1; i <= class_count; i++) {
         c = order[i]
-        weight[c] = (c in seconds) ? seconds[c] : tests[c] * per_test
+        weight[c] = (bare[c] in seconds) ? seconds[bare[c]] : tests[c] * per_test
       }
       # Heaviest first, ties by name, each to the lightest shard so far
       # (lowest index on a tie): the same input always gives the same plan.
@@ -183,8 +188,7 @@ lv_run_unit_shards() {
     rm -rf "$work"
     return 1
   fi
-  local module expected=0 planned count
-  module="$(awk -F. 'NF > 1 { print $1; exit }' "$work/list")"
+  local expected=0 planned count
   planned="$(wc -l <"$work/plan" | tr -d ' ')"
   while read -r count _; do expected=$((expected + count)); done <"$work/plan"
   echo "==> $expected tests in $planned shards (build ${build_seconds} s)" | tee -a "$log"
@@ -208,7 +212,7 @@ lv_run_unit_shards() {
       # "Module.Class/" matches that class's methods and no other class's:
       # the module name pins the start and the slash the end, without the
       # regex metacharacters the build gate refuses.
-      filter_args+=(--filter "$module.$class/")
+      filter_args+=(--filter "$class/")
     done
     lv_run_one_unit_shard "$work" "$index" \
       ${skip_args[@]+"${skip_args[@]}"} "${filter_args[@]}" \

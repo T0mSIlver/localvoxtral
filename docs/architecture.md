@@ -8,8 +8,10 @@ session state the views read. The dictation itself lives in
 - `DictationSessionController.swift` — session state, start and stop, the
   realtime clients, the stop's inputs to the commit
 - `DictationSessionController+Session.swift` — managed-backend wait, connect
-  and its timeout, stop-finalization, the stop-commit that drives
-  `StopCommitCoordinator`, connection-failure handling
+  and its timeout, stop-finalization, connection-failure handling
+- `DictationSessionController+StopCommit.swift` — the stop-commit: each
+  output path's finish, the overlay commit and its polish task (driving
+  `StopCommitCoordinator`), the session record
 - `DictationSessionController+RealtimeEvents.swift` — realtime event routing
 - `DictationSessionController+Reconnect.swift` — the bounded retry run behind a
   socket that drops mid-dictation
@@ -31,16 +33,25 @@ pure step (#432 steps 1–8):
   repository vocabulary and the cross-source merge
 - `PolishRequestAssembler.swift` — the request itself: sections,
   pre-application, prompts, context blocks, provenance
-- `PolishOutcomeClassifier.swift` — what a reply means for the commit:
-  placeholder integrity, and the failure copy for each error
+- `PolishOutcomeClassifier.swift` (in `localvoxtralCore`) — what a reply
+  means for the commit: placeholder integrity, and the failure copy for each
+  error
 - `StopCommitCoordinator.swift` — everything in the stop-commit that decides
   what reaches the polisher: the transcript's preparation, the profile and
   templates, the pre-task sample (clipboard, screen, join, pane), the
   gather-assemble-send step, the overlay commit, the dogfood capture record
-- `TranscriptAccumulator.swift` — the transcript the realtime events build:
-  partials, finals, the live insertion a final still owes, promotion
+- `TranscriptAccumulator.swift` (in `localvoxtralCore`) — the transcript the
+  realtime events build: partials, finals, the live insertion a final still
+  owes, promotion
 - `SessionAudioPipeline.swift` — `viewModel.audio`: capture, the send and
   commit loops, ducking, the input device selection
+
+`Sources/localvoxtralCore` (#432 step 9) holds what the app computes without
+AppKit: `TranscriptAccumulator`, `TextMergingAlgorithms`, the overlay text
+assembler, `PolishTokenGuard`, `ClipboardPayloadMacro`,
+`PolishOutcomeClassifier`, the connection-failure classifier, `SessionClock`.
+It builds and tests on Linux (`scripts/core-tests-linux.sh`); the app
+re-exports it.
 
 Key subsystems:
 

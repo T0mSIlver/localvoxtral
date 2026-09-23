@@ -40,7 +40,7 @@ expect true "the realtime client runs the lane" \
 expect true "the shared base client runs the lane" \
   Sources/localvoxtral/BaseRealtimeWebSocketClient.swift
 expect true "what the client trims keys and model names with runs the lane" \
-  Sources/localvoxtral/StringExtensions.swift
+  Sources/localvoxtralCore/StringExtensions.swift
 expect true "what the unavailable-device test calls runs the lane" \
   Sources/localvoxtral/AudioDeviceManager.swift
 # `*` in a bash case pattern crosses `/`, so a wide *Realtime* used to buy the
@@ -50,7 +50,7 @@ expect false "the view model's realtime event handling does not" \
 expect false "the reconnect policy does not" \
   Sources/localvoxtral/RealtimeReconnectPolicy.swift
 expect true "the scorer's normalizer runs the lane" \
-  Sources/localvoxtral/TextMergingAlgorithms.swift
+  Sources/localvoxtralCore/TextMergingAlgorithms.swift
 expect true "the suite itself runs the lane" \
   Tests/localvoxtralTests/RealtimeAPIVLLMIntegrationTests.swift
 expect true "a dependency pin runs the lane" Package.resolved

@@ -46,10 +46,10 @@ PATTERNS=(
   'Sources/localvoxtral/RealtimeClient.swift'
   'Sources/localvoxtral/*RealtimeWebSocketClient.swift'   # Base, and Mistral, which shares it
   'Sources/localvoxtral/RealtimeAPIWebSocketClient.swift' # the client under test
-  'Sources/localvoxtral/StringExtensions.swift'           # API key and model trimming
+  'Sources/localvoxtralCore/StringExtensions.swift'       # API key and model trimming
   'Sources/localvoxtral/MicrophoneCaptureService.swift'
   'Sources/localvoxtral/AudioDeviceManager.swift'         # the unavailable-device test
-  'Sources/localvoxtral/TextMergingAlgorithms.swift'      # the scorer normalizes through it
+  'Sources/localvoxtralCore/TextMergingAlgorithms.swift'  # the scorer normalizes through it
   'Tests/localvoxtralTests/RealtimeAPIVLLMIntegrationTests.swift'
   'Tests/localvoxtralTests/IntegrationTestSupport.swift'
   'Package.swift'

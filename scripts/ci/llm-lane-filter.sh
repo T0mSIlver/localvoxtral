@@ -86,6 +86,7 @@ PATTERNS=(
   '*PolishContextGatherer*'                         # the gather step: budgets, preparations, merge (#432 step 6)
   '*RepoVocabularyGrounding*'                       # the repository-vocabulary pipeline and its gates (#432 step 6)
   '*StopCommitCoordinator*'                         # the stop-commit's polish: prepare, templates, profile, send (#432 steps 7, 7b)
+  '*DictationSessionController+StopCommit*'         # what the session hands it: transcript, latched dictionary, commit target (#432)
   '*LLMPolishEvalSupport*'                           # shared eval corpus + scorer
   '*PolishHelperIntegrationTests*'                   # the lane's own suite
   '*AgentDictationE2EEval*'                          # agent-dictation E2E eval harness (suite + support + its unit tests)

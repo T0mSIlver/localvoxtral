@@ -7,13 +7,21 @@ import Foundation
 ///
 /// The app runs on the wall clock. A test passes a clock it advances by hand,
 /// so no session in a unit suite arms a real timer.
-struct SessionClock: Sendable {
+package struct SessionClock: Sendable {
     /// Returns when `duration` has passed, or early when the calling task is
     /// cancelled — the same contract as `try? await Task.sleep(for:)`.
-    var sleep: @Sendable (Duration) async -> Void
-    var now: @Sendable () -> Date
+    package var sleep: @Sendable (Duration) async -> Void
+    package var now: @Sendable () -> Date
 
-    static let live = SessionClock(
+    package init(
+        sleep: @escaping @Sendable (Duration) async -> Void,
+        now: @escaping @Sendable () -> Date
+    ) {
+        self.sleep = sleep
+        self.now = now
+    }
+
+    package static let live = SessionClock(
         sleep: { try? await Task.sleep(for: $0) },
         now: { Date() }
     )

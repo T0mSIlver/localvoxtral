@@ -16,6 +16,12 @@ needed. Set the host once per clone: `git config localvoxtral.buildhost
 <ssh-destination>`. The script's header lists every verb; the usual ones are
 `test` (the default), `test --filter <Suite>` and `package`.
 
+- `localvoxtralCore` (the Foundation-only pieces: transcript merge, text
+  merging, polish token guard, outcome and connection-failure classifiers,
+  session clock) builds and tests on Linux, no Mac:
+  `./scripts/core-tests-linux.sh` (Swift 6.2; `SWIFT=` names the toolchain).
+  The app re-exports it, so a core declaration the app uses needs `package`
+  access.
 - Run `./scripts/mac-health.sh` before long remote work. A sleeping Mac makes
   rsync hang instead of fail.
 - `--filter` takes no `|`; the host's SSH gate refuses it. Repeat the flag,

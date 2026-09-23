@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import XCTest
 @testable import localvoxtral
 
 /// A `SessionClock` a test advances by hand. A sleep returns when `advance`
@@ -18,7 +19,7 @@ final class ManualSessionClock: Sendable {
 
     private struct CountWaiter {
         let count: Int
-        let continuation: CheckedContinuation<Void, Never>
+        let wait: BoundedWait
     }
 
     private struct State {
@@ -31,10 +32,10 @@ final class ManualSessionClock: Sendable {
         var cancelledBeforeSuspending: Set<UInt64> = []
         var countWaiters: [CountWaiter] = []
 
-        mutating func takeSatisfiedCountWaiters() -> [CheckedContinuation<Void, Never>] {
+        mutating func takeSatisfiedCountWaiters() -> [BoundedWait] {
             let satisfied = countWaiters.filter { $0.count <= sleepers.count }
             countWaiters.removeAll { $0.count <= sleepers.count }
-            return satisfied.map(\.continuation)
+            return satisfied.map(\.wait)
         }
     }
 
@@ -67,7 +68,7 @@ final class ManualSessionClock: Sendable {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 let (cancelled, satisfied) = self.state.withLock { state in
                     if state.cancelledBeforeSuspending.remove(id) != nil {
-                        return (true, [CheckedContinuation<Void, Never>]())
+                        return (true, [BoundedWait]())
                     }
                     state.sleepers.append(Sleeper(
                         id: id,
@@ -77,7 +78,7 @@ final class ManualSessionClock: Sendable {
                     return (false, state.takeSatisfiedCountWaiters())
                 }
                 if cancelled { continuation.resume() }
-                satisfied.forEach { $0.resume() }
+                satisfied.forEach { $0.resolve() }
             }
         } onCancel: {
             let continuation = self.state.withLock { state -> CheckedContinuation<Void, Never>? in
@@ -107,15 +108,25 @@ final class ManualSessionClock: Sendable {
 
     /// Returns once at least `count` timers are armed: how a test knows the
     /// task it woke has reached its next sleep. Only wait for a timer the
-    /// code under test is certain to arm; nothing else resumes this.
-    func waitForSleepers(_ count: Int) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let ready = self.state.withLock { state -> Bool in
-                if state.sleepers.count >= count { return true }
-                state.countWaiters.append(CountWaiter(count: count, continuation: continuation))
-                return false
-            }
-            if ready { continuation.resume() }
+    /// code under test is certain to arm. If it never arms one, the test
+    /// fails after `failAfter` seconds of wall time instead of hanging the
+    /// suite: a bound on a failure, never a wait a passing test relies on.
+    func waitForSleepers(
+        _ count: Int,
+        failAfter: TimeInterval = 10,
+        isolation: isolated (any Actor)? = #isolation,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let armed = BoundedWait()
+        let ready = state.withLock { state -> Bool in
+            if state.sleepers.count >= count { return true }
+            state.countWaiters.append(CountWaiter(count: count, wait: armed))
+            return false
         }
+        if ready { armed.resolve() }
+        if await armed.value(failAfter: failAfter) { return }
+        state.withLock { $0.countWaiters.removeAll { $0.wait === armed } }
+        XCTFail("no \(count) timer(s) were ever armed on the session clock", file: file, line: line)
     }
 }
