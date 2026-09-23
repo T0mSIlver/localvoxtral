@@ -433,6 +433,24 @@ private struct ConnectionSettingsPane: View {
         )
     }
 
+    private var managedSpeechModelBinding: Binding<String> {
+        Binding(
+            get: { settings.resolvedManagedSpeechModel.repoID },
+            set: { viewModel.engines.applyManagedSpeechModelChange($0) }
+        )
+    }
+
+    private var managedSpeechModelHelp: String {
+        let option = settings.resolvedManagedSpeechModel
+        return SpeechModelPickerSupport.helpText(
+            for: option,
+            isDownloaded: ManagedModelCache.isDownloaded(
+                repoID: option.repoID,
+                revision: option.revision
+            )
+        )
+    }
+
     private var speechdCacheLimitBinding: Binding<SpeechdCacheLimit> {
         Binding(
             get: { settings.speechdCacheLimit },
@@ -522,7 +540,7 @@ private struct ConnectionSettingsPane: View {
 
         return PolishModelPickerSupport.helpText(
             for: selectedEntry,
-            isDownloaded: PolishModelCache.isDownloaded(
+            isDownloaded: ManagedModelCache.isDownloaded(
                 repoID: selectedEntry.repoID,
                 revision: selectedEntry.option?.revision
             )
@@ -582,6 +600,19 @@ private struct ConnectionSettingsPane: View {
                         )
                     }
                 case .managedLocal:
+                    SettingsFieldRow(title: "Model") {
+                        Picker("", selection: managedSpeechModelBinding) {
+                            ForEach(SpeechModelCatalog.options, id: \.repoID) { option in
+                                Text(option.displayName).tag(option.repoID)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .accessibilityIdentifier("engines.dictation.managedModel")
+                    } footer: {
+                        SettingsHelpText(managedSpeechModelHelp)
+                    }
+
                     SettingsFieldRow(title: "Memory limit") {
                         Picker("", selection: speechdCacheLimitBinding) {
                             ForEach(SpeechdCacheLimit.allCases) { limit in

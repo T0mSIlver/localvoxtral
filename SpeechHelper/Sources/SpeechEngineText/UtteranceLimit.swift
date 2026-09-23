@@ -92,21 +92,16 @@ public struct UtteranceStopReporter: Equatable, Sendable {
 
     public init() {}
 
-    /// Returns the stop to report, or nil when there is nothing new to report. The token
-    /// count is only read when a report is due: the engine hands out a copy of its whole
-    /// token array, and every step after a stop would otherwise pay for it.
-    public mutating func check(
-        isFinished: Bool,
-        decodedTokenCount: @autoclosure () -> Int,
-        maxDecodedTokens: Int
-    ) -> UtteranceStop? {
-        guard !reported, isFinished,
-              let stop = UtteranceStop.classify(
-                isFinished: isFinished,
-                decodedTokenCount: decodedTokenCount(),
-                maxDecodedTokens: maxDecodedTokens
-              )
-        else { return nil }
+    /// Returns the stop to report, or nil when there is nothing new to report. Each
+    /// streaming engine classifies its own stop (Voxtral's decoder hits a token cap;
+    /// Nemotron's RNN-T never ends a stream, so its session caps the audio it accepts),
+    /// hence an already-classified argument.
+    ///
+    /// The stop is evaluated only while a report is still possible: classifying a Voxtral
+    /// session copies its whole token array, and every step after a stop would otherwise
+    /// pay for it.
+    public mutating func report(_ stop: @autoclosure () -> UtteranceStop?) -> UtteranceStop? {
+        guard !reported, let stop = stop() else { return nil }
         reported = true
         return stop
     }
@@ -115,4 +110,31 @@ public struct UtteranceStopReporter: Equatable, Sendable {
     public mutating func reset() {
         reported = false
     }
+}
+
+/// How much audio one session has accepted against an `UtteranceLimit`, for an engine
+/// whose decoder has no token budget to cap (Nemotron's RNN-T emits a variable number
+/// of tokens per frame and never ends a stream on its own). Audio past the limit is
+/// dropped, which is exactly what `UtteranceStop.lengthLimit` tells the user — so the
+/// cap latches when audio is actually lost, not at the boundary a session may simply
+/// end on.
+public struct UtteranceAudioCap: Equatable, Sendable {
+    private let maxSamples: Int
+    private var acceptedSamples = 0
+    private var droppedAudio = false
+
+    public init(limit: UtteranceLimit, sampleRate: Int = 16_000) {
+        self.maxSamples = limit.seconds * sampleRate
+    }
+
+    /// How many of the next `sampleCount` samples the engine may still be fed.
+    public mutating func accept(_ sampleCount: Int) -> Int {
+        let room = max(0, maxSamples - acceptedSamples)
+        if sampleCount > room { droppedAudio = true }
+        let accepted = min(sampleCount, room)
+        acceptedSamples += accepted
+        return accepted
+    }
+
+    public var stop: UtteranceStop? { droppedAudio ? .lengthLimit : nil }
 }

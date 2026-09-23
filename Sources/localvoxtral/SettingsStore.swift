@@ -333,6 +333,7 @@ final class SettingsStore {
         static let dictationBackendMode = "settings.dictation_backend_mode"
         static let speechdCacheLimit = "settings.speechd_cache_limit"
         static let speechdStepCadence = "settings.speechd_step_cadence"
+        static let managedSpeechModel = "settings.managed_speech_model"
         static let polishingBackendMode = "settings.polishing_backend_mode"
         // Legacy global backend mode. Read only for one-time migration.
         static let backendMode = "settings.backend_mode"
@@ -489,6 +490,15 @@ final class SettingsStore {
     /// contract as `speechdCacheLimit`.
     var speechdStepCadence: SpeechdStepCadence {
         didSet { defaults.set(speechdStepCadence.rawValue, forKey: Keys.speechdStepCadence) }
+    }
+
+    /// Hugging Face repo the managed dictation helper loads, chosen from
+    /// `SpeechModelCatalog`. Same restart contract as `speechdCacheLimit`
+    /// (`EnginesModel.applyManagedSpeechModelChange`). External URL mode keeps
+    /// its own server-side model NAME in `realtimeAPIModelName`; separate keys
+    /// so a leftover external value can never leak into a managed launch.
+    var managedSpeechModel: String {
+        didSet { defaults.set(managedSpeechModel, forKey: Keys.managedSpeechModel) }
     }
 
     /// True once the user has completed (or skipped) the first-launch onboarding
@@ -1204,6 +1214,17 @@ final class SettingsStore {
             speechdStepCadence = parsedStepCadence
         } else {
             speechdStepCadence = .auto
+        }
+
+        // A repo that left the catalog (or was hand-written into the plist)
+        // must never reach a helper launch: fall back to the default and
+        // rewrite the stored value so the picker and the launch agree.
+        let storedSpeechModel = defaults.string(forKey: Keys.managedSpeechModel)?.trimmed ?? ""
+        if let option = SpeechModelCatalog.option(forRepoID: storedSpeechModel) {
+            managedSpeechModel = option.repoID
+        } else {
+            managedSpeechModel = SpeechModelCatalog.defaultOption.repoID
+            defaults.set(SpeechModelCatalog.defaultOption.repoID, forKey: Keys.managedSpeechModel)
         }
 
         let configuredProvider = Self.loadString(
@@ -2044,7 +2065,7 @@ final class SettingsStore {
             // Keep the external provider's placeholder/default independent:
             // user-typed external values remain ignored in managed mode, but
             // an existing external endpoint still sees its historical model.
-            return SpeechModelCatalog.defaultOption.repoID
+            return resolvedManagedSpeechModel.repoID
         }
         let normalized = Self.normalizedModelName(from: modelName(for: provider))
         return normalized.isEmpty ? provider.defaultModelName : normalized
@@ -2167,5 +2188,13 @@ final class SettingsStore {
     var resolvedManagedLLMPolishingModel: String {
         let model = managedLLMPolishingModel.trimmed
         return model.isEmpty ? Self.defaultLLMPolishingModel : model
+    }
+
+    /// The catalog entry the managed dictation helper runs. Resolves only
+    /// entries the bundled helper knows how to load, so a stale stored repo
+    /// falls back to the default instead of failing the launch.
+    var resolvedManagedSpeechModel: SpeechModelOption {
+        SpeechModelCatalog.option(forRepoID: managedSpeechModel.trimmed)
+            ?? SpeechModelCatalog.defaultOption
     }
 }

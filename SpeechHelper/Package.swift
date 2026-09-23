@@ -7,8 +7,9 @@ import PackageDescription
 // but produces a binary that cannot load Metal kernels at runtime — fine for the
 // Metal-free unit tests (SpeechEngineTextTests), which is what CI's tier-0 lane runs here.
 //
-// SpeechEngine consumes Blaizzy/mlx-audio-swift's VoxtralRealtime engine as an upstream
-// dependency (product `MLXAudioSTT`), pinned to a reviewed revision — see DEPENDENCY.md.
+// SpeechEngine consumes Blaizzy/mlx-audio-swift's VoxtralRealtime and NemotronASR engines
+// as an upstream dependency (product `MLXAudioSTT`), pinned to a reviewed revision — see
+// DEPENDENCY.md.
 // The float32-leak fixes we previously carried as local patches were upstreamed in
 // Blaizzy/mlx-audio-swift#226. Only the append-only delta contract stays local, now in
 // our own SpeechEngineText layer (TranscriptDeltaEmitter). Replaces the managed Python
@@ -30,14 +31,16 @@ let package = Package(
         // here freezes the whole graph to 1.1.9. (SPM warns it's "unused" — expected.)
         .package(url: "https://github.com/huggingface/swift-transformers.git", exact: "1.1.9"),
         .package(url: "https://github.com/huggingface/swift-huggingface.git", exact: "0.8.1"),
-        // The Voxtral Realtime engine, consumed as a dependency (was vendored+patched before
-        // #226). Pinned to a full-SHA revision, not a tag, so the exact reviewed tree is
-        // reproducible — see DEPENDENCY.md for the upgrade procedure.
+        // The streaming ASR engines, consumed as a dependency (Voxtral Realtime was
+        // vendored+patched before #226). Pinned to a full-SHA revision, not a tag, so the
+        // exact reviewed tree is reproducible — see DEPENDENCY.md for the upgrade procedure.
         //
         // 01dec7c is upstream main at the merge of Blaizzy/mlx-audio-swift#265. It carries
         // #232 (quantized-tied-embedding loader, required by the catalog's -qhead model,
-        // SpeechModelCatalog) and #263-#265 (bounded streaming memory: consumed conv/adapter
-        // rows dropped, KV appended in place, incremental detokenize).
+        // SpeechModelCatalog), #263-#265 (bounded streaming memory: consumed conv/adapter
+        // rows dropped, KV appended in place, incremental detokenize), and #195/#196/#208/#236
+        // (the Nemotron ASR model, its incremental `NemotronASRStreamSession`, and the wider
+        // checkpoint loader) — so the second catalog entry needs no pin change.
         .package(
             url: "https://github.com/Blaizzy/mlx-audio-swift.git",
             revision: "01dec7c9bdce3088a6b6b7ab9f2e403458195efb"

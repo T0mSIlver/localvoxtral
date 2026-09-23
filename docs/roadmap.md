@@ -13,10 +13,12 @@
       recently touched files on the enrolled host over the app's own ssh, so
       a joined remote session grounds polishing the way a local one does
 - [ ] Documentation website — a visual, end-user guide beyond these docs
-- [ ] More streaming ASR models beyond Voxtral Realtime — e.g.
-      [NVIDIA Nemotron 3.5 ASR Streaming 0.6B](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)
-      ([#383](https://github.com/T0mSIlver/localvoxtral/issues/383), which also
-      covers revisable transcripts for the Overlay Buffer)
+- [ ] Revisable transcripts for the Overlay Buffer, so a streaming model may
+      correct text it has already emitted
+      ([#383](https://github.com/T0mSIlver/localvoxtral/issues/383); the second
+      streaming ASR model it asked for,
+      [NVIDIA Nemotron 3.5 ASR Streaming 0.6B](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b),
+      shipped in [#463](https://github.com/T0mSIlver/localvoxtral/issues/463))
 
 ## Specified and open
 

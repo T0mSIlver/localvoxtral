@@ -411,6 +411,7 @@ final class DictationViewModel {
             backendManager
             ?? BackendManager(
                 polishingModelProvider: { settings.resolvedManagedLLMPolishingModel },
+                speechModelProvider: { settings.resolvedManagedSpeechModel },
                 speechdCacheLimitProvider: { settings.speechdCacheLimit.megabytes },
                 speechdStepCadenceProvider: { settings.speechdStepCadence.milliseconds }
             )

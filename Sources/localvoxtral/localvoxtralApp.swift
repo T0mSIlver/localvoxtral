@@ -288,6 +288,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let manager = BackendManager(
             polishingModelProvider: { settings.resolvedManagedLLMPolishingModel },
+            speechModelProvider: { settings.resolvedManagedSpeechModel },
             speechdCacheLimitProvider: { settings.speechdCacheLimit.megabytes },
             speechdStepCadenceProvider: { settings.speechdStepCadence.milliseconds }
         )

@@ -48,8 +48,11 @@ set -euo pipefail
 #                  optional args = seconds (default 60), cadence ms
 #                  (default 100 = the production step cadence),
 #                  cache-limit-mb (default = the helper's built-in limit),
-#                  and max-utterance-seconds (default = seconds, so a long
-#                  run keeps decoding past the helper's own utterance limit);
+#                  max-utterance-seconds (default = seconds, so a long
+#                  run keeps decoding past the helper's own utterance limit),
+#                  and an HF model repo from the catalog (default = the
+#                  catalog default; its weights must already be in the shared
+#                  cache, which integration-speechd provisions);
 #                  requires a prior `package`
 #     eval-llm     default-polish-prompt eval against a live chat/completions
 #                  server (the bundled polishd test service by default);
@@ -535,8 +538,8 @@ case "$CMD" in
   speechd-bench)
     # The SSH gate does not allow arbitrary packaged-binary execution. A marker-gated
     # root XCTest launches the xcodebuild-produced helper and relays its BENCH output.
-    if [[ $# -gt 4 ]]; then
-      echo "speechd-bench accepts optional seconds, cadence-ms, cache-limit-mb, and max-utterance-seconds arguments" >&2
+    if [[ $# -gt 5 ]]; then
+      echo "speechd-bench accepts optional seconds, cadence-ms, cache-limit-mb, max-utterance-seconds, and model arguments" >&2
       exit 1
     fi
     SPEECHD_BENCH_SECONDS="${1:-60}"
@@ -545,6 +548,7 @@ case "$CMD" in
     # The helper stops decoding at its utterance limit (#314). By default the benchmark
     # lifts it to the run length, so a long run measures decoding rather than dead air.
     SPEECHD_BENCH_MAX_UTTERANCE="${4:-$SPEECHD_BENCH_SECONDS}"
+    SPEECHD_BENCH_MODEL="${5:-}"
     if [[ ! "$SPEECHD_BENCH_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
       echo "speechd-bench seconds must be a positive integer" >&2
       exit 1
@@ -561,24 +565,28 @@ case "$CMD" in
       echo "speechd-bench max-utterance-seconds must be a positive integer" >&2
       exit 1
     fi
+    if [[ -n "$SPEECHD_BENCH_MODEL" && ! "$SPEECHD_BENCH_MODEL" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+      echo "speechd-bench model must be an owner/name Hugging Face repo id" >&2
+      exit 1
+    fi
     SPEECHD_BENCH_MARKER="$ROOT_DIR/.speechd-bench-enable.json"
     trap 'cleanup_transient_marker "$SPEECHD_BENCH_MARKER"' EXIT
+    # The optional fields are omitted rather than nulled, so the test's decoder
+    # falls back to its own defaults exactly as it did before they existed.
+    SPEECHD_BENCH_OPTIONAL=""
     if [[ -n "$SPEECHD_BENCH_CACHE_MB" ]]; then
-      printf '{"helperPath":"%s","seconds":%s,"cadenceMilliseconds":%s,"cacheLimitMB":%s,"maxUtteranceSeconds":%s}\n' \
-        "dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd" \
-        "$SPEECHD_BENCH_SECONDS" \
-        "$SPEECHD_BENCH_CADENCE" \
-        "$SPEECHD_BENCH_CACHE_MB" \
-        "$SPEECHD_BENCH_MAX_UTTERANCE" \
-        >"$SPEECHD_BENCH_MARKER"
-    else
-      printf '{"helperPath":"%s","seconds":%s,"cadenceMilliseconds":%s,"maxUtteranceSeconds":%s}\n' \
-        "dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd" \
-        "$SPEECHD_BENCH_SECONDS" \
-        "$SPEECHD_BENCH_CADENCE" \
-        "$SPEECHD_BENCH_MAX_UTTERANCE" \
-        >"$SPEECHD_BENCH_MARKER"
+      SPEECHD_BENCH_OPTIONAL+=",\"cacheLimitMB\":$SPEECHD_BENCH_CACHE_MB"
     fi
+    if [[ -n "$SPEECHD_BENCH_MODEL" ]]; then
+      SPEECHD_BENCH_OPTIONAL+=",\"model\":\"$SPEECHD_BENCH_MODEL\""
+    fi
+    printf '{"helperPath":"%s","seconds":%s,"cadenceMilliseconds":%s,"maxUtteranceSeconds":%s%s}\n' \
+      "dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd" \
+      "$SPEECHD_BENCH_SECONDS" \
+      "$SPEECHD_BENCH_CADENCE" \
+      "$SPEECHD_BENCH_MAX_UTTERANCE" \
+      "$SPEECHD_BENCH_OPTIONAL" \
+      >"$SPEECHD_BENCH_MARKER"
     REMOTE_CMD=(swift test --filter SpeechdStreamingBenchTests)
     ;;
   eval-e2e)

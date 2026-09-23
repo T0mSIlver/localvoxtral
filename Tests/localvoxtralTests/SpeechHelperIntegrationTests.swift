@@ -104,10 +104,14 @@ final class SpeechHelperIntegrationTests: XCTestCase {
             "models--" + repoID.replacingOccurrences(of: "/", with: "--")
         )
         let snapshotsDir = repoDir.appendingPathComponent("snapshots")
-        let pinnedRevision = SpeechModelCatalog.option(forRepoID: repoID)?.revision
+        let catalogOption = SpeechModelCatalog.option(forRepoID: repoID)
+        let pinnedRevision = catalogOption?.revision
+        let engine = catalogOption?.engine ?? .voxtral
 
         if let pinnedRevision {
-            if Self.snapshotIsProvisioned(snapshotsDir.appendingPathComponent(pinnedRevision)) {
+            if Self.snapshotIsProvisioned(
+                snapshotsDir.appendingPathComponent(pinnedRevision), engine: engine
+            ) {
                 return
             }
         } else if let revision = try? String(
@@ -116,7 +120,9 @@ final class SpeechHelperIntegrationTests: XCTestCase {
         )
         .trimmingCharacters(in: .whitespacesAndNewlines),
             !revision.isEmpty,
-            Self.snapshotIsProvisioned(snapshotsDir.appendingPathComponent(revision))
+            Self.snapshotIsProvisioned(
+                snapshotsDir.appendingPathComponent(revision), engine: engine
+            )
         {
             return
         }
@@ -187,13 +193,21 @@ final class SpeechHelperIntegrationTests: XCTestCase {
 
     static let provisionedSentinel = ".localvoxtral-provisioned"
 
-    static func snapshotIsProvisioned(_ snapshot: URL) -> Bool {
+    /// Nemotron checkpoints carry their vocabulary inside `config.json`; only the
+    /// Voxtral loader needs the separate `tekken.json` tokenizer.
+    static func snapshotIsProvisioned(
+        _ snapshot: URL,
+        engine: SpeechEngineKind = .voxtral
+    ) -> Bool {
         let fileManager = FileManager.default
-        let hasRequiredMetadata = fileManager.fileExists(
+        var hasRequiredMetadata = fileManager.fileExists(
             atPath: snapshot.appendingPathComponent(provisionedSentinel).path
         )
             && fileManager.fileExists(atPath: snapshot.appendingPathComponent("config.json").path)
-            && fileManager.fileExists(atPath: snapshot.appendingPathComponent("tekken.json").path)
+        if engine == .voxtral {
+            hasRequiredMetadata = hasRequiredMetadata
+                && fileManager.fileExists(atPath: snapshot.appendingPathComponent("tekken.json").path)
+        }
         guard hasRequiredMetadata else { return false }
         if fileManager.fileExists(atPath: snapshot.appendingPathComponent("model.safetensors").path) {
             return true
@@ -239,6 +253,19 @@ final class SpeechHelperIntegrationTests: XCTestCase {
         }
 
         XCTAssertFalse(Self.snapshotIsProvisioned(snapshot))
+    }
+
+    func testSnapshotProvisioningSentinelDoesNotDemandVoxtralsTokenizerFromNemotron() throws {
+        let snapshot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("speechd-nemotron-snapshot-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: snapshot) }
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        for name in [Self.provisionedSentinel, "config.json", "model.safetensors"] {
+            try Data().write(to: snapshot.appendingPathComponent(name))
+        }
+
+        XCTAssertTrue(Self.snapshotIsProvisioned(snapshot, engine: .nemotron))
+        XCTAssertFalse(Self.snapshotIsProvisioned(snapshot, engine: .voxtral))
     }
 
     private func launchHelper(
@@ -436,10 +463,12 @@ final class SpeechHelperIntegrationTests: XCTestCase {
             extraArguments: ["--max-utterance-seconds", "\(limitSeconds)"]
         )
 
-        // The helper's cap is ceil(limit x 12.5) + 64 finish-padding tokens, and decoded
-        // tokens trail the audio by up to the 30-token maximum transcription delay. The cap
-        // must cross while audio is still streaming (the final commit path reports nothing),
-        // so the speech has to outlast that budget with room to spare.
+        // The cap must cross while audio is still streaming (a crossing at the commit is
+        // `testLimitCrossedByTheCommitRemainderIsReported`), so the speech has to outlast
+        // the budget with room to spare. Voxtral's
+        // cap is the widest: ceil(limit x 12.5) + 64 finish-padding tokens, with decoded
+        // tokens trailing the audio by up to the 30-token maximum transcription delay.
+        // Nemotron caps on the audio itself, so it stops at the limit — well inside this.
         let maxDecodedTokens = Int((Double(limitSeconds) * 12.5).rounded(.up)) + 64
         let secondsToCrossCap = Double(maxDecodedTokens + 30) / 12.5
         let phrase = [
@@ -516,6 +545,87 @@ final class SpeechHelperIntegrationTests: XCTestCase {
             "speechd limit test: \(String(format: "%.1f", spokenSeconds))s spoken, "
                 + "transcript: \(doneText)"
         )
+        XCTAssertTrue(process.isRunning)
+        process.terminate()
+    }
+
+    /// The limit can be crossed by the last sub-step fragment of audio, which the helper
+    /// only feeds to the engine on the final commit. 3.05 s under a 3 s limit does exactly
+    /// that at the default 100 ms step: thirty full steps fill the limit and the 50 ms
+    /// remainder arrives with the commit. Nemotron caps the audio it accepts, so it drops
+    /// that remainder and must say so; Voxtral caps decoded tokens, which 3 s of speech
+    /// never reaches, so it must stay quiet.
+    func testLimitCrossedByTheCommitRemainderIsReported() async throws {
+        let (binary, model) = try helperConfiguration()
+        try await ensureModelCached(model)
+        let engine = SpeechModelCatalog.option(forRepoID: model)?.engine ?? .voxtral
+        let limitSeconds = 3
+        let (process, stderrLog) = try await launchHelper(
+            binary: binary,
+            model: model,
+            extraArguments: ["--max-utterance-seconds", "\(limitSeconds)"]
+        )
+
+        let spoken = try makeSpokenPCM16Data(
+            phrase: "this passage runs a little past the limit, so its last fragment "
+                + "arrives with the final commit instead of with a streaming step."
+        )
+        let byteCount = (limitSeconds * 16_000 + 800) * 2
+        XCTAssertGreaterThanOrEqual(spoken.count, byteCount, "the TTS audio is too short")
+        let chunks = IntegrationTestSupport.splitPCM16IntoChunks(
+            Data(spoken.prefix(byteCount)), chunkSizeBytes: 3_200
+        )
+
+        let client = RealtimeAPIWebSocketClient()
+        let stops = TranscriptCapture()
+        let connected = expectation(description: "connected")
+        let finalTranscript = expectation(description: "final transcript")
+        finalTranscript.assertForOverFulfill = false
+        let disconnected = expectation(description: "disconnected")
+
+        client.setEventHandler { event, _ in
+            switch event {
+            case .connected:
+                connected.fulfill()
+                for chunk in chunks {
+                    client.sendAudioChunk(chunk)
+                }
+                client.sendCommit(final: true)
+            case .finalTranscript:
+                finalTranscript.fulfill()
+            case .transcriptionStopped(let message):
+                stops.append(delta: message)
+            case .disconnected:
+                disconnected.fulfill()
+            case .partialTranscript, .error, .status, .transcriptionFinalized:
+                break
+            }
+        }
+
+        try client.connect(configuration: RealtimeSessionConfiguration(
+            endpoint: URL(string: "ws://127.0.0.1:\(Self.testPort)/v1/realtime")!,
+            apiKey: "",
+            model: model
+        ))
+        await fulfillment(of: [connected, finalTranscript], timeout: 120)
+        client.disconnect()
+        await fulfillment(of: [disconnected], timeout: 5)
+
+        switch engine {
+        case .nemotron:
+            XCTAssertEqual(
+                stops.snapshot().deltas,
+                ["\(limitSeconds)-second limit reached; start again."],
+                "audio dropped at the commit must be reported, once"
+            )
+            XCTAssertTrue(
+                stderrLog.tail(50).contains("utterance reached the \(limitSeconds)s limit"),
+                "the helper must log the stop: \(stderrLog.tail(50))"
+            )
+        case .voxtral:
+            XCTAssertEqual(stops.snapshot().deltas, [], "3 s of speech is under Voxtral's token cap")
+        }
+        print("speechd commit-remainder test (\(engine)): stops \(stops.snapshot().deltas)")
         XCTAssertTrue(process.isRunning)
         process.terminate()
     }

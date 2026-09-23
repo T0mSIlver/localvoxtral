@@ -105,36 +105,75 @@ final class UtteranceLimitTests: XCTestCase {
         )
     }
 
-    func testReporterReadsTheTokenCountOnlyWhenAReportIsDue() {
+    func testReporterClassifiesTheSessionOnlyWhenAReportIsDue() {
         var reporter = UtteranceStopReporter()
         var reads = 0
-        func count() -> Int { reads += 1; return 101 }
+        func classify(isFinished: Bool) -> UtteranceStop? {
+            reads += 1
+            return UtteranceStop.classify(
+                isFinished: isFinished, decodedTokenCount: 101, maxDecodedTokens: 100
+            )
+        }
 
-        XCTAssertNil(reporter.check(isFinished: false, decodedTokenCount: count(), maxDecodedTokens: 100))
-        XCTAssertEqual(reads, 0, "a live session must not copy the token array")
-        XCTAssertEqual(
-            reporter.check(isFinished: true, decodedTokenCount: count(), maxDecodedTokens: 100),
-            .lengthLimit
-        )
-        XCTAssertNil(reporter.check(isFinished: true, decodedTokenCount: count(), maxDecodedTokens: 100))
-        XCTAssertEqual(reads, 1, "steps after a reported stop must not copy the token array")
+        XCTAssertNil(reporter.report(classify(isFinished: false)))
+        XCTAssertEqual(reads, 1)
+        XCTAssertEqual(reporter.report(classify(isFinished: true)), .lengthLimit)
+        XCTAssertNil(reporter.report(classify(isFinished: true)))
+        XCTAssertEqual(reads, 2, "steps after a reported stop must not copy the token array")
     }
 
     func testReporterReportsAStopOncePerSession() {
         var reporter = UtteranceStopReporter()
 
-        XCTAssertNil(reporter.check(isFinished: false, decodedTokenCount: 10, maxDecodedTokens: 100))
+        XCTAssertNil(reporter.report(
+            UtteranceStop.classify(isFinished: false, decodedTokenCount: 10, maxDecodedTokens: 100)
+        ))
         XCTAssertEqual(
-            reporter.check(isFinished: true, decodedTokenCount: 101, maxDecodedTokens: 100),
+            reporter.report(
+                UtteranceStop.classify(isFinished: true, decodedTokenCount: 101, maxDecodedTokens: 100)
+            ),
             .lengthLimit
         )
         // Audio keeps arriving after the stop; every later step must stay quiet.
-        XCTAssertNil(reporter.check(isFinished: true, decodedTokenCount: 101, maxDecodedTokens: 100))
+        XCTAssertNil(reporter.report(
+            UtteranceStop.classify(isFinished: true, decodedTokenCount: 101, maxDecodedTokens: 100)
+        ))
 
         reporter.reset()
         XCTAssertEqual(
-            reporter.check(isFinished: true, decodedTokenCount: 40, maxDecodedTokens: 100),
+            reporter.report(
+                UtteranceStop.classify(isFinished: true, decodedTokenCount: 40, maxDecodedTokens: 100)
+            ),
             .endOfStream
         )
+    }
+}
+
+final class UtteranceAudioCapTests: XCTestCase {
+    private let sampleRate = 16_000
+
+    func testAudioUpToTheLimitIsAcceptedWhole() {
+        var cap = UtteranceAudioCap(limit: UtteranceLimit(seconds: 2), sampleRate: sampleRate)
+
+        XCTAssertEqual(cap.accept(sampleRate), sampleRate)
+        XCTAssertNil(cap.stop)
+        XCTAssertEqual(cap.accept(sampleRate), sampleRate)
+        XCTAssertNil(
+            cap.stop,
+            "a session that ends exactly at the limit lost nothing; there is nothing to report"
+        )
+    }
+
+    func testAudioPastTheLimitIsTruncatedAndReportedOnce() {
+        var cap = UtteranceAudioCap(limit: UtteranceLimit(seconds: 1), sampleRate: sampleRate)
+
+        XCTAssertEqual(cap.accept(12_000), 12_000)
+        XCTAssertNil(cap.stop)
+        // 4,000 samples of room left, 8,000 offered.
+        XCTAssertEqual(cap.accept(8_000), 4_000)
+        XCTAssertEqual(cap.stop, .lengthLimit)
+        // Every later chunk is dropped whole, and the stop does not change.
+        XCTAssertEqual(cap.accept(8_000), 0)
+        XCTAssertEqual(cap.stop, .lengthLimit)
     }
 }

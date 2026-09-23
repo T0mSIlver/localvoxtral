@@ -1,9 +1,13 @@
-# Dependency: mlx-audio-swift VoxtralRealtime
+# Dependency: mlx-audio-swift streaming ASR
 
 `SpeechEngine` drives [`Blaizzy/mlx-audio-swift`](https://github.com/Blaizzy/mlx-audio-swift)'s
-VoxtralRealtime engine as an **upstream SwiftPM dependency** (product `MLXAudioSTT`, MIT-licensed).
-It used to be vendored into `Sources/SpeechEngine/` with local patches; those patches were
-upstreamed (see below), so we depend instead of vendor.
+VoxtralRealtime and NemotronASR engines as an **upstream SwiftPM dependency** (product
+`MLXAudioSTT`, MIT-licensed). VoxtralRealtime used to be vendored into `Sources/SpeechEngine/`
+with local patches; those patches were upstreamed (see below), so we depend instead of vendor.
+
+Which engine a launch drives is decided by `SpeechModelLoader` from the repo id (or a
+`--model-dir` checkpoint's `model_type`), and both are adapted to one local contract,
+`SpeechASREngine` / `SpeechASRStreamingSession` — see "What stays local" below.
 
 The app now consumes this package as its production managed ASR backend:
 `BackendCatalog.speechd` launches the bundled `localvoxtral-speechd`, and the
@@ -30,6 +34,23 @@ three PRs that bound streaming memory over long sessions: #263 drops conv and ad
 consumed, #264 appends decoder KV rows in place instead of rebuilding the window, #265 decodes
 the transcript one token at a time instead of re-detokenizing it every step. `session.text` is
 still the full transcript, so the append-only delta routing below is unchanged.
+
+The same tree already carries NVIDIA Nemotron 3.5 ASR streaming — #195/#196 port the model,
+#208 adds the incremental `NemotronASRStreamSession`, #236 widens the checkpoint loader — so
+adding the second catalog entry (#463) needed no pin change. Two Nemotron facts the adapter
+in `SpeechASREngines.swift` depends on:
+
+- It is an **RNN-T**: it only ever appends text, and it never emits end-of-stream on its own,
+  so the append-only delta contract carries it unchanged and there is no `maxTokens` to cap.
+  `UtteranceLimit` is therefore enforced by our adapter, on the audio the session accepts.
+- Its session decodes in fixed chunks of 80 ms encoder frames; the model card publishes WER
+  for 80/160/320/560/1120 ms, and `NemotronChunkLadder` maps `--transcription-delay-ms` onto
+  those rungs. Its decoder strips the model's `<xx-XX>` language tag itself.
+
+Its `advance()` recomputes the whole mel from the raw buffer on every `step`, which is
+O(utterance) per step — upstream calls it negligible at utterance scale and a future
+optimization. `speechd-bench` at the production cadence is how to check that claim before
+raising the limit on this engine.
 
 The pin before that, `8ed8188`, was the merge of
 [Blaizzy/mlx-audio-swift#232](https://github.com/Blaizzy/mlx-audio-swift/pull/232): the
@@ -78,6 +99,10 @@ casts; `VoxtralRealtimeStreamSession.swift` differed only in the delta routing b
   internally (old LOCAL FIX #6), but now in a Metal-free, unit-testable layer
   (`SpeechEngineTextTests`). `transcript.done` carries `emitter.emittedText` (== the sum of
   every delta) so the final payload can never contradict the streamed wire output.
+- **The engine seam** — `SpeechEngineText/SpeechASREngineContract.swift` (pure, tested in the
+  tier-0 lane) plus the MLX-bound adapters in `SpeechEngine/SpeechASREngines.swift`. Upstream
+  has no common protocol across its models, so the server talks to one of ours: feed audio,
+  read the growing transcript, flush the tail, and say why the session stopped decoding.
 - **Our loopback server** — `RealtimeSpeechServer.swift`: the OpenAI-Realtime websocket subset
   consumed by the app's production realtime client. Original code, never
   upstream.
@@ -107,11 +132,13 @@ full transitive closure.
 1. Bump the `revision:` to the new upstream SHA (and re-pin the four graph deps to whatever the
    new upstream `Package.resolved` uses, keeping the two `exact` constraints above satisfied —
    never let mlx-swift reach 0.31.4/0.31.5 or swift-transformers reach 1.2).
-2. Re-run the equivalence checklist: diff the new `Models/VoxtralRealtime/` tree (plus
-   `Generation.swift` / `GLMASR/STTOutput.swift`) against the previous SHA and confirm nothing
-   we depend on regressed, and that the delta-routing assumption still holds (upstream's
-   `session.text` is the full transcript; its raw `Delta` is not append-only).
+2. Re-run the equivalence checklist: diff the new `Models/VoxtralRealtime/` and
+   `Models/NemotronASR/` trees (plus `Generation.swift` / `GLMASR/STTOutput.swift`) against the
+   previous SHA and confirm nothing we depend on regressed, and that the delta-routing
+   assumption still holds (upstream's `session.text` is the full transcript; its raw `Delta`
+   is not append-only).
 3. Run the lanes: `./scripts/remote-build.sh test --package-path SpeechHelper` (Metal-free unit
    tier) and `./scripts/remote-build.sh package` followed by
    `./scripts/remote-build.sh integration-speechd` (the packaged real-model Metal gate for the
-   upstream engine, append-only wire contract, and parent tether).
+   upstream engine, append-only wire contract, and parent tether) — once per catalog entry,
+   passing the repo id as the lane's argument.

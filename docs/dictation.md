@@ -111,7 +111,7 @@ History; the panes sit under the sidebar's Settings header:
   brings the window up on History every time the app starts. Both are off, and
   a first launch shows the setup wizard rather than the window.
 - **Engines** — Dictation and Polishing each switch independently between
-  `Managed local` (a model picker for polishing, plus a status light),
+  `Managed local` (a model picker and a status light for each),
   `External URL` (server URL, model name, API key), and `Mistral API`
   (Mistral's hosted models on one API key, entered in the pane's Mistral API
   group). Dictation accepts an OpenAI Realtime-compatible endpoint. For
