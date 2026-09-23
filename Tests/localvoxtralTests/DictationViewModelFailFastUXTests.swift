@@ -276,16 +276,18 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.mistralAPIKey = "mistral-account-key"
         viewModel.session.realtimeAPIClient.debugSkipSocketCreationForTesting()
         viewModel.session.mistralRealtimeClient.debugSkipSocketCreationForTesting()
-        // This test reaches beginDictationSession, which arms the real 10s
-        // connect timeout on a process-retained view model (PR #66).
+        // This test reaches the connect, which arms the 1.0 s connect timeout
+        // on the wall clock of a process-retained view model (PR #66).
         viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.session.debugBeforeConnectHookForTesting = { [weak viewModel] in
-            viewModel?.engines.applyDictationBackendModeChange(.mistralAPI)
+        // Between the halves: after the snapshot, before the dial. (The next
+        // test flips it from inside the start's capture await.)
+        guard let configuration = await viewModel.session.prepareDictationSession() else {
+            return XCTFail("the start ended before the connect")
         }
-
-        await viewModel.session.beginDictationSession()
+        viewModel.engines.applyDictationBackendModeChange(.mistralAPI)
+        viewModel.session.connectDictationSession(configuration)
 
         let dialled = viewModel.session.realtimeAPIClient.debugLastConnectConfigurationForTesting()
         XCTAssertEqual(
@@ -299,6 +301,63 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertTrue(
             viewModel.session.activeRealtimeClient === viewModel.session.realtimeAPIClient,
             "the latch is not swapped under a starting session"
+        )
+        XCTAssertNil(
+            viewModel.session.mistralRealtimeClient.debugLastConnectConfigurationForTesting(),
+            "the Mistral transport was never dialled by a session started in External URL mode"
+        )
+    }
+
+    /// The same flip from inside the window a real start suspends in: the
+    /// screen-context capture, whose join resolver asks the terminal for its
+    /// focused TTY. The endpoint, model and key have to be read before that
+    /// await, or the session dials with the other provider's key.
+    func testModeFlipDuringTheStartCaptureKeepsTheStartingProvidersKey() async {
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        viewModel.settings.dictationBackendMode = .externalURL
+        viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:9/v1/realtime"
+        viewModel.settings.apiKey = "external-server-key"
+        viewModel.settings.mistralAPIKey = "mistral-account-key"
+        viewModel.session.realtimeAPIClient.debugSkipSocketCreationForTesting()
+        viewModel.session.mistralRealtimeClient.debugSkipSocketCreationForTesting()
+        viewModel.dependencies.clock = ManualSessionClock().clock
+        retainForTestProcessLifetime(viewModel)
+        // The capture asks the resolver only behind all of its gates: a
+        // permitted polishing endpoint, the screen setting, Accessibility, and
+        // a supported terminal in front.
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.settings.llmPolishingEndpointURL = "http://127.0.0.1:9/v1/chat/completions"
+        viewModel.settings.terminalScreenContextEnabled = true
+        viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        TerminalScreenContextSource.debugFrontmostTargetOverride = {
+            TerminalScreenTarget(pid: 4242, bundleID: TerminalScreenAllowlist.ghosttyBundleID)
+        }
+        defer { TerminalScreenContextSource.debugFrontmostTargetOverride = nil }
+        let flips = FlipCounter()
+        viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
+            registry: ClaudeSessionRegistry(
+                now: { Date(timeIntervalSince1970: 1_000) },
+                isProcessAlive: { _ in true }
+            ),
+            focusedTerminalTTY: { [weak viewModel] _ in
+                viewModel?.engines.applyDictationBackendModeChange(.mistralAPI)
+                flips.count += 1
+                return nil
+            }
+        )
+
+        await viewModel.session.beginDictationSession()
+
+        XCTAssertEqual(flips.count, 1, "positive control: the mode flipped inside the capture")
+        XCTAssertEqual(viewModel.settings.dictationBackendMode, .mistralAPI)
+        let dialled = viewModel.session.realtimeAPIClient.debugLastConnectConfigurationForTesting()
+        XCTAssertEqual(
+            dialled?.endpoint.absoluteString, "ws://127.0.0.1:9/v1/realtime",
+            "the session dials the endpoint it was started for"
+        )
+        XCTAssertEqual(
+            dialled?.apiKey, "external-server-key",
+            "the external server must never receive the Mistral account key"
         )
         XCTAssertNil(
             viewModel.session.mistralRealtimeClient.debugLastConnectConfigurationForTesting(),
@@ -1676,22 +1735,19 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         return settings
     }
 
-    /// Emits a fake backend status and suspends until the view model's
-    /// managed-startup status mirror has processed it. A bare `Task.yield()`
-    /// after `emitStatus` is a scheduling race: the mirror's `for await` loop
-    /// may not have run yet when the test asserts on `statusText` (flaked on
-    /// main, CI run 28752686491).
+    /// Emits a fake backend status and returns once the view model's
+    /// managed-startup status mirror has written the status line. A bare
+    /// `Task.yield()` after `emitStatus` is a scheduling race: the mirror's
+    /// `for await` loop may not have run yet when the test asserts on
+    /// `statusText` (flaked on main, CI run 28752686491). The status must be
+    /// one the mirror shows; one it skips would never return.
     private func emitStatusAndAwaitMirror(
         _ backendManager: FakeManagedBackendManager,
         viewModel: DictationViewModel,
         spec: ManagedBackendSpec,
         status: ManagedBackendStatus
     ) async {
-        await withCheckedContinuation { continuation in
-            viewModel.session.debugManagedStatusMirrorEventSink = {
-                viewModel.session.debugManagedStatusMirrorEventSink = nil
-                continuation.resume()
-            }
+        await awaitNextWrite(of: { viewModel.statusText }) {
             backendManager.emitStatus(spec: spec, status: status)
         }
     }
@@ -1703,6 +1759,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 }
 
 // MARK: - Test-only accessors and doubles
+
+@MainActor
+private final class FlipCounter {
+    var count = 0
+}
 
 @MainActor
 private final class FakeManagedBackendManager: ManagedBackendManaging {
