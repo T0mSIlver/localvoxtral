@@ -375,7 +375,7 @@ extension DictationViewModel {
         }
         refreshInsertionScalarTracingForSession()
 
-        audioChunkBuffer.clear()
+        audio.audioChunkBuffer.clear()
         transcript.resetForNewSession()
         firstChunkPreprocessor.reset()
         overlayBufferCoordinator.reset()
@@ -423,8 +423,8 @@ extension DictationViewModel {
     func startAudioCaptureAfterConnection() {
         let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
         do {
-            let chunkBuffer = audioChunkBuffer
-            try startSessionAudioCapture(preferredDeviceID: preferredInputID) { chunk in
+            let chunkBuffer = audio.audioChunkBuffer
+            try audio.startSessionAudioCapture(preferredDeviceID: preferredInputID) { chunk in
                 chunkBuffer.append(chunk)
             }
 
@@ -432,12 +432,15 @@ extension DictationViewModel {
             isDictating = true
             // Here, not at connect: a connect that times out or is refused
             // must never leave other audio down. Both output modes duck.
-            audioDucking.duckForSessionStart()
+            audio.audioDucking.duckForSessionStart()
             escapeCancelHandler.start()
             applyPreCapturedSessionTargetVerdict()
             statusText = "Listening..."
-            restartAudioSendTask()
-            restartCommitTask()
+            audio.restartAudioSendTask(
+                client: activeRealtimeClient,
+                debugLoggingEnabled: debugLoggingEnabled
+            )
+            audio.restartCommitTask(client: activeRealtimeClient)
             if isLiveAutoPasteModeEnabled {
                 textInsertion.restartInsertionRetryTask { [weak self] in
                     self?.acceptsRealtimeEvents ?? false
@@ -453,8 +456,11 @@ extension DictationViewModel {
             }
             // The monitor's recovery restarts the microphone, which would mix
             // the room into a session that is fed from a file.
-            if capturesFromMicrophone {
-                healthMonitor.start(microphone: microphone, callbacks: makeHealthMonitorCallbacks())
+            if audio.capturesFromMicrophone {
+                audio.healthMonitor.start(
+                    microphone: audio.microphone,
+                    callbacks: makeHealthMonitorCallbacks()
+                )
             }
         } catch {
             statusText = "Failed to start dictation."
@@ -462,9 +468,9 @@ extension DictationViewModel {
             isConnectingRealtimeSession = false
             isDictating = false
             escapeCancelHandler.stop()
-            healthMonitor.stop()
-            stopSessionAudioCapture()
-            audioDucking.restoreAfterSession()
+            audio.healthMonitor.stop()
+            audio.stopSessionAudioCapture()
+            audio.audioDucking.restoreAfterSession()
             activeRealtimeClient.disconnect()
             setRealtimeIndicatorIdle()
             Log.dictation.error("Failed to start microphone after realtime connect: \(error.localizedDescription, privacy: .public)")
@@ -473,8 +479,8 @@ extension DictationViewModel {
     }
 
     func makeHealthMonitorCallbacks() -> AudioCaptureHealthMonitor.Callbacks {
-        let chunkBuffer = audioChunkBuffer
-        let mic = microphone
+        let chunkBuffer = audio.audioChunkBuffer
+        let mic = audio.microphone
         return AudioCaptureHealthMonitor.Callbacks(
             refreshMicrophoneInputs: { [weak self] in
                 self?.refreshMicrophoneInputs()
@@ -509,63 +515,6 @@ extension DictationViewModel {
                 }
             }
         )
-    }
-
-    // MARK: - Audio Pipeline
-
-    func restartCommitTask() {
-        commitTask?.cancel()
-        commitTask = nil
-
-        let interval = TimingConstants.commitInterval
-        let client = activeRealtimeClient
-        guard client.supportsPeriodicCommit else { return }
-        commitTask = Task(priority: .utility) {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(interval))
-                guard !Task.isCancelled else { break }
-                client.sendCommit(final: false)
-            }
-        }
-    }
-
-    func restartAudioSendTask() {
-        audioSendTask?.cancel()
-
-        let interval = TimingConstants.audioSendInterval
-        let client = activeRealtimeClient
-        let chunkBuffer = audioChunkBuffer
-        let debugLoggingEnabled = debugLoggingEnabled
-        audioSendTask = Task(priority: .utility) {
-            var emptyBufferTicks = 0
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(interval))
-                guard !Task.isCancelled else { break }
-
-                // Read before draining: between the socket dying and the
-                // `.disconnected` event cancelling this task, a tick that
-                // drained would hand its chunk to a client that discards it —
-                // and that audio is exactly what a reconnect replays (#380).
-                guard client.isConnected else { continue }
-
-                let bufferedChunk = chunkBuffer.takeAll()
-                guard !bufferedChunk.isEmpty else {
-                    emptyBufferTicks += 1
-                    if debugLoggingEnabled, emptyBufferTicks % 20 == 0 {
-                        Log.dictation.debug("audio send loop has no buffered chunks")
-                    }
-                    continue
-                }
-                emptyBufferTicks = 0
-                client.sendAudioChunk(bufferedChunk)
-            }
-        }
-    }
-
-    func flushBufferedAudio() {
-        let chunk = audioChunkBuffer.takeAll()
-        guard !chunk.isEmpty else { return }
-        activeRealtimeClient.sendAudioChunk(chunk)
     }
 
     // MARK: - Stop Finalization
@@ -1245,8 +1194,8 @@ extension DictationViewModel {
         isCompletingStoppedSession = false
         polishAndCommitTask = nil
         clearLatchedSessionMetadata()
-        stopMicrophoneIfInitialized()
-        audioDucking.restoreAfterSession()
+        audio.stopMicrophoneIfInitialized()
+        audio.audioDucking.restoreAfterSession()
         realtimeFinalizationLastActivityAt = nil
         firstChunkPreprocessor.reset()
         textInsertion.endLiveReplacementSession()
@@ -1254,7 +1203,7 @@ extension DictationViewModel {
         if disconnectSocket {
             activeRealtimeClient.disconnect()
         }
-        healthMonitor.stop()
+        audio.healthMonitor.stop()
     }
 
     // MARK: - Indicator State

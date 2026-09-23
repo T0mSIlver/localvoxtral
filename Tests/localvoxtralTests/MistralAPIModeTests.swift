@@ -66,7 +66,7 @@ final class MistralAPIModeTests: XCTestCase {
     func testMistralTransportAdvertisesNoPeriodicCommit() {
         let (viewModel, _, _) = makeViewModel()
 
-        // `restartCommitTask` keys off this, so a Mistral session gets no
+        // `SessionAudioPipeline.restartCommitTask` keys off this, so a Mistral session gets no
         // periodic commit task — the wire has no partial commit.
         XCTAssertFalse(viewModel.mistralRealtimeClient.supportsPeriodicCommit)
         XCTAssertTrue(viewModel.realtimeAPIClient.supportsPeriodicCommit)

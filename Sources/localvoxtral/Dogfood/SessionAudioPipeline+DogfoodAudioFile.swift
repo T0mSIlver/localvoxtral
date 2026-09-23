@@ -2,9 +2,10 @@
 
 import Foundation
 
-extension DictationViewModel {
+extension SessionAudioPipeline {
     /// Loads the file on every session start, so a file that is missing or in
-    /// the wrong format fails THAT dictation with its reason in `lastError`.
+    /// the wrong format fails THAT dictation by throwing; the session shows the
+    /// reason as its error line.
     /// Falling back to the microphone instead would let an end-to-end run pass
     /// or fail on whatever the room sounded like.
     func startDogfoodAudioFileSource(

@@ -66,7 +66,7 @@ final class RealtimeReconnectTests: XCTestCase {
         viewModel.transcript.pendingSegmentText = "world"
         viewModel.transcript.livePartialText = "world"
         // Audio the user spoke that the send loop had not drained yet.
-        viewModel.audioChunkBuffer.append(Data(count: 3_200))
+        viewModel.audio.audioChunkBuffer.append(Data(count: 3_200))
 
         // The socket opens on the first poll of the first attempt.
         viewModel.dependencies.reconnectSleep = { _ in client.setConnected(true) }
@@ -84,10 +84,10 @@ final class RealtimeReconnectTests: XCTestCase {
         XCTAssertEqual(viewModel.statusText, "Listening...")
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .connected)
         XCTAssertEqual(client.connectCount, 1)
-        XCTAssertNotNil(viewModel.audioSendTask, "the audio send loop must resume")
-        XCTAssertNotNil(viewModel.commitTask, "the periodic commit must resume")
+        XCTAssertNotNil(viewModel.audio.audioSendTask, "the audio send loop must resume")
+        XCTAssertNotNil(viewModel.audio.commitTask, "the periodic commit must resume")
         XCTAssertEqual(
-            viewModel.audioChunkBuffer.bufferedByteCount, 3_200,
+            viewModel.audio.audioChunkBuffer.bufferedByteCount, 3_200,
             "the audio spoken into the gap waits for the restarted send loop to replay it"
         )
         XCTAssertEqual(
@@ -199,14 +199,14 @@ final class RealtimeReconnectTests: XCTestCase {
         viewModel.handle(event: .disconnected)
         XCTAssertTrue(viewModel.isReconnectingRealtimeSession)
         await viewModel.reconnectTask?.value
-        await viewModel.audioDucking.debugFadeTask?.value
+        await viewModel.audio.audioDucking.debugFadeTask?.value
 
         XCTAssertTrue(viewModel.isDictating, "precondition: the session survived")
         XCTAssertTrue(
             volume.writes.isEmpty,
             "a session that keeps going keeps its duck — no volume moved across the gap")
         XCTAssertNotNil(
-            viewModel.audioDucking.debugDuckedOutput,
+            viewModel.audio.audioDucking.debugDuckedOutput,
             "and the way back is still held for the eventual stop")
     }
 
@@ -222,7 +222,7 @@ final class RealtimeReconnectTests: XCTestCase {
 
         viewModel.handle(event: .disconnected)
         await viewModel.reconnectTask?.value
-        await viewModel.audioDucking.debugFadeTask?.value
+        await viewModel.audio.audioDucking.debugFadeTask?.value
 
         XCTAssertFalse(viewModel.isDictating, "precondition: the run gave up")
         let restored = try XCTUnwrap(volume.volume(of: "device-a"))
@@ -240,15 +240,15 @@ final class RealtimeReconnectTests: XCTestCase {
     ) async -> FakeOutputVolumeControl {
         let volume = FakeOutputVolumeControl(volume: 0.8)
         let pinnedNow = Date(timeIntervalSince1970: 1_000)
-        viewModel.audioDucking = AudioDuckingController(
+        viewModel.audio.audioDucking = AudioDuckingController(
             volumeControl: volume,
             isEnabled: { true },
             fadeDuration: { 0 },
             now: { pinnedNow },
             sleepFor: { _ in }
         )
-        viewModel.audioDucking.duckForSessionStart()
-        await viewModel.audioDucking.debugFadeTask?.value
+        viewModel.audio.audioDucking.duckForSessionStart()
+        await viewModel.audio.audioDucking.debugFadeTask?.value
         return volume
     }
 
@@ -349,7 +349,7 @@ final class RealtimeReconnectTests: XCTestCase {
         XCTAssertFalse(viewModel.isDictating, "a cancelled session must stay cancelled")
         XCTAssertFalse(viewModel.isReconnectingRealtimeSession)
         XCTAssertNotEqual(viewModel.statusText, "Listening...")
-        XCTAssertNil(viewModel.audioSendTask, "no audio may resume after the cancel")
+        XCTAssertNil(viewModel.audio.audioSendTask, "no audio may resume after the cancel")
         XCTAssertEqual(client.commits, [], "the cancel must not commit the gap audio")
     }
 

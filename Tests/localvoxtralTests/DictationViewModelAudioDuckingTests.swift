@@ -19,7 +19,7 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
         let (viewModel, volume) = await makeDuckedSession()
 
         viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
-        await viewModel.audioDucking.debugFadeTask?.value
+        await viewModel.audio.audioDucking.debugFadeTask?.value
 
         assertVolume(volume.volume(of: Self.deviceA), Self.original)
     }
@@ -30,7 +30,7 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
         let (viewModel, volume) = await makeDuckedSession()
 
         viewModel.abortConnectingSession()
-        await viewModel.audioDucking.debugFadeTask?.value
+        await viewModel.audio.audioDucking.debugFadeTask?.value
 
         assertVolume(volume.volume(of: Self.deviceA), Self.original)
     }
@@ -39,7 +39,7 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
         let (viewModel, volume) = await makeDuckedSession()
 
         viewModel.handle(event: .disconnected)
-        await viewModel.audioDucking.debugFadeTask?.value
+        await viewModel.audio.audioDucking.debugFadeTask?.value
 
         assertVolume(volume.volume(of: Self.deviceA), Self.original)
         XCTAssertFalse(viewModel.isDictating)
@@ -68,7 +68,7 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
 
         center.post(name: NSWorkspace.willSleepNotification, object: nil)
         await Task.yield()
-        await viewModel.audioDucking.debugFadeTask?.value
+        await viewModel.audio.audioDucking.debugFadeTask?.value
 
         assertVolume(volume.volume(of: Self.deviceA), Self.original)
         XCTAssertFalse(viewModel.isDictating)
@@ -80,7 +80,7 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
         viewModel.isDictating = true
 
         viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
-        await viewModel.audioDucking.debugFadeTask?.value
+        await viewModel.audio.audioDucking.debugFadeTask?.value
 
         XCTAssertTrue(volume.writes.isEmpty)
     }
@@ -105,8 +105,8 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
     ) async -> (DictationViewModel, FakeOutputVolumeControl) {
         let (viewModel, volume) = makeSession(duckingEnabled: true, lifecycleCenter: lifecycleCenter)
         viewModel.isDictating = true
-        viewModel.audioDucking.duckForSessionStart()
-        await viewModel.audioDucking.debugFadeTask?.value
+        viewModel.audio.audioDucking.duckForSessionStart()
+        await viewModel.audio.audioDucking.debugFadeTask?.value
         assertVolume(volume.volume(of: Self.deviceA), Self.duckTarget, "precondition: ducked")
         volume.clearWrites()
         return (viewModel, volume)
@@ -140,7 +140,7 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
         // which paths restore, and must not read the wall clock to do it. The
         // fade's shape is AudioDuckingControllerTests.
         let pinnedNow = Date(timeIntervalSince1970: 1_000)
-        viewModel.audioDucking = AudioDuckingController(
+        viewModel.audio.audioDucking = AudioDuckingController(
             volumeControl: volume,
             isEnabled: { settings.audioDuckingEnabled },
             fadeDuration: { 0 },

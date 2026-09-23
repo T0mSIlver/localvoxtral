@@ -273,7 +273,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
         await viewModel.beginDictationSession(outputMode: .overlayBuffer)
         XCTAssertFalse(
-            viewModel.hasInitializedMicrophone,
+            viewModel.audio.hasInitializedMicrophone,
             "connecting must not eagerly initialize CoreAudio"
         )
 
@@ -287,7 +287,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
         viewModel.abortConnectingSession()
         XCTAssertFalse(
-            viewModel.hasInitializedMicrophone,
+            viewModel.audio.hasInitializedMicrophone,
             "aborting before audio starts must not register CoreAudio listeners"
         )
     }
