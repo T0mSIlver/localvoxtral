@@ -62,9 +62,9 @@ final class RealtimeReconnectTests: XCTestCase {
 
     func testDropMidDictationReconnectsAndDictationContinues() async {
         let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
-        viewModel.currentDictationEventText = "hello"
-        viewModel.pendingSegmentText = "world"
-        viewModel.livePartialText = "world"
+        viewModel.transcript.currentDictationEventText = "hello"
+        viewModel.transcript.pendingSegmentText = "world"
+        viewModel.transcript.livePartialText = "world"
         // Audio the user spoke that the send loop had not drained yet.
         viewModel.audioChunkBuffer.append(Data(count: 3_200))
 
@@ -91,10 +91,10 @@ final class RealtimeReconnectTests: XCTestCase {
             "the audio spoken into the gap waits for the restarted send loop to replay it"
         )
         XCTAssertEqual(
-            viewModel.currentDictationEventText, "hello\nworld",
+            viewModel.transcript.currentDictationEventText, "hello\nworld",
             "the transcript must carry across the gap, dangling partial included"
         )
-        XCTAssertTrue(viewModel.pendingSegmentText.isEmpty)
+        XCTAssertTrue(viewModel.transcript.pendingSegmentText.isEmpty)
     }
 
     func testReconnectDialsTheConfigurationTheSessionStartedOn() async {
@@ -151,9 +151,9 @@ final class RealtimeReconnectTests: XCTestCase {
         await viewModel.reconnectTask?.value
 
         XCTAssertEqual(insertedChunks, ["hello", " world"], "the reconnect itself types nothing")
-        XCTAssertEqual(viewModel.currentDictationEventText, "hello\nworld")
-        XCTAssertTrue(viewModel.pendingSegmentText.isEmpty)
-        XCTAssertTrue(viewModel.livePartialText.isEmpty)
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "hello\nworld")
+        XCTAssertTrue(viewModel.transcript.pendingSegmentText.isEmpty)
+        XCTAssertTrue(viewModel.transcript.livePartialText.isEmpty)
 
         // The reconnected backend starts with an empty transcript of its own,
         // so its stream is new text and lands exactly once.
@@ -161,7 +161,7 @@ final class RealtimeReconnectTests: XCTestCase {
         viewModel.handle(event: .finalTranscript(" again"))
 
         XCTAssertEqual(insertedChunks, ["hello", " world", " again"])
-        XCTAssertEqual(viewModel.currentDictationEventText, "hello\nworld\nagain")
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "hello\nworld\nagain")
     }
 
     func testAttemptsRetryUntilOneConnects() async {
@@ -256,7 +256,7 @@ final class RealtimeReconnectTests: XCTestCase {
 
     func testExhaustedReconnectLandsOnTodaysConnectionLostBehavior() async {
         let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
-        viewModel.currentDictationEventText = "hello"
+        viewModel.transcript.currentDictationEventText = "hello"
         let escapeStopsBefore = EscapeCancelHandler.stopCallCount
         // Every attempt's socket reports back a failure.
         viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in
@@ -435,8 +435,8 @@ final class RealtimeReconnectTests: XCTestCase {
         viewModel.handle(event: .finalTranscript("hello world"), from: dyingSocket)
 
         XCTAssertEqual(insertedChunks, ["hello world"], "the straggler must not be typed again")
-        XCTAssertEqual(viewModel.currentDictationEventText, "hello world")
-        XCTAssertEqual(viewModel.transcriptText, "hello world")
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "hello world")
+        XCTAssertEqual(viewModel.transcript.transcriptText, "hello world")
 
         viewModel.cancelRealtimeReconnect()
         await task?.value
@@ -466,8 +466,8 @@ final class RealtimeReconnectTests: XCTestCase {
         viewModel.handle(event: .finalTranscript("hello world"), from: retiredSocket)
 
         XCTAssertEqual(insertedChunks, ["hello world"], "the straggler must not be typed again")
-        XCTAssertEqual(viewModel.currentDictationEventText, "hello world")
-        XCTAssertEqual(viewModel.transcriptText, "hello world")
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "hello world")
+        XCTAssertEqual(viewModel.transcript.transcriptText, "hello world")
 
         // And the socket the session IS on is still heard.
         viewModel.handle(

@@ -376,9 +376,7 @@ extension DictationViewModel {
         refreshInsertionScalarTracingForSession()
 
         audioChunkBuffer.clear()
-        livePartialText = ""
-        pendingSegmentText = ""
-        currentDictationEventText = ""
+        transcript.resetForNewSession()
         firstChunkPreprocessor.reset()
         overlayBufferCoordinator.reset()
         realtimeFinalizationLastActivityAt = nil
@@ -675,7 +673,7 @@ extension DictationViewModel {
     /// as-is otherwise.
     private func commitOverlayBufferSession(sessionMode: DictationOutputMode) {
         let preparation = StopCommitCoordinator.prepare(
-            originalText: currentDictationEventText,
+            originalText: transcript.currentDictationEventText,
             latchedReplacementDictionary: sessionReplacementDictionary,
             settings: settings,
             appConfigStore: appConfigStore,
@@ -692,8 +690,8 @@ extension DictationViewModel {
         let displayWorkingText = StopCommitCoordinator.substitutingPayload(
             workingText, payload: clipboardPayload
         )
-        if currentDictationEventText != displayWorkingText {
-            currentDictationEventText = displayWorkingText
+        if transcript.currentDictationEventText != displayWorkingText {
+            transcript.currentDictationEventText = displayWorkingText
         }
         refreshOverlayBufferSession()
 
@@ -862,7 +860,7 @@ extension DictationViewModel {
             dogfoodCommittedText = committedText
             #endif
 
-            self.currentDictationEventText = StopCommitCoordinator.substitutingPayload(
+            self.transcript.currentDictationEventText = StopCommitCoordinator.substitutingPayload(
                 committedText, payload: clipboardPayload
             )
             // Polish-changed iff the guarded/verified committed
@@ -989,7 +987,7 @@ extension DictationViewModel {
 
         saveSessionRecord(
             startedAt: capturedSessionStartedAt,
-            rawText: currentDictationEventText,
+            rawText: transcript.currentDictationEventText,
             polishedText: nil,
             polishingDuration: nil,
             provider: capturedProvider,
@@ -1050,8 +1048,7 @@ extension DictationViewModel {
         } else {
             setRealtimeIndicatorIdle()
         }
-        livePartialText = ""
-        pendingSegmentText = ""
+        transcript.clearPending()
         switch overlayCommitOutcome {
         case .failed?:
             statusText = "Insert failed."

@@ -10,9 +10,11 @@ import XCTest
 // merge/preprocess/insertion processing. When off, the logging call path must
 // not be entered at all.
 //
-// OSLog output can't be captured in-process, so we observe through the
-// `#if DEBUG` `debugConfigureDeltaLogSink` seam, which is invoked from the
-// same gated path as `Log.deltas`. The sink records mirror what is logged.
+// OSLog output can't be captured in-process, so we observe through
+// `Dependencies.onRealtimeDeltaLogRecord`, which is called from the same
+// gated path as `Log.deltas`. The records mirror what is logged. The log's
+// own sequencing rules are pinned by `RealtimeDeltaLogTests`; these prove the
+// view model routes every event through it, behind the setting.
 #if DEBUG
 @MainActor
 final class DictationViewModelDeltaLoggingTests: XCTestCase {
@@ -32,17 +34,18 @@ final class DictationViewModelDeltaLoggingTests: XCTestCase {
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.debugLogRealtimeDeltas = enableDeltaLogging
 
+        captured = []
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: MockOverlayCoordinator(),
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: DictationViewModel.Dependencies(
+                onRealtimeDeltaLogRecord: { [weak self] record in
+                    self?.captured.append(record)
+                }
+            )
         )
         retainForTestProcessLifetime(viewModel)
-
-        captured = []
-        viewModel.debugConfigureDeltaLogSink { [weak self] record in
-            self?.captured.append(record)
-        }
 
         return viewModel
     }
@@ -66,7 +69,7 @@ final class DictationViewModelDeltaLoggingTests: XCTestCase {
 
         XCTAssertTrue(captured.isEmpty, "sink must not fire when toggle is off")
         XCTAssertEqual(
-            viewModel.realtimeDeltaLogSequence, 0,
+            viewModel.realtimeDeltaLog.sequence, 0,
             "sequence counter must not advance when toggle is off")
     }
 

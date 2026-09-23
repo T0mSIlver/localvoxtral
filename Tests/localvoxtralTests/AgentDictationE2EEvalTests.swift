@@ -545,7 +545,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = input
+        viewModel.transcript.currentDictationEventText = input
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         // Read before the first suspension, while the value
@@ -566,7 +566,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         let raw = await service.lastRawPolishedText
         let request = await service.lastRequest
         return PolishStageOutcome(
-            committedText: viewModel.currentDictationEventText,
+            committedText: viewModel.transcript.currentDictationEventText,
             rawModelOutput: raw,
             request: request
         )

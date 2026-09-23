@@ -485,7 +485,7 @@ final class PolishRequestGoldenTests: XCTestCase {
 
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.currentDictationEventText = scenario.transcript
+        viewModel.transcript.currentDictationEventText = scenario.transcript
 
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
@@ -513,7 +513,7 @@ final class PolishRequestGoldenTests: XCTestCase {
             configuration: configuration.map(Golden.Configuration.init),
             request: request.map(Golden.Request.init),
             record: savedRecord.map(Golden.Record.init),
-            committedText: viewModel.currentDictationEventText,
+            committedText: viewModel.transcript.currentDictationEventText,
             statusText: viewModel.statusText,
             lastError: viewModel.lastError,
             pasteboardReads: pasteboard.stringCallCount,
