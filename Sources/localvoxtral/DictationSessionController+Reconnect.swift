@@ -193,9 +193,10 @@ extension DictationSessionController {
         // restarted send loop is what replays the gap.
         audio.restartAudioSendTask(
             client: activeRealtimeClient,
-            debugLoggingEnabled: debugLoggingEnabled
+            debugLoggingEnabled: debugLoggingEnabled,
+            sleep: dependencies.clock.sleep
         )
-        audio.restartCommitTask(client: activeRealtimeClient)
+        audio.restartCommitTask(client: activeRealtimeClient, sleep: dependencies.clock.sleep)
     }
 
     private func exhaustRealtimeReconnect(policy: RealtimeReconnectPolicy) {

@@ -149,30 +149,33 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let settings = makeSettings(outputMode: .liveAutoPaste)
         settings.dictationShortcutMode = .pushToTalk
         let overlayCoordinator = MockOverlayCoordinator()
+        let clock = ManualSessionClock()
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: DictationViewModel.Dependencies(clock: clock.clock)
         )
         retainForTestProcessLifetime(viewModel)
 
-        // Prevent NSAlert from blocking test execution when the timeout path presents.
-        viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.isConnectingRealtimeSession = true
         viewModel.statusText = "Connecting to realtime backend..."
         viewModel.shortcuts.isPushToTalkShortcutHeld = true
         viewModel.shortcuts.hasActivePushToTalkShortcutSession = true
         viewModel.session.scheduleConnectTimeout()
+        let timeoutTask = viewModel.session.connectTimeoutTask
 
         viewModel.shortcuts.handleDictationShortcutRelease()
 
         XCTAssertTrue(viewModel.isConnectingRealtimeSession)
         XCTAssertEqual(viewModel.statusText, "Connecting to realtime backend...")
 
-        let timeoutAt = Date().addingTimeInterval(TimingConstants.connectTimeout + 1.0)
-        while viewModel.isConnectingRealtimeSession, Date() < timeoutAt {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+        // The timeout, then its socket-error grace, both on the session clock.
+        await clock.waitForSleepers(1)
+        clock.advance(by: TimingConstants.connectTimeout)
+        await clock.waitForSleepers(1)
+        clock.advance(by: TimingConstants.connectTimeoutSocketErrorGrace)
+        await timeoutTask?.value
 
         XCTAssertFalse(viewModel.isConnectingRealtimeSession)
         XCTAssertEqual(viewModel.statusText, "Connection timed out.")

@@ -154,7 +154,7 @@ extension DictationSessionController {
         let processedDelta = preprocessIncomingTranscriptChunk(delta)
         guard !processedDelta.isEmpty else { return }
         if isFinalizingStop {
-            realtimeFinalizationLastActivityAt = Date()
+            realtimeFinalizationLastActivityAt = dependencies.clock.now()
         }
 
         transcript.appendPartial(processedDelta)
@@ -172,7 +172,7 @@ extension DictationSessionController {
         guard acceptsRealtimeEvents else { return }
         let processedText = preprocessIncomingTranscriptChunk(text)
         if isFinalizingStop {
-            realtimeFinalizationLastActivityAt = Date()
+            realtimeFinalizationLastActivityAt = dependencies.clock.now()
         }
 
         guard let finalized = transcript.applyFinal(processedText) else {

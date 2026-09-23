@@ -18,6 +18,9 @@ enum TimingConstants {
     /// How long to wait for a WebSocket to reach `.connected` before timing out.
     static let connectTimeout: TimeInterval = 1.0
 
+    /// How long a start waits on a microphone prompt nobody answers.
+    static let microphonePermissionPromptTimeout: TimeInterval = 120
+
     /// Short grace after the app-level connect timeout fires before presenting
     /// a timeout. This lets URLSession deliver a terminal socket error that
     /// raced the timer, so refused ports are not mislabeled as silent timeouts.
