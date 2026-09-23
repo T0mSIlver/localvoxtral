@@ -158,6 +158,12 @@ expect true "the context budget in the core target runs the lane" \
   Sources/localvoxtralCore/PolishContextBudget.swift
 expect true "the cross-source grounding merge in the core target runs the lane" \
   Sources/localvoxtralCore/PolishContextGrounding.swift
+# The strict join-URL parsers moved to the core target and still run the
+# lane: which session (if any) the Claude context comes from.
+expect true "the bridge session URL parser in the core target runs the lane" \
+  Sources/localvoxtralCore/ClaudeBridgeSessionURL.swift
+expect true "the desktop session URL parser in the core target runs the lane" \
+  Sources/localvoxtralCore/ClaudeDesktopSessionURL.swift
 expect false "empty changed-file list decides run=false (caller owns fail-open)" \
   ""
 
