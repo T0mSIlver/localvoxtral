@@ -230,6 +230,7 @@ extension DictationSessionController {
         // were never meant to notice. This is the end of the line.
         audio.audioDucking.restoreAfterSession()
         isDictating = false
+        disarmSilenceAutoStop()
         escapeCancelHandler.stop()
         finishStoppedSession(promotePendingSegment: true)
         statusText = Self.connectionLostMessage

@@ -494,6 +494,7 @@ extension DictationSessionController {
             } else {
                 textInsertion.stopInsertionRetryTask()
             }
+            armSilenceAutoStopIfEnabled()
             if isOverlayBufferModeEnabled {
                 startOverlayBufferSession()
             } else {

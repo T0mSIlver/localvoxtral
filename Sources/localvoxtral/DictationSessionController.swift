@@ -279,6 +279,12 @@ final class DictationSessionController {
     var stopFinalizationTask: Task<Void, Never>?
     @ObservationIgnored
     var connectTimeoutTask: Task<Void, Never>?
+    /// Stops an Overlay Buffer tap session that has gone quiet
+    /// (`DictationSessionController+SilenceAutoStop.swift`).
+    @ObservationIgnored
+    var silenceAutoStopTask: Task<Void, Never>?
+    @ObservationIgnored
+    var lastTranscriptTextAt: Date?
     @ObservationIgnored
     var isResolvingConnectTimeout = false
     /// The connect snapshot THIS session opened with. A mid-session reconnect
@@ -626,6 +632,7 @@ final class DictationSessionController {
         guard isDictating else { return }
         debugLog("stopDictation reason=\(reason)")
         shortcuts.clearPushToTalkShortcutSessionAttempt()
+        disarmSilenceAutoStop()
 
         // Before anything else: a reconnect run still in flight must not be
         // allowed to hand this session a socket after the user stopped it.

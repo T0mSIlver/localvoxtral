@@ -300,6 +300,19 @@ struct DictationSettingsPane: View {
                 }
 
                 SettingsFieldRow(
+                    title: "Stop when no new text",
+                    help: "Tap sessions only. A held shortcut stops on release."
+                ) {
+                    Picker("", selection: $settings.overlayBufferSilenceAutoStop) {
+                        ForEach(SilenceAutoStop.allCases) { choice in
+                            Text(choice.displayName).tag(choice)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                }
+
+                SettingsFieldRow(
                     title: "Position",
                     help: "Drag the overlay anywhere on it to move it; "
                         + "double-click it to put it back.",
