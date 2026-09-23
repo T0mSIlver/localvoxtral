@@ -599,6 +599,7 @@ case "$CMD" in
     E2E_RECORDING_DIR=""
     E2E_PROVIDER=""
     E2E_ASR=""
+    E2E_ASR_GIVEN=0
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --asr)
@@ -607,10 +608,12 @@ case "$CMD" in
             exit 1
           fi
           E2E_ASR="$2"
+          E2E_ASR_GIVEN=1
           shift 2
           ;;
         --asr=*)
           E2E_ASR="${1#--asr=}"
+          E2E_ASR_GIVEN=1
           shift
           ;;
         --provider)
@@ -647,7 +650,7 @@ case "$CMD" in
       echo "eval-e2e: unknown provider '$E2E_PROVIDER' (only 'mistral')" >&2
       exit 1
     fi
-    if [[ "$E2E_PROVIDER" == "mistral" && -n "$E2E_ASR" ]]; then
+    if [[ "$E2E_PROVIDER" == "mistral" && "$E2E_ASR_GIVEN" == 1 ]]; then
       echo "eval-e2e: --asr picks a speech test service on the Mac; --provider mistral uses none" >&2
       exit 1
     fi
@@ -661,7 +664,9 @@ case "$CMD" in
     fi
     # The speech service to score: its port and pinned repo come from the same
     # list the Mac's services are installed from.
-    E2E_ASR="${E2E_ASR:-voxtral}"
+    if [[ "$E2E_ASR_GIVEN" == 0 ]]; then
+      E2E_ASR="voxtral"
+    fi
     E2E_ASR_PORT=""
     E2E_ASR_REPO=""
     if [[ "$E2E_PROVIDER" != "mistral" ]]; then
@@ -669,7 +674,7 @@ case "$CMD" in
         || ! read -r E2E_ASR_PORT E2E_ASR_REPO < <(awk -v n="$E2E_ASR" \
           '$1 == n { print $2, $3; found = 1 } END { exit !found }' \
           "${LV_TEST_SPEECH_MODELS:-$ROOT_DIR/scripts/mac/test-speech-models.tsv}") \
-        || [[ ! "$E2E_ASR_PORT" =~ ^[0-9]{4,5}$ \
+        || [[ ! "$E2E_ASR_PORT" =~ ^80[0-7][0-9]$ \
               || ! "$E2E_ASR_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
         echo "eval-e2e: no speech model '$E2E_ASR' in scripts/mac/test-speech-models.tsv" >&2
         exit 1

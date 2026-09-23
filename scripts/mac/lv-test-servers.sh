@@ -122,7 +122,9 @@ LAUNCH_AGENTS_DIR="${LV_TEST_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 LOG_DIR="${LV_TEST_SERVER_LOG_DIR:-/Users/Shared/localvoxtral}"
 
 # Print each row of the list as "name port repo revision". A malformed row is
-# an error rather than a skip, so a typo cannot silently drop a model.
+# an error rather than a skip, so a typo cannot silently drop a model. Ports
+# stay in 8000-8079: `stop` kills whatever listens on a service's port, and
+# 8080 (polishd) and the app's own 8471/8472 must never be one.
 speech_model_rows() {
   if [[ ! -f "$SPEECH_MODELS" ]]; then
     echo "lv-test-servers: speech model list missing: $SPEECH_MODELS" >&2
@@ -131,7 +133,7 @@ speech_model_rows() {
   local name port repo revision extra
   while read -r name port repo revision extra; do
     [[ -z "$name" || "$name" == \#* ]] && continue
-    if [[ ! "$name" =~ ^[a-z0-9]+$ || ! "$port" =~ ^[0-9]{4,5}$ \
+    if [[ ! "$name" =~ ^[a-z0-9]+$ || ! "$port" =~ ^80[0-7][0-9]$ \
           || ! "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ \
           || ! "$revision" =~ ^[0-9a-f]{40}$ || -n "$extra" ]]; then
       echo "lv-test-servers: bad row in $SPEECH_MODELS: $name $port $repo $revision $extra" >&2
@@ -274,9 +276,11 @@ newest_activity() {
   prefix="$(stamp_prefix_for "$name")" || return 1
   trigger="$(trigger_for "$name")"
   # shellcheck disable=SC2012
+  # `|| true`: ls fails when the stamp glob matches nothing (a trigger with no
+  # stamp yet), and under pipefail that failure would end status and reap.
   ls -1 "${prefix}"* "$trigger" 2>/dev/null \
     | while read -r f; do stat -f %m "$f" 2>/dev/null || true; done \
-    | sort -n | tail -1
+    | sort -n | tail -1 || true
 }
 
 # ---- commands ----------------------------------------------------------------
@@ -314,7 +318,13 @@ MSG
     return 1
   fi
   # Stamp our own activity file — always permitted (we own it) — to reset the
-  # idle window regardless of who created the trigger.
+  # idle window regardless of who created the trigger. The run dir is world
+  # writable, so a symlink planted at our stamp path would make touch write
+  # through it; refuse one.
+  if [[ -L "$stamp" ]]; then
+    echo "lv-test-servers: refusing symlinked activity stamp $stamp" >&2
+    return 1
+  fi
   touch "$stamp" 2>/dev/null || {
     echo "lv-test-servers: cannot write activity stamp $stamp" >&2
     return 1

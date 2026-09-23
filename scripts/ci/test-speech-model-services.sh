@@ -109,6 +109,15 @@ status=0
 servers install-speech-models >"$TMP_DIR/out" 2>&1 || status=$?
 [[ "$status" != 0 ]] || fail "a malformed row was accepted"
 [[ -z "$(ls "$AGENTS")" ]] || fail "a malformed list still wrote plists"
+# `stop` kills whatever holds a service's port, so the app's own ports and
+# polishd's are refused.
+for port in 8080 8471; do
+  cp "$TMP_DIR/good.tsv" "$LIST"
+  printf 'clash\t%s\towner/repo\t%s\n' "$port" "$NEMOTRON_REVISION" >>"$LIST"
+  status=0
+  servers install-speech-models >"$TMP_DIR/out" 2>&1 || status=$?
+  [[ "$status" != 0 ]] || fail "a row on port $port was accepted"
+done
 cp "$TMP_DIR/good.tsv" "$LIST"
 
 # ---- ensure / status ---------------------------------------------------------
@@ -125,7 +134,16 @@ status=0
 servers ensure speechd-bogus >"$TMP_DIR/out" 2>&1 || status=$?
 [[ "$status" == 2 ]] || fail "ensure of an unknown service exited $status, expected 2"
 
-servers status >"$TMP_DIR/out" 2>&1 || fail "status failed"
+# A symlink planted at a stamp path must not be written through.
+rm -f "$RUN/speechd-nemotron.seen.$(id -u)"
+ln -s "$TMP_DIR/planted-by-servers" "$RUN/speechd-nemotron.seen.$(id -u)"
+status=0
+servers ensure speechd-nemotron >"$TMP_DIR/out" 2>&1 || status=$?
+[[ "$status" != 0 && ! -e "$TMP_DIR/planted-by-servers" ]] \
+  || fail "ensure wrote through a symlinked stamp (exit $status)"
+rm -f "$RUN/speechd-nemotron.seen.$(id -u)"
+
+servers status >"$TMP_DIR/out" 2>&1 || fail "status failed: $(cat "$TMP_DIR/out")"
 for line in 'speechd-voxtral' 'speechd-nemotron' 'port 8001: up' 'polishd'; do
   assert_has "$TMP_DIR/out" "$line"
 done
@@ -178,8 +196,20 @@ assert_gate_denied 'ensure speechd-Nemotron'
 assert_gate_denied 'ensure speechd-'
 assert_gate_denied 'ensure speechd-../x'
 printf 'evil\t80;id\towner/repo\t%s\n' "$NEMOTRON_REVISION" >>"$INSTALLED"
+printf 'app\t8471\towner/repo\t%s\n' "$NEMOTRON_REVISION" >>"$INSTALLED"
 assert_gate_denied 'ensure speechd-evil'
+assert_gate_denied 'ensure speechd-app'
 cp "$LIST" "$INSTALLED"
+
+# The gate refuses to write through a symlink planted at its stamp path.
+gate_stamp="$TMP_DIR/gate-run/speechd-nemotron.seen.$(id -u)"
+rm -f "$gate_stamp"
+ln -s "$TMP_DIR/planted-by-gate" "$gate_stamp"
+status=0
+gate 'ensure speechd-nemotron' >"$TMP_DIR/out" 2>&1 || status=$?
+[[ "$status" != 0 && ! -e "$TMP_DIR/planted-by-gate" ]] \
+  || fail "the gate wrote through a symlinked stamp (exit $status)"
+rm -f "$gate_stamp"
 
 # ---- remote-build.sh eval-e2e --asr -------------------------------------------
 
@@ -224,6 +254,7 @@ assert_eval_refused() {
   assert_has "$TMP_DIR/out" "$expected"
 }
 assert_eval_refused "no speech model 'bogus'" --asr bogus
+assert_eval_refused "no speech model ''" --asr=
 assert_eval_refused "--provider mistral uses none" --asr nemotron --provider mistral
 
 printf 'PASS: speech test services follow the model list, in lv-test-servers, the gate and eval-e2e\n'

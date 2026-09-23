@@ -511,7 +511,7 @@ lv_speech_model_names() {
   local name port rest
   [[ -f "$LV_SPEECH_MODELS_FILE" ]] || return 0
   while read -r name port rest; do
-    [[ "$name" =~ ^[a-z0-9]+$ && "$port" =~ ^[0-9]{4,5}$ ]] || continue
+    [[ "$name" =~ ^[a-z0-9]+$ && "$port" =~ ^80[0-7][0-9]$ ]] || continue
     printf '%s\n' "$name"
   done <"$LV_SPEECH_MODELS_FILE"
 }
@@ -520,7 +520,8 @@ lv_speech_model_port() {
   [[ -f "$LV_SPEECH_MODELS_FILE" ]] || return 1
   while read -r name port rest; do
     [[ "$name" == "$want" ]] || continue
-    [[ "$port" =~ ^[0-9]{4,5}$ ]] || return 1
+    # 8000-8079 only: never polishd's 8080 or the app's own 8471/8472.
+    [[ "$port" =~ ^80[0-7][0-9]$ ]] || return 1
     printf '%s\n' "$port"
     return 0
   done <"$LV_SPEECH_MODELS_FILE"
@@ -613,6 +614,12 @@ ensure_one_service() {
   fi
   if [[ ! -e "$trigger" ]]; then
     printf 'ensure %s: cannot create trigger %s\n' "$name" "$trigger" >&2
+    return 1
+  fi
+  # The run dir is world writable: a symlink planted at this predictable path
+  # would make touch write through it, as the gate account.
+  if [[ -L "$stamp" ]]; then
+    printf 'ensure %s: refusing symlinked activity stamp %s\n' "$name" "$stamp" >&2
     return 1
   fi
   touch "$stamp" 2>/dev/null || {

@@ -33,13 +33,18 @@ final class SpeechModelCatalogTests: XCTestCase {
             .map { $0.split(whereSeparator: \.isWhitespace).map(String.init) }
 
         XCTAssertTrue(rows.allSatisfy { $0.count == 4 }, "\(rows)")
+        XCTAssertEqual(rows.count, SpeechModelCatalog.options.count, "one row per model")
         XCTAssertEqual(
             Set(rows.map { "\($0[2])@\($0[3])" }),
             Set(SpeechModelCatalog.options.map { "\($0.repoID)@\($0.revision)" })
         )
         XCTAssertEqual(Set(rows.map { $0[0] }).count, rows.count, "names must be unique")
         XCTAssertEqual(Set(rows.map { $0[1] }).count, rows.count, "ports must be unique")
-        XCTAssertFalse(rows.contains { $0[1] == "8080" }, "8080 is the polishd test service")
+        // lv-test-servers.sh and the build gate accept 8000-8079 only.
+        XCTAssertTrue(
+            rows.allSatisfy { Int($0[1]).map { (8000...8079).contains($0) } ?? false },
+            "ports must stay in 8000-8079"
+        )
         // CI and older build gates reach Voxtral on 8000 without reading the list.
         XCTAssertEqual(rows.first { $0[0] == "voxtral" }?[1], "8000")
     }
