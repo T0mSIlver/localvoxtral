@@ -128,9 +128,10 @@ enum PolishPromptWarmup {
 /// The coordinator remembers which prefixes it warmed on the current helper
 /// launch (`PolishPromptWarmup.CachedPrefix`) and warms whatever the current
 /// plan needs that is not in that set. It reconciles on three triggers:
-/// - every polishd `.ready` update. A launch clears the set (initial start,
-///   crash auto-restart, model-switch restart, polishing re-enable); the
-///   duplicate `.ready` that `ensureReady` re-emits finds nothing missing.
+/// - a polishd launch: the `.ready` that follows any non-ready status (initial
+///   start, crash auto-restart, model-switch restart, polishing re-enable),
+///   with the warmed set cleared. The duplicate `.ready` that `ensureReady`
+///   re-emits on a dictation start is left to the dictation-start check.
 /// - a change to any setting the plan reads (About you, speaker terms, the
 ///   agent toggle, the model and its template arguments), observed through
 ///   `withObservationTracking` and settled for `settleDelay` on the injected
@@ -146,7 +147,8 @@ enum PolishPromptWarmup {
 /// requests run sequentially in one task (the container would serialize them
 /// anyway), a non-cancellation failure on one profile still warms the rest,
 /// and failures are logged to `Log.backends` and swallowed — warmup is never
-/// user-visible. A failed prefix stays missing, so the next trigger retries it.
+/// user-visible. A failed prefix stays missing, so the next trigger retries it,
+/// up to `maxFailuresPerLaunch` times per helper launch.
 @MainActor
 final class PolishPromptWarmupCoordinator {
     typealias PlanProvider =
@@ -159,6 +161,10 @@ final class PolishPromptWarmupCoordinator {
     /// How long plan inputs must stay unchanged before a settings-driven
     /// warmup runs: long enough to cover typing in the About-you field.
     static let defaultSettleDelay: Duration = .milliseconds(1500)
+    /// A prefix that failed this many times on one helper launch is not
+    /// retried until the next launch: every retry queues ahead of real
+    /// polishes on the helper's model container.
+    static let maxFailuresPerLaunch = 3
 
     private let serviceProvider: ServiceProvider
     private let planProvider: PlanProvider
@@ -170,6 +176,10 @@ final class PolishPromptWarmupCoordinator {
     /// Prefixes the running `warmupTask` has not finished yet, in order; each
     /// leaves the list when its request completes.
     private var inFlightPrefixes: [PolishPromptWarmup.CachedPrefix] = []
+    /// The latest plan's prefixes. The running task skips an entry that left
+    /// the plan instead of being cancelled and restarted over it.
+    private var plannedPrefixes: Set<PolishPromptWarmup.CachedPrefix> = []
+    private var failureCounts: [PolishPromptWarmup.CachedPrefix: Int] = [:]
     /// Bumped per warmup task, so a superseded task's late completion cannot
     /// mark a prefix warm for a helper launch it did not target.
     private var warmupGeneration = 0
@@ -230,12 +240,13 @@ final class PolishPromptWarmupCoordinator {
                 inFlightPrefixes = []
             }
             warmedPrefixes = []
+            failureCounts = [:]
             polishdIsReady = false
             return
         }
-        let isLaunch = !polishdIsReady
+        guard !polishdIsReady else { return }
         polishdIsReady = true
-        ensureWarm(reason: isLaunch ? "helper ready" : "helper ready again")
+        ensureWarm(reason: "helper ready")
     }
 
     /// Warms every prefix of the current plan this helper launch does not
@@ -263,8 +274,12 @@ final class PolishPromptWarmupCoordinator {
         // Only the current plan's prefixes count as warm: the helper keeps a
         // few LRU slots, and a prefix from before a settings change may have
         // been evicted by the time the setting changes back.
-        warmedPrefixes.formIntersection(planned.map(\.prefix))
-        let missing = planned.filter { !warmedPrefixes.contains($0.prefix) }
+        plannedPrefixes = Set(planned.map(\.prefix))
+        warmedPrefixes.formIntersection(plannedPrefixes)
+        let missing = planned.filter {
+            !warmedPrefixes.contains($0.prefix)
+                && failureCounts[$0.prefix, default: 0] < Self.maxFailuresPerLaunch
+        }
         guard !missing.isEmpty else {
             // Whatever is still in flight is no longer planned (a profile
             // turned off, an edit reverted): it would only hold the helper
@@ -276,7 +291,10 @@ final class PolishPromptWarmupCoordinator {
             }
             return
         }
-        if warmupTask != nil, inFlightPrefixes == missing.map(\.prefix) { return }
+        // Still covered by the running task: let it finish rather than resend
+        // a prefix the helper may already be prefilling. It skips whatever
+        // left the plan.
+        if warmupTask != nil, Set(missing.map(\.prefix)).isSubset(of: inFlightPrefixes) { return }
 
         warmupTask?.cancel()
         warmupGeneration += 1
@@ -303,6 +321,14 @@ final class PolishPromptWarmupCoordinator {
                 guard !Task.isCancelled else {
                     Log.backends.info("polish prompt warmup cancelled")
                     return
+                }
+                guard self?.plannedPrefixes.contains(entry.prefix) == true else {
+                    if let self, self.warmupGeneration == generation,
+                        self.inFlightPrefixes.first == entry.prefix
+                    {
+                        self.inFlightPrefixes.removeFirst()
+                    }
+                    continue
                 }
                 let profile = entry.profiled.profile.rawValue
                 defer {
@@ -338,6 +364,7 @@ final class PolishPromptWarmupCoordinator {
                     // real request works either way — it just pays full
                     // prefill. The prefix stays missing, so the next trigger
                     // retries it; the remaining profiles still get theirs.
+                    self?.failureCounts[entry.prefix, default: 0] += 1
                     Log.backends.error(
                         "polish prompt warmup (\(profile, privacy: .public)) failed (log-only): \(error.localizedDescription, privacy: .public)"
                     )
@@ -360,6 +387,7 @@ final class PolishPromptWarmupCoordinator {
     }
 
     private func planInputsChanged() {
+        guard isObservingPlanInputs else { return }
         armPlanObservation()
         settleTask?.cancel()
         let clock = clock

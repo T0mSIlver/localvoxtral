@@ -169,6 +169,56 @@ final class PolishPromptWarmupTests: XCTestCase {
         }
     }
 
+    /// First polish call waits until `release()`, then succeeds; later calls
+    /// answer immediately. Event-driven, no wall clock.
+    private final class GatedPolishService: LLMPolishingServicing, @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Void, Never>?
+        private var released = false
+        private var recordedRequests: [LLMPolishingRequest] = []
+        let started = XCTestExpectation(description: "first polish request reached the service")
+
+        var requests: [LLMPolishingRequest] {
+            lock.lock()
+            defer { lock.unlock() }
+            return recordedRequests
+        }
+
+        func release() {
+            lock.lock()
+            released = true
+            let continuation = self.continuation
+            self.continuation = nil
+            lock.unlock()
+            continuation?.resume()
+        }
+
+        func polish(
+            request: LLMPolishingRequest,
+            configuration: LLMPolishingConfiguration
+        ) async throws -> LLMPolishingResult {
+            let isFirst: Bool = lock.withLock {
+                recordedRequests.append(request)
+                return recordedRequests.count == 1
+            }
+            if isFirst {
+                started.fulfill()
+                await withCheckedContinuation { continuation in
+                    lock.lock()
+                    let go = released
+                    if !go { self.continuation = continuation }
+                    lock.unlock()
+                    if go { continuation.resume() }
+                }
+            }
+            return LLMPolishingResult(
+                rawText: request.inputText,
+                polishedText: request.inputText,
+                durationSeconds: 0
+            )
+        }
+    }
+
     // MARK: - Helpers
 
     private func makePlan(
@@ -433,7 +483,7 @@ final class PolishPromptWarmupTests: XCTestCase {
         await awaitWarmup(coordinator)
     }
 
-    func testSettingsChangeRewarmsOnceAfterABurstOfEdits() async {
+    func testSettingsChangeRewarmsOnceAfterABurstOfEdits() async throws {
         let service = RecordingPolishService()
         let inputs = WarmupPlanInputs()
         let clock = ManualSessionClock()
@@ -451,9 +501,15 @@ final class PolishPromptWarmupTests: XCTestCase {
         // edit restarts the settle delay, so only the last one is warmed.
         inputs.systemPrompt = "system t"
         await clock.waitForSleepers(1)
-        let firstSettle = coordinator.settleTask
+        let firstSettle = try XCTUnwrap(coordinator.settleTask)
         inputs.systemPrompt = "system two"
-        await firstSettle?.value
+        // The change reaches the coordinator through a main-actor hop; a
+        // bounded wait that fails, rather than hangs, if it never arrives.
+        for _ in 0..<1000 where coordinator.settleTask == firstSettle {
+            await Task.yield()
+        }
+        XCTAssertNotEqual(coordinator.settleTask, firstSettle, "the second edit restarts the settle")
+        XCTAssertTrue(firstSettle.isCancelled)
         await settle(coordinator, clock)
 
         XCTAssertEqual(
@@ -555,6 +611,62 @@ final class PolishPromptWarmupTests: XCTestCase {
         XCTAssertTrue(service.observedCancellation)
         XCTAssertNil(coordinator.warmupTask)
         coordinator.cancelTasks()
+    }
+
+    func testAPrefixThatKeepsFailingStopsBeingRetriedUntilTheNextLaunch() async {
+        let service = RecordingPolishService()
+        service.setFailure(LLMPolishingError.networkError("rejected"))
+        let coordinator = PolishPromptWarmupCoordinator(
+            serviceProvider: { service },
+            planProvider: { [plan = makePlan()] in plan }
+        )
+        coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .ready))
+        await awaitWarmup(coordinator)
+        for _ in 0..<5 {
+            coordinator.ensureWarm(reason: "dictation start")
+            await awaitWarmup(coordinator)
+        }
+        XCTAssertEqual(service.requests.count, PolishPromptWarmupCoordinator.maxFailuresPerLaunch)
+
+        coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .stopped))
+        coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .ready))
+        await awaitWarmup(coordinator)
+        XCTAssertEqual(
+            service.requests.count, PolishPromptWarmupCoordinator.maxFailuresPerLaunch + 1,
+            "a new helper launch gets a fresh try"
+        )
+    }
+
+    /// Opus review finding: turning the agent profile off while the standard
+    /// warmup ran cancelled it and sent the standard prefix again. The running
+    /// task now finishes the standard prefix and skips the dropped one.
+    func testDroppingAProfileMidWarmupKeepsTheRunningRequestAndSkipsTheDroppedOne() async {
+        let service = GatedPolishService()
+        let bothProfiles = LockedBool(true)
+        let coordinator = PolishPromptWarmupCoordinator(
+            serviceProvider: { service },
+            planProvider: {
+                [both = makePlan(profiles: [.standard, .agent]), standard = makePlan()] in
+                bothProfiles.value ? both : standard
+            }
+        )
+        coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .ready))
+        await fulfillment(of: [service.started], timeout: 5)
+        let running = coordinator.warmupTask
+
+        bothProfiles.set(false)
+        coordinator.ensureWarm(reason: "settings change")
+        XCTAssertEqual(coordinator.warmupTask, running, "the running warmup is kept")
+        XCTAssertEqual(running?.isCancelled, false)
+
+        service.release()
+        await awaitWarmup(coordinator)
+        XCTAssertEqual(
+            service.requests.map(\.systemPrompt), ["system standard"],
+            "the standard prefix is sent once and the dropped agent prefix never"
+        )
+        coordinator.ensureWarm(reason: "dictation start")
+        XCTAssertNil(coordinator.warmupTask, "the standard prefix counts as warm")
     }
 
     func testDictationStartDoesNothingWhileHelperIsNotReady() async {
