@@ -27,9 +27,9 @@ import Foundation
 ///   the identity.
 ///
 /// Anything else returns nil, which means "no join", never "guess".
-enum ClaudeBridgeSessionURL {
+package enum ClaudeBridgeSessionURL {
     /// Hosts whose `/code/session_…` URLs identify a Remote Control session.
-    static let host = ClaudeSessionPageURL.host
+    package static let host = ClaudeSessionPageURL.host
 
     /// The path prefix the session id follows.
     private static let pathPrefix = "/code/"
@@ -45,7 +45,7 @@ enum ClaudeBridgeSessionURL {
 
     /// The bridge session id named by `rawURL`, or nil when the URL is not
     /// exactly a Claude Code session URL.
-    static func sessionID(inTabURL rawURL: String) -> String? {
+    package static func sessionID(inTabURL rawURL: String) -> String? {
         guard let sessionID = ClaudeSessionPageURL.lastComponent(
             of: rawURL, underPathPrefix: pathPrefix
         ) else { return nil }
@@ -54,7 +54,7 @@ enum ClaudeBridgeSessionURL {
     }
 
     /// `session_[A-Za-z0-9_-]+`, ASCII only, bounded.
-    static func isSessionID(_ candidate: String) -> Bool {
+    package static func isSessionID(_ candidate: String) -> Bool {
         ClaudeSessionPageURL.isIdentifier(
             candidate, prefix: sessionIDPrefix, maxCount: maxSessionIDCount
         )
@@ -65,16 +65,16 @@ enum ClaudeBridgeSessionURL {
 /// `https://claude.ai/<prefix><id>` page URL whose last component is a session
 /// handle. Kept in one place so the two arms cannot drift apart on what counts
 /// as that host, and see `ClaudeBridgeSessionURL` for why each rule exists.
-enum ClaudeSessionPageURL {
+package enum ClaudeSessionPageURL {
     /// Hosts whose session page URLs a join arm reads. Exact match after
     /// lowercasing; there is deliberately no suffix match.
-    static let host = "claude.ai"
+    package static let host = "claude.ai"
 
     /// The single path component after `pathPrefix`, or nil when `rawURL` is
     /// not exactly `https://claude.ai<pathPrefix><component>` (one trailing
     /// slash tolerated, query and fragment ignored). The component is returned
     /// still PERCENT-ENCODED; the caller's charset check rejects any escape.
-    static func lastComponent(of rawURL: String, underPathPrefix pathPrefix: String) -> String? {
+    package static func lastComponent(of rawURL: String, underPathPrefix pathPrefix: String) -> String? {
         guard let components = URLComponents(string: rawURL) else { return nil }
         // `scheme` is already the parsed scheme, so a string like
         // "https://claude.ai@evil.com/..." cannot fake it — the userinfo check
@@ -97,7 +97,7 @@ enum ClaudeSessionPageURL {
     }
 
     /// `<prefix>[A-Za-z0-9_-]+`, ASCII only, at most `maxCount` characters.
-    static func isIdentifier(_ candidate: String, prefix: String, maxCount: Int) -> Bool {
+    package static func isIdentifier(_ candidate: String, prefix: String, maxCount: Int) -> Bool {
         guard candidate.hasPrefix(prefix), candidate.count <= maxCount else { return false }
         let rest = candidate.dropFirst(prefix.count)
         guard !rest.isEmpty else { return false }

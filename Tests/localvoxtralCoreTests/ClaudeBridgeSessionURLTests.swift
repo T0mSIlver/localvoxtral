@@ -1,5 +1,5 @@
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// The parser that turns a browser tab URL into a join key.
 ///

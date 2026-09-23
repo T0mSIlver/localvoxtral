@@ -153,6 +153,19 @@ expect true "the control-character sanitizer in the core target runs the lane" \
   Sources/localvoxtralCore/StringExtensions.swift
 expect false "the statusline combine script, moved to the core target, stays exempt" \
   Sources/localvoxtralCore/ClaudeStatuslineCombine.swift
+# The context budget and cross-source grounding merge moved to the core target
+# and still run it: they decide how many characters reach the model and what
+# gets pre-applied.
+expect true "the context budget in the core target runs the lane" \
+  Sources/localvoxtralCore/PolishContextBudget.swift
+expect true "the cross-source grounding merge in the core target runs the lane" \
+  Sources/localvoxtralCore/PolishContextGrounding.swift
+# The strict join-URL parsers moved to the core target and still run the
+# lane: which session (if any) the Claude context comes from.
+expect true "the bridge session URL parser in the core target runs the lane" \
+  Sources/localvoxtralCore/ClaudeBridgeSessionURL.swift
+expect true "the desktop session URL parser in the core target runs the lane" \
+  Sources/localvoxtralCore/ClaudeDesktopSessionURL.swift
 expect false "empty changed-file list decides run=false (caller owns fail-open)" \
   ""
 
