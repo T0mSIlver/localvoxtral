@@ -214,7 +214,7 @@ final class MistralModelCatalogTests: XCTestCase {
     func testPolishRequestForAModelWithoutReasoningOmitsTheField() throws {
         let json = try requestJSON(model: "ministral-8b-2512", effort: .omitted)
 
-        XCTAssertEqual(Set(json.keys), ["model", "messages", "temperature"])
+        XCTAssertEqual(Set(json.keys), ["model", "messages", "temperature", "prompt_cache_key"])
     }
 
     @MainActor

@@ -1,7 +1,15 @@
 import Foundation
+import Observation
 import XCTest
 
 @testable import localvoxtral
+
+/// Stands in for `SettingsStore`: the plan reads it, so observation tracks it.
+@Observable
+@MainActor
+final class WarmupPlanInputs {
+    var systemPrompt = "system one"
+}
 
 @MainActor
 final class PolishPromptWarmupTests: XCTestCase {
@@ -386,6 +394,160 @@ final class PolishPromptWarmupTests: XCTestCase {
         XCTAssertTrue(service.observedCancellation)
     }
 
+    // MARK: - Re-warming after the cached start changes (#489)
+
+    /// Non-observable, like a prompt TOML on disk.
+    private final class DiskTemplate: @unchecked Sendable {
+        var systemPrompt = "disk one"
+    }
+
+    private func plan(systemPrompt: String) -> (
+        requests: [PolishPromptWarmup.ProfiledRequest],
+        configuration: LLMPolishingConfiguration
+    ) {
+        let base = makePlan()
+        return (
+            requests: [PolishPromptWarmup.ProfiledRequest(
+                profile: .standard,
+                request: LLMPolishingRequest(
+                    inputText: "warm",
+                    systemPrompt: systemPrompt,
+                    userPrompts: ["static prefix", "tail"],
+                    maxTokens: 1
+                )
+            )],
+            configuration: base.configuration
+        )
+    }
+
+    /// Settles a settings-driven warmup: advances past the settle delay and
+    /// waits for the warmup it starts.
+    private func settle(
+        _ coordinator: PolishPromptWarmupCoordinator,
+        _ clock: ManualSessionClock
+    ) async {
+        await clock.waitForSleepers(1)
+        let settling = coordinator.settleTask
+        clock.advance(by: 1.5)
+        await settling?.value
+        await awaitWarmup(coordinator)
+    }
+
+    func testSettingsChangeRewarmsOnceAfterABurstOfEdits() async {
+        let service = RecordingPolishService()
+        let inputs = WarmupPlanInputs()
+        let clock = ManualSessionClock()
+        let coordinator = PolishPromptWarmupCoordinator(
+            serviceProvider: { service },
+            planProvider: { [unowned self] in self.plan(systemPrompt: inputs.systemPrompt) },
+            clock: clock.clock
+        )
+        coordinator.observePlanInputs()
+        coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .ready))
+        await awaitWarmup(coordinator)
+        XCTAssertEqual(service.requests.map(\.systemPrompt), ["system one"])
+
+        // Typing in About you: every keystroke changes the prefix. Each
+        // edit restarts the settle delay, so only the last one is warmed.
+        inputs.systemPrompt = "system t"
+        await clock.waitForSleepers(1)
+        let firstSettle = coordinator.settleTask
+        inputs.systemPrompt = "system two"
+        await firstSettle?.value
+        await settle(coordinator, clock)
+
+        XCTAssertEqual(
+            service.requests.map(\.systemPrompt), ["system one", "system two"],
+            "a burst of edits must warm the final prefix exactly once"
+        )
+    }
+
+    func testSettingsChangeBeforeHelperIsReadyWarmsOnlyAtReady() async {
+        let service = RecordingPolishService()
+        let inputs = WarmupPlanInputs()
+        let clock = ManualSessionClock()
+        let coordinator = PolishPromptWarmupCoordinator(
+            serviceProvider: { service },
+            planProvider: { [unowned self] in self.plan(systemPrompt: inputs.systemPrompt) },
+            clock: clock.clock
+        )
+        coordinator.observePlanInputs()
+
+        inputs.systemPrompt = "system two"
+        await settle(coordinator, clock)
+        XCTAssertTrue(service.requests.isEmpty, "no helper, nothing to warm")
+
+        coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .ready))
+        await awaitWarmup(coordinator)
+        XCTAssertEqual(service.requests.map(\.systemPrompt), ["system two"])
+    }
+
+    /// A prompt TOML edited on disk is invisible to observation; the
+    /// dictation start is where it gets caught, and only once.
+    func testDictationStartWarmsAPrefixThatChangedOnDisk() async {
+        let service = RecordingPolishService()
+        let disk = DiskTemplate()
+        let coordinator = PolishPromptWarmupCoordinator(
+            serviceProvider: { service },
+            planProvider: { [unowned self] in self.plan(systemPrompt: disk.systemPrompt) }
+        )
+        coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .ready))
+        await awaitWarmup(coordinator)
+
+        coordinator.ensureWarm(reason: "dictation start")
+        await awaitWarmup(coordinator)
+        XCTAssertEqual(service.requests.count, 1, "an unchanged prefix is not warmed again")
+
+        disk.systemPrompt = "disk two"
+        coordinator.ensureWarm(reason: "dictation start")
+        await awaitWarmup(coordinator)
+        coordinator.ensureWarm(reason: "dictation start")
+        await awaitWarmup(coordinator)
+        XCTAssertEqual(service.requests.map(\.systemPrompt), ["disk one", "disk two"])
+
+        // Changing back warms again: the helper's few LRU slots may no
+        // longer hold the old prefix.
+        disk.systemPrompt = "disk one"
+        coordinator.ensureWarm(reason: "dictation start")
+        await awaitWarmup(coordinator)
+        XCTAssertEqual(service.requests.map(\.systemPrompt), ["disk one", "disk two", "disk one"])
+    }
+
+    func testFailedWarmupIsRetriedOnTheNextDictationStart() async {
+        let service = RecordingPolishService()
+        service.setFailure(LLMPolishingError.networkError("connection refused"))
+        let coordinator = PolishPromptWarmupCoordinator(
+            serviceProvider: { service },
+            planProvider: { [plan = makePlan()] in plan }
+        )
+        coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .ready))
+        await awaitWarmup(coordinator)
+
+        service.setFailure(nil)
+        coordinator.ensureWarm(reason: "dictation start")
+        await awaitWarmup(coordinator)
+        coordinator.ensureWarm(reason: "dictation start")
+        await awaitWarmup(coordinator)
+        XCTAssertEqual(service.requests.count, 2, "retried once, then warm")
+    }
+
+    func testDictationStartDoesNothingWhileHelperIsNotReady() async {
+        let service = RecordingPolishService()
+        let coordinator = PolishPromptWarmupCoordinator(
+            serviceProvider: { service },
+            planProvider: { [plan = makePlan()] in plan }
+        )
+        coordinator.ensureWarm(reason: "dictation start")
+        XCTAssertNil(coordinator.warmupTask)
+
+        coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .ready))
+        await awaitWarmup(coordinator)
+        coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .stopped))
+        coordinator.ensureWarm(reason: "dictation start")
+        XCTAssertNil(coordinator.warmupTask, "a stopped helper is warmed at its next ready")
+        XCTAssertEqual(service.requests.count, 1)
+    }
+
     // MARK: - Warmup request shape (the cache-hit invariant)
 
     /// The invariant that makes app-side warmup work: the helper checkpoints
@@ -634,6 +796,55 @@ final class PolishPromptWarmupPlanTests: XCTestCase {
         )
 
         XCTAssertEqual(plan.requests.map(\.profile), [.standard])
+    }
+
+    /// The production wiring: the plan reads `SettingsStore`, so editing
+    /// About you, accepting a term, or turning the agent profile on re-warms
+    /// the changed prefixes once the edits settle, with no helper restart.
+    func testEditingSettingsTheCachedStartReadsRewarmsIt() async throws {
+        let store = makeStore()
+        store.llmPolishingEnabled = true
+        store.agentPolishProfileEnabled = false
+        let service = FakePolishingService()
+        let clock = ManualSessionClock()
+        let configStore = profileAwareConfigStore
+        let coordinator = PolishPromptWarmupCoordinator(
+            serviceProvider: { service },
+            planProvider: { PolishPromptWarmup.plan(settings: store, appConfigStore: configStore) },
+            clock: clock.clock
+        )
+        coordinator.observePlanInputs()
+        coordinator.handleStatusUpdate(
+            ManagedBackendStatusUpdate(spec: BackendCatalog.polishd, status: .ready))
+        await coordinator.warmupTask?.value
+        var sent = await service.requests.count
+        XCTAssertEqual(sent, 1)
+
+        func settle() async {
+            await clock.waitForSleepers(1)
+            let settling = coordinator.settleTask
+            clock.advance(by: 1.5)
+            await settling?.value
+            await coordinator.warmupTask?.value
+        }
+
+        store.polishSpeakerProfile = "I work on localvoxtral."
+        await settle()
+        sent = await service.requests.count
+        XCTAssertEqual(sent, 2)
+        let profileRequest = await service.lastRequest
+        XCTAssertTrue(profileRequest?.systemPrompt.contains("I work on localvoxtral.") == true)
+
+        store.polishSpeakerTerms = ["Voxtral"]
+        await settle()
+        let termsRequest = await service.lastRequest
+        XCTAssertTrue(termsRequest?.systemPrompt.contains("Voxtral") == true)
+
+        store.agentPolishProfileEnabled = true
+        await settle()
+        let systemPrompts = await service.requests.map(\.systemPrompt)
+        XCTAssertEqual(systemPrompts.count, 4, "only the newly planned agent prefix is warmed")
+        XCTAssertTrue(systemPrompts.last?.hasPrefix("agent system") == true)
     }
 
     func testPlanIsNilWhenPolishingDisabled() {

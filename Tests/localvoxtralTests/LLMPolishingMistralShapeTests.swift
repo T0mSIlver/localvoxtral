@@ -42,7 +42,10 @@ final class LLMPolishingMistralShapeTests: XCTestCase {
 
         XCTAssertEqual(
             Set(json.keys),
-            ["model", "messages", "temperature", "top_p", "presence_penalty", "reasoning_effort"]
+            [
+                "model", "messages", "temperature", "top_p", "presence_penalty",
+                "reasoning_effort", "prompt_cache_key",
+            ]
         )
         XCTAssertEqual(json["model"] as? String, "mistral-medium-3-5")
         XCTAssertEqual(json["temperature"] as? Double, 0.2)
@@ -82,7 +85,10 @@ final class LLMPolishingMistralShapeTests: XCTestCase {
             ) as? [String: Any]
         )
 
-        XCTAssertEqual(Set(json.keys), ["model", "messages", "temperature", "reasoning_effort"])
+        XCTAssertEqual(
+            Set(json.keys),
+            ["model", "messages", "temperature", "reasoning_effort", "prompt_cache_key"]
+        )
         XCTAssertEqual(json["temperature"] as? Double, 0.3)
         XCTAssertEqual(json["reasoning_effort"] as? String, "none")
     }
@@ -330,5 +336,41 @@ final class LLMPolishingMistralShapeTests: XCTestCase {
 
         let noContent: [String: Any] = ["choices": [["message": ["role": "assistant"]]]]
         XCTAssertNil(LLMPolishingService.assistantText(inResponseObject: noContent))
+    }
+
+    /// `prompt_cache_key` names the fixed start of the prompt and nothing
+    /// else: requests that differ only in the transcript share a key, a
+    /// different system prompt gets another, and the key carries no prompt
+    /// text. A one-message request has no fixed start and sends no key.
+    func testMistralPromptCacheKeyFollowsTheFixedStartOnly() throws {
+        func key(_ system: String, _ prompts: [String]) -> String? {
+            LLMPolishingService.mistralPromptCacheKey(
+                for: LLMPolishingRequest(inputText: "x", systemPrompt: system, userPrompts: prompts)
+            )
+        }
+        let first = try XCTUnwrap(key("system", ["fixed", "transcript one"]))
+        XCTAssertEqual(key("system", ["fixed", "transcript two"]), first)
+        XCTAssertNotEqual(key("other system", ["fixed", "transcript one"]), first)
+        XCTAssertNotEqual(key("system", ["other fixed", "transcript one"]), first)
+        XCTAssertTrue(first.hasPrefix("lvx-polish-"))
+        XCTAssertEqual(first.count, "lvx-polish-".count + 16)
+        XCTAssertFalse(first.contains("system"))
+        XCTAssertNil(key("", ["only message"]))
+        XCTAssertNotNil(key("system", ["only message"]))
+    }
+
+    /// The key is a Mistral field; the OpenAI-compatible shape never sends it.
+    func testOpenAIShapeSendsNoPromptCacheKey() throws {
+        let configuration = LLMPolishingConfiguration(
+            endpointURL: URL(string: "http://127.0.0.1:8080/v1/chat/completions")!,
+            apiKey: "",
+            model: "local"
+        )
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: LLMPolishingService.requestBody(request: request, configuration: configuration)
+            ) as? [String: Any]
+        )
+        XCTAssertNil(json["prompt_cache_key"])
     }
 }

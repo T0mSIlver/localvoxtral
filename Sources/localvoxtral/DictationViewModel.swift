@@ -616,10 +616,15 @@ final class DictationViewModel {
                         settings: self.settings,
                         appConfigStore: self.appConfigStore
                     )
-                }
+                },
+                clock: dependencies.clock
             )
             polishPromptWarmupCoordinator = promptWarmup
             promptWarmup.observe(self.backendManager.statusUpdates)
+            promptWarmup.observePlanInputs()
+            session.onDictationStartRequested = { [weak promptWarmup] in
+                promptWarmup?.ensureWarm(reason: "dictation start")
+            }
             engines.warmUpManagedBackendsAtLaunchIfNeeded()
         } else if let center = dependencies.lifecycleNotificationCenter {
             registerLifecycleObservers(on: center)
