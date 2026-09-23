@@ -42,7 +42,7 @@ final class VibeFakeHost: @unchecked Sendable {
         try FileManager.default.createSymbolicLink(at: fakeSSH, withDestinationURL: try Self.sharedStub("fake-ssh"))
     }
 
-    /// The two executables every host needs, written once per test process and
+    /// The executables the hosts need, written once per test process and
     /// symlinked into each host. Executing a script the system has not seen
     /// before cost 170–260 ms on the build host against 23 ms for one it has,
     /// and each of the 28 hosts used to write its own pair. What differs per
@@ -56,6 +56,17 @@ final class VibeFakeHost: @unchecked Sendable {
             HOME="$home" PATH="$(/bin/cat "$home/fake-ssh.path")" exec /bin/sh -s
 
             """,
+        // The `curl` the installed shim dials through: it keeps the last
+        // argument (the URL) and the header file, under `$HOME`.
+        "capture-curl": """
+            #!/bin/sh
+            while [ "$#" -gt 0 ]; do
+              case "$1" in --header) case "$2" in @*) cp "${2#@}" "$HOME/captured-header" ;; esac ;; esac
+              last="$1"; shift
+            done
+            echo "$last" >"$HOME/captured-url"
+            printf 200
+            """,
     ]
 
     private static func sharedStub(_ name: String) throws -> URL {
@@ -67,6 +78,13 @@ final class VibeFakeHost: @unchecked Sendable {
         try Data(sharedStubs[name]!.utf8).write(to: url)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         return url
+    }
+
+    /// Links one of the shared stubs at `relative` under this host's home.
+    func linkSharedStub(_ name: String, at relative: String) throws {
+        let url = home.appendingPathComponent(relative)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: url, withDestinationURL: try Self.sharedStub(name))
     }
 
     private func writeFakeSSHPath() throws {
@@ -247,16 +265,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
         // where setup put them, from $HOME alone.
         let host = try VibeFakeHost()
         _ = try setUp(host)
-        let stub = """
-        #!/bin/sh
-        while [ "$#" -gt 0 ]; do
-          case "$1" in --header) case "$2" in @*) cp "${2#@}" "$HOME/captured-header" ;; esac ;; esac
-          last="$1"; shift
-        done
-        echo "$last" >"$HOME/captured-url"
-        printf 200
-        """
-        try host.write(stub, to: "stub/curl", mode: 0o755)
+        try host.linkSharedStub("capture-curl", at: "stub/curl")
         try host.write(
             #"{"session_id":"s1","transcript_path":null,"cwd":"/srv","parent_session_id":null,"hook_event_name":"post_agent"}"#,
             to: "payload.json"
@@ -264,7 +273,9 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = [host.path(".vibe/localvoxtral/remote/post.sh")]
-        process.environment = ["HOME": host.home.path, "PATH": "\(host.path("stub")):/usr/bin:/bin"]
+        process.environment = [
+            "HOME": host.home.path, "PATH": "\(host.path("stub")):\(VibeTestPython.directory.path):/usr/bin:/bin",
+        ]
         process.standardInput = try FileHandle(forReadingFrom: URL(fileURLWithPath: host.path("payload.json")))
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice

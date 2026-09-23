@@ -1,4 +1,4 @@
-10.706 VibeRemoteShimTests
+7.300 VibeRemoteShimTests
 8.793 ClaudeRemotePluginManifestTests
 4.530 AgentDictationE2EEvalSupportTests
 3.116 VibeRemoteHooksSetupTests
