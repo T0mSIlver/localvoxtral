@@ -14,7 +14,7 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         settings.dictationShortcutMode = .pushToTalk
         let viewModel = makeViewModel(settings: settings)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isDictating = true
 
         viewModel.shortcuts.handleModifierOnlyTap(mode: .overlayBuffer)
@@ -34,7 +34,7 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         let coordinator = MockOverlayCoordinator()
         let viewModel = makeViewModel(settings: settings, coordinator: coordinator)
 
-        viewModel.sessionOutputMode = .liveAutoPaste
+        viewModel.session.sessionOutputMode = .liveAutoPaste
         viewModel.isDictating = true
 
         viewModel.shortcuts.handleModifierOnlyTap(mode: .overlayBuffer)
@@ -53,13 +53,13 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         let settings = makeSettings(outputMode: .overlayBuffer)
         let viewModel = makeViewModel(settings: settings)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isDictating = true
 
         viewModel.shortcuts.handleModifierOnlyHoldStart()
 
         XCTAssertEqual(
-            viewModel.sessionOutputMode, .overlayBuffer,
+            viewModel.session.sessionOutputMode, .overlayBuffer,
             "a hold during an active session must not rewrite its output mode"
         )
         XCTAssertFalse(
@@ -77,7 +77,7 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         viewModel.shortcuts.handleModifierOnlyHoldStart()
 
         XCTAssertNil(
-            viewModel.sessionOutputMode,
+            viewModel.session.sessionOutputMode,
             "a gesture whose startDictation request is declined must not latch a shortcut mode"
         )
 
@@ -85,14 +85,14 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         viewModel.isAwaitingMicrophonePermission = false
         viewModel.textInsertion.debugSetAccessibilityTrusted(true)
 
-        await viewModel.beginDictationSession()
+        await viewModel.session.beginDictationSession()
 
         XCTAssertEqual(
-            viewModel.sessionOutputMode, .overlayBuffer,
+            viewModel.session.sessionOutputMode, .overlayBuffer,
             "the next settings-based session must use the current setting, not a stale failed gesture mode"
         )
 
-        viewModel.abortConnectingSession()
+        viewModel.session.abortConnectingSession()
     }
 
     func testAccessibilityTrustArrivalRetriesFailedModifierOnlyRegistration() {

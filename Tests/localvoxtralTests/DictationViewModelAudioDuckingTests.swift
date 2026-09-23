@@ -29,7 +29,7 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
         // funnel here, and none of them reach stopped-session cleanup.
         let (viewModel, volume) = await makeDuckedSession()
 
-        viewModel.abortConnectingSession()
+        viewModel.session.abortConnectingSession()
         await viewModel.audio.audioDucking.debugFadeTask?.value
 
         assertVolume(volume.volume(of: Self.deviceA), Self.original)
@@ -38,7 +38,7 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
     func testASocketLostMidDictationRestoresTheVolume() async {
         let (viewModel, volume) = await makeDuckedSession()
 
-        viewModel.handle(event: .disconnected)
+        viewModel.session.handle(event: .disconnected)
         await viewModel.audio.audioDucking.debugFadeTask?.value
 
         assertVolume(volume.volume(of: Self.deviceA), Self.original)

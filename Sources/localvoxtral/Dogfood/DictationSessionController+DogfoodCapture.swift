@@ -2,7 +2,7 @@
 
 import Foundation
 
-extension DictationViewModel {
+extension DictationSessionController {
     /// Writes this dictation's capture record, or does nothing at all.
     ///
     /// Called from the polish commit path AFTER the text was committed and the

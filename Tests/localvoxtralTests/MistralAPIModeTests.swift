@@ -14,20 +14,20 @@ final class MistralAPIModeTests: XCTestCase {
     func testActiveRealtimeClientDefaultsToTheOpenAICompatibleClient() {
         let (viewModel, _, _) = makeViewModel()
 
-        XCTAssertTrue(viewModel.activeRealtimeClient === viewModel.realtimeAPIClient)
+        XCTAssertTrue(viewModel.session.activeRealtimeClient === viewModel.session.realtimeAPIClient)
     }
 
     func testRealtimeClientForModeSelectsTheMistralTransportOnlyForMistralMode() {
         let (viewModel, _, _) = makeViewModel()
 
         XCTAssertTrue(
-            viewModel.realtimeClient(for: .mistralAPI) === viewModel.mistralRealtimeClient
+            viewModel.session.realtimeClient(for: .mistralAPI) === viewModel.session.mistralRealtimeClient
         )
         XCTAssertTrue(
-            viewModel.realtimeClient(for: .externalURL) === viewModel.realtimeAPIClient
+            viewModel.session.realtimeClient(for: .externalURL) === viewModel.session.realtimeAPIClient
         )
         XCTAssertTrue(
-            viewModel.realtimeClient(for: .managedLocal) === viewModel.realtimeAPIClient
+            viewModel.session.realtimeClient(for: .managedLocal) === viewModel.session.realtimeAPIClient
         )
     }
 
@@ -35,32 +35,32 @@ final class MistralAPIModeTests: XCTestCase {
         let (viewModel, settings, _) = makeViewModel()
 
         settings.dictationBackendMode = .mistralAPI
-        viewModel.latchActiveRealtimeClient()
-        XCTAssertTrue(viewModel.activeRealtimeClient === viewModel.mistralRealtimeClient)
+        viewModel.session.latchActiveRealtimeClient()
+        XCTAssertTrue(viewModel.session.activeRealtimeClient === viewModel.session.mistralRealtimeClient)
 
         settings.dictationBackendMode = .externalURL
-        viewModel.latchActiveRealtimeClient()
-        XCTAssertTrue(viewModel.activeRealtimeClient === viewModel.realtimeAPIClient)
+        viewModel.session.latchActiveRealtimeClient()
+        XCTAssertTrue(viewModel.session.activeRealtimeClient === viewModel.session.realtimeAPIClient)
     }
 
     func testAModeChangeMidSessionDoesNotSwapTheClientUnderTheLiveSession() {
         let (viewModel, settings, _) = makeViewModel()
         settings.dictationBackendMode = .mistralAPI
-        viewModel.latchActiveRealtimeClient()
-        XCTAssertTrue(viewModel.activeRealtimeClient === viewModel.mistralRealtimeClient)
+        viewModel.session.latchActiveRealtimeClient()
+        XCTAssertTrue(viewModel.session.activeRealtimeClient === viewModel.session.mistralRealtimeClient)
 
         // Settings changed while the session runs: the latch is what keeps the
         // session's audio, its stop, and its disconnect on one client.
         viewModel.engines.applyDictationBackendModeChange(.externalURL)
 
         XCTAssertTrue(
-            viewModel.activeRealtimeClient === viewModel.mistralRealtimeClient,
+            viewModel.session.activeRealtimeClient === viewModel.session.mistralRealtimeClient,
             "the running session keeps the client it latched at start"
         )
 
         // The NEXT session picks up the new mode.
-        viewModel.latchActiveRealtimeClient()
-        XCTAssertTrue(viewModel.activeRealtimeClient === viewModel.realtimeAPIClient)
+        viewModel.session.latchActiveRealtimeClient()
+        XCTAssertTrue(viewModel.session.activeRealtimeClient === viewModel.session.realtimeAPIClient)
     }
 
     func testMistralTransportAdvertisesNoPeriodicCommit() {
@@ -68,8 +68,8 @@ final class MistralAPIModeTests: XCTestCase {
 
         // `SessionAudioPipeline.restartCommitTask` keys off this, so a Mistral session gets no
         // periodic commit task — the wire has no partial commit.
-        XCTAssertFalse(viewModel.mistralRealtimeClient.supportsPeriodicCommit)
-        XCTAssertTrue(viewModel.realtimeAPIClient.supportsPeriodicCommit)
+        XCTAssertFalse(viewModel.session.mistralRealtimeClient.supportsPeriodicCommit)
+        XCTAssertTrue(viewModel.session.realtimeAPIClient.supportsPeriodicCommit)
     }
 
     // MARK: - Mode changes and the managed engines
@@ -156,12 +156,12 @@ final class MistralAPIModeTests: XCTestCase {
         settings.modifierOnlyHotKeyEnabled = true
         settings.polishingBackendMode = .mistralAPI
 
-        XCTAssertFalse(viewModel.isManagedPolishingRequired(outputMode: .overlayBuffer))
+        XCTAssertFalse(viewModel.session.isManagedPolishingRequired(outputMode: .overlayBuffer))
         XCTAssertFalse(viewModel.engines.isManagedPolishingWarmupWanted)
 
         // Same answer External URL gets, which is the point.
         settings.polishingBackendMode = .externalURL
-        XCTAssertFalse(viewModel.isManagedPolishingRequired(outputMode: .overlayBuffer))
+        XCTAssertFalse(viewModel.session.isManagedPolishingRequired(outputMode: .overlayBuffer))
         XCTAssertFalse(viewModel.engines.isManagedPolishingWarmupWanted)
     }
 
@@ -372,11 +372,11 @@ final class MistralAPIModeTests: XCTestCase {
             task.cancel()
             session.invalidateAndCancel()
         }
-        viewModel.mistralRealtimeClient.debugPrimeConnectedStateForTesting(
+        viewModel.session.mistralRealtimeClient.debugPrimeConnectedStateForTesting(
             task: task, isUserInitiatedDisconnect: true, hasReceivedSessionCreated: true,
             usageModel: MistralRealtimeWebSocketClient.defaultModel)
-        viewModel.mistralRealtimeClient.sendAudioChunk(Data(count: 16_000))
-        viewModel.mistralRealtimeClient.disconnect()
+        viewModel.session.mistralRealtimeClient.sendAudioChunk(Data(count: 16_000))
+        viewModel.session.mistralRealtimeClient.disconnect()
         XCTAssertEqual(ledger.entries().map(\.audioSeconds), [0.5])
         #endif
 

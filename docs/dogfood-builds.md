@@ -238,4 +238,4 @@ Records are plain JSON, sorted keys — `jq` away. The `Screen.cause`,
 stage lost the term". The pipeline that assembles them is
 [`DogfoodCapturePipeline.swift`](../Sources/localvoxtral/Dogfood/DogfoodCapturePipeline.swift);
 the wiring point is
-[`DictationViewModel+DogfoodCapture.swift`](../Sources/localvoxtral/Dogfood/DictationViewModel+DogfoodCapture.swift).
+[`DictationSessionController+DogfoodCapture.swift`](../Sources/localvoxtral/Dogfood/DictationSessionController+DogfoodCapture.swift).

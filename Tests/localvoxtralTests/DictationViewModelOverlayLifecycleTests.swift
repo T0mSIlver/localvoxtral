@@ -15,16 +15,16 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         settings.dictationOutputMode = .liveAutoPaste
 
-        XCTAssertTrue(viewModel.isOverlayBufferModeEnabled)
-        XCTAssertFalse(viewModel.isLiveAutoPasteModeEnabled)
+        XCTAssertTrue(viewModel.session.isOverlayBufferModeEnabled)
+        XCTAssertFalse(viewModel.session.isLiveAutoPasteModeEnabled)
 
-        viewModel.sessionOutputMode = nil
+        viewModel.session.sessionOutputMode = nil
 
-        XCTAssertFalse(viewModel.isOverlayBufferModeEnabled)
-        XCTAssertTrue(viewModel.isLiveAutoPasteModeEnabled)
+        XCTAssertFalse(viewModel.session.isOverlayBufferModeEnabled)
+        XCTAssertTrue(viewModel.session.isLiveAutoPasteModeEnabled)
     }
 
     func testExplicitOutputModeSurvivesBeginDictationSession() async {
@@ -38,13 +38,13 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        await viewModel.beginDictationSession(outputMode: .overlayBuffer)
+        await viewModel.session.beginDictationSession(outputMode: .overlayBuffer)
 
-        XCTAssertEqual(viewModel.sessionOutputMode, .overlayBuffer)
-        XCTAssertTrue(viewModel.isOverlayBufferModeEnabled)
-        XCTAssertFalse(viewModel.isLiveAutoPasteModeEnabled)
+        XCTAssertEqual(viewModel.session.sessionOutputMode, .overlayBuffer)
+        XCTAssertTrue(viewModel.session.isOverlayBufferModeEnabled)
+        XCTAssertFalse(viewModel.session.isLiveAutoPasteModeEnabled)
 
-        viewModel.abortConnectingSession()
+        viewModel.session.abortConnectingSession()
     }
 
     func testStopWithoutFinalizationStillCommitsOverlayUsingLatchedSessionMode() {
@@ -57,7 +57,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         settings.dictationOutputMode = .liveAutoPaste
         viewModel.isDictating = true
         viewModel.transcript.currentDictationEventText = "hello"
@@ -72,7 +72,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(overlayCoordinator.dismissAfterHoldCallCount, 1)
         XCTAssertEqual(overlayCoordinator.resetCallCount, 0)
         XCTAssertEqual(viewModel.statusText, "Ready")
-        XCTAssertNil(viewModel.sessionOutputMode)
+        XCTAssertNil(viewModel.session.sessionOutputMode)
     }
 
     func testFinishStoppedSessionCommitFailureKeepsOverlayVisible() {
@@ -86,18 +86,18 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "hello"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
         XCTAssertEqual(overlayCoordinator.refreshCalls.count, 1)
         XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
         XCTAssertEqual(overlayCoordinator.resetCallCount, 0)
         XCTAssertEqual(viewModel.statusText, "Insert failed.")
         XCTAssertEqual(viewModel.lastError, "Unable to insert buffered text into the focused app.")
-        XCTAssertNil(viewModel.sessionOutputMode)
+        XCTAssertNil(viewModel.session.sessionOutputMode)
     }
 
     func testTranscriptionFinalizedDisconnectsImmediatelyDuringFinalization() async {
@@ -118,15 +118,15 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         }
 
         viewModel.isFinalizingStop = true
-        viewModel.sessionOutputMode = .overlayBuffer
-        viewModel.realtimeAPIClient.debugPrimeConnectedStateForTesting(task: task)
+        viewModel.session.sessionOutputMode = .overlayBuffer
+        viewModel.session.realtimeAPIClient.debugPrimeConnectedStateForTesting(task: task)
         // The priming stands in for a real connect, so the session has to be on
         // the socket it produced: the `.disconnected` this test drives comes
         // back through the production handler, which refuses any other one.
-        viewModel.sessionConnectionGeneration =
-            viewModel.realtimeAPIClient.connectionGeneration
+        viewModel.session.sessionConnectionGeneration =
+            viewModel.session.realtimeAPIClient.connectionGeneration
 
-        viewModel.handle(event: .transcriptionFinalized)
+        viewModel.session.handle(event: .transcriptionFinalized)
 
         let timeoutAt = Date().addingTimeInterval(1.0)
         while viewModel.isFinalizingStop, Date() < timeoutAt {
@@ -142,7 +142,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
             TimingConstants.overlayFinalWordVisibilityMinimum
         )
         XCTAssertEqual(overlayCoordinator.resetCallCount, 0)
-        XCTAssertFalse(viewModel.realtimeAPIClient.isConnected)
+        XCTAssertFalse(viewModel.session.realtimeAPIClient.isConnected)
     }
 
     func testPushToTalkReleaseWhileConnectingStillSurfacesTimeoutFailure() async {
@@ -157,12 +157,12 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         // Prevent NSAlert from blocking test execution when the timeout path presents.
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.isConnectingRealtimeSession = true
         viewModel.statusText = "Connecting to realtime backend..."
         viewModel.shortcuts.isPushToTalkShortcutHeld = true
         viewModel.shortcuts.hasActivePushToTalkShortcutSession = true
-        viewModel.scheduleConnectTimeout()
+        viewModel.session.scheduleConnectTimeout()
 
         viewModel.shortcuts.handleDictationShortcutRelease()
 
@@ -202,7 +202,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         viewModel.shortcuts.hasActivePushToTalkShortcutSession = true
 
         viewModel.shortcuts.handleDictationShortcutRelease()
-        viewModel.handle(event: .connected)
+        viewModel.session.handle(event: .connected)
 
         XCTAssertFalse(viewModel.isConnectingRealtimeSession)
         XCTAssertFalse(viewModel.isDictating)
@@ -221,7 +221,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .liveAutoPaste
+        viewModel.session.sessionOutputMode = .liveAutoPaste
         viewModel.isConnectingRealtimeSession = true
         viewModel.statusText = "Connecting to realtime backend..."
         viewModel.shortcuts.isPushToTalkShortcutHeld = true
@@ -229,7 +229,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         viewModel.shortcuts.isModifierOnlyHoldActive = true
 
         viewModel.shortcuts.handleDictationShortcutRelease()
-        viewModel.handle(event: .connected)
+        viewModel.session.handle(event: .connected)
 
         XCTAssertFalse(viewModel.isConnectingRealtimeSession)
         XCTAssertFalse(viewModel.isDictating)
@@ -277,7 +277,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.statusText = "Polishing..."
         let polishTask = Task<Void, Never> {
@@ -285,15 +285,15 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
                 try? await Task.sleep(for: .milliseconds(100))
             }
         }
-        viewModel.polishAndCommitTask = polishTask
+        viewModel.session.polishAndCommitTask = polishTask
 
-        let cancelled = viewModel.cancelPolishingForNewSessionIfNeeded()
+        let cancelled = viewModel.session.cancelPolishingForNewSessionIfNeeded()
 
         XCTAssertTrue(cancelled)
         XCTAssertTrue(polishTask.isCancelled)
-        XCTAssertNil(viewModel.polishAndCommitTask)
+        XCTAssertNil(viewModel.session.polishAndCommitTask)
         XCTAssertFalse(viewModel.isFinalizingStop)
-        XCTAssertNil(viewModel.sessionOutputMode)
+        XCTAssertNil(viewModel.session.sessionOutputMode)
         XCTAssertEqual(viewModel.statusText, "Ready")
         XCTAssertEqual(overlayCoordinator.resetCallCount, 1)
     }
@@ -308,14 +308,14 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "hello"
-        viewModel.polishAndCommitTask = Task<Void, Never> {}
+        viewModel.session.polishAndCommitTask = Task<Void, Never> {}
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
-        XCTAssertNil(viewModel.polishAndCommitTask)
+        XCTAssertNil(viewModel.session.polishAndCommitTask)
         XCTAssertFalse(viewModel.isFinalizingStop)
     }
 
@@ -334,14 +334,14 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         viewModel.llmPolishingService = polishingService
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "hello world"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         // Held for the whole middle of this test: the duplicate calls below
         // have to land while the first commit is demonstrably still open.
-        let commitTask = viewModel.polishAndCommitTask
+        let commitTask = viewModel.session.polishAndCommitTask
         // The service itself says when the request arrived. There is no task
         // to await here — awaiting the commit is what the end of the test
         // does, and that is exactly what must NOT have happened yet.
@@ -349,10 +349,10 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         let initialCallCount = await polishingService.callCount()
         XCTAssertEqual(initialCallCount, 1)
-        XCTAssertTrue(viewModel.isCompletingStoppedSession)
+        XCTAssertTrue(viewModel.session.isCompletingStoppedSession)
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
         let duplicateCallCount = await polishingService.callCount()
         XCTAssertEqual(duplicateCallCount, 1)
@@ -362,7 +362,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         await commitTask?.value
 
         let finalCallCount = await polishingService.callCount()
-        XCTAssertFalse(viewModel.isCompletingStoppedSession)
+        XCTAssertFalse(viewModel.session.isCompletingStoppedSession)
         XCTAssertEqual(finalCallCount, 1)
         XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
     }
@@ -384,11 +384,11 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "postgres for local voxtral"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
         XCTAssertEqual(viewModel.transcript.currentDictationEventText, "PostgreSQL for localvoxtral")
         XCTAssertEqual(overlayCoordinator.refreshCalls.last?.displayText, "PostgreSQL for localvoxtral")
@@ -413,11 +413,11 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isDictating = true
 
-        viewModel.handle(event: .partialTranscript("post"))
-        viewModel.handle(event: .partialTranscript("gres "))
+        viewModel.session.handle(event: .partialTranscript("post"))
+        viewModel.session.handle(event: .partialTranscript("gres "))
 
         XCTAssertEqual(overlayCoordinator.refreshCalls.map(\.displayText), [
             "post",
@@ -450,14 +450,14 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isDictating = true
-        viewModel.handle(event: .partialTranscript("foo "))
-        viewModel.handle(event: .finalTranscript("foo "))
+        viewModel.session.handle(event: .partialTranscript("foo "))
+        viewModel.session.handle(event: .finalTranscript("foo "))
         viewModel.isDictating = false
         viewModel.isFinalizingStop = true
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
         XCTAssertEqual(overlayCoordinator.refreshCalls.last?.displayText, "bar")
         XCTAssertEqual(overlayCoordinator.refreshCalls.last?.commitText, "bar")
@@ -485,10 +485,10 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         viewModel.sessionStore = store
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = text
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         return viewModel
     }
 
@@ -588,11 +588,11 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         viewModel.llmPolishingService = polishingService
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "hello world"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
         await awaitStoppedSessionCommit(viewModel)
 
@@ -627,11 +627,11 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         viewModel.lastPolishChangedRawTranscript = "stale raw"
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "hello world"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
         await awaitStoppedSessionCommit(viewModel)
 
@@ -692,11 +692,11 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         viewModel.llmPolishingService = polishingService
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "postgres rocks"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
         await awaitStoppedSessionCommit(viewModel)
 
@@ -737,11 +737,11 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         viewModel.llmPolishingService = polishingService
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "postgres rocks"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
         await awaitStoppedSessionCommit(viewModel)
 
@@ -772,11 +772,11 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         viewModel.llmPolishingService = polishingService
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "postgres"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
         await awaitStoppedSessionCommit(viewModel)
 
@@ -811,14 +811,14 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
             ])
         )
         viewModel.llmPolishingService = polishingService
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "postgres"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
         await awaitStoppedSessionCommit(viewModel)
 
@@ -849,14 +849,14 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
             overlayBufferCoordinator: overlayCoordinator,
             startRuntimeServices: false
         )
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "hello"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
         XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
         XCTAssertEqual(viewModel.statusText, "LLM polishing failed.")
@@ -884,11 +884,11 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         viewModel.appConfigStore = configStore
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .liveAutoPaste
+        viewModel.session.sessionOutputMode = .liveAutoPaste
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "postgres"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
         XCTAssertEqual(configStore.loadReplacementDictionaryCallCount, 0)
         XCTAssertEqual(viewModel.transcript.currentDictationEventText, "postgres")
@@ -949,11 +949,11 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.isDictating = true
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.transcript.currentDictationEventText = "hello"
         let stopCountBefore = EscapeCancelHandler.stopCallCount
 
-        viewModel.handle(event: .disconnected)
+        viewModel.session.handle(event: .disconnected)
 
         XCTAssertFalse(viewModel.isDictating)
         XCTAssertGreaterThan(EscapeCancelHandler.stopCallCount, stopCountBefore)
@@ -987,7 +987,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.isDictating = true
-        viewModel.sessionOutputMode = outputMode
+        viewModel.session.sessionOutputMode = outputMode
         let stopCountBefore = EscapeCancelHandler.stopCallCount
 
         viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
@@ -1016,7 +1016,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.isDictating = true
-        viewModel.sessionOutputMode = outputMode
+        viewModel.session.sessionOutputMode = outputMode
         let stopCountBefore = EscapeCancelHandler.stopCallCount
 
         viewModel.cancelDictation()
@@ -1042,7 +1042,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         viewModel.isConnectingRealtimeSession = true
         let stopCountBefore = EscapeCancelHandler.stopCallCount
 
-        viewModel.abortConnectingSession()
+        viewModel.session.abortConnectingSession()
 
         XCTAssertFalse(viewModel.isConnectingRealtimeSession)
         XCTAssertGreaterThan(EscapeCancelHandler.stopCallCount, stopCountBefore)
@@ -1064,15 +1064,15 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         viewModel.isConnectingRealtimeSession = true
         viewModel.cancelDictation()
-        XCTAssertFalse(viewModel.wasCancelled)
+        XCTAssertFalse(viewModel.session.wasCancelled)
 
         // Next session: a normal stop must still promote and commit.
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "hello"
         viewModel.transcript.pendingSegmentText = " world"
 
-        viewModel.finishStoppedSession(promotePendingSegment: true)
+        viewModel.session.finishStoppedSession(promotePendingSegment: true)
 
         XCTAssertEqual(viewModel.transcript.currentDictationEventText, "hello\nworld")
         XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
@@ -1092,13 +1092,13 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "hello"
         viewModel.transcript.pendingSegmentText = " world"
-        viewModel.wasCancelled = true
+        viewModel.session.wasCancelled = true
 
-        viewModel.finishStoppedSession(promotePendingSegment: true)
+        viewModel.session.finishStoppedSession(promotePendingSegment: true)
 
         // Segment promotion skipped: display text never refreshed/merged.
         XCTAssertEqual(overlayCoordinator.refreshCalls.count, 0)
@@ -1107,7 +1107,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(overlayCoordinator.commitCallCount, 0)
         XCTAssertEqual(overlayCoordinator.resetCallCount, 1)
         XCTAssertEqual(viewModel.statusText, "Ready")
-        XCTAssertNil(viewModel.sessionOutputMode)
+        XCTAssertNil(viewModel.session.sessionOutputMode)
     }
 
     func testCancelDictationDuringActiveDictationStopsWithoutOverlayCommit() {
@@ -1120,7 +1120,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isDictating = true
         viewModel.transcript.currentDictationEventText = "hello"
         viewModel.transcript.pendingSegmentText = " world"
@@ -1152,7 +1152,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         viewModel.cancelDictation()
 
         // Guard rejects: nothing changed, no overlay churn.
-        XCTAssertFalse(viewModel.wasCancelled)
+        XCTAssertFalse(viewModel.session.wasCancelled)
         XCTAssertEqual(overlayCoordinator.resetCallCount, 0)
         XCTAssertEqual(overlayCoordinator.commitCallCount, 0)
         XCTAssertEqual(viewModel.transcript.currentDictationEventText, "hello")

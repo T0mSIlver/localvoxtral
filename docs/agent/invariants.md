@@ -25,7 +25,7 @@ there is not.
   filesystem-existence seam; non-existing ones (`/compact`) stay commands.
 - **A mid-dictation reconnect resumes the session; it never replays it.**
   When the realtime socket drops without the user asking
-  (`DictationViewModel+Reconnect.swift`, #380), the mic keeps recording and the
+  (`DictationSessionController+Reconnect.swift`, #380), the mic keeps recording and the
   socket is retried on a bounded backoff. Four things hold that apart from a
   session restart, and each is load-bearing:
   (1) the run dials the endpoint/key/model snapshot latched at session start
@@ -55,7 +55,7 @@ there is not.
   `RealtimeConnectionGeneration` on the socket it opens, `emit(_:from:)`
   carries it in the same call as the event (a parallel channel could be dropped
   or reordered; the main-queue FIFO only orders what it is handed together),
-  and `DictationViewModel.handle(event:from:)` drops anything not stamped with
+  and `DictationSessionController.handle(event:from:)` drops anything not stamped with
   the generation the session is on. That one comparison is the whole check —
   nothing downstream re-derives which socket it is hearing (#417). Three things
   make it hold:

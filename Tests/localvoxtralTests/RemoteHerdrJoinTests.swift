@@ -1920,7 +1920,7 @@ final class RemoteHerdrJoinTests: XCTestCase {
         viewModel.context.retainRemoteHerdrForward(of: join)
         XCTAssertEqual(viewModel.context.openRemoteHerdrForwardCount, 1)
 
-        viewModel.abortConnectingSession()
+        viewModel.session.abortConnectingSession()
 
         XCTAssertEqual(forwards.closeCount, 1)
         XCTAssertEqual(forwards.process.terminations.withLock { $0 }, 1)

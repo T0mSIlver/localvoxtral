@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-extension DictationViewModel {
+extension DictationSessionController {
     // MARK: - Realtime Event Routing
 
     /// The door every realtime event comes through in the running app, and the

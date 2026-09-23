@@ -46,7 +46,7 @@ expect true "what the unavailable-device test calls runs the lane" \
 # `*` in a bash case pattern crosses `/`, so a wide *Realtime* used to buy the
 # lane for files the suite never executes.
 expect false "the view model's realtime event handling does not" \
-  "Sources/localvoxtral/DictationViewModel+RealtimeEvents.swift"
+  "Sources/localvoxtral/DictationSessionController+RealtimeEvents.swift"
 expect false "the reconnect policy does not" \
   Sources/localvoxtral/RealtimeReconnectPolicy.swift
 expect true "the scorer's normalizer runs the lane" \

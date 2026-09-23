@@ -59,17 +59,17 @@ final class DictationViewModelDeltaLoggingTests: XCTestCase {
         // The two assertions together prove "no logging call path is hit".
         let viewModel = makeViewModel(enableDeltaLogging: false)
 
-        viewModel.handle(event: .connected)
-        viewModel.handle(event: .partialTranscript("spar"))
-        viewModel.handle(event: .partialTranscript("isce"))
-        viewModel.handle(event: .partialTranscript("."))
-        viewModel.handle(event: .finalTranscript("sparisce."))
-        viewModel.handle(event: .transcriptionFinalized)
-        viewModel.handle(event: .disconnected)
+        viewModel.session.handle(event: .connected)
+        viewModel.session.handle(event: .partialTranscript("spar"))
+        viewModel.session.handle(event: .partialTranscript("isce"))
+        viewModel.session.handle(event: .partialTranscript("."))
+        viewModel.session.handle(event: .finalTranscript("sparisce."))
+        viewModel.session.handle(event: .transcriptionFinalized)
+        viewModel.session.handle(event: .disconnected)
 
         XCTAssertTrue(captured.isEmpty, "sink must not fire when toggle is off")
         XCTAssertEqual(
-            viewModel.realtimeDeltaLog.sequence, 0,
+            viewModel.session.realtimeDeltaLog.sequence, 0,
             "sequence counter must not advance when toggle is off")
     }
 
@@ -82,9 +82,9 @@ final class DictationViewModelDeltaLoggingTests: XCTestCase {
         // see upstream; the app must record it verbatim.
         let viewModel = makeViewModel(enableDeltaLogging: true)
 
-        viewModel.handle(event: .partialTranscript("sparis"))
-        viewModel.handle(event: .partialTranscript("."))
-        viewModel.handle(event: .partialTranscript("ce"))
+        viewModel.session.handle(event: .partialTranscript("sparis"))
+        viewModel.session.handle(event: .partialTranscript("."))
+        viewModel.session.handle(event: .partialTranscript("ce"))
 
         XCTAssertEqual(captured.count, 3)
         XCTAssertEqual(captured[0].kind, .partialDelta)
@@ -106,7 +106,7 @@ final class DictationViewModelDeltaLoggingTests: XCTestCase {
         let viewModel = makeViewModel(enableDeltaLogging: true)
 
         let exact = "  lead\u{00a0}space\ntrail\t"
-        viewModel.handle(event: .partialTranscript(exact))
+        viewModel.session.handle(event: .partialTranscript(exact))
 
         XCTAssertEqual(captured.count, 1)
         XCTAssertEqual(captured[0].payload, exact)
@@ -117,11 +117,11 @@ final class DictationViewModelDeltaLoggingTests: XCTestCase {
         // Each event is captured with a monotonic per-session sequence.
         let viewModel = makeViewModel(enableDeltaLogging: true)
 
-        viewModel.handle(event: .connected)
-        viewModel.handle(event: .partialTranscript("hi"))
-        viewModel.handle(event: .finalTranscript("hi."))
-        viewModel.handle(event: .transcriptionFinalized)
-        viewModel.handle(event: .disconnected)
+        viewModel.session.handle(event: .connected)
+        viewModel.session.handle(event: .partialTranscript("hi"))
+        viewModel.session.handle(event: .finalTranscript("hi."))
+        viewModel.session.handle(event: .transcriptionFinalized)
+        viewModel.session.handle(event: .disconnected)
 
         XCTAssertEqual(
             captured.map(\.kind),
@@ -141,12 +141,12 @@ final class DictationViewModelDeltaLoggingTests: XCTestCase {
         let viewModel = makeViewModel(enableDeltaLogging: true)
 
         // Session 1.
-        viewModel.handle(event: .connected)            // seq 0 (reset)
-        viewModel.handle(event: .partialTranscript("a"))  // seq 1
-        viewModel.handle(event: .partialTranscript("b"))  // seq 2
+        viewModel.session.handle(event: .connected)            // seq 0 (reset)
+        viewModel.session.handle(event: .partialTranscript("a"))  // seq 1
+        viewModel.session.handle(event: .partialTranscript("b"))  // seq 2
         // Session 2 begins — sequence must reset.
-        viewModel.handle(event: .connected)            // seq 0 (reset)
-        viewModel.handle(event: .partialTranscript("c"))  // seq 1
+        viewModel.session.handle(event: .connected)            // seq 0 (reset)
+        viewModel.session.handle(event: .partialTranscript("c"))  // seq 1
 
         let connectedRecords = captured.filter { $0.kind == .sessionConnected }
         XCTAssertEqual(connectedRecords.map(\.sequence), [0, 0])
@@ -161,8 +161,8 @@ final class DictationViewModelDeltaLoggingTests: XCTestCase {
         // debugging session.
         let viewModel = makeViewModel(enableDeltaLogging: true)
 
-        viewModel.handle(event: .status("Session ready."))
-        viewModel.handle(event: .error("rate limited"))
+        viewModel.session.handle(event: .status("Session ready."))
+        viewModel.session.handle(event: .error("rate limited"))
 
         XCTAssertEqual(captured.count, 2)
         XCTAssertEqual(captured[0].kind, .status)
@@ -183,7 +183,7 @@ final class DictationViewModelDeltaLoggingTests: XCTestCase {
         viewModel.statusText = "Transcribing..."
         let message = "10-minute limit reached; start again."
 
-        viewModel.handle(event: .transcriptionStopped(message))
+        viewModel.session.handle(event: .transcriptionStopped(message))
 
         XCTAssertEqual(viewModel.statusText, message)
         XCTAssertNil(viewModel.lastError)
@@ -195,7 +195,7 @@ final class DictationViewModelDeltaLoggingTests: XCTestCase {
         let viewModel = makeViewModel(enableDeltaLogging: false)
         viewModel.statusText = "Ready"
 
-        viewModel.handle(event: .transcriptionStopped("Dictation stopped early; start again."))
+        viewModel.session.handle(event: .transcriptionStopped("Dictation stopped early; start again."))
 
         XCTAssertEqual(viewModel.statusText, "Ready")
         XCTAssertNil(viewModel.lastError)

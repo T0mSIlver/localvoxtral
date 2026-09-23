@@ -568,11 +568,11 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "run --force now"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(viewModel.transcript.currentDictationEventText, "run \u{2013} force now")
@@ -614,11 +614,11 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "run --force now"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(viewModel.transcript.currentDictationEventText, "run immediately")
@@ -652,11 +652,11 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "look at user session manager.swift."
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(viewModel.transcript.currentDictationEventText, expected)
@@ -758,11 +758,11 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "fix the bug in the auth module"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
         return savedRecord
     }
@@ -1021,11 +1021,11 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         }
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = transcript
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
         return viewModel
     }
@@ -1075,11 +1075,11 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "fix the user session manager"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
         let request = await service.lastRequest
         return (savedRecord, request)
@@ -1357,11 +1357,11 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = transcript
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
         let request = await service.lastRequest
         return ClipboardMacroSessionResult(
@@ -1527,11 +1527,11 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "fix this paste clipboard thanks"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
 
         // The vocab seam ran, and by then BOTH clipboard reads had happened.
@@ -1584,11 +1584,11 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         }
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "open useauth.ts and fix the import"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
 
         let capturedRequest = await service.lastRequest
@@ -1637,11 +1637,11 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "look at user session manager.swift"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(
@@ -1698,11 +1698,11 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         }
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "look at user session manager.swift"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(
@@ -1754,22 +1754,22 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         // Pipeline seam (NOT the entries seam, which bypasses the race):
         // suspends forever, like an uncancelable syscall. Deliberately leaked
         // for the test process lifetime, mirroring the production abandonment.
-        viewModel.repoVocabularyPipeline.pipeline = { _ in
+        viewModel.session.repoVocabularyPipeline.pipeline = { _ in
             await withUnsafeContinuation { (_: UnsafeContinuation<Void, Never>) in }
             return nil
         }
         // Deadline sleep seam: returns immediately — the deadline expires
         // before the pipeline can ever win.
-        viewModel.repoVocabularyPipeline.deadlineSleep = {}
+        viewModel.session.repoVocabularyPipeline.deadlineSleep = {}
         var savedRecord: DictationSessionRecord?
         viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "open use auth dot t s and fix the import"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
 
         // The commit completed despite the wedged pipeline...
@@ -1808,16 +1808,16 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         // Wedged pipeline: signals that it started, then suspends forever
         // (deliberately leaked for the test process lifetime, mirroring the
         // production abandonment).
-        viewModel.repoVocabularyPipeline.pipeline = { _ in
+        viewModel.session.repoVocabularyPipeline.pipeline = { _ in
             pipelineCalls.increment()
             startSignal.yield()
             await withUnsafeContinuation { (_: UnsafeContinuation<Void, Never>) in }
             return nil
         }
-        viewModel.repoVocabularyPipeline.deadlineSleep = {}
+        viewModel.session.repoVocabularyPipeline.deadlineSleep = {}
 
         let endpoint = URL(string: "http://127.0.0.1:8472/v1/chat/completions")!
-        let first = await viewModel.repoVocabularyGroundingIfEnabled(
+        let first = await viewModel.session.repoVocabularyGroundingIfEnabled(
             endpointURL: endpoint, transcript: "open use auth dot t s"
         )
         // Deadline expired; the wedged pipeline was abandoned holding the gate.
@@ -1825,7 +1825,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         var startIterator = pipelineStarted.makeAsyncIterator()
         _ = await startIterator.next()
 
-        let second = await viewModel.repoVocabularyGroundingIfEnabled(
+        let second = await viewModel.session.repoVocabularyGroundingIfEnabled(
             endpointURL: endpoint, transcript: "open use auth dot t s"
         )
         XCTAssertNil(second)
@@ -1897,11 +1897,11 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "open use auth dot t s and fix the import"
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
         let request = await service.lastRequest
         return (savedRecord, request)
@@ -1954,11 +1954,11 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = transcript
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
         return (savedRecord, await service.lastRequest)
     }

@@ -434,7 +434,7 @@ final class PolishRequestGoldenTests: XCTestCase {
         // The failure cases present a real modal alert when NSApp exists; the
         // flag makes the presenter a no-op (AGENTS.md). `lastError` is set
         // before that gate.
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
 
         let pasteboard = PasteboardStub(string: scenario.clipboardText)
@@ -483,11 +483,11 @@ final class PolishRequestGoldenTests: XCTestCase {
         // Read before the commit consumes the join.
         let joinWorkspace = viewModel.context.claudeSessionJoin?.snapshot.workspace
 
-        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = scenario.transcript
 
-        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
         store.waitForPendingWrites()
 

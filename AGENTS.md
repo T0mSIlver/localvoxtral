@@ -77,7 +77,7 @@ and order it with blocked-by links, not prose.
   or a counter from one. Files and sockets get unique names.
 - A test that reaches `beginDictationSession` arms the real 1 s connect
   timeout on a process-retained view model. It must set
-  `viewModel.isShowingConnectionFailureAlert = true`, or the alert fires
+  `viewModel.session.isShowingConnectionFailureAlert = true`, or the alert fires
   inside the next test and SIGTRAPs the suite (#66).
 - UI change: say exactly what you verified by hand and how.
 - Session-path change (view model start/stop, realtime clients, merging,

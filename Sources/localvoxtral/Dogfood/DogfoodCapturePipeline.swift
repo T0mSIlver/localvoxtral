@@ -37,7 +37,7 @@ final class DogfoodCaptureTap: Sendable {
         /// Deliberately outside the consume/clear cycle above. `join report` on
         /// the dogfood control socket has to answer after a dictation has
         /// finished, and by then the commit path has consumed the abstentions
-        /// AND `DictationViewModel.claudeSessionJoin` — the commit path
+        /// AND `SessionContextResolver.claudeSessionJoin` — the commit path
         /// consumes the join, by design (docs/agent/invariants.md). So the
         /// summary is snapshotted the moment it is resolved and kept until the
         /// next resolution replaces it. It is the same

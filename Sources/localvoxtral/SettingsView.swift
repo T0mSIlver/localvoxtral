@@ -2727,7 +2727,7 @@ private struct AboutSettingsPane: View {
     }
 
     /// Shows the in-memory value the capture pipeline actually consults
-    /// (DictationViewModel+DogfoodCapture), not a live defaults read — a
+    /// (DictationSessionController+DogfoodCapture), not a live defaults read — a
     /// `defaults write` while the app runs takes effect on relaunch, and the
     /// row must describe what THIS process is doing.
     private var dogfoodCaptureArmed: Bool {

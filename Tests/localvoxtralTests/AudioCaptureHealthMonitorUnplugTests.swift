@@ -40,7 +40,7 @@ final class AudioCaptureHealthMonitorUnplugTests: XCTestCase {
     }
 }
 
-/// Mirrors `DictationViewModel.refreshMicrophoneInputs`: when the selected
+/// Mirrors `SessionAudioPipeline.refreshMicrophoneInputs`: when the selected
 /// mic disappears, the refresh falls back to the first available one.
 @MainActor
 private final class FakeAudioState {

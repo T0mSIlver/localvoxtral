@@ -1,17 +1,21 @@
 # Architecture map
 
-Everything routes through `DictationViewModel` (`@MainActor`, four files
-totaling ~4.2k lines — still the main refactor target, #432):
+`DictationViewModel` (`@MainActor`) is the facade the views bind to: it builds
+the parts below from the collaborators the app shares, and forwards the
+session state the views read. The dictation itself lives in
+`DictationSessionController` (#432 step 8c):
 
-- `DictationViewModel.swift` — state, wiring, hotkey press/release dispatch
-- `DictationViewModel+Session.swift` — session lifecycle, stop-finalization
-  state machine, LLM polishing + commit path
-- `DictationViewModel+RealtimeEvents.swift` — transcript event routing/merge
-- `DictationViewModel+Reconnect.swift` — the bounded retry run behind a socket
-  that drops mid-dictation
+- `DictationSessionController.swift` — session state, start and stop, the
+  realtime clients, the stop's inputs to the commit
+- `DictationSessionController+Session.swift` — managed-backend wait, connect
+  and its timeout, stop-finalization, the stop-commit that drives
+  `StopCommitCoordinator`, connection-failure handling
+- `DictationSessionController+RealtimeEvents.swift` — realtime event routing
+- `DictationSessionController+Reconnect.swift` — the bounded retry run behind a
+  socket that drops mid-dictation
 
-Jobs already lifted out of it, each reached through the view model or called
-as a pure step (#432 steps 1–7):
+Jobs lifted out of the view model, each reached through it or called as a
+pure step (#432 steps 1–8):
 
 - `EnginesModel.swift` — the Engines pane behind `viewModel.engines`: backend
   modes, the Mistral key check and model catalog, managed warmup/shutdown,
@@ -29,9 +33,14 @@ as a pure step (#432 steps 1–7):
   pre-application, prompts, context blocks, provenance
 - `PolishOutcomeClassifier.swift` — what a reply means for the commit:
   placeholder integrity, and the failure copy for each error
-- `StopCommitCoordinator.swift` — the commit's dealings with the world: the
-  pre-task sample (clipboard, screen, join, pane), the clipboard gates, the
-  overlay commit, and the dogfood capture record
+- `StopCommitCoordinator.swift` — everything in the stop-commit that decides
+  what reaches the polisher: the transcript's preparation, the profile and
+  templates, the pre-task sample (clipboard, screen, join, pane), the
+  gather-assemble-send step, the overlay commit, the dogfood capture record
+- `TranscriptAccumulator.swift` — the transcript the realtime events build:
+  partials, finals, the live insertion a final still owes, promotion
+- `SessionAudioPipeline.swift` — `viewModel.audio`: capture, the send and
+  commit loops, ducking, the input device selection
 
 Key subsystems:
 
@@ -42,7 +51,7 @@ Key subsystems:
 - Realtime clients: `RealtimeClient` protocol; `RealtimeAPIWebSocketClient`
   (managed speechd / vLLM / any OpenAI-Realtime server) and
   `MistralRealtimeWebSocketClient` (Mistral API mode), both over
-  `BaseRealtimeWebSocketClient`. `DictationViewModel.activeRealtimeClient`
+  `BaseRealtimeWebSocketClient`. `DictationSessionController.activeRealtimeClient`
   latches one of them per session from `settings.dictationBackendMode`. A
   socket that drops on its own mid-dictation is retried on a bounded backoff
   (`RealtimeReconnectPolicy`) against the endpoint/key/model snapshot the

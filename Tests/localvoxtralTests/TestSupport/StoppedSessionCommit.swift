@@ -19,10 +19,10 @@ func awaitStoppedSessionCommit(
     file: StaticString = #filePath,
     line: UInt = #line
 ) async {
-    let commitTask = viewModel.polishAndCommitTask
+    let commitTask = viewModel.session.polishAndCommitTask
     await commitTask?.value
     XCTAssertFalse(
-        viewModel.isCompletingStoppedSession,
+        viewModel.session.isCompletingStoppedSession,
         "the commit must be over before anything reads what it wrote",
         file: file,
         line: line

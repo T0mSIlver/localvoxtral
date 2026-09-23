@@ -20,7 +20,7 @@ import os
 ///    promoted into the committed transcript at the drop, so the reconnected
 ///    backend — which starts with an empty transcript of its own — can only
 ///    produce text that has never been typed.
-extension DictationViewModel {
+extension DictationSessionController {
     // MARK: - Entry
 
     /// An unexpected drop arrived while dictating. Starts a reconnect run and
@@ -121,7 +121,7 @@ extension DictationViewModel {
         runID: Int,
         configuration: RealtimeSessionConfiguration,
         policy: RealtimeReconnectPolicy = .default,
-        sleepFor: @MainActor (TimeInterval) async -> Void = DictationViewModel.sleepForReconnect
+        sleepFor: @MainActor (TimeInterval) async -> Void = DictationSessionController.sleepForReconnect
     ) async {
         for attempt in 1...max(1, policy.maxAttempts) {
             await sleepFor(policy.backoff(beforeAttempt: attempt))

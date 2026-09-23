@@ -583,7 +583,7 @@ final class DogfoodControlServiceTests: XCTestCase {
             startRuntimeServices: false,
             dependencies: .init(microphone: { FakeMicrophoneCaptureService() })
         )
-        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
         return viewModel
     }

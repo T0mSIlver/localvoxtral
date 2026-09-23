@@ -3,7 +3,7 @@ import Foundation
 import Synchronization
 import os
 
-extension DictationViewModel {
+extension DictationSessionController {
     // MARK: - Session Lifecycle
 
     // Session metadata lifecycle:
@@ -1268,7 +1268,7 @@ extension DictationViewModel {
 
     func resolveConnectTimeout(
         timeoutSeconds: TimeInterval,
-        sleepFor: (TimeInterval) async -> Void = DictationViewModel.sleepForConnectTimeoutSocketErrorGrace
+        sleepFor: (TimeInterval) async -> Void = DictationSessionController.sleepForConnectTimeoutSocketErrorGrace
     ) async {
         guard isConnectingRealtimeSession else { return }
 
