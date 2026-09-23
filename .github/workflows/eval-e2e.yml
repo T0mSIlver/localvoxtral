@@ -20,6 +20,9 @@ concurrency:
   group: eval-e2e
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   eval-e2e:
     # Self-hosted only, and there is no pull_request trigger above — fork code

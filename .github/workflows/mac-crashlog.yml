@@ -19,6 +19,8 @@ on:
         description: "Only this app log category (e.g. ClaudeContext); empty = all but Deltas"
         default: ""
 
+permissions: {}
+
 jobs:
   crashlog:
     runs-on: [self-hosted, macOS, ARM64]

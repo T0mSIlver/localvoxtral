@@ -27,6 +27,11 @@ concurrency:
   group: ui-smoke-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  # ui-smoke-guard.sh reads past runs of this workflow.
+  actions: read
+
 jobs:
   ui-smoke:
     # Same security invariant as ci.yml: fork PRs must never reach the
