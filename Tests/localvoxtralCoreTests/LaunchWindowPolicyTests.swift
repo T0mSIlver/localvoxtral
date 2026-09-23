@@ -1,7 +1,7 @@
 import Foundation
 import XCTest
 
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// What a finished launch puts on screen (#449).
 final class LaunchWindowPolicyTests: XCTestCase {
