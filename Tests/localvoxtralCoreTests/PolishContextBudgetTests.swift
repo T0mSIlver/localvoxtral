@@ -1,5 +1,5 @@
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 final class PolishContextBudgetTests: XCTestCase {
     private typealias Source = PolishContextSource

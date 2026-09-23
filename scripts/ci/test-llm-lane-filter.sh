@@ -151,6 +151,13 @@ expect true "the phonetic keys in the core target run the lane" \
   Sources/localvoxtralCore/DoubleMetaphone.swift
 expect true "the control-character sanitizer in the core target runs the lane" \
   Sources/localvoxtralCore/StringExtensions.swift
+# The context budget and cross-source grounding merge moved to the core target
+# and still run it: they decide how many characters reach the model and what
+# gets pre-applied.
+expect true "the context budget in the core target runs the lane" \
+  Sources/localvoxtralCore/PolishContextBudget.swift
+expect true "the cross-source grounding merge in the core target runs the lane" \
+  Sources/localvoxtralCore/PolishContextGrounding.swift
 expect false "empty changed-file list decides run=false (caller owns fail-open)" \
   ""
 
