@@ -2,14 +2,16 @@ import Foundation
 
 /// Applies one-time normalization for the first transcript chunk in a session.
 /// Current rule: trim leading whitespace/newlines from the first non-empty chunk.
-struct FirstChunkPreprocessor {
+package struct FirstChunkPreprocessor {
     private(set) var isFirstChunkPending = true
 
-    mutating func reset() {
+    package init() {}
+
+    package mutating func reset() {
         isFirstChunkPending = true
     }
 
-    mutating func preprocess(_ text: String) -> String {
+    package mutating func preprocess(_ text: String) -> String {
         guard !text.isEmpty else { return text }
         guard isFirstChunkPending else { return text }
         isFirstChunkPending = false
