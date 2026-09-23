@@ -123,7 +123,30 @@ MARKER_TEXT_FILE="${2:-}"
 # client authenticates, which decides whether that join arm resolves at all.
 EXEMPT=(
   'Sources/localvoxtral/ClaudeContext/AGENTS.md'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel.swift'  # Settings pane model
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel.swift'  # Settings pane model, and its files by area
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Cmux.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+EnrollmentActions.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+EnrollmentTypes.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+HerdrMachines.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+HerdrPanel.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+HostRow.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+IntegrationRows.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Listener.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+ListenerStatus.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Opencode.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Plugin.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Preview.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+RemoteHosts.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+SetupRun.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+ShellSetup.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Statusline.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Verification.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Vibe.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationActionAttempts.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudePluginInstalling.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeShellSetupStatus.swift'
+  'Sources/localvoxtral/ClaudeContext/RemoteHostSetupRun.swift'
+  'Sources/localvoxtral/ClaudeContext/HerdrMachineImport.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationLiveIO.swift'         # its process/file seams
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService.swift'   # one-time host setup over ssh
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentLiveIO.swift'
