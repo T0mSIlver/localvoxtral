@@ -67,6 +67,25 @@ printf 'PASS: finish without start fails\n'
 [[ ! -f "$TMP_DIR/red/status" ]] || fail "restart kept the previous status"
 printf 'PASS: start clears a previous status\n'
 
+# Past the timeout the command is stopped, children included.
+"$STEP" start "$TMP_DIR/orphan" -- bash -c 'sleep 30 & echo "$!" >"'"$TMP_DIR"'/orphan-child"; wait' >/dev/null
+for _ in 1 2 3 4 5; do [[ -s "$TMP_DIR/orphan-child" ]] && break; sleep 1; done
+child="$(cat "$TMP_DIR/orphan-child")"
+status="$(finish_status "$TMP_DIR/orphan" 1)"
+[[ "$status" == "124" ]] || fail "timeout kill: expected exit 124, got $status"
+if kill -0 "$child" 2>/dev/null; then fail "timeout kill: child $child still running"; fi
+printf 'PASS: a timed-out command is killed with its children\n'
+
+# stop (a cancelled job) kills the command and shows its output.
+"$STEP" start "$TMP_DIR/cancel" -- bash -c 'echo before-cancel; sleep 30' >/dev/null
+sleep 1
+"$STEP" stop "$TMP_DIR/cancel" >"$TMP_DIR/out" 2>&1 || fail "stop: nonzero exit"
+grep -q 'before-cancel' "$TMP_DIR/out" || fail "stop: output not shown"
+pgid="$(cat "$TMP_DIR/cancel/pgid")"
+if kill -0 -- "-$pgid" 2>/dev/null; then fail "stop: process group $pgid still alive"; fi
+"$STEP" stop "$TMP_DIR/never-started" >/dev/null 2>&1 || fail "stop without start must not fail"
+printf 'PASS: stop kills the command and prints its output\n'
+
 # Bad usage is refused.
 status=0
 "$STEP" start "$TMP_DIR/usage" true >/dev/null 2>&1 || status=$?

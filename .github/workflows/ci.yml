@@ -386,6 +386,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: ./scripts/ci/background-step.sh finish "$RUNNER_TEMP/shell-suites" 600
 
+      - name: Stop process-cleanup regression tests (cancelled run)
+        # A cancelled run skips the step above; this one stops the suites and
+        # prints what they wrote, so their output is not lost.
+        if: ${{ cancelled() }}
+        run: ./scripts/ci/background-step.sh stop "$RUNNER_TEMP/shell-suites"
+
       - name: Upload complete unit-test log
         if: ${{ always() && steps.ci_scope.outputs.docs_only != 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
