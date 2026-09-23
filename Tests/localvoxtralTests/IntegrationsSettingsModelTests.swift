@@ -11,14 +11,7 @@ final class IntegrationsSettingsModelTests: XCTestCase {
     // MARK: - Harness
 
     func testSetupSheetsRenderConsentButNoGeneratedCode() throws {
-        let repoRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let source = try String(
-            contentsOf: repoRoot.appendingPathComponent("Sources/localvoxtral/SettingsView.swift"),
-            encoding: .utf8
-        )
+        let source = try SettingsSourceText.load()
         for forbidden in [
             "confirmation.preview",
             "plan.remoteCommands",

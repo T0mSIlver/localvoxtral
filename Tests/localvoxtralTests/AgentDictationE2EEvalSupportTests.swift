@@ -513,11 +513,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
     /// drift or corpus-decoding drift cannot leave the operator workflow
     /// broken while app tests pass. This path intentionally needs no ffmpeg.
     func testHumanRecorderScriptCompilesAndListsEverySpeechCase() throws {
-        let outputDirectory = recorderOutputDirectory(label: "smoke")
-        addTeardownBlock { try? FileManager.default.removeItem(at: outputDirectory) }
-        let run = try runRecorderThroughWrapper(
-            ["--list", "--output", outputDirectory.path]
-        )
+        let run = try Self.scripts.get().recorderThroughWrapper.result()
         XCTAssertEqual(run.status, 0, run.output)
         let expectedSpeechCases = try AgentDictationEvalCorpus.loadStrata().reduce(0) {
             $0 + (Support.stagePlan(for: $1.stratum.resolvedPipeline).runsSpeechRecognition
@@ -541,7 +537,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
     }
 
     func testHumanRecorderAcceptsRepeatedCaseFilters() throws {
-        let outputDirectory = recorderOutputDirectory(label: "focused-batch")
+        let outputDirectory = Self.recorderOutputDirectory(label: "focused-batch")
         addTeardownBlock { try? FileManager.default.removeItem(at: outputDirectory) }
         let selected = ["b-en-equals-assignment", "j-fr-git-dense"]
         let run = try runRecorder([
@@ -560,7 +556,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
     /// of accepted human speech. Older manifests are journaled on first run;
     /// subsequent runs reconstruct the manifest from that durable journal.
     func testHumanRecorderRecoveryJournalRebuildsCorruptManifest() throws {
-        let outputDirectory = recorderOutputDirectory(label: "recovery")
+        let outputDirectory = Self.recorderOutputDirectory(label: "recovery")
         try FileManager.default.createDirectory(
             at: outputDirectory, withIntermediateDirectories: true
         )
@@ -776,7 +772,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
             to: directory.appendingPathComponent("manifest.json"),
             atomically: true, encoding: .utf8
         )
-        let duplicateRun = try runReportRenderer([logURL.path, directory.path])
+        let duplicateRun = try runCompiledReportRenderer([logURL.path, directory.path])
         XCTAssertNotEqual(duplicateRun.status, 0)
         XCTAssertTrue(duplicateRun.output.contains("duplicate id: r-en-report"))
     }
@@ -1105,81 +1101,127 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertEqual(run.status, 0, run.output)
     }
 
-    /// The operator's entry point: the wrapper hands the script to the Swift
-    /// interpreter, which compiles all 760 lines on every run (1–3 s each on the
-    /// build host). One case goes through it, so the wrapper and the
-    /// interpreted path stay covered; the rest run `compiledRecorder()`.
-    private func runRecorderThroughWrapper(
-        _ arguments: [String]
-    ) throws -> (status: Int32, output: String) {
-        try Self.run(
-            URL(fileURLWithPath: "/bin/bash"),
-            [repoRoot.appendingPathComponent("scripts/record-agent-eval.sh").path] + arguments
-        )
+    /// The two Swift scripts cost seconds per run: the wrapper hands the
+    /// script to the interpreter, which compiles it on every run, and one
+    /// `swiftc` build costs as much. Class setUp starts the three runs the
+    /// tests need at once, so they overlap each other and the fast tests
+    /// instead of queueing: the recorder through its operator wrapper (the one
+    /// interpreted recorder run, which keeps the wrapper covered), and a
+    /// `swiftc` build of each script for every other run.
+    private struct ScriptRuns: Sendable {
+        let buildDirectory: URL
+        let recorderOutputDirectory: URL
+        let recorderThroughWrapper: BackgroundProcess
+        let recorderBuild: BackgroundProcess
+        let rendererBuild: BackgroundProcess
+
+        var recorderBinary: URL { buildDirectory.appendingPathComponent("record-agent-eval") }
+        var rendererBinary: URL {
+            buildDirectory.appendingPathComponent("render-agent-eval-report")
+        }
+
+        init() throws {
+            let root = AgentDictationE2EEvalSupportTests.repositoryRoot
+            buildDirectory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("lv-recorder-build-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: buildDirectory, withIntermediateDirectories: true
+            )
+            recorderOutputDirectory = AgentDictationE2EEvalSupportTests
+                .recorderOutputDirectory(label: "smoke")
+            recorderThroughWrapper = try BackgroundProcess(
+                URL(fileURLWithPath: "/bin/bash"),
+                [
+                    root.appendingPathComponent("scripts/record-agent-eval.sh").path,
+                    "--list", "--output", recorderOutputDirectory.path,
+                ]
+            )
+            // Compiled from its real path, so the recorder's `#filePath`
+            // still resolves the repository root.
+            recorderBuild = try BackgroundProcess(
+                URL(fileURLWithPath: "/usr/bin/xcrun"),
+                [
+                    "swiftc", root.appendingPathComponent("scripts/record-agent-eval.swift").path,
+                    "-o", buildDirectory.appendingPathComponent("record-agent-eval").path,
+                ]
+            )
+            rendererBuild = try BackgroundProcess(
+                URL(fileURLWithPath: "/usr/bin/xcrun"),
+                [
+                    "swiftc",
+                    root.appendingPathComponent("scripts/render-agent-eval-report.swift").path,
+                    "-o", buildDirectory.appendingPathComponent("render-agent-eval-report").path,
+                ]
+            )
+        }
+
+        func waitForAll() {
+            _ = recorderThroughWrapper.result()
+            _ = recorderBuild.result()
+            _ = rendererBuild.result()
+        }
     }
 
-    private func runRecorder(_ arguments: [String]) throws -> (status: Int32, output: String) {
-        try Self.run(try Self.compiledRecorder(), arguments)
+    private nonisolated static let scripts = Result { try ScriptRuns() }
+
+    override nonisolated class func setUp() {
+        super.setUp()
+        _ = scripts
     }
 
-    private static let compiledRecorderDirectory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("lv-recorder-build-\(UUID().uuidString)", isDirectory: true)
+    override nonisolated class func tearDown() {
+        if case .success(let runs) = scripts {
+            runs.waitForAll()
+            try? FileManager.default.removeItem(at: runs.buildDirectory)
+            try? FileManager.default.removeItem(at: runs.recorderOutputDirectory)
+        }
+        super.tearDown()
+    }
 
-    /// The same source the wrapper interprets, compiled once for the class from
-    /// its real path, so `#filePath` still resolves the repository root.
-    private static func compiledRecorder() throws -> URL {
-        let binary = compiledRecorderDirectory.appendingPathComponent("record-agent-eval")
-        guard !FileManager.default.fileExists(atPath: binary.path) else { return binary }
-        try FileManager.default.createDirectory(
-            at: compiledRecorderDirectory, withIntermediateDirectories: true
-        )
-        let source = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("scripts/record-agent-eval.swift")
-        let build = try run(
-            URL(fileURLWithPath: "/usr/bin/xcrun"),
-            ["swiftc", source.path, "-o", binary.path]
-        )
-        guard build.status == 0 else {
+    private static func compiled(
+        _ binary: URL, by build: BackgroundProcess, script: String
+    ) throws -> URL {
+        let result = build.result()
+        guard result.status == 0 else {
             throw NSError(
-                domain: "AgentDictationE2EEvalSupportTests", code: Int(build.status),
-                userInfo: [NSLocalizedDescriptionKey: "record-agent-eval.swift did not compile:\n\(build.output)"]
+                domain: "AgentDictationE2EEvalSupportTests", code: Int(result.status),
+                userInfo: [NSLocalizedDescriptionKey: "\(script) did not compile:\n\(result.output)"]
             )
         }
         return binary
     }
 
-    override class func tearDown() {
-        try? FileManager.default.removeItem(at: compiledRecorderDirectory)
-        super.tearDown()
+    private func runRecorder(_ arguments: [String]) throws -> (status: Int32, output: String) {
+        let runs = try Self.scripts.get()
+        let binary = try Self.compiled(
+            runs.recorderBinary, by: runs.recorderBuild, script: "record-agent-eval.swift"
+        )
+        return try BackgroundProcess(binary, arguments).result()
     }
 
-    /// Output is read to EOF before the exit is awaited, so a child that fills
-    /// the pipe cannot block on a reader that is waiting for it to exit.
-    private static func run(
-        _ executable: URL, _ arguments: [String]
+    /// The first renderer run in a test goes through the operator's wrapper
+    /// (`runReportRenderer`), so the wrapper stays covered; later runs use the
+    /// same source compiled once for the class.
+    private func runCompiledReportRenderer(
+        _ arguments: [String]
     ) throws -> (status: Int32, output: String) {
-        let output = Pipe()
-        let process = Process()
-        process.executableURL = executable
-        process.arguments = arguments
-        process.standardOutput = output
-        process.standardError = output
-        let exited = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in exited.signal() }
-        try process.run()
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        exited.wait()
-        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+        let runs = try Self.scripts.get()
+        let binary = try Self.compiled(
+            runs.rendererBinary, by: runs.rendererBuild,
+            script: "render-agent-eval-report.swift"
+        )
+        return try BackgroundProcess(binary, arguments).result()
     }
 
-    private func recorderOutputDirectory(label: String) -> URL {
+    private nonisolated static var repositoryRoot: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
+    }
+
+    private nonisolated static func recorderOutputDirectory(label: String) -> URL {
+        repositoryRoot
             .appendingPathComponent("EvalRecordings/agent-dictation", isDirectory: true)
             .appendingPathComponent(
                 ".tests-\(label)-\(UUID().uuidString)", isDirectory: true
@@ -1773,5 +1815,38 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertEqual(decoded.rewriteFailure, result.rewriteFailure)
         XCTAssertEqual(decoded.rewriteIsFatal, false)
         XCTAssertEqual(decoded.wordAccuracyVsIntended, 1.0)
+    }
+}
+
+/// A child process whose output is read on its own thread, so a caller can
+/// start several and collect each result when it needs it. Output is read to
+/// EOF before the exit is awaited, so a child that fills the pipe cannot block
+/// on a reader that is waiting for it to exit.
+private final class BackgroundProcess: @unchecked Sendable {
+    private let process = Process()
+    private let finished = DispatchSemaphore(value: 0)
+    private var output = Data()
+
+    init(_ executable: URL, _ arguments: [String]) throws {
+        let pipe = Pipe()
+        process.executableURL = executable
+        process.arguments = arguments
+        process.standardOutput = pipe
+        process.standardError = pipe
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+        try process.run()
+        Thread.detachNewThread { [self] in
+            output = pipe.fileHandleForReading.readDataToEndOfFile()
+            exited.wait()
+            finished.signal()
+        }
+    }
+
+    /// Blocks until the child has exited; callable any number of times.
+    func result() -> (status: Int32, output: String) {
+        finished.wait()
+        defer { finished.signal() }
+        return (process.terminationStatus, String(decoding: output, as: UTF8.self))
     }
 }

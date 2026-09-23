@@ -460,67 +460,49 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
     }
 
-    func testABlockWithTheRIGHTPortButNoSendEnvIsNOTCurrent() throws {
-        // The owner's exact shape, and the one this check exists for now: a
-        // host enrolled before `SendEnv LC_LVX_TTY` existed already forwards
-        // the right port, so a port-only currency check reported "current" and
-        // `Update Plugin…` skipped the local rewrite — the line the release
-        // notes promise that button adds never arrived (review finding B1).
-        let stale = [
-            ClaudeRemoteEnrollmentService.blockBegin(hostID: host.id),
-            "Host sandbox-vpn",
-            "    RemoteForward 28542 127.0.0.1:8473",
-            "    ExitOnForwardFailure no",
-            ClaudeRemoteEnrollmentService.blockEnd(hostID: host.id),
-        ].joined(separator: "\n")
-        let filesystem = MemorySSHConfigFileSystem(
-            state: ClaudeRemoteRemoteConfigStateFixture.state(configText: stale)
-        )
-        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: filesystem)
-        XCTAssertEqual(
-            service.sshConfigBlockIsCurrent(snippet: expectedBlock(), hostID: host.id), false,
-            "the port matches and the block is still stale"
-        )
-    }
-
-    func testACOMMENTEDSendEnvDoesNotMakeABlockCurrent() throws {
-        // `# SendEnv LC_LVX_TTY` contains the substring and sends nothing.
-        let commented = [
-            ClaudeRemoteEnrollmentService.blockBegin(hostID: host.id),
-            "Host sandbox-vpn",
-            "    RemoteForward 28542 127.0.0.1:8473",
-            "    ExitOnForwardFailure no",
-            "    # SendEnv LC_LVX_TTY",
-            ClaudeRemoteEnrollmentService.blockEnd(hostID: host.id),
-        ].joined(separator: "\n")
-        let filesystem = MemorySSHConfigFileSystem(
-            state: ClaudeRemoteRemoteConfigStateFixture.state(configText: commented)
-        )
-        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: filesystem)
-        XCTAssertEqual(
-            service.sshConfigBlockIsCurrent(snippet: expectedBlock(), hostID: host.id), false
-        )
-    }
-
-    func testSSHConfigCurrencyAcceptsTabsAndRepeatedSpacesBetweenDirectiveFields() throws {
-        let current = [
-            ClaudeRemoteEnrollmentService.blockBegin(hostID: host.id),
-            "Host sandbox-vpn",
-            "\tRemoteForward\t28542\t127.0.0.1:8473",
-            "  ExitOnForwardFailure    no",
-            "    SendEnv   LC_LVX_TTY",
-            ClaudeRemoteEnrollmentService.blockEnd(hostID: host.id),
-        ].joined(separator: "\n")
-        let filesystem = MemorySSHConfigFileSystem(
-            state: ClaudeRemoteRemoteConfigStateFixture.state(configText: current)
-        )
-        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: filesystem)
-
-        XCTAssertEqual(
-            service.sshConfigBlockIsCurrent(snippet: expectedBlock(), hostID: host.id),
-            true,
-            "OpenSSH accepts any horizontal whitespace between directive fields"
-        )
+    /// Each row: the directive lines between our BEGIN/END markers, and
+    /// whether that block is current for `expectedBlock()`.
+    func testSSHConfigCurrencyOfHandWrittenBlocks() throws {
+        let rows: [(name: String, lines: [String], current: Bool, why: String)] = [
+            // The owner's exact shape, and the one this check exists for now: a
+            // host enrolled before `SendEnv LC_LVX_TTY` existed already forwards
+            // the right port, so a port-only currency check reported "current" and
+            // `Update Plugin…` skipped the local rewrite — the line the release
+            // notes promise that button adds never arrived (review finding B1).
+            ("ABlockWithTheRIGHTPortButNoSendEnvIsNOTCurrent", [
+                "Host sandbox-vpn",
+                "    RemoteForward 28542 127.0.0.1:8473",
+                "    ExitOnForwardFailure no",
+            ], false, "the port matches and the block is still stale"),
+            // `# SendEnv LC_LVX_TTY` contains the substring and sends nothing.
+            ("ACOMMENTEDSendEnvDoesNotMakeABlockCurrent", [
+                "Host sandbox-vpn",
+                "    RemoteForward 28542 127.0.0.1:8473",
+                "    ExitOnForwardFailure no",
+                "    # SendEnv LC_LVX_TTY",
+            ], false, ""),
+            ("SSHConfigCurrencyAcceptsTabsAndRepeatedSpacesBetweenDirectiveFields", [
+                "Host sandbox-vpn",
+                "\tRemoteForward\t28542\t127.0.0.1:8473",
+                "  ExitOnForwardFailure    no",
+                "    SendEnv   LC_LVX_TTY",
+            ], true, "OpenSSH accepts any horizontal whitespace between directive fields"),
+        ]
+        for row in rows {
+            let block = (
+                [ClaudeRemoteEnrollmentService.blockBegin(hostID: host.id)]
+                    + row.lines
+                    + [ClaudeRemoteEnrollmentService.blockEnd(hostID: host.id)]
+            ).joined(separator: "\n")
+            let filesystem = MemorySSHConfigFileSystem(
+                state: ClaudeRemoteRemoteConfigStateFixture.state(configText: block)
+            )
+            let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: filesystem)
+            XCTAssertEqual(
+                service.sshConfigBlockIsCurrent(snippet: expectedBlock(), hostID: host.id), row.current,
+                "\(row.name): \(row.why)"
+            )
+        }
     }
 
     /// Port and `SendEnv` right, the rest wrong: each of these is a dead or
@@ -721,15 +703,6 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             let terminator = try XCTUnwrap(invocation.argv.firstIndex(of: "--"))
             let alias = try XCTUnwrap(invocation.argv.firstIndex(of: "builder"))
             XCTAssertLessThan(terminator, alias, "the alias must sit after `--`")
-        }
-    }
-
-    func testPlanRefusesAnInvalidAlias() {
-        XCTAssertThrowsError(try plan(alias: "host\nRemoteForward 22 evil:22")) { error in
-            XCTAssertEqual(
-                error as? ClaudeRemoteEnrollmentService.ServiceError,
-                .invalidHostAlias
-            )
         }
     }
 
@@ -1275,16 +1248,56 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
 
     // MARK: Execution
 
-    func testExecutionIsRefusedWithoutAnInjectedRunner() throws {
-        let service = ClaudeRemoteEnrollmentService()
-        XCTAssertThrowsError(
-            try service.executeRemoteSetup(try plan(), sshHostAlias: "builder", token: token)
-        ) { error in
-            XCTAssertEqual(
-                error as? ClaudeRemoteEnrollmentService.ServiceError,
-                .executionNotConfigured
-            )
+    /// Calls the service refuses before doing any work. A service with no
+    /// runner (or no local file system) spawns nothing, ever, and says so
+    /// instead of quietly reaching for a default. An invalid alias is refused
+    /// before SSH: the shared runner below fails any row that reaches it.
+    func testServiceCallsAreRefusedBeforeAnyWork() throws {
+        typealias Service = ClaudeRemoteEnrollmentService
+        let setupPlan = try plan()
+        let token = token
+        let runnerCalls = Mutex(0)
+        let guarded = Service(runner: { _ in
+            runnerCalls.withLock { $0 += 1 }
+            XCTFail("the runner must never be reached with an invalid alias")
+            return .init(exitCode: 0, message: "")
+        })
+        let rows: [(name: String, expected: Service.ServiceError, call: () throws -> Void)] = [
+            ("ExecutionIsRefusedWithoutAnInjectedRunner", .executionNotConfigured, {
+                _ = try Service().executeRemoteSetup(setupPlan, sshHostAlias: "builder", token: token)
+            }),
+            ("PluginUpdateExecutionIsRefusedWithoutAnInjectedRunner", .executionNotConfigured, {
+                _ = try Service().executeRemotePluginUpdate(sshHostAlias: "builder")
+            }),
+            ("VerificationIsRefusedWithoutAnInjectedRunner", .executionNotConfigured, {
+                _ = try Service().executeVerification(sshHostAlias: "builder", listenerIsBound: true)
+            }),
+            ("HerdrPanelConfigurationIsRefusedWithoutAnInjectedRunner", .executionNotConfigured, {
+                _ = try Service().configureRemoteHerdrPanel(sshHostAlias: "builder")
+            }),
+            ("LocalHerdrPanelConfigurationIsRefusedWithoutAnInjectedFileSystem",
+             .localHerdrConfigEditingNotConfigured, {
+                _ = try Service().configureLocalHerdrPanel()
+            }),
+            ("PlanRefusesAnInvalidAlias", .invalidHostAlias, {
+                _ = try self.plan(alias: "host\nRemoteForward 22 evil:22")
+            }),
+            ("PluginUpdateRefusesAnInvalidAlias", .invalidHostAlias, {
+                _ = try guarded.executeRemotePluginUpdate(sshHostAlias: "a b")
+            }),
+            ("VerificationRefusesAnInvalidAlias", .invalidHostAlias, {
+                _ = try guarded.executeVerification(sshHostAlias: "a b", listenerIsBound: true)
+            }),
+            ("HerdrPanelConfigurationRefusesAnInvalidAliasBeforeSSH", .invalidHostAlias, {
+                _ = try guarded.configureRemoteHerdrPanel(sshHostAlias: "builder; touch /tmp/no")
+            }),
+        ]
+        for row in rows {
+            XCTAssertThrowsError(try row.call(), row.name) { error in
+                XCTAssertEqual(error as? Service.ServiceError, row.expected, row.name)
+            }
         }
+        XCTAssertEqual(runnerCalls.withLock { $0 }, 0)
     }
 
     func testExecutionRunsExactlyTheRemoteCommandsOverSSH() throws {
@@ -1552,16 +1565,6 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
 
     // MARK: Update execution
 
-    func testPluginUpdateExecutionIsRefusedWithoutAnInjectedRunner() throws {
-        let service = ClaudeRemoteEnrollmentService()
-        XCTAssertThrowsError(try service.executeRemotePluginUpdate(sshHostAlias: "builder")) { error in
-            XCTAssertEqual(
-                error as? ClaudeRemoteEnrollmentService.ServiceError,
-                .executionNotConfigured
-            )
-        }
-    }
-
     func testPluginUpdateRunsExactlyTheTwoClaudeCommandsOverSSH() throws {
         let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
         let service = ClaudeRemoteEnrollmentService(runner: { invocation in
@@ -1626,19 +1629,6 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertEqual(calls.withLock { $0 }, 1)
     }
 
-    func testPluginUpdateRefusesAnInvalidAlias() {
-        let service = ClaudeRemoteEnrollmentService(runner: { _ in
-            XCTFail("the runner must never be reached with an invalid alias")
-            return .init(exitCode: 0, message: "")
-        })
-        XCTAssertThrowsError(try service.executeRemotePluginUpdate(sshHostAlias: "a b")) { error in
-            XCTAssertEqual(
-                error as? ClaudeRemoteEnrollmentService.ServiceError,
-                .invalidHostAlias
-            )
-        }
-    }
-
     func testExecutionNeverTouchesTheSSHConfig() throws {
         let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
         let service = ClaudeRemoteEnrollmentService(runner: { invocation in
@@ -1685,35 +1675,6 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             ),
             invocations: calls.withLock { $0 }
         )
-    }
-
-    func testVerificationIsRefusedWithoutAnInjectedRunner() {
-        // Same opt-in as execution: a service with no runner spawns nothing,
-        // ever, and says so instead of quietly reaching for a default.
-        let service = ClaudeRemoteEnrollmentService()
-        XCTAssertThrowsError(
-            try service.executeVerification(sshHostAlias: "builder", listenerIsBound: true)
-        ) { error in
-            XCTAssertEqual(
-                error as? ClaudeRemoteEnrollmentService.ServiceError,
-                .executionNotConfigured
-            )
-        }
-    }
-
-    func testVerificationRefusesAnInvalidAlias() {
-        let service = ClaudeRemoteEnrollmentService(runner: { _ in
-            XCTFail("the runner must never be reached with an invalid alias")
-            return .init(exitCode: 0, message: "")
-        })
-        XCTAssertThrowsError(
-            try service.executeVerification(sshHostAlias: "a b", listenerIsBound: true)
-        ) { error in
-            XCTAssertEqual(
-                error as? ClaudeRemoteEnrollmentService.ServiceError,
-                .invalidHostAlias
-            )
-        }
     }
 
     /// The tunnel probe must NOT clear forwardings, unlike every other
@@ -1800,48 +1761,140 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
     }
 
-    func testA401MeansTheTunnelIsUpWhenOurOwnListenerIsBound() throws {
-        let checks = try verify(
-            results: [.init(exitCode: 0, message: "LVX_HTTP:401\n"), .init(exitCode: 0, message: "")]
-        ).checks
-        let tunnel = try XCTUnwrap(checks.first { $0.kind == .tunnel })
-        XCTAssertTrue(tunnel.passed, "401 is the SUCCESS signal, and the app must say so, not the user")
-        XCTAssertTrue(tunnel.summary.contains("Tunnel is up"))
+    /// One verdict of `executeVerification`: the probes' scripted answers
+    /// (tunnel probe, then plugin probe) and what the check of `kind` must say.
+    /// `why` is appended to every assertion message of the row.
+    private struct VerdictCase {
+        let name: String
+        var remoteForwardPort: UInt16 = 8473
+        var listenerIsBound = true
+        let results: [ClaudeRemoteEnrollmentService.RunResult]
+        var kind: ClaudeRemoteEnrollmentService.VerificationCheck.Kind = .tunnel
+        let passed: Bool
+        var summary: String?
+        var summaryContains: [String] = []
+        var summaryLacks: [String] = []
+        var hintContains: [String] = []
+        var detailContains: [String] = []
+        var detailLacks: [String] = []
+        var why = ""
     }
 
-    /// Review finding, round 1: a 401 proves something on this Mac answered
-    /// through the tunnel, not that it was us. When our own bind failed, the
-    /// squatter holding the listener port is what replied — and the old verdict
-    /// called that a pass.
-    func testA401DoesNotPassWhenOurListenerIsNotBound() throws {
-        let checks = try verify(
-            remoteForwardPort: 28511,
-            listenerIsBound: false,
-            results: [.init(exitCode: 0, message: "LVX_HTTP:401"), .init(exitCode: 0, message: "")]
-        ).checks
-        let tunnel = try XCTUnwrap(checks.first { $0.kind == .tunnel })
-        XCTAssertFalse(tunnel.passed)
-        XCTAssertTrue(tunnel.summary.contains("Something else answered"))
-        XCTAssertTrue(tunnel.summary.contains("28511"))
-        XCTAssertTrue(
-            tunnel.hint?.contains("not listening") ?? false,
-            "the remedy is the port conflict on THIS Mac, and the user must be sent there"
-        )
-    }
-
-    func testCurlConnectFailureIsReportedAsNoLiveTunnelNotAsAnSSHFailure() throws {
-        // The script always exits 0 and prints one token, so 000 can only mean
-        // "nothing answered on the forwarded port".
-        let checks = try verify(
-            results: [.init(exitCode: 0, message: "LVX_HTTP:000"), .init(exitCode: 0, message: "")]
-        ).checks
-        let tunnel = try XCTUnwrap(checks.first { $0.kind == .tunnel })
-        XCTAssertFalse(tunnel.passed)
-        XCTAssertEqual(tunnel.summary, "No tunnel is live right now.")
-        XCTAssertTrue(
-            tunnel.hint?.contains("SSH session") ?? false,
-            "the forward exists only while a session is open — say it, once"
-        )
+    func testVerificationVerdicts() throws {
+        let leaked = "tokenQQQQRRRRSSSSTTTTUUUU77776666"
+        let cases: [VerdictCase] = [
+            VerdictCase(
+                name: "A401MeansTheTunnelIsUpWhenOurOwnListenerIsBound",
+                results: [.init(exitCode: 0, message: "LVX_HTTP:401\n"), .init(exitCode: 0, message: "")],
+                passed: true,
+                summaryContains: ["Tunnel is up"],
+                why: "401 is the SUCCESS signal, and the app must say so, not the user"
+            ),
+            // Review finding, round 1: a 401 proves something on this Mac answered
+            // through the tunnel, not that it was us. When our own bind failed, the
+            // squatter holding the listener port is what replied — and the old verdict
+            // called that a pass.
+            VerdictCase(
+                name: "A401DoesNotPassWhenOurListenerIsNotBound",
+                remoteForwardPort: 28511,
+                listenerIsBound: false,
+                results: [.init(exitCode: 0, message: "LVX_HTTP:401"), .init(exitCode: 0, message: "")],
+                passed: false,
+                summaryContains: ["Something else answered", "28511"],
+                hintContains: ["not listening"],
+                why: "the remedy is the port conflict on THIS Mac, and the user must be sent there"
+            ),
+            // The script always exits 0 and prints one token, so 000 can only mean
+            // "nothing answered on the forwarded port".
+            VerdictCase(
+                name: "CurlConnectFailureIsReportedAsNoLiveTunnelNotAsAnSSHFailure",
+                results: [.init(exitCode: 0, message: "LVX_HTTP:000"), .init(exitCode: 0, message: "")],
+                passed: false,
+                summary: "No tunnel is live right now.",
+                hintContains: ["SSH session"],
+                why: "the forward exists only while a session is open — say it, once"
+            ),
+            VerdictCase(
+                name: "AnSSHFailureIsDistinctFromAnAbsentTunnel",
+                results: [
+                    .init(exitCode: 255, message: "ssh: Could not resolve hostname builder"),
+                    .init(exitCode: 255, message: "ssh: Could not resolve hostname builder"),
+                ],
+                passed: false,
+                summary: "Could not reach builder over SSH.",
+                detailContains: ["255"],
+                why: "the exit code is the diagnosable part we own"
+            ),
+            // A squatter that returns 200 is not a pass, and not "no tunnel"
+            // either: the user has to learn something else holds the port.
+            VerdictCase(
+                name: "AStrangerAnsweringOnThePortIsItsOwnVerdict",
+                remoteForwardPort: 28511,
+                results: [.init(exitCode: 0, message: "LVX_HTTP:200"), .init(exitCode: 0, message: "")],
+                passed: false,
+                summaryContains: ["28511"]
+            ),
+            // Field failure 2026-07-26: `ssh host /bin/sh -s` runs with sshd's
+            // minimal PATH. "claude is not installed here" and "the plugin is not
+            // installed" are different problems with different fixes.
+            VerdictCase(
+                name: "AMissingClaudeOnTheHostIsItsOwnVerdictNotAMissingPlugin",
+                results: [
+                    .init(exitCode: 0, message: "LVX_HTTP:401"),
+                    .init(exitCode: 127, message: "localvoxtral: 'claude' was not found on this host's non-interactive PATH"),
+                ],
+                kind: .plugin,
+                passed: false,
+                summaryContains: ["Claude Code was not found"],
+                summaryLacks: ["plugin is not installed"]
+            ),
+            VerdictCase(
+                name: "AFailedPluginProbeStillLeaksNothingFromTheHost",
+                results: [
+                    .init(exitCode: 0, message: "LVX_HTTP:401"),
+                    .init(exitCode: 3, message: "error: could not read config token=\(leaked)"),
+                ],
+                kind: .plugin,
+                passed: false,
+                detailContains: ["3"],
+                detailLacks: [leaked],
+                why: "the exit code is ours to report"
+            ),
+            // Truncation, a wrapper's rewrite, anything: three digits or it is not
+            // a code, and a non-code must never be reported as one.
+            VerdictCase(
+                name: "AFramedAnswerThatIsNotAStatusCodeIsTreatedAsSilence",
+                results: [
+                    .init(exitCode: 0, message: "LVX_HTTP:not-a-code"),
+                    .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral"),
+                ],
+                passed: false,
+                summary: "No tunnel is live right now.",
+                detailLacks: ["not-a-code"],
+                why: "unparsed host text must not travel"
+            ),
+        ]
+        for row in cases {
+            let label = "\(row.name): \(row.why)"
+            let checks = try verify(
+                remoteForwardPort: row.remoteForwardPort,
+                listenerIsBound: row.listenerIsBound,
+                results: row.results
+            ).checks
+            guard let check = checks.first(where: { $0.kind == row.kind }) else {
+                XCTFail("\(row.name): no \(row.kind) check")
+                continue
+            }
+            XCTAssertEqual(check.passed, row.passed, label)
+            if let summary = row.summary { XCTAssertEqual(check.summary, summary, label) }
+            for text in row.summaryContains { XCTAssertTrue(check.summary.contains(text), "\(label) [\(text)]") }
+            for text in row.summaryLacks { XCTAssertFalse(check.summary.contains(text), "\(label) [\(text)]") }
+            for text in row.hintContains {
+                XCTAssertTrue(check.hint?.contains(text) ?? false, "\(label) [\(text)]")
+            }
+            for text in row.detailContains { XCTAssertTrue(check.detail.contains(text), "\(label) [\(text)]") }
+            for text in row.detailLacks { XCTAssertFalse(check.detail.contains(text), "\(label) [\(text)]") }
+        }
     }
 
     func testNothingAnsweringWithNoLocalListenerBlamesTheMacNotTheTunnel() throws {
@@ -1882,31 +1935,6 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
     }
 
-    func testAnSSHFailureIsDistinctFromAnAbsentTunnel() throws {
-        let checks = try verify(
-            results: [
-                .init(exitCode: 255, message: "ssh: Could not resolve hostname builder"),
-                .init(exitCode: 255, message: "ssh: Could not resolve hostname builder"),
-            ]
-        ).checks
-        let tunnel = try XCTUnwrap(checks.first { $0.kind == .tunnel })
-        XCTAssertFalse(tunnel.passed)
-        XCTAssertEqual(tunnel.summary, "Could not reach builder over SSH.")
-        XCTAssertTrue(tunnel.detail.contains("255"), "the exit code is the diagnosable part we own")
-    }
-
-    func testAStrangerAnsweringOnThePortIsItsOwnVerdict() throws {
-        // A squatter that returns 200 is not a pass, and not "no tunnel"
-        // either: the user has to learn something else holds the port.
-        let checks = try verify(
-            remoteForwardPort: 28511,
-            results: [.init(exitCode: 0, message: "LVX_HTTP:200"), .init(exitCode: 0, message: "")]
-        ).checks
-        let tunnel = try XCTUnwrap(checks.first { $0.kind == .tunnel })
-        XCTAssertFalse(tunnel.passed)
-        XCTAssertTrue(tunnel.summary.contains("28511"))
-    }
-
     func testThePluginCheckPassesOnlyWhenTheRemotePluginIsListed() throws {
         let present = try verify(
             results: [
@@ -1926,22 +1954,6 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertFalse(check.passed)
         XCTAssertTrue(check.summary.contains("not installed"))
         XCTAssertTrue(check.hint?.contains("step 2") ?? false)
-    }
-
-    func testAMissingClaudeOnTheHostIsItsOwnVerdictNotAMissingPlugin() throws {
-        // Field failure 2026-07-26: `ssh host /bin/sh -s` runs with sshd's
-        // minimal PATH. "claude is not installed here" and "the plugin is not
-        // installed" are different problems with different fixes.
-        let checks = try verify(
-            results: [
-                .init(exitCode: 0, message: "LVX_HTTP:401"),
-                .init(exitCode: 127, message: "localvoxtral: 'claude' was not found on this host's non-interactive PATH"),
-            ]
-        ).checks
-        let plugin = try XCTUnwrap(checks.first { $0.kind == .plugin })
-        XCTAssertFalse(plugin.passed)
-        XCTAssertTrue(plugin.summary.contains("Claude Code was not found"))
-        XCTAssertFalse(plugin.summary.contains("plugin is not installed"))
     }
 
     /// MINOR 4 (review round 3). 127 is the shell's generic "command not
@@ -2039,20 +2051,6 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertTrue(plugin.detail.contains(ClaudePluginAssets.remotePluginName))
     }
 
-    func testAFailedPluginProbeStillLeaksNothingFromTheHost() throws {
-        let leaked = "tokenQQQQRRRRSSSSTTTTUUUU77776666"
-        let run = try verify(
-            results: [
-                .init(exitCode: 0, message: "LVX_HTTP:401"),
-                .init(exitCode: 3, message: "error: could not read config token=\(leaked)"),
-            ]
-        )
-        let plugin = try XCTUnwrap(run.checks.first { $0.kind == .plugin })
-        XCTAssertFalse(plugin.passed)
-        XCTAssertFalse(plugin.detail.contains(leaked))
-        XCTAssertTrue(plugin.detail.contains("3"), "the exit code is ours to report")
-    }
-
     /// MINOR 2 (review round 2). The probe's answer is a line the probe itself
     /// printed; a login banner, an rc-file echo or a MOTD that happens to end
     /// in `401` must not be able to decide a verdict.
@@ -2086,21 +2084,6 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         let tunnel = try XCTUnwrap(unframed.first { $0.kind == .tunnel })
         XCTAssertFalse(tunnel.passed, "an unframed line is not our probe speaking")
         XCTAssertEqual(tunnel.summary, "No tunnel is live right now.")
-    }
-
-    func testAFramedAnswerThatIsNotAStatusCodeIsTreatedAsSilence() throws {
-        // Truncation, a wrapper's rewrite, anything: three digits or it is not
-        // a code, and a non-code must never be reported as one.
-        let checks = try verify(
-            results: [
-                .init(exitCode: 0, message: "LVX_HTTP:not-a-code"),
-                .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral"),
-            ]
-        ).checks
-        let tunnel = try XCTUnwrap(checks.first { $0.kind == .tunnel })
-        XCTAssertFalse(tunnel.passed)
-        XCTAssertEqual(tunnel.summary, "No tunnel is live right now.")
-        XCTAssertFalse(tunnel.detail.contains("not-a-code"), "unparsed host text must not travel")
     }
 
     /// MAJOR 1 (review round 2), service half: the local fact is re-applied to
@@ -2221,19 +2204,6 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
 
     // MARK: herdr agents-panel configuration
 
-    func testHerdrPanelConfigurationIsRefusedWithoutAnInjectedRunner() {
-        XCTAssertThrowsError(
-            try ClaudeRemoteEnrollmentService().configureRemoteHerdrPanel(
-                sshHostAlias: "builder"
-            )
-        ) { error in
-            XCTAssertEqual(
-                error as? ClaudeRemoteEnrollmentService.ServiceError,
-                .executionNotConfigured
-            )
-        }
-    }
-
     func testHerdrPanelConfigurationUsesTheEnrollmentSSHChannelAndConservativePatch() throws {
         let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
         let service = ClaudeRemoteEnrollmentService(runner: { invocation in
@@ -2344,36 +2314,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         }
     }
 
-    func testHerdrPanelConfigurationRefusesAnInvalidAliasBeforeSSH() {
-        let calls = Mutex(0)
-        let service = ClaudeRemoteEnrollmentService(runner: { _ in
-            calls.withLock { $0 += 1 }
-            return .init(exitCode: 0, message: "")
-        })
-
-        XCTAssertThrowsError(
-            try service.configureRemoteHerdrPanel(sshHostAlias: "builder; touch /tmp/no")
-        ) { error in
-            XCTAssertEqual(
-                error as? ClaudeRemoteEnrollmentService.ServiceError,
-                .invalidHostAlias
-            )
-        }
-        XCTAssertEqual(calls.withLock { $0 }, 0)
-    }
-
     // MARK: local herdr agents-panel configuration
-
-    func testLocalHerdrPanelConfigurationIsRefusedWithoutAnInjectedFileSystem() {
-        XCTAssertThrowsError(
-            try ClaudeRemoteEnrollmentService().configureLocalHerdrPanel()
-        ) { error in
-            XCTAssertEqual(
-                error as? ClaudeRemoteEnrollmentService.ServiceError,
-                .localHerdrConfigEditingNotConfigured
-            )
-        }
-    }
 
     func testLocalHerdrPanelStatusMatchesWhatSetUpWouldDo() {
         func status(_ content: String?, symlink: Bool = false) -> ClaudeRemoteEnrollmentService.LocalHerdrPanelStatus {
@@ -2441,56 +2382,33 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertEqual(fileSystem.snapshot.writes.count, 1)
     }
 
-    func testLocalHerdrPanelConfigurationRefusesACustomizedTable() {
-        let original = "[ui.sidebar.agents]\nrows = [[\"state_icon\"]]\n"
-        let fileSystem = MemoryLocalHerdrConfigFileSystem(
-            state: ClaudeLocalHerdrConfigState(
-                directoryExists: true,
-                configData: Data(original.utf8),
-                configPermissions: 0o644
+    func testLocalHerdrPanelConfigurationRefusesExistingAgentsConfiguration() {
+        let rows: [(name: String, original: String)] = [
+            ("LocalHerdrPanelConfigurationRefusesACustomizedTable", "[ui.sidebar.agents]\nrows = [[\"state_icon\"]]\n"),
+            ("LocalHerdrPanelConfigurationRefusesAnExistingRowsKey", "[ui.sidebar]\nrows = [[\"state_icon\"]]\n"),
+        ]
+        for row in rows {
+            let fileSystem = MemoryLocalHerdrConfigFileSystem(
+                state: ClaudeLocalHerdrConfigState(
+                    directoryExists: true,
+                    configData: Data(row.original.utf8),
+                    configPermissions: 0o644
+                )
             )
-        )
-        let service = ClaudeRemoteEnrollmentService(
-            localHerdrConfigFileSystem: fileSystem
-        )
+            let service = ClaudeRemoteEnrollmentService(
+                localHerdrConfigFileSystem: fileSystem
+            )
 
-        XCTAssertThrowsError(try service.configureLocalHerdrPanel()) { error in
-            XCTAssertEqual(
-                error as? ClaudeRemoteEnrollmentService.ServiceError,
-                .localHerdrPanelConfigAlreadyCustomized
-            )
+            XCTAssertThrowsError(try service.configureLocalHerdrPanel(), row.name) { error in
+                XCTAssertEqual(
+                    error as? ClaudeRemoteEnrollmentService.ServiceError,
+                    .localHerdrPanelConfigAlreadyCustomized,
+                    row.name
+                )
+            }
+            XCTAssertTrue(fileSystem.snapshot.writes.isEmpty, row.name)
+            XCTAssertEqual(fileSystem.snapshot.state.configData, Data(row.original.utf8), row.name)
         }
-        XCTAssertTrue(fileSystem.snapshot.writes.isEmpty)
-        XCTAssertEqual(
-            fileSystem.snapshot.state.configData,
-            Data(original.utf8)
-        )
-    }
-
-    func testLocalHerdrPanelConfigurationRefusesAnExistingRowsKey() {
-        let original = "[ui.sidebar]\nrows = [[\"state_icon\"]]\n"
-        let fileSystem = MemoryLocalHerdrConfigFileSystem(
-            state: ClaudeLocalHerdrConfigState(
-                directoryExists: true,
-                configData: Data(original.utf8),
-                configPermissions: 0o644
-            )
-        )
-        let service = ClaudeRemoteEnrollmentService(
-            localHerdrConfigFileSystem: fileSystem
-        )
-
-        XCTAssertThrowsError(try service.configureLocalHerdrPanel()) { error in
-            XCTAssertEqual(
-                error as? ClaudeRemoteEnrollmentService.ServiceError,
-                .localHerdrPanelConfigAlreadyCustomized
-            )
-        }
-        XCTAssertTrue(fileSystem.snapshot.writes.isEmpty)
-        XCTAssertEqual(
-            fileSystem.snapshot.state.configData,
-            Data(original.utf8)
-        )
     }
 
     func testLocalHerdrPanelConfigurationDeclaresWhetherTheConfigExisted() throws {
@@ -2903,40 +2821,36 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         }
     }
 
-    func testPluginSetupUpdatesAStalePluginAndReadsTheNewVersionBack() throws {
-        let calls = PluginSetupCalls()
-        let service = ClaudeRemoteEnrollmentService(
-            runner: pluginSetupRunner(
-                before: "1.4.0",
-                after: ClaudeRemoteEnrollmentService.remotePluginVersion,
-                calls: calls
+    /// Each row: the version listed before setup, the token setup gets, the
+    /// outcome it must report, and what the install call's script must carry.
+    /// The read-back always lists the current version.
+    func testPluginSetupUpdatesOrInstallsAndReadsTheNewVersionBack() throws {
+        let rows: [(name: String, before: String?, token: String?,
+                    outcome: ClaudeRemoteEnrollmentService.PluginSetupOutcome, script: [String])] = [
+            ("PluginSetupUpdatesAStalePluginAndReadsTheNewVersionBack", "1.4.0", nil, .updated,
+             ["claude plugin marketplace update", "claude plugin update"]),
+            ("PluginSetupInstallsAnAbsentPluginWhenItHasAToken", nil, "t0k", .installed,
+             ["claude plugin marketplace add", "--config 'token=t0k'"]),
+        ]
+        for row in rows {
+            let calls = PluginSetupCalls()
+            let service = ClaudeRemoteEnrollmentService(
+                runner: pluginSetupRunner(
+                    before: row.before,
+                    after: ClaudeRemoteEnrollmentService.remotePluginVersion,
+                    calls: calls
+                )
             )
-        )
-        XCTAssertEqual(
-            try service.setupRemotePlugin(sshHostAlias: "builder", token: nil, remoteForwardPort: 28_511),
-            ClaudeRemoteEnrollmentService.PluginSetupOutcome.updated
-        )
-        let script = calls.scripts[1]
-        XCTAssertTrue(script.contains("claude plugin marketplace update"))
-        XCTAssertTrue(script.contains("claude plugin update"))
-    }
-
-    func testPluginSetupInstallsAnAbsentPluginWhenItHasAToken() throws {
-        let calls = PluginSetupCalls()
-        let service = ClaudeRemoteEnrollmentService(
-            runner: pluginSetupRunner(
-                before: nil,
-                after: ClaudeRemoteEnrollmentService.remotePluginVersion,
-                calls: calls
+            XCTAssertEqual(
+                try service.setupRemotePlugin(sshHostAlias: "builder", token: row.token, remoteForwardPort: 28_511),
+                row.outcome,
+                row.name
             )
-        )
-        XCTAssertEqual(
-            try service.setupRemotePlugin(sshHostAlias: "builder", token: "t0k", remoteForwardPort: 28_511),
-            ClaudeRemoteEnrollmentService.PluginSetupOutcome.installed
-        )
-        let script = calls.scripts[1]
-        XCTAssertTrue(script.contains("claude plugin marketplace add"))
-        XCTAssertTrue(script.contains("--config 'token=t0k'"))
+            let script = calls.scripts[1]
+            for expected in row.script {
+                XCTAssertTrue(script.contains(expected), "\(row.name): \(expected)")
+            }
+        }
     }
 
     func testPluginSetupReadBackNamesTheVersionItFound() throws {

@@ -214,18 +214,9 @@ final class SettingsTabTests: XCTestCase {
         }
     }
 
-    /// `SettingsView.swift` source, for the copy/layout pins above. Read from
-    /// the repo rather than inlined constants so the assertion runs against
-    /// what actually ships.
+    /// The Settings window's source, for the copy/layout pins above.
     private static func settingsViewSource() throws -> String {
-        let repoRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()  // SettingsTabTests.swift
-            .deletingLastPathComponent()  // localvoxtralTests
-            .deletingLastPathComponent()  // Tests
-        return try String(
-            contentsOf: repoRoot.appendingPathComponent("Sources/localvoxtral/SettingsView.swift"),
-            encoding: .utf8
-        )
+        try SettingsSourceText.load()
     }
 
     /// First double-quoted argument of every top-level `<call> "<arg>" ...`
@@ -271,7 +262,7 @@ final class SettingsTabTests: XCTestCase {
 
         let title = try XCTUnwrap(
             source.range(of: "title: \"Clipboard\""),
-            "the Clipboard toggle row is gone from SettingsView.swift"
+            "the Clipboard toggle row is gone from the Settings sources"
         )
         // The row's `help:` argument is the next one after its title.
         let afterTitle = source[title.upperBound...]
@@ -302,13 +293,15 @@ final class SettingsTabTests: XCTestCase {
 
         let filesRow = try XCTUnwrap(
             source.range(of: "SettingsFieldRow(title: \"Files\", layout: .stacked)"),
-            "the Files list row is gone from SettingsView.swift — update this pin"
+            "the Files list row is gone from the Settings sources — update this pin"
         )
-        let nextGroup = try XCTUnwrap(
-            source.range(of: "SettingsGroup(", range: filesRow.upperBound..<source.endIndex),
-            "the Files row is not followed by a group — update this pin"
-        )
-        let filesList = source[filesRow.lowerBound..<nextGroup.lowerBound]
+        // Up to the next group, or the end of the pane when the Files row is
+        // its last one.
+        let paneEnd = SettingsSourceText.endOfTopLevelDeclaration(in: source, after: filesRow.upperBound)
+        let listEnd = source.range(
+            of: "SettingsGroup(", range: filesRow.upperBound..<paneEnd
+        )?.lowerBound ?? paneEnd
+        let filesList = source[filesRow.lowerBound..<listEnd]
 
         XCTAssertFalse(
             filesList.contains("terminal_apps.toml"),
@@ -432,12 +425,10 @@ final class SettingsTabTests: XCTestCase {
 
         func paneBody(_ name: String) throws -> Substring {
             let start = try XCTUnwrap(
-                source.range(of: "private struct \(name): View {"),
-                "\(name) is gone from SettingsView.swift — update this pin"
+                source.range(of: "struct \(name): View {"),
+                "\(name) is gone from the Settings sources — update this pin"
             )
-            let end = source.range(
-                of: "\nprivate struct ", range: start.upperBound..<source.endIndex
-            )?.lowerBound ?? source.endIndex
+            let end = SettingsSourceText.endOfTopLevelDeclaration(in: source, after: start.upperBound)
             return source[start.lowerBound..<end]
         }
 

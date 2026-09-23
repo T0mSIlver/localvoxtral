@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Builds and runs the localvoxtralCore tests on Linux (#432 step 9): the
-# Foundation-only core, with no Mac. The app and its suite need AppKit and are
-# not in the package on Linux, so this builds the test product alone.
+# Foundation-only core, with no Mac. It also builds the Claude hook publisher,
+# which runs on remote Linux hosts, and runs its tests. The app and its suite
+# need AppKit and are not in the package on Linux, so the test product is
+# built alone.
 #
 #   ./scripts/core-tests-linux.sh                       # every core test
 #   ./scripts/core-tests-linux.sh --filter TranscriptAccumulatorTests
@@ -21,5 +23,6 @@ resolved_backup="$(mktemp)"
 cp Package.resolved "$resolved_backup"
 trap 'cp "$resolved_backup" Package.resolved; rm -f "$resolved_backup"' EXIT
 
+"$SWIFT" build --scratch-path "$SCRATCH" --product localvoxtral-claude-hook
 "$SWIFT" build --scratch-path "$SCRATCH" --product localvoxtralPackageTests
 "$SWIFT" test --skip-build --scratch-path "$SCRATCH" "$@"

@@ -164,6 +164,21 @@ extension ClaudeHookPublisher {
             hasTTY: tdev != -1 && tdev != 0,
             startMicros: startMicros > 0 ? startMicros : nil
         )
+        #elseif os(Linux)
+        guard let stat = LinuxProcStat.read(pid: pid) else { return nil }
+        let startMicros = LinuxProcStat.readBootTimeSeconds().flatMap {
+            LinuxProcStat.startMicros(
+                startTicks: stat.startTicks,
+                bootTimeSeconds: $0,
+                ticksPerSecond: Int64(sysconf(Int32(_SC_CLK_TCK)))
+            )
+        }
+        return ProcessFacts(
+            parent: stat.parent,
+            session: stat.session,
+            hasTTY: stat.ttyNumber != 0,
+            startMicros: startMicros
+        )
         #else
         return nil
         #endif

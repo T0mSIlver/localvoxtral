@@ -27,7 +27,48 @@ final class LLMPolishingServiceTests: XCTestCase {
             request: request,
             configuration: configuration
         )
-        XCTAssertEqual(urlRequest.timeoutInterval, 40)
+        // "hello": 5 characters, 2 estimated tokens at 50 ms each on the floor.
+        XCTAssertEqual(urlRequest.timeoutInterval, 40.1, accuracy: 1e-9)
+    }
+
+    /// An hour-long dictation used to get the same 40 s as a sentence and
+    /// always timed out (#318). The transcript's length reaches the URLRequest.
+    func testLongTranscriptGetsALongerTimeout() throws {
+        let long = LLMPolishingRequest(
+            inputText: String(repeating: "word ", count: 1_800),  // 9,000 characters
+            systemPrompt: "system",
+            userPrompts: ["first"]
+        )
+        let urlRequest = try LLMPolishingService.makeURLRequest(
+            request: long,
+            configuration: LLMPolishingConfiguration(
+                endpointURL: URL(string: "http://127.0.0.1:8472/v1/chat/completions")!,
+                apiKey: "",
+                model: "model"
+            )
+        )
+        XCTAssertEqual(urlRequest.timeoutInterval, 152.5, accuracy: 1e-9)
+    }
+
+    /// Term suggestions set their own timeout; the transcript scaling must not
+    /// replace it.
+    func testExplicitTimeoutWinsOverScaling() throws {
+        let explicit = LLMPolishingRequest(
+            inputText: String(repeating: "word ", count: 1_800),
+            systemPrompt: "",
+            userPrompts: ["first"],
+            timeoutSeconds: 7
+        )
+        let urlRequest = try LLMPolishingService.makeURLRequest(
+            request: explicit,
+            configuration: LLMPolishingConfiguration(
+                endpointURL: URL(string: "https://api.mistral.ai/v1/chat/completions")!,
+                apiKey: "key",
+                model: "mistral-small-latest",
+                requestShape: .mistral
+            )
+        )
+        XCTAssertEqual(urlRequest.timeoutInterval, 7)
     }
 
     func testNilSamplingDefaultsKeepLegacyRequestBytesIdentical() throws {

@@ -74,9 +74,16 @@ expect false "unrelated marker text does not trigger" \
 # --- The ClaudeContext exemption list (#418) --------------------------------
 expect false "an enrollment change does not run the lane" \
   Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService.swift
+expect false "the enrollment service's split-out files do not run the lane" \
+  Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+Verification.swift \
+  Sources/localvoxtral/ClaudeContext/ClaudeRemoteSSHConfigFileSystem.swift
 expect false "a settings-model plus forward-supervisor change does not run the lane" \
   Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel.swift \
   Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardSupervisor.swift
+expect false "the settings model's files by area do not run the lane" \
+  "Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+SetupRun.swift" \
+  Sources/localvoxtral/ClaudeContext/ClaudeShellSetupStatus.swift \
+  Sources/localvoxtral/ClaudeContext/HerdrMachineImport.swift
 expect true "an exempt file beside a join change still runs the lane" \
   Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService.swift \
   Sources/localvoxtral/ClaudeContext/SSHDestinationTTYProbe.swift
@@ -136,6 +143,14 @@ expect true "the outcome classifier in the core target runs the lane" \
   Sources/localvoxtralCore/PolishOutcomeClassifier.swift
 expect true "the polish error in the core target runs the lane" \
   Sources/localvoxtralCore/LLMPolishingError.swift
+expect true "the vocabulary matcher in the core target runs the lane" \
+  Sources/localvoxtralCore/RepoVocabularyMatcher.swift
+expect true "the clipboard vocabulary in the core target runs the lane" \
+  Sources/localvoxtralCore/ClipboardVocabulary.swift
+expect true "the phonetic keys in the core target run the lane" \
+  Sources/localvoxtralCore/DoubleMetaphone.swift
+expect true "the control-character sanitizer in the core target runs the lane" \
+  Sources/localvoxtralCore/StringExtensions.swift
 expect false "empty changed-file list decides run=false (caller owns fail-open)" \
   ""
 

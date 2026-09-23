@@ -206,12 +206,20 @@ struct LLMPolishingService: LLMPolishingServicing {
         self.usageRecorder = usageRecorder
     }
 
-    /// Polish request timeout. Sized for the managed worst case, not the warm
-    /// path: a 4B model whose polishd prefix-cache checkpoint was invalidated
-    /// re-prefills ~2.3k tokens before generating — a real request took 23.6 s
-    /// and the previous 15 s timeout abandoned it (field, 2026-07-11). Polish
-    /// is async behind the overlay: a slow polish beats a discarded one.
-    static let requestTimeoutInterval: TimeInterval = 40
+    /// The polish timeout for an empty transcript; longer transcripts get
+    /// more (`PolishRequestTimeout`). Polish is async behind the overlay: a
+    /// slow polish beats a discarded one.
+    static let requestTimeoutInterval: TimeInterval = PolishRequestTimeout.floorSeconds
+
+    /// One rule for every backend. The timeout is only the client's cap: a
+    /// fast hosted model finishes long before it, and a long transcript takes
+    /// longer on an external server or Mistral too.
+    static func timeoutInterval(for request: LLMPolishingRequest) -> TimeInterval {
+        PolishRequestTimeout.seconds(
+            forInputCharacters: request.inputText.count,
+            override: request.timeoutSeconds
+        )
+    }
 
     /// Classify a URLSession transport failure. A timeout keeps its own case; every other
     /// failure stays a network error carrying the system's description.
@@ -431,7 +439,7 @@ struct LLMPolishingService: LLMPolishingServicing {
         if configuration.passthroughExtraParameters, configuration.requestShape != .mistral {
             urlRequest.setValue("true", forHTTPHeaderField: "x-bf-passthrough-extra-params")
         }
-        urlRequest.timeoutInterval = request.timeoutSeconds ?? Self.requestTimeoutInterval
+        urlRequest.timeoutInterval = Self.timeoutInterval(for: request)
         urlRequest.httpBody = try requestBody(
             request: request,
             configuration: configuration

@@ -5,6 +5,47 @@ import XCTest
 
 @testable import localvoxtral
 
+/// `python3` for these tests: a link, under the name the shim's fallback looks
+/// for, to the interpreter `/usr/bin/python3` itself runs. On macOS that path
+/// is an `xcrun` trampoline, and under the stripped environment the shim runs
+/// in (no `TMPDIR`, a temporary `HOME`) it was most of each hook's cost on the
+/// build host. The shim still finds the interpreter through its `command -v
+/// python3` fallback, under the same name check.
+enum VibeTestPython {
+    static let directory: URL = {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vibe-python-\(UUID().uuidString)")
+        atexit { try? FileManager.default.removeItem(at: VibeTestPython.directory) }
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? FileManager.default.createSymbolicLink(
+            atPath: directory.appendingPathComponent("python3").path, withDestinationPath: resolved()
+        )
+        return directory
+    }()
+
+    static var executable: URL { directory.appendingPathComponent("python3") }
+
+    /// The interpreter behind `/usr/bin/python3`, or that path when it will not say.
+    private static func resolved() -> String {
+        let fallback = "/usr/bin/python3"
+        let answer = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vibe-python-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: answer) }
+        guard FileManager.default.createFile(atPath: answer.path, contents: nil),
+              let sink = try? FileHandle(forWritingTo: answer) else { return fallback }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: fallback)
+        process.arguments = ["-c", "import sys; print(sys.executable)"]
+        process.standardOutput = sink
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.runUntilExit()) != nil, process.terminationStatus == 0 else { return fallback }
+        try? sink.close()
+        let path = ((try? String(contentsOf: answer, encoding: .utf8)) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return path.hasPrefix("/") && FileManager.default.isExecutableFile(atPath: path) ? path : fallback
+    }
+}
+
 /// Runs the REAL remote Vibe shim (`integrations/vibe/remote/post.sh` and
 /// `compact.py`) with a stub `curl` on PATH, and reads what it handed curl back
 /// through the app's own request parsers — the two sides of the contract
@@ -123,7 +164,7 @@ final class VibeRemoteShimTests: XCTestCase {
         FileManager.default.createFile(atPath: output.path, contents: nil)
         var environment = [
             "HOME": root.path,
-            "PATH": "\(stubDir.path):/usr/bin:/bin",
+            "PATH": "\(stubDir.path):\(VibeTestPython.directory.path):/usr/bin:/bin",
             "XDG_RUNTIME_DIR": root.appendingPathComponent("run").path,
             "LOCALVOXTRAL_VIBE_REMOTE_DIR": remoteDir.path,
             "FAKE_CURL_DIR": captureDir.path,
@@ -391,13 +432,13 @@ final class VibeRemoteShimTests: XCTestCase {
         """
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.executableURL = VibeTestPython.executable
         process.arguments = [
             "-c", driver, remoteDir.appendingPathComponent("post.sh").path, payloadFile.path, captureDir.path,
         ]
         process.environment = [
             "HOME": root.path,
-            "PATH": "\(stubDir.path):/usr/bin:/bin",
+            "PATH": "\(stubDir.path):\(VibeTestPython.directory.path):/usr/bin:/bin",
             "XDG_RUNTIME_DIR": root.appendingPathComponent("run").path,
             "LOCALVOXTRAL_VIBE_REMOTE_DIR": remoteDir.path,
             "FAKE_CURL_DIR": captureDir.path,
@@ -406,8 +447,7 @@ final class VibeRemoteShimTests: XCTestCase {
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
+        try process.runUntilExit()
         XCTAssertEqual(process.terminationStatus, 0, "3 means no SessionEnd within 20 s of Vibe exiting")
 
         XCTAssertTrue(try captured("argv", 3).hasSuffix("http://127.0.0.1:18473/v1/hook/SessionEnd\n"))
@@ -425,13 +465,13 @@ final class VibeRemoteShimTests: XCTestCase {
         let payloadFile = root.appendingPathComponent("payload.json")
         try payload(event: "post_agent").write(to: payloadFile)
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.executableURL = VibeTestPython.executable
         process.arguments = [
             "-c", driver, remoteDir.appendingPathComponent("post.sh").path, payloadFile.path, captureDir.path,
         ] + arguments
         process.environment = [
             "HOME": root.path,
-            "PATH": "\(extraPath.map { $0 + ":" } ?? "")\(stubDir.path):/usr/bin:/bin",
+            "PATH": "\(extraPath.map { $0 + ":" } ?? "")\(stubDir.path):\(VibeTestPython.directory.path):/usr/bin:/bin",
             "XDG_RUNTIME_DIR": root.appendingPathComponent("run").path,
             "LOCALVOXTRAL_VIBE_REMOTE_DIR": remoteDir.path,
             "FAKE_CURL_DIR": captureDir.path,
@@ -440,8 +480,7 @@ final class VibeRemoteShimTests: XCTestCase {
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
+        try process.runUntilExit()
         return process.terminationStatus
     }
 
@@ -459,7 +498,7 @@ final class VibeRemoteShimTests: XCTestCase {
         let held = root.appendingPathComponent("held")
         try FileManager.default.createDirectory(at: held, withIntermediateDirectories: true)
         let wrapper = """
-        #!/usr/bin/python3
+        #!\(VibeTestPython.executable.path)
         import os, select, sys
         if not os.path.exists("\(held.path)/passed"):
             open("\(held.path)/passed", "w").close()
@@ -586,7 +625,7 @@ final class VibeRemoteShimTests: XCTestCase {
         try Data("#!/bin/sh\nexit 1\n".utf8).write(to: broken.appendingPathComponent("ps"))
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: broken.path + "/ps")
         let run = try runShim(Data(#"{"cwd":"/srv/app","hook_event_name":"post_agent"}"#.utf8), environment: [
-            "PATH": "\(broken.path):\(stubDir.path):/usr/bin:/bin",
+            "PATH": "\(broken.path):\(stubDir.path):\(VibeTestPython.directory.path):/usr/bin:/bin",
         ])
         XCTAssertEqual(run.exitCode, 0)
         XCTAssertEqual(run.output, Data())
@@ -600,13 +639,12 @@ final class VibeRemoteShimTests: XCTestCase {
         let input = work.appendingPathComponent("payload")
         try Data(payload.utf8).write(to: input)
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.executableURL = VibeTestPython.executable
         process.arguments = ["-I", remoteDir.appendingPathComponent("compact.py").path, work.path, String(startPID)]
         process.standardInput = try FileHandle(forReadingFrom: input)
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
+        try process.runUntilExit()
         return work
     }
 
@@ -650,7 +688,7 @@ final class VibeRemoteShimTests: XCTestCase {
         try Data("#!/bin/sh\nexit 1\n".utf8).write(to: broken.appendingPathComponent("ps"))
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: broken.path + "/ps")
         let run = try runShim(payload(event: "post_agent"), environment: [
-            "PATH": "\(broken.path):\(stubDir.path):/usr/bin:/bin",
+            "PATH": "\(broken.path):\(stubDir.path):\(VibeTestPython.directory.path):/usr/bin:/bin",
             "LOCALVOXTRAL_VIBE_WATCHER": "on",
         ])
         XCTAssertEqual(run.exitCode, 0)
@@ -669,13 +707,15 @@ final class VibeRemoteShimTests: XCTestCase {
         let oldWatcher = Process()
         oldWatcher.executableURL = URL(fileURLWithPath: "/bin/sleep")
         oldWatcher.arguments = ["600"]
+        let oldWatcherExited = DispatchSemaphore(value: 0)
+        oldWatcher.terminationHandler = { _ in oldWatcherExited.signal() }
         try oldWatcher.run()
         defer { if oldWatcher.isRunning { oldWatcher.terminate() } }
         try Data("\(oldWatcher.processIdentifier)\n".utf8).write(to: lock.appendingPathComponent("pid"))
         try Data("1\n".utf8).write(to: lock.appendingPathComponent("agent"))
 
         _ = try runShim(payload(event: "post_agent"), environment: ["LOCALVOXTRAL_VIBE_WATCHER": "on"])
-        oldWatcher.waitUntilExit()
+        oldWatcherExited.wait()
         XCTAssertFalse(oldWatcher.isRunning, "its SessionEnd would have evicted the session that is live now")
         let agent = try String(contentsOf: lock.appendingPathComponent("agent"), encoding: .utf8)
         XCTAssertNotEqual(agent, "1\n", "the lock now names the process this hook belongs to")
@@ -688,6 +728,10 @@ final class VibeRemoteShimTests: XCTestCase {
         let source = try String(contentsOf: remoteDir.appendingPathComponent("post.sh"), encoding: .utf8)
         XCTAssertTrue(source.contains(#"mkdir "$LOCK" 2>/dev/null || exit 0"#), "the lock is the atomic mkdir")
         XCTAssertTrue(source.contains(") </dev/null >/dev/null 2>&1 &"), "Vibe waits for the hook's pipes to close")
+        // The watcher tests shorten the interval through the environment; the
+        // shipped default stays two seconds.
+        XCTAssertTrue(source.contains(#"WATCH_INTERVAL="${LOCALVOXTRAL_VIBE_WATCH_INTERVAL:-2}""#))
+        XCTAssertTrue(source.contains("*) WATCH_INTERVAL=2 ;; esac"))
 
         _ = try runShim(payload(event: "post_agent")) // harness default: off
         XCTAssertFalse(FileManager.default.fileExists(
