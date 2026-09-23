@@ -49,10 +49,13 @@ struct LinuxProcStat: Equatable {
     ///
     /// The kernel encodes `tty_nr` as major in bits 8–19, minor in bits 0–7
     /// and 20–31. Pty slaves are major 136 with the pts index as the minor.
+    /// `/proc` prints the 32-bit value signed, so a minor with bit 19 set
+    /// arrives negative; decode the bit pattern, not the sign.
     static func ptsPath(ttyNumber: Int64) -> String? {
-        guard ttyNumber > 0 else { return nil }
-        let major = (ttyNumber >> 8) & 0xfff
-        let minor = (ttyNumber & 0xff) | ((ttyNumber >> 12) & 0xfff00)
+        let bits = Int64(UInt32(truncatingIfNeeded: ttyNumber))
+        guard bits != 0 else { return nil }
+        let major = (bits >> 8) & 0xfff
+        let minor = (bits & 0xff) | ((bits >> 12) & 0xfff00)
         guard major == 136 else { return nil }
         return "/dev/pts/\(minor)"
     }

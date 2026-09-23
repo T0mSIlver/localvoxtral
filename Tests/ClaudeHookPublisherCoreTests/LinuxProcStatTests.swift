@@ -39,6 +39,12 @@ final class LinuxProcStatTests: XCTestCase {
         XCTAssertEqual(LinuxProcStat.ptsPath(ttyNumber: (136 << 8) | 44 | (1 << 20)), "/dev/pts/300")
     }
 
+    func testAPtsIndexWithBit19SetDecodesFromTheSignedValueProcPrints() {
+        // pts 524288: minor bit 19 lands in bit 31 of tty_nr, which /proc
+        // prints as a negative Int32.
+        XCTAssertEqual(LinuxProcStat.ptsPath(ttyNumber: -2_147_448_832), "/dev/pts/524288")
+    }
+
     func testNoTerminalOrANonPtyTerminalNamesNoDevice() {
         XCTAssertNil(LinuxProcStat.ptsPath(ttyNumber: 0))
         XCTAssertNil(LinuxProcStat.ptsPath(ttyNumber: (4 << 8) | 1)) // /dev/tty1, a virtual console
