@@ -63,6 +63,9 @@ concurrency:
   group: record-demo-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   record-demo:
     runs-on: [self-hosted, macOS, ARM64]

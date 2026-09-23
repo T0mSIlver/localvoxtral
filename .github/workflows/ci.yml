@@ -45,6 +45,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+permissions:
+  contents: read
+
 jobs:
   # TIER 0 — GitHub-hosted macOS, for every event and every contributor.
   #

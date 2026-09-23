@@ -7,6 +7,9 @@ name: DMG layout test
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build-dmg:
     runs-on: [self-hosted, macOS]
