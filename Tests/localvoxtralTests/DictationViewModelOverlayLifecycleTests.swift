@@ -705,7 +705,10 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         let request = await polishingService.lastRequest
         XCTAssertEqual(request?.inputText, "PostgreSQL rocks")
-        XCTAssertEqual(request?.systemPrompt, "system instructions")
+        XCTAssertEqual(
+            request?.systemPrompt,
+            "system instructions\n\n\(PolishReferenceGuide.systemSection)\n"
+        )
         XCTAssertEqual(
             request?.userPrompts,
             ["Working text:\nPostgreSQL rocks"]

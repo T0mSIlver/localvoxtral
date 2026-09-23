@@ -27,6 +27,8 @@ enum BundledConfigDefaultHistory {
             "6736867bb539f20e241812c45399198dc86b4c87488ddc50458348c2558ace69",
         ],
         "llm_user_prompt.toml": [
+            // 2026-09-23 working text last, for the prompt cache (#490)
+            "43e3bfcddf41afeed879389c38964067307ba9e60f46f561cb055ed7993b584d",
             // 2026-07-12 prompt trim (#126)
             "06c1b26b7708748d07392f85ddce1a7a9a8da97c7a69a01c550c41648f9d5bd7",
             // 2026-07-07 punctuation-spacing focus (#80)
@@ -45,6 +47,8 @@ enum BundledConfigDefaultHistory {
             "8150e32ae3868e19554707e7b7b76fb979c1311306339d8dae1308cd7cf84cb5",
         ],
         "llm_user_prompt_agent.toml": [
+            // 2026-09-23 working text last, for the prompt cache (#490)
+            "c4cea521f50affe940dc96c93edb2ab5d4482fa71ea73e0c0214acabcda65b8e",
             // 2026-07-12 prompt trim (#126)
             "0041927e3aed8fd87d0e0f8033b24faf22fc0a685b86740a9c2f8e063da04134",
             // 2026-07-12 agent profile introduction (#113)

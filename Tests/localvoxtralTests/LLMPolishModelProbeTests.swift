@@ -226,7 +226,7 @@ final class LLMPolishModelProbeTests: XCTestCase {
         let templates = AppConfigStore(
             configDirectoryOverride: FileManager.default.temporaryDirectory
                 .appendingPathComponent("lv-probe-\(UUID().uuidString)", isDirectory: true)
-        ).loadLLMPromptTemplates()
+        ).loadLLMPromptTemplates().withReferenceGuide()
         for hardCase in Self.hardCases {
             var messages: [[String: String]] = [["role": "system", "content": templates.systemContent]]
             for userPrompt in templates.renderedUserPrompts(inputText: hardCase.input, replacementDictionary: "") {

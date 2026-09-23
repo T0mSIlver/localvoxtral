@@ -566,7 +566,10 @@ final class PolishPromptWarmupPlanTests: XCTestCase {
 
         XCTAssertEqual(plan.requests.map(\.profile), [.standard, .agent])
         let agentRequest = try XCTUnwrap(plan.requests.last?.request)
-        XCTAssertEqual(agentRequest.systemPrompt, "agent system")
+        XCTAssertEqual(
+            agentRequest.systemPrompt,
+            "agent system\n\n\(PolishReferenceGuide.systemSection)\n"
+        )
         XCTAssertEqual(agentRequest.userPrompts.first, "agent prefix ")
         XCTAssertEqual(agentRequest.maxTokens, 1)
     }

@@ -270,7 +270,7 @@ final class RepoVocabularyMatcherTests: XCTestCase {
             base: "",
             entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth"])]
         )
-        XCTAssertTrue(appended.hasPrefix("Repository vocabulary"))
+        XCTAssertTrue(appended.hasPrefix("[Repository vocabulary]\n"))
     }
 
     func testAppendedSectionUnchangedWithNoEntries() {

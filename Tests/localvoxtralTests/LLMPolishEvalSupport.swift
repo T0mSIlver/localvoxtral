@@ -481,6 +481,7 @@ enum LLMPolishEvalSupport {
             .appendingPathComponent("lv-polish-eval-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let templates = AppConfigStore(configDirectoryOverride: directory).loadLLMPromptTemplates()
+            .withReferenceGuide()
         return (templates, { try? FileManager.default.removeItem(at: directory) })
     }
 
@@ -493,6 +494,7 @@ enum LLMPolishEvalSupport {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let templates = AppConfigStore(configDirectoryOverride: directory)
             .loadLLMPromptTemplates(profile: .agent)
+            .withReferenceGuide()
         return (templates, { try? FileManager.default.removeItem(at: directory) })
     }
 
