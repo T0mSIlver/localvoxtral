@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# localvoxtral build gate v4.
+# localvoxtral build gate v5.
 #
 # This script is intended to be installed as the forced command for the Mac
 # build-host SSH key. It keeps the existing build/test/package allowlist and
@@ -15,8 +15,10 @@ set -euo pipefail
 #   applog [minutes]    # integer, clamped to 1..120, default 10
 #   voxlog [lines]      # integer, clamped to 1..500, default 80
 #   svc-status
-#   ensure <speechd|polishd|all>  # warm an on-demand test server (touch + poll;
-#                                 # retired voxmlx/mlxlm names accepted as aliases)
+#   ensure <speechd|speechd-<name>|polishd|all>
+#                       # warm an on-demand test server (touch + poll); <name>
+#                       # is a row of the installed speech model list (v5);
+#                       # retired voxmlx/mlxlm names accepted as aliases
 #   reap work/localvoxtral-<id>  # terminate stale tests in one exact work dir
 #   disk                # df + per-work-dir du (du can take a while — on demand)
 #   gc                  # delete work dirs unused > LV_GC_MAX_AGE_DAYS (v4)
@@ -47,6 +49,11 @@ LV_RUN_DIR="/Users/Shared/localvoxtral/run"
 LV_ENSURE_READY_TIMEOUT=180
 LV_ENSURE_PROBE_TIMEOUT=2
 REAPER="$HOME/bin/localvoxtral-cleanup-stale-test-processes.sh"
+# The dictation models served as speechd-<name> test services, one row each
+# ("name port repo revision"). The owner installs it with
+# `lv-test-servers.sh install-speech-models`; the gate reads only the name and
+# port, so a new model needs a new row there, not a new gate.
+LV_SPEECH_MODELS_FILE="/Users/Shared/localvoxtral/testservers/speech-models.tsv"
 
 # Work-dir garbage collection (`gc` verb): every ephemeral Linux worktree
 # mints one ~/work/localvoxtral-* dir (remote-build.sh derives the name from
@@ -411,7 +418,13 @@ show_voxmlx_service() {
   # come back empty from the gate account — processes/ports (below in
   # svc-status/diag) are the real signal. Print each candidate label so
   # whichever generation is loaded in the owner's domain is visible.
-  for label in "${TEST_SERVICE_LABELS[@]}"; do
+  local -a labels=("${TEST_SERVICE_LABELS[@]}")
+  local name
+  for name in $(lv_speech_model_names); do
+    # voxtral is com.localvoxtral.testspeechd, already listed.
+    [[ "$name" == voxtral ]] || labels+=("com.localvoxtral.testspeechd-$name")
+  done
+  for label in "${labels[@]}"; do
     section "launchctl ${label}"
     (launchctl print "$(launchctl_target "$label")" 2>&1 || true) | head -n "$lines"
   done
@@ -487,22 +500,51 @@ run_svc_status() {
 
 # Map an on-demand service name to its trigger file, port, and readiness probe.
 # Mirrors scripts/mac/lv-test-servers.sh; changing one means changing both.
-# The current names are speechd/polishd; voxmlx/mlxlm are deprecated aliases.
-# The trigger/stamp filesystem KEYS stay at the retired names (voxmlx.want /
-# mlxlm.want) so this gate and the newly-bootstrapped testspeechd/testpolishd
-# plists rendezvous on the same paths (see lv-test-servers.sh header).
+# The canonical names are speechd-<name> (one per speech model) and polishd;
+# speechd means speechd-voxtral, and voxmlx/mlxlm are deprecated aliases.
+# Voxtral and polishd keep the retired trigger/stamp KEYS (voxmlx.want /
+# mlxlm.want) and fixed ports, so they work before the list is installed; the
+# other speech services are keyed by name and take their port from the list.
+
+# Names of the installed list's rows, skipping any that are malformed.
+lv_speech_model_names() {
+  local name port rest
+  [[ -f "$LV_SPEECH_MODELS_FILE" ]] || return 0
+  while read -r name port rest; do
+    [[ "$name" =~ ^[a-z0-9]+$ && "$port" =~ ^[0-9]{4,5}$ ]] || continue
+    printf '%s\n' "$name"
+  done <"$LV_SPEECH_MODELS_FILE"
+}
+lv_speech_model_port() {
+  local want="$1" name port rest
+  [[ -f "$LV_SPEECH_MODELS_FILE" ]] || return 1
+  while read -r name port rest; do
+    [[ "$name" == "$want" ]] || continue
+    [[ "$port" =~ ^[0-9]{4,5}$ ]] || return 1
+    printf '%s\n' "$port"
+    return 0
+  done <"$LV_SPEECH_MODELS_FILE"
+  return 1
+}
 lv_service_canonical() {
   case "$1" in
-    speechd|voxmlx) printf 'speechd\n' ;;
-    polishd|mlxlm)  printf 'polishd\n' ;;
+    speechd|voxmlx|speechd-voxtral) printf 'speechd-voxtral\n' ;;
+    polishd|mlxlm) printf 'polishd\n' ;;
+    speechd-*)
+      [[ "${1#speechd-}" =~ ^[a-z0-9]+$ ]] || return 1
+      lv_speech_model_port "${1#speechd-}" >/dev/null || return 1
+      printf '%s\n' "$1"
+      ;;
     *) return 1 ;;
   esac
 }
 lv_service_fskey() {
-  case "$(lv_service_canonical "$1" 2>/dev/null)" in
-    speechd) printf 'voxmlx\n' ;;
+  local cname
+  cname="$(lv_service_canonical "$1" 2>/dev/null)" || return 1
+  case "$cname" in
+    speechd-voxtral) printf 'voxmlx\n' ;;
     polishd) printf 'mlxlm\n' ;;
-    *) return 1 ;;
+    *) printf '%s\n' "$cname" ;;
   esac
 }
 lv_service_trigger() {
@@ -511,14 +553,16 @@ lv_service_trigger() {
   printf '%s/%s.want\n' "$LV_RUN_DIR" "$key"
 }
 lv_service_port() {
-  case "$(lv_service_canonical "$1" 2>/dev/null)" in
-    speechd) printf '8000\n' ;;
+  local cname
+  cname="$(lv_service_canonical "$1" 2>/dev/null)" || return 1
+  case "$cname" in
+    speechd-voxtral) printf '8000\n' ;;
     polishd) printf '8080\n' ;;
-    *) return 1 ;;
+    *) lv_speech_model_port "${cname#speechd-}" ;;
   esac
 }
 lv_service_healthy() {
-  # speechd (8000): TCP accept (model loads before the listener binds, no HTTP
+  # speechd-*: TCP accept (model loads before the listener binds, no HTTP
   #   route) — same signal the retired voxmlx uvicorn gave.
   # polishd (8080): GET /health once the model is resident. Accept /v1/models
   #   too so the probe is correct against BOTH the new polishd and the retired
@@ -529,7 +573,7 @@ lv_service_healthy() {
   local name="$1" port
   port="$(lv_service_port "$name")" || return 1
   case "$(lv_service_canonical "$name" 2>/dev/null)" in
-    speechd)
+    speechd-*)
       nc -z -G "$LV_ENSURE_PROBE_TIMEOUT" -w "$LV_ENSURE_PROBE_TIMEOUT" \
         127.0.0.1 "$port" >/dev/null 2>&1
       ;;
@@ -593,8 +637,7 @@ ensure_one_service() {
 
   local label
   case "$name" in
-    speechd) label="com.localvoxtral.testspeechd" ;;
-    polishd) label="com.localvoxtral.testpolishd" ;;
+    speechd-voxtral) label="com.localvoxtral.testspeechd" ;;
     *) label="com.localvoxtral.test${name}" ;;
   esac
   printf 'ensure %s: NOT ready after %ss (port %s) — is %s bootstrapped and its model cached?\n' \
@@ -606,9 +649,18 @@ run_ensure_command() {
   local target="$1"
   case "$target" in
     speechd|polishd|voxmlx|mlxlm) ensure_one_service "$target" ;;
+    speechd-*)
+      [[ "$target" =~ ^speechd-[a-z0-9]+$ ]] || deny
+      lv_service_canonical "$target" >/dev/null || deny
+      ensure_one_service "$target"
+      ;;
     all)
-      local rc=0
+      local rc=0 name
       ensure_one_service speechd || rc=$?
+      for name in $(lv_speech_model_names); do
+        [[ "$name" == voxtral ]] && continue
+        ensure_one_service "speechd-$name" || rc=$?
+      done
       ensure_one_service polishd || rc=$?
       return "$rc"
       ;;
