@@ -63,7 +63,8 @@ public struct UnixSocketPublisher: Sendable {
             if let failure = writeAll(fd: fd, data: line) { return .failure(failure) }
             // Half-close so the broker sees EOF and stops waiting for more
             // records; it can still write its reply back to us.
-            shutdown(fd, SHUT_WR)
+            // Int32(...): Glibc imports SHUT_WR as an Int, Darwin as Int32.
+            shutdown(fd, Int32(SHUT_WR))
             return .success(readReply(fd: fd))
         }
     }
@@ -105,7 +106,12 @@ public struct UnixSocketPublisher: Sendable {
 
         // O_NONBLOCK via fcntl rather than a SOCK_NONBLOCK socket type: that
         // flag is a Linux extension and does not exist on Darwin.
+        #if canImport(Glibc)
+        // Glibc imports SOCK_STREAM as the `__socket_type` enum, not an Int32.
+        let fd = socket(AF_UNIX, Int32(SOCK_STREAM.rawValue), 0)
+        #else
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        #endif
         guard fd >= 0 else { return .failure(.socketUnavailable) }
 
         configureNoSIGPIPE(fd)

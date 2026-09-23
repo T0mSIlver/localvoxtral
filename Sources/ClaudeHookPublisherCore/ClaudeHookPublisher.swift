@@ -394,11 +394,16 @@ public struct ClaudeHookPublisher: Sendable {
     }
 
     /// The `/dev/…` path of `pid`'s controlling terminal from the process
-    /// table (`kinfo_proc.kp_eproc.e_tdev`), or nil when the process does not
-    /// exist or has no terminal. Reads metadata about a pid we already hold —
-    /// no fds, no signals, no assumptions about our own session.
+    /// table (`kinfo_proc.kp_eproc.e_tdev`; `tty_nr` in `/proc/<pid>/stat` on
+    /// Linux), or nil when the process does not exist or has no terminal.
+    /// Reads metadata about a pid we already hold — no fds, no signals, no
+    /// assumptions about our own session.
     static func ttyDevicePath(forProcess pid: pid_t) -> String? {
         guard pid > 0 else { return nil }
+        #if os(Linux)
+        guard let stat = LinuxProcStat.read(pid: pid) else { return nil }
+        return LinuxProcStat.ptsPath(ttyNumber: stat.ttyNumber)
+        #elseif canImport(Darwin)
         var info = kinfo_proc()
         var size = MemoryLayout<kinfo_proc>.stride
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
@@ -409,6 +414,9 @@ public struct ClaudeHookPublisher: Sendable {
         let tdev = info.kp_eproc.e_tdev
         guard tdev != -1, tdev != 0, let name = devname(tdev, S_IFCHR) else { return nil }
         return "/dev/" + String(cString: name)
+        #else
+        return nil
+        #endif
     }
 
     /// Write to stdout with raw `write(2)`, looping over partial writes.
