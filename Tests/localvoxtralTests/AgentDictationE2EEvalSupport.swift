@@ -554,7 +554,7 @@ enum AgentDictationE2EEvalSupport {
     static let textFieldTargetBundleID = "com.localvoxtral.eval.textfield"
 
     /// The commit-target bundle ID injected per stratum, which drives the
-    /// production `selectedPolishProfile` switch. The agent-dictation corpus
+    /// production `StopCommitCoordinator.polishProfile` switch. The agent-dictation corpus
     /// runs the AGENT profile — except `punctuation-spacing-migration`, whose
     /// cases (including all 7 day-one required cases) are byte-for-byte
     /// migrations of the `LLMPolishEvalSupport` corpus whose required-case

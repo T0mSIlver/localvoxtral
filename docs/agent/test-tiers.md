@@ -87,7 +87,10 @@ lives in
 `scripts/ci/llm-lane-filter.sh` — PolishHelper/**, the bundled
 `llm_*.toml` prompts, model catalog/pins, the polish client, token guard,
 prompt warmup, clipboard context/macro, repo vocabulary, the polish-commit
-path (`DictationViewModel+Session.swift`), and the eval support/corpus. The
+path (`StopCommitCoordinator.swift` and the steps it calls; the view model
+only supplies its latched dictionary and commit target, and tier 0's
+`PolishRequestGoldenTests` pins what they produce), and the eval
+support/corpus. The
 decide step writes "LLM eval lane: RUNNING (…)" or "SKIPPED (…)" to the
 run's step summary so a skipped run is self-explanatory. The PolishHelper
 UNIT suite (Metal-free) is path-gated per helper, and the tier-1 speechd

@@ -80,14 +80,12 @@ PATTERNS=(
   '*TerminalFocusedTTYReader*'                       # per-terminal tty readers: which session the context comes from
   '*BrowserTabURLReader*'                            # per-browser focused-tab url reads: which session the context comes from
   '*ClaudeDesktopSessionReader*'                     # Claude Desktop focused web view address: which session the context comes from
-  '*DictationViewModel+Session.swift'                # polish-and-commit path
-  'Sources/localvoxtral/DictationViewModel.swift'    # context capture/gate call sites feeding the commit path
   '*SessionContextResolver*'                        # the context gates themselves (#432 step 4b)
   '*PolishRequestAssembler*'                        # sections, pre-application, prompts, blocks (#432 step 5)
   '*PolishOutcomeClassifier*'                       # placeholder integrity, failure copy (#432 step 5)
   '*PolishContextGatherer*'                         # the gather step: budgets, preparations, merge (#432 step 6)
   '*RepoVocabularyGrounding*'                       # the repository-vocabulary pipeline and its gates (#432 step 6)
-  '*StopCommitCoordinator*'                         # the clipboard gates and the commit's prologue (#432 step 7)
+  '*StopCommitCoordinator*'                         # the stop-commit's polish: prepare, templates, profile, send (#432 steps 7, 7b)
   '*LLMPolishEvalSupport*'                           # shared eval corpus + scorer
   '*PolishHelperIntegrationTests*'                   # the lane's own suite
   '*AgentDictationE2EEval*'                          # agent-dictation E2E eval harness (suite + support + its unit tests)
