@@ -44,6 +44,8 @@ filter_expect true "session start and stop" Sources/localvoxtral/DictationViewMo
 filter_expect true "a session controller extension" "Sources/localvoxtral/DictationSessionController+StopCommit.swift"
 filter_expect true "the stop-commit" Sources/localvoxtral/StopCommitCoordinator.swift
 filter_expect true "a realtime client" Sources/localvoxtral/MistralRealtimeWebSocketClient.swift
+filter_expect true "the reconnect schedule" Sources/localvoxtral/RealtimeReconnectPolicy.swift
+filter_expect true "the live correction" Sources/localvoxtral/LiveReplacementCorrector.swift
 filter_expect true "transcript merging in core" Sources/localvoxtralCore/TextMergingAlgorithms.swift
 filter_expect true "text insertion" Sources/localvoxtral/TextInsertionService.swift
 filter_expect true "the overlay commit" Sources/localvoxtral/OverlayBufferSessionCoordinator.swift
@@ -82,7 +84,10 @@ case "$1 ${2:-}" in
     case "$url" in
       */compare/*) jq -r "$jq_filter" "$SCEN/compare.json" ;;
       */check-runs*) jq -r "$jq_filter" "$SCEN/check-runs.json" ;;
-      */actions/workflows/ui-smoke.yml/runs*) jq -r "$jq_filter" "$SCEN/runs.json" ;;
+      */actions/workflows/ui-smoke.yml/runs*)
+        echo "$url" >"$SCEN/runs-url"
+        jq -r "$jq_filter" "$SCEN/runs.json"
+        ;;
       */commits/*) jq -r "$jq_filter" <<<'{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' ;;
       *) echo "stub gh: unexpected api url: $url" >&2; exit 64 ;;
     esac
@@ -181,6 +186,15 @@ expect 0 "a new commit an hour after the last run dispatches" newcommit "dispatc
 
 scenario override "$DOCS" completed/success "[$(run_json 11 completed "$HEAD_SHA" "$ISO_10M_AGO" failure)]"
 expect 0 "--override dispatches past the path, cooldown and same-commit refusals" override "override: owner asked for a rerun" --override "owner asked for a rerun"
+
+# An unencoded '&' would split the query: the lookup would find no runs and
+# every run-history refusal would pass.
+scenario amp "$SESSION" completed/success '[]'
+SCEN="$TMP_DIR/amp" PATH="$STUB_BIN:$PATH" UI_SMOKE_DISPATCH_NOW="$NOW" \
+  "$DISPATCH" --dry-run 't/fix-a&b' >/dev/null
+grep -qF 'runs?branch=t%2Ffix-a%26b&per_page=' "$TMP_DIR/amp/runs-url" \
+  || fail "the runs query does not encode the branch: $(cat "$TMP_DIR/amp/runs-url")"
+pass "the branch is encoded in the runs query"
 
 code=0
 "$DISPATCH" >/dev/null 2>&1 || code=$?

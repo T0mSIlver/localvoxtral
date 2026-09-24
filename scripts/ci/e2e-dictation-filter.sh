@@ -38,10 +38,12 @@ PATTERNS=(
   'Sources/localvoxtralCore/FirstChunkPreprocessor.swift'
   'Sources/localvoxtral/RealtimeClient.swift'
   'Sources/localvoxtral/*RealtimeWebSocketClient.swift'   # Base, RealtimeAPI, Mistral
+  'Sources/localvoxtral/RealtimeReconnectPolicy.swift'
   'Sources/localvoxtralCore/TranscriptAccumulator.swift'
   'Sources/localvoxtralCore/TextMergingAlgorithms.swift'
   'Sources/localvoxtral/TranscriptDiff.swift'
   'Sources/localvoxtral/LiveHoldBackReplacementStream.swift'
+  'Sources/localvoxtral/LiveReplacementCorrector.swift'
   'Sources/localvoxtral/LiveTerminalNewlineGuard.swift'
   'Sources/localvoxtral/TUIAutocompleteTrailingSpace.swift'
   'Sources/localvoxtral/TextInsertionService.swift'

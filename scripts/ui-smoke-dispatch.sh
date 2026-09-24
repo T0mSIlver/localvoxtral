@@ -58,7 +58,9 @@ now="${UI_SMOKE_DISPATCH_NOW:-$(date +%s)}"
 tmp="$(mktemp "${TMPDIR:-/tmp}/lv-ui-smoke-dispatch.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
 
-sha="$(gh api "repos/{owner}/{repo}/commits/$branch" --jq '.sha')" \
+# Encoded: a branch name may hold '#', '&' or '?'.
+branch_uri="$(jq -rn --arg b "$branch" '$b | @uri')"
+sha="$(gh api "repos/{owner}/{repo}/commits/$branch_uri" --jq '.sha')" \
   || api_error "cannot resolve $branch on GitHub; push it first"
 echo "branch: $branch at ${sha:0:9}"
 
@@ -79,7 +81,7 @@ echo "build-test: $build_test"
 [[ "$build_test" == "completed/success" ]] || refusals+=("build-test is not green on ${sha:0:9}")
 
 # id, status, head sha, start epoch, conclusion; newest first.
-runs="$(gh api "repos/{owner}/{repo}/actions/workflows/ui-smoke.yml/runs?branch=$branch&per_page=20" \
+runs="$(gh api "repos/{owner}/{repo}/actions/workflows/ui-smoke.yml/runs?branch=$branch_uri&per_page=20" \
   --jq '.workflow_runs[] | [.id, .status, .head_sha, (.created_at | fromdateiso8601), (.conclusion // "")] | @tsv')" \
   || api_error "cannot list UI Smoke runs on $branch"
 active_id=""
