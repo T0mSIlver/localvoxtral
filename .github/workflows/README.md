@@ -240,10 +240,13 @@ battery power (scheduled lanes never drain the owner's MacBook,
 `scripts/ci/ac-power-guard.sh`, shared with eval-e2e.yml's nightly), when
 the screen is locked (the drill needs an unlocked GUI session), or when a
 slot's drill already ran and passed that day, so at most one real drill runs
-per day. Manual dispatch bypasses the guard.
-Also runs on same-repo PRs when the `needs-ui-smoke` label is added — the
-on-demand proof path for UI-affecting PRs (re-add the label to rerun after
-new pushes; fork PRs never reach the self-hosted runner, label or no label).
+per day. Manual dispatch bypasses the guard; agents dispatch through
+`scripts/ui-smoke-dispatch.sh`, which refuses a run the diff does not need, a
+second run on one commit and a run within an hour of the last (rules in
+`docs/agent/test-tiers.md`, "Proving a change with the e2e dictation check").
+Also runs on same-repo PRs when the owner adds the `needs-ui-smoke` label
+(re-add it to rerun after new pushes; fork PRs never reach the self-hosted
+runner, label or no label).
 It packages the app, launches a fresh menu bar instance, verifies the status
 item, checks that launch alone does not spawn managed backend processes, opens
 Settings from the status menu, selects the three settings tabs, checks the

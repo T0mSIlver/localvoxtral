@@ -207,25 +207,49 @@ avoidable run costs far more than its own duration.
 and puts text into another app's window. Run it for any change to the session
 path between the capture callback and the focused app: `DictationViewModel`
 session start and stop, the realtime clients, transcript merging, text
-insertion, the overlay commit. A refactor of those files passes it before and
-after.
+insertion, the overlay commit.
 
 No agent account can run it directly, since the build gate has no GUI session
-and the UI gate reaches only the app under test. The runner can:
+and the UI gate reaches only the app under test. The runner can, and each run
+holds it for about ten minutes, takes the owner's keyboard and queues every
+other agent's `mac-lanes` behind it. So it runs once per PR, and only through
+the wrapper, which refuses when the run is not justified:
 
 ```bash
-gh run list --workflow ui-smoke.yml --branch <branch>   # nothing queued already?
-gh workflow run "UI Smoke" --ref <branch>
+./scripts/ui-smoke-dispatch.sh --dry-run <branch>   # does this diff need it?
+./scripts/ui-smoke-dispatch.sh <branch>
+gh run list --workflow ui-smoke.yml --branch <branch> -L 1
 ./scripts/watch-checks.sh --run <run-id>
 gh run view <run-id> --log | grep -E "spoken:|inserted:|PASS:|FAIL:|NOT RUN:"
 ```
 
-On a PR, the `needs-ui-smoke` label does the same. Paste the `spoken:` /
-`inserted:` / `PASS:` lines in the Proof section. The run takes the owner's
-keyboard for about a minute and says so out loud first, so dispatch it once per
-change, not once per commit. Exit 3 (`NOT RUN:`) means the Mac was locked, the
-STT test service was down or the app had no Accessibility grant, and nothing
-was measured.
+It refuses when:
+
+- the diff against main touches no session-path file. The list is
+  `scripts/ci/e2e-dictation-filter.sh`; the polish path, the overlay's look,
+  settings and docs are off it. The PR body quotes the `path:` line either
+  way, as it does for the live lanes.
+- `build-test` is not green on the pushed head. Dispatch after the review
+  fixes, on the final diff, never per commit.
+- a UI Smoke run on the branch is queued or running, or started less than an
+  hour ago.
+- a run already ran on this head commit, whatever it concluded. `NOT RUN:`
+  (exit 3: the Mac was locked, the STT test service was down or the app had
+  no Accessibility grant) and a lost keyboard focus measure the Mac, not the
+  change. Put the line in the Proof section and ask the owner; don't
+  redispatch. A later commit may run again after the hour; take that run only
+  when the commit changed session-path code since the last one.
+
+`--override "<why>"` skips all but the queued-run refusal, for a rerun the
+owner asked for; quote the reason in the PR. The `needs-ui-smoke` label
+dispatches without these checks, so it is the owner's, not an agent's.
+
+A stack of PRs gets one run, from its top branch, before its lowest layer
+merges: the top's diff against main holds every layer. A refactor that moves
+session-path code still needs that one run; it does not need one per step.
+The evening runs on main (18:00 to 21:00 UTC) cover what no PR claimed.
+
+Paste the `spoken:` / `inserted:` / `PASS:` lines in the Proof section.
 
 A new scenario is a file in `scripts/e2e/scenarios/` (`mode`, `phrase`,
 `min_word_accuracy`), not a new script. Polishing is off in every scenario so
