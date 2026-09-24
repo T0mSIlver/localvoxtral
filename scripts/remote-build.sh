@@ -162,6 +162,7 @@ handle_remote_signal() {
   # A second Ctrl-C while the best-effort reap SSH is running must not skip
   # existing EXIT traps that remove transient eval markers.
   trap '' HUP INT TERM
+  declare -F stop_linux_suites >/dev/null && stop_linux_suites
   if [[ "$REMOTE_PAYLOAD_ACTIVE" == "1" ]]; then
     reap_remote_workdir
   fi
@@ -288,10 +289,35 @@ run_linux_suites() {
     ${LINUX_ARGS[@]+"${LINUX_ARGS[@]}"} >"$LINUX_LOG" 2>&1
 }
 
+# The run beside the Mac's goes in a process group of its own, so a signal to
+# this script can stop the whole of it, swift included, rather than leave a
+# build holding .build/linux; handle_remote_signal does. That also keeps a
+# terminal's Ctrl-C from reaching it twice.
+LINUX_PID=""
+start_linux_suites() {
+  mkdir -p "$(dirname "$LINUX_LOG")"
+  if command -v setsid >/dev/null 2>&1; then
+    SWIFT="$LINUX_SWIFT" setsid "$ROOT_DIR/scripts/core-tests-linux.sh" \
+      ${LINUX_ARGS[@]+"${LINUX_ARGS[@]}"} >"$LINUX_LOG" 2>&1 </dev/null &
+  else
+    run_linux_suites &
+  fi
+  LINUX_PID=$!
+}
+
+stop_linux_suites() {
+  [[ -n "$LINUX_PID" ]] || return 0
+  kill -TERM -- "-$LINUX_PID" 2>/dev/null || kill -TERM "$LINUX_PID" 2>/dev/null || true
+  wait "$LINUX_PID" 2>/dev/null || true
+  LINUX_PID=""
+}
+
 # Prints the outcome of run_linux_suites, given its exit status.
 report_linux_suites() {
   local status="$1" executed
-  executed="$(grep -E 'Executed [0-9]+ tests?, with' "$LINUX_LOG" | tail -n 1 | sed 's/^[[:space:]]*//')"
+  # A build that fails prints no summary: grep finds nothing, and that must
+  # not end the script under pipefail before the failure is reported.
+  executed="$(grep -E 'Executed [0-9]+ tests?, with' "$LINUX_LOG" | tail -n 1 | sed 's/^[[:space:]]*//' || true)"
   if [[ "$status" == "0" ]]; then
     echo "==> Linux suites passed here: ${executed:-no XCTest summary}"
   else
@@ -320,7 +346,9 @@ if [[ -n "$LINUX_SWIFT" ]]; then
         --filter=*) value="${rest[i]#--filter=}"; i=$((i + 1)) ;;
         *) only_filters=0; break ;;
       esac
-      if [[ -n "$value" ]] && lv_filter_is_linux_only "$value"; then
+      # A --filter with no value goes to the Mac as typed, and fails there.
+      if [[ -z "$value" ]]; then only_filters=0; break; fi
+      if lv_filter_is_linux_only "$value"; then
         linux_filters+=(--filter "$value")
       else
         mac_filters+=(--filter "$value")
@@ -963,11 +991,9 @@ TREE_SYNCED=1
 
 # Started only now: core-tests-linux.sh removes Package.resolved while it
 # builds, and the sync above must carry it.
-LINUX_PID=""
 if [[ "$LINUX_RUN" == "1" ]]; then
   echo "==> Running the Linux suites here with $LINUX_SWIFT, beside the Mac run"
-  run_linux_suites &
-  LINUX_PID=$!
+  start_linux_suites
 fi
 
 PAYLOAD_STATUS=0
@@ -999,6 +1025,7 @@ fi
 if [[ -n "$LINUX_PID" ]]; then
   LINUX_STATUS=0
   wait "$LINUX_PID" || LINUX_STATUS=$?
+  LINUX_PID=""
   report_linux_suites "$LINUX_STATUS"
   if [[ "$PAYLOAD_STATUS" == "0" && "$LINUX_STATUS" != "0" ]]; then
     PAYLOAD_STATUS="$LINUX_STATUS"

@@ -23,6 +23,7 @@ while [[ $# -gt 1 ]]; do shift; done
 printf '%s\n' "$1" >>"$LV_TEST_SSH_LOG"
 case "$1" in
   *"swift test"*)
+    [[ -z "${LV_TEST_SSH_HOLD:-}" ]] || /bin/sleep "$LV_TEST_SSH_HOLD"
     echo "Test Suite 'Selected tests' passed at 2026-09-25 10:00:00.000."
     echo "	 Executed 1 test, with 0 failures (0 unexpected) in 0.1 (0.1) seconds"
     ;;
@@ -41,7 +42,12 @@ STUB
 cat >"$TMP_DIR/bin/fake-swift" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$LV_TEST_SWIFT_LOG"
+if [[ "$1" == build && -n "${LV_TEST_LINUX_BUILD_FAILS:-}" ]]; then
+  echo "error: no such module 'Nope'"
+  exit 1
+fi
 if [[ "$1" == test ]]; then
+  [[ -z "${LV_TEST_SWIFT_HOLD:-}" ]] || /bin/sleep "$LV_TEST_SWIFT_HOLD"
   echo "	 Executed 3 tests, with 0 failures (0 unexpected) in 0.1 (0.1) seconds"
   exit "${LV_TEST_LINUX_STATUS:-0}"
 fi
@@ -132,6 +138,47 @@ if run LV_TEST_SHARDS=1 LV_TEST_LINUX_STATUS=1 "$REMOTE_BUILD" test; then
 fi
 grep -q '^==> Linux suites FAILED here (exit 1)' "$TMP_DIR/out.log" \
   || fail "a red Linux run must say so: $(cat "$TMP_DIR/out.log")"
+
+# A build that fails prints no XCTest summary; the failure is still reported.
+if run LV_TEST_LINUX_BUILD_FAILS=1 "$REMOTE_BUILD" test --filter DoubleMetaphoneTests; then
+  fail "a failed Linux build left the run green"
+fi
+grep -q '^==> Linux suites FAILED here (exit 1)' "$TMP_DIR/out.log" \
+  || fail "a failed Linux build must say so: $(cat "$TMP_DIR/out.log")"
+grep -q "no such module 'Nope'" "$TMP_DIR/out.log" \
+  || fail "a failed Linux build must show its error: $(cat "$TMP_DIR/out.log")"
+
+# A --filter with no value goes to the Mac as typed, not as an empty filter
+# that matches every test.
+run "$REMOTE_BUILD" test --filter DoubleMetaphoneTests --filter || true
+[[ -z "$(swift_tests)" ]] || fail "a dangling --filter ran on Linux"
+mac_tests | grep -q -- "--filter DoubleMetaphoneTests --filter *$" \
+  || fail "a dangling --filter must reach the Mac as typed: $(cat "$ssh_log")"
+
+# A signal to the script stops the Linux run beside the Mac's, swift
+# included. bash runs the trap once the Mac payload (held 1 s) returns; the
+# Linux run is held far longer, so only the trap can have ended it.
+: >"$ssh_log"
+: >"$swift_log"
+env "${common_env[@]}" LV_TEST_SHARDS=1 LV_TEST_SSH_HOLD=1 LV_TEST_SWIFT_HOLD=60 \
+  "$REMOTE_BUILD" test >"$TMP_DIR/out.log" 2>&1 &
+script_pid=$!
+for (( i = 0; i < 500; i++ )); do
+  swift_tests | grep -q . && pgrep -f "$TMP_DIR/bin/fake-swift test" >/dev/null && break
+  /bin/sleep 0.02
+done
+pgrep -f "$TMP_DIR/bin/fake-swift test" >/dev/null || fail "the Linux run never started: $(cat "$TMP_DIR/out.log")"
+kill -TERM "$script_pid"
+wait "$script_pid" 2>/dev/null || true
+for (( i = 0; i < 250; i++ )); do
+  pgrep -f "$TMP_DIR/bin/fake-swift test" >/dev/null || break
+  /bin/sleep 0.02
+done
+if pgrep -f "$TMP_DIR/bin/fake-swift test" >/dev/null; then
+  pkill -f "$TMP_DIR/bin/fake-swift" || true
+  fail "a TERM to the script left the Linux run behind"
+fi
+pkill -f "$TMP_DIR/bin/ssh" 2>/dev/null || true
 
 # Every payload above is in the gate's own terms.
 LOCALVOXTRAL_BUILD_GATE_SOURCE_ONLY=1
