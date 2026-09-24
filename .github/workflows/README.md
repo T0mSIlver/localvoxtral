@@ -44,8 +44,8 @@ workflow edit, and `scripts/core-tests-linux.sh` in the `swift:6.2.0` image
 pinned by digest. It is not a required check yet, so `build-test` keeps its
 own shell-suite step and nothing that gated a merge stops gating it.
 
-The jobs run in parallel and share no artifact; each computes the
-docs-only fast-path decision itself rather than serialising behind a `needs:`.
+The jobs run in parallel and share no artifact; the two Mac jobs each compute the
+docs-only fast-path decision themselves rather than serialising behind a `needs:`.
 
 **Any step that launches the app on the self-hosted Mac must set
 `LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN: "1"`** (the launch smoke's
@@ -104,7 +104,7 @@ for one release so a scripted `-f hosted=true` does not fail on an unknown
 input, and cannot be repurposed to move `mac-lanes` — that job exists
 precisely because its work needs that Mac.
 
-The docs/scripts-only fast path applies to both jobs when every changed file
+The docs/scripts-only fast path applies to `build-test` and `mac-lanes` when every changed file
 passes `scripts/ci/docs-only-filter.sh`; they then skip all Swift, helper,
 packaging, artifact, smoke, warm, and integration steps. The filter fails open
 to the full run for unknown or ambiguous diffs and excludes CI control files,

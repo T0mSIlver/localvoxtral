@@ -1431,8 +1431,8 @@ echo "== 13. the embedded Swift helper compiles =="
 # The gate's CoreGraphics/AX helper is a heredoc, so nothing else ever type
 # checks it — and a helper that does not compile turns every GUI verb into a
 # runtime failure the owner only discovers by hand. On the macOS runner this
-# is a real compile; on a Linux dev box it is skipped (and says so).
-if command -v swiftc >/dev/null 2>&1; then
+# is a real compile; off a Mac (no AppKit) it is skipped, and says so.
+if [[ "$(uname -s)" == Darwin ]] && command -v swiftc >/dev/null 2>&1; then
   HELPER_DIR="$TMP_DIR/helper"
   mkdir -p "$HELPER_DIR"
   awk '/^  cat <<.SWIFT.$/ { capture = 1; next }
@@ -1446,7 +1446,7 @@ if command -v swiftc >/dev/null 2>&1; then
     || fail "the embedded Swift helper does not type check"
   pass "the embedded Swift helper type checks"
 else
-  printf 'SKIP: swiftc not available — the embedded Swift helper was not type checked\n'
+  printf 'SKIP: no macOS swiftc — the embedded Swift helper was not type checked\n'
 fi
 
 # ---------------------------------------------------------------------------
