@@ -196,10 +196,14 @@ final class DictationSessionStore {
     @discardableResult
     func delete(id: UUID) -> Task<Void, Never> {
         let audioStore = audioStore
+        // The record goes first: a save that fails keeps the dictation with its
+        // audio, and a file that will not go is retried by the next sweep.
         return enqueueWrite("delete dictation \(id)") { context in
-            audioStore?.remove([id])
-            return try Self.deleteRecords(
+            let deleted = try Self.deleteRecords(
                 matching: #Predicate<DictationSessionRecord> { $0.id == id }, in: context)
+            try context.save()
+            audioStore?.remove([id])
+            return deleted
         }
     }
 
@@ -207,8 +211,10 @@ final class DictationSessionStore {
     func deleteAll() -> Task<Void, Never> {
         let audioStore = audioStore
         return enqueueWrite("delete all dictations") { context in
+            let deleted = try Self.deleteRecords(matching: nil, in: context)
+            try context.save()
             audioStore?.removeAll()
-            return try Self.deleteRecords(matching: nil, in: context)
+            return deleted
         }
     }
 
@@ -237,7 +243,10 @@ final class DictationSessionStore {
     func removeOrphanedAudio() -> Task<Void, Never> {
         let audioStore = audioStore
         return enqueueWrite("sweep dictation audio") { context in
-            if let audioStore { try Self.removeOrphanedAudio(audioStore, context: context) }
+            if let audioStore {
+                audioStore.removeStrayFiles()
+                try Self.removeOrphanedAudio(audioStore, context: context)
+            }
             return 0
         }
     }

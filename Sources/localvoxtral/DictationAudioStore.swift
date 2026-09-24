@@ -74,6 +74,18 @@ final class DictationAudioStore: Sendable {
         remove(storedIDs().subtracting(kept))
     }
 
+    /// Deletes whatever in the folder is not a recording: the temporary file
+    /// an atomic write leaves when the app dies mid-write. Launch only, when
+    /// no write is in flight.
+    func removeStrayFiles() {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directoryURL.path)) ?? []
+        for name in names {
+            let isRecording = name.hasSuffix(".wav") && UUID(uuidString: String(name.dropLast(4))) != nil
+            guard !isRecording else { continue }
+            try? FileManager.default.removeItem(at: directoryURL.appendingPathComponent(name))
+        }
+    }
+
     /// Deletes every recording. Returns how many it deleted.
     @discardableResult
     func removeAll() -> Int {

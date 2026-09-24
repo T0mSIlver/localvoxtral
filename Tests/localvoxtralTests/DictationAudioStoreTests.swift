@@ -85,10 +85,13 @@ final class DictationAudioStoreTests: XCTestCase {
         let orphan = UUID()
         try audio.write(pcm16: pcm, for: orphan)
         let kept = record("kept")
-        store.save(kept, audio: pcm)
+        await store.save(kept, audio: pcm).value
+        let torn = audio.directoryURL.appendingPathComponent(".dat.nosync1234.tmp")
+        try Data([0]).write(to: torn)
         await store.removeOrphanedAudio().value
 
         XCTAssertEqual(audio.storedIDs(), [kept.id])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: torn.path))
     }
 
     func testDeleteAllAndTurningAudioOffDeleteEveryRecording() async throws {
