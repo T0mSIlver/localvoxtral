@@ -79,6 +79,11 @@ def resolve_out_dir(out_dir: str) -> str:
 class UserMessage:
     text: str
     session_path: str  # relative to projects dir
+    language: str | None = None  # "en", "fr", or None when undecided
+
+    @property
+    def project(self) -> str:
+        return self.session_path.split(os.sep, 1)[0]
 
 
 def _extract_text(content) -> str | None:
@@ -109,6 +114,9 @@ _NON_HUMAN_MARKERS = (
     "<bash-input>",
     "<bash-stdout>",
     "<bash-stderr>",
+    # Claude Code's own summary of a compacted conversation, filed as a user
+    # message; its section headers would otherwise rank as terms.
+    "This session is being continued from a previous conversation",
 )
 
 
@@ -178,6 +186,47 @@ def looks_sensitive(sentence: str) -> bool:
 
 
 # --------------------------------------------------------------------------
+# Language
+# --------------------------------------------------------------------------
+
+FRENCH_WORDS = {
+    "le", "la", "les", "des", "une", "un", "est", "pas", "que", "qui", "dans",
+    "pour", "avec", "sur", "mais", "je", "tu", "il", "elle", "nous", "vous",
+    "ce", "cette", "ces", "sont", "fait", "faire", "du", "au", "aux", "on",
+    "ça", "et", "ou", "si", "ne", "plus", "tout", "tous", "mon", "ton", "son",
+    "moi", "toi", "lui", "leur", "quand", "comme", "où", "donc", "alors",
+    "aussi", "bien", "très", "peux", "peut", "veux", "faut", "c'est", "j'ai",
+    "n'est", "qu'il", "d'un", "d'une", "l'on", "encore", "déjà", "juste",
+    "après", "avant", "chaque", "entre", "sans", "sous", "vers", "chez",
+    "de", "en", "à", "ai", "est-ce", "parce", "qu'on", "c'était", "y",
+}
+ENGLISH_WORDS = {
+    "the", "is", "are", "and", "to", "of", "in", "that", "it", "for", "with",
+    "this", "you", "not", "but", "be", "we", "can", "should", "what", "when",
+}
+RE_WORD = re.compile(r"[a-zàâäçéèêëîïôöûùüÿœæ']+")
+
+
+def detect_language(text: str, min_hits: int = 3) -> str | None:
+    """"fr", "en", or None when the function-word counts do not decide.
+
+    A sentence is decided on its own when it is clear, else it takes its
+    message's language: a short sentence carries few function words, but a
+    message can quote a line in the other language.
+    """
+    words = RE_WORD.findall(text.lower().replace("\u2019", "'"))
+    if len(words) < 4:
+        return None
+    fr = sum(w in FRENCH_WORDS for w in words)
+    en = sum(w in ENGLISH_WORDS for w in words)
+    if fr >= min_hits and fr > en * 1.5:
+        return "fr"
+    if en >= min_hits - 1 and en > fr * 1.5:
+        return "en"
+    return None
+
+
+# --------------------------------------------------------------------------
 # Term inventory
 # --------------------------------------------------------------------------
 
@@ -187,6 +236,11 @@ EXTRA_COMMON = {
     "repo", "repos", "config", "configs", "dev", "prod", "todo", "readme",
     "info", "meta", "async", "sync", "auto", "multi", "misc", "impl",
     "don", "doesn", "isn", "wasn", "won", "can", "let", "lets", "ll", "ve",
+    "didn", "couldn", "shouldn", "wouldn", "haven", "hasn", "aren", "weren",
+    "hadn", "mustn", "needn", "ain",
+    # Chat shorthand: typed, never dictated, and no engine writes it.
+    "imo", "imho", "idk", "bc", "afaik", "iirc", "fyi", "lol", "thx", "pls",
+    "plz", "ofc", "wdyt", "qqn",
     "cf", "eg", "ie", "nb", "ps", "http", "https", "www", "com",
 }
 
@@ -199,7 +253,8 @@ RE_NUMERIC = re.compile(r"^[\d.,:x-]+$")
 RE_WORDISH = re.compile(r"[A-Za-z]")
 
 # A token: word chars plus the joiners that appear inside technical names.
-RE_TOKEN = re.compile(r"[A-Za-z0-9_](?:[A-Za-z0-9_.+#-]*[A-Za-z0-9_#+])?")
+# Unicode word characters, so an accented French word stays one token.
+RE_TOKEN = re.compile(r"\w(?:[\w.+#-]*[\w#+])?")
 
 STOP_TERMS = {
     # High-frequency but not really "technical terms a user dictates".
@@ -213,7 +268,11 @@ def load_dictionary() -> set[str]:
     try:
         with open("/usr/share/dict/words", encoding="utf-8", errors="replace") as fh:
             for w in fh:
-                words.add(w.strip().lower())
+                # Lowercase entries only: a capitalized entry is a name
+                # ("Claude"), and a name is a term to spell right.
+                w = w.strip()
+                if w and w == w.lower():
+                    words.add(w)
     except OSError:
         pass
     words |= EXTRA_COMMON
@@ -345,9 +404,16 @@ def build_inventory(messages: list[UserMessage], dictionary: set[str]):
                     for g in interior
                 ):
                     continue
+                # A phrase is a term when two of its words are ("gh pr",
+                # "DNS TXT record"), or when it is a capitalized name with at
+                # least one word outside the dictionary ("Claude Code"). One
+                # technical word inside ordinary words ("review the PR") is
+                # that word's case, and a title-cased heading ("Next Step") is
+                # not a name.
                 n_tech = sum(1 for g in gram if is_technical_unigram(g, dictionary))
                 n_caps = sum(1 for g in gram if g[:1].isupper())
-                if n_tech == 0 and n_caps < len(gram):
+                n_uncommon = sum(1 for g in gram if g.lower() not in dictionary)
+                if n_tech < 2 and not (n_caps == len(gram) and n_uncommon >= 1):
                     continue
                 phrase = " ".join(gram)
                 ngrams[phrase].count += 1
@@ -392,6 +458,11 @@ RE_PASTED = [
     re.compile(r"[{};]\s*$"),  # code line endings
     re.compile(r"\bfunc \w+\(|\bdef \w+\(|\bconst \w+ ="),  # code
     re.compile(r"\b[0-9a-f]{7,40}\b"),  # commit hashes — unspeakable
+    re.compile(r"[\u2500-\u257f]"),  # box-drawing table borders
+    re.compile(r"(?:^|\s)--?[a-z][\w-]*"),  # command-line flags
+    re.compile(r"\w\("),  # call syntax
+    re.compile(r"\s=\s"),  # assignments
+    re.compile(r"#{2,}|\{#"),  # markdown headings and anchors
 ]
 
 
@@ -428,7 +499,28 @@ def sentence_ok(s: str) -> bool:
     alpha = sum(c.isalpha() or c.isspace() for c in s)
     if alpha < len(s) * 0.75:
         return False
+    if looks_like_identifier_list(s):
+        return False
+    # A table header or log column row: mostly ALLCAPS words.
+    words = s.split()
+    shouted = sum(1 for w in words if len(w) >= 2 and w.isupper())
+    if shouted >= 3 and shouted * 2 >= len(words):
+        return False
     return True
+
+
+RE_JOINED_NAME = re.compile(r"[A-Za-z0-9][._#+-][A-Za-z0-9]|[a-z][A-Z]")
+
+
+def looks_like_identifier_list(s: str) -> bool:
+    """A run of names nobody would dictate: CSS class lists, import lines,
+    flag lists. normalize_sentence strips a leading "- " as a list marker, so
+    a diff line of class names ("- flex-row items-center gap-2 px-4") reaches
+    this point looking like prose; what gives it away is that most of its
+    words are joined names."""
+    words = s.split()
+    joined = sum(1 for w in words if RE_JOINED_NAME.search(w))
+    return joined >= 3 and joined * 5 >= len(words) * 2
 
 
 def find_terms_in_sentence(
@@ -457,6 +549,97 @@ def find_terms_in_sentence(
     return [t for _, t in hits]
 
 
+@dataclass
+class Candidate:
+    text: str
+    terms: list[str]
+    session: str
+    project: str
+    language: str
+    score: float
+
+
+def terms_by_scope(messages: list[UserMessage], term_rank: dict[str, int]):
+    """Listed terms seen in each session and each project, as rank-ordered
+    lists. A case's bias list is its session's terms, topped up from its
+    project, as #316 builds the live list from the joined session and the
+    repository."""
+    by_session: dict[str, set[str]] = defaultdict(set)
+    by_project: dict[str, set[str]] = defaultdict(set)
+    for m in messages:
+        found = find_terms_in_sentence(m.text, term_rank)
+        by_session[m.session_path].update(found)
+        by_project[m.project].update(found)
+
+    def ranked(terms: set[str]) -> list[str]:
+        return sorted(terms, key=lambda t: term_rank[t])
+
+    return (
+        {k: ranked(v) for k, v in by_session.items()},
+        {k: ranked(v) for k, v in by_project.items()},
+    )
+
+
+def session_terms_for(
+    case: Candidate,
+    by_session: dict[str, list[str]],
+    by_project: dict[str, list[str]],
+    limit: int,
+) -> list[str]:
+    listed = list(case.terms)
+    for term in by_session.get(case.session, []) + by_project.get(case.project, []):
+        if len(listed) >= limit:
+            break
+        if term not in listed:
+            listed.append(term)
+    return listed
+
+
+def noise_terms_for(
+    ranked_terms: list[str],
+    cases: list[Candidate],
+    session_lists: list[list[str]],
+    limit: int,
+) -> list[str]:
+    """Terms from the inventory that no case speaks and no case lists: the
+    unrelated list #316's noise-control arm biases with. A case may still say
+    one by accident, so the scorer counts insertions against the reference."""
+    used = {t.lower() for listed in session_lists for t in listed}
+    spoken = [c.text.lower() for c in cases]
+    noise: list[str] = []
+    for term in ranked_terms:
+        if len(noise) >= limit:
+            break
+        low = term.lower()
+        if low in used or any(low in text for text in spoken):
+            continue
+        noise.append(term)
+    return noise
+
+
+def select_cases(
+    candidates: list[Candidate], max_cases: int, per_term_cap: int
+) -> list[Candidate]:
+    """Best-scored first, at most per_term_cap cases led by the same term."""
+    per_term = Counter()
+    selected: list[Candidate] = []
+    for c in sorted(candidates, key=lambda c: (-c.score, c.text)):
+        dom = c.terms[0]
+        if per_term[dom] >= per_term_cap:
+            continue
+        per_term[dom] += 1
+        selected.append(c)
+        if len(selected) >= max_cases:
+            break
+    return selected
+
+
+def write_json(path: str, payload) -> None:
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
@@ -465,12 +648,22 @@ def main() -> int:
         help="Claude Code transcripts root (default: ~/.claude/projects)",
     )
     ap.add_argument("--out-dir", default="EvalRecordings/term-recall")
-    ap.add_argument("--max-cases", type=int, default=300)
-    ap.add_argument("--min-cases", type=int, default=150)
+    ap.add_argument(
+        "--private-dir",
+        default=os.path.expanduser("~/.local/share/localvoxtral/term-recall"),
+        help="where terms.json and session-map.json go: outside the repo, so "
+        "no remote-build sync can carry them off this machine",
+    )
+    ap.add_argument("--max-cases-en", type=int, default=200)
+    ap.add_argument("--min-cases-en", type=int, default=150)
+    ap.add_argument("--max-cases-fr", type=int, default=60)
+    ap.add_argument("--min-cases-fr", type=int, default=40)
     ap.add_argument("--top-terms", type=int, default=400,
                     help="inventory size used for sentence matching")
     ap.add_argument("--per-term-cap", type=int, default=6,
                     help="max sentences dominated by the same top term")
+    ap.add_argument("--list-size", type=int, default=100,
+                    help="entries in each case's session list and in the noise list")
     ap.add_argument("--print-terms", action="store_true",
                     help="print the top-30 term inventory to stdout "
                     "(transcript-derived content; off by default so terminal "
@@ -493,12 +686,35 @@ def main() -> int:
         if digest in seen:
             continue
         seen.add(digest)
+        m.language = detect_language(m.text)
         messages.append(m)
+    by_language = Counter(m.language for m in messages)
     print(f"sessions scanned: {n_sessions}")
-    print(f"unique real user messages: {len(messages)}")
+    print(
+        f"unique real user messages: {len(messages)} "
+        f"(en {by_language['en']}, fr {by_language['fr']}, undecided {by_language[None]})"
+    )
 
-    # 2) Term inventory.
-    ranked = build_inventory(messages, dictionary)
+    # 2) Dictation-shaped sentences. Everything below reads only these, so
+    # pasted logs and tool output never rank as terms or reach a bias list.
+    sentences: list[UserMessage] = []
+    for m in messages:
+        for raw in split_sentences(m.text):
+            s = normalize_sentence(raw)
+            if not sentence_ok(s):
+                continue
+            language = detect_language(s, min_hits=2) or m.language
+            if language is not None:
+                sentences.append(UserMessage(s, m.session_path, language))
+
+    # 3) Term inventory. The dictionary test that makes a word "technical" is
+    # English, so only English sentences build it; French sentences are then
+    # matched against the same inventory, which also keeps French words out.
+    english = [m for m in sentences if m.language == "en"]
+    ranked = [
+        entry for entry in build_inventory(english, dictionary)
+        if entry[0].lower() not in FRENCH_WORDS
+    ]
     print(f"technical terms extracted: {len(ranked)}")
     top = ranked[: args.top_terms]
     term_rank = {term: i for i, (term, _, _) in enumerate(top)}
@@ -507,66 +723,68 @@ def main() -> int:
         for term, st, _ in ranked
     }
 
-    # 3) Sentence frames.
-    @dataclass
-    class Candidate:
-        text: str
-        terms: list[str]
-        session: str
-        context: list[str]
-        score: float
-
+    # 4) Cases, kept whether or not the engine will get them right: a clean
+    # case is the only way to count a term a change breaks.
     candidates: list[Candidate] = []
     seen_sent: set[str] = set()
-    for m in messages:
-        msg_terms = find_terms_in_sentence(m.text, term_rank)
-        for raw in split_sentences(m.text):
-            s = normalize_sentence(raw)
-            if not sentence_ok(s):
-                continue
-            key = re.sub(r"[^a-z0-9 ]", "", s.lower())
-            if key in seen_sent:
-                continue
-            terms = find_terms_in_sentence(s, term_rank)
-            # 1-3 distinct target terms; prefer rare + multiword terms
-            terms = list(
-                dict.fromkeys(t for t in terms if t.lower() not in STOP_TERMS)
-            )
-            if not (1 <= len(terms) <= 3):
-                continue
-            seen_sent.add(key)
-            context = list(dict.fromkeys(t for t in msg_terms if t not in terms))[:6]
-            sc = sum(
-                (1.5 if " " in t else 1.0) / (1 + term_rank[t] / 50)
-                for t in terms
-            )
-            candidates.append(Candidate(s, terms, m.session_path, context, sc))
-
-    print(f"candidate sentences: {len(candidates)}")
-
-    # 4) Diverse selection: best-scored first, cap per dominant term.
-    candidates.sort(key=lambda c: (-c.score, c.text))
-    per_term = Counter()
-    selected: list[Candidate] = []
-    for c in candidates:
-        dom = c.terms[0]
-        if per_term[dom] >= args.per_term_cap:
+    for m in sentences:
+        key = re.sub(r"[^\w ]", "", m.text.lower())
+        if key in seen_sent:
             continue
-        per_term[dom] += 1
-        selected.append(c)
-        if len(selected) >= args.max_cases:
-            break
-    if len(selected) < args.min_cases:
-        print(
-            f"warning: only {len(selected)} cases (< --min-cases "
-            f"{args.min_cases}); relax caps or thresholds",
-            file=sys.stderr,
+        terms = find_terms_in_sentence(m.text, term_rank)
+        terms = list(
+            dict.fromkeys(t for t in terms if t.lower() not in STOP_TERMS)
         )
+        if not (1 <= len(terms) <= 3):
+            continue
+        seen_sent.add(key)
+        sc = sum(
+            (1.5 if " " in t else 1.0) / (1 + term_rank[t] / 50)
+            for t in terms
+        )
+        candidates.append(
+            Candidate(m.text, terms, m.session_path, m.project, m.language, sc)
+        )
+    print(
+        "candidate sentences: "
+        f"en {sum(c.language == 'en' for c in candidates)}, "
+        f"fr {sum(c.language == 'fr' for c in candidates)}"
+    )
 
-    # 5) Emit. cases.json is the file that travels to the Mac for mining, so
-    # it carries only a short HASH of the session path — the home-dir-shaped
-    # transcript paths stay in session-map.json, which never leaves this box.
+    # 5) Per-language selection.
+    selected: list[Candidate] = []
+    for language, max_cases, min_cases in (
+        ("en", args.max_cases_en, args.min_cases_en),
+        ("fr", args.max_cases_fr, args.min_cases_fr),
+    ):
+        picked = select_cases(
+            [c for c in candidates if c.language == language],
+            max_cases,
+            args.per_term_cap,
+        )
+        if len(picked) < min_cases:
+            print(
+                f"warning: only {len(picked)} {language} cases (< {min_cases}); "
+                "relax caps or thresholds",
+                file=sys.stderr,
+            )
+        selected.extend(picked)
+
+    # 6) Bias lists.
+    by_session, by_project = terms_by_scope(sentences, term_rank)
+    selected.sort(key=lambda c: (c.language, c.session, c.text))
+    session_lists = [
+        session_terms_for(c, by_session, by_project, args.list_size) for c in selected
+    ]
+    noise = noise_terms_for(
+        [term for term, _, _ in ranked], selected, session_lists, args.list_size
+    )
+
+    # 7) Emit. cases.json is the only file that travels to the Mac, so it
+    # carries a short HASH of the session path; the transcript paths go to
+    # session-map.json in the private dir, outside the repo.
     os.makedirs(args.out_dir, exist_ok=True)
+    os.makedirs(args.private_dir, exist_ok=True)
     session_map: dict[str, str] = {}
 
     def session_hash(path: str) -> str:
@@ -574,75 +792,69 @@ def main() -> int:
         session_map[digest] = path
         return digest
 
+    counters: Counter = Counter()
     cases = []
-    for i, c in enumerate(sorted(selected, key=lambda c: (c.session, c.text))):
+    for c, listed in zip(selected, session_lists):
+        counters[c.language] += 1
         cases.append(
             {
-                "id": f"tr-{i:04d}",
+                "id": f"tr-{c.language}-{counters[c.language]:04d}",
+                "language": c.language,
                 "text": c.text,
-                "target_terms": c.terms,
-                "term_provenance": {
-                    t: term_provenance.get(t, {"count": 0, "sessions": 0})
-                    for t in c.terms
-                },
-                "source_session_hash": session_hash(c.session),
-                "context_hint": c.context,
+                "terms": c.terms,
+                "sessionTerms": listed,
+                "sessionHash": session_hash(c.session),
             }
         )
     cases_path = os.path.join(args.out_dir, "cases.json")
-    with open(cases_path, "w", encoding="utf-8") as fh:
-        json.dump(
-            {
-                "schemaVersion": 1,
-                "set": "term-recall",
-                "private": True,
-                "note": "Transcript-derived. Gitignored under /EvalRecordings/. Never commit or upload.",
-                "cases": cases,
-            },
-            fh,
-            indent=2,
-            ensure_ascii=False,
-        )
-        fh.write("\n")
-    terms_path = os.path.join(args.out_dir, "terms.json")
-    with open(terms_path, "w", encoding="utf-8") as fh:
-        json.dump(
-            {
-                "schemaVersion": 1,
-                "private": True,
-                "terms": [
-                    {
-                        "term": term,
-                        "count": st.count,
-                        "sessions": len(st.sessions),
-                        "score": round(sc, 2),
-                    }
-                    for term, st, sc in ranked[:1000]
-                ],
-            },
-            fh,
-            indent=2,
-            ensure_ascii=False,
-        )
-        fh.write("\n")
+    write_json(
+        cases_path,
+        {
+            "schemaVersion": 2,
+            "set": "term-recall",
+            "private": True,
+            "note": "Transcript-derived. Gitignored under /EvalRecordings/. Never commit or upload.",
+            "noiseTerms": noise,
+            "cases": cases,
+        },
+    )
+    terms_path = os.path.join(args.private_dir, "terms.json")
+    write_json(
+        terms_path,
+        {
+            "schemaVersion": 1,
+            "private": True,
+            "terms": [
+                {
+                    "term": term,
+                    "count": term_provenance[term]["count"],
+                    "sessions": term_provenance[term]["sessions"],
+                    "score": round(sc, 2),
+                }
+                for term, _, sc in ranked[:1000]
+            ],
+        },
+    )
+    map_path = os.path.join(args.private_dir, "session-map.json")
+    write_json(
+        map_path,
+        {
+            "schemaVersion": 1,
+            "private": True,
+            "note": "hash -> transcript session path. LOCAL ONLY: never copy off this machine (cases.json carries only the hashes).",
+            "sessions": session_map,
+        },
+    )
 
-    map_path = os.path.join(args.out_dir, "session-map.json")
-    with open(map_path, "w", encoding="utf-8") as fh:
-        json.dump(
-            {
-                "schemaVersion": 1,
-                "private": True,
-                "note": "hash -> transcript session path. LOCAL ONLY: never copy off this machine (cases.json carries only the hashes).",
-                "sessions": session_map,
-            },
-            fh,
-            indent=2,
-            ensure_ascii=False,
-        )
-        fh.write("\n")
-
-    print(f"cases written: {len(cases)} -> {cases_path}")
-    print(f"terms written: {min(len(ranked), 1000)} -> {terms_path}")
+    list_sizes = [len(listed) for listed in session_lists] or [0]
+    print(
+        f"cases written: en {counters['en']}, fr {counters['fr']} -> {cases_path}"
+    )
+    print(
+        f"session lists: {min(list_sizes)}-{max(list_sizes)} terms; "
+        f"noise list: {len(noise)} terms"
+    )
+    print(f"terms written: {min(len(ranked), 1000)} -> {terms_path} (local only)")
     print(f"session map:   {len(session_map)} entries -> {map_path} (local only)")
     if args.print_terms:
         print("top 30 terms:")
