@@ -158,7 +158,7 @@ extension DictationSessionController {
         }
 
         transcript.appendPartial(processedDelta)
-        if isLiveAutoPasteModeEnabled, isLiveSpokenSendActive {
+        if isLiveAutoPasteModeEnabled, liveSpokenSendWithholdsSegment() {
             // Typed at the final, once it is known whether it ends in the
             // trigger: typed text cannot be taken back.
         } else if isLiveAutoPasteModeEnabled {
@@ -184,10 +184,11 @@ extension DictationSessionController {
         }
         statusText = activeStatusText
 
-        if isLiveAutoPasteModeEnabled, isLiveSpokenSendActive {
+        if isLiveAutoPasteModeEnabled, liveSpokenSendWithholdsSegment() {
             // No partial of this segment was typed, so the whole segment is.
             deliverLiveSpokenSendFinal(processedText, merged: finalized.text)
         } else if isLiveAutoPasteModeEnabled {
+            liveSpokenSendSegmentMode = .undecided
             if let liveInsertion = finalized.liveInsertion {
                 textInsertion.enqueueRealtimeInsertion(liveInsertion)
             }
@@ -258,10 +259,10 @@ extension DictationSessionController {
     func promotePendingRealtimeTextToLatestSegment() -> String? {
         guard let pendingSegment = transcript.promotePendingToLatestSegment() else { return nil }
 
-        // Held partials are typed nowhere else: a promotion (stop, dropped
-        // socket) stands in for the final they never got.
-        if isLiveAutoPasteModeEnabled, isLiveSpokenSendActive {
-            deliverLiveSpokenSendSegment(pendingSegment)
+        // Withheld partials are typed nowhere else: a promotion (stop,
+        // dropped socket) stands in for the final they never got.
+        if isLiveAutoPasteModeEnabled {
+            deliverPromotedLiveSpokenSendSegment(pendingSegment)
         }
 
         if isLiveAutoPasteModeEnabled, settings.autoCopyEnabled {

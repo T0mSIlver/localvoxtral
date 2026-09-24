@@ -408,9 +408,7 @@ extension DictationSessionController {
     }
 
     func configureLiveAutoPasteReplacementCorrectorForSession() {
-        // After the stream and the target PID are set up, whichever way
-        // this returns.
-        defer { configureLiveSpokenSendForSession() }
+        resetLiveSpokenSendForSession()
         guard isLiveAutoPasteModeEnabled else {
             textInsertion.endLiveReplacementSession()
             return
@@ -446,7 +444,7 @@ extension DictationSessionController {
         isCompletingStoppedSession = false
         realtimeFinalizationLastActivityAt = nil
         polishAndCommitTask = nil
-        isLiveSpokenSendActive = false
+        liveSpokenSendSegmentMode = .undecided
         // Every stop funnels through here. The commit path has already
         // consumed the capture by now (it reconciles synchronously, before
         // spawning the polish Task), so this is a no-op there — it exists to

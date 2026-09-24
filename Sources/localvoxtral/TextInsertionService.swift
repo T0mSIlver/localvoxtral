@@ -131,12 +131,12 @@ final class TextInsertionService {
     @ObservationIgnored
     private var liveTypedTextForSession = ""
     /// The frontmost app at each successful live insertion since the last
-    /// `takeLiveInsertionTargetPIDs()`, nil where it could not be read. Live
+    /// `clearLiveInsertionTargetPIDs()`, nil where it could not be read. Live
     /// text is typed into whatever has focus, so this is the only record of
     /// where it went; the spoken send trigger presses Return only when all of
     /// it went to the terminal the Return is for.
     @ObservationIgnored
-    private var liveInsertionTargetPIDs: [pid_t?] = []
+    private(set) var liveInsertionTargetPIDs: [pid_t?] = []
 
 #if DEBUG
     @ObservationIgnored
@@ -284,13 +284,11 @@ final class TextInsertionService {
         return true
     }
 
-    /// Where live text went since the last call, and a fresh start.
-    func takeLiveInsertionTargetPIDs() -> [pid_t?] {
-        defer { liveInsertionTargetPIDs = [] }
-        return liveInsertionTargetPIDs
+    func clearLiveInsertionTargetPIDs() {
+        liveInsertionTargetPIDs = []
     }
 
-    private func currentFrontmostPID() -> pid_t? {
+    func frontmostApplicationPID() -> pid_t? {
 #if DEBUG
         if let debugFrontmostPIDReader {
             return debugFrontmostPIDReader()
@@ -320,7 +318,7 @@ final class TextInsertionService {
         switch insertTextPrioritizingKeyboard(insertedText) {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
-            liveInsertionTargetPIDs.append(currentFrontmostPID())
+            liveInsertionTargetPIDs.append(frontmostApplicationPID())
         case .failed:
             break
         }
@@ -396,7 +394,6 @@ final class TextInsertionService {
         pendingHoldBackReleasedText = ""
         liveTargetIsTerminalLike = isTerminalLikeTarget
         liveTypedTextForSession = ""
-        liveInsertionTargetPIDs = []
 
         let entryCount = dictionary?.entries.count ?? 0
         let ruleCount = dictionary.map { LiveReplacementCorrector(dictionary: $0).ruleCount } ?? 0
@@ -494,7 +491,7 @@ final class TextInsertionService {
         switch insertTextPrioritizingKeyboard(releasedText) {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             liveTypedTextForSession += releasedText
-            liveInsertionTargetPIDs.append(currentFrontmostPID())
+            liveInsertionTargetPIDs.append(frontmostApplicationPID())
         case .failed:
             // Keep the released text verbatim for the retry task; it must
             // never be re-ingested into the stream.

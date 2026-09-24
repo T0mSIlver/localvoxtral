@@ -3,9 +3,9 @@ import os
 
 /// The spoken send trigger (#318): dictation that ends in "send it" or
 /// "send now" is inserted without those words, then Return is pressed in the
-/// app the text went to. Opt-in per output mode, terminals only, never under
-/// Secure Keyboard Entry, and never without a target PID. Logs say what was
-/// decided and never what was said.
+/// app the text went to. Opt-in per output mode, terminals only (by bundle
+/// ID), never under Secure Keyboard Entry. Logs say what was decided and
+/// never what was said.
 extension DictationSessionController {
     // MARK: - Overlay Buffer
 
@@ -29,13 +29,7 @@ extension DictationSessionController {
             Log.dictation.notice("spoken send: no target app; trigger kept as text")
             return nil
         }
-        // The commit target's own bundle ID, on the built-in list or the
-        // user's Settings > Terminals list. No AX probe: it reads the element
-        // focused now, which need not belong to this PID.
-        let bundleID = dependencies.bundleIdentifier(pid)
-        let isTerminal = TerminalTargetDetector.isTerminalLikeBundleID(bundleID)
-            || bundleID.map(settings.userTerminalAppBundleIDs.contains) == true
-        guard isTerminal else {
+        guard isOnTerminalList(pid: pid) else {
             Log.dictation.notice("spoken send: target is not on the terminal list; trigger kept as text")
             return nil
         }
@@ -67,91 +61,133 @@ extension DictationSessionController {
     }
 
     // MARK: - Live Auto-Paste
+    //
+    // Every decision is taken when it is needed, from the app frontmost at
+    // that moment: nothing captured at session start or connect time takes
+    // part. A segment's partials are withheld only while a terminal is
+    // frontmost; only a non-empty backend final can trigger; the Return goes
+    // to the frontmost terminal, and only when every live insertion since the
+    // last Return sent (or the session start) landed in that same app.
 
-    /// Session start, after the target verdict and the live target PID.
-    func configureLiveSpokenSendForSession() {
+    /// Session start: nothing carries over from the previous dictation.
+    func resetLiveSpokenSendForSession() {
         spokenSendLatch.reset()
         liveSpokenSendTypedSinceReturn = false
-        guard isLiveAutoPasteModeEnabled, settings.liveSpokenSendEnabled else {
-            isLiveSpokenSendActive = false
-            return
-        }
-        guard sessionTargetIsTerminalLike else {
-            isLiveSpokenSendActive = false
-            Log.dictation.notice("spoken send: target is not a terminal; live typing unchanged")
-            return
-        }
-        isLiveSpokenSendActive = true
-        Log.dictation.notice("spoken send: on; each segment is typed when its final arrives")
+        liveSpokenSendSegmentMode = .undecided
+        liveSpokenSendBlockLogged = false
+        textInsertion.clearLiveInsertionTargetPIDs()
     }
 
-    /// A final of a Live Auto-Paste session with the trigger on. No partial
-    /// was typed, so the backend's final is the segment: it alone decides
-    /// whether there is a trigger. `merged` (the accumulator's segment) is
-    /// used only for a final with no text. The accumulator merges for live
-    /// typing, where typed partials cannot be taken back: it glues a partial
-    /// that disagrees with the final onto it ("send" + "Send it."), and keeps
-    /// partial words the final dropped ("run tests send it" + "run tests").
-    /// Either would read as a trigger the final does not hold. The cost:
-    /// words only a partial had are not typed.
+    /// Whether the current segment's text is held back until its final. Taken
+    /// at the segment's first insertion and kept for the rest of it: a segment
+    /// half typed live cannot have its trigger removed, and one half withheld
+    /// must be typed whole at its final.
+    func liveSpokenSendWithholdsSegment() -> Bool {
+        if liveSpokenSendSegmentMode == .undecided {
+            let withholds = settings.liveSpokenSendEnabled && frontmostTerminalPID() != nil
+            liveSpokenSendSegmentMode = withholds ? .withheld : .typedLive
+        }
+        return liveSpokenSendSegmentMode == .withheld
+    }
+
+    /// A final of a withheld segment. Only the backend's non-empty final can
+    /// trigger: the accumulator's merge keeps partial words the final dropped
+    /// and glues a disagreeing partial onto it, so it is typed as text and
+    /// never parsed. The cost: when the final is not empty, words only a
+    /// partial had are not typed.
     func deliverLiveSpokenSendFinal(_ finalText: String, merged: String) {
+        liveSpokenSendSegmentMode = .undecided
         let final = finalText.trimmed
-        deliverLiveSpokenSendSegment(final.isEmpty ? merged : final)
-    }
-
-    /// One segment of a Live Auto-Paste session with the trigger on. None of
-    /// it was typed while it was spoken.
-    func deliverLiveSpokenSendSegment(_ segment: String) {
-        let action = SendNowCommandParser.parse(segment)
-        if action.pressesReturn {
+        guard !final.isEmpty else {
+            spokenSendLatch.noteNonSubmittingFinal()
+            typeLiveSpokenSendText(merged)
+            return
+        }
+        let action = SendNowCommandParser.parse(final)
+        switch action {
+        case .none:
+            return
+        case .insertText(let text):
+            spokenSendLatch.noteNonSubmittingFinal()
+            typeLiveSpokenSendText(text)
+        case .pressReturn, .insertTextAndPressReturn:
             // Claimed before anything is typed or pressed: a repeated final
             // must not do either a second time.
-            guard spokenSendLatch.claimSubmission(of: segment) else {
+            guard spokenSendLatch.claimSubmission(of: final) else {
                 Log.dictation.notice("spoken send: repeated final ignored")
                 return
             }
-        } else {
-            spokenSendLatch.noteNonSubmittingFinal()
-        }
-
-        let targetPID = overlayBufferCoordinator.commitTargetAppPID
-        if action.pressesReturn, targetPID == nil {
-            Log.dictation.notice("spoken send: no target app; no Return")
-        }
-        for step in SendNowPlan.steps(for: action, targetPID: targetPID) {
-            switch step {
-            case .insert(let text, _):
-                let separator = liveSpokenSendTypedSinceReturn ? " " : ""
-                textInsertion.enqueueRealtimeInsertion(separator + text)
-                liveSpokenSendTypedSinceReturn = true
-                if let accessibilityError = textInsertion.lastAccessibilityError {
-                    lastError = accessibilityError
-                }
-            case .pressReturn(let pid):
-                // The hold-back stream keeps the last word until it knows the
-                // word is complete; the Return must come after it.
-                textInsertion.flushFinalLiveReplacementCorrections()
-                guard !textInsertion.hasPendingInsertionText else {
-                    Log.dictation.notice("spoken send: text not delivered yet; no Return")
-                    continue
-                }
-                // Live text goes to whatever has focus. The Return is for
-                // `pid`, so everything typed since the last Return must have
-                // gone there, or it would submit a prompt the user did not
-                // dictate into it. An unreadable frontmost app counts as
-                // elsewhere.
-                let targets = textInsertion.takeLiveInsertionTargetPIDs()
-                guard targets.allSatisfy({ $0 == pid }) else {
-                    Log.dictation.notice(
-                        "spoken send: text since the last Return went to another app; no Return"
-                    )
-                    continue
-                }
-                if pressSpokenSendReturn(pid: pid) {
-                    liveSpokenSendTypedSinceReturn = false
-                }
+            if case .insertTextAndPressReturn(let text) = action {
+                typeLiveSpokenSendText(text)
             }
+            pressLiveSpokenSendReturnIfAllowed()
         }
+    }
+
+    /// A withheld segment promoted without a final (stop, dropped socket):
+    /// typed as text, never a trigger.
+    func deliverPromotedLiveSpokenSendSegment(_ segment: String) {
+        let mode = liveSpokenSendSegmentMode
+        liveSpokenSendSegmentMode = .undecided
+        guard mode == .withheld else { return }
+        spokenSendLatch.noteNonSubmittingFinal()
+        typeLiveSpokenSendText(segment)
+    }
+
+    private func typeLiveSpokenSendText(_ text: String) {
+        guard !text.isEmpty else { return }
+        let separator = liveSpokenSendTypedSinceReturn ? " " : ""
+        textInsertion.enqueueRealtimeInsertion(separator + text)
+        liveSpokenSendTypedSinceReturn = true
+        if let accessibilityError = textInsertion.lastAccessibilityError {
+            lastError = accessibilityError
+        }
+    }
+
+    private func pressLiveSpokenSendReturnIfAllowed() {
+        // The hold-back stream keeps the last word until it knows the word is
+        // complete; the Return must come after it.
+        textInsertion.flushFinalLiveReplacementCorrections()
+        guard !textInsertion.hasPendingInsertionText else {
+            Log.dictation.notice("spoken send: text not delivered yet; no Return")
+            return
+        }
+        guard let pid = frontmostTerminalPID() else {
+            Log.dictation.notice("spoken send: frontmost app is not on the terminal list; no Return")
+            return
+        }
+        // The record is cleared only by a Return sent, never by a refusal:
+        // once text has landed elsewhere, no later trigger can submit the
+        // terminal's own prompt in its place.
+        guard textInsertion.liveInsertionTargetPIDs.allSatisfy({ $0 == pid }) else {
+            if !liveSpokenSendBlockLogged {
+                liveSpokenSendBlockLogged = true
+                Log.dictation.notice(
+                    "spoken send: text went to another app; no Return for the rest of this dictation"
+                )
+            }
+            return
+        }
+        guard pressSpokenSendReturn(pid: pid) else { return }
+        textInsertion.clearLiveInsertionTargetPIDs()
+        liveSpokenSendTypedSinceReturn = false
+    }
+
+    /// The frontmost app's PID when its bundle ID is on the built-in or the
+    /// Settings > Terminals list. Nil when it is not, or cannot be read.
+    private func frontmostTerminalPID() -> pid_t? {
+        guard let pid = textInsertion.frontmostApplicationPID(),
+              isOnTerminalList(pid: pid)
+        else { return nil }
+        return pid
+    }
+
+    /// Terminal by bundle ID only. The AX probe reads the element focused
+    /// now, which need not belong to `pid`.
+    private func isOnTerminalList(pid: pid_t) -> Bool {
+        let bundleID = dependencies.bundleIdentifier(pid)
+        return TerminalTargetDetector.isTerminalLikeBundleID(bundleID)
+            || bundleID.map(settings.userTerminalAppBundleIDs.contains) == true
     }
 
     // MARK: - Shared

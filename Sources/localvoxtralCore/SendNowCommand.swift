@@ -171,35 +171,3 @@ package struct SendNowResubmitLatch: Equatable, Sendable {
         self = SendNowResubmitLatch()
     }
 }
-
-/// The ordered keystroke steps for one action, all aimed at one process.
-///
-/// The PID is captured once, when the text's target is resolved, and every
-/// step carries it: a focus change between the insertion and the Return
-/// cannot land the prompt in one app and its Return in another. Without a
-/// PID there is no Return at all — the text is still inserted, since that is
-/// what Live Auto-Paste would have done without the trigger.
-package enum SendNowStep: Equatable, Sendable {
-    case insert(String, pid: Int32?)
-    case pressReturn(pid: Int32)
-}
-
-package enum SendNowPlan {
-    package static func steps(
-        for action: SendNowCommandAction,
-        targetPID: Int32?
-    ) -> [SendNowStep] {
-        switch action {
-        case .none:
-            return []
-        case .insertText(let text):
-            return [.insert(text, pid: targetPID)]
-        case .pressReturn:
-            guard let pid = targetPID else { return [] }
-            return [.pressReturn(pid: pid)]
-        case .insertTextAndPressReturn(let text):
-            guard let pid = targetPID else { return [.insert(text, pid: nil)] }
-            return [.insert(text, pid: pid), .pressReturn(pid: pid)]
-        }
-    }
-}

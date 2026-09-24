@@ -106,13 +106,23 @@ there is not.
   Return is pressed only in the PID the session pinned, only while that PID
   is frontmost (it never activates an app for a Return), never under Secure
   Keyboard Entry, and only once the hold-back stream has released every
-  word — a Return ahead of the last word would submit half a prompt. Live
-  text goes to whatever has focus, so `TextInsertionService` records the
-  frontmost PID at every live insertion, and the Return needs every one since
-  the previous Return to be the pinned PID (an unreadable one counts as
-  elsewhere). The segment is the backend's final, never the accumulator's
-  merge: that keeps partial words the final dropped and glues a disagreeing
-  partial onto it, and either can read as a trigger the final does not hold.
+  word — a Return ahead of the last word would submit half a prompt. Every
+  Live decision is taken when it is needed, from the app frontmost THEN
+  (terminal by bundle ID only); nothing sampled at session start or connect
+  time takes part, because focus can move in between (Codex round 2 on #494:
+  a verdict from before the connect and a PID from audio start sent both
+  text and Return to an editor). A segment is withheld only if a terminal is
+  frontmost at its first insertion. Live text goes to whatever has focus, so
+  `TextInsertionService` records the frontmost PID at every live insertion;
+  the Return goes to the frontmost terminal only when every one since the
+  last Return SENT is that PID (an unreadable one counts as elsewhere). The
+  record is cleared only by a Return sent or a new session, never by a
+  refusal: once text landed elsewhere, the trigger does nothing for the rest
+  of that dictation. Only a non-empty backend final can trigger; an empty
+  final or a promotion types the merged text as text. The accumulator's
+  merge is never parsed: it keeps partial words the final dropped and glues
+  a disagreeing partial onto it, and either can read as a trigger the final
+  does not hold.
   `SendNowResubmitLatch` refuses a submission equal to the previous one until
   a non-submitting final comes between: no backend names its segments, and
   partials cannot tell a repeat from a straggler, so "send it" twice in a row

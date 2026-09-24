@@ -11,6 +11,7 @@ final class SpokenSendWiringTests: XCTestCase {
     private static let terminalPID: pid_t = 4242
     private static let ghostty = "com.mitchellh.ghostty"
     private static let editor = "com.example.editor"
+    private static let editorPID: pid_t = 555
 
     override func tearDown() async throws {
         TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
@@ -205,8 +206,11 @@ final class SpokenSendWiringTests: XCTestCase {
         harness.frontmost.value = 777
         harness.viewModel.session.handle(event: .partialTranscript("run the tests send"))
         harness.viewModel.session.handle(event: .finalTranscript("run the tests send it"))
+        harness.stop()
 
-        XCTAssertEqual(harness.typedText, "run the tests")
+        // Not a terminal at the segment's first insertion: typed live as
+        // dictated, trigger words included.
+        XCTAssertEqual(harness.typedText, "run the tests send it")
         XCTAssertFalse(harness.events.value.contains { $0.hasPrefix("return:") })
     }
 
@@ -235,6 +239,53 @@ final class SpokenSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.events.value, ["return:\(Self.terminalPID)"])
     }
 
+    /// Codex review round 2 of #494 (High): the trigger was switched on by the
+    /// terminal verdict taken before the connection, while the target PID was
+    /// read at audio start. Focus moving to an editor while connecting sent
+    /// the text and the Return to the editor.
+    func testLiveFocusMovedToAnEditorWhileConnectingPressesNoReturn() {
+        let harness = makeLiveHarness(
+            frontmostPID: Self.editorPID,
+            commitTargetPID: Self.editorPID
+        )
+
+        harness.viewModel.session.handle(event: .partialTranscript("run the tests send it"))
+        harness.viewModel.session.handle(event: .finalTranscript("run the tests send it"))
+        harness.stop()
+
+        XCTAssertEqual(harness.typedText, "run the tests send it")
+        XCTAssertFalse(harness.events.value.contains { $0.hasPrefix("return:") })
+    }
+
+    /// Codex review round 2 of #494 (High): a rejected Return cleared the
+    /// record of where text went, so the next trigger passed and submitted the
+    /// terminal's own prompt.
+    func testLiveTextTypedElsewhereBlocksEveryLaterTrigger() {
+        let harness = makeLiveHarness()
+
+        harness.frontmost.value = 777
+        harness.viewModel.session.handle(event: .partialTranscript("notes for later"))
+        harness.viewModel.session.handle(event: .finalTranscript("notes for later"))
+        harness.frontmost.value = Self.terminalPID
+        harness.viewModel.session.handle(event: .partialTranscript("send"))
+        harness.viewModel.session.handle(event: .finalTranscript("send it"))
+        harness.viewModel.session.handle(event: .partialTranscript("send"))
+        harness.viewModel.session.handle(event: .finalTranscript("send now"))
+
+        XCTAssertFalse(harness.events.value.contains { $0.hasPrefix("return:") })
+    }
+
+    /// Codex review round 2 of #494 (Medium): an empty final parsed the merged
+    /// partials, so "send it" heard only in a partial pressed Return.
+    func testLiveEmptyFinalNeverTriggers() {
+        let harness = makeLiveHarness()
+
+        harness.viewModel.session.handle(event: .partialTranscript("run tests send it"))
+        harness.viewModel.session.handle(event: .finalTranscript(""))
+
+        XCTAssertFalse(harness.events.value.contains { $0.hasPrefix("return:") })
+    }
+
     func testLiveTriggerAlonePressesOnlyReturn() {
         let harness = makeLiveHarness()
 
@@ -245,21 +296,28 @@ final class SpokenSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.events.value, ["return:\(Self.terminalPID)"])
     }
 
-    func testLiveHeldPartialIsTypedWhenTheStopPromotesIt() {
+    /// A promotion is not a backend final: the withheld text is typed as
+    /// dictated and never triggers.
+    func testLiveWithheldPartialPromotedAtStopIsTypedAsTextWithoutReturn() {
         let harness = makeLiveHarness()
 
         harness.viewModel.session.handle(event: .partialTranscript("run the tests send it"))
+        XCTAssertEqual(harness.typedText, "")
         harness.viewModel.isDictating = false
         harness.viewModel.isFinalizingStop = true
         harness.viewModel.session.finishStoppedSession(promotePendingSegment: true)
 
-        XCTAssertEqual(harness.typedText, "run the tests")
-        XCTAssertEqual(harness.events.value.last, "return:\(Self.terminalPID)")
+        XCTAssertEqual(harness.typedText, "run the tests send it")
+        XCTAssertFalse(harness.events.value.contains { $0.hasPrefix("return:") })
     }
 
     func testLiveNonTerminalTargetTypesLiveEvenWithTheOptionOn() {
         TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
-        let harness = makeLiveHarness(frontmostBundleID: Self.editor)
+        let harness = makeLiveHarness(
+            frontmostBundleID: Self.editor,
+            frontmostPID: Self.editorPID,
+            commitTargetPID: Self.editorPID
+        )
 
         harness.viewModel.session.handle(event: .partialTranscript("run the tests send it"))
         XCTAssertEqual(harness.typedText, "run the tests send it")
@@ -345,14 +403,16 @@ final class SpokenSendWiringTests: XCTestCase {
 
     private func makeLiveHarness(
         enabled: Bool = true,
-        frontmostBundleID: String = SpokenSendWiringTests.ghostty
+        frontmostBundleID: String = SpokenSendWiringTests.ghostty,
+        frontmostPID: pid_t = SpokenSendWiringTests.terminalPID,
+        commitTargetPID: pid_t = SpokenSendWiringTests.terminalPID
     ) -> Harness {
         let settings = makeSettings(outputMode: .liveAutoPaste)
         settings.liveSpokenSendEnabled = enabled
         settings.replacementDictionaryEnabled = false
 
         let overlay = MockOverlayCoordinator()
-        overlay.commitTargetAppPID = Self.terminalPID
+        overlay.commitTargetAppPID = commitTargetPID
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlay,
@@ -360,9 +420,12 @@ final class SpokenSendWiringTests: XCTestCase {
         )
         viewModel.appConfigStore = MockAppConfigStore()
         retainForTestProcessLifetime(viewModel)
+        viewModel.dependencies.bundleIdentifier = { pid in
+            pid == Self.terminalPID ? Self.ghostty : Self.editor
+        }
 
         let events = Box<[String]>([])
-        let frontmost = Box<pid_t?>(Self.terminalPID)
+        let frontmost = Box<pid_t?>(frontmostPID)
         viewModel.textInsertion.debugConfigureInsertionHooks(
             unicodePoster: { chunk in
                 events.value.append("type:\(chunk)")

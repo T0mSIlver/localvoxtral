@@ -56,8 +56,10 @@ before it is typed, so with the option on each phrase appears when you finish
 it rather than word by word, and saying the same "… send it" phrase twice in a
 row sends it once. Neither mode presses Return in an app that is not a
 terminal, while Secure Keyboard Entry is on, or when the text could not be
-inserted into that terminal. Overlay Buffer recognizes a terminal only if it
-is a known one or listed in Settings → Terminals.
+inserted into that terminal. A terminal is recognized only if it is a known
+one or listed in Settings → Terminals. In Live Auto-Paste, once any text of a
+dictation lands in another app, "send it" does nothing until the dictation
+ends.
 
 ## The menu bar popover
 
