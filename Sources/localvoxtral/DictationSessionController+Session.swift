@@ -494,6 +494,7 @@ extension DictationSessionController {
             } else {
                 textInsertion.stopInsertionRetryTask()
             }
+            armSilenceAutoStopIfEnabled()
             if isOverlayBufferModeEnabled {
                 startOverlayBufferSession()
             } else {
@@ -647,6 +648,7 @@ extension DictationSessionController {
         context.closeRemoteHerdrForwards()
         cancelConnectTimeout()
         cancelRealtimeReconnect()
+        disarmSilenceAutoStop()
         finalizationWatchdogTask?.cancel()
         finalizationWatchdogTask = nil
         shortcuts.clearPushToTalkShortcutSessionAttempt()

@@ -654,6 +654,7 @@ final class DictationViewModel {
         audio.audioSendTask?.cancel()
         session.stopFinalizationTask?.cancel()
         session.connectTimeoutTask?.cancel()
+        session.silenceAutoStopTask?.cancel()
         session.reconnectTask?.cancel()
         session.recentFailureResetTask?.cancel()
         session.finalizationWatchdogTask?.cancel()

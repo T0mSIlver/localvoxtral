@@ -299,6 +299,16 @@ struct DictationSettingsPane: View {
                     }
                 }
 
+                SettingsFieldRow(title: "Stop dictating after silence") {
+                    Picker("", selection: $settings.overlayBufferSilenceAutoStop) {
+                        ForEach(SilenceAutoStop.allCases) { choice in
+                            Text(choice.displayName).tag(choice)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                }
+
                 SettingsFieldRow(
                     title: "Position",
                     help: "Drag the overlay anywhere on it to move it; "

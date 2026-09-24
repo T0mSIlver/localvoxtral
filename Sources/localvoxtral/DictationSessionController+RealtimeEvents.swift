@@ -158,6 +158,7 @@ extension DictationSessionController {
         }
 
         transcript.appendPartial(processedDelta)
+        noteTranscriptTextForSilenceAutoStop()
         if isLiveAutoPasteModeEnabled {
             textInsertion.enqueueRealtimeInsertion(processedDelta)
             if let accessibilityError = textInsertion.lastAccessibilityError {
@@ -174,11 +175,13 @@ extension DictationSessionController {
         if isFinalizingStop {
             realtimeFinalizationLastActivityAt = dependencies.clock.now()
         }
+        let overlayTextBeforeFinal = transcript.overlayDisplayText
 
         guard let finalized = transcript.applyFinal(processedText) else {
             refreshOverlayBufferSession()
             return
         }
+        noteFinalTextForSilenceAutoStop(overlayTextBefore: overlayTextBeforeFinal)
         statusText = activeStatusText
 
         if isLiveAutoPasteModeEnabled {
