@@ -131,6 +131,15 @@ enum TerminalTargetDetector {
         return verdict
     }
 
+    /// The same verdict for the target focused right now, without the
+    /// session-start log line: re-checked mid-session before a newline is
+    /// typed (`LiveTerminalNewlineGuard`).
+    static func isCurrentTargetTerminalLike(userBundleIDs: Set<String> = []) -> Bool {
+        decision(forBundleID: currentFrontmostBundleID(), userBundleIDs: userBundleIDs) {
+            probeFocusedElementLive()
+        }.isTerminalLike
+    }
+
     /// True when macOS Secure Keyboard Entry is active (e.g. Ghostty around
     /// password prompts, or enabled manually in Terminal.app/iTerm2). It
     /// blocks synthetic keyboard events, so dictated text silently lands

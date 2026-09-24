@@ -409,6 +409,16 @@ extension DictationSessionController {
 
     func configureLiveAutoPasteReplacementCorrectorForSession() {
         resetLiveSpokenSendForSession()
+        // The verdict below is taken once; focus can reach a terminal later.
+        textInsertion.setLiveLateTerminalProbe(
+            isLiveAutoPasteModeEnabled && !sessionTargetIsTerminalLike
+                ? { [settings] in
+                    TerminalTargetDetector.isCurrentTargetTerminalLike(
+                        userBundleIDs: settings.userTerminalAppBundleIDs
+                    )
+                }
+                : nil
+        )
         guard isLiveAutoPasteModeEnabled else {
             textInsertion.endLiveReplacementSession()
             return
