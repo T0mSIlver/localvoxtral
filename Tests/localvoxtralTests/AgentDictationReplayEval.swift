@@ -60,6 +60,10 @@ extension AgentDictationE2EEvalTests {
         var todayScore = DictationReplaySupport.ArmScore()
         var seconds = 0
         var failures = 0
+        // Per arm (day 0, today): what shows whether the arms really differ.
+        var requestsSent = [0, 0]
+        var requestsWithLearnedTerm = [0, 0]
+        var outputsChanged = [0, 0]
         for (index, entry) in entries.enumerated() {
             do {
                 let wav = try Data(contentsOf: audioStore.fileURL(for: entry.id))
@@ -75,8 +79,13 @@ extension AgentDictationE2EEvalTests {
                     configuration: polishConfiguration, configStore: configStore)
                 let reference = entry.finalText
                 transcriptScore.add(reference: reference, output: transcript, terms: terms)
-                dayZeroScore.add(reference: reference, output: dayZero, terms: terms)
-                todayScore.add(reference: reference, output: today, terms: terms)
+                dayZeroScore.add(reference: reference, output: dayZero.text, terms: terms)
+                todayScore.add(reference: reference, output: today.text, terms: terms)
+                for (arm, polish) in [(0, dayZero), (1, today)] {
+                    if polish.sent { requestsSent[arm] += 1 }
+                    if polish.carriedLearnedTerm { requestsWithLearnedTerm[arm] += 1 }
+                    if polish.text != transcript { outputsChanged[arm] += 1 }
+                }
                 print("replay [\(index + 1)/\(entries.count)] ok")
             } catch {
                 failures += 1
@@ -95,6 +104,12 @@ extension AgentDictationE2EEvalTests {
                 ("day 0", dayZeroScore),
                 ("today", todayScore),
             ]))
+        for (arm, name) in [(0, "day 0"), (1, "today")] {
+            print(
+                "replay: \(name): \(requestsSent[arm]) polish requests, "
+                    + "\(requestsWithLearnedTerm[arm]) carrying a learned term, "
+                    + "\(outputsChanged[arm]) outputs differ from the transcript")
+        }
         fflush(stdout)
         XCTAssertEqual(failures, 0, "every stored dictation replays")
     }
@@ -111,7 +126,7 @@ extension AgentDictationE2EEvalTests {
         speakerTerms: [String],
         configuration: LLMPolishingConfiguration,
         configStore: AppConfigStore
-    ) async throws -> String {
+    ) async throws -> ReplayPolish {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = true
         settings.polishingBackendMode = .externalURL
@@ -156,7 +171,22 @@ extension AgentDictationE2EEvalTests {
         if savedRecord?.status == DictationSessionStatus.llmFailed.rawValue {
             throw EvalInfraError("polish failed")
         }
-        return viewModel.transcript.currentDictationEventText
+        let request = await service.lastRequest
+        let requestText = request.map { ([$0.systemPrompt, $0.inputText] + $0.userPrompts).joined(separator: "\n") }
+        return ReplayPolish(
+            text: viewModel.transcript.currentDictationEventText,
+            sent: request != nil,
+            carriedLearnedTerm: requestText.map { text in
+                learnedTerms.contains { text.contains($0) }
+            } ?? false)
+    }
+
+    /// What one arm's polish did, for the diagnostics line: whether a request
+    /// went out, and whether a learned term was in it.
+    private struct ReplayPolish {
+        let text: String
+        let sent: Bool
+        let carriedLearnedTerm: Bool
     }
 
     private func makeReplayConfigStore() throws -> AppConfigStore {
