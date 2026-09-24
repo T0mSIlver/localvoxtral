@@ -182,6 +182,39 @@ final class SpokenSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.events.value.last, "return:\(Self.terminalPID)")
     }
 
+    /// #536: vLLM ended a generation mid-word, and the next one opened on
+    /// the rest of the word with no space. The terminal got "Pleas e help".
+    func testLiveWordSplitAcrossGenerationsIsTypedWhole() {
+        let harness = makeLiveHarness()
+
+        harness.viewModel.session.handle(event: .partialTranscript("So"))
+        harness.viewModel.session.handle(event: .partialTranscript(" I need you."))
+        harness.viewModel.session.handle(event: .partialTranscript(" Pleas"))
+        harness.viewModel.session.handle(event: .finalTranscript("So I need you. Pleas"))
+        harness.viewModel.session.handle(event: .partialTranscript("e help"))
+        harness.viewModel.session.handle(event: .partialTranscript(" me constr"))
+        harness.viewModel.session.handle(event: .finalTranscript("e help me constr"))
+        // The next generation is cut short by the stop and promoted.
+        harness.viewModel.session.handle(event: .partialTranscript("uct"))
+        harness.viewModel.isDictating = false
+        harness.viewModel.isFinalizingStop = true
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: true)
+
+        XCTAssertEqual(harness.typedText, "So I need you. Please help me construct")
+    }
+
+    func testLiveLowercaseSegmentAfterPunctuationKeepsItsSpace() {
+        let harness = makeLiveHarness()
+
+        harness.viewModel.session.handle(event: .partialTranscript("first"))
+        harness.viewModel.session.handle(event: .partialTranscript(" part."))
+        harness.viewModel.session.handle(event: .finalTranscript("first part."))
+        harness.viewModel.session.handle(event: .partialTranscript("second part"))
+        harness.viewModel.session.handle(event: .finalTranscript("second part"))
+
+        XCTAssertEqual(harness.typedText, "first part. second part")
+    }
+
     /// Codex review of #494 (High): the text went to whatever app had focus,
     /// the Return to the session's terminal. A segment typed elsewhere, then
     /// "send it" with the terminal refocused, submitted the terminal's own
