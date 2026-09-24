@@ -299,10 +299,7 @@ struct DictationSettingsPane: View {
                     }
                 }
 
-                SettingsFieldRow(
-                    title: "Stop when no new text",
-                    help: "Tap sessions only. A held shortcut stops on release."
-                ) {
+                SettingsFieldRow(title: "Stop dictating after silence") {
                     Picker("", selection: $settings.overlayBufferSilenceAutoStop) {
                         ForEach(SilenceAutoStop.allCases) { choice in
                             Text(choice.displayName).tag(choice)
