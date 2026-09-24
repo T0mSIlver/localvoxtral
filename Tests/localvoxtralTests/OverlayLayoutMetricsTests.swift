@@ -291,6 +291,73 @@ final class OverlayLayoutMetricsTests: XCTestCase {
             )
         }
     }
+
+    /// Field report 2026-09-24: once the buffer scrolled, lines came out with
+    /// their last two words alone on the next line. The body's `ScrollView`
+    /// takes a scroller's width off its content while scrolling, so a line
+    /// broken for the full width got wrapped again. The same wrapped text must
+    /// render one line per line inside the real overlay while it scrolls.
+    func testSelfWrappedLinesRenderAsOneLineEachWhileScrolling() {
+        let transcript = String(
+            repeating:
+                "censé marcher, ouais, en vrai, l'avantage, c'est que c'est super rapide, quoi ça apparaît vraiment instantanément, ça apparaît douze mots à la fois carrément ",
+            count: 3)
+
+        for fontSize in [
+            OverlayLayoutMetrics.minimumBodyFontSize,
+            OverlayLayoutMetrics.defaultBodyFontSize,
+            16,  // the reported screenshot's size
+            OverlayLayoutMetrics.maximumBodyFontSize,
+        ] {
+            let metrics = OverlayLayoutMetrics(bodyFontSize: fontSize)
+            var wrapper = metrics.makeStableLineWrapper()
+            let wrapped = wrapper.wrapped(transcript)
+            let lineCount = wrapped.split(separator: "\n").count
+            XCTAssertGreaterThan(
+                lineCount, metrics.visibleLines, "the sample must scroll at \(fontSize)pt")
+
+            let placeholder = Array(repeating: "Xg", count: lineCount).joined(separator: "\n")
+            XCTAssertEqual(
+                scrollDocumentHeight(rendering: wrapped, metrics: metrics),
+                scrollDocumentHeight(rendering: placeholder, metrics: metrics),
+                "SwiftUI re-wrapped a line in the scrolling overlay at \(fontSize)pt: \(wrapped)"
+            )
+        }
+    }
+
+    /// Height of the body's scroll document when the whole overlay renders
+    /// `text` at the panel width the controller gives it.
+    private func scrollDocumentHeight(rendering text: String, metrics: OverlayLayoutMetrics) -> CGFloat {
+        let hosting = NSHostingView(
+            rootView: DictationOverlayView(
+                phase: .buffering, text: text, errorMessage: nil, secureInputActive: false,
+                metrics: metrics))
+        hosting.frame = NSRect(x: 0, y: 0, width: metrics.panelWidth, height: metrics.maximumPanelHeight)
+        let window = NSWindow(
+            contentRect: hosting.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = hosting
+        hosting.layoutSubtreeIfNeeded()
+        // The scroller takes its width from the content on the next run-loop
+        // turn, not in the first layout pass. `.distantPast` handles what is
+        // already pending and returns; nothing waits on the clock.
+        RunLoop.main.run(mode: .default, before: .distantPast)
+        hosting.layoutSubtreeIfNeeded()
+        guard let scrollView = Self.firstScrollView(in: hosting),
+            let document = scrollView.documentView
+        else {
+            XCTFail("the overlay body has no NSScrollView")
+            return 0
+        }
+        return document.frame.height
+    }
+
+    private static func firstScrollView(in view: NSView) -> NSScrollView? {
+        if let scrollView = view as? NSScrollView { return scrollView }
+        for subview in view.subviews {
+            if let found = firstScrollView(in: subview) { return found }
+        }
+        return nil
+    }
 }
 
 // MARK: - Scroll-to-bottom reaches the real bottom (field report 2026-09-18)
