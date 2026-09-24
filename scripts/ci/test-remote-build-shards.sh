@@ -27,8 +27,8 @@ command="$1"
 printf '%s\n' "$command" >>"$LV_TEST_SSH_LOG"
 case "$command" in
   reap\ *|gc|mkdir\ -p\ *) exit 0 ;;
-  *"swift build --build-tests") echo "Build complete!"; exit 0 ;;
-  *"swift test list --skip-build")
+  *"swift build --build-tests --build-system native") echo "Build complete!"; exit 0 ;;
+  *"swift test list --skip-build --build-system native")
     printf '%s\n' localvoxtralTests.AlphaTests/testA localvoxtralTests.BetaTests/testB \
       localvoxtralTests.GammaTests/testC localvoxtralTests.HerdrIntegrationTests/testD
     exit 0
@@ -111,7 +111,7 @@ last_shard_end="$(grep -n '^shard ended$' "$ssh_log" | tail -n 1 | cut -d: -f1)"
 # Any extra argument keeps the one plain `swift test`.
 : >"$ssh_log"
 env "${common_env[@]}" "$REMOTE_BUILD" test --filter AlphaTests >/dev/null 2>&1 || true
-grep -q "&& swift test --skip RealtimeAPIVLLMIntegrationTests .* --filter AlphaTests *$" "$ssh_log" \
+grep -q "&& swift test --build-system native --skip RealtimeAPIVLLMIntegrationTests .* --filter AlphaTests *$" "$ssh_log" \
   || fail "test with arguments must stay one swift test: $(cat "$ssh_log")"
 if grep -q "swift build --build-tests" "$ssh_log"; then fail "test with arguments ran shards"; fi
 
