@@ -1105,6 +1105,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         let service = LLMPolishingService()
         for profile in [PolishPromptProfile.standard, PolishPromptProfile.agent] {
             let templates = configStore.loadLLMPromptTemplates(profile: profile)
+                .withReferenceGuide()
             let request = PolishPromptWarmup.request(templates: templates)
             for _ in 0..<3 {
                 do {

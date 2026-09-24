@@ -844,6 +844,36 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertEqual(run.status, 0, run.output)
     }
 
+    /// The ablation's "current production" arms send the reference guide the
+    /// app appends to every system prompt (#490). The script renders it from
+    /// the Swift sources; this pins that rendering to the constant.
+    func testAblationRendersTheReferenceGuideExactlyAsTheApp() throws {
+        let script = repoRoot.appendingPathComponent("scripts/ablate-agent-eval.py")
+        let expected = FileManager.default.temporaryDirectory
+            .appendingPathComponent("reference-guide-\(UUID().uuidString).txt")
+        try PolishReferenceGuide.systemSection.write(to: expected, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: expected) }
+        let snippet = #"""
+        import importlib.util, sys
+        spec = importlib.util.spec_from_file_location("agent_ablation", sys.argv[1])
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        expected = open(sys.argv[2], encoding="utf-8").read()
+        assert module.reference_guide() == expected, module.reference_guide()
+        system = module.production_system_prompt("llm_system_prompt.toml")
+        assert system == module.bundled_prompt_content("llm_system_prompt.toml") + "\n\n" + expected + "\n"
+        record = {"userPrompts": ["p",
+            "[Repository vocabulary]\n- A.swift: a swift\n\n"
+            + "[Candidate terms: maybe said, use one only where it fits better]\n- Foo\n\n"
+            + "Working text:\nx"]}
+        assert module.has_recorded_context_mapping(record)
+        assert module.recorded_context_mappings(record) == [("A.swift", "a swift")]
+        """#
+        let run = try runPython(["-c", snippet, script.path, expected.path])
+        XCTAssertEqual(run.status, 0, run.output)
+    }
+
     func testAblationRendersCurrentPromptsAndAttributesTechnicalTermFailures() throws {
         let script = repoRoot.appendingPathComponent("scripts/ablate-agent-eval.py")
         let snippet = #"""

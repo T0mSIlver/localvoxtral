@@ -332,8 +332,10 @@ enum StopCommitCoordinator {
         )
     }
 
-    /// The templates the request is rendered from: the profile's pair, with
-    /// the user's About-you block and terms.
+    /// The templates the request is rendered from: the profile's pair, the
+    /// reference guide, then the user's About-you block and terms. The one
+    /// place this is assembled; the prompt-cache warmup calls it too, so the
+    /// fixed start it warms is the one real requests send.
     @MainActor
     static func promptTemplates(
         profile: PolishPromptProfile,
@@ -341,6 +343,7 @@ enum StopCommitCoordinator {
         appConfigStore: any AppConfigServing
     ) -> LLMPromptTemplates {
         appConfigStore.loadLLMPromptTemplates(profile: profile)
+            .withReferenceGuide()
             .withSpeakerProfile(settings.polishSpeakerProfile, terms: settings.polishSpeakerTerms)
     }
 

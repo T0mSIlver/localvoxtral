@@ -33,7 +33,11 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         XCTAssertEqual(record.text.polishedOutput, "polished output text")
         XCTAssertEqual(record.text.committedText, "polished output text")
         XCTAssertFalse(record.text.userPrompts.isEmpty, "the rendered prompt is the payload")
-        XCTAssertEqual(record.text.systemPrompt, "system")
+        XCTAssertEqual(
+            record.text.systemPrompt,
+            "system\n\n\(PolishReferenceGuide.systemSection)\n",
+            "the capture holds the system prompt as sent, reference guide included"
+        )
 
         // Session facts.
         XCTAssertEqual(record.session.outputMode, DictationOutputMode.overlayBuffer.rawValue)

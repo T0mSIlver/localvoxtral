@@ -1127,59 +1127,44 @@ package enum RepoVocabularyMatcher {
         !term.isEmpty && !term.allSatisfy { $0 == "-" }
     }
 
-    /// Header for entries harvested from the focused terminal's git repo.
-    package static let repositoryVocabularyHeader =
-        "Repository vocabulary (exact file names and identifiers from the project the "
-        + "speaker is working in; use them to correct near-miss spellings of the terms "
-        + "below, never to add new content):"
+    /// Headers of the vocabulary lists. Each is a short label; what the list
+    /// is and how to use it is explained once in the system prompt
+    /// (`PolishReferenceGuide`), which the helper keeps cached, instead of on
+    /// every request.
+    ///
+    /// Entries harvested from the focused terminal's git repo.
+    package static let repositoryVocabularyHeader = "[Repository vocabulary]"
 
-    /// Header for entries harvested from the user's clipboard excerpt (the
-    /// clipboard polish-context feature): same rendering, honest provenance.
-    package static let clipboardVocabularyHeader =
-        "Clipboard vocabulary (exact file names and identifiers from text the user "
-        + "recently copied; use them to correct near-miss spellings of the terms "
-        + "below, never to add new content):"
+    /// Entries harvested from the user's clipboard excerpt (the clipboard
+    /// polish-context feature): same rendering, honest provenance.
+    package static let clipboardVocabularyHeader = "[Clipboard vocabulary]"
 
-    /// Header for entries harvested from the terminal screen the speaker was
-    /// looking at (the terminal screen polish-context feature): same rendering,
-    /// honest provenance. Used for BOTH the `render` and `vocabularyOnly`
-    /// reconciliation outcomes — in the latter the excerpt itself is withheld,
-    /// but these entries are still terms the user could see while speaking.
-    package static let terminalScreenVocabularyHeader =
-        "Terminal screen vocabulary (exact file names and identifiers visible on the "
-        + "speaker's terminal screen; use them to correct near-miss spellings of the "
-        + "terms below, never to add new content):"
+    /// Entries harvested from the terminal screen the speaker was looking at.
+    /// Used for BOTH the `render` and `vocabularyOnly` reconciliation
+    /// outcomes — in the latter the excerpt itself is withheld, but these
+    /// entries are still terms the user could see while speaking.
+    package static let terminalScreenVocabularyHeader = "[Terminal screen vocabulary]"
 
-    /// Header for entries harvested from the joined Claude Code session's own
-    /// state — the request the speaker previously sent that agent and the files
-    /// it touched. Same rendering, honest provenance.
-    package static let claudeSessionVocabularyHeader =
-        "Coding agent session vocabulary (exact file names and identifiers from the "
-        + "speaker's open coding-agent session; use them to correct near-miss spellings "
-        + "of the terms below, never to add new content):"
+    /// Entries harvested from the joined Claude Code session's own state — the
+    /// request the speaker previously sent that agent and the files it touched.
+    package static let claudeSessionVocabularyHeader = "[Coding agent session vocabulary]"
 
-    /// Header for entries the app remembers from this project's earlier
-    /// dictations (`LearnedTerms`). Same rendering, honest provenance: the
-    /// speaker has said these words before and something on their machine
-    /// spelled them this way at the time.
-    package static let learnedVocabularyHeader =
-        "Learned vocabulary (exact spellings the speaker has used before in this "
-        + "project; use them to correct near-miss spellings of the terms below, never "
-        + "to add new content):"
+    /// Entries the app remembers from this project's earlier dictations
+    /// (`LearnedTerms`): the speaker has said these words before and something
+    /// on their machine spelled them this way at the time.
+    package static let learnedVocabularyHeader = "[Learned vocabulary]"
 
-    /// Header for the terms the sound-alike tiers nominated. The matcher only
-    /// knows that something in the transcript sounds like one of them; whether
-    /// the speaker meant it depends on the sentence, which is the model's call.
-    /// The heard span is deliberately NOT rendered: shown as `"heard" -> "term"`
-    /// pairs, models applied the pair as an instruction (replay 2026-09-18:
-    /// five wrong insertions with pairs, three with this list, none without).
+    /// The terms the sound-alike tiers nominated. The matcher only knows that
+    /// something in the transcript sounds like one of them; whether the speaker
+    /// meant it depends on the sentence, which is the model's call. The heard
+    /// span is deliberately NOT rendered: shown as `"heard" -> "term"` pairs,
+    /// models applied the pair as an instruction (replay 2026-09-18: five wrong
+    /// insertions with pairs, three with this list, none without). The rule for
+    /// using them is `PolishReferenceGuide.candidateTerms`, kept word for word;
+    /// the label repeats its gist next to the terms, where a small model reads
+    /// it, so the list never passes for spellings to apply.
     package static let verificationCandidatesHeader =
-        "Terms from the speaker's current project, screen, clipboard or coding-agent "
-        + "session, or ones they have used before in this project. "
-        + "The speaker may or may not have said any of them. Use one ONLY where the text contains a word or "
-        + "phrase that sounds like it AND makes less sense than the term would in that "
-        + "sentence; write it exactly as spelled here. Ordinary words that already make "
-        + "sense stay as they are:"
+        "[Candidate terms: maybe said, use one only where it fits better]"
 
 
     /// Renders matched entries as a prompt section mirroring

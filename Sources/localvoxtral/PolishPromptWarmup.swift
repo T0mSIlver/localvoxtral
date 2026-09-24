@@ -60,19 +60,17 @@ enum PolishPromptWarmup {
         else {
             return nil
         }
-        let speakerProfile = settings.polishSpeakerProfile
-        let speakerTerms = settings.polishSpeakerTerms
         let standardRequest = request(
-            templates: appConfigStore.loadLLMPromptTemplates()
-                .withSpeakerProfile(speakerProfile, terms: speakerTerms)
+            templates: StopCommitCoordinator.promptTemplates(
+                profile: .standard, settings: settings, appConfigStore: appConfigStore)
         )
         var requests: [ProfiledRequest] = [
             ProfiledRequest(profile: .standard, request: standardRequest)
         ]
         if settings.agentPolishProfileEnabled {
             let agentRequest = request(
-                templates: appConfigStore.loadLLMPromptTemplates(profile: .agent)
-                    .withSpeakerProfile(speakerProfile, terms: speakerTerms)
+                templates: StopCommitCoordinator.promptTemplates(
+                    profile: .agent, settings: settings, appConfigStore: appConfigStore)
             )
             if !sharesCheckpointedPrefix(agentRequest, standardRequest) {
                 requests.append(ProfiledRequest(profile: .agent, request: agentRequest))
