@@ -846,7 +846,7 @@ final class SettingsStore {
         {
             speechdCacheLimit = parsedCacheLimit
         } else {
-            speechdCacheLimit = .auto
+            speechdCacheLimit = .defaultLimit
         }
 
         if let storedStepCadence = defaults.string(forKey: Keys.speechdStepCadence),
@@ -854,7 +854,7 @@ final class SettingsStore {
         {
             speechdStepCadence = parsedStepCadence
         } else {
-            speechdStepCadence = .auto
+            speechdStepCadence = .defaultCadence
         }
 
         // A repo that left the catalog (or was hand-written into the plist)

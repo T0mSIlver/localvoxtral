@@ -214,7 +214,7 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(supervisorFactory.createdConfigurations.count, 1)
     }
 
-    func testSpeechdCacheLimitAutoOmitsFlagAndPresetsAppendMegabytes() async throws {
+    func testSpeechdCacheLimitNilOmitsFlagAndPresetsAppendMegabytes() async throws {
         let option = SpeechModelCatalog.defaultOption
         let baseArguments = [
             "--model", option.repoID,
@@ -223,7 +223,7 @@ final class BackendManagerTests: XCTestCase {
             "--parent-pid", "\(Darwin.getpid())",
         ]
 
-        // Auto: identical to the base argument list, no cache-limit flag.
+        // No limit from settings: identical to the base argument list, no cache-limit flag.
         let autoConfiguration = try await speechdConfiguration(cacheLimitMB: nil)
         XCTAssertEqual(autoConfiguration.arguments, baseArguments)
 
@@ -238,7 +238,7 @@ final class BackendManagerTests: XCTestCase {
         }
     }
 
-    func testSpeechdStepCadenceAutoOmitsFlagAndPresetsAppendMilliseconds() async throws {
+    func testSpeechdStepCadenceNilOmitsFlagAndPresetsAppendMilliseconds() async throws {
         let option = SpeechModelCatalog.defaultOption
         let baseArguments = [
             "--model", option.repoID,
@@ -247,7 +247,7 @@ final class BackendManagerTests: XCTestCase {
             "--parent-pid", "\(Darwin.getpid())",
         ]
 
-        // Auto: identical to the base argument list, no step-cadence flag.
+        // No cadence from settings: identical to the base argument list, no step-cadence flag.
         let autoConfiguration = try await speechdConfiguration(stepCadenceMs: nil)
         XCTAssertEqual(autoConfiguration.arguments, baseArguments)
 

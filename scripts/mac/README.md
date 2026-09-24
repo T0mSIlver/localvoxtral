@@ -20,6 +20,20 @@ metal` succeeds even when the component is missing (the shim exists), so
 only an actual invocation (`xcrun metal --version`) proves it works. Runs
 as a normal user, no sudo needed.
 
+After a macOS upgrade (seen on 27.0, 2026-09-24) the toolchain image can end
+up attached once, under the account that asked first. `mount | grep
+DVTDownloads` then shows it in the runner user's
+`~/Library/Developer/DVTDownloads/...`, and `builder` fails with "Failed to
+remount the Metal Toolchain … you don't have permission" because it cannot
+enter that home. Re-downloading does not help. Detach that mount, then clear
+`builder`'s xcrun cache; both accounts then use the system cryptex copy:
+
+```bash
+diskutil eject <the mount point that line printed>
+sudo -u builder -i xcrun --kill-cache
+sudo -u builder -i xcrun metal --version   # expect "Apple metal version"
+```
+
 ## herdr, for the live integration lane
 
 `./scripts/remote-build.sh integration-herdr` (and CI's conditional herdr

@@ -21,6 +21,15 @@ public enum StreamingSpeechBenchmark {
             seconds: benchmark.seconds,
             wavPath: benchmark.wavPath
         )
+        warmUp(
+            engine: engine,
+            audio: audio,
+            options: options,
+            cadenceMilliseconds: benchmark.cadenceMilliseconds
+        )
+        // The warm-up session is gone by now; clear after the drop, as the server
+        // does between dictations, so its buffers do not start the measured one.
+        Memory.clearCache()
         // Same utterance limit the server applies, so a long benchmark measures what a
         // long dictation costs instead of an engine that silently stopped decoding (#314).
         let session = engine.makeSession(
@@ -32,6 +41,16 @@ public enum StreamingSpeechBenchmark {
             sampleRate: sampleRate
         )
         var records: [StepRecord] = []
+        var timeline = RealtimeStepTimeline(sampleRate: sampleRate)
+        func step(_ batch: [Float], at audioSamples: Int) {
+            let record = measureStep(session: session, samples: batch, at: audioSamples)
+            records.append(record)
+            timeline.record(
+                audioSamples: audioSamples,
+                latencySeconds: record.latencyMilliseconds / 1_000,
+                transcript: session.text
+            )
+        }
         // Early marks show warm-up; one mark per minute after that shows long-session drift.
         let marks = ([5, 15, 30, 60] + Array(stride(from: 120, through: benchmark.seconds, by: 60)))
             .filter { $0 <= benchmark.seconds }
@@ -46,7 +65,7 @@ public enum StreamingSpeechBenchmark {
             appendedSamples += chunk.count
             for batch in batcher.append(chunk) {
                 steppedSamples += batch.count
-                records.append(measureStep(session: session, samples: batch, at: steppedSamples))
+                step(batch, at: steppedSamples)
             }
             offset = end
 
@@ -66,7 +85,7 @@ public enum StreamingSpeechBenchmark {
         let remainder = batcher.flushRemainder()
         if !remainder.isEmpty {
             steppedSamples += remainder.count
-            records.append(measureStep(session: session, samples: remainder, at: steppedSamples))
+            step(remainder, at: steppedSamples)
         }
 
         // A nonstandard duration/cadence can put its final remainder exactly at a mark. Reprint
@@ -80,10 +99,48 @@ public enum StreamingSpeechBenchmark {
             )
             nextMarkIndex += 1
         }
+        printTimeline(timeline, records: records)
         print(
             "BENCH done seconds=\(benchmark.seconds) limit_s=\(options.utteranceLimit.seconds) "
                 + "tokens=\(session.decodedTokenCount) "
                 + "stopped=\(session.utteranceStop.map(String.init(describing:)) ?? "none")"
+        )
+    }
+
+    /// The first steps after a load compile kernels and can take seconds, which only the
+    /// first dictation after the helper starts pays. A throwaway session absorbs that, so
+    /// the measured session shows what every later dictation costs; the warm-up's own
+    /// numbers are printed as that first dictation's.
+    private static func warmUp(
+        engine: any SpeechASREngine,
+        audio: [Float],
+        options: SpeechdLaunchOptions,
+        cadenceMilliseconds: Int
+    ) {
+        let warmupSamples = min(audio.count, 3 * sampleRate)
+        let session = engine.makeSession(
+            transcriptionDelayMs: options.transcriptionDelayMs,
+            utteranceLimit: options.utteranceLimit
+        )
+        var batcher = StepBatcher(cadenceMilliseconds: cadenceMilliseconds, sampleRate: sampleRate)
+        var timeline = RealtimeStepTimeline(sampleRate: sampleRate)
+        var stepped = 0
+        var slowest = 0.0
+        for batch in batcher.append(Array(audio.prefix(warmupSamples))) {
+            stepped += batch.count
+            let record = measureStep(session: session, samples: batch, at: stepped)
+            slowest = max(slowest, record.latencyMilliseconds)
+            timeline.record(
+                audioSamples: stepped,
+                latencySeconds: record.latencyMilliseconds / 1_000,
+                transcript: session.text
+            )
+        }
+        session.finish()
+        let firstText = timeline.firstTextSeconds.map { String(format: "%.3f", $0) } ?? "none"
+        print(
+            String(format: "BENCH warmup seconds=3 slowest_step_ms=%.1f ", slowest)
+                + "first_text_s=\(firstText)"
         )
     }
 
@@ -109,6 +166,37 @@ public enum StreamingSpeechBenchmark {
             latencyMilliseconds: milliseconds,
             memory: Memory.snapshot()
         )
+    }
+
+    /// What the Engines pane's two settings promise: the memory limit bounds what the
+    /// helper holds (weights, working set and the buffer cache together), and the step
+    /// interval decides how soon words appear.
+    private static func printTimeline(_ timeline: RealtimeStepTimeline, records: [StepRecord]) {
+        let bytesPerMB = 1024.0 * 1024.0
+        let footprint = records.map { $0.memory.activeMemory + $0.memory.cacheMemory }.max() ?? 0
+        let cache = records.map(\.memory.cacheMemory).max() ?? 0
+        let peak = records.last?.memory.peakMemory ?? 0
+        let words = timeline.wordAppearanceSeconds
+        let meanStep = records.map(\.latencyMilliseconds).reduce(0, +)
+            / Double(max(1, records.count))
+        let firstText = timeline.firstTextSeconds.map { String(format: "%.3f", $0) } ?? "none"
+        print(
+            String(
+                format:
+                    "BENCH timeline steps=%d mean_step_ms=%.3f max_lag_ms=%.1f "
+                    + "first_text_s=\(firstText) words=%d peak_mb=%.1f max_cache_mb=%.1f "
+                    + "max_footprint_mb=%.1f",
+                records.count,
+                meanStep,
+                timeline.maxLagSeconds * 1_000,
+                words.count,
+                Double(peak) / bytesPerMB,
+                Double(cache) / bytesPerMB,
+                Double(footprint) / bytesPerMB
+            )
+        )
+        // Word k's appearance time, comparable across runs of one model on the same audio.
+        print("BENCH words_s=" + words.map { String(format: "%.3f", $0) }.joined(separator: ","))
     }
 
     private static func printMark(

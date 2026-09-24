@@ -52,7 +52,10 @@ set -euo pipefail
 #                  run keeps decoding past the helper's own utterance limit),
 #                  and an HF model repo from the catalog (default = the
 #                  catalog default; its weights must already be in the shared
-#                  cache, which integration-speechd provisions);
+#                  cache, which integration-speechd provisions), and the
+#                  audio: `noise` (default, synthetic) or `speech` (a passage
+#                  from the Mac's system voice, needed for the time-to-first-
+#                  text and word timings to mean anything);
 #                  requires a prior `package`
 #     eval-llm     default-polish-prompt eval against a live chat/completions
 #                  server (the bundled polishd test service by default);
@@ -538,8 +541,8 @@ case "$CMD" in
   speechd-bench)
     # The SSH gate does not allow arbitrary packaged-binary execution. A marker-gated
     # root XCTest launches the xcodebuild-produced helper and relays its BENCH output.
-    if [[ $# -gt 5 ]]; then
-      echo "speechd-bench accepts optional seconds, cadence-ms, cache-limit-mb, max-utterance-seconds, and model arguments" >&2
+    if [[ $# -gt 6 ]]; then
+      echo "speechd-bench accepts optional seconds, cadence-ms, cache-limit-mb, max-utterance-seconds, model, and audio arguments" >&2
       exit 1
     fi
     SPEECHD_BENCH_SECONDS="${1:-60}"
@@ -549,6 +552,7 @@ case "$CMD" in
     # lifts it to the run length, so a long run measures decoding rather than dead air.
     SPEECHD_BENCH_MAX_UTTERANCE="${4:-$SPEECHD_BENCH_SECONDS}"
     SPEECHD_BENCH_MODEL="${5:-}"
+    SPEECHD_BENCH_AUDIO="${6:-noise}"
     if [[ ! "$SPEECHD_BENCH_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
       echo "speechd-bench seconds must be a positive integer" >&2
       exit 1
@@ -569,6 +573,10 @@ case "$CMD" in
       echo "speechd-bench model must be an owner/name Hugging Face repo id" >&2
       exit 1
     fi
+    if [[ "$SPEECHD_BENCH_AUDIO" != noise && "$SPEECHD_BENCH_AUDIO" != speech ]]; then
+      echo "speechd-bench audio must be noise or speech" >&2
+      exit 1
+    fi
     SPEECHD_BENCH_MARKER="$ROOT_DIR/.speechd-bench-enable.json"
     trap 'cleanup_transient_marker "$SPEECHD_BENCH_MARKER"' EXIT
     # The optional fields are omitted rather than nulled, so the test's decoder
@@ -579,6 +587,9 @@ case "$CMD" in
     fi
     if [[ -n "$SPEECHD_BENCH_MODEL" ]]; then
       SPEECHD_BENCH_OPTIONAL+=",\"model\":\"$SPEECHD_BENCH_MODEL\""
+    fi
+    if [[ "$SPEECHD_BENCH_AUDIO" == speech ]]; then
+      SPEECHD_BENCH_OPTIONAL+=",\"audio\":\"speech\""
     fi
     printf '{"helperPath":"%s","seconds":%s,"cadenceMilliseconds":%s,"maxUtteranceSeconds":%s%s}\n' \
       "dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd" \
