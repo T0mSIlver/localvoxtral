@@ -91,7 +91,11 @@ and order it with blocked-by links, not prose.
 - Session-path change (view model start/stop, realtime clients, merging,
   insertion, overlay commit): run the e2e dictation check and paste its lines
   (`docs/agent/test-tiers.md`). It is the only check where the packaged app
-  dictates.
+  dictates, and it holds the Mac and the owner's keyboard: dispatch it only
+  with `scripts/ui-smoke-dispatch.sh`, once per PR (per stack, from the top),
+  after review fixes and a green `build-test`. The PR body quotes its
+  `--dry-run` `path:` line. A NOT RUN or lost-focus red goes in Proof for the
+  owner, not into a second dispatch.
 - Live lanes run only on a lane-filter path match or a marker
   (`[run-stt-integration]`, `[run-llm-eval]`, `[run-speechd-integration]`,
   `[run-herdr-integration]`) in the PR body or head commit when the run is
