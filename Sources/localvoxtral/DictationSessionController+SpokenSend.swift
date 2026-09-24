@@ -29,14 +29,14 @@ extension DictationSessionController {
             Log.dictation.notice("spoken send: no target app; trigger kept as text")
             return nil
         }
-        let verdict = TerminalTargetDetector.verdict(
-            forBundleID: dependencies.bundleIdentifier(pid),
-            userBundleIDs: settings.userTerminalAppBundleIDs
-        )
-        guard verdict.isTerminalLike else {
-            Log.dictation.notice(
-                "spoken send: target is not a terminal (\(verdict.reason.rawValue, privacy: .public)); trigger kept as text"
-            )
+        // The commit target's own bundle ID, on the built-in list or the
+        // user's Settings > Terminals list. No AX probe: it reads the element
+        // focused now, which need not belong to this PID.
+        let bundleID = dependencies.bundleIdentifier(pid)
+        let isTerminal = TerminalTargetDetector.isTerminalLikeBundleID(bundleID)
+            || bundleID.map(settings.userTerminalAppBundleIDs.contains) == true
+        guard isTerminal else {
+            Log.dictation.notice("spoken send: target is not on the terminal list; trigger kept as text")
             return nil
         }
         guard !TerminalTargetDetector.isSecureKeyboardEntryEnabled() else {
@@ -85,35 +85,28 @@ extension DictationSessionController {
         Log.dictation.notice("spoken send: on; each segment is typed when its final arrives")
     }
 
-    /// A final of a Live Auto-Paste session with the trigger on. `merged` is
-    /// the accumulator's segment, built for live typing: when partials and
-    /// the final disagree it glues them together ("send" + "Send it." gives
-    /// "send Send it."), because typed partials cannot be taken back. Here
-    /// none were typed, so the backend's final is the segment, unless the
-    /// held partials ran past it: then the merge starts with the final and
-    /// keeps the words after it.
+    /// A final of a Live Auto-Paste session with the trigger on. No partial
+    /// was typed, so the backend's final is the segment: it alone decides
+    /// whether there is a trigger. `merged` (the accumulator's segment) is
+    /// used only for a final with no text. The accumulator merges for live
+    /// typing, where typed partials cannot be taken back: it glues a partial
+    /// that disagrees with the final onto it ("send" + "Send it."), and keeps
+    /// partial words the final dropped ("run tests send it" + "run tests").
+    /// Either would read as a trigger the final does not hold. The cost:
+    /// words only a partial had are not typed.
     func deliverLiveSpokenSendFinal(_ finalText: String, merged: String) {
         let final = finalText.trimmed
-        guard !final.isEmpty else {
-            deliverLiveSpokenSendSegment(merged, finalText: merged)
-            return
-        }
-        let mergedWords = SendNowCommandParser.normalizedSegment(merged)
-        let finalWords = SendNowCommandParser.normalizedSegment(final)
-        let mergedExtendsFinal = mergedWords == finalWords
-            || mergedWords.hasPrefix(finalWords + " ")
-        deliverLiveSpokenSendSegment(mergedExtendsFinal ? merged : final, finalText: final)
+        deliverLiveSpokenSendSegment(final.isEmpty ? merged : final)
     }
 
-    /// One finalized segment of a Live Auto-Paste session with the trigger
-    /// on. None of it was typed while it was spoken. `finalText` is the
-    /// backend's final as it arrived, which the resubmit latch compares.
-    func deliverLiveSpokenSendSegment(_ segment: String, finalText: String) {
+    /// One segment of a Live Auto-Paste session with the trigger on. None of
+    /// it was typed while it was spoken.
+    func deliverLiveSpokenSendSegment(_ segment: String) {
         let action = SendNowCommandParser.parse(segment)
         if action.pressesReturn {
             // Claimed before anything is typed or pressed: a repeated final
             // must not do either a second time.
-            guard spokenSendLatch.claimSubmission(of: finalText) else {
+            guard spokenSendLatch.claimSubmission(of: segment) else {
                 Log.dictation.notice("spoken send: repeated final ignored")
                 return
             }
@@ -140,6 +133,18 @@ extension DictationSessionController {
                 textInsertion.flushFinalLiveReplacementCorrections()
                 guard !textInsertion.hasPendingInsertionText else {
                     Log.dictation.notice("spoken send: text not delivered yet; no Return")
+                    continue
+                }
+                // Live text goes to whatever has focus. The Return is for
+                // `pid`, so everything typed since the last Return must have
+                // gone there, or it would submit a prompt the user did not
+                // dictate into it. An unreadable frontmost app counts as
+                // elsewhere.
+                let targets = textInsertion.takeLiveInsertionTargetPIDs()
+                guard targets.allSatisfy({ $0 == pid }) else {
+                    Log.dictation.notice(
+                        "spoken send: text since the last Return went to another app; no Return"
+                    )
                     continue
                 }
                 if pressSpokenSendReturn(pid: pid) {

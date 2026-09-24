@@ -135,34 +135,26 @@ package enum SendNowCommandParser {
 /// same finalized segment again; pressing Return a second time would send an
 /// empty or repeated prompt to the agent, which cannot be undone.
 ///
-/// The latch holds the normalized segment of the last submission. A final
-/// equal to it is a duplicate unless it is a new segment. None of the
-/// backends name their segments (speechd, vLLM and Mistral finals carry text
-/// only), so the segment's identity is its own partials: a new utterance
-/// streams partials from its first word, so the partials received since the
-/// last final must spell the start of the new final. A late partial of the
-/// utterance already submitted ("it." after "fix the build send it") is the
-/// tail of that utterance, not the start of a new one, and re-arms nothing.
-/// The caller claims the submission BEFORE the irreversible insertion or
-/// Return, so a failed Return leaves the latch set and a duplicate final
-/// cannot retry it.
+/// The rule: a submission equal to the previous one (case, punctuation and
+/// spacing aside) is refused until a final that submits nothing comes in
+/// between, or the session ends. None of the backends name their segments
+/// (speechd, vLLM and Mistral finals carry text only), and partials cannot
+/// tell a new utterance from a straggler of the old one: a late "send"
+/// before a repeated "send it" looks exactly like the user saying it again
+/// (Codex review of #494). The cost: saying the same submitting phrase twice
+/// in a row, "send it" then "send it", presses Return once; the second needs
+/// other words between them or a new dictation. The caller claims the
+/// submission BEFORE the irreversible insertion or Return, so a failed Return
+/// leaves the latch set and a duplicate final cannot retry it.
 package struct SendNowResubmitLatch: Equatable, Sendable {
     package private(set) var lastSubmittedSegment: String?
-    /// The partial deltas since the last final, joined as they arrived.
-    private var partialsSinceLastFinal = ""
 
     package init() {}
-
-    /// A partial delta arrived.
-    package mutating func notePartial(_ delta: String) {
-        partialsSinceLastFinal.append(delta)
-    }
 
     /// A final that inserts text without submitting. Clears the latch: the
     /// next submission follows new text, so it cannot be a duplicate.
     package mutating func noteNonSubmittingFinal() {
         lastSubmittedSegment = nil
-        partialsSinceLastFinal = ""
     }
 
     /// Returns true when `segment` may submit, and sets the latch in the same
@@ -170,38 +162,13 @@ package struct SendNowResubmitLatch: Equatable, Sendable {
     /// nothing at all, not even the insertion.
     package mutating func claimSubmission(of segment: String) -> Bool {
         let normalized = SendNowCommandParser.normalizedSegment(segment)
-        let partials = SendNowCommandParser.normalizedSegment(partialsSinceLastFinal)
-        partialsSinceLastFinal = ""
-        if normalized == lastSubmittedSegment,
-           !Self.partials(partials, openSegment: normalized)
-        {
-            return false
-        }
+        guard normalized != lastSubmittedSegment else { return false }
         lastSubmittedSegment = normalized
         return true
     }
 
     package mutating func reset() {
         self = SendNowResubmitLatch()
-    }
-
-    /// Whether the normalized partials are the first words of the normalized
-    /// segment. The last partial word may still be growing ("fo" before
-    /// "focused"), so it only has to start the segment's word.
-    private static func partials(_ partials: String, openSegment segment: String) -> Bool {
-        let partialWords = partials.split(separator: " ")
-        let segmentWords = segment.split(separator: " ")
-        guard !partialWords.isEmpty, partialWords.count <= segmentWords.count else {
-            return false
-        }
-        for (index, word) in partialWords.enumerated() {
-            let isLast = index == partialWords.count - 1
-            let matches = isLast
-                ? segmentWords[index].hasPrefix(word)
-                : segmentWords[index] == word
-            guard matches else { return false }
-        }
-        return true
     }
 }
 

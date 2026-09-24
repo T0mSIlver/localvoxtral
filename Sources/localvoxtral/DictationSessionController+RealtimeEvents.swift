@@ -161,7 +161,6 @@ extension DictationSessionController {
         if isLiveAutoPasteModeEnabled, isLiveSpokenSendActive {
             // Typed at the final, once it is known whether it ends in the
             // trigger: typed text cannot be taken back.
-            spokenSendLatch.notePartial(processedDelta)
         } else if isLiveAutoPasteModeEnabled {
             textInsertion.enqueueRealtimeInsertion(processedDelta)
             if let accessibilityError = textInsertion.lastAccessibilityError {
@@ -262,7 +261,7 @@ extension DictationSessionController {
         // Held partials are typed nowhere else: a promotion (stop, dropped
         // socket) stands in for the final they never got.
         if isLiveAutoPasteModeEnabled, isLiveSpokenSendActive {
-            deliverLiveSpokenSendSegment(pendingSegment, finalText: pendingSegment)
+            deliverLiveSpokenSendSegment(pendingSegment)
         }
 
         if isLiveAutoPasteModeEnabled, settings.autoCopyEnabled {

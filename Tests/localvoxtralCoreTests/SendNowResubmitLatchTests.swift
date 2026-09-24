@@ -4,9 +4,7 @@ import XCTest
 final class SendNowResubmitLatchTests: XCTestCase {
     func testDuplicateFinalCannotResubmit() {
         var latch = SendNowResubmitLatch()
-        latch.notePartial("run the focused test")
         XCTAssertTrue(latch.claimSubmission(of: "run the focused test send now"))
-        // The backend repeats the final with no partial in between.
         XCTAssertFalse(latch.claimSubmission(of: "run the focused test send now"))
         XCTAssertFalse(latch.claimSubmission(of: "Run the focused test, send now."))
     }
@@ -21,31 +19,17 @@ final class SendNowResubmitLatchTests: XCTestCase {
         XCTAssertFalse(latch.claimSubmission(of: "send it"))
     }
 
-    func testSameWordsSpokenAgainSubmitAgain() {
+    /// The accepted cost of a rule that cannot double-submit: the same
+    /// submitting phrase twice in a row presses Return once. Partials cannot
+    /// tell the user saying it again from a straggler of the first utterance
+    /// (Codex review of #494).
+    func testSamePhraseTwiceInARowSubmitsOnce() {
         var latch = SendNowResubmitLatch()
-        latch.notePartial("run the focused test send now")
-        XCTAssertTrue(latch.claimSubmission(of: "run the focused test send now"))
-        // The second utterance streams its own partials from its first word.
-        latch.notePartial("Run the")
-        latch.notePartial(" focused test,")
-        latch.notePartial(" send")
-        XCTAssertTrue(latch.claimSubmission(of: "Run the focused test, send now."))
+        XCTAssertTrue(latch.claimSubmission(of: "send it"))
+        XCTAssertFalse(latch.claimSubmission(of: "Send it."))
     }
 
-    /// Codex review of #494: a partial that arrives after a final and belongs
-    /// to the SAME utterance re-armed the latch, so the backend's repeat of
-    /// that final pressed Return a second time.
-    func testLatePartialOfTheSameUtteranceDoesNotReArm() {
-        var latch = SendNowResubmitLatch()
-        latch.notePartial("fix the build send")
-        XCTAssertTrue(latch.claimSubmission(of: "fix the build send it"))
-        // Event order: final, then a straggling delta of that utterance's
-        // tail, then the backend repeats the final.
-        latch.notePartial(" it.")
-        XCTAssertFalse(latch.claimSubmission(of: "fix the build send it"))
-    }
-
-    func testDifferentSegmentSubmitsWithoutPartial() {
+    func testDifferentSegmentSubmits() {
         var latch = SendNowResubmitLatch()
         XCTAssertTrue(latch.claimSubmission(of: "fix it send it"))
         XCTAssertTrue(latch.claimSubmission(of: "now run it send it"))
@@ -57,14 +41,6 @@ final class SendNowResubmitLatchTests: XCTestCase {
         latch.noteNonSubmittingFinal()
         XCTAssertNil(latch.lastSubmittedSegment)
         XCTAssertTrue(latch.claimSubmission(of: "send it"))
-    }
-
-    func testPartialFlagDoesNotOutliveOneFinal() {
-        var latch = SendNowResubmitLatch()
-        latch.notePartial("send")
-        XCTAssertTrue(latch.claimSubmission(of: "send it"))
-        // The partial before the first final must not excuse the duplicate.
-        XCTAssertFalse(latch.claimSubmission(of: "send it"))
     }
 
     func testReset() {

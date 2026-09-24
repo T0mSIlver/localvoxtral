@@ -89,6 +89,19 @@ final class SpokenSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.events.value, ["commit:run the tests"])
     }
 
+    /// Codex review of #494 (Medium): an unknown bundle was judged by the
+    /// element focused NOW. With a terminal focused while the commit target
+    /// is an editor, the editor got the Return.
+    func testOverlayUnknownTargetIsJudgedByItsOwnBundleNotTheFocusedElement() {
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueNotSettable }
+        let harness = makeOverlayHarness(text: "run the tests send it", targetBundleID: Self.editor)
+
+        harness.stop()
+
+        XCTAssertEqual(harness.overlay.committedTexts, ["run the tests send it"])
+        XCTAssertEqual(harness.events.value, ["commit:run the tests send it"])
+    }
+
     func testOverlayPolishNeverSeesTheTrigger() async {
         let polishingService = FakePolishingService(returning: "Run the tests.")
         let harness = makeOverlayHarness(text: "run the tests, send it.", polishingService: polishingService)
@@ -168,6 +181,60 @@ final class SpokenSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.events.value.last, "return:\(Self.terminalPID)")
     }
 
+    /// Codex review of #494 (High): the text went to whatever app had focus,
+    /// the Return to the session's terminal. A segment typed elsewhere, then
+    /// "send it" with the terminal refocused, submitted the terminal's own
+    /// prompt.
+    func testLiveReturnNeedsTheTextSinceTheLastReturnTypedIntoTheTerminal() {
+        let harness = makeLiveHarness()
+
+        harness.frontmost.value = 777
+        harness.viewModel.session.handle(event: .partialTranscript("notes for later"))
+        harness.viewModel.session.handle(event: .finalTranscript("notes for later"))
+        harness.frontmost.value = Self.terminalPID
+        harness.viewModel.session.handle(event: .partialTranscript("send"))
+        harness.viewModel.session.handle(event: .finalTranscript("send it"))
+
+        XCTAssertEqual(harness.typedText, "notes for later")
+        XCTAssertFalse(harness.events.value.contains { $0.hasPrefix("return:") })
+    }
+
+    func testLiveReturnNeedsTheSegmentTypedIntoTheTerminal() {
+        let harness = makeLiveHarness()
+
+        harness.frontmost.value = 777
+        harness.viewModel.session.handle(event: .partialTranscript("run the tests send"))
+        harness.viewModel.session.handle(event: .finalTranscript("run the tests send it"))
+
+        XCTAssertEqual(harness.typedText, "run the tests")
+        XCTAssertFalse(harness.events.value.contains { $0.hasPrefix("return:") })
+    }
+
+    /// Codex review of #494 (High): a partial that ran past the final kept
+    /// "send it" although the backend's final held no command.
+    func testLiveBackendFinalDecidesTheTrigger() {
+        let harness = makeLiveHarness()
+
+        harness.viewModel.session.handle(event: .partialTranscript("run tests send it"))
+        harness.viewModel.session.handle(event: .finalTranscript("run tests"))
+
+        XCTAssertEqual(harness.typedText, "run tests")
+        XCTAssertFalse(harness.events.value.contains { $0.hasPrefix("return:") })
+    }
+
+    /// Codex review of #494 (Medium): a late partial that is a prefix of the
+    /// repeated final passed for a new utterance.
+    func testLiveLatePrefixPartialDoesNotResubmit() {
+        let harness = makeLiveHarness()
+
+        harness.viewModel.session.handle(event: .partialTranscript("send"))
+        harness.viewModel.session.handle(event: .finalTranscript("send it"))
+        harness.viewModel.session.handle(event: .partialTranscript("send"))
+        harness.viewModel.session.handle(event: .finalTranscript("send it"))
+
+        XCTAssertEqual(harness.events.value, ["return:\(Self.terminalPID)"])
+    }
+
     func testLiveTriggerAlonePressesOnlyReturn() {
         let harness = makeLiveHarness()
 
@@ -210,6 +277,8 @@ final class SpokenSendWiringTests: XCTestCase {
         let viewModel: DictationViewModel
         let overlay: MockOverlayCoordinator
         let events: Box<[String]>
+        /// What the insertion service reads as the frontmost app.
+        var frontmost = Box<pid_t?>(nil)
 
         var typedText: String {
             events.value
@@ -293,6 +362,7 @@ final class SpokenSendWiringTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         let events = Box<[String]>([])
+        let frontmost = Box<pid_t?>(Self.terminalPID)
         viewModel.textInsertion.debugConfigureInsertionHooks(
             unicodePoster: { chunk in
                 events.value.append("type:\(chunk)")
@@ -303,7 +373,8 @@ final class SpokenSendWiringTests: XCTestCase {
             returnKeyPoster: { pid in
                 events.value.append("return:\(pid)")
                 return true
-            }
+            },
+            frontmostPIDReader: { frontmost.value }
         )
 
         TerminalTargetDetector.debugFrontmostBundleIDOverride = { frontmostBundleID }
@@ -314,7 +385,7 @@ final class SpokenSendWiringTests: XCTestCase {
         viewModel.session.sessionOutputMode = .liveAutoPaste
         viewModel.isDictating = true
         viewModel.session.configureLiveAutoPasteReplacementCorrectorForSession()
-        return Harness(viewModel: viewModel, overlay: overlay, events: events)
+        return Harness(viewModel: viewModel, overlay: overlay, events: events, frontmost: frontmost)
     }
 }
 

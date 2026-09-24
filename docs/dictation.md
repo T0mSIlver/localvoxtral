@@ -53,9 +53,11 @@ touching the keyboard. It is off by default and set per mode in Settings →
 Dictation. In Overlay Buffer the words are removed before polishing, so the
 polisher never sees them. In Live Auto-Paste the trigger can only be removed
 before it is typed, so with the option on each phrase appears when you finish
-it rather than word by word. Neither mode presses Return in an app that is not
-a terminal, while Secure Keyboard Entry is on, or when the text could not be
-inserted.
+it rather than word by word, and saying the same "… send it" phrase twice in a
+row sends it once. Neither mode presses Return in an app that is not a
+terminal, while Secure Keyboard Entry is on, or when the text could not be
+inserted into that terminal. Overlay Buffer recognizes a terminal only if it
+is a known one or listed in Settings → Terminals.
 
 ## The menu bar popover
 

@@ -130,6 +130,13 @@ final class TextInsertionService {
     /// user's app and can never be recalled.
     @ObservationIgnored
     private var liveTypedTextForSession = ""
+    /// The frontmost app at each successful live insertion since the last
+    /// `takeLiveInsertionTargetPIDs()`, nil where it could not be read. Live
+    /// text is typed into whatever has focus, so this is the only record of
+    /// where it went; the spoken send trigger presses Return only when all of
+    /// it went to the terminal the Return is for.
+    @ObservationIgnored
+    private var liveInsertionTargetPIDs: [pid_t?] = []
 
 #if DEBUG
     @ObservationIgnored
@@ -140,6 +147,8 @@ final class TextInsertionService {
     private var debugAccessibilityInserter: ((String, pid_t?) -> Bool)?
     @ObservationIgnored
     private var debugReturnKeyPoster: ((pid_t) -> Bool)?
+    @ObservationIgnored
+    private var debugFrontmostPIDReader: (() -> pid_t?)?
 #endif
 
     static let accessibilityErrorMessage = AccessibilityTrustManager.errorMessage
@@ -275,6 +284,21 @@ final class TextInsertionService {
         return true
     }
 
+    /// Where live text went since the last call, and a fresh start.
+    func takeLiveInsertionTargetPIDs() -> [pid_t?] {
+        defer { liveInsertionTargetPIDs = [] }
+        return liveInsertionTargetPIDs
+    }
+
+    private func currentFrontmostPID() -> pid_t? {
+#if DEBUG
+        if let debugFrontmostPIDReader {
+            return debugFrontmostPIDReader()
+        }
+#endif
+        return NSWorkspace.shared.frontmostApplication?.processIdentifier
+    }
+
     func enqueueRealtimeInsertion(_ text: String) {
         guard !text.isEmpty else { return }
         pendingRealtimeInsertionText.append(text)
@@ -296,6 +320,7 @@ final class TextInsertionService {
         switch insertTextPrioritizingKeyboard(insertedText) {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
+            liveInsertionTargetPIDs.append(currentFrontmostPID())
         case .failed:
             break
         }
@@ -371,6 +396,7 @@ final class TextInsertionService {
         pendingHoldBackReleasedText = ""
         liveTargetIsTerminalLike = isTerminalLikeTarget
         liveTypedTextForSession = ""
+        liveInsertionTargetPIDs = []
 
         let entryCount = dictionary?.entries.count ?? 0
         let ruleCount = dictionary.map { LiveReplacementCorrector(dictionary: $0).ruleCount } ?? 0
@@ -468,6 +494,7 @@ final class TextInsertionService {
         switch insertTextPrioritizingKeyboard(releasedText) {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             liveTypedTextForSession += releasedText
+            liveInsertionTargetPIDs.append(currentFrontmostPID())
         case .failed:
             // Keep the released text verbatim for the retry task; it must
             // never be re-ingested into the stream.
@@ -880,12 +907,14 @@ extension TextInsertionService {
         unicodePoster: ((String) -> Bool)? = nil,
         modifierStateReader: (() -> Bool)? = nil,
         accessibilityInserter: ((String, pid_t?) -> Bool)? = nil,
-        returnKeyPoster: ((pid_t) -> Bool)? = nil
+        returnKeyPoster: ((pid_t) -> Bool)? = nil,
+        frontmostPIDReader: (() -> pid_t?)? = nil
     ) {
         debugUnicodePoster = unicodePoster
         debugModifierStateReader = modifierStateReader
         debugAccessibilityInserter = accessibilityInserter
         debugReturnKeyPoster = returnKeyPoster
+        debugFrontmostPIDReader = frontmostPIDReader
     }
 
     func debugInsertionSnapshot() -> DebugInsertionSnapshot {

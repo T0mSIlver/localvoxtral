@@ -106,12 +106,22 @@ there is not.
   Return is pressed only in the PID the session pinned, only while that PID
   is frontmost (it never activates an app for a Return), never under Secure
   Keyboard Entry, and only once the hold-back stream has released every
-  word — a Return ahead of the last word would submit half a prompt. A
-  repeated final is refused by `SendNowResubmitLatch`, which judges the
-  backend's final text, not the accumulator's merge (that glues a straggling
-  partial onto the next final). In Overlay Buffer the trigger is cut from the
-  raw transcript before the dictionary and the polisher, and the Return
-  follows only a commit that reported `.succeeded`.
+  word — a Return ahead of the last word would submit half a prompt. Live
+  text goes to whatever has focus, so `TextInsertionService` records the
+  frontmost PID at every live insertion, and the Return needs every one since
+  the previous Return to be the pinned PID (an unreadable one counts as
+  elsewhere). The segment is the backend's final, never the accumulator's
+  merge: that keeps partial words the final dropped and glues a disagreeing
+  partial onto it, and either can read as a trigger the final does not hold.
+  `SendNowResubmitLatch` refuses a submission equal to the previous one until
+  a non-submitting final comes between: no backend names its segments, and
+  partials cannot tell a repeat from a straggler, so "send it" twice in a row
+  presses Return once. In Overlay Buffer the trigger is cut from the raw
+  transcript before the dictionary and the polisher; the target counts as a
+  terminal only by its own bundle ID on the built-in or Settings → Terminals
+  list (the AX probe reads the element focused NOW, which need not be the
+  commit target's), and the Return follows only a commit that reported
+  `.succeeded`.
 - **The overlay panel's click-through is insertion machinery, not window
   chrome.** `NonActivatingPanel` refuses key and main and swallows every click
   on its body, because the panel is on screen exactly while the app it is
