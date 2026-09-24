@@ -203,6 +203,21 @@ final class SpokenSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.typedText, "So I need you. Please help me construct")
     }
 
+    /// GLM review of #541: the new generation re-heard the end of the word.
+    /// The dictation event drops the repeat; the terminal must too.
+    func testLiveWordSplitWithARepeatedTailIsNotTypedTwice() {
+        let harness = makeLiveHarness()
+
+        harness.viewModel.session.handle(event: .partialTranscript("The"))
+        harness.viewModel.session.handle(event: .partialTranscript(" information"))
+        harness.viewModel.session.handle(event: .finalTranscript("The information"))
+        harness.viewModel.session.handle(event: .partialTranscript("ation overload"))
+        harness.viewModel.session.handle(event: .finalTranscript("ation overload"))
+
+        XCTAssertEqual(harness.typedText, "The information overload")
+        XCTAssertEqual(harness.viewModel.transcript.currentDictationEventText, "The information overload")
+    }
+
     func testLiveLowercaseSegmentAfterPunctuationKeepsItsSpace() {
         let harness = makeLiveHarness()
 
