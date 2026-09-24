@@ -609,7 +609,10 @@ def noise_terms_for(
         if len(noise) >= limit:
             break
         key = scorer_key(term)
-        if not key or key in used or any(f" {key} " in text for text in spoken):
+        glued = key.replace(" ", "")
+        if not key or key in used or any(
+            f" {key} " in text or f" {glued} " in text for text in spoken
+        ):
             continue
         noise.append(term)
     return noise

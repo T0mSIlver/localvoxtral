@@ -131,6 +131,13 @@ final class TermRecallScoringTests: XCTestCase {
         XCTAssertEqual(score.falseInsertions, [.init(term: "Claude", list: .session, count: 1)])
     }
 
+    func testUnrelatedListedTermOverASpokenTermIsAnInsertion() {
+        let evalCase = makeCase("restart the speechd server", terms: ["speechd"])
+        let score = TermRecallScorer.score(evalCase, hypothesis: "restart the herdr server", noiseTerms: ["herdr"])
+        XCTAssertEqual(score.terms.map(\.recalled), [0])
+        XCTAssertEqual(score.falseInsertions, [.init(term: "herdr", list: .noise, count: 1)])
+    }
+
     func testTermOnBothListsCountsAsSession() {
         let evalCase = makeCase("hello there", terms: [], sessionTerms: ["herdr"])
         let score = TermRecallScorer.score(evalCase, hypothesis: "hello herdr there", noiseTerms: ["herdr"])
@@ -202,6 +209,14 @@ final class TermRecallScoringTests: XCTestCase {
         XCTAssertEqual(comparison.pairedCases, 0)
         XCTAssertEqual(comparison.termGains, 0)
         XCTAssertEqual(comparison.termLosses, 0)
+        XCTAssertEqual(comparison.changed, ["tr-en-0001"])
+    }
+
+    func testCompareLeavesOutACaseWhoseTargetsChanged() {
+        let before = [TermRecallScorer.score(makeCase("use the tty now", terms: ["tty"]), hypothesis: "use the tty now", noiseTerms: [])]
+        let after = [TermRecallScorer.score(makeCase("use the tty now", terms: ["tty", "now"]), hypothesis: "use the tty now", noiseTerms: [])]
+        let comparison = TermRecallScorer.compare(before: before, after: after)
+        XCTAssertEqual(comparison.termGains, 0)
         XCTAssertEqual(comparison.changed, ["tr-en-0001"])
     }
 

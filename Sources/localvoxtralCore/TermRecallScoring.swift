@@ -70,8 +70,9 @@ package struct TermRecallCaseScore: Codable, Equatable, Sendable {
 
     package var id: String
     package var language: String
-    /// The case text as the scorer's words, so `compare` can tell a case
-    /// that changed under the same id from one the engine got differently.
+    /// The case text as the scorer's words, then its listed terms, so
+    /// `compare` can tell a case that changed under the same id (text or
+    /// targets) from one the engine got differently.
     package var reference: String
     package var hypothesis: String
     package var terms: [TermResult]
@@ -204,9 +205,11 @@ package enum TermRecallScorer {
             )
         }
 
-        // A listed term the hypothesis writes over the words of a different
-        // term the reference says ("Claude Claude" for "Claude Code") is that
-        // term misheard, charged to recall; only the rest can be insertions.
+        // A listed term that is part of a longer spoken term, written over
+        // that term's words ("Claude Claude" for "Claude Code"), is the longer
+        // term misheard, charged to recall. Any other listed term written
+        // over a spoken one ("herdr" for "speechd") is an insertion: that is
+        // the failure a biased list causes.
         var insertable: [String: Int] = [:]
         let referenceKeyAt = referenceMatches.reduce(into: [Int: String]()) { keys, match in
             for index in match.range { keys[index] = match.key }
@@ -221,7 +224,7 @@ package enum TermRecallScorer {
                 guard let referenceIndex = referenceIndexOfHeard[index],
                     let spoken = referenceKeyAt[referenceIndex]
                 else { return false }
-                return spoken != match.key
+                return spoken != match.key && isPart(match.key, of: spoken)
             }
             if !overTerm { insertable[match.key, default: 0] += 1 }
         }
@@ -243,7 +246,8 @@ package enum TermRecallScorer {
         return TermRecallCaseScore(
             id: evalCase.id,
             language: evalCase.language,
-            reference: reference.joined(separator: " "),
+            reference: reference.joined(separator: " ") + " | "
+                + evalCase.terms.map(key).sorted().joined(separator: ", "),
             hypothesis: hypothesis,
             terms: termResults,
             falseInsertions: insertions,
@@ -450,6 +454,16 @@ package enum TermRecallScorer {
             }
         }
         return errors
+    }
+
+    /// Whether `part`'s words appear in order, adjacent, inside `whole`'s.
+    private static func isPart(_ part: String, of whole: String) -> Bool {
+        let partWords = part.split(separator: " ")
+        let wholeWords = whole.split(separator: " ")
+        guard partWords.count < wholeWords.count else { return false }
+        return (0...(wholeWords.count - partWords.count)).contains {
+            Array(wholeWords[$0..<$0 + partWords.count]) == partWords
+        }
     }
 
     private static func isHeardWordForWord(_ range: Range<Int>, alignment: [Step]) -> Bool {

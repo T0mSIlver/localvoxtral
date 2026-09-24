@@ -227,9 +227,15 @@ final class TermRecallEvalTests: XCTestCase {
             throw EvalSpeechStage.Failure("compare mode needs before and after run files in the marker")
         }
         func load(_ path: String) throws -> TermRecallRun {
-            try TermRecallRun.parse(
-                jsonLines: String(contentsOf: repoRoot.appendingPathComponent(path), encoding: .utf8)
-            )
+            do {
+                return try TermRecallRun.parse(
+                    jsonLines: String(contentsOf: repoRoot.appendingPathComponent(path), encoding: .utf8)
+                )
+            } catch let error as DecodingError {
+                throw EvalSpeechStage.Failure(
+                    "\(path) does not decode (\(error)); a run file from an older scorer, so run it again"
+                )
+            }
         }
         print(TermRecallReport.comparison(before: try load(before), after: try load(after)))
     }
