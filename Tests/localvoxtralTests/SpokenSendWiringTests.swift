@@ -197,8 +197,11 @@ final class SpokenSendWiringTests: XCTestCase {
         harness.viewModel.session.handle(event: .finalTranscript("send it"))
         harness.stop()
 
-        // No Return, so the trigger is typed as dictated.
-        XCTAssertEqual(harness.typedText, "notes for later send it")
+        // No Return, so the trigger is typed as dictated. Per app: the space
+        // between segments belongs only where the previous text landed in
+        // the same app (Codex review round 4 of #494).
+        XCTAssertEqual(harness.typedText(in: 777), "notes for later")
+        XCTAssertEqual(harness.typedText(in: Self.terminalPID), "send it")
         XCTAssertFalse(harness.events.value.contains { $0.hasPrefix("return:") })
     }
 
@@ -375,6 +378,13 @@ final class SpokenSendWiringTests: XCTestCase {
         let events: Box<[String]>
         /// What the insertion service reads as the frontmost app.
         var frontmost = Box<pid_t?>(nil)
+        /// Each posted chunk with the app frontmost when it was posted.
+        var typedPerApp = Box<[(pid: pid_t?, text: String)]>([])
+
+        /// What the app `pid` received, not every app's typing joined.
+        func typedText(in pid: pid_t) -> String {
+            typedPerApp.value.filter { $0.pid == pid }.map(\.text).joined()
+        }
 
         var typedText: String {
             events.value
@@ -464,9 +474,11 @@ final class SpokenSendWiringTests: XCTestCase {
 
         let events = Box<[String]>([])
         let frontmost = Box<pid_t?>(frontmostPID)
+        let typedPerApp = Box<[(pid: pid_t?, text: String)]>([])
         viewModel.textInsertion.debugConfigureInsertionHooks(
             unicodePoster: { chunk in
                 events.value.append("type:\(chunk)")
+                typedPerApp.value.append((frontmost.value, chunk))
                 return true
             },
             modifierStateReader: { false },
@@ -486,7 +498,13 @@ final class SpokenSendWiringTests: XCTestCase {
         viewModel.session.sessionOutputMode = .liveAutoPaste
         viewModel.isDictating = true
         viewModel.session.configureLiveAutoPasteReplacementCorrectorForSession()
-        return Harness(viewModel: viewModel, overlay: overlay, events: events, frontmost: frontmost)
+        return Harness(
+            viewModel: viewModel,
+            overlay: overlay,
+            events: events,
+            frontmost: frontmost,
+            typedPerApp: typedPerApp
+        )
     }
 }
 

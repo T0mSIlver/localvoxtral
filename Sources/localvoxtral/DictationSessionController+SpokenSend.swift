@@ -143,7 +143,13 @@ extension DictationSessionController {
 
     private func typeLiveSpokenSendText(_ text: String) {
         guard !text.isEmpty else { return }
-        let separator = liveSpokenSendTypedSinceReturn ? " " : ""
+        // A space only after text in the same app: the last recorded landing
+        // must be the app in front now. No landing yet (the hold-back stream
+        // still holds it) means that text will land here too. A landing
+        // under Secure Keyboard Entry is nil and never matches.
+        let lastLanding = textInsertion.liveInsertionTargetPIDs.last
+        let sameApp = lastLanding.map { $0 != nil && $0 == textInsertion.frontmostApplicationPID() } ?? true
+        let separator = liveSpokenSendTypedSinceReturn && sameApp ? " " : ""
         textInsertion.enqueueRealtimeInsertion(separator + text)
         liveSpokenSendTypedSinceReturn = true
         if let accessibilityError = textInsertion.lastAccessibilityError {
