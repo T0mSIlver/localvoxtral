@@ -8,16 +8,24 @@
 /// terminal.
 ///
 /// Unlike that stream, nothing is buffered: an editor session keeps typing
-/// with no delay, and the check runs only for chunks that need it. The state
-/// below carries the previous chunk's ending across the boundary so no double
-/// space appears either side of a collapsed run.
+/// with no delay, and the check runs only for chunks that need it. The space
+/// a collapsed run stands for is typed with the next non-whitespace
+/// character, never at the end of a chunk. So a dictation ending in a newline
+/// leaves no trailing space to dismiss a TUI autocomplete popup, and a chunk
+/// that follows into another app keeps its own leading whitespace.
+///
+/// Two limits, both accepted: whitespace typed before a later chunk's newline
+/// is already in the field, so `a␣␣` then `\nb` reaches the terminal as
+/// `a␣␣b`, not `a␣b`. And an inconclusive AX probe reads as non-terminal,
+/// the same verdict a session started in that app gets.
 struct LiveTerminalNewlineGuard {
     /// Whether the last typed character was whitespace. Starts true, like the
     /// stream, so a collapse run opening the session types no leading space.
     private var lastTypedWasWhitespace = true
-    /// Whether the last chunk ended in a collapsed run; the next chunk's
-    /// leading whitespace is then dropped (the run's space is already typed).
-    private var endsWithCollapsedRun = false
+    /// A collapsed run's space not typed yet; the next non-whitespace
+    /// character pays it, and the whitespace in front of that character is
+    /// dropped in its favor.
+    private var owesSpace = false
 
     struct Prepared {
         let text: String
@@ -29,22 +37,23 @@ struct LiveTerminalNewlineGuard {
 
     /// `targetIsTerminalLike` runs only when `text` holds a newline or tab.
     func prepare(_ text: String, targetIsTerminalLike: () -> Bool) -> Prepared {
+        var owes = owesSpace
         var input = Substring(text)
-        if endsWithCollapsedRun {
+        if owes {
             input = input.drop(while: { $0.isWhitespace && !Self.isCollapseTrigger($0) })
         }
 
         var output = ""
         var collapsedRunCount = 0
-        var trailingRunCollapsed = false
         if input.contains(where: Self.isCollapseTrigger), targetIsTerminalLike() {
             var run = ""
             var runNeedsCollapse = false
-            var precededByWhitespace = endsWithCollapsedRun || lastTypedWasWhitespace
-            func emitRun() {
+            var atSessionTextStart = lastTypedWasWhitespace && !owes
+            func endRun() {
                 if runNeedsCollapse {
                     collapsedRunCount += 1
-                    if !precededByWhitespace { output.append(" ") }
+                    // Right after typed whitespace the space is already there.
+                    if !atSessionTextStart { owes = true }
                 } else {
                     output.append(run)
                 }
@@ -57,12 +66,20 @@ struct LiveTerminalNewlineGuard {
                     runNeedsCollapse = runNeedsCollapse || Self.isCollapseTrigger(character)
                     continue
                 }
-                emitRun()
+                endRun()
+                if owes {
+                    output.append(" ")
+                    owes = false
+                }
                 output.append(character)
-                precededByWhitespace = false
+                atSessionTextStart = false
             }
-            trailingRunCollapsed = runNeedsCollapse
-            emitRun()
+            endRun()
+        } else if owes, let first = input.first {
+            // Not a terminal now: a newline of its own replaces the owed
+            // space; anything else gets it back.
+            output = Self.isCollapseTrigger(first) ? String(input) : " " + input
+            owes = false
         } else {
             output = String(input)
         }
@@ -71,9 +88,7 @@ struct LiveTerminalNewlineGuard {
         if let last = output.last {
             next.lastTypedWasWhitespace = last.isWhitespace
         }
-        if !output.isEmpty || trailingRunCollapsed {
-            next.endsWithCollapsedRun = trailingRunCollapsed
-        }
+        next.owesSpace = owes
         return Prepared(text: output, collapsedRunCount: collapsedRunCount, stateAfterTyping: next)
     }
 

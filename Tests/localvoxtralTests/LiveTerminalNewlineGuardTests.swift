@@ -78,7 +78,7 @@ final class LiveTerminalNewlineGuardTests: XCTestCase {
             targetIsTerminalLike: { true }
         )
 
-        XCTAssertEqual(prepared.text, "Pourquoi\u{00A0}? Oui  non ")
+        XCTAssertEqual(prepared.text, "Pourquoi\u{00A0}? Oui  non")
     }
 
     func testLeadingRunTypesNoSpaceAtSessionStartOrAfterWhitespace() {
@@ -89,18 +89,46 @@ final class LiveTerminalNewlineGuardTests: XCTestCase {
         XCTAssertEqual(afterSpace.text, "world")
     }
 
-    func testNoDoubleSpaceAcrossAChunkThatEndsInACollapsedRun() {
+    func testACollapsedRunEndingAChunkTypesItsSpaceWithTheNextWord() {
         let first = LiveTerminalNewlineGuard()
             .prepare("hello", targetIsTerminalLike: { true })
             .stateAfterTyping
             .prepare("\n", targetIsTerminalLike: { true })
-        XCTAssertEqual(first.text, " ")
+        XCTAssertEqual(first.text, "")
 
         let second = first.stateAfterTyping.prepare("\n", targetIsTerminalLike: { true })
         XCTAssertEqual(second.text, "")
 
         let third = second.stateAfterTyping.prepare(" world", targetIsTerminalLike: { true })
-        XCTAssertEqual(third.text, "world")
+        XCTAssertEqual(third.text, " world")
+    }
+
+    // Codex review of #514: a space the terminal kept must not be taken from
+    // the editor focused next.
+    func testTheChunkAfterFocusLeavesTheTerminalKeepsItsSpace() {
+        let inTerminal = LiveTerminalNewlineGuard().prepare("hello\n", targetIsTerminalLike: { true })
+        XCTAssertEqual(inTerminal.text, "hello")
+
+        let inEditor = inTerminal.stateAfterTyping.prepare(" world", targetIsTerminalLike: { false })
+        XCTAssertEqual(inEditor.text, " world")
+
+        let editorNewline = inTerminal.stateAfterTyping.prepare("\nworld", targetIsTerminalLike: { false })
+        XCTAssertEqual(editorNewline.text, "\nworld", "the editor keeps its newline")
+    }
+
+    // Codex review of #514: `TUIAutocompleteTrailingSpace` covers only
+    // sessions started in a terminal; a dictation ending in a newline must
+    // not leave a space that dismisses the command popup.
+    func testADictationEndingInANewlineLeavesNoTrailingSpace() {
+        let frontmost = Box(Self.editor)
+        let typed = Box<[String]>([])
+        let viewModel = makeLiveViewModel(frontmostBundleID: frontmost, typed: typed)
+
+        frontmost.value = Self.ghostty
+        viewModel.textInsertion.enqueueRealtimeInsertion("/compact\n")
+        viewModel.textInsertion.flushFinalLiveReplacementCorrections()
+
+        XCTAssertEqual(typed.value.joined(), "/compact")
     }
 
     func testLeavesTextAloneWhenTheTargetIsNotATerminal() {
