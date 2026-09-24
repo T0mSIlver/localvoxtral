@@ -134,6 +134,10 @@ final class SettingsStore {
         static let livePasteShortcutKeyCode = "settings.live_paste_shortcut_key_code"
         static let livePasteShortcutModifiers = "settings.live_paste_shortcut_carbon_modifiers"
         static let livePasteShortcutEnabled = "settings.live_paste_shortcut_enabled"
+        static let copyLastDictationShortcutKeyCode = "settings.copy_last_dictation_shortcut_key_code"
+        static let copyLastDictationShortcutModifiers =
+            "settings.copy_last_dictation_shortcut_carbon_modifiers"
+        static let copyLastDictationShortcutEnabled = "settings.copy_last_dictation_shortcut_enabled"
     }
 
     let defaults: UserDefaults
@@ -786,6 +790,26 @@ final class SettingsStore {
         didSet { defaults.set(livePasteShortcutEnabled, forKey: Keys.livePasteShortcutEnabled) }
     }
 
+    var copyLastDictationShortcutEnabled: Bool {
+        didSet {
+            defaults.set(copyLastDictationShortcutEnabled, forKey: Keys.copyLastDictationShortcutEnabled)
+        }
+    }
+
+    var copyLastDictationShortcutKeyCode: UInt32 {
+        didSet {
+            defaults.set(copyLastDictationShortcutKeyCode, forKey: Keys.copyLastDictationShortcutKeyCode)
+        }
+    }
+
+    var copyLastDictationShortcutCarbonModifierFlags: UInt32 {
+        didSet {
+            defaults.set(
+                copyLastDictationShortcutCarbonModifierFlags,
+                forKey: Keys.copyLastDictationShortcutModifiers)
+        }
+    }
+
     var livePasteShortcutKeyCode: UInt32 {
         didSet { defaults.set(livePasteShortcutKeyCode, forKey: Keys.livePasteShortcutKeyCode) }
     }
@@ -1133,6 +1157,14 @@ final class SettingsStore {
             livePasteShortcutCarbonModifierFlags = 0
             livePasteShortcutEnabled = false
         }
+
+        // Off until the user records one.
+        copyLastDictationShortcutKeyCode =
+            (defaults.object(forKey: Keys.copyLastDictationShortcutKeyCode) as? NSNumber)?.uint32Value ?? 0
+        copyLastDictationShortcutCarbonModifierFlags =
+            (defaults.object(forKey: Keys.copyLastDictationShortcutModifiers) as? NSNumber)?.uint32Value ?? 0
+        copyLastDictationShortcutEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.copyLastDictationShortcutEnabled, fallback: false)
 
         if needsOverlayMigrationPersist {
             defaults.set(overlayBufferShortcutKeyCode, forKey: Keys.overlayBufferShortcutKeyCode)

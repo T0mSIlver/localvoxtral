@@ -79,6 +79,9 @@ struct ShortcutRecorderField: NSViewRepresentable {
         func handleRecorderChange(_ sender: RecorderControl) {
             guard !isApplyingProgrammaticUpdate else { return }
 
+            // Cleared before the write, not after: the binding's setter can
+            // refuse the key and say why in `validationError`.
+            parent.validationError = nil
             if let value = sender.objectValue {
                 let recordedShortcut = DictationShortcut(
                     keyCode: value.carbonKeyCode,
@@ -88,14 +91,12 @@ struct ShortcutRecorderField: NSViewRepresentable {
                 if parent.shortcut != recordedShortcut {
                     parent.shortcut = recordedShortcut
                 }
-                parent.validationError = nil
                 return
             }
 
             if parent.shortcut != nil {
                 parent.shortcut = nil
             }
-            parent.validationError = nil
         }
 
         func updateControlValue(_ control: RecorderControl, from shortcut: DictationShortcut?) {

@@ -119,6 +119,21 @@ extension DictationSessionController {
                 pasteboardReader: dependencies.pasteboardReader
             )
 
+            saveInterruptedPolishCommit = { [weak self] in
+                self?.saveSessionRecord(
+                    startedAt: capturedSessionStartedAt,
+                    rawText: originalText,
+                    polishedText: workingText != originalText ? workingText : nil,
+                    polishingDuration: nil,
+                    provider: capturedProvider,
+                    model: capturedModel,
+                    outputMode: capturedOutputMode,
+                    targetAppBundleID: capturedTargetBundleID,
+                    status: .sttCompleted,
+                    commitSucceeded: false,
+                    polishContextSummary: payloadProvenanceSummary
+                )
+            }
             polishAndCommitTask = Task { @MainActor [weak self] in
                 guard let self else { return }
                 await self.polishAndCommitOverlayBuffer(
@@ -261,6 +276,8 @@ extension DictationSessionController {
         }
 
         guard !Task.isCancelled else { return }
+        // From here the task commits and saves the dictation itself.
+        self.saveInterruptedPolishCommit = nil
 
         let overlayCommit = StopCommitCoordinator.commit(
             overlay: self.overlayBufferCoordinator,
@@ -454,6 +471,7 @@ extension DictationSessionController {
         isCompletingStoppedSession = false
         realtimeFinalizationLastActivityAt = nil
         polishAndCommitTask = nil
+        saveInterruptedPolishCommit = nil
         liveSpokenSendSegmentMode = .undecided
         // Every stop funnels through here. The commit path has already
         // consumed the capture by now (it reconciles synchronously, before
@@ -583,6 +601,7 @@ extension DictationSessionController {
             polishContextSummary: polishContextSummary
         )
         dependencies.onSessionRecord?(record)
+        lastDictation = DictationHistoryEntry(record)
         let retention = settings.dictationHistoryRetention
         guard retention.savesDictations else {
             Log.persistence.debug("Dictation history is off: not saving this dictation")

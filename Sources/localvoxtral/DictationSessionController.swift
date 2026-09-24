@@ -67,6 +67,20 @@ final class DictationSessionController {
         lastPolishChangedRawTranscript?.trimmed.isEmpty == false
     }
 
+    /// The last dictation the stop-commit saved, kept whether or not History
+    /// keeps it: after a failed insertion it is the text the user still needs
+    /// (#526). Seeded from History at launch, and it follows History when a
+    /// dictation there is deleted.
+    var lastDictation: DictationHistoryEntry? {
+        didSet { lastDictationGeneration &+= 1 }
+    }
+    /// A store read that started before the last change to `lastDictation`
+    /// answers for an older History and must not overwrite it.
+    @ObservationIgnored private var lastDictationGeneration = 0
+
+    /// Whether "Copy last dictation" has something to copy.
+    var canCopyLastDictation: Bool { lastDictation?.textToCopy != nil }
+
     /// Whether the app focused at the most recent session start behaves like
     /// a terminal emulator (bundle allowlist, AX-writability heuristic
     /// fallback). Refreshed at each session start; live replacement strategy
@@ -343,6 +357,12 @@ final class DictationSessionController {
     var sessionOutputMode: DictationOutputMode?
     @ObservationIgnored
     var polishAndCommitTask: Task<Void, Never>?
+    /// Saves the dictation `polishAndCommitTask` is polishing, as not
+    /// inserted, if the task never gets to. A new dictation started over the
+    /// polish cancels it, and that dictation used to reach neither the
+    /// target app nor History (#526).
+    @ObservationIgnored
+    var saveInterruptedPolishCommit: (() -> Void)?
     @ObservationIgnored
     // Several finalization callbacks can converge here; keep stop cleanup
     // idempotent until commit/post-processing fully finishes.
@@ -723,6 +743,40 @@ final class DictationSessionController {
         guard let raw = lastPolishChangedRawTranscript?.trimmed, !raw.isEmpty else { return }
         writeToPasteboard(raw)
         statusText = "Raw transcript copied."
+    }
+
+    /// Copies the last dictation's text: the polished text, or the transcript
+    /// when polishing failed (`LastDictationCopy`). Reached from the menu bar
+    /// and from its optional global shortcut.
+    func copyLastDictation() {
+        // Mid-session the status line belongs to the session: "Listening..."
+        // must not turn into a line about the clipboard.
+        let ownsStatusLine = !isDictating && !isFinalizingStop && !isConnectingRealtimeSession
+        guard let text = lastDictation?.textToCopy else {
+            Log.dictation.notice("copy last dictation: nothing to copy")
+            if ownsStatusLine { statusText = StatusStrings.noDictationToCopy }
+            return
+        }
+        writeToPasteboard(text)
+        Log.dictation.info("copy last dictation: copied \(text.count, privacy: .public) chars")
+        if ownsStatusLine { statusText = StatusStrings.lastDictationCopied }
+    }
+
+    /// Makes `lastDictation` the newest dictation in History. Run at launch
+    /// and after History changes, so a deleted dictation stops being
+    /// copyable; with History off the store is empty and changes no more,
+    /// and `lastDictation` is whatever this run saved last.
+    func refreshLastDictationFromStore() async {
+        guard let store = sessionStore else { return }
+        let generation = lastDictationGeneration
+        var query = DictationHistoryQuery()
+        query.limit = 1
+        let newest = await store.entries(matching: query).first
+        guard generation == lastDictationGeneration else { return }
+        // A dictation saved while History is off never reaches the store; a
+        // store that answers with nothing must not erase it.
+        guard newest != nil || settings.dictationHistoryRetention.savesDictations else { return }
+        lastDictation = newest
     }
 
     private func writeToPasteboard(_ text: String) {

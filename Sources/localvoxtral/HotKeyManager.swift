@@ -8,6 +8,7 @@ final class HotKeyManager {
         case shortcutUnavailable
         case livePasteShortcutUnavailable
         case modifierOnlyHotKeyUnavailable
+        case copyLastDictationShortcutUnavailable
     }
 
     enum RegistrationResult {
@@ -29,6 +30,8 @@ final class HotKeyManager {
     static let unavailableErrorMessage = "The selected keyboard shortcut is unavailable."
     static let livePasteUnavailableErrorMessage =
         "The selected Live Auto-Paste shortcut is unavailable."
+    static let copyLastDictationUnavailableErrorMessage =
+        "The selected Copy last dictation shortcut is unavailable."
     static let modifierOnlyUnavailableErrorMessage =
         "Unable to install the single-modifier hotkey monitors. Grant Accessibility permission, then try again."
 
@@ -49,6 +52,10 @@ final class HotKeyManager {
     /// semantics latch dictation on.
     var onModifierOnlyTap: ((DictationOutputMode) -> Void)?
 
+    /// Fired when the "Copy last dictation" shortcut is pressed. Its release
+    /// is swallowed: it must never read as the end of a push-to-talk hold.
+    var onCopyLastDictation: (() -> Void)?
+
     private var hotKeyRefs: [UInt32: EventHotKeyRef] = [:]
     private var hotKeyHandlerRef: EventHandlerRef?
     private static let hotKeySignature = OSType(0x53565854) // SVXT
@@ -66,6 +73,13 @@ final class HotKeyManager {
 
     private static let overlayHotKeyID: UInt32 = 1
     private static let livePasteHotKeyID: UInt32 = 2
+    private static let copyLastDictationHotKeyID: UInt32 = 3
+
+    /// The "Copy last dictation" hotkey lives apart from the dictation
+    /// triggers: re-registering or switching the triggers, the single-modifier
+    /// gesture included, leaves it alone.
+    private var copyLastDictationRef: EventHotKeyRef?
+    private var isCopyLastDictationRegistered = false
 
     #if DEBUG
     private(set) var debugCurrentRegistrationKind: DebugRegistrationKind = .none
@@ -249,6 +263,8 @@ final class HotKeyManager {
         return .success
     }
 
+    /// Unregisters the dictation triggers. The "Copy last dictation" hotkey
+    /// stays; `registerCopyLastDictation(nil)` removes it.
     func unregister() {
         #if DEBUG
         Self.debugUnregisterCallCount += 1
@@ -264,10 +280,58 @@ final class HotKeyManager {
         hotKeyRefs.removeAll()
         hotKeyIDToMode.removeAll()
 
-        if let hotKeyHandlerRef {
-            RemoveEventHandler(hotKeyHandlerRef)
-            self.hotKeyHandlerRef = nil
+        removeHandlerIfUnused()
+    }
+
+    /// Registers the "Copy last dictation" hotkey in place of the one before,
+    /// or only removes that one for nil. A failure leaves no copy hotkey; the
+    /// caller puts the previous one back.
+    @discardableResult
+    func registerCopyLastDictation(_ shortcut: DictationShortcut?) -> RegistrationResult {
+        if let copyLastDictationRef {
+            UnregisterEventHotKey(copyLastDictationRef)
+            self.copyLastDictationRef = nil
         }
+        isCopyLastDictationRegistered = false
+
+        guard let shortcut else {
+            removeHandlerIfUnused()
+            return .success
+        }
+        if !installHandlerIfNeeded() {
+            return .failure(.handlerInstallFailed)
+        }
+
+        var ref: EventHotKeyRef?
+        let hotKeyID = EventHotKeyID(signature: Self.hotKeySignature, id: Self.copyLastDictationHotKeyID)
+        let status = registerEventHotKey(
+            shortcut.keyCode,
+            shortcut.carbonModifierFlags,
+            hotKeyID,
+            GetApplicationEventTarget(),
+            0,
+            &ref
+        )
+        guard status == noErr else {
+            Log.modifierKeys.error(
+                "Copy last dictation hotkey registration failed with status \(status, privacy: .public)"
+            )
+            removeHandlerIfUnused()
+            return .failure(.copyLastDictationShortcutUnavailable)
+        }
+        copyLastDictationRef = ref
+        isCopyLastDictationRegistered = true
+        return .success
+    }
+
+    var isCopyLastDictationShortcutRegistered: Bool { isCopyLastDictationRegistered }
+
+    /// The Carbon handler serves every hotkey here, so it goes only with the
+    /// last of them.
+    private func removeHandlerIfUnused() {
+        guard hotKeyRefs.isEmpty, !isCopyLastDictationRegistered, let hotKeyHandlerRef else { return }
+        RemoveEventHandler(hotKeyHandlerRef)
+        self.hotKeyHandlerRef = nil
     }
 
     // MARK: - Private
@@ -364,6 +428,10 @@ final class HotKeyManager {
     }
 
     private func handleHotKeyEvent(kind: UInt32, hotKeyID: UInt32) {
+        if hotKeyID == Self.copyLastDictationHotKeyID {
+            if kind == UInt32(kEventHotKeyPressed) { onCopyLastDictation?() }
+            return
+        }
         switch kind {
         case UInt32(kEventHotKeyPressed):
             if let mode = hotKeyIDToMode[hotKeyID] {
@@ -401,12 +469,27 @@ extension HotKeyManager {
             debugForcedRegisterStatusesByID[overlayHotKeyID] = status
         case .livePaste:
             debugForcedRegisterStatusesByID[livePasteHotKeyID] = status
+        case .copyLastDictation:
+            debugForcedRegisterStatusesByID[copyLastDictationHotKeyID] = status
         }
+    }
+
+    /// Delivers a hotkey event as the Carbon handler would.
+    func debugDeliverHotKeyEventForTesting(pressed: Bool, hotKeyID: DebugRegistrationKindHotKeyID) {
+        let id: UInt32
+        switch hotKeyID {
+        case .overlay: id = Self.overlayHotKeyID
+        case .livePaste: id = Self.livePasteHotKeyID
+        case .copyLastDictation: id = Self.copyLastDictationHotKeyID
+        }
+        handleHotKeyEvent(
+            kind: UInt32(pressed ? kEventHotKeyPressed : kEventHotKeyReleased), hotKeyID: id)
     }
 }
 
 enum DebugRegistrationKindHotKeyID {
     case overlay
     case livePaste
+    case copyLastDictation
 }
 #endif
