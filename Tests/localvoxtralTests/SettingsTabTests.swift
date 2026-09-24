@@ -409,8 +409,11 @@ final class SettingsTabTests: XCTestCase {
     /// Presentation order is a UX contract of its own: `testRawValuesAreStable`
     /// compares a Set, so an accidental reorder (an alphabetical sort, a
     /// careless merge) would pass every other test while moving rows the user
-    /// has already built muscle memory for.
+    /// has already built muscle memory for. A pane listed in two sections would
+    /// render twice, and no Set comparison notices it.
     func testSidebarOrderIsThePresentationContract() {
+        let panes = SettingsTab.allKnownPanes
+        XCTAssertEqual(Set(panes).count, panes.count, "a pane is listed in two sidebar sections")
         XCTAssertEqual(SettingsTab.historySidebarItems, [.history, .insights])
         XCTAssertEqual(
             SettingsTab.primarySidebarItems,
