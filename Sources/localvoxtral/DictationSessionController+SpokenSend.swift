@@ -117,10 +117,17 @@ extension DictationSessionController {
                 Log.dictation.notice("spoken send: repeated final ignored")
                 return
             }
+            // The Return is decided before anything is typed: the trigger is
+            // cut only when it will be sent. Otherwise the final is typed
+            // whole, and no spoken word is lost.
+            guard let pid = liveSpokenSendReturnTarget() else {
+                typeLiveSpokenSendText(final)
+                return
+            }
             if case .insertTextAndPressReturn(let text) = action {
                 typeLiveSpokenSendText(text)
             }
-            pressLiveSpokenSendReturnIfAllowed()
+            pressLiveSpokenSendReturn(in: pid)
         }
     }
 
@@ -144,21 +151,19 @@ extension DictationSessionController {
         }
     }
 
-    private func pressLiveSpokenSendReturnIfAllowed() {
-        // The hold-back stream keeps the last word until it knows the word is
-        // complete; the Return must come after it.
-        textInsertion.flushFinalLiveReplacementCorrections()
-        guard !textInsertion.hasPendingInsertionText else {
-            Log.dictation.notice("spoken send: text not delivered yet; no Return")
-            return
+    /// The frontmost terminal a Return may go to right now, or nil.
+    private func liveSpokenSendReturnTarget() -> pid_t? {
+        guard !TerminalTargetDetector.isSecureKeyboardEntryEnabled() else {
+            Log.dictation.notice("spoken send: Secure Keyboard Entry is on; no Return")
+            return nil
         }
         guard let pid = frontmostTerminalPID() else {
             Log.dictation.notice("spoken send: frontmost app is not on the terminal list; no Return")
-            return
+            return nil
         }
         // The record is cleared only by a Return sent, never by a refusal:
-        // once text has landed elsewhere, no later trigger can submit the
-        // terminal's own prompt in its place.
+        // once text has landed elsewhere (or under Secure Keyboard Entry), no
+        // later trigger can submit the terminal's own prompt in its place.
         guard textInsertion.liveInsertionTargetPIDs.allSatisfy({ $0 == pid }) else {
             if !liveSpokenSendBlockLogged {
                 liveSpokenSendBlockLogged = true
@@ -166,8 +171,21 @@ extension DictationSessionController {
                     "spoken send: text went to another app; no Return for the rest of this dictation"
                 )
             }
+            return nil
+        }
+        return pid
+    }
+
+    private func pressLiveSpokenSendReturn(in pid: pid_t) {
+        // The hold-back stream keeps the last word until it knows the word is
+        // complete; the Return must come after it.
+        textInsertion.flushFinalLiveReplacementCorrections()
+        guard !textInsertion.hasPendingInsertionText else {
+            Log.dictation.notice("spoken send: text not delivered yet; no Return")
             return
         }
+        // Checked again: the text just typed is in the record now.
+        guard liveSpokenSendReturnTarget() == pid else { return }
         guard pressSpokenSendReturn(pid: pid) else { return }
         textInsertion.clearLiveInsertionTargetPIDs()
         liveSpokenSendTypedSinceReturn = false

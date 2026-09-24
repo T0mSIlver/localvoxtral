@@ -115,7 +115,11 @@ there is not.
   frontmost at its first insertion. Live text goes to whatever has focus, so
   `TextInsertionService` records the frontmost PID at every live insertion;
   the Return goes to the frontmost terminal only when every one since the
-  last Return SENT is that PID (an unreadable one counts as elsewhere). The
+  last Return SENT is that PID (an unreadable one, or one made under Secure
+  Keyboard Entry, which swallows posted keys while reporting success, counts
+  as elsewhere). The Return is decided before the segment is typed, and the
+  trigger is cut only when it will be sent; otherwise the final is typed
+  whole. The
   record is cleared only by a Return sent or a new session, never by a
   refusal: once text landed elsewhere, the trigger does nothing for the rest
   of that dictation. Only a non-empty backend final can trigger; an empty

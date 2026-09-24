@@ -195,8 +195,10 @@ final class SpokenSendWiringTests: XCTestCase {
         harness.frontmost.value = Self.terminalPID
         harness.viewModel.session.handle(event: .partialTranscript("send"))
         harness.viewModel.session.handle(event: .finalTranscript("send it"))
+        harness.stop()
 
-        XCTAssertEqual(harness.typedText, "notes for later")
+        // No Return, so the trigger is typed as dictated.
+        XCTAssertEqual(harness.typedText, "notes for later send it")
         XCTAssertFalse(harness.events.value.contains { $0.hasPrefix("return:") })
     }
 
@@ -283,6 +285,42 @@ final class SpokenSendWiringTests: XCTestCase {
         harness.viewModel.session.handle(event: .partialTranscript("run tests send it"))
         harness.viewModel.session.handle(event: .finalTranscript(""))
 
+        XCTAssertFalse(harness.events.value.contains { $0.hasPrefix("return:") })
+    }
+
+    /// Codex review round 3 of #494 (High): keys posted under Secure Keyboard
+    /// Entry are swallowed while posting reports success, so that text was
+    /// recorded as landed in the terminal and a later "send it" submitted the
+    /// terminal's own prompt.
+    func testLiveTextTypedUnderSecureInputBlocksEveryLaterTrigger() {
+        let harness = makeLiveHarness()
+        let secureInput = Box(false)
+        TerminalTargetDetector.debugSecureEventInputOverride = { secureInput.value }
+
+        secureInput.value = true
+        harness.viewModel.session.handle(event: .partialTranscript("notes for later"))
+        harness.viewModel.session.handle(event: .finalTranscript("notes for later"))
+        secureInput.value = false
+        harness.viewModel.session.handle(event: .partialTranscript("send"))
+        harness.viewModel.session.handle(event: .finalTranscript("send it"))
+
+        XCTAssertFalse(harness.events.value.contains { $0.hasPrefix("return:") })
+    }
+
+    /// Codex review round 3 of #494 (Medium): the segment was held back while
+    /// a terminal was in front, then focus moved to an editor before the
+    /// final. The editor got the text without "send it" and no Return: the
+    /// words were lost. The trigger is cut only when the Return will be sent.
+    func testLiveTriggerIsTypedWholeWhenTheReturnWillNotBeSent() {
+        let harness = makeLiveHarness()
+
+        harness.viewModel.session.handle(event: .partialTranscript("run tests send"))
+        XCTAssertEqual(harness.typedText, "")
+        harness.frontmost.value = Self.editorPID
+        harness.viewModel.session.handle(event: .finalTranscript("run tests send it"))
+        harness.stop()
+
+        XCTAssertEqual(harness.typedText, "run tests send it")
         XCTAssertFalse(harness.events.value.contains { $0.hasPrefix("return:") })
     }
 

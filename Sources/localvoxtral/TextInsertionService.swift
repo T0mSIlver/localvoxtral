@@ -131,7 +131,8 @@ final class TextInsertionService {
     @ObservationIgnored
     private var liveTypedTextForSession = ""
     /// The frontmost app at each successful live insertion since the last
-    /// `clearLiveInsertionTargetPIDs()`, nil where it could not be read. Live
+    /// `clearLiveInsertionTargetPIDs()`; nil where it could not be read or
+    /// Secure Keyboard Entry was on. Live
     /// text is typed into whatever has focus, so this is the only record of
     /// where it went; the spoken send trigger presses Return only when all of
     /// it went to the terminal the Return is for.
@@ -284,6 +285,15 @@ final class TextInsertionService {
         return true
     }
 
+    /// Where a live insertion just went, as far as it can be confirmed.
+    /// Under Secure Keyboard Entry the posted keys are swallowed while posting
+    /// reports success, so the text landed nowhere: recorded as nil, like an
+    /// unreadable frontmost app, which blocks the spoken send Return.
+    private func confirmedLiveInsertionPID() -> pid_t? {
+        guard !TerminalTargetDetector.isSecureKeyboardEntryEnabled() else { return nil }
+        return frontmostApplicationPID()
+    }
+
     func clearLiveInsertionTargetPIDs() {
         liveInsertionTargetPIDs = []
     }
@@ -318,7 +328,7 @@ final class TextInsertionService {
         switch insertTextPrioritizingKeyboard(insertedText) {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
-            liveInsertionTargetPIDs.append(frontmostApplicationPID())
+            liveInsertionTargetPIDs.append(confirmedLiveInsertionPID())
         case .failed:
             break
         }
@@ -491,7 +501,7 @@ final class TextInsertionService {
         switch insertTextPrioritizingKeyboard(releasedText) {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             liveTypedTextForSession += releasedText
-            liveInsertionTargetPIDs.append(frontmostApplicationPID())
+            liveInsertionTargetPIDs.append(confirmedLiveInsertionPID())
         case .failed:
             // Keep the released text verbatim for the retry task; it must
             // never be re-ingested into the stream.

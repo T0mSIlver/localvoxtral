@@ -163,6 +163,7 @@ extension DictationSessionController {
             // trigger: typed text cannot be taken back.
         } else if isLiveAutoPasteModeEnabled {
             textInsertion.enqueueRealtimeInsertion(processedDelta)
+            liveSpokenSendTypedSinceReturn = true
             if let accessibilityError = textInsertion.lastAccessibilityError {
                 lastError = accessibilityError
             }
@@ -191,6 +192,7 @@ extension DictationSessionController {
             liveSpokenSendSegmentMode = .undecided
             if let liveInsertion = finalized.liveInsertion {
                 textInsertion.enqueueRealtimeInsertion(liveInsertion)
+                liveSpokenSendTypedSinceReturn = true
             }
             if let accessibilityError = textInsertion.lastAccessibilityError {
                 lastError = accessibilityError

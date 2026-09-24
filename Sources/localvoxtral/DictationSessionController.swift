@@ -358,8 +358,8 @@ final class DictationSessionController {
     var liveSpokenSendSegmentMode = LiveSpokenSendSegmentMode.undecided
     @ObservationIgnored
     var spokenSendLatch = SendNowResubmitLatch()
-    /// Whether withheld text was typed since the last Return, so the next
-    /// segment needs a space before it.
+    /// Whether live text was typed since the last Return, so the next
+    /// withheld segment needs a space before it.
     @ObservationIgnored
     var liveSpokenSendTypedSinceReturn = false
     /// The "text went to another app" line is logged once per dictation.
