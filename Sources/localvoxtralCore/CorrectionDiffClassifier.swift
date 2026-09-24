@@ -68,7 +68,9 @@ package enum CorrectionDiffClassifier {
         learnedTerms: Set<String> = []
     ) -> Verdict {
         let old = words(of: inserted)
-        let new = words(of: withoutPasteMarkers(submitted))
+        let submittedText = withoutPasteMarkers(submitted)
+        let new = words(of: submittedText)
+        let lineStarts = lineStartIndices(of: submittedText)
         guard !old.isEmpty, !new.isEmpty else { return .nothing(.empty) }
         guard old.count <= maxInsertedWords, new.count <= maxSubmittedWords else {
             return .nothing(.tooLong)
@@ -123,7 +125,7 @@ package enum CorrectionDiffClassifier {
             let rejection = judge(
                 replaced: replaced,
                 term: term,
-                atSentenceStart: isSentenceStart(candidate.first ?? 0, in: new),
+                atSentenceStart: isSentenceStart(candidate.first ?? 0, in: new, lineStarts: lineStarts),
                 knownTerms: foldedKnown
             )
             let replacedIsLearned = foldedLearned.contains(replaced.caseFoldedForMatching)
@@ -217,10 +219,37 @@ package enum CorrectionDiffClassifier {
         return String(result)
     }
 
-    private static func isSentenceStart(_ index: Int, in words: [String]) -> Bool {
-        guard index > 0 else { return true }
+    /// A word opens a sentence after sentence punctuation or at the start of
+    /// a line: dictated prompts are often lists with no final period, and
+    /// capitalizing a line's first word is an ordinary edit, not a name.
+    private static func isSentenceStart(
+        _ index: Int,
+        in words: [String],
+        lineStarts: Set<Int>
+    ) -> Bool {
+        guard index > 0, !lineStarts.contains(index) else { return true }
         guard let last = words[index - 1].last else { return true }
-        return ".!?:".contains(last) || words[index - 1].hasSuffix("\n")
+        return ".!?:".contains(last)
+    }
+
+    /// Indices, in `words(of: text)`, of the words that begin a line.
+    static func lineStartIndices(of text: String) -> Set<Int> {
+        var starts: Set<Int> = []
+        var index = 0
+        var inWord = false
+        var sawNewline = true
+        for character in text {
+            if character.isWhitespace {
+                if inWord { index += 1 }
+                inWord = false
+                if character.isNewline { sawNewline = true }
+            } else {
+                if !inWord, sawNewline { starts.insert(index) }
+                inWord = true
+                sawNewline = false
+            }
+        }
+        return starts
     }
 
     // MARK: Alignment

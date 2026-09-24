@@ -138,6 +138,46 @@ final class CorrectionLearningTests: XCTestCase {
         XCTAssertEqual(presenter.shown, [])
     }
 
+    /// Enter pressed as the last word appears can beat the stop's commit.
+    func testPromptArrivingJustBeforeTheCommitIsStillCompared() {
+        let (learner, store, _) = makeLearner()
+        learner.promptSubmitted(sessionID: "s1", prompt: "please fix the Qwen tokenizer")
+        clock += CorrectionLearning.earlyPromptGrace - 1
+        learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project)
+        store.waitForPendingWrites()
+
+        XCTAssertEqual(store.confirmedTerms(projectKey: project.key), ["Qwen"])
+        XCTAssertTrue(learner.pending.isEmpty)
+        XCTAssertTrue(learner.earlyPrompts.isEmpty)
+    }
+
+    func testAnEarlierPromptPastTheGraceIsNotCompared() {
+        let (learner, store, _) = makeLearner()
+        learner.promptSubmitted(sessionID: "s1", prompt: "please fix the Qwen tokenizer")
+        clock += CorrectionLearning.earlyPromptGrace + 1
+        learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project)
+        store.waitForPendingWrites()
+
+        XCTAssertEqual(store.summary().terms, 0)
+        XCTAssertNotNil(learner.pending["s1"], "the dictation still waits for its own prompt")
+    }
+
+    /// The store keeps no spelling past 60 characters, so none is announced.
+    func testAFixTooLongToRememberIsNotAnnounced() {
+        let (learner, store, presenter) = makeLearner()
+        let long = "Aaaaaaaaaaaaaaa.Bbbbbbbbbbbbbbb.Cccccccccccccccc.Dddddddddddddddd.ts"
+        learner.expect(
+            inserted: "open aaaaaaaaaaaaaaa bbbbbbbbbbbbbbb cccccccccccccccc dddddddddddddddd now",
+            sessionID: "s1",
+            project: project
+        )
+        learner.promptSubmitted(sessionID: "s1", prompt: "open \(long) now")
+        store.waitForPendingWrites()
+
+        XCTAssertEqual(store.summary().terms, 0)
+        XCTAssertEqual(presenter.shown, [])
+    }
+
     func testPendingSessionsAreCapped() {
         let (learner, _, _) = makeLearner()
         for index in 0...CorrectionLearning.maxPending {

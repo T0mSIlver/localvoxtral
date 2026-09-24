@@ -376,6 +376,10 @@ final class DictationSessionController {
     /// withheld segment needs a space before it.
     @ObservationIgnored
     var liveSpokenSendTypedSinceReturn = false
+    /// The trigger pressed Return at least once this dictation, so the user
+    /// sent it unedited (`liveDictationCanTeachACorrection`).
+    @ObservationIgnored
+    var liveSpokenSendReturnPressed = false
     /// The "text went to another app" line is logged once per dictation.
     @ObservationIgnored
     var liveSpokenSendBlockLogged = false

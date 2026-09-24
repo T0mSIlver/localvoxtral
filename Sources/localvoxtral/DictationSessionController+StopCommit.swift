@@ -400,7 +400,9 @@ extension DictationSessionController {
         let capturedOutputMode = sessionMode.rawValue
         textInsertion.flushFinalLiveReplacementCorrections()
         // Read before the cleanup below discards the join.
-        expectCorrection(of: liveTypedText(), join: context.claudeSessionJoin, project: nil)
+        if liveDictationCanTeachACorrection {
+            expectCorrection(of: liveTypedText(), join: context.claudeSessionJoin, project: nil)
+        }
         completeStoppedSessionCleanup(
             sessionMode: sessionMode,
             overlayCommitOutcome: nil,

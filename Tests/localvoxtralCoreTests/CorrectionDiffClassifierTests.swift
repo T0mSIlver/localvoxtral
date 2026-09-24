@@ -148,6 +148,20 @@ final class CorrectionDiffClassifierTests: XCTestCase {
         )
     }
 
+    /// Dictated lists often have no final period; capitalizing the first word
+    /// of a line is still not a name (GLM review of #532).
+    func testLineStartCapitalIsNotEvidence() {
+        XCTAssertEqual(
+            classify("fix the bug\nthen commit", "fix the bug\nThen commit"),
+            .nothing(.notTermShaped)
+        )
+        XCTAssertEqual(
+            classify("fix the bug then kwen", "fix the bug\nthen Qwen"),
+            .learn(term: "Qwen", replaced: "kwen", forgetting: nil),
+            "only the first word of a line is exempt"
+        )
+    }
+
     func testRewordingIsNotLearned() {
         XCTAssertEqual(
             classify("fix the bug in the parser", "fix the issue in the parser"),

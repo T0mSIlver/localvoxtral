@@ -21,7 +21,8 @@ protocol CorrectionLearningPresenting: AnyObject {
 ///
 /// What is held, and for how long: the inserted text, in memory, until the
 /// session submits a prompt or `window` passes. The prompt is compared and
-/// dropped. Only the learned spelling reaches the disk (`LearnedTermStore`);
+/// dropped; one that arrives before its dictation's commit waits at most
+/// `earlyPromptGrace`. Only the learned spelling reaches the disk (`LearnedTermStore`);
 /// the log gets verdict categories, never text.
 @MainActor
 final class CorrectionLearning {
@@ -30,6 +31,11 @@ final class CorrectionLearning {
     static let window: TimeInterval = 180
     /// Sessions waiting at once. One per terminal tab is plenty.
     static let maxPending = 8
+    /// How long a prompt that arrived with nothing to compare is kept for a
+    /// dictation still finishing. An Enter pressed the moment the last word
+    /// appears can reach the app before the stop's commit does; a prompt
+    /// older than this belongs to no dictation still in flight.
+    static let earlyPromptGrace: TimeInterval = 10
 
     struct Pending {
         var inserted: String
@@ -42,6 +48,7 @@ final class CorrectionLearning {
     private let now: @MainActor () -> Date
     weak var presenter: (any CorrectionLearningPresenting)?
     private(set) var pending: [String: Pending] = [:]
+    private(set) var earlyPrompts: [String: (prompt: String, at: Date)] = [:]
 
     init(
         store: LearnedTermStore,
@@ -72,6 +79,9 @@ final class CorrectionLearning {
            let oldest = pending.min(by: { $0.value.insertedAt < $1.value.insertedAt })?.key {
             pending.removeValue(forKey: oldest)
         }
+        if let early = earlyPrompts.removeValue(forKey: sessionID) {
+            promptSubmitted(sessionID: sessionID, prompt: early.prompt)
+        }
     }
 
     /// The joined session submitted `prompt`. Compared once with what was
@@ -79,7 +89,10 @@ final class CorrectionLearning {
     func promptSubmitted(sessionID: String, prompt: String) {
         let moment = now()
         dropExpired(at: moment)
-        guard let entry = pending.removeValue(forKey: sessionID) else { return }
+        guard let entry = pending.removeValue(forKey: sessionID) else {
+            earlyPrompts[sessionID] = (prompt, moment)
+            return
+        }
 
         let remembered = store.snapshot().projects
             .first { $0.key == entry.project.key }?.terms ?? []
@@ -102,6 +115,12 @@ final class CorrectionLearning {
         case .learn(let term, _, let forgetting):
             if let forgetting {
                 store.forget(forgetting, projectKey: entry.project.key)
+            }
+            // The store keeps nothing it cannot sanitize (a spelling past 60
+            // characters); announcing it would promise a term that is not there.
+            guard !LearnedTerms.sanitized(term).isEmpty else {
+                Log.polishing.info("Correction learning: fix too long to remember")
+                return
             }
             let folded = term.caseFoldedForMatching
             // A spelling the user typed into Names and terms is already theirs
@@ -130,5 +149,8 @@ final class CorrectionLearning {
 
     private func dropExpired(at moment: Date) {
         pending = pending.filter { moment.timeIntervalSince($0.value.insertedAt) <= Self.window }
+        earlyPrompts = earlyPrompts.filter {
+            moment.timeIntervalSince($0.value.at) <= Self.earlyPromptGrace
+        }
     }
 }

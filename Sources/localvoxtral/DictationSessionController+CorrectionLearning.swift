@@ -27,13 +27,15 @@ extension DictationSessionController {
         )
     }
 
-    /// What Live Auto-Paste typed: the transcript with the replacement rules
-    /// the session latched at start, as `LiveHoldBackReplacementStream`
-    /// released it. Only the latched dictionary: loading one here would read
-    /// the config file on a stop that never loaded it. The newline and tab
-    /// sanitizing the stream also does only changes whitespace, which the
-    /// comparison ignores.
+    /// What Live Auto-Paste typed. The insertion service records every
+    /// released chunk that reached the field, which is exact: the spoken
+    /// send cut, the finals typed in place of partials, the newline guard.
+    /// A session that typed without the hold-back stream keeps no record;
+    /// for it the transcript with the latched rules stands in. Only
+    /// the latched dictionary: loading one here would read the config file
+    /// on a stop that never loaded it.
     func liveTypedText() -> String {
+        if let typed = textInsertion.liveTypedTextThisSession { return typed }
         let raw = transcript.currentDictationEventText
         guard let dictionary = sessionReplacementDictionary else { return raw }
         return LiveReplacementCorrector.completedBoundaryCorrectedText(
@@ -41,5 +43,13 @@ extension DictationSessionController {
             dictionary: dictionary,
             includeFinalUnboundedWord: true
         )
+    }
+
+    /// A Live dictation is compared only when all of it reached the field
+    /// and the user, not the spoken send trigger, decides when it is sent:
+    /// text the trigger already submitted was sent unedited, and text still
+    /// pending never reached the prompt at all.
+    var liveDictationCanTeachACorrection: Bool {
+        !textInsertion.hasPendingInsertionText && !liveSpokenSendReturnPressed
     }
 }

@@ -73,6 +73,7 @@ extension DictationSessionController {
     func resetLiveSpokenSendForSession() {
         spokenSendLatch.reset()
         liveSpokenSendTypedSinceReturn = false
+        liveSpokenSendReturnPressed = false
         liveSpokenSendSegmentMode = .undecided
         liveSpokenSendBlockLogged = false
         textInsertion.clearLiveInsertionTargetPIDs()
@@ -195,6 +196,7 @@ extension DictationSessionController {
         guard pressSpokenSendReturn(pid: pid) else { return }
         textInsertion.clearLiveInsertionTargetPIDs()
         liveSpokenSendTypedSinceReturn = false
+        liveSpokenSendReturnPressed = true
     }
 
     /// The frontmost app's PID when its bundle ID is on the built-in or the

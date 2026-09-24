@@ -240,7 +240,16 @@ there is not.
   learned spelling back, deletes the term outright rather than lowering its
   count. The feature inherits the join's gates: no polish endpoint, both
   context settings off, or an endpoint that is neither loopback nor trusted
-  means no join and nothing learned.
+  means no join and nothing learned. A prompt that arrives before its
+  dictation's commit (Enter pressed as the last word appears) waits 10 s,
+  no longer. A Live dictation is compared as the insertion service
+  recorded it typing, and not at all when text is still pending or the
+  spoken send trigger pressed Return: the user sent that unedited. Known
+  limit (GLM review of #532): without polish the project key is the
+  joined session's own directory, not the repository the vocabulary
+  pipeline would widen it to, so a session in a subdirectory learns into
+  a separate bucket; resolving the root would walk the filesystem on the
+  commit path, which `LearnedTermProjectResolver` forbids.
 
 - **"About you" is the only place the model is told to infer a misheard name.**
   `LLMPromptTemplates.withSpeakerProfile` appends the user's own text to the
