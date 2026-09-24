@@ -55,6 +55,7 @@ REALTIME_ENDPOINT="${LV_E2E_REALTIME_ENDPOINT:-ws://127.0.0.1:8000/v1/realtime}"
 REALTIME_MODEL="${LV_E2E_REALTIME_MODEL:-T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead}"
 CONTROL_SOCKET="${HOME}/Library/Application Support/localvoxtral/dogfood/control/control.sock"
 TARGET_BUNDLE_ID="com.localvoxtral.e2e-target"
+TARGET_MACOS="15.0" # Package.swift's platform floor
 
 if command -v timeout >/dev/null 2>&1; then
   OSASCRIPT_TIMEOUT_BIN="$(command -v timeout)"
@@ -215,11 +216,15 @@ build_target_app() {
   <key>CFBundleExecutable</key><string>e2e-target</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleVersion</key><string>1</string>
+  <key>LSMinimumSystemVersion</key><string>$TARGET_MACOS</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>
 PLIST
-  swiftc -O -o "$bundle/Contents/MacOS/e2e-target" "$SCRIPT_DIR/e2e/target-app.swift"
+  # Without -target, swiftc builds for the SDK's macOS, and an SDK newer than
+  # the running system makes `open` refuse the app with error -10825.
+  swiftc -O -target "$(uname -m)-apple-macos$TARGET_MACOS" \
+    -o "$bundle/Contents/MacOS/e2e-target" "$SCRIPT_DIR/e2e/target-app.swift"
 }
 
 start_target() {
