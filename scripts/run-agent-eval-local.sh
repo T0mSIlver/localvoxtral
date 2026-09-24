@@ -125,7 +125,7 @@ mkdir -p .build
 LOG_FILE="$ROOT_DIR/.build/agent-eval-local.log"
 echo "Full eval output: $LOG_FILE"
 set +e
-"${ENV_ARGS[@]}" swift test --filter AgentDictationE2EEvalTests 2>&1 | tee "$LOG_FILE"
+"${ENV_ARGS[@]}" swift test --build-system native --filter AgentDictationE2EEvalTests 2>&1 | tee "$LOG_FILE"
 TEST_STATUS=${PIPESTATUS[0]}
 set -e
 

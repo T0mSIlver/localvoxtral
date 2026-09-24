@@ -129,11 +129,24 @@ lv_plan_unit_shards() {
   '
 }
 
-# Tests an XCTest log says it ran: the last "Executed N tests" line is the
-# whole run's total. Prints 0 when there is none (a crash before the end).
+# Tests an XCTest log says it ran: the sum of the run-level totals, the
+# "Executed N tests" line under each "Selected tests" / "All tests" suite.
+# Swift 6.4 (Xcode 27) runs each test bundle as its own run, so a shard
+# prints one total per bundle and the last is only the last bundle's. A log
+# with no run-level total falls back to its last "Executed" line. Prints 0
+# when there is none (a crash before the end).
 lv_executed_test_count() {
-  awk '/Executed [0-9]+ tests?, with/ { n = $0; sub(/.*Executed /, "", n); sub(/ .*/, "", n); last = n }
-    END { print (last == "" ? 0 : last) }' "$1"
+  awk '
+    /^Test Suite \047(Selected tests|All tests)\047 (passed|failed) at / { top = 1; next }
+    /Executed [0-9]+ tests?, with/ {
+      n = $0; sub(/.*Executed /, "", n); sub(/ .*/, "", n)
+      last = n
+      if (top) { sum += n; runs++ }
+      top = 0
+      next
+    }
+    { top = 0 }
+    END { print (runs > 0 ? sum : (last == "" ? 0 : last)) }' "$1"
 }
 
 
