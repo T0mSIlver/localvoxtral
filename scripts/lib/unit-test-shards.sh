@@ -227,7 +227,7 @@ lv_run_unit_shards() {
       # regex metacharacters the build gate refuses.
       filter_args+=(--filter "$class/")
     done
-    lv_run_one_unit_shard "$work" "$index" \
+    lv_run_one_unit_shard "$work" "$index" "${line%% *}" \
       ${skip_args[@]+"${skip_args[@]}"} "${filter_args[@]}" \
       ${extra_args[@]+"${extra_args[@]}"} &
     LV_SHARD_PIDS+=($!)
@@ -261,16 +261,41 @@ lv_run_unit_shards() {
   return "$status"
 }
 
+# Exit 0 when a shard's `swift test` output shows it failed only on SwiftPM's
+# locked build database: exactly the expected number of tests ran, no test
+# failed, and the lock is its only "error:" line. Under the native build
+# system (Xcode 27) the lock no longer stops the run: xctest runs every test
+# and only swift test's exit status carries the error (#543).
+#   $1  the shard's output   $2  its exit status   $3  the tests it should run
+lv_shard_failed_only_on_lock() {
+  local output="$1" status="$2" expected="$3"
+  [[ "$status" == "1" ]] || return 1
+  grep -q "database is locked" "$output" || return 1
+  [[ "$(lv_executed_test_count "$output")" == "$expected" ]] || return 1
+  awk '
+    /error:/ && !/database is locked/ { bad = 1 }
+    /^Test Case .* failed/ { bad = 1 }
+    /✘/ { bad = 1 }
+    /Executed [0-9]+ tests?, with/ {
+      n = $0; sub(/.*, with /, "", n); sub(/ .*/, "", n)
+      if (n != "0") bad = 1
+    }
+    END { exit bad }' "$output"
+}
+
 # Background job: one shard's `swift test`, its output and "<exit> <seconds>".
 # A TERM reaches `swift test` too: `lv_shard_swift &` is a subshell, so the
 # swift process is its child, which killing the subshell alone would orphan.
 #
-# --skip-build still opens SwiftPM's build database, and a sibling shard that
-# holds it at that moment makes this one exit before running any test ("database
-# is locked"). Only that case is retried, up to twice.
+# --skip-build still opens SwiftPM's build database, and a sibling shard can
+# hold it at that moment ("database is locked"). The old build system then
+# exited before running any test: that case is retried, up to twice. The
+# native one runs every test anyway and exits 1: that shard passes when
+# lv_shard_failed_only_on_lock says the lock was its only fault.
+#   $3  the number of tests the shard's filters select
 lv_run_one_unit_shard() {
-  local work="$1" index="$2" child shard_status shard_started=$SECONDS attempt
-  shift 2
+  local work="$1" index="$2" expected="$3" child shard_status shard_started=$SECONDS attempt
+  shift 3
   : >"$work/$index.log"
   for attempt in 1 2 3; do
     lv_shard_swift test --skip-build --ignore-lock "$@" >"$work/$index.attempt" 2>&1 &
@@ -289,6 +314,11 @@ lv_run_one_unit_shard() {
       >>"$work/$index.log"
     sleep 1
   done
+  if lv_shard_failed_only_on_lock "$work/$index.attempt" "$shard_status" "$expected"; then
+    echo "==> Shard $index: all $expected tests passed; exit 1 came only from SwiftPM's locked build database" \
+      >>"$work/$index.log"
+    shard_status=0
+  fi
   echo "$shard_status $((SECONDS - shard_started))" >"$work/$index.status"
 }
 

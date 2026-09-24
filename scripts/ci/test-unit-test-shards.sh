@@ -107,7 +107,10 @@ LOG
 
 # Prints what a real `swift test --filter` would: one Executed line per class
 # and the run's total last. STUB_DROP names a class to leave out (a --filter
-# that matched nothing); STUB_FAIL a class whose shard exits 1.
+# that matched nothing); STUB_FAIL a class whose test fails. STUB_LOCK prints
+# the native build system's lock error before the tests and exits 1 after them,
+# as Xcode 27's SwiftPM does (#543); STUB_ERROR adds one more output line.
+LOCK_LINE="Another instance of SwiftPM (PID: 1) is already running using 'x/.build', but this will be ignored since \`--ignore-lock\` has been passederror: unable to attach DB: error: accessing build database \"x/.build/build.db\": database is locked Possibly there are two concurrent builds running in the same filesystem location."
 lv_shard_swift() {
   echo "swift $*" >>"$TMP_DIR/calls"
   case "$1 ${2:-}" in
@@ -119,21 +122,32 @@ lv_shard_swift() {
     echo "error: unable to attach DB: error: accessing build database \"x/build.db\": database is locked"
     return 1
   fi
-  local arg class total=0 status=0 previous=""
+  [[ -n "${STUB_LOCK:-}" ]] && echo "$LOCK_LINE"
+  local arg class total=0 failures=0 status=0 previous=""
   for arg in "$@"; do
     if [[ "$previous" == "--filter" ]]; then
       class="${arg#*.}"
       class="${class%/}"
       [[ "$class" == "${STUB_DROP:-}" ]] && { previous="$arg"; continue; }
-      [[ "$class" == "${STUB_FAIL:-}" ]] && status=1
-      echo "Test Suite '$class' passed at 2026-09-23 10:00:00.000."
-      echo "	 Executed 1 test, with 0 failures (0 unexpected) in 0.1 (0.1) seconds"
+      if [[ "$class" == "${STUB_FAIL:-}" ]]; then
+        status=1
+        failures=$((failures + 1))
+        echo "/x/$class.swift:1: error: -[Mod.$class testOne] : XCTAssertTrue failed"
+        echo "Test Case '-[Mod.$class testOne]' failed (0.001 seconds)."
+        echo "Test Suite '$class' failed at 2026-09-23 10:00:00.000."
+        echo "	 Executed 1 test, with 1 failure (0 unexpected) in 0.1 (0.1) seconds"
+      else
+        echo "Test Suite '$class' passed at 2026-09-23 10:00:00.000."
+        echo "	 Executed 1 test, with 0 failures (0 unexpected) in 0.1 (0.1) seconds"
+      fi
       total=$((total + 1))
     fi
     previous="$arg"
   done
   echo "Test Suite 'Selected tests' passed at 2026-09-23 10:00:00.000."
-  echo "	 Executed $total tests, with 0 failures (0 unexpected) in 0.1 (0.1) seconds"
+  echo "	 Executed $total tests, with $failures failures (0 unexpected) in 0.1 (0.1) seconds"
+  [[ -n "${STUB_ERROR:-}" ]] && echo "$STUB_ERROR"
+  [[ -n "${STUB_LOCK:-}" ]] && status=1
   return "$status"
 }
 
@@ -190,6 +204,34 @@ rm -f "$TMP_DIR/locked-once"
 STUB_LOCK_ONCE=1 lv_run_unit_shards 2 "$log" Skipped >/dev/null \
   || fail "a shard that met a locked build database must be retried: $(cat "$log")"
 grep -q "build database was locked by another shard; retrying" "$log" || fail "retry not logged"
+
+# Xcode 27: every shard meets the lock, runs all its tests and exits 1. A
+# shard whose tests all passed and whose only error is the lock passes (#543).
+STUB_LOCK=1 lv_run_unit_shards 2 "$log" Skipped >/dev/null \
+  || fail "a shard whose only error was the locked build database must pass: $(cat "$log")"
+[[ "$(grep -c '^==> Shard [12]/2: exit 0' "$log")" == "2" ]] || fail "lock-only shards: $(cat "$log")"
+grep -q "exit 1 came only from SwiftPM's locked build database" "$log" || fail "lock pass not logged"
+if grep -q "retrying" "$log"; then fail "a shard that ran its tests was retried"; fi
+
+# ... and the lock never hides a real failure: a failed test, a test that did
+# not run, or any other error.
+if STUB_LOCK=1 STUB_FAIL=Gamma lv_run_unit_shards 2 "$log" Skipped >/dev/null; then
+  fail "the lock turned a failed test green: $(cat "$log")"
+fi
+grep -q "^==> Shard [12]/2: exit 1" "$log" || fail "a failed test behind the lock: $(cat "$log")"
+if STUB_LOCK=1 STUB_DROP=Beta lv_run_unit_shards 2 "$log" Skipped >/dev/null; then
+  fail "the lock turned a missing test green: $(cat "$log")"
+fi
+grep -q "^==> Shard [12]/2: exit 1" "$log" || fail "a missing test behind the lock: $(cat "$log")"
+if STUB_LOCK=1 STUB_ERROR="error: Exited with unexpected signal code 11" \
+    lv_run_unit_shards 2 "$log" Skipped >/dev/null; then
+  fail "the lock turned a crash green: $(cat "$log")"
+fi
+[[ "$(grep -c '^==> Shard [12]/2: exit 1' "$log")" == "2" ]] || fail "a crash behind the lock: $(cat "$log")"
+if STUB_LOCK=1 STUB_ERROR="✘ Test run with 1 test failed after 0.1 seconds with 1 issue." \
+    lv_run_unit_shards 2 "$log" Skipped >/dev/null; then
+  fail "the lock turned a Swift Testing failure green: $(cat "$log")"
+fi
 
 # TERM mid-run: each shard's swift process goes too, not only the subshell
 # that started it, and the log keeps what the shards printed so far.
