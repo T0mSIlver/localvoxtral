@@ -289,25 +289,23 @@ run_linux_suites() {
     ${LINUX_ARGS[@]+"${LINUX_ARGS[@]}"} >"$LINUX_LOG" 2>&1
 }
 
-# The run beside the Mac's goes in a process group of its own, so a signal to
-# this script can stop the whole of it, swift included, rather than leave a
-# build holding .build/linux; handle_remote_signal does. That also keeps a
-# terminal's Ctrl-C from reaching it twice.
+# The run beside the Mac's goes in a process group of its own (job control,
+# `set -m`, as scripts/ci/run-supervised-command.sh does; macOS has no
+# setsid), so a signal to this script can stop the whole of it, swift
+# included, rather than leave a build holding .build/linux;
+# handle_remote_signal does. That also keeps a terminal's Ctrl-C from reaching
+# it twice.
 LINUX_PID=""
 start_linux_suites() {
-  mkdir -p "$(dirname "$LINUX_LOG")"
-  if command -v setsid >/dev/null 2>&1; then
-    SWIFT="$LINUX_SWIFT" setsid "$ROOT_DIR/scripts/core-tests-linux.sh" \
-      ${LINUX_ARGS[@]+"${LINUX_ARGS[@]}"} >"$LINUX_LOG" 2>&1 </dev/null &
-  else
-    run_linux_suites &
-  fi
+  set -m
+  run_linux_suites </dev/null &
   LINUX_PID=$!
+  set +m
 }
 
 stop_linux_suites() {
   [[ -n "$LINUX_PID" ]] || return 0
-  kill -TERM -- "-$LINUX_PID" 2>/dev/null || kill -TERM "$LINUX_PID" 2>/dev/null || true
+  kill -TERM -- "-$LINUX_PID" 2>/dev/null || true
   wait "$LINUX_PID" 2>/dev/null || true
   LINUX_PID=""
 }
