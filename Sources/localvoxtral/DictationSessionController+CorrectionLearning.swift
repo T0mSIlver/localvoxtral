@@ -11,7 +11,7 @@ extension DictationSessionController {
     ///   widens a session in a subdirectory to its repository. Without
     ///   polish, the joined session's own workspace decides.
     func expectCorrection(
-        of inserted: String,
+        of inserted: @autoclosure () -> String,
         join: ClaudeSessionJoin?,
         project: LearnedTermProjectResolver.Identity?
     ) {
@@ -21,19 +21,21 @@ extension DictationSessionController {
             workspace: join.snapshot.workspace
         ) else { return }
         correctionLearning.expect(
-            inserted: inserted,
+            inserted: inserted(),
             sessionID: join.snapshot.sessionID,
             project: project
         )
     }
 
-    /// What Live Auto-Paste typed: the transcript with the session's
-    /// replacement rules applied, as `LiveHoldBackReplacementStream` released
-    /// it. The newline and tab sanitizing it also does only changes
-    /// whitespace, which the comparison ignores.
+    /// What Live Auto-Paste typed: the transcript with the replacement rules
+    /// the session latched at start, as `LiveHoldBackReplacementStream`
+    /// released it. Only the latched dictionary: loading one here would read
+    /// the config file on a stop that never loaded it. The newline and tab
+    /// sanitizing the stream also does only changes whitespace, which the
+    /// comparison ignores.
     func liveTypedText() -> String {
         let raw = transcript.currentDictationEventText
-        guard let dictionary = replacementDictionaryForCurrentSession() else { return raw }
+        guard let dictionary = sessionReplacementDictionary else { return raw }
         return LiveReplacementCorrector.completedBoundaryCorrectedText(
             raw,
             dictionary: dictionary,
