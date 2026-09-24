@@ -736,7 +736,7 @@ case "$CMD" in
     fi
     printf '{"rounds":%s,"arms":[%s]}\n' "$POLISHD_BENCH_ROUNDS" "$POLISHD_BENCH_ARMS" \
       >"$POLISHD_BENCH_MARKER"
-    REMOTE_CMD=(swift test --filter PolishdSpeculativeBenchTests)
+    REMOTE_CMD=(swift test --build-system native --filter PolishdSpeculativeBenchTests)
     ;;
   speechd-bench)
     # The SSH gate does not allow arbitrary packaged-binary execution. A marker-gated
