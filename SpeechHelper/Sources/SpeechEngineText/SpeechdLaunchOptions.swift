@@ -9,7 +9,7 @@ public struct SpeechdLaunchOptions: Equatable {
     public var port: UInt16 = 8471
     public var parentPID: pid_t?
     public var transcriptionDelayMs: Int?
-    public var cacheLimitMB = 4096
+    public var cacheLimitMB = 2048
     public var stepMilliseconds = 100
     /// Maximum length of one utterance (one engine stream session); see `UtteranceLimit`.
     public var utteranceLimit = UtteranceLimit()

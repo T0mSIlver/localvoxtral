@@ -836,13 +836,13 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.engines.applySpeechdCacheLimitChange(.gb2)
+        viewModel.engines.applySpeechdCacheLimitChange(.gb4)
         await viewModel.engines.dictationShutdownTask?.value
         await viewModel.engines.dictationWarmupTask?.value
 
         // Owner rule (2026-07-17): changing the memory limit or step interval
         // must not require a Managed -> External -> Managed round trip.
-        XCTAssertEqual(viewModel.settings.speechdCacheLimit, .gb2)
+        XCTAssertEqual(viewModel.settings.speechdCacheLimit, .gb4)
         XCTAssertEqual(backendManager.stopDictationCallCount, 1)
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: false)])
     }
@@ -854,11 +854,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.engines.applySpeechdStepCadenceChange(.ms100)
+        viewModel.engines.applySpeechdStepCadenceChange(.ms240)
         await viewModel.engines.dictationShutdownTask?.value
         await viewModel.engines.dictationWarmupTask?.value
 
-        XCTAssertEqual(viewModel.settings.speechdStepCadence, .ms100)
+        XCTAssertEqual(viewModel.settings.speechdStepCadence, .ms240)
         XCTAssertEqual(backendManager.stopDictationCallCount, 1)
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: false)])
     }
@@ -870,12 +870,12 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.engines.applySpeechdCacheLimitChange(.gb2)
-        viewModel.engines.applySpeechdStepCadenceChange(.ms100)
+        viewModel.engines.applySpeechdCacheLimitChange(.gb4)
+        viewModel.engines.applySpeechdStepCadenceChange(.ms240)
 
         XCTAssertNil(viewModel.engines.dictationShutdownTask)
-        XCTAssertEqual(viewModel.settings.speechdCacheLimit, .gb2)
-        XCTAssertEqual(viewModel.settings.speechdStepCadence, .ms100)
+        XCTAssertEqual(viewModel.settings.speechdCacheLimit, .gb4)
+        XCTAssertEqual(viewModel.settings.speechdStepCadence, .ms240)
         XCTAssertEqual(backendManager.stopDictationCallCount, 0)
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
     }

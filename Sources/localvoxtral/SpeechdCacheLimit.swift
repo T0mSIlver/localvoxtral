@@ -1,20 +1,21 @@
 import Foundation
 
-/// Metal buffer-pool cache limit for the managed dictation helper. `Auto`
-/// omits the `--cache-limit-mb` flag so the helper's built-in default applies;
-/// every other case pins an explicit ceiling.
+/// Metal buffer-pool cache limit for the managed dictation helper, passed as
+/// `--cache-limit-mb`. It caps MLX's buffer cache, not the weights or the live
+/// working set. On Voxtral the cache fills to whatever limit is set while time
+/// per step stays flat, so the smallest preset is the default (#486).
 enum SpeechdCacheLimit: String, CaseIterable, Identifiable, Sendable {
-    case auto
     case gb2 = "2gb"
     case gb4 = "4gb"
     case gb6 = "6gb"
     case gb8 = "8gb"
 
+    static let defaultLimit: SpeechdCacheLimit = .gb2
+
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
-        case .auto: return "Auto"
         case .gb2: return "2 GB"
         case .gb4: return "4 GB"
         case .gb6: return "6 GB"
@@ -22,11 +23,8 @@ enum SpeechdCacheLimit: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// Megabytes to pass via `--cache-limit-mb`, or nil for `Auto` (the flag is
-    /// omitted and the helper's built-in default applies).
-    var megabytes: Int? {
+    var megabytes: Int {
         switch self {
-        case .auto: return nil
         case .gb2: return 2048
         case .gb4: return 4096
         case .gb6: return 6144

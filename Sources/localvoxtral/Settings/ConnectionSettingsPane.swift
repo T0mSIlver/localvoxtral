@@ -220,14 +220,17 @@ struct ConnectionSettingsPane: View {
                         SettingsHelpText(managedSpeechModelHelp)
                     }
 
-                    SettingsFieldRow(title: "Memory limit") {
-                        Picker("", selection: speechdCacheLimitBinding) {
-                            ForEach(SpeechdCacheLimit.allCases) { limit in
-                                Text(limit.displayName).tag(limit)
+                    if settings.resolvedManagedSpeechModel.showsMemoryLimit {
+                        SettingsFieldRow(title: "Memory limit") {
+                            Picker("", selection: speechdCacheLimitBinding) {
+                                ForEach(SpeechdCacheLimit.allCases) { limit in
+                                    Text(limit.displayName).tag(limit)
+                                }
                             }
+                            .pickerStyle(.menu)
+                            .labelsHidden()
+                            .accessibilityIdentifier("engines.dictation.memoryLimit")
                         }
-                        .pickerStyle(.menu)
-                        .labelsHidden()
                     }
 
                     SettingsFieldRow(
