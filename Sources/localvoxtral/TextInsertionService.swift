@@ -130,6 +130,15 @@ final class TextInsertionService {
     /// user's app and can never be recalled.
     @ObservationIgnored
     private var liveTypedTextForSession = ""
+    /// Set for a Live Auto-Paste session judged non-terminal at its start:
+    /// answers whether the target focused now is terminal-like, so a newline
+    /// typed after focus moved to a terminal still collapses to a space
+    /// (`LiveTerminalNewlineGuard`, #513). Nil for a terminal session, whose
+    /// hold-back stream already sanitizes, and outside Live Auto-Paste.
+    @ObservationIgnored
+    private var liveLateTerminalProbe: (() -> Bool)?
+    @ObservationIgnored
+    private var liveNewlineGuard = LiveTerminalNewlineGuard()
     /// The frontmost app at each successful live insertion since the last
     /// `clearLiveInsertionTargetPIDs()`; nil where it could not be read or
     /// Secure Keyboard Entry was on. Live
@@ -324,9 +333,10 @@ final class TextInsertionService {
 
         guard !pendingRealtimeInsertionText.isEmpty else { return }
 
-        let insertedText = pendingRealtimeInsertionText
-        switch insertTextPrioritizingKeyboard(insertedText) {
+        let prepared = preparedForLateTerminal(pendingRealtimeInsertionText)
+        switch insertTextPrioritizingKeyboard(prepared.text) {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
+            commitLateTerminalGuard(prepared)
             pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
             liveInsertionTargetPIDs.append(confirmedLiveInsertionPID())
         case .failed:
@@ -447,6 +457,13 @@ final class TextInsertionService {
         )
     }
 
+    /// Arms (or, with nil, disarms) the late-terminal newline guard for the
+    /// session starting now, resetting its state.
+    func setLiveLateTerminalProbe(_ probe: (() -> Bool)?) {
+        liveLateTerminalProbe = probe
+        liveNewlineGuard = LiveTerminalNewlineGuard()
+    }
+
     func endLiveReplacementSession() {
         // Teardown: flush any text the stream is still holding so a stopped
         // session never drops its trailing word(s). Idempotent with the
@@ -498,9 +515,11 @@ final class TextInsertionService {
 
         guard !releasedText.isEmpty else { return }
 
-        switch insertTextPrioritizingKeyboard(releasedText) {
+        let prepared = preparedForLateTerminal(releasedText)
+        switch insertTextPrioritizingKeyboard(prepared.text) {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
-            liveTypedTextForSession += releasedText
+            commitLateTerminalGuard(prepared)
+            liveTypedTextForSession += prepared.text
             liveInsertionTargetPIDs.append(confirmedLiveInsertionPID())
         case .failed:
             // Keep the released text verbatim for the retry task; it must
@@ -508,6 +527,29 @@ final class TextInsertionService {
             pendingHoldBackReleasedText = releasedText
             Log.corrector.notice(
                 "corrector holdback release failed chars=\(releasedText.count, privacy: .public) queued_for_retry=1"
+            )
+        }
+    }
+
+    /// The text to type for `text`: unchanged unless the late-terminal guard
+    /// is armed. The guard state moves on only through
+    /// `commitLateTerminalGuard`, after the text is typed.
+    private func preparedForLateTerminal(_ text: String) -> LiveTerminalNewlineGuard.Prepared {
+        guard let probe = liveLateTerminalProbe else {
+            return LiveTerminalNewlineGuard.Prepared(
+                text: text,
+                collapsedRunCount: 0,
+                stateAfterTyping: liveNewlineGuard
+            )
+        }
+        return liveNewlineGuard.prepare(text, targetIsTerminalLike: probe)
+    }
+
+    private func commitLateTerminalGuard(_ prepared: LiveTerminalNewlineGuard.Prepared) {
+        liveNewlineGuard = prepared.stateAfterTyping
+        if prepared.collapsedRunCount > 0 {
+            Log.insertion.notice(
+                "newline guard: target turned terminal-like mid-session; collapsed \(prepared.collapsedRunCount, privacy: .public) newline/tab run(s) to a space"
             )
         }
     }
