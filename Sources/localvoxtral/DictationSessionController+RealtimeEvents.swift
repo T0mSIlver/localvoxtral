@@ -175,14 +175,13 @@ extension DictationSessionController {
         if isFinalizingStop {
             realtimeFinalizationLastActivityAt = dependencies.clock.now()
         }
-        if !processedText.trimmed.isEmpty {
-            noteTranscriptTextForSilenceAutoStop()
-        }
+        let overlayTextBeforeFinal = transcript.overlayDisplayText
 
         guard let finalized = transcript.applyFinal(processedText) else {
             refreshOverlayBufferSession()
             return
         }
+        noteFinalTextForSilenceAutoStop(overlayTextBefore: overlayTextBeforeFinal)
         statusText = activeStatusText
 
         if isLiveAutoPasteModeEnabled {

@@ -85,6 +85,47 @@ final class SilenceAutoStopTests: XCTestCase {
         XCTAssertNil(viewModel.session.silenceAutoStopTask, "the watch ended with its one stop")
     }
 
+    func testAFinalThatRepeatsThePartialIsNotNewText() async {
+        let clock = ManualSessionClock()
+        let (viewModel, _, _) = makeLiveOverlaySession(clock: clock)
+        viewModel.session.armSilenceAutoStopIfEnabled()
+        let watch = viewModel.session.silenceAutoStopTask
+
+        await clock.waitForSleepers(1)
+        clock.advance(by: 3)
+        viewModel.session.handle(event: .partialTranscript("hello there"))
+        clock.advance(by: 4.9)
+        // The final only confirms the partial: the quiet still counts from 3 s.
+        viewModel.session.handle(event: .finalTranscript("hello there"))
+        await clock.waitForSleepers(1)
+        clock.advance(by: 3.1)
+        // A watch that counted the final sleeps on and never ends here; the
+        // bound turns that into a failure instead of a hung suite.
+        let ended = BoundedWait()
+        Task { await watch?.value; ended.resolve() }
+        let stopped = await ended.value(failAfter: 10)
+
+        XCTAssertTrue(stopped, "8 s after the last new words, the watch stops the session")
+        XCTAssertFalse(viewModel.isDictating)
+    }
+
+    func testAFinalWithNewWordsIsNewText() async {
+        let clock = ManualSessionClock()
+        let (viewModel, _, _) = makeLiveOverlaySession(clock: clock)
+        viewModel.session.armSilenceAutoStopIfEnabled()
+
+        await clock.waitForSleepers(1)
+        clock.advance(by: 3)
+        viewModel.session.handle(event: .partialTranscript("hello"))
+        clock.advance(by: 4.9)
+        viewModel.session.handle(event: .finalTranscript("hello there"))
+        await clock.waitForSleepers(1)
+        clock.advance(by: 3.1)
+        await clock.waitForSleepers(1)
+
+        XCTAssertTrue(viewModel.isDictating, "the final added a word at 7.9 s")
+    }
+
     func testSettingOffNeverArms() {
         let clock = ManualSessionClock()
         let (viewModel, _, _) = makeLiveOverlaySession(clock: clock, silenceAutoStop: .off)

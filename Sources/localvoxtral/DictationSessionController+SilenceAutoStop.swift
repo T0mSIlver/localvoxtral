@@ -60,6 +60,21 @@ extension DictationSessionController {
         lastTranscriptTextAt = dependencies.clock.now()
     }
 
+    /// A final that only confirms the partial already shown is not new text,
+    /// or the stop would slip by the final's latency. It counts only when it
+    /// adds or changes words.
+    func noteFinalTextForSilenceAutoStop(overlayTextBefore: String) {
+        let before = Self.spokenWords(overlayTextBefore)
+        let after = Self.spokenWords(transcript.overlayDisplayText)
+        guard after != before, !before.starts(with: after) else { return }
+        noteTranscriptTextForSilenceAutoStop()
+    }
+
+    static func spokenWords(_ text: String) -> [Substring] {
+        let lowered = text.lowercased()
+        return lowered.split { !$0.isLetter && !$0.isNumber }
+    }
+
     func disarmSilenceAutoStop() {
         silenceAutoStopTask?.cancel()
         silenceAutoStopTask = nil
