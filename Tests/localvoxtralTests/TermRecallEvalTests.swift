@@ -106,6 +106,10 @@ final class TermRecallEvalTests: XCTestCase {
         print(jsonLines, terminator: "")
         print(TermRecallReport.runEnd)
         print(TermRecallReport.scoreboard(run))
+        // XCTest writes assertion diagnostics to the same descriptor; flush
+        // the run file first, or a failure below lands inside a JSON line
+        // (as in the agent-dictation eval).
+        fflush(stdout)
 
         let failed = run.scores.filter { $0.hypothesis.isEmpty }.count
         XCTAssertEqual(failed, 0, "\(failed) case(s) got no transcript; see the log")
@@ -145,7 +149,7 @@ final class TermRecallEvalTests: XCTestCase {
             frenchVoice = EvalSpeechStage.resolveVoice(
                 languagePrefix: "fr", preferred: EvalSpeechStage.frenchVoicePreference
             )
-            print("term-recall: voices en=\(englishVoice ?? "default") fr=\(frenchVoice ?? "none")")
+            progress("term-recall: voices en=\(englishVoice ?? "default") fr=\(frenchVoice ?? "none")")
         }
 
         let endpoint = EvalSpeechStage.Endpoint(url: endpointURL, apiKey: "", model: model)
@@ -156,7 +160,7 @@ final class TermRecallEvalTests: XCTestCase {
                 let pcm: Data
                 if let recordings {
                     guard let recorded = recordings[evalCase.id] else {
-                        print("term-recall: [\(index + 1)/\(cases.count)] \(evalCase.id) no recording, skipped")
+                        progress("term-recall: [\(index + 1)/\(cases.count)] \(evalCase.id) no recording, skipped")
                         continue
                     }
                     pcm = recorded
@@ -176,10 +180,10 @@ final class TermRecallEvalTests: XCTestCase {
             } catch {
                 // Infrastructure, not a score: the case id and the error, no
                 // case text.
-                print("term-recall: [\(index + 1)/\(cases.count)] \(evalCase.id) FAILED: \(error)")
+                progress("term-recall: [\(index + 1)/\(cases.count)] \(evalCase.id) FAILED: \(error)")
             }
             scores.append(TermRecallScorer.score(evalCase, hypothesis: hypothesis, noiseTerms: noiseTerms))
-            print("term-recall: [\(index + 1)/\(cases.count)] \(evalCase.id) done")
+            progress("term-recall: [\(index + 1)/\(cases.count)] \(evalCase.id) done")
         }
         let audio = config.recordingDirectory.map { "human/\(URL(fileURLWithPath: $0).lastPathComponent)" } ?? "say"
         return TermRecallRun(
@@ -209,7 +213,7 @@ final class TermRecallEvalTests: XCTestCase {
             byID[row.id] = row.text
         }
         let scored = cases.filter { byID[$0.id] != nil }
-        print("term-recall: \(scored.count) of \(cases.count) selected case(s) have a hypothesis")
+        progress("term-recall: \(scored.count) of \(cases.count) selected case(s) have a hypothesis")
         return TermRecallRun(
             header: .init(
                 label: config.label ?? URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent,
@@ -238,6 +242,12 @@ final class TermRecallEvalTests: XCTestCase {
             }
         }
         print(TermRecallReport.comparison(before: try load(before), after: try load(after)))
+    }
+
+    /// A progress line, flushed so a long run shows where it is.
+    private func progress(_ line: String) {
+        print(line)
+        fflush(stdout)
     }
 
     // MARK: - Inputs

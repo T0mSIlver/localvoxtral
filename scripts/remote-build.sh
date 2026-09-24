@@ -768,7 +768,7 @@ case "$CMD" in
       # work dir that a fresh LV_BUILD_DIR or the gc verb can drop.
       TERM_RECALL_RUN_OUT="$ROOT_DIR/$TR_DIR/runs/$TR_LABEL.jsonl"
     fi
-    REMOTE_CMD=(swift test --filter TermRecallEvalTests)
+    REMOTE_CMD=(swift test --build-system native --filter TermRecallEvalTests)
     REQUIRE_SUITE_IN_LOG="TermRecallEvalTests"
     ;;
   eval-e2e)
@@ -1080,12 +1080,14 @@ if [[ -n "$TERM_RECALL_RUN_OUT" ]]; then
   if awk '/^=== TERM-RECALL-RUN-END ===$/ { if (inside) closed = 1; inside = 0; next }
           inside { print }
           /^=== TERM-RECALL-RUN-BEGIN ===$/ { inside = 1 }
-          END { exit !closed }' "$REMOTE_LOG" >"$TERM_RECALL_RUN_OUT.tmp"; then
+          END { exit !closed }' "$REMOTE_LOG" >"$TERM_RECALL_RUN_OUT.tmp" \
+    && ! grep -qv '^{.*}$' "$TERM_RECALL_RUN_OUT.tmp"; then
     mv "$TERM_RECALL_RUN_OUT.tmp" "$TERM_RECALL_RUN_OUT"
     echo "==> Run file: ${TERM_RECALL_RUN_OUT#"$ROOT_DIR/"}"
   else
     rm -f "$TERM_RECALL_RUN_OUT.tmp"
-    echo "==> No complete run file in the log; nothing copied back" >&2
+    echo "==> No complete run file in the log, or a line in it is not JSON (a" >&2
+    echo "    diagnostic written into it); nothing copied back" >&2
   fi
 fi
 

@@ -519,6 +519,62 @@ def looks_like_identifier_list(s: str) -> bool:
     return joined >= 3 and joined * 5 >= len(words) * 2
 
 
+def scorer_targets(text: str, session_list: list[str], noise: list[str]) -> list[str]:
+    """The session-list terms TermRecallScorer finds in `text`, in list order.
+
+    A port of TermRecallScorer.Matcher: patterns with more words first; a
+    pattern matches its words in order, or fewer adjacent words that glue to
+    it; a match claims its words. TermRecallEvalTests fails a run whose cases
+    disagree with the Swift scorer, so a drift here cannot go unseen.
+    """
+    patterns = []
+    seen: set[str] = set()
+    for term in session_list + noise:
+        key = scorer_key(term)
+        if key and key not in seen:
+            seen.add(key)
+            patterns.append((key.split(" "), key.replace(" ", ""), key, term))
+    patterns.sort(key=lambda p: (len(p[0]), len(p[1]), p[2]), reverse=True)
+    words = scorer_key(text).split(" ") if scorer_key(text) else []
+    found: set[str] = set()
+    i = 0
+    while i < len(words):
+        length = 0
+        for parts, glued, key, _ in patterns:
+            n = len(parts)
+            if words[i : i + n] == parts:
+                length = n
+            else:
+                length = next(
+                    (w for w in range(n - 1, 0, -1)
+                     if i + w <= len(words) and "".join(words[i : i + w]) == glued),
+                    0,
+                )
+            if length:
+                found.add(key)
+                break
+        i += length or 1
+    return [t for t in dict.fromkeys(session_list) if scorer_key(t) in found]
+
+
+def glued_key(text: str) -> str:
+    """A term's identity as TermRecallScorer sees it: its words with case
+    and separators dropped. "Next.js", "nextjs" and "next js" are one term to
+    the scorer, which lets a spelling glue to it, so they are one term here."""
+    return scorer_key(text).replace(" ", "")
+
+
+_LOOKUPS: dict[int, dict[str, str]] = {}
+
+
+def term_rank_lookup(term_rank: dict[str, int]) -> dict[str, str]:
+    lookup = _LOOKUPS.get(id(term_rank))
+    if lookup is None:
+        lookup = {glued_key(t): t for t in sorted(term_rank, key=term_rank.get, reverse=True)}
+        _LOOKUPS[id(term_rank)] = lookup
+    return lookup
+
+
 def find_terms_in_sentence(
     sentence: str, term_rank: dict[str, int]
 ) -> list[str]:
@@ -536,8 +592,12 @@ def find_terms_in_sentence(
             if n > 1 and not whitespace_adjacent(sentence, spans, i, n):
                 continue
             phrase = " ".join(toks[i : i + n])
-            key = phrase if phrase in term_rank else phrase.lower()
-            if key in term_rank:
+            key = term_rank_lookup(term_rank).get(glued_key(phrase))
+            # Fewer words may glue to a term, more may not: "with a" is not
+            # the term "witha", as the scorer sees it.
+            if key is not None and len(scorer_key(phrase).split()) > len(scorer_key(key).split()):
+                key = None
+            if key is not None:
                 for j in range(i, i + n):
                     claimed[j] = True
                 hits.append((term_rank[key], key))
@@ -718,10 +778,29 @@ def main() -> int:
     # English, so only English sentences build it; French sentences are then
     # matched against the same inventory, which also keeps French words out.
     english = [m for m in sentences if m.language == "en"]
-    ranked = [
-        entry for entry in build_inventory(english, dictionary)
-        if entry[0].lower() not in FRENCH_WORDS
-    ]
+    # One entry per scorer identity: the best-ranked spelling stands for
+    # "Next.js", "nextjs" and "next js" alike.
+    # Of those spellings, the one with the most words: the scorer lets fewer
+    # words glue to a term, never more, so "Next.js" also finds "nextjs"
+    # while "nextjs" would miss "Next.js".
+    ranked = []
+    position: dict[str, int] = {}
+    for entry in build_inventory(english, dictionary):
+        key = glued_key(entry[0])
+        if entry[0].lower() in FRENCH_WORDS or not key:
+            continue
+        # The scorer ignores case, so a one-word term that is an ordinary
+        # word in lowercase ("DO", "ONE", "GET") would make every "do" a
+        # target.
+        words = scorer_key(entry[0]).split()
+        if len(words) == 1 and words[0] in dictionary:
+            continue
+        if key not in position:
+            position[key] = len(ranked)
+            ranked.append(entry)
+        elif len(scorer_key(entry[0]).split()) > len(scorer_key(ranked[position[key]][0]).split()):
+            _, stats, score = ranked[position[key]]
+            ranked[position[key]] = (entry[0], stats, score)
     print(f"technical terms extracted: {len(ranked)}")
     top = ranked[: args.top_terms]
     term_rank = {term: i for i, (term, _, _) in enumerate(top)}
@@ -786,6 +865,15 @@ def main() -> int:
     noise = noise_terms_for(
         [term for term, _, _ in ranked], selected, session_lists, args.list_size
     )
+    # A case's terms are what the scorer will find in its text from its
+    # lists, so the two can never disagree about a case's targets.
+    kept = []
+    for c, listed in zip(selected, session_lists):
+        c.terms = scorer_targets(c.text, listed, noise)
+        if c.terms:
+            kept.append((c, listed))
+    selected = [c for c, _ in kept]
+    session_lists = [listed for _, listed in kept]
 
     # 7) Emit. cases.json is the only file that travels to the Mac, so it
     # carries a short HASH of the session path; the transcript paths go to
