@@ -55,7 +55,6 @@ PATTERNS=(
   'scripts/lib/word-accuracy.sh'
   'scripts/lib/launch-app.sh'
   '.github/workflows/ui-smoke.yml'
-  'scripts/ci/e2e-dictation-filter.sh'
 )
 
 if [[ $# -ne 1 ]]; then
