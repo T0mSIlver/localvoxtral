@@ -79,34 +79,6 @@ package enum TextMergingAlgorithms {
         character.isLetter || character.isNumber
     }
 
-    package static func mergeIncrementalText(existing: String, incoming: String) -> (merged: String, appendedDelta: String) {
-        guard !incoming.isEmpty else { return (existing, "") }
-        guard !existing.isEmpty else { return (incoming, incoming) }
-
-        if incoming == existing {
-            return (existing, "")
-        }
-
-        if incoming.hasPrefix(existing) {
-            let start = incoming.index(incoming.startIndex, offsetBy: existing.count)
-            let delta = String(incoming[start...])
-            return (incoming, delta)
-        }
-
-        if existing.hasSuffix(incoming) || existing.contains(incoming) {
-            return (existing, "")
-        }
-
-        let overlap = longestSuffixPrefixOverlap(lhs: existing, rhs: incoming)
-        if overlap > 0 {
-            let start = incoming.index(incoming.startIndex, offsetBy: overlap)
-            let delta = String(incoming[start...])
-            return (existing + delta, delta)
-        }
-
-        return (existing + incoming, incoming)
-    }
-
     /// Joins a finalized segment onto the dictation event. A segment boundary
     /// is where the backend ended a generation or the socket reconnected, not
     /// where the speaker paused, so it joins with a space, or with nothing

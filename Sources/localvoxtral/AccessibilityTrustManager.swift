@@ -96,12 +96,6 @@ final class AccessibilityTrustManager {
         }
     }
 
-    func requestPermission() {
-        permissionPrompter()
-        startPolling()
-        refresh()
-    }
-
     func promptIfNeeded() {
         refresh()
         guard !isTrusted else { return }

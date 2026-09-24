@@ -145,4 +145,35 @@ extension SettingsStore {
         }
         livePasteShortcutEnabled = true
     }
+
+    // MARK: - Copy last dictation (#526)
+
+    /// The global shortcut for "Copy last dictation", nil when none is set.
+    var copyLastDictationShortcut: DictationShortcut? {
+        guard copyLastDictationShortcutEnabled else { return nil }
+        let candidate = DictationShortcut(
+            keyCode: copyLastDictationShortcutKeyCode,
+            carbonModifierFlags: copyLastDictationShortcutCarbonModifierFlags
+        ).normalized
+        if DictationShortcutValidation.persistenceErrorMessage(for: candidate) != nil {
+            return nil
+        }
+        return candidate
+    }
+
+    /// A shortcut the validator rejects is not stored: the slot is optional,
+    /// so it has no default to fall back to.
+    func setCopyLastDictationShortcut(_ shortcut: DictationShortcut?) {
+        guard let shortcut else {
+            copyLastDictationShortcutEnabled = false
+            return
+        }
+        let normalizedShortcut = shortcut.normalized
+        guard DictationShortcutValidation.persistenceErrorMessage(for: normalizedShortcut) == nil else {
+            return
+        }
+        copyLastDictationShortcutKeyCode = normalizedShortcut.keyCode
+        copyLastDictationShortcutCarbonModifierFlags = normalizedShortcut.carbonModifierFlags
+        copyLastDictationShortcutEnabled = true
+    }
 }

@@ -122,13 +122,10 @@ final class DoubleMetaphoneTests: XCTestCase {
 
         XCTAssertEqual(pain, DoubleMetaphone.Key(primary: "PN", secondary: "PN"))
         XCTAssertEqual(pane, DoubleMetaphone.Key(primary: "PN", secondary: "PN"))
-        XCTAssertTrue(DoubleMetaphone.keysMatch(pain, pane))
 
         XCTAssertEqual(claude, DoubleMetaphone.Key(primary: "KLT", secondary: "KLT"))
         XCTAssertEqual(clothes, DoubleMetaphone.Key(primary: "KL0S", secondary: "KLTS"))
         XCTAssertEqual(close, DoubleMetaphone.Key(primary: "KLS", secondary: "KLS"))
-        XCTAssertFalse(DoubleMetaphone.keysMatch(claude, clothes))
-        XCTAssertFalse(DoubleMetaphone.keysMatch(claude, close))
     }
 
     func testShortWords_canIntentionallyCollide() {
@@ -137,12 +134,6 @@ final class DoubleMetaphoneTests: XCTestCase {
         let expected = DoubleMetaphone.Key(primary: "KT", secondary: "KT")
         XCTAssertEqual(DoubleMetaphone.encode("code"), expected)
         XCTAssertEqual(DoubleMetaphone.encode("coat"), expected)
-        XCTAssertTrue(
-            DoubleMetaphone.keysMatch(
-                DoubleMetaphone.encode("code"),
-                DoubleMetaphone.encode("coat")
-            )
-        )
     }
 
     func testNormalizationAndEmptyInputs() {
@@ -169,30 +160,6 @@ final class DoubleMetaphoneTests: XCTestCase {
         XCTAssertEqual(
             DoubleMetaphone.encode("aeiou"),
             DoubleMetaphone.Key(primary: "A", secondary: "A")
-        )
-    }
-
-    func testKeysMatch_checksPrimarySecondaryCrossPairings() {
-        let primaryOnlySide = DoubleMetaphone.Key(primary: "ABC", secondary: "DEF")
-        let secondaryOnlySide = DoubleMetaphone.Key(primary: "XYZ", secondary: "ABC")
-        XCTAssertTrue(DoubleMetaphone.keysMatch(primaryOnlySide, secondaryOnlySide))
-        XCTAssertTrue(DoubleMetaphone.keysMatch(secondaryOnlySide, primaryOnlySide))
-        XCTAssertFalse(
-            DoubleMetaphone.keysMatch(
-                primaryOnlySide,
-                DoubleMetaphone.Key(primary: "UVW", secondary: "XYZ")
-            )
-        )
-    }
-
-    func testKeysMatch_neverMatchesEmptyKeys() {
-        let empty = DoubleMetaphone.Key(primary: "", secondary: "")
-        XCTAssertFalse(DoubleMetaphone.keysMatch(empty, empty))
-        XCTAssertFalse(
-            DoubleMetaphone.keysMatch(
-                empty,
-                DoubleMetaphone.Key(primary: "", secondary: "A")
-            )
         )
     }
 

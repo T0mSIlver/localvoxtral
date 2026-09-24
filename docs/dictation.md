@@ -68,6 +68,14 @@ glance, a **microphone picker**, an auto-copy toggle for the final text, and
 — after a polished commit — the raw transcript one click away. LLM polishing
 prompts are editable (see the config folder below).
 
+**Copy last dictation** puts the last dictation on the clipboard: its polished
+text, or the transcript when polishing failed. It covers the dictations that
+never reached the app: the insertion failed, the connection dropped and could
+not come back (the text transcribed up to then is kept), or a new dictation
+started while the last one was still polishing. It works with history off,
+until the app quits. A global shortcut for it can be recorded under
+**Settings → Dictation → Output**.
+
 ## History
 
 Every dictation is saved on this Mac, in plain text, in
@@ -104,6 +112,16 @@ the last 7 days, the last 30, or all of them:
   failed. **Show** opens History filtered to them.
 - **Polishing**: how often it changed the text, the typical wait (the
   median), and the wait one polish in ten exceeds.
+- **Learning, last 12 weeks**: one bar per week, whatever the period says,
+  so you can see whether localvoxtral is learning how you speak. **Terms the
+  recognizer spelled right** takes your Names and terms and the learned terms
+  that ended up in a dictation, and counts how many the transcript already
+  spelled exactly, before polishing or a replacement fixed them. **Transcripts
+  inserted as recognized** is the share of polished dictations whose text went
+  in exactly as the recognizer wrote it. A week with fewer than five
+  dictations to count draws no bar. Both are a trend, not a measurement: the
+  history only holds the terms that reached the inserted text, so a term that
+  both the recognizer and polishing got wrong is counted nowhere.
 - **What polishing keeps fixing**: replacements of up to four words that
   polishing made in three dictations or more, such as `quen → Qwen`. These are
   the words the recognizer gets wrong for you. A spelling added to Names and
@@ -137,7 +155,8 @@ History; the panes sit under the sidebar's Settings header:
   (2 GB by default); Nemotron never fills it, so the row appears only for
   Voxtral.
 - **Dictation** — the trigger (single modifier key with tap/hold gestures, or
-  per-mode keyboard shortcuts), the menu-bar mode, copy on stop, ducking other
+  per-mode keyboard shortcuts), the menu-bar mode, copy on stop, the **Copy
+  last dictation** shortcut, ducking other
   audio, the spoken "send it" trigger for each mode, and the overlay's font
   size and how many lines it shows before scrolling. **Lower other audio while dictating**, on unless you turn it off,
   drops music and calls to a fifth of your volume for as long as a session
