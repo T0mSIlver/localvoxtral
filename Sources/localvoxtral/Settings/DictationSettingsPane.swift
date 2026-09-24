@@ -310,6 +310,16 @@ struct DictationSettingsPane: View {
                     }
                 }
 
+                SettingsFieldRow(title: "Stop dictating after silence") {
+                    Picker("", selection: $settings.overlayBufferSilenceAutoStop) {
+                        ForEach(SilenceAutoStop.allCases) { choice in
+                            Text(choice.displayName).tag(choice)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                }
+
                 SettingsFieldRow(title: "Say \u{201C}send it\u{201D} to press Return in a terminal") {
                     Toggle("", isOn: $settings.overlaySpokenSendEnabled)
                         .labelsHidden()

@@ -158,6 +158,7 @@ extension DictationSessionController {
         }
 
         transcript.appendPartial(processedDelta)
+        noteTranscriptTextForSilenceAutoStop()
         if isLiveAutoPasteModeEnabled, liveSpokenSendWithholdsSegment() {
             // Typed at the final, once it is known whether it ends in the
             // trigger: typed text cannot be taken back.
@@ -178,11 +179,13 @@ extension DictationSessionController {
         if isFinalizingStop {
             realtimeFinalizationLastActivityAt = dependencies.clock.now()
         }
+        let overlayTextBeforeFinal = transcript.overlayDisplayText
 
         guard let finalized = transcript.applyFinal(processedText) else {
             refreshOverlayBufferSession()
             return
         }
+        noteFinalTextForSilenceAutoStop(overlayTextBefore: overlayTextBeforeFinal)
         statusText = activeStatusText
 
         if isLiveAutoPasteModeEnabled, liveSpokenSendWithholdsSegment() {
