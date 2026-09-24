@@ -1,130 +1,104 @@
-# Term-recall harvest (private eval raw material)
+# Term-recall eval (private)
 
-Raw material for a future term-recall eval: can the polish LLM map botched
-ASR of technical terms ("clothes code" -> "Claude Code") back to exact local
-spellings using attached context?  This directory holds ONLY documentation
-and no data.  Everything the pipeline produces is PRIVATE — derived from the
-owner's real Claude Code transcripts — and lives under `EvalRecordings/`,
-which is wholesale gitignored (root `.gitignore`, `/EvalRecordings/`) and
-receiver-protected by `remote-build.sh`'s rsync filters.  Never commit the
-outputs, never upload them, never quote them into public PRs/issues.
+Measures whether the speech engine spells the owner's technical terms right,
+whether it writes listed terms nobody said, and how it does on the other
+words. Polish is not in the loop, so a speech-engine change is measured
+alone. It is the gate for term biasing in the engine (#316, #521) and for a
+second pass on stop (#524).
+
+This directory holds only this README. The cases come from the owner's own
+Claude Code transcripts, so everything the pipeline writes stays under the
+gitignored `EvalRecordings/term-recall/` or outside the repo. Never commit
+it, and never quote a case, a term or a transcript into a PR, an issue or a
+CI log. The scoreboard prints counts only and is the part that goes in a PR.
 
 ## Pipeline
 
-```
-Linux dev box (where ~/.claude/projects lives):
-  python3 scripts/harvest-term-recall-cases.py
-    -> EvalRecordings/term-recall/cases.json       (sentence, target terms, context;
-         provenance is a 12-hex session HASH, no transcript paths)
-    -> EvalRecordings/term-recall/terms.json       (ranked term inventory)
-    -> EvalRecordings/term-recall/session-map.json (hash -> transcript path;
-         LOCAL ONLY — never copy off the harvest machine)
+On the machine that holds the transcripts (`~/.claude/projects`):
 
-Mac build host (live voxmlx; copy ONLY cases.json into
-EvalRecordings/term-recall/ there — not session-map.json or terms.json):
-  ./scripts/mine-term-recall-asr.sh
-  (from a Linux box: ./scripts/remote-build.sh mine-term-recall [N] — the
-   SSH gate cannot run scripts directly, so the verb launches the miner
-   through the marker-gated TermRecallMinerLaunchTests and refuses to run
-   while the local-only harvest files sit in the tree it would sync)
-    -> EvalRecordings/term-recall/mined.jsonl          (resumable journal)
-    -> EvalRecordings/term-recall/asr-corruptions.json (the mined product:
-         {id, spoken_text, asr_text, corrupted_terms:[{intended, heard}]})
+```bash
+python3 scripts/harvest-term-recall-cases.py
 ```
 
-A relative `--out-dir` is always resolved against `git rev-parse
---show-toplevel` (the script refuses to run if that fails): the privacy
-guarantee rests on the ROOT-anchored `/EvalRecordings/` gitignore rule, so a
-cwd-relative write from a subdirectory must be impossible.  The top-terms
-stdout dump is opt-in (`--print-terms`) so transcript-derived content stays
-out of terminal scrollback and logs by default.
+It writes `EvalRecordings/term-recall/cases.json`, the only file that goes to
+the Mac. `terms.json` (the ranked inventory) and `session-map.json` (case
+session hash to transcript path) go to `~/.local/share/localvoxtral/term-recall/`,
+outside the repo, so no sync can carry them off. `remote-build.sh` refuses to
+run if either sits in `EvalRecordings/term-recall/`.
 
-The miner keeps only cases where TTS -> live voxmlx ASR genuinely corrupted a
-target term; those `(intended, heard)` pairs are the future eval's inputs.
+From the same machine, against the Mac's speech test services:
 
-## What the harvest does
+```bash
+./scripts/remote-build.sh eval-term-recall --asr voxtral
+```
 
-- Scans `~/.claude/projects/*/*.jsonl` session transcripts (schema parsed
-  defensively; sidechains, `subagents/` files, command wrappers, and
-  tool-result echoes are excluded — only real human messages count).
-- Builds a technical-term inventory (unigrams + whitespace-adjacent n-grams
-  up to 3) ranked by frequency x session spread x multi-word bonus, with
-  per-term provenance counts.  Unspeakable tokens (hashes, UUIDs, paths,
-  symbol soup) are dropped.
-- Selects real user sentences containing 1–3 inventory terms that read like
-  dictation, with per-term caps for diversity.  Pasted content (diffs, logs,
-  shell prompts, markup, code) is filtered out.
-- Redacts by DROPPING: any sentence matching secret/token/key/email/JWT/
-  hex-blob patterns, URLs, long paths, or `user@host` strings is discarded
-  entirely rather than masked.
+```bash
+./scripts/remote-build.sh eval-term-recall --asr nemotron
+```
 
-## Harness conventions reused (do not fork them)
+```bash
+./scripts/remote-build.sh eval-term-recall compare voxtral-none nemotron-none
+```
 
-- TTS: `/usr/bin/say --file-format=WAVE --data-format=LEI16@16000`, cached in
-  `~/Library/Caches/localvoxtral-eval/wav/<key>.wav` with the exact
-  `AgentDictationE2EEvalSupport.wavCacheKey` derivation (SHA-256 over
-  length-prefixed text/voice/data-format), so WAVs are shared with the
-  agent-dictation E2E eval and reruns are pure cache hits.  Synthesis is
-  temp-name-then-move, same as the harness.
-- ASR: the realtime websocket protocol the production client speaks
-  (`OpenAI-Beta: realtime=v1` header, `session.update` ->
-  `input_audio_buffer.append` -> commit + final commit ->
-  `transcription.done`), default endpoint `ws://127.0.0.1:8000/v1/realtime`
-  with the repo-wide model pin
-  `T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit`; the wrapper warms
-  voxmlx via `scripts/mac/lv-test-servers.sh ensure voxmlx` first, like
-  `run-agent-eval-local.sh`.  Like the E2E harness, the miner waits a 1 s
-  grace after the first non-empty final and joins trailing final segments,
-  so multi-segment utterances are not truncated into false corruptions.
-- Reporting: `mined.jsonl` appends one record per case immediately
-  (resumable; reruns skip cases whose `input_sha` is unchanged) and stdout
-  ends with a sentinel-delimited report,
-  `=== TERM-RECALL-MINING-REPORT-BEGIN/END ===` — deliberately a DIFFERENT
-  sentinel name from the E2E inspection report so `ablate-agent-eval.py`
-  can never mistake one for the other.
+Each run prints a scoreboard and leaves its run file in
+`EvalRecordings/term-recall/runs/<label>.jsonl`. `--hypotheses
+EvalRecordings/term-recall/<file>.jsonl` scores `{"id", "text"}` rows with no
+speech engine, for a second pass or a polished transcript. `--recordings
+EvalRecordings/term-recall/<set>` replaces `say` with human WAVs in the
+agent-dictation manifest format. The full option list is in the header of
+`scripts/remote-build.sh`.
 
-## Corruption decision and "heard" span extraction
+## Cases
 
-A term counts as PRESERVED when its speech tokens appear contiguously in the
-ASR tokens, or when some window of 1..N adjacent ASR tokens (N = term token
-count) joins to exactly the glued term — windowed EQUALITY on token
-boundaries, never substring containment, so "tty" can never false-preserve
-inside an unrelated glued word.  Decision table (validated against a Python
-reference, 9/9):
+`cases.json` (schema 2) holds `noiseTerms` and a list of cases, each with:
 
-| term | ASR text | decision |
-|---|---|---|
-| Claude Code | open claude code and fix the bug | preserved |
-| tty | that is pretty good | corrupted |
-| tty | join the tty now | preserved |
-| mlx-lm | package mlxlm into the app | preserved (glued token) |
-| mlx-lm | package mlx lm into the app | preserved (contiguous) |
-| mlx-lm | package em el ex el em into the app | corrupted |
-| SwiftPM | swift pm process trees | corrupted (needs exact-spelling recall) |
-| voxmlx | restart vox m l x on the mac | corrupted |
-| AGENTS.md | read agents md first | preserved |
+- `id`: `tr-en-NNNN` or `tr-fr-NNNN`.
+- `language`: `en` or `fr`, decided per sentence by function-word counts,
+  else by its message.
+- `text`: the sentence `say` speaks and the reference it is scored against.
+- `terms`: the listed terms the sentence contains (1 to 3).
+- `sessionTerms`: at most 100 terms from the sentence's session, topped up from
+  its project, its own terms included. This is the list the session arm of
+  #316 biases with.
+- `sessionHash`: 12 hex characters; the path it stands for stays in
+  `session-map.json`.
 
-For a corrupted term, the miner reports what ASR wrote in its place: the ASR
-tokens between the nearest exactly-matched anchor words on either side of
-the term (word-level minimum-edit alignment).  Validated against a Python
-reference on these cases before the Swift port (8/8):
+`noiseTerms` holds up to 100 inventory terms that no case speaks or lists: the
+noise-control arm's list.
 
-| term | ASR heard | extracted span |
-|---|---|---|
-| Claude Code | clothes code | clothes code |
-| voxmlx | vox m l x | vox m l x |
-| worktree | work tree | work tree |
-| mlx-lm | em el ex el em | em el ex el em |
-| AGENTS.md | agents dot MD | agents dot md |
-| polishd | polished | polished |
-| Ghostty | ghosty | ghosty |
-| tty | (dropped) | "" |
+The harvester keeps every sentence that qualifies, including the ones the
+engine already gets right, because a clean case is the only way to see a term
+a change breaks. It takes real user messages only, and drops sentences with
+secrets, URLs, paths, code, command-line flags, table rows, or runs of
+identifiers such as a diff line of CSS class names. The inventory is built from
+English sentences, because the "not in the dictionary" test that makes a word
+technical is English; French sentences are matched against it.
 
-## Caveats
+## Scoring
 
-- `scripts/mine-term-recall-asr.swift` has not been executed yet (the build
-  gate offers no standalone-script typecheck verb); first Mac run should
-  start with `--limit 3`.
-- Term detection is heuristic.  The inventory deliberately over-collects;
-  the per-case `target_terms` are what matter, and the mining pass is the
-  ground-truth filter.
+`TermRecallScorer` in `localvoxtralCore` (tests: `TermRecallScoringTests`,
+Linux) does all of it:
+
+- Words are lowercased and split on anything that is not a letter or digit,
+  so case and punctuation never decide.
+- A listed term is recalled where its words appear in order, or where fewer
+  adjacent words glue to it exactly (`mlxlm` for `mlx-lm`). It never matches
+  inside a longer word, and a split term (`work tree` for `worktree`) is a
+  miss. Where two listed terms overlap, the longer one claims the words.
+- Term recall counts occurrences of the session list's terms in the reference.
+- A false insertion is a listed term the hypothesis says more often than the
+  reference, reported for the session list and the noise list separately.
+  Every arm counts against both lists, so arms stay comparable.
+- The non-term word error rate counts alignment errors on reference words
+  outside listed terms. An extra word next to a term is left out, so a
+  misheard term ("clothes code") counts against recall once, not twice.
+- `compare` pairs two runs per case and counts term occurrences gained and
+  lost.
+
+## Known limits
+
+- `say` is cleaner than a human voice. Confirm headline results on human
+  recordings.
+- The sentences are mostly typed, not dictated, messages.
+- Term detection is heuristic; a few common words still rank as terms. The
+  paired comparison is what a decision rests on, and it is unaffected.
