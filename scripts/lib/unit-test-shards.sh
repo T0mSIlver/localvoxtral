@@ -272,8 +272,13 @@ lv_shard_failed_only_on_lock() {
   [[ "$status" == "1" ]] || return 1
   grep -q "database is locked" "$output" || return 1
   [[ "$(lv_executed_test_count "$output")" == "$expected" ]] || return 1
+  # SwiftPM joins messages without a newline, so the lock diagnostic is cut
+  # out of its line and any other "error:" left there still counts.
   awk '
-    /error:/ && !/database is locked/ { bad = 1 }
+    {
+      gsub(/error: unable to attach DB: error: accessing build database "[^"]*": database is locked/, "")
+      if (/error:/) bad = 1
+    }
     /^Test Case .* failed/ { bad = 1 }
     /✘/ { bad = 1 }
     /Executed [0-9]+ tests?, with/ {

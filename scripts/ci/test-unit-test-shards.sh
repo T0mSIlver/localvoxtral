@@ -109,7 +109,8 @@ LOG
 # and the run's total last. STUB_DROP names a class to leave out (a --filter
 # that matched nothing); STUB_FAIL a class whose test fails. STUB_LOCK prints
 # the native build system's lock error before the tests and exits 1 after them,
-# as Xcode 27's SwiftPM does (#543); STUB_ERROR adds one more output line.
+# as Xcode 27's SwiftPM does (#543); STUB_ERROR adds one more output line and
+# STUB_LOCK_JOINED text on the lock line itself.
 LOCK_LINE="Another instance of SwiftPM (PID: 1) is already running using 'x/.build', but this will be ignored since \`--ignore-lock\` has been passederror: unable to attach DB: error: accessing build database \"x/.build/build.db\": database is locked Possibly there are two concurrent builds running in the same filesystem location."
 lv_shard_swift() {
   echo "swift $*" >>"$TMP_DIR/calls"
@@ -122,7 +123,7 @@ lv_shard_swift() {
     echo "error: unable to attach DB: error: accessing build database \"x/build.db\": database is locked"
     return 1
   fi
-  [[ -n "${STUB_LOCK:-}" ]] && echo "$LOCK_LINE"
+  [[ -n "${STUB_LOCK:-}" ]] && echo "$LOCK_LINE${STUB_LOCK_JOINED:-}"
   local arg class total=0 failures=0 status=0 previous=""
   for arg in "$@"; do
     if [[ "$previous" == "--filter" ]]; then
@@ -228,6 +229,10 @@ if STUB_LOCK=1 STUB_ERROR="error: Exited with unexpected signal code 11" \
   fail "the lock turned a crash green: $(cat "$log")"
 fi
 [[ "$(grep -c '^==> Shard [12]/2: exit 1' "$log")" == "2" ]] || fail "a crash behind the lock: $(cat "$log")"
+if STUB_LOCK=1 STUB_LOCK_JOINED="error: Exited with unexpected signal code 11" \
+    lv_run_unit_shards 2 "$log" Skipped >/dev/null; then
+  fail "the lock turned a crash on its own line green: $(cat "$log")"
+fi
 if STUB_LOCK=1 STUB_ERROR="✘ Test run with 1 test failed after 0.1 seconds with 1 issue." \
     lv_run_unit_shards 2 "$log" Skipped >/dev/null; then
   fail "the lock turned a Swift Testing failure green: $(cat "$log")"
