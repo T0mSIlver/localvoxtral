@@ -29,6 +29,45 @@ package enum TextMergingAlgorithms {
         return 0
     }
 
+    /// `longestSuffixPrefixOverlap`, counting only an overlap that starts a
+    /// word in `lhs`. A shared letter inside a word is a coincidence, not an
+    /// alignment: "I need" + "doing" is not "I needoing" (#516).
+    package static func wordAlignedSuffixPrefixOverlap(lhs: String, rhs: String) -> Int {
+        let maxOverlap = min(lhs.count, rhs.count)
+        guard maxOverlap > 0 else { return 0 }
+
+        for overlap in stride(from: maxOverlap, through: 1, by: -1) {
+            let lhsStart = lhs.index(lhs.endIndex, offsetBy: -overlap)
+            if lhsStart > lhs.startIndex, isWordCharacter(lhs[lhs.index(before: lhsStart)]) {
+                continue
+            }
+            let rhsEnd = rhs.index(rhs.startIndex, offsetBy: overlap)
+            if lhs[lhsStart...] == rhs[..<rhsEnd] {
+                return overlap
+            }
+        }
+
+        return 0
+    }
+
+    /// Whether raw transcript text begins inside a word. Voxtral's tokenizer
+    /// carries a word's leading space on its first token, so text a new
+    /// generation or a reconnected socket starts mid-word opens on the rest of
+    /// that word, lowercase and with no space: "e help" after "Pleas".
+    package static func startsMidWord(_ rawText: String) -> Bool {
+        guard let first = rawText.first else { return false }
+        return first.isLetter && first.isLowercase
+    }
+
+    /// Whether text that `startsMidWord` finishes the last word of `existing`.
+    private static func continuesLastWord(of existing: String, startsMidWord: Bool) -> Bool {
+        startsMidWord && existing.last?.isLetter == true
+    }
+
+    private static func isWordCharacter(_ character: Character) -> Bool {
+        character.isLetter || character.isNumber
+    }
+
     package static func mergeIncrementalText(existing: String, incoming: String) -> (merged: String, appendedDelta: String) {
         guard !incoming.isEmpty else { return (existing, "") }
         guard !existing.isEmpty else { return (incoming, incoming) }
@@ -57,7 +96,15 @@ package enum TextMergingAlgorithms {
         return (existing + incoming, incoming)
     }
 
-    package static func appendToCurrentDictationEvent(segment: String, existingText: String) -> String {
+    /// Joins a finalized segment onto the dictation event. A segment boundary
+    /// is where the backend ended a generation or the socket reconnected, not
+    /// where the speaker paused, so it joins with a space, or with nothing
+    /// when the segment `startsMidWord` (#516).
+    package static func appendToCurrentDictationEvent(
+        segment: String,
+        existingText: String,
+        segmentStartsMidWord: Bool = false
+    ) -> String {
         let normalizedSegment = segment.trimmed
         guard !normalizedSegment.isEmpty else { return existingText }
 
@@ -76,14 +123,17 @@ package enum TextMergingAlgorithms {
             return normalizedExisting
         }
 
-        let overlap = longestSuffixPrefixOverlap(lhs: normalizedExisting, rhs: normalizedSegment)
+        let overlap = wordAlignedSuffixPrefixOverlap(lhs: normalizedExisting, rhs: normalizedSegment)
         if overlap > 0 {
             let overlapIndex = normalizedSegment.index(normalizedSegment.startIndex, offsetBy: overlap)
             let suffix = String(normalizedSegment[overlapIndex...])
             return normalizedExisting + suffix
         }
 
-        return normalizedExisting + "\n" + normalizedSegment
+        if continuesLastWord(of: normalizedExisting, startsMidWord: segmentStartsMidWord) {
+            return normalizedExisting + normalizedSegment
+        }
+        return normalizedExisting + " " + normalizedSegment
     }
 
     package static func longestCommonPrefixLength(lhs: String, rhs: String) -> Int {
@@ -178,7 +228,8 @@ package enum TextMergingAlgorithms {
 
     package static func appendWithTailOverlap(
         existing: String,
-        incoming: String
+        incoming: String,
+        incomingStartsMidWord: Bool = false
     ) -> (merged: String, appendedDelta: String) {
         guard !incoming.isEmpty else { return (existing, "") }
         guard !existing.isEmpty else { return (incoming, incoming) }
@@ -191,11 +242,15 @@ package enum TextMergingAlgorithms {
             return (existing, "")
         }
 
-        let overlap = longestSuffixPrefixOverlap(lhs: existing, rhs: incoming)
+        let overlap = wordAlignedSuffixPrefixOverlap(lhs: existing, rhs: incoming)
         if overlap > 0 {
             let start = incoming.index(incoming.startIndex, offsetBy: overlap)
             let delta = String(incoming[start...])
             return (existing + delta, delta)
+        }
+
+        if continuesLastWord(of: existing, startsMidWord: incomingStartsMidWord) {
+            return (existing + incoming, incoming)
         }
 
         if incoming.count >= replayCharacterThreshold {

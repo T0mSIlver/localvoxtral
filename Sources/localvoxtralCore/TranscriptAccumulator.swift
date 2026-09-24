@@ -44,6 +44,9 @@ package struct TranscriptAccumulator: Equatable, Sendable {
     /// cleared either way.
     package mutating func applyFinal(_ processedText: String) -> FinalizedSegment? {
         let finalizedSegment = resolvedFinalizedSegment(from: processedText)
+        let segmentStartsMidWord = TextMergingAlgorithms.startsMidWord(
+            bufferedRawText.trimmed.isEmpty ? processedText : bufferedRawText
+        )
         let hadLiveDelta = !pendingSegmentText.trimmed.isEmpty
             || !livePartialText.trimmed.isEmpty
         // Text already typed into the field by the live partial path. Derived
@@ -62,7 +65,8 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         appendToTranscript(finalizedSegment)
         currentDictationEventText = TextMergingAlgorithms.appendToCurrentDictationEvent(
             segment: finalizedSegment,
-            existingText: currentDictationEventText
+            existingText: currentDictationEventText,
+            segmentStartsMidWord: segmentStartsMidWord
         )
         lastFinalSegment = currentDictationEventText
         livePartialText = ""
@@ -97,7 +101,8 @@ package struct TranscriptAccumulator: Equatable, Sendable {
 
         currentDictationEventText = TextMergingAlgorithms.appendToCurrentDictationEvent(
             segment: pendingSegment,
-            existingText: currentDictationEventText
+            existingText: currentDictationEventText,
+            segmentStartsMidWord: TextMergingAlgorithms.startsMidWord(bufferedRawText)
         )
         lastFinalSegment = currentDictationEventText
         livePartialText = ""
@@ -149,12 +154,18 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         return pendingText + finalizedText
     }
 
+    /// The partial in flight as the backend sent it, leading space included.
+    private var bufferedRawText: String {
+        pendingSegmentText.trimmed.isEmpty ? livePartialText : pendingSegmentText
+    }
+
     /// The overlay's text while the user speaks, before streaming correction.
     package var overlayDisplayText: String {
         OverlayBufferTextAssembler.displayText(
             committedText: currentDictationEventText,
             pendingText: pendingSegmentText,
-            fallbackPendingText: livePartialText
+            fallbackPendingText: livePartialText,
+            pendingStartsMidWord: TextMergingAlgorithms.startsMidWord(bufferedRawText)
         )
     }
 
@@ -163,7 +174,8 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         OverlayBufferTextAssembler.commitText(
             committedText: currentDictationEventText,
             pendingText: pendingSegmentText,
-            fallbackPendingText: livePartialText
+            fallbackPendingText: livePartialText,
+            pendingStartsMidWord: TextMergingAlgorithms.startsMidWord(bufferedRawText)
         )
     }
 
