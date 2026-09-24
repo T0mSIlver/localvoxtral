@@ -246,7 +246,7 @@ jobs:
 
       - name: Gate — build
         if: steps.plan.outputs.proceed != 'false'
-        run: swift build -c release
+        run: swift build --build-system native -c release
 
       - name: Gate — unit tests
         if: steps.plan.outputs.proceed != 'false'
@@ -269,7 +269,7 @@ jobs:
         run: |
           NSUnbufferedIO=YES ./scripts/ci/run-supervised-command.sh \
             900 "$RUNNER_TEMP/localvoxtral-release-unit-tests.log" -- \
-            swift test \
+            swift test --build-system native \
             --skip RealtimeAPIVLLMIntegrationTests \
             --skip SpeechHelperIntegrationTests \
             --skip AgentDictationE2EEvalTests \
@@ -307,7 +307,7 @@ jobs:
         env:
           VLLM_REALTIME_TEST_ENABLE: "1"
           VLLM_REALTIME_TEST_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead
-        run: swift test --filter RealtimeAPIVLLMIntegrationTests
+        run: swift test --build-system native --filter RealtimeAPIVLLMIntegrationTests
 
       - name: Gate — package app bundle
         # Releases stay ad-hoc signed on purpose: the runner's localvoxtral-dev

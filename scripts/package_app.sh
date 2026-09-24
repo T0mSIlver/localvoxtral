@@ -142,7 +142,7 @@ else
   echo "Dogfood capture: disabled (set LOCALVOXTRAL_DOGFOOD=1 to build an instrumented artifact)"
 fi
 
-swift build -c "$CONFIGURATION" --product localvoxtral -Xswiftc -g
+swift build --build-system native -c "$CONFIGURATION" --product localvoxtral -Xswiftc -g
 
 BINARY_PATH="$(find "$ROOT_DIR/.build" -type f -path "*/${CONFIGURATION}/localvoxtral" | head -n 1)"
 if [[ -z "$BINARY_PATH" ]]; then
@@ -239,7 +239,7 @@ cp "$MENUBAR_ICON_FAILURE_2X_SOURCE" "$APP_DIR/Contents/Resources/MicIconTemplat
 # The publisher is a dependency-free SwiftPM product, so a plain `swift build`
 # is enough here — unlike the polishing helper below, it has no Metal kernels
 # and needs no xcodebuild lane.
-swift build -c "$CONFIGURATION" --product localvoxtral-claude-hook -Xswiftc -g
+swift build --build-system native -c "$CONFIGURATION" --product localvoxtral-claude-hook -Xswiftc -g
 
 CLAUDE_HOOK_BINARY="$(find "$ROOT_DIR/.build" -type f -path "*/${CONFIGURATION}/localvoxtral-claude-hook" | head -n 1)"
 if [[ -z "$CLAUDE_HOOK_BINARY" ]]; then
