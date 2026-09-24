@@ -652,6 +652,7 @@ case "$CMD" in
     # gate runs nothing else (EvalCorpus/term-recall/README.md).
     TR_DIR="EvalRecordings/term-recall"
     TR_ASR="voxtral"
+    TR_ASR_GIVEN=0
     TR_LABEL=""
     TR_LIMIT=""
     TR_CASES=()
@@ -666,7 +667,7 @@ case "$CMD" in
             exit 1
           fi
           case "$1" in
-            --asr) TR_ASR="$2" ;;
+            --asr) TR_ASR="$2"; TR_ASR_GIVEN=1 ;;
             --label) TR_LABEL="$2" ;;
             --limit) TR_LIMIT="$2" ;;
             --case) TR_CASES+=("$2") ;;
@@ -707,6 +708,16 @@ case "$CMD" in
         exit 1
       fi
     done
+    # Options that one mode would silently ignore are mistakes: refuse them.
+    if [[ ${#TR_COMPARE[@]} -eq 2 && ( "$TR_ASR_GIVEN" == 1 || -n "$TR_LABEL$TR_LIMIT$TR_RECORDINGS$TR_HYPOTHESES" \
+          || ${#TR_CASES[@]} -gt 0 ) ]]; then
+      echo "eval-term-recall compare takes no other options" >&2
+      exit 1
+    fi
+    if [[ -n "$TR_HYPOTHESES" && ( "$TR_ASR_GIVEN" == 1 || -n "$TR_RECORDINGS" ) ]]; then
+      echo "eval-term-recall: --hypotheses scores text, so --asr and --recordings do not apply" >&2
+      exit 1
+    fi
     TR_MARKER="$ROOT_DIR/.term-recall-eval-enable.json"
     trap 'cleanup_transient_marker "$TR_MARKER"' EXIT
     if [[ ${#TR_COMPARE[@]} -eq 2 ]]; then
@@ -1061,18 +1072,20 @@ fi
 
 # eval-term-recall prints its run file between sentinels; keep a local copy,
 # since the Mac's copy lives in a work dir that can be dropped. A run that
-# failed some cases still printed the ones it scored.
+# failed some cases still printed the ones it scored. Only a block with both
+# sentinels is taken: a payload that died mid-print would leave a partial
+# file that a later compare would read as a complete run.
 if [[ -n "$TERM_RECALL_RUN_OUT" ]]; then
   mkdir -p "$(dirname "$TERM_RECALL_RUN_OUT")"
-  if awk '/^=== TERM-RECALL-RUN-END ===$/ { inside = 0 }
+  if awk '/^=== TERM-RECALL-RUN-END ===$/ { if (inside) closed = 1; inside = 0; next }
           inside { print }
-          /^=== TERM-RECALL-RUN-BEGIN ===$/ { inside = 1; found = 1 }
-          END { exit !found }' "$REMOTE_LOG" >"$TERM_RECALL_RUN_OUT.tmp"; then
+          /^=== TERM-RECALL-RUN-BEGIN ===$/ { inside = 1 }
+          END { exit !closed }' "$REMOTE_LOG" >"$TERM_RECALL_RUN_OUT.tmp"; then
     mv "$TERM_RECALL_RUN_OUT.tmp" "$TERM_RECALL_RUN_OUT"
     echo "==> Run file: ${TERM_RECALL_RUN_OUT#"$ROOT_DIR/"}"
   else
     rm -f "$TERM_RECALL_RUN_OUT.tmp"
-    echo "==> No run file in the log; nothing copied back" >&2
+    echo "==> No complete run file in the log; nothing copied back" >&2
   fi
 fi
 

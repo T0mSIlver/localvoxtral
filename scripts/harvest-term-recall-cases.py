@@ -2,29 +2,25 @@
 """Harvest term-recall eval cases from local Claude Code transcripts.
 
 PRIVATE-DATA TOOL. Reads the operator's own Claude Code session transcripts
-(~/.claude/projects/*/*.jsonl) on the local machine and produces:
+(~/.claude/projects) and writes:
 
-  EvalRecordings/term-recall/cases.json   — (sentence, target terms, context) triples
-  EvalRecordings/term-recall/terms.json   — ranked technical-term inventory
+  EvalRecordings/term-recall/cases.json  the cases, the only file that goes
+                                         to the Mac (gitignored)
+  <private dir>/terms.json               the ranked term inventory
+  <private dir>/session-map.json         case session hash -> transcript path
 
-Both outputs are transcript-derived and land under EvalRecordings/, which is
-wholesale gitignored (see the root .gitignore) and receiver-protected by
-remote-build.sh's rsync filters. Never commit the outputs; never send them to
-a remote service. Only this script (code) is committed.
+The private dir defaults to ~/.local/share/localvoxtral/term-recall, outside
+the repo, so no remote-build sync can carry those two off this machine.
+Never commit or upload any of it. `./scripts/remote-build.sh
+eval-term-recall` scores the cases; EvalCorpus/term-recall/README.md has the
+schema and the rules.
 
-The cases feed the Mac-side ASR-corruption mining pass
-(scripts/mine-term-recall-asr.sh), which runs each sentence through
-say-TTS -> live voxmlx ASR and keeps the cases where a target term got
-corrupted. Those (intended, heard) pairs become the raw material for the
-polish-LLM term-recall eval.
-
-Re-runnable and deterministic for a fixed transcript corpus (stable sort
-keys, seeded selection). Parses defensively: transcript schema varies across
-Claude Code versions.
+Deterministic for a fixed transcript corpus. A case id is derived from its
+sentence, so a re-harvest keeps the ids of the sentences it keeps.
 
 Usage:
   python3 scripts/harvest-term-recall-cases.py [--projects-dir ~/.claude/projects]
-      [--out-dir EvalRecordings/term-recall] [--max-cases 300] [--min-cases 150]
+      [--out-dir EvalRecordings/term-recall] [--private-dir DIR]
 """
 
 from __future__ import annotations
@@ -604,17 +600,25 @@ def noise_terms_for(
     """Terms from the inventory that no case speaks and no case lists: the
     unrelated list #316's noise-control arm biases with. A case may still say
     one by accident, so the scorer counts insertions against the reference."""
-    used = {t.lower() for listed in session_lists for t in listed}
-    spoken = [c.text.lower() for c in cases]
+    used = {scorer_key(t) for listed in session_lists for t in listed}
+    # Padded word strings, so " pull request " finds "pull-request" the way
+    # the scorer would, and never matches inside a longer word.
+    spoken = [f" {scorer_key(c.text)} " for c in cases]
     noise: list[str] = []
     for term in ranked_terms:
         if len(noise) >= limit:
             break
-        low = term.lower()
-        if low in used or any(low in text for text in spoken):
+        key = scorer_key(term)
+        if not key or key in used or any(f" {key} " in text for text in spoken):
             continue
         noise.append(term)
     return noise
+
+
+def scorer_key(text: str) -> str:
+    """The words TermRecallScorer compares: lowercased, split on anything
+    that is not a letter or digit."""
+    return " ".join(re.findall(r"[^\W_]+", text.lower()))
 
 
 def select_cases(
@@ -796,9 +800,10 @@ def main() -> int:
     cases = []
     for c, listed in zip(selected, session_lists):
         counters[c.language] += 1
+        digest = hashlib.sha256(c.text.encode()).hexdigest()[:10]
         cases.append(
             {
-                "id": f"tr-{c.language}-{counters[c.language]:04d}",
+                "id": f"tr-{c.language}-{digest}",
                 "language": c.language,
                 "text": c.text,
                 "terms": c.terms,

@@ -81,6 +81,8 @@ final class TermRecallScoringTests: XCTestCase {
         let score = TermRecallScorer.score(evalCase, hypothesis: "the tty and the other titty", noiseTerms: [])
         XCTAssertEqual(score.terms.first?.expected, 2)
         XCTAssertEqual(score.terms.first?.recalled, 1)
+        // The span shown is the occurrence that was missed, not the first one.
+        XCTAssertEqual(score.terms.first?.heard, "titty")
     }
 
     // MARK: - False insertions
@@ -110,6 +112,23 @@ final class TermRecallScoringTests: XCTestCase {
         XCTAssertEqual(score.terms, [])
         XCTAssertEqual(score.falseInsertions, [])
         XCTAssertEqual(score.nonTermWords, 4)
+    }
+
+    func testMisheardLongerTermIsNotAnInsertionOfItsPart() {
+        let evalCase = makeCase(
+            "Claude Code handles it", terms: ["Claude Code"], sessionTerms: ["Claude"]
+        )
+        let score = TermRecallScorer.score(evalCase, hypothesis: "Claude Claude handles it", noiseTerms: [])
+        XCTAssertEqual(score.terms.map(\.recalled), [0])
+        XCTAssertEqual(score.falseInsertions, [])
+    }
+
+    func testListedTermOverOrdinaryWordsIsStillAnInsertion() {
+        let evalCase = makeCase("Claude Code handles the cloud", terms: ["Claude Code"], sessionTerms: ["Claude"])
+        let score = TermRecallScorer.score(
+            evalCase, hypothesis: "Claude Code handles the Claude", noiseTerms: []
+        )
+        XCTAssertEqual(score.falseInsertions, [.init(term: "Claude", list: .session, count: 1)])
     }
 
     func testTermOnBothListsCountsAsSession() {
@@ -166,6 +185,25 @@ final class TermRecallScoringTests: XCTestCase {
     }
 
     // MARK: - Tally and comparison
+
+    func testCaseWithoutListedTermsIsNotCountedAsAllRight() {
+        let score = TermRecallScorer.score(
+            makeCase("restart the server", terms: ["speechd"]), hypothesis: "restart the server", noiseTerms: []
+        )
+        let tally = TermRecallScorer.tally([score])["all"]
+        XCTAssertEqual(tally?.casesWithTerms, 0)
+        XCTAssertEqual(tally?.casesAllRecalled, 0)
+    }
+
+    func testCompareLeavesOutACaseWhoseTextChanged() {
+        let before = [TermRecallScorer.score(makeCase("use the tty now", terms: ["tty"]), hypothesis: "use the tty now", noiseTerms: [])]
+        let after = [TermRecallScorer.score(makeCase("use the thing now", terms: ["thing"]), hypothesis: "use the thing now", noiseTerms: [])]
+        let comparison = TermRecallScorer.compare(before: before, after: after)
+        XCTAssertEqual(comparison.pairedCases, 0)
+        XCTAssertEqual(comparison.termGains, 0)
+        XCTAssertEqual(comparison.termLosses, 0)
+        XCTAssertEqual(comparison.changed, ["tr-en-0001"])
+    }
 
     func testTallyGroupsByLanguageAndAll() {
         let english = TermRecallScorer.score(

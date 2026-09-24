@@ -52,7 +52,8 @@ agent-dictation manifest format. The full option list is in the header of
 
 `cases.json` (schema 2) holds `noiseTerms` and a list of cases, each with:
 
-- `id`: `tr-en-NNNN` or `tr-fr-NNNN`.
+- `id`: `tr-en-` or `tr-fr-` plus 10 hex characters of the sentence's
+  SHA-256.
 - `language`: `en` or `fr`, decided per sentence by function-word counts,
   else by its message.
 - `text`: the sentence `say` speaks and the reference it is scored against.
@@ -88,12 +89,15 @@ Linux) does all of it:
 - Term recall counts occurrences of the session list's terms in the reference.
 - A false insertion is a listed term the hypothesis says more often than the
   reference, reported for the session list and the noise list separately.
-  Every arm counts against both lists, so arms stay comparable.
+  Every arm counts against both lists, so arms stay comparable. A listed term
+  written over the words of another term the reference says ("Claude Claude"
+  for "Claude Code") is that term misheard and counts against recall only.
 - The non-term word error rate counts alignment errors on reference words
   outside listed terms. An extra word next to a term is left out, so a
   misheard term ("clothes code") counts against recall once, not twice.
 - `compare` pairs two runs per case and counts term occurrences gained and
-  lost.
+  lost. A case id comes from its sentence, so it survives a re-harvest; a case
+  whose text differs between the two runs is left out and counted apart.
 
 ## Known limits
 

@@ -70,6 +70,9 @@ package struct TermRecallCaseScore: Codable, Equatable, Sendable {
 
     package var id: String
     package var language: String
+    /// The case text as the scorer's words, so `compare` can tell a case
+    /// that changed under the same id from one the engine got differently.
+    package var reference: String
     package var hypothesis: String
     package var terms: [TermResult]
     package var falseInsertions: [FalseInsertion]
@@ -85,6 +88,9 @@ package struct TermRecallCaseScore: Codable, Equatable, Sendable {
 /// Sums over a group of cases. Holds counts only, no case content.
 package struct TermRecallTally: Equatable, Sendable {
     package var cases = 0
+    /// Cases whose text says at least one listed term, and those
+    /// with every such occurrence recalled.
+    package var casesWithTerms = 0
     package var casesAllRecalled = 0
     package var termOccurrences = 0
     package var recalled = 0
@@ -102,7 +108,10 @@ package struct TermRecallTally: Equatable, Sendable {
         let got = score.terms.reduce(0) { $0 + $1.recalled }
         termOccurrences += expected
         recalled += got
-        if got == expected { casesAllRecalled += 1 }
+        if expected > 0 {
+            casesWithTerms += 1
+            if got == expected { casesAllRecalled += 1 }
+        }
         for insertion in score.falseInsertions {
             switch insertion.list {
             case .session: falseInsertionsSession += insertion.count
@@ -131,6 +140,9 @@ package struct TermRecallComparison: Equatable, Sendable {
     package var nonTermErrorsAfter = 0
     /// Case ids only one run scored.
     package var unpaired: [String] = []
+    /// Case ids both runs scored against different text: the case set was
+    /// re-harvested between them. Left out of every count above.
+    package var changed: [String] = []
 
     package init() {}
 }
@@ -180,20 +192,44 @@ package enum TermRecallScorer {
             guard expected > 0 else { continue }
             let recalled = min(expected, hypothesisCounts[key(term)] ?? 0)
             var span: String?
-            if recalled < expected,
-                let range = referenceMatches.first(where: { $0.key == key(term) })?.range
-            {
-                span = heardSpan(for: range, alignment: alignment, hypothesis: heard)
+            if recalled < expected {
+                // The occurrence the engine missed: the first whose words do
+                // not all align to matching words.
+                let ranges = referenceMatches.filter { $0.key == key(term) }.map(\.range)
+                let missed = ranges.first { !isHeardWordForWord($0, alignment: alignment) } ?? ranges[0]
+                span = heardSpan(for: missed, alignment: alignment, hypothesis: heard)
             }
             termResults.append(
                 .init(term: term, expected: expected, recalled: recalled, heard: span)
             )
         }
 
+        // A listed term the hypothesis writes over the words of a different
+        // term the reference says ("Claude Claude" for "Claude Code") is that
+        // term misheard, charged to recall; only the rest can be insertions.
+        var insertable: [String: Int] = [:]
+        let referenceKeyAt = referenceMatches.reduce(into: [Int: String]()) { keys, match in
+            for index in match.range { keys[index] = match.key }
+        }
+        let referenceIndexOfHeard = alignment.reduce(into: [Int: Int]()) { indices, step in
+            if let hypothesisIndex = step.hypothesis, step.kind == .match || step.kind == .substitution {
+                indices[hypothesisIndex] = step.reference
+            }
+        }
+        for match in hypothesisMatches {
+            let overTerm = match.range.contains { index in
+                guard let referenceIndex = referenceIndexOfHeard[index],
+                    let spoken = referenceKeyAt[referenceIndex]
+                else { return false }
+                return spoken != match.key
+            }
+            if !overTerm { insertable[match.key, default: 0] += 1 }
+        }
+
         var insertions: [TermRecallCaseScore.FalseInsertion] = []
         for (list, terms) in [(TermRecallCaseScore.ListKind.session, sessionList), (.noise, noiseList)] {
             for term in terms {
-                let extra = (hypothesisCounts[key(term)] ?? 0) - (referenceCounts[key(term)] ?? 0)
+                let extra = (insertable[key(term)] ?? 0) - (referenceCounts[key(term)] ?? 0)
                 if extra > 0 {
                     insertions.append(.init(term: term, list: list, count: extra))
                 }
@@ -207,6 +243,7 @@ package enum TermRecallScorer {
         return TermRecallCaseScore(
             id: evalCase.id,
             language: evalCase.language,
+            reference: reference.joined(separator: " "),
             hypothesis: hypothesis,
             terms: termResults,
             falseInsertions: insertions,
@@ -236,6 +273,10 @@ package enum TermRecallScorer {
         comparison.unpaired = Set(beforeByID.keys).symmetricDifference(afterByID.keys).sorted()
         for id in beforeByID.keys.sorted() {
             guard let old = beforeByID[id], let new = afterByID[id] else { continue }
+            guard old.reference == new.reference else {
+                comparison.changed.append(id)
+                continue
+            }
             comparison.pairedCases += 1
             let oldRecalled = Dictionary(old.terms.map { (key($0.term), $0.recalled) }, uniquingKeysWith: +)
             let newRecalled = Dictionary(new.terms.map { (key($0.term), $0.recalled) }, uniquingKeysWith: +)
@@ -411,6 +452,11 @@ package enum TermRecallScorer {
         return errors
     }
 
+    private static func isHeardWordForWord(_ range: Range<Int>, alignment: [Step]) -> Bool {
+        let steps = alignment.filter { $0.kind != .insertion && range.contains($0.reference) }
+        return steps.count == range.count && steps.allSatisfy { $0.kind == .match }
+    }
+
     /// The hypothesis words between the nearest matched words on either side
     /// of a reference span; empty when nothing is left there.
     private static func heardSpan(for range: Range<Int>, alignment: [Step], hypothesis: [String]) -> String {
@@ -504,7 +550,7 @@ package enum TermRecallReport {
                     pad(language, 4),
                     pad("\(tally.cases)", 5),
                     pad("\(percent(tally.recalled, tally.termOccurrences)) (\(tally.recalled)/\(tally.termOccurrences))", 19),
-                    pad("\(tally.casesAllRecalled)/\(tally.cases)", 15),
+                    pad("\(tally.casesAllRecalled)/\(tally.casesWithTerms)", 15),
                     pad("\(tally.falseInsertionsSession)/\(tally.falseInsertionsNoise)", 32),
                     "\(percent(tally.nonTermErrors, tally.nonTermWords)) (\(tally.nonTermErrors)/\(tally.nonTermWords))",
                 ].joined(separator: "  ")
@@ -533,6 +579,11 @@ package enum TermRecallReport {
         ]
         if !result.unpaired.isEmpty {
             lines.append("unpaired cases (in one run only): \(result.unpaired.count)")
+        }
+        if !result.changed.isEmpty {
+            lines.append(
+                "cases left out, text changed between the runs (re-harvested?): \(result.changed.count)"
+            )
         }
         lines.append(comparisonEnd)
         return lines.joined(separator: "\n")
