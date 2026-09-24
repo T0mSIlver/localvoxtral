@@ -236,6 +236,7 @@ jobs:
             ./scripts/ci/test-remote-build-gc.sh \
             ./scripts/ci/test-remote-build-gate-args.sh \
             ./scripts/ci/test-remote-build-shards.sh \
+            ./scripts/ci/test-remote-build-linux-routing.sh \
             ./scripts/ci/test-run-supervised-command.sh \
             ./scripts/ci/test-ui-smoke-guard.sh \
             ./scripts/ci/test-ui-smoke-owner-app.sh \
