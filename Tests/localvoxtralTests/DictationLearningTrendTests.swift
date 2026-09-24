@@ -71,7 +71,7 @@ final class DictationLearningTrendTests: XCTestCase {
     }
 
     func testAWeekUnderTheMinimumShowsNoValue() {
-        let entries = repeated(DictationLearningTrend.minimumSamples - 1) {
+        let entries = repeated(DictationLearningTrend.minimumDictations - 1) {
             entry(weeksAgo: 0, "Qwen", polishSeconds: 1)
         }
         let trend = DictationLearningTrend(entries: entries, terms: ["Qwen"], now: now)
@@ -79,6 +79,40 @@ final class DictationLearningTrendTests: XCTestCase {
         XCTAssertEqual(trend.weeks.last?.termMentions, 4)
         XCTAssertNil(trend.weeks.last?.termsSpelledRightShare)
         XCTAssertNil(trend.weeks.last?.transcriptKeptShare)
+    }
+
+    func testManyTermsInOneDictationAreStillOneDictation() {
+        let entries = repeated(DictationLearningTrend.minimumDictations - 1) {
+            entry(weeksAgo: 0, "Qwen MLX vLLM Ghostty herdr")
+        }
+        let trend = DictationLearningTrend(
+            entries: entries, terms: ["Qwen", "MLX", "vLLM", "Ghostty", "herdr"], now: now)
+
+        XCTAssertEqual(trend.weeks.last?.termMentions, 20)
+        XCTAssertNil(trend.weeks.last?.termsSpelledRightShare)
+    }
+
+    func testAPolishedDictationThatWasNeverInsertedIsNotCounted() {
+        let entries = (0..<DictationLearningTrend.minimumDictations).map { _ in
+            DictationHistoryEntry(
+                id: UUID(), startedAt: now.addingTimeInterval(-86_400),
+                finishedAt: now.addingTimeInterval(-86_380), rawText: "hello",
+                polishedText: nil, polishingDurationSeconds: 1, provider: "p", model: "m",
+                outputMode: "overlay_buffer", targetAppBundleID: nil, status: .completed,
+                commitSucceeded: false, polishProfile: nil, polishContextSummary: nil)
+        }
+        let trend = DictationLearningTrend(entries: entries, terms: [], now: now)
+
+        XCTAssertEqual(trend.weeks.last?.polished, 0)
+    }
+
+    func testACombiningMarkAfterATermMakesItAnotherWord() {
+        let counts = DictationLearningTrend.termCounts(
+            in: entry(weeksAgo: 0, "Cafe\u{301} ouvert", polished: "Cafe ouvert"),
+            matchers: DictationLearningTrend.matchers(for: ["Cafe"]))
+
+        XCTAssertEqual(counts.mentions, 1)
+        XCTAssertEqual(counts.spelledRight, 0)
     }
 
     func testWrongCasingInTheTranscriptIsNotSpelledRight() {

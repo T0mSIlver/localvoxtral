@@ -5,27 +5,31 @@ import Foundation
 ///
 /// - **Terms spelled right by the recognizer**: of the speaker's terms (Names
 ///   and terms plus the confirmed learned terms) that a dictation ended up
-///   containing, the share the transcript already spelled exactly. It rises
-///   only when the speech side improves, which is what teaching the speech
-///   model a vocabulary has to show. A term the transcript missed and nothing
-///   fixed never reaches the final text, so it is not counted either way.
-/// - **Transcripts kept as they were**: of the dictations a polish answered
-///   for, the share whose final text is the transcript unchanged. It rises as
-///   the recognizer leaves polishing less to fix. (A replacement or a
-///   pre-applied term counts as a change: the record keeps the transcript and
-///   the final text, not what the model was sent.)
+///   containing, the share the transcript already spelled exactly.
+/// - **Transcripts kept as they were**: of the polished dictations that were
+///   inserted, the share whose final text is the transcript unchanged. (A
+///   replacement or a pre-applied term counts as a change: the record keeps
+///   the transcript and the final text, not what the model was sent.)
+///
+/// Neither isolates the recognizer. History only knows the terms that reached
+/// the final text: a term the transcript missed and polishing also missed is
+/// counted nowhere, so a week where polishing fixes fewer terms can read
+/// better on both numbers. They are a trend to watch, not a measurement; the
+/// replay of stored audio is the measurement, on identical input.
 ///
 /// A value computed from the entries and the terms and nothing else, so the
 /// numbers have tests. Weeks count back from `now` in 7-day steps, not
 /// calendar weeks, so the last bar is always a full week.
 struct DictationLearningTrend: Equatable, Sendable {
     static let weekCount = 12
-    /// A week with fewer samples than this shows no value: one dictation
+    /// A week with fewer dictations than this shows no value: one dictation
     /// would swing it from 0 to 100 %.
-    static let minimumSamples = 5
+    static let minimumDictations = 5
 
     struct Week: Equatable, Sendable, Identifiable {
         let start: Date
+        /// Dictations whose final text holds at least one speaker term.
+        var dictationsWithTerms = 0
         /// Distinct speaker terms found in the final texts, one per dictation.
         var termMentions = 0
         /// Of those, the ones the transcript already spelled exactly.
@@ -35,17 +39,16 @@ struct DictationLearningTrend: Equatable, Sendable {
 
         var id: Date { start }
 
+        /// Counted by dictation, not by term: five terms in one dictation are
+        /// still one dictation's say.
         var termsSpelledRightShare: Double? {
-            Self.share(termsSpelledRight, of: termMentions)
+            guard dictationsWithTerms >= DictationLearningTrend.minimumDictations else { return nil }
+            return Double(termsSpelledRight) / Double(termMentions)
         }
 
         var transcriptKeptShare: Double? {
-            Self.share(transcriptKept, of: polished)
-        }
-
-        private static func share(_ part: Int, of whole: Int) -> Double? {
-            guard whole >= DictationLearningTrend.minimumSamples else { return nil }
-            return Double(part) / Double(whole)
+            guard polished >= DictationLearningTrend.minimumDictations else { return nil }
+            return Double(transcriptKept) / Double(polished)
         }
     }
 
@@ -69,13 +72,16 @@ struct DictationLearningTrend: Equatable, Sendable {
             let offset = entry.startedAt.timeIntervalSince(origin)
             guard offset >= 0, entry.startedAt < now else { continue }
             let index = min(Int(offset / (7 * 86_400)), Self.weekCount - 1)
-            if entry.polishRan {
+            // A failed insertion never showed its text anywhere; whether it
+            // matched the transcript says nothing about what was inserted.
+            if entry.polishRan, entry.commitSucceeded {
                 weeks[index].polished += 1
                 if !entry.textWasChanged {
                     weeks[index].transcriptKept += 1
                 }
             }
             let (mentions, spelledRight) = Self.termCounts(in: entry, matchers: matchers)
+            if mentions > 0 { weeks[index].dictationsWithTerms += 1 }
             weeks[index].termMentions += mentions
             weeks[index].termsSpelledRight += spelledRight
         }
@@ -102,7 +108,9 @@ struct DictationLearningTrend: Equatable, Sendable {
             let folded = trimmed.caseFoldedForMatching
             guard !folded.isEmpty, seen.insert(folded).inserted else { return nil }
             let escaped = NSRegularExpression.escapedPattern(for: trimmed)
-            let pattern = "(?<![\\p{L}\\p{N}])\(escaped)(?![\\p{L}\\p{N}])"
+            // Marks count as part of a word: "Cafe" is not in a decomposed
+            // "Café".
+            let pattern = "(?<![\\p{L}\\p{M}\\p{N}])\(escaped)(?![\\p{L}\\p{M}\\p{N}])"
             guard let anyCase = try? NSRegularExpression(
                 pattern: pattern, options: [.caseInsensitive]),
                 let exact = try? NSRegularExpression(pattern: pattern)

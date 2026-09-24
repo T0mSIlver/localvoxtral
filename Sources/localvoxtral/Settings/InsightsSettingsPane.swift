@@ -274,10 +274,21 @@ private struct TrendRow: View {
     }
 
     private var accessibilitySummary: String {
-        let values = weeks.compactMap { $0[keyPath: share] }
-        guard let first = values.first, let last = values.last else { return "No weeks counted" }
+        let counted = weeks.enumerated().compactMap { index, week in
+            week[keyPath: share].map { (weeksAgo: weeks.count - 1 - index, value: $0) }
+        }
+        guard let first = counted.first, let last = counted.last else { return "No weeks counted" }
         let percent = FloatingPointFormatStyle<Double>.Percent().precision(.fractionLength(0))
-        return "From \(first.formatted(percent)) to \(last.formatted(percent)) over \(values.count) weeks"
+        func when(_ weeksAgo: Int) -> String {
+            switch weeksAgo {
+            case 0: "in the last 7 days"
+            case 1: "1 week ago"
+            default: "\(weeksAgo) weeks ago"
+            }
+        }
+        return "\(first.value.formatted(percent)) \(when(first.weeksAgo)), "
+            + "\(last.value.formatted(percent)) \(when(last.weeksAgo)), "
+            + "\(counted.count) of \(weeks.count) weeks counted"
     }
 }
 

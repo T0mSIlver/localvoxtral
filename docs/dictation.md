@@ -110,8 +110,10 @@ the last 7 days, the last 30, or all of them:
   that ended up in a dictation, and counts how many the transcript already
   spelled exactly, before polishing or a replacement fixed them. **Transcripts
   inserted as recognized** is the share of polished dictations whose text went
-  in exactly as the recognizer wrote it. A week with fewer than five draws no
-  bar.
+  in exactly as the recognizer wrote it. A week with fewer than five
+  dictations to count draws no bar. Both are a trend, not a measurement: the
+  history only holds the terms that reached the inserted text, so a term that
+  both the recognizer and polishing got wrong is counted nowhere.
 - **What polishing keeps fixing**: replacements of up to four words that
   polishing made in three dictations or more, such as `quen → Qwen`. These are
   the words the recognizer gets wrong for you. A spelling added to Names and
