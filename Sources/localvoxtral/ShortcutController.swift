@@ -72,10 +72,8 @@ final class ShortcutController {
     /// The launch registration; the owner calls it once runtime services run.
     func registerAtLaunch() {
         registerCurrentHotKeys()
-        if case .failure(let reason) = hotKeyManager.registerCopyLastDictation(
-            settings.copyLastDictationShortcut)
-        {
-            applyHotKeyRegistrationFailure(reason)
+        if case .failure = hotKeyManager.registerCopyLastDictation(settings.copyLastDictationShortcut) {
+            applyHotKeyRegistrationFailure(.copyLastDictationShortcutUnavailable)
         }
     }
 
@@ -423,10 +421,12 @@ final class ShortcutController {
         switch hotKeyManager.registerCopyLastDictation(settings.copyLastDictationShortcut) {
         case .success:
             clearHotKeyErrors(copyLastDictation: true)
-        case .failure(let reason):
+        case .failure:
             settings.setCopyLastDictationShortcut(previous)
             hotKeyManager.registerCopyLastDictation(previous)
-            applyHotKeyRegistrationFailure(reason)
+            // Its own message whatever failed, a handler install included:
+            // that message is how `clearHotKeyErrors` tells the slots apart.
+            applyHotKeyRegistrationFailure(.copyLastDictationShortcutUnavailable)
         }
         return nil
     }

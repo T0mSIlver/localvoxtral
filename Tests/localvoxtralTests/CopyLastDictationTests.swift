@@ -66,6 +66,21 @@ final class CopyLastDictationTests: XCTestCase {
         XCTAssertFalse(copied.contains(ClipboardPayloadMacro.placeholder), copied)
     }
 
+    /// History's change callback reads the stored row back; it must not
+    /// swap the clipboard text for the placeholder that row holds.
+    func testReadingHistoryBackKeepsTheClipboardText() async throws {
+        let (viewModel, written) = makeViewModel(polishing: nil)
+        viewModel.sessionStore = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        viewModel.dependencies.pasteboardReader = { PasteboardStub(string: "ValueError: boom") }
+
+        finishOverlayDictation(viewModel, text: "here is the error paste clipboard")
+        await viewModel.session.refreshLastDictationFromStore()
+        viewModel.copyLastDictation()
+
+        let copied = written.values.first ?? ""
+        XCTAssertTrue(copied.contains("ValueError: boom"), copied)
+    }
+
     func testWithNothingDictatedTheRowIsOffAndCopiesNothing() {
         let (viewModel, written) = makeViewModel(polishing: nil)
 
@@ -271,6 +286,24 @@ final class CopyLastDictationShortcutTests: XCTestCase {
         XCTAssertNil(shortcuts.requestCopyLastDictationShortcut(bareF13))
 
         XCTAssertEqual(shortcuts.settings.copyLastDictationShortcut, bareF15)
+        XCTAssertEqual(session.lastError, HotKeyManager.copyLastDictationUnavailableErrorMessage)
+    }
+
+    /// A handler install failure on the copy slot is the copy slot's error:
+    /// a dictation trigger that registers fine must not clear it.
+    func testACopyHandlerFailureIsNotClearedByADictationTrigger() {
+        HotKeyManager.debugResetOverridesForTesting()
+        HotKeyManager.debugForceHandlerInstallResultForTesting(false)
+        addTeardownBlock { @MainActor in HotKeyManager.debugResetOverridesForTesting() }
+        let (shortcuts, session) = makeShortcuts()
+
+        XCTAssertNil(shortcuts.requestCopyLastDictationShortcut(bareF15))
+        XCTAssertEqual(session.lastError, HotKeyManager.copyLastDictationUnavailableErrorMessage)
+
+        HotKeyManager.debugForceHandlerInstallResultForTesting(true)
+        HotKeyManager.debugForceRegisterStatusForTesting(hotKeyID: .overlay, status: noErr)
+        shortcuts.applyHotKeySettingsChange()
+
         XCTAssertEqual(session.lastError, HotKeyManager.copyLastDictationUnavailableErrorMessage)
     }
 

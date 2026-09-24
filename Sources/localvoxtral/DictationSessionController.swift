@@ -780,6 +780,12 @@ final class DictationSessionController {
         // an empty store says nothing about it. One that History held was
         // deleted with it: turning History off deletes every dictation.
         guard newest != nil || lastDictationIsInHistory else { return }
+        // The same dictation: keep the in-memory copy, which holds the
+        // clipboard text History stores only as a placeholder.
+        if let newest, newest.id == lastDictation?.id {
+            lastDictationIsInHistory = true
+            return
+        }
         lastDictation = newest
         lastDictationIsInHistory = newest != nil
     }
