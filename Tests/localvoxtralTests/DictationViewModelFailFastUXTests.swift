@@ -410,6 +410,24 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
             "suppression must return before the latch — no prompt task may be spawned")
     }
 
+    // MARK: - Prompt-cache warmup hook (#489)
+
+    /// The prompt-cache warmup checks the cached start on every dictation
+    /// start, including one a later gate refuses: the check is what catches a
+    /// prompt TOML edited on disk, and it must see the start while the speaker
+    /// is still talking.
+    func testStartDictationRunsTheWarmupHookBeforeAnyGate() {
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        var hookCalls = 0
+        viewModel.session.onDictationStartRequested = { hookCalls += 1 }
+        viewModel.session.isAwaitingMicrophonePermission = true
+
+        viewModel.startDictation()
+
+        XCTAssertEqual(hookCalls, 1)
+        XCTAssertFalse(viewModel.isDictating, "the permission gate still refused the start")
+    }
+
     // MARK: - Managed backend startup
 
     func testStartDictationManagedBothWithPolishingEnabledRequestsBothBackends() async {

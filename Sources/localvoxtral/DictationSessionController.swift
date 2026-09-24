@@ -137,6 +137,12 @@ final class DictationSessionController {
     @ObservationIgnored
     var secureInputWarningSound: () -> Void = { NSSound(named: "Basso")?.play() }
 
+    /// Runs on every dictation start request, before any gate can refuse it.
+    /// The view model points it at the prompt-cache warmup, which must see
+    /// the start while the speaker is still talking.
+    @ObservationIgnored
+    var onDictationStartRequested: (() -> Void)?
+
     /// `var` so a test can replace one collaborator after construction. The
     /// lifecycle center and the microphone are read at init (the microphone
     /// into the audio pipeline, so replace it through `init`); the rest when a
@@ -512,6 +518,7 @@ final class DictationSessionController {
 
     func startDictation(outputMode: DictationOutputMode? = nil) {
         guard !isDictating else { return }
+        onDictationStartRequested?()
         guard !isConnectingRealtimeSession else {
             statusText = StatusStrings.connectingRealtimeBackend
             return
