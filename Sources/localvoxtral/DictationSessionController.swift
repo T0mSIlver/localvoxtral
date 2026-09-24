@@ -395,6 +395,10 @@ final class DictationSessionController {
     /// withheld segment needs a space before it.
     @ObservationIgnored
     var liveSpokenSendTypedSinceReturn = false
+    /// The last character typed live since the last Return: a withheld
+    /// segment that starts mid-word is glued on only after a letter.
+    @ObservationIgnored
+    var liveSpokenSendLastTypedCharacter: Character?
     /// The "text went to another app" line is logged once per dictation.
     @ObservationIgnored
     var liveSpokenSendBlockLogged = false

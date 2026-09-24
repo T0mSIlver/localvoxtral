@@ -73,6 +73,7 @@ extension DictationSessionController {
     func resetLiveSpokenSendForSession() {
         spokenSendLatch.reset()
         liveSpokenSendTypedSinceReturn = false
+        liveSpokenSendLastTypedCharacter = nil
         liveSpokenSendSegmentMode = .undecided
         liveSpokenSendBlockLogged = false
         textInsertion.clearLiveInsertionTargetPIDs()
@@ -95,12 +96,12 @@ extension DictationSessionController {
     /// and glues a disagreeing partial onto it, so it is typed as text and
     /// never parsed. The cost: when the final is not empty, words only a
     /// partial had are not typed.
-    func deliverLiveSpokenSendFinal(_ finalText: String, merged: String) {
+    func deliverLiveSpokenSendFinal(_ finalText: String, merged: String, startsMidWord: Bool) {
         liveSpokenSendSegmentMode = .undecided
         let final = finalText.trimmed
         guard !final.isEmpty else {
             spokenSendLatch.noteNonSubmittingFinal()
-            typeLiveSpokenSendText(merged)
+            typeLiveSpokenSendText(merged, startsMidWord: startsMidWord)
             return
         }
         let action = SendNowCommandParser.parse(final)
@@ -109,7 +110,7 @@ extension DictationSessionController {
             return
         case .insertText(let text):
             spokenSendLatch.noteNonSubmittingFinal()
-            typeLiveSpokenSendText(text)
+            typeLiveSpokenSendText(text, startsMidWord: startsMidWord)
         case .pressReturn, .insertTextAndPressReturn:
             // Claimed before anything is typed or pressed: a repeated final
             // must not do either a second time.
@@ -121,11 +122,11 @@ extension DictationSessionController {
             // cut only when it will be sent. Otherwise the final is typed
             // whole, and no spoken word is lost.
             guard let pid = liveSpokenSendReturnTarget() else {
-                typeLiveSpokenSendText(final)
+                typeLiveSpokenSendText(final, startsMidWord: startsMidWord)
                 return
             }
             if case .insertTextAndPressReturn(let text) = action {
-                typeLiveSpokenSendText(text)
+                typeLiveSpokenSendText(text, startsMidWord: startsMidWord)
             }
             pressLiveSpokenSendReturn(in: pid)
         }
@@ -133,15 +134,22 @@ extension DictationSessionController {
 
     /// A withheld segment promoted without a final (stop, dropped socket):
     /// typed as text, never a trigger.
-    func deliverPromotedLiveSpokenSendSegment(_ segment: String) {
+    func deliverPromotedLiveSpokenSendSegment(_ segment: String, startsMidWord: Bool) {
         let mode = liveSpokenSendSegmentMode
         liveSpokenSendSegmentMode = .undecided
         guard mode == .withheld else { return }
         spokenSendLatch.noteNonSubmittingFinal()
-        typeLiveSpokenSendText(segment)
+        typeLiveSpokenSendText(segment, startsMidWord: startsMidWord)
     }
 
-    private func typeLiveSpokenSendText(_ text: String) {
+    /// Live text was typed: the next withheld segment needs a space before
+    /// it, unless it finishes the word this text ends on.
+    func noteLiveTextTyped(_ text: String) {
+        liveSpokenSendTypedSinceReturn = true
+        liveSpokenSendLastTypedCharacter = text.last ?? liveSpokenSendLastTypedCharacter
+    }
+
+    private func typeLiveSpokenSendText(_ text: String, startsMidWord: Bool) {
         guard !text.isEmpty else { return }
         // A space only after text in the same app: the last recorded landing
         // must be the app in front now. No landing yet (the hold-back stream
@@ -149,9 +157,12 @@ extension DictationSessionController {
         // under Secure Keyboard Entry is nil and never matches.
         let lastLanding = textInsertion.liveInsertionTargetPIDs.last
         let sameApp = lastLanding.map { $0 != nil && $0 == textInsertion.frontmostApplicationPID() } ?? true
-        let separator = liveSpokenSendTypedSinceReturn && sameApp ? " " : ""
+        // A segment a new generation started mid-word finishes the word
+        // typed last (#536): "Pleas" + "e help", not "Pleas e help".
+        let continuesTypedWord = startsMidWord && liveSpokenSendLastTypedCharacter?.isLetter == true
+        let separator = liveSpokenSendTypedSinceReturn && sameApp && !continuesTypedWord ? " " : ""
         textInsertion.enqueueRealtimeInsertion(separator + text)
-        liveSpokenSendTypedSinceReturn = true
+        noteLiveTextTyped(text)
         if let accessibilityError = textInsertion.lastAccessibilityError {
             lastError = accessibilityError
         }
@@ -195,6 +206,7 @@ extension DictationSessionController {
         guard pressSpokenSendReturn(pid: pid) else { return }
         textInsertion.clearLiveInsertionTargetPIDs()
         liveSpokenSendTypedSinceReturn = false
+        liveSpokenSendLastTypedCharacter = nil
     }
 
     /// The frontmost app's PID when its bundle ID is on the built-in or the
