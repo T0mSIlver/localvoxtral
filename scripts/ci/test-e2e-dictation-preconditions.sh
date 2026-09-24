@@ -19,7 +19,7 @@ fail() { echo "FAIL: $1" >&2; echo "--- events:" >&2; cat "$EVENTS" >&2 || true;
 stub() { cat >"$BIN/$1"; chmod +x "$BIN/$1"; }
 stub uname <<'STUB'
 #!/bin/sh
-echo Darwin
+if [ "$1" = -m ]; then echo arm64; else echo Darwin; fi
 STUB
 stub plistbuddy <<'STUB'
 #!/bin/sh
@@ -110,8 +110,8 @@ exit 1
 STUB
 STUB_DOGFOOD_STAMP=true LV_SCREEN_LOCK_STATE=unlocked STUB_NC_STATUS=0 run "$WORK/app.app"
 [ "$STATUS" -eq 3 ] || fail "a failed target compile exited $STATUS, want 3 (not runnable)"
-grep -qE '^swiftc .*-target [^ ]+-apple-macos15\.0 ' "$EVENTS" \
-  || fail "the target app was not compiled for macOS 15.0"
+grep -qE '^swiftc .*-target arm64-apple-macos15\.0 ' "$EVENTS" \
+  || fail "the target app was not compiled for arm64-apple-macos15.0"
 echo "PASS: the target app is compiled for macOS 15.0"
 
 # The scenarios that ship must parse.
