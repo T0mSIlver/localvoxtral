@@ -3,7 +3,7 @@ import XCTest
 @testable import PolishHelperCore
 
 private final class StubResponder: ChatResponding, @unchecked Sendable {
-    let result: Result<String, Error>
+    let result: Result<ChatReply, Error>
     private(set) var received:
         (
             messages: [ChatCompletionMessage],
@@ -11,7 +11,7 @@ private final class StubResponder: ChatResponding, @unchecked Sendable {
             sampling: ChatSamplingParameters
         )?
 
-    init(result: Result<String, Error> = .success("polished")) {
+    init(result: Result<ChatReply, Error> = .success(ChatReply(content: "polished"))) {
         self.result = result
     }
 
@@ -19,7 +19,7 @@ private final class StubResponder: ChatResponding, @unchecked Sendable {
         to messages: [ChatCompletionMessage],
         chatTemplateArguments: [String: ChatTemplateArgumentValue]?,
         sampling: ChatSamplingParameters
-    ) async throws -> String {
+    ) async throws -> ChatReply {
         received = (messages, chatTemplateArguments, sampling)
         return try result.get()
     }
@@ -37,7 +37,7 @@ final class PolishdRouterTests: XCTestCase {
     }
 
     func testChatCompletionRoundTripsContentAndParameters() async throws {
-        let responder = StubResponder(result: .success("cleaned text"))
+        let responder = StubResponder(result: .success(ChatReply(content: "cleaned text")))
         let router = PolishdRouter(responder: responder, modelName: "test-model")
         let response = await router.handle(
             chatRequest(
@@ -60,6 +60,32 @@ final class PolishdRouterTests: XCTestCase {
         XCTAssertNil(responder.received?.chatTemplateArguments)
         XCTAssertEqual(responder.received?.sampling.temperature, 0.3)
         XCTAssertNil(responder.received?.sampling.maxTokens)
+        XCTAssertNil(decoded.timings)
+    }
+
+    func testChatCompletionReturnsTheEngineTimings() async throws {
+        let timings = PolishTimings(
+            firstTokenMilliseconds: 180, totalMilliseconds: 420, promptTokens: 900,
+            cachedPromptTokens: 850, completionTokens: 40, draftTokens: 20,
+            acceptedDraftTokens: 17)
+        let router = PolishdRouter(
+            responder: StubResponder(result: .success(ChatReply(content: "x", timings: timings))),
+            modelName: "m")
+        let response = await router.handle(
+            chatRequest("{\"messages\": [{\"role\": \"user\", \"content\": \"x\"}]}")
+        )
+
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+        let wire = try XCTUnwrap(object["timings"] as? [String: Any])
+        XCTAssertEqual(wire["first_token_ms"] as? Double, 180)
+        XCTAssertEqual(wire["total_ms"] as? Double, 420)
+        XCTAssertEqual(wire["cached_prompt_tokens"] as? Int, 850)
+        XCTAssertEqual(wire["accepted_draft_tokens"] as? Int, 17)
+        XCTAssertEqual(
+            timings.summary,
+            "first token 180 ms, total 420 ms, prompt 900 (cached 850), completion 40, "
+                + "drafts accepted 17/20")
     }
 
     func testChatCompletionDecodesChatTemplateKwargs() async throws {
