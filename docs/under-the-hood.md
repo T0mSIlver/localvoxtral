@@ -61,7 +61,10 @@ supervises two inference engines for you — no terminal required:
   [Qwen3.5-4B-OptiQ in 4-bit](https://huggingface.co/mlx-community/Qwen3.5-4B-OptiQ-4bit)
   by default (a lighter 0.8B and a larger 9B are one click away in
   Settings). A warm prompt cache keeps polish latency low, and turning
-  polishing off frees its memory immediately.
+  polishing off frees its memory immediately. The helper builds against an
+  mlx-swift-lm `main` commit from 2026-09-22 (`ee673d6`), not a release:
+  no release yet loads OptiQ checkpoints correctly, because they ship
+  extra weight files next to the model's.
 
 Both helpers ship inside the app bundle. Their model weights download from
 Hugging Face at exact pinned commits, so an upstream edit to a model repo
