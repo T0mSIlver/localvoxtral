@@ -459,7 +459,9 @@ run twice on identical input. With **Keep dictation audio** on (Settings →
 History), each saved dictation keeps its WAV. On the Mac that dictated, as
 that user, `./scripts/export-dictation-replay.sh <dir>` copies the history
 store, the recordings, the learned terms and Names and terms into a set.
-Copy it to the gitignored `EvalRecordings/replay/<set>/` of a checkout, then:
+Copy it to the gitignored `EvalRecordings/replay/<set>/` of a checkout. The run
+below rsyncs the checkout, set included, to the build host, so the
+dictations' text and audio land there too. Then:
 
 ```bash
 ./scripts/remote-build.sh package

@@ -40,7 +40,11 @@ extension AgentDictationE2EEvalTests {
         let audioStore = DictationAudioStore(directoryURL: set.audioDirectory)
         let stored = audioStore.storedIDs()
         let entries = await history.entries(since: nil)
-            .filter { stored.contains($0.id) && $0.outputMode == DictationOutputMode.overlayBuffer.rawValue }
+            // Only text that reached the target app is a reference.
+            .filter {
+                stored.contains($0.id) && $0.commitSucceeded
+                    && $0.outputMode == DictationOutputMode.overlayBuffer.rawValue
+            }
             .reversed()  // oldest first, the order they were spoken in
         guard !entries.isEmpty else {
             throw EvalInfraError("no Overlay Buffer dictation in the set has audio")
@@ -76,7 +80,9 @@ extension AgentDictationE2EEvalTests {
                 print("replay [\(index + 1)/\(entries.count)] ok")
             } catch {
                 failures += 1
-                print("replay [\(index + 1)/\(entries.count)] failed: \(error)")
+                // The error's type, never its message: a backend that echoes
+                // the request would put the user's words in the log.
+                print("replay [\(index + 1)/\(entries.count)] failed: \(type(of: error))")
             }
         }
 
@@ -148,7 +154,7 @@ extension AgentDictationE2EEvalTests {
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await viewModel.session.polishAndCommitTask?.value
         if savedRecord?.status == DictationSessionStatus.llmFailed.rawValue {
-            throw EvalInfraError("polish failed: \(viewModel.lastError ?? "unknown error")")
+            throw EvalInfraError("polish failed")
         }
         return viewModel.transcript.currentDictationEventText
     }

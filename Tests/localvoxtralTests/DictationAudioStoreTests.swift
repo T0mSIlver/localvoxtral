@@ -80,6 +80,17 @@ final class DictationAudioStoreTests: XCTestCase {
         XCTAssertEqual(audio.storedIDs(), [recent.id])
     }
 
+    func testTheLaunchSweepDeletesOnlyAudioWithoutADictation() async throws {
+        let (store, audio) = try makeStores()
+        let orphan = UUID()
+        try audio.write(pcm16: pcm, for: orphan)
+        let kept = record("kept")
+        store.save(kept, audio: pcm)
+        await store.removeOrphanedAudio().value
+
+        XCTAssertEqual(audio.storedIDs(), [kept.id])
+    }
+
     func testDeleteAllAndTurningAudioOffDeleteEveryRecording() async throws {
         let (store, audio) = try makeStores()
         store.save(record("one", daysAgo: 1), audio: pcm)

@@ -168,13 +168,15 @@ final class DictationSessionStore {
     /// The returned task finishes once the record is on disk; production
     /// callers drop it.
     /// `audio` is the dictation's 16 kHz mono PCM16, written beside the
-    /// record in the same step, so no trim can run between the two.
+    /// record in the same step, so no trim can run between the two. The
+    /// record is saved first: a save that fails leaves no file behind.
     @discardableResult
     func save(_ record: DictationSessionRecord, audio: Data? = nil) -> Task<Void, Never> {
         let entry = DictationHistoryEntry(record)
         let audioStore = audio == nil ? nil : audioStore
         return enqueueWrite("save dictation \(entry.id)") { context in
             context.insert(entry.makeRecord())
+            try context.save()
             if let audio, let audioStore {
                 do {
                     try audioStore.write(pcm16: audio, for: entry.id)
@@ -220,20 +222,40 @@ final class DictationSessionStore {
             let deleted = try Self.deleteRecords(
                 matching: #Predicate<DictationSessionRecord> { $0.startedAt < cutoff },
                 in: context)
-            // Only the recordings on disk are looked up: most users keep none,
-            // and this runs after every saved dictation.
-            if let audioStore, case let stored = Array(audioStore.storedIDs()), !stored.isEmpty {
+            if let audioStore {
                 if deleted > 0 { try context.save() }
-                let kept = try Set(context.fetch(FetchDescriptor<DictationSessionRecord>(
-                    predicate: #Predicate { stored.contains($0.id) })).map(\.id))
-                let removed = audioStore.removeAll(except: kept)
-                if removed > 0 {
-                    Log.persistence.info(
-                        "History: deleted \(removed, privacy: .public) recording(s) whose dictation is gone"
-                    )
-                }
+                try Self.removeOrphanedAudio(audioStore, context: context)
             }
             return deleted
+        }
+    }
+
+    /// Deletes the recordings whose dictation is gone. Run at launch, where
+    /// Forever retention never trims: it is what retries a delete that failed
+    /// and clears a file a crash left behind.
+    @discardableResult
+    func removeOrphanedAudio() -> Task<Void, Never> {
+        let audioStore = audioStore
+        return enqueueWrite("sweep dictation audio") { context in
+            if let audioStore { try Self.removeOrphanedAudio(audioStore, context: context) }
+            return 0
+        }
+    }
+
+    /// Only the recordings on disk are looked up: most users keep none, and
+    /// this runs after every saved dictation.
+    private nonisolated static func removeOrphanedAudio(
+        _ audioStore: DictationAudioStore, context: ModelContext
+    ) throws {
+        let stored = Array(audioStore.storedIDs())
+        guard !stored.isEmpty else { return }
+        let kept = try Set(context.fetch(FetchDescriptor<DictationSessionRecord>(
+            predicate: #Predicate { stored.contains($0.id) })).map(\.id))
+        let removed = audioStore.removeAll(except: kept)
+        if removed > 0 {
+            Log.persistence.info(
+                "History: deleted \(removed, privacy: .public) recording(s) whose dictation is gone"
+            )
         }
     }
 

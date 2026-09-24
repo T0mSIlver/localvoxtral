@@ -45,12 +45,23 @@ final class DictationAudioStore: Sendable {
         })
     }
 
-    /// Deletes the files of these ids. Returns how many it deleted.
+    /// Deletes the files of these ids. Returns how many it deleted. A file
+    /// that will not go is logged and left for the next sweep (every trim,
+    /// and launch), and the Settings row keeps counting it.
     @discardableResult
     func remove(_ ids: some Sequence<UUID>) -> Int {
         var removed = 0
         for id in ids {
-            if (try? FileManager.default.removeItem(at: fileURL(for: id))) != nil { removed += 1 }
+            let url = fileURL(for: id)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            do {
+                try FileManager.default.removeItem(at: url)
+                removed += 1
+            } catch {
+                Log.persistence.error(
+                    "History: could not delete the audio of dictation \(id, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+            }
         }
         return removed
     }
@@ -63,12 +74,10 @@ final class DictationAudioStore: Sendable {
         remove(storedIDs().subtracting(kept))
     }
 
-    /// Deletes the folder. Returns how many recordings were in it.
+    /// Deletes every recording. Returns how many it deleted.
     @discardableResult
     func removeAll() -> Int {
-        let count = storedIDs().count
-        try? FileManager.default.removeItem(at: directoryURL)
-        return count
+        remove(storedIDs())
     }
 
     /// Bytes on disk, for the Settings row.

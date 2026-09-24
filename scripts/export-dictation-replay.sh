@@ -38,8 +38,9 @@ fi
 mkdir -p "$OUT"
 chmod 700 "$OUT"
 
-# The app may be writing: .backup takes a consistent copy, WAL included.
-sqlite3 "$STORE" ".backup '$OUT/default.store'"
+# The app may be writing: .backup takes a consistent copy, WAL included. The
+# target is relative so no path ever sits inside a dot-command's quotes.
+(cd "$OUT" && sqlite3 "$STORE" ".backup default.store")
 cp -R "$AUDIO" "$OUT/dictation-audio"
 if [[ -f "$LEARNED" ]]; then
   cp "$LEARNED" "$OUT/learned-terms.json"

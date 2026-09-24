@@ -586,6 +586,7 @@ final class DictationViewModel {
             // still clear recordings kept before it was turned off.
             sessionStore?.audioStore = DictationAudioStore(
                 directoryURL: DictationAudioStore.defaultDirectoryURL())
+            sessionStore?.removeOrphanedAudio()
             applyDictationHistoryRetention()
             learnedTermStore = LearnedTermStore(
                 fileURL: LearnedTermStore.defaultFileURL(),
