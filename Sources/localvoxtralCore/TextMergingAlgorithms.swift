@@ -63,7 +63,7 @@ package enum TextMergingAlgorithms {
     /// starts mid-word may repeat the end of the word it continues
     /// ("information" + "ation overload"), so it also aligns inside a word,
     /// on two letters or more.
-    private static func joinOverlap(existing: String, incoming: String, incomingStartsMidWord: Bool) -> Int {
+    package static func joinOverlap(existing: String, incoming: String, incomingStartsMidWord: Bool) -> Int {
         let aligned = wordAlignedSuffixPrefixOverlap(lhs: existing, rhs: incoming)
         guard aligned == 0, incomingStartsMidWord else { return aligned }
         let unaligned = longestSuffixPrefixOverlap(lhs: existing, rhs: incoming)

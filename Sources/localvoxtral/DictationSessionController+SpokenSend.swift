@@ -73,7 +73,7 @@ extension DictationSessionController {
     func resetLiveSpokenSendForSession() {
         spokenSendLatch.reset()
         liveSpokenSendTypedSinceReturn = false
-        liveSpokenSendLastTypedCharacter = nil
+        liveSpokenSendTypedWord = ""
         liveSpokenSendSegmentMode = .undecided
         liveSpokenSendBlockLogged = false
         textInsertion.clearLiveInsertionTargetPIDs()
@@ -146,10 +146,15 @@ extension DictationSessionController {
     /// it, unless it finishes the word this text ends on.
     func noteLiveTextTyped(_ text: String) {
         liveSpokenSendTypedSinceReturn = true
-        liveSpokenSendLastTypedCharacter = text.last ?? liveSpokenSendLastTypedCharacter
+        if let lastSpace = text.lastIndex(where: \.isWhitespace) {
+            liveSpokenSendTypedWord = String(text[text.index(after: lastSpace)...])
+        } else {
+            liveSpokenSendTypedWord += text
+        }
     }
 
     private func typeLiveSpokenSendText(_ text: String, startsMidWord: Bool) {
+        var text = text
         guard !text.isEmpty else { return }
         // A space only after text in the same app: the last recorded landing
         // must be the app in front now. No landing yet (the hold-back stream
@@ -159,7 +164,16 @@ extension DictationSessionController {
         let sameApp = lastLanding.map { $0 != nil && $0 == textInsertion.frontmostApplicationPID() } ?? true
         // A segment a new generation started mid-word finishes the word
         // typed last (#536): "Pleas" + "e help", not "Pleas e help".
-        let continuesTypedWord = startsMidWord && liveSpokenSendLastTypedCharacter?.isLetter == true
+        // A new generation may hear the word's end again ("information" +
+        // "ation overload"); that repeat is dropped, as in the dictation event.
+        let continuesTypedWord = liveSpokenSendTypedSinceReturn && sameApp
+            && startsMidWord && liveSpokenSendTypedWord.last?.isLetter == true
+        if continuesTypedWord {
+            let overlap = TextMergingAlgorithms.joinOverlap(
+                existing: liveSpokenSendTypedWord, incoming: text, incomingStartsMidWord: true)
+            text = String(text.dropFirst(overlap))
+            guard !text.isEmpty else { return }
+        }
         let separator = liveSpokenSendTypedSinceReturn && sameApp && !continuesTypedWord ? " " : ""
         textInsertion.enqueueRealtimeInsertion(separator + text)
         noteLiveTextTyped(text)
@@ -206,7 +220,7 @@ extension DictationSessionController {
         guard pressSpokenSendReturn(pid: pid) else { return }
         textInsertion.clearLiveInsertionTargetPIDs()
         liveSpokenSendTypedSinceReturn = false
-        liveSpokenSendLastTypedCharacter = nil
+        liveSpokenSendTypedWord = ""
     }
 
     /// The frontmost app's PID when its bundle ID is on the built-in or the
