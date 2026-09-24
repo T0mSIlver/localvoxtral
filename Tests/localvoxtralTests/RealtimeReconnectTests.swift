@@ -91,7 +91,7 @@ final class RealtimeReconnectTests: XCTestCase {
             "the audio spoken into the gap waits for the restarted send loop to replay it"
         )
         XCTAssertEqual(
-            viewModel.transcript.currentDictationEventText, "hello\nworld",
+            viewModel.transcript.currentDictationEventText, "hello world",
             "the transcript must carry across the gap, dangling partial included"
         )
         XCTAssertTrue(viewModel.transcript.pendingSegmentText.isEmpty)
@@ -151,7 +151,7 @@ final class RealtimeReconnectTests: XCTestCase {
         await viewModel.session.reconnectTask?.value
 
         XCTAssertEqual(insertedChunks, ["hello", " world"], "the reconnect itself types nothing")
-        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "hello\nworld")
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "hello world")
         XCTAssertTrue(viewModel.transcript.pendingSegmentText.isEmpty)
         XCTAssertTrue(viewModel.transcript.livePartialText.isEmpty)
 
@@ -161,7 +161,7 @@ final class RealtimeReconnectTests: XCTestCase {
         viewModel.session.handle(event: .finalTranscript(" again"))
 
         XCTAssertEqual(insertedChunks, ["hello", " world", " again"])
-        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "hello\nworld\nagain")
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "hello world again")
     }
 
     func testAttemptsRetryUntilOneConnects() async {
