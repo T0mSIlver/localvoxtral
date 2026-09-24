@@ -20,6 +20,10 @@ package struct TranscriptAccumulator: Equatable, Sendable {
     package var currentDictationEventText = ""
     /// What "Copy latest segment" and "Paste latest segment" read.
     package var lastFinalSegment = ""
+    /// Whether a delta this session started with a space. Only then does a
+    /// segment without one start mid-word: a server that strips every
+    /// leading space says nothing about where its words start.
+    package var hasSeenSpacePrefixedDelta = false
 
     package init() {}
 
@@ -37,6 +41,9 @@ package struct TranscriptAccumulator: Equatable, Sendable {
     package mutating func appendPartial(_ processedDelta: String) {
         pendingSegmentText.append(processedDelta)
         livePartialText = pendingSegmentText
+        if processedDelta.first?.isWhitespace == true {
+            hasSeenSpacePrefixedDelta = true
+        }
     }
 
     /// Folds a preprocessed final into the dictation event. Nil when the
@@ -44,7 +51,7 @@ package struct TranscriptAccumulator: Equatable, Sendable {
     /// cleared either way.
     package mutating func applyFinal(_ processedText: String) -> FinalizedSegment? {
         let finalizedSegment = resolvedFinalizedSegment(from: processedText)
-        let segmentStartsMidWord = TextMergingAlgorithms.startsMidWord(
+        let segmentStartsMidWord = startsMidWord(
             bufferedRawText.trimmed.isEmpty ? processedText : bufferedRawText
         )
         let hadLiveDelta = !pendingSegmentText.trimmed.isEmpty
@@ -102,7 +109,7 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         currentDictationEventText = TextMergingAlgorithms.appendToCurrentDictationEvent(
             segment: pendingSegment,
             existingText: currentDictationEventText,
-            segmentStartsMidWord: TextMergingAlgorithms.startsMidWord(bufferedRawText)
+            segmentStartsMidWord: startsMidWord(bufferedRawText)
         )
         lastFinalSegment = currentDictationEventText
         livePartialText = ""
@@ -159,13 +166,17 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         pendingSegmentText.trimmed.isEmpty ? livePartialText : pendingSegmentText
     }
 
+    private func startsMidWord(_ rawText: String) -> Bool {
+        hasSeenSpacePrefixedDelta && TextMergingAlgorithms.startsMidWord(rawText)
+    }
+
     /// The overlay's text while the user speaks, before streaming correction.
     package var overlayDisplayText: String {
         OverlayBufferTextAssembler.displayText(
             committedText: currentDictationEventText,
             pendingText: pendingSegmentText,
             fallbackPendingText: livePartialText,
-            pendingStartsMidWord: TextMergingAlgorithms.startsMidWord(bufferedRawText)
+            pendingStartsMidWord: startsMidWord(bufferedRawText)
         )
     }
 
@@ -175,7 +186,7 @@ package struct TranscriptAccumulator: Equatable, Sendable {
             committedText: currentDictationEventText,
             pendingText: pendingSegmentText,
             fallbackPendingText: livePartialText,
-            pendingStartsMidWord: TextMergingAlgorithms.startsMidWord(bufferedRawText)
+            pendingStartsMidWord: startsMidWord(bufferedRawText)
         )
     }
 
@@ -201,5 +212,6 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         livePartialText = ""
         pendingSegmentText = ""
         currentDictationEventText = ""
+        hasSeenSpacePrefixedDelta = false
     }
 }

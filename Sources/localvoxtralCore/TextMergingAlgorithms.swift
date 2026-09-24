@@ -59,6 +59,17 @@ package enum TextMergingAlgorithms {
         return first.isLetter && first.isLowercase
     }
 
+    /// The overlap to drop when joining `incoming` onto `existing`. Text that
+    /// starts mid-word may repeat the end of the word it continues
+    /// ("information" + "ation overload"), so it also aligns inside a word,
+    /// on two letters or more.
+    private static func joinOverlap(existing: String, incoming: String, incomingStartsMidWord: Bool) -> Int {
+        let aligned = wordAlignedSuffixPrefixOverlap(lhs: existing, rhs: incoming)
+        guard aligned == 0, incomingStartsMidWord else { return aligned }
+        let unaligned = longestSuffixPrefixOverlap(lhs: existing, rhs: incoming)
+        return unaligned >= 2 ? unaligned : 0
+    }
+
     /// Whether text that `startsMidWord` finishes the last word of `existing`.
     private static func continuesLastWord(of existing: String, startsMidWord: Bool) -> Bool {
         startsMidWord && existing.last?.isLetter == true
@@ -123,7 +134,11 @@ package enum TextMergingAlgorithms {
             return normalizedExisting
         }
 
-        let overlap = wordAlignedSuffixPrefixOverlap(lhs: normalizedExisting, rhs: normalizedSegment)
+        let overlap = joinOverlap(
+            existing: normalizedExisting,
+            incoming: normalizedSegment,
+            incomingStartsMidWord: segmentStartsMidWord
+        )
         if overlap > 0 {
             let overlapIndex = normalizedSegment.index(normalizedSegment.startIndex, offsetBy: overlap)
             let suffix = String(normalizedSegment[overlapIndex...])
@@ -242,7 +257,8 @@ package enum TextMergingAlgorithms {
             return (existing, "")
         }
 
-        let overlap = wordAlignedSuffixPrefixOverlap(lhs: existing, rhs: incoming)
+        let overlap = joinOverlap(
+            existing: existing, incoming: incoming, incomingStartsMidWord: incomingStartsMidWord)
         if overlap > 0 {
             let start = incoming.index(incoming.startIndex, offsetBy: overlap)
             let delta = String(incoming[start...])

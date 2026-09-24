@@ -67,7 +67,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         XCTAssertEqual(overlayCoordinator.refreshCalls.count, 1)
         XCTAssertEqual(overlayCoordinator.refreshCalls.last?.displayText, "hello world")
-        XCTAssertEqual(overlayCoordinator.refreshCalls.last?.commitText, "hello\nworld")
+        XCTAssertEqual(overlayCoordinator.refreshCalls.last?.commitText, "hello world")
         XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
         XCTAssertEqual(overlayCoordinator.dismissAfterHoldCallCount, 1)
         XCTAssertEqual(overlayCoordinator.resetCallCount, 0)
@@ -1080,7 +1080,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         viewModel.session.finishStoppedSession(promotePendingSegment: true)
 
-        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "hello\nworld")
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "hello world")
         XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
     }
 

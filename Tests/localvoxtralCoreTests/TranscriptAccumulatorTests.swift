@@ -268,4 +268,25 @@ final class TranscriptAccumulatorTests: XCTestCase {
         inFlight.appendPartial(" doing")
         XCTAssertEqual(inFlight.overlayDisplayText, "I need doing")
     }
+
+    func testAMidWordSegmentThatRepeatsTheWordsTailIsNotDoubled() {
+        var transcript = TranscriptAccumulator()
+        feedGeneration(["The", " information"], into: &transcript)
+        feedGeneration(["ation", " overload"], into: &transcript)
+        XCTAssertEqual(transcript.currentDictationEventText, "The information overload")
+    }
+
+    func testAServerThatNeverSendsALeadingSpaceIsNotGlued() {
+        // One final per utterance, lowercase, no leading space: nothing on
+        // this wire says a segment starts mid-word.
+        var transcript = TranscriptAccumulator()
+        _ = transcript.applyFinal("hello world")
+        _ = transcript.applyFinal("goodbye now")
+        XCTAssertEqual(transcript.currentDictationEventText, "hello world goodbye now")
+
+        var streamed = TranscriptAccumulator()
+        feedGeneration(["hello", "world"], into: &streamed)
+        feedGeneration(["goodbye"], into: &streamed)
+        XCTAssertEqual(streamed.currentDictationEventText, "helloworld goodbye")
+    }
 }
