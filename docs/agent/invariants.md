@@ -97,6 +97,45 @@ there is not.
   so `LiveHoldBackReplacementStream` withholds the trailing partial word plus
   any suffix that is still a live prefix of a dictionary rule. Nothing is lost
   (`flushRemainder()` releases it at stop) but it costs latency of appearance.
+- **The spoken send trigger withholds whole segments in Live Auto-Paste.**
+  "send it" / "send now" at the end of a segment must be cut before it is
+  typed, and nothing typed can be taken back, so with the opt-in on in a
+  terminal NO partial is typed: each segment is typed at its final (or at the
+  promotion a stop or dropped socket does), then Return is pressed. That is
+  the owner's accepted cost (2026-09-24), shown next to the toggle. The
+  Return is pressed only in the PID the session pinned, only while that PID
+  is frontmost (it never activates an app for a Return), never under Secure
+  Keyboard Entry, and only once the hold-back stream has released every
+  word — a Return ahead of the last word would submit half a prompt. Every
+  Live decision is taken when it is needed, from the app frontmost THEN
+  (terminal by bundle ID only); nothing sampled at session start or connect
+  time takes part, because focus can move in between (Codex round 2 on #494:
+  a verdict from before the connect and a PID from audio start sent both
+  text and Return to an editor). A segment is withheld only if a terminal is
+  frontmost at its first insertion. Live text goes to whatever has focus, so
+  `TextInsertionService` records the frontmost PID at every live insertion;
+  the Return goes to the frontmost terminal only when every one since the
+  last Return SENT is that PID (an unreadable one, or one made under Secure
+  Keyboard Entry, which swallows posted keys while reporting success, counts
+  as elsewhere). The Return is decided before the segment is typed, and the
+  trigger is cut only when it will be sent; otherwise the final is typed
+  whole. The
+  record is cleared only by a Return sent or a new session, never by a
+  refusal: once text landed elsewhere, the trigger does nothing for the rest
+  of that dictation. Only a non-empty backend final can trigger; an empty
+  final or a promotion types the merged text as text. The accumulator's
+  merge is never parsed: it keeps partial words the final dropped and glues
+  a disagreeing partial onto it, and either can read as a trigger the final
+  does not hold.
+  `SendNowResubmitLatch` refuses a submission equal to the previous one until
+  a non-submitting final comes between: no backend names its segments, and
+  partials cannot tell a repeat from a straggler, so "send it" twice in a row
+  presses Return once. In Overlay Buffer the trigger is cut from the raw
+  transcript before the dictionary and the polisher; the target counts as a
+  terminal only by its own bundle ID on the built-in or Settings → Terminals
+  list (the AX probe reads the element focused NOW, which need not be the
+  commit target's), and the Return follows only a commit that reported
+  `.succeeded`.
 - **The overlay panel's click-through is insertion machinery, not window
   chrome.** `NonActivatingPanel` refuses key and main and swallows every click
   on its body, because the panel is on screen exactly while the app it is

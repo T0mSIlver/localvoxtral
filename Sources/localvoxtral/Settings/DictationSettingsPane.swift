@@ -262,6 +262,17 @@ struct DictationSettingsPane: View {
                 }
             }
 
+            SettingsGroup(title: "Live Auto-Paste") {
+                // The help line is the trade-off, visible before turning it on.
+                SettingsFieldRow(
+                    title: "Say \u{201C}send it\u{201D} to press Return in a terminal",
+                    help: "In a terminal, text appears when you finish a phrase, not as you speak."
+                ) {
+                    Toggle("", isOn: $settings.liveSpokenSendEnabled)
+                        .labelsHidden()
+                }
+            }
+
             SettingsGroup(title: "Overlay Buffer") {
                 SettingsFieldRow(
                     title: "Font size"
@@ -307,6 +318,11 @@ struct DictationSettingsPane: View {
                     }
                     .pickerStyle(.menu)
                     .labelsHidden()
+                }
+
+                SettingsFieldRow(title: "Say \u{201C}send it\u{201D} to press Return in a terminal") {
+                    Toggle("", isOn: $settings.overlaySpokenSendEnabled)
+                        .labelsHidden()
                 }
 
                 SettingsFieldRow(

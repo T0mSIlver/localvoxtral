@@ -53,6 +53,18 @@ final class SettingsStoreOutOfBoxDefaultsTests: XCTestCase {
         XCTAssertTrue(makeStore().audioDuckingEnabled)
     }
 
+    func testSpokenSendIsOffUntilTurnedOn() {
+        // It presses Return in the user's terminal: opt-in in both modes.
+        XCTAssertFalse(makeStore().overlaySpokenSendEnabled)
+        XCTAssertFalse(makeStore().liveSpokenSendEnabled)
+
+        let store = makeStore()
+        store.overlaySpokenSendEnabled = true
+        store.liveSpokenSendEnabled = true
+        XCTAssertTrue(makeStore().overlaySpokenSendEnabled)
+        XCTAssertTrue(makeStore().liveSpokenSendEnabled)
+    }
+
     func testAnInstallThatTurnedDuckingOffKeepsItOff() {
         let store = makeStore()
         store.audioDuckingEnabled = false

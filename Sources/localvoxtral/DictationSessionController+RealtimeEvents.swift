@@ -159,8 +159,12 @@ extension DictationSessionController {
 
         transcript.appendPartial(processedDelta)
         noteTranscriptTextForSilenceAutoStop()
-        if isLiveAutoPasteModeEnabled {
+        if isLiveAutoPasteModeEnabled, liveSpokenSendWithholdsSegment() {
+            // Typed at the final, once it is known whether it ends in the
+            // trigger: typed text cannot be taken back.
+        } else if isLiveAutoPasteModeEnabled {
             textInsertion.enqueueRealtimeInsertion(processedDelta)
+            liveSpokenSendTypedSinceReturn = true
             if let accessibilityError = textInsertion.lastAccessibilityError {
                 lastError = accessibilityError
             }
@@ -184,9 +188,14 @@ extension DictationSessionController {
         noteFinalTextForSilenceAutoStop(overlayTextBefore: overlayTextBeforeFinal)
         statusText = activeStatusText
 
-        if isLiveAutoPasteModeEnabled {
+        if isLiveAutoPasteModeEnabled, liveSpokenSendWithholdsSegment() {
+            // No partial of this segment was typed, so the whole segment is.
+            deliverLiveSpokenSendFinal(processedText, merged: finalized.text)
+        } else if isLiveAutoPasteModeEnabled {
+            liveSpokenSendSegmentMode = .undecided
             if let liveInsertion = finalized.liveInsertion {
                 textInsertion.enqueueRealtimeInsertion(liveInsertion)
+                liveSpokenSendTypedSinceReturn = true
             }
             if let accessibilityError = textInsertion.lastAccessibilityError {
                 lastError = accessibilityError
@@ -254,6 +263,12 @@ extension DictationSessionController {
     @discardableResult
     func promotePendingRealtimeTextToLatestSegment() -> String? {
         guard let pendingSegment = transcript.promotePendingToLatestSegment() else { return nil }
+
+        // Withheld partials are typed nowhere else: a promotion (stop,
+        // dropped socket) stands in for the final they never got.
+        if isLiveAutoPasteModeEnabled {
+            deliverPromotedLiveSpokenSendSegment(pendingSegment)
+        }
 
         if isLiveAutoPasteModeEnabled, settings.autoCopyEnabled {
             copyLatestSegment(updateStatus: false)

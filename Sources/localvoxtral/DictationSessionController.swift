@@ -359,6 +359,22 @@ final class DictationSessionController {
     var sessionModelName: String?
     @ObservationIgnored
     var sessionReplacementDictionary: ReplacementDictionary?
+    /// Live Auto-Paste spoken send trigger state
+    /// (`DictationSessionController+SpokenSend.swift`), reset per session.
+    enum LiveSpokenSendSegmentMode {
+        case undecided, typedLive, withheld
+    }
+    @ObservationIgnored
+    var liveSpokenSendSegmentMode = LiveSpokenSendSegmentMode.undecided
+    @ObservationIgnored
+    var spokenSendLatch = SendNowResubmitLatch()
+    /// Whether live text was typed since the last Return, so the next
+    /// withheld segment needs a space before it.
+    @ObservationIgnored
+    var liveSpokenSendTypedSinceReturn = false
+    /// The "text went to another app" line is logged once per dictation.
+    @ObservationIgnored
+    var liveSpokenSendBlockLogged = false
     @ObservationIgnored
     var firstChunkPreprocessor = FirstChunkPreprocessor()
 

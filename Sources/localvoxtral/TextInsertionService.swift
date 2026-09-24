@@ -130,6 +130,14 @@ final class TextInsertionService {
     /// user's app and can never be recalled.
     @ObservationIgnored
     private var liveTypedTextForSession = ""
+    /// The frontmost app at each successful live insertion since the last
+    /// `clearLiveInsertionTargetPIDs()`; nil where it could not be read or
+    /// Secure Keyboard Entry was on. Live
+    /// text is typed into whatever has focus, so this is the only record of
+    /// where it went; the spoken send trigger presses Return only when all of
+    /// it went to the terminal the Return is for.
+    @ObservationIgnored
+    private(set) var liveInsertionTargetPIDs: [pid_t?] = []
 
 #if DEBUG
     @ObservationIgnored
@@ -138,6 +146,10 @@ final class TextInsertionService {
     private var debugModifierStateReader: (() -> Bool)?
     @ObservationIgnored
     private var debugAccessibilityInserter: ((String, pid_t?) -> Bool)?
+    @ObservationIgnored
+    private var debugReturnKeyPoster: ((pid_t) -> Bool)?
+    @ObservationIgnored
+    private var debugFrontmostPIDReader: (() -> pid_t?)?
 #endif
 
     static let accessibilityErrorMessage = AccessibilityTrustManager.errorMessage
@@ -244,6 +256,57 @@ final class TextInsertionService {
         return true
     }
 
+    /// Presses Return once for the spoken send trigger (#318), only while
+    /// `pid` is the frontmost app. It never activates an app to do it: the
+    /// text went to `pid`, and a Return that landed anywhere else would submit
+    /// something the user never dictated.
+    func pressReturn(inAppPID pid: pid_t) -> Bool {
+#if DEBUG
+        if let debugReturnKeyPoster {
+            return debugReturnKeyPoster(pid)
+        }
+        // A test that did not pin the hook must never press Return in
+        // whatever the host has focused.
+        if TerminalTargetDetector.isRunningUnderXCTest { return false }
+#endif
+        guard pid != getpid(),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+              let source = CGEventSource(stateID: .combinedSessionState),
+              // 36 is kVK_Return.
+              let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: false)
+        else {
+            return false
+        }
+        keyDown.flags = []
+        keyUp.flags = []
+        keyDown.post(tap: .cgAnnotatedSessionEventTap)
+        keyUp.post(tap: .cgAnnotatedSessionEventTap)
+        return true
+    }
+
+    /// Where a live insertion just went, as far as it can be confirmed.
+    /// Under Secure Keyboard Entry the posted keys are swallowed while posting
+    /// reports success, so the text landed nowhere: recorded as nil, like an
+    /// unreadable frontmost app, which blocks the spoken send Return.
+    private func confirmedLiveInsertionPID() -> pid_t? {
+        guard !TerminalTargetDetector.isSecureKeyboardEntryEnabled() else { return nil }
+        return frontmostApplicationPID()
+    }
+
+    func clearLiveInsertionTargetPIDs() {
+        liveInsertionTargetPIDs = []
+    }
+
+    func frontmostApplicationPID() -> pid_t? {
+#if DEBUG
+        if let debugFrontmostPIDReader {
+            return debugFrontmostPIDReader()
+        }
+#endif
+        return NSWorkspace.shared.frontmostApplication?.processIdentifier
+    }
+
     func enqueueRealtimeInsertion(_ text: String) {
         guard !text.isEmpty else { return }
         pendingRealtimeInsertionText.append(text)
@@ -265,6 +328,7 @@ final class TextInsertionService {
         switch insertTextPrioritizingKeyboard(insertedText) {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
+            liveInsertionTargetPIDs.append(confirmedLiveInsertionPID())
         case .failed:
             break
         }
@@ -437,6 +501,7 @@ final class TextInsertionService {
         switch insertTextPrioritizingKeyboard(releasedText) {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             liveTypedTextForSession += releasedText
+            liveInsertionTargetPIDs.append(confirmedLiveInsertionPID())
         case .failed:
             // Keep the released text verbatim for the retry task; it must
             // never be re-ingested into the stream.
@@ -848,11 +913,15 @@ extension TextInsertionService {
     func debugConfigureInsertionHooks(
         unicodePoster: ((String) -> Bool)? = nil,
         modifierStateReader: (() -> Bool)? = nil,
-        accessibilityInserter: ((String, pid_t?) -> Bool)? = nil
+        accessibilityInserter: ((String, pid_t?) -> Bool)? = nil,
+        returnKeyPoster: ((pid_t) -> Bool)? = nil,
+        frontmostPIDReader: (() -> pid_t?)? = nil
     ) {
         debugUnicodePoster = unicodePoster
         debugModifierStateReader = modifierStateReader
         debugAccessibilityInserter = accessibilityInserter
+        debugReturnKeyPoster = returnKeyPoster
+        debugFrontmostPIDReader = frontmostPIDReader
     }
 
     func debugInsertionSnapshot() -> DebugInsertionSnapshot {

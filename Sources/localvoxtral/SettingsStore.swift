@@ -56,6 +56,8 @@ final class SettingsStore {
         static let dictationOutputMode = "settings.dictation_output_mode"
         static let dictationShortcutMode = "settings.dictation_shortcut_mode"
         static let autoCopyEnabled = "settings.auto_copy_enabled"
+        static let overlaySpokenSendEnabled = "settings.overlay_spoken_send_enabled"
+        static let liveSpokenSendEnabled = "settings.live_spoken_send_enabled"
         static let audioDuckingEnabled = "settings.audio_ducking_enabled"
         static let audioDuckingFadeDuration = "settings.audio_ducking_fade_duration"
         /// The device and volume a launch ducked away from, written at the
@@ -271,6 +273,20 @@ final class SettingsStore {
 
     var autoCopyEnabled: Bool {
         didSet { defaults.set(autoCopyEnabled, forKey: Keys.autoCopyEnabled) }
+    }
+
+    /// Overlay Buffer: a dictation that ends in "send it" or "send now" is
+    /// committed without those words, then Return is pressed in the same app.
+    /// Terminals only. Off by default (#318).
+    var overlaySpokenSendEnabled: Bool {
+        didSet { defaults.set(overlaySpokenSendEnabled, forKey: Keys.overlaySpokenSendEnabled) }
+    }
+
+    /// Live Auto-Paste: the same trigger, per segment. Live typing cannot take
+    /// words back, so while this is on in a terminal each segment is typed
+    /// when its final arrives instead of as the words come. Off by default.
+    var liveSpokenSendEnabled: Bool {
+        didSet { defaults.set(liveSpokenSendEnabled, forKey: Keys.liveSpokenSendEnabled) }
     }
 
     /// Lower other audio while dictating, and fade it back on stop. On by
@@ -916,6 +932,10 @@ final class SettingsStore {
             defaults: defaults, key: Keys.opensWindowAtLaunch, fallback: false)
         autoCopyEnabled = Self.loadBool(
             defaults: defaults, key: Keys.autoCopyEnabled, fallback: false)
+        overlaySpokenSendEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.overlaySpokenSendEnabled, fallback: false)
+        liveSpokenSendEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.liveSpokenSendEnabled, fallback: false)
         audioDuckingEnabled = Self.loadBool(
             defaults: defaults, key: Keys.audioDuckingEnabled, fallback: true)
         let storedDuckingFade = defaults.object(forKey: Keys.audioDuckingFadeDuration) != nil
