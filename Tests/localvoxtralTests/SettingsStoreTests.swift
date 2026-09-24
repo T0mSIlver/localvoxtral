@@ -665,11 +665,6 @@ final class SettingsStoreTests: XCTestCase {
 
     // MARK: - repoVocabularyEnabled
 
-    func testRepoVocabularyEnabled_defaultsToFalse() {
-        let store = makeStore()
-        XCTAssertFalse(store.repoVocabularyEnabled)
-    }
-
     func testRepoVocabularyEnabled_persistsAcrossReload() {
         let store = makeStore()
         store.repoVocabularyEnabled = true

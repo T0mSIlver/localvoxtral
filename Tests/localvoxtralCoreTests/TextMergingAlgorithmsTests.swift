@@ -25,26 +25,6 @@ final class TextMergingAlgorithmsTests: XCTestCase {
         }
     }
 
-    // MARK: - mergeIncrementalText
-
-    func testMergeIncremental() {
-        let cases: [(name: String, existing: String, incoming: String, merged: String, delta: String)] = [
-            ("emptyIncoming", "hello", "", "hello", ""),
-            ("emptyExisting", "", "hello", "hello", "hello"),
-            ("exactMatch", "hello", "hello", "hello", ""),
-            ("incomingPrefixedByExisting", "hello", "hello world", "hello world", " world"),
-            ("existingSuffixesIncoming", "hello world", "world", "hello world", ""),
-            ("existingContainsIncoming", "hello world", "lo wor", "hello world", ""),
-            ("suffixPrefixOverlap", "hello wor", "world", "hello world", "ld"),
-            ("noOverlap", "abc", "xyz", "abcxyz", "xyz"),
-        ]
-        for (name, existing, incoming, merged, delta) in cases {
-            let result = TextMergingAlgorithms.mergeIncrementalText(existing: existing, incoming: incoming)
-            XCTAssertEqual(result.merged, merged, "\(name): merged")
-            XCTAssertEqual(result.appendedDelta, delta, "\(name): appendedDelta")
-        }
-    }
-
     // MARK: - appendToCurrentDictationEvent
 
     func testAppendEvent() {

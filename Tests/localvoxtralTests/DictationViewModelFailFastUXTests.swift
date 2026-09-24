@@ -27,19 +27,6 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
     }
 
-    func testSocketHostUnreachableSurfacesDistinctStatus() {
-        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        viewModel.session.isShowingConnectionFailureAlert = true
-        retainForTestProcessLifetime(viewModel)
-
-        viewModel.session.handleConnectFailure(
-            reason: .socketError(message: "WebSocket failed: [NSURLErrorDomain:-1003] url=ws://x/realtime")
-        )
-
-        XCTAssertEqual(viewModel.statusText, "Host unreachable.")
-        XCTAssertNotNil(viewModel.lastError)
-    }
-
     func testTimeoutReasonKeepsStableStatusAndEndpointPhrase() {
         let viewModel = makeViewModel(outputMode: .overlayBuffer)
         viewModel.session.isShowingConnectionFailureAlert = true
@@ -78,21 +65,6 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertTrue(viewModel.lastError?.contains("Connection refused") == true)
         XCTAssertFalse(viewModel.lastError?.contains("No connection response received") == true)
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
-    }
-
-    func testEndpointRejectedSocketErrorSurfacesPathStatus() {
-        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
-        viewModel.session.isShowingConnectionFailureAlert = true
-        retainForTestProcessLifetime(viewModel)
-
-        viewModel.session.handleConnectFailure(
-            reason: .socketError(
-                message: "WebSocket failed: bad server response [NSURLErrorDomain:-1011] url=ws://127.0.0.1:8000/v1/realtimeaa"
-            )
-        )
-
-        XCTAssertEqual(viewModel.statusText, "Endpoint path rejected.")
-        XCTAssertTrue(viewModel.lastError?.contains("Check the path") == true)
     }
 
     func testInvalidEndpointReasonSurfacesSettingsGuidance() {

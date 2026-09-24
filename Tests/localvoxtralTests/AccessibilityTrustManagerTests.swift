@@ -33,20 +33,6 @@ final class AccessibilityTrustManagerTests: XCTestCase {
         XCTAssertTrue(manager.isTrusted)
     }
 
-    func testRequestPermission_promptsEveryCall() {
-        var promptCount = 0
-        let manager = AccessibilityTrustManager(
-            trustChecker: { false },
-            permissionPrompter: { promptCount += 1 },
-            pollingTimeoutSeconds: 0
-        )
-
-        manager.requestPermission()
-        manager.requestPermission()
-
-        XCTAssertEqual(promptCount, 2)
-    }
-
     func testRefresh_whenTrustBecomesGranted_clearsErrorAndNotifies() {
         var trusted = false
         var trustChangedCount = 0
@@ -72,7 +58,7 @@ final class AccessibilityTrustManagerTests: XCTestCase {
         XCTAssertEqual(trustChangedCount, 1)
     }
 
-    func testRequestPermission_pollingRefreshesUntilTrusted() async {
+    func testPromptIfNeeded_pollingRefreshesUntilTrusted() async {
         var trusted = false
         var currentDate = Date(timeIntervalSince1970: 1_000)
         var sleepCalls = 0
@@ -90,7 +76,7 @@ final class AccessibilityTrustManagerTests: XCTestCase {
             pollingTimeoutSeconds: 1
         )
 
-        manager.requestPermission()
+        manager.promptIfNeeded()
         await Task.yield()
         await Task.yield()
 

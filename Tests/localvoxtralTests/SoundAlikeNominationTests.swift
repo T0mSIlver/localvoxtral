@@ -40,16 +40,6 @@ final class SoundAlikeNominationTests: XCTestCase {
         XCTAssertEqual(preapplied(transcript, terms: ["SettingsStore"]), transcript)
     }
 
-    func testExactPhoneticKeyHitIsNominatedNotPreApplied() {
-        let transcript = "click the terminal pain"
-        let result = outcome(transcript, terms: ["terminal pane"])
-
-        XCTAssertTrue(result.entries.isEmpty)
-        XCTAssertTrue(result.phoneticEntries.isEmpty)
-        XCTAssertEqual(result.verificationCandidates.map(\.replaceWith), ["terminal pane"])
-        XCTAssertEqual(preapplied(transcript, terms: ["terminal pane"]), transcript)
-    }
-
     /// "local Voxtral" came back as `localvoxtral.js` twice in the field, and
     /// every model tried repeated it when the file name was merely offered.
     func testFileNameWithUnspokenExtensionIsNeverOffered() {

@@ -705,14 +705,8 @@ package enum RepoVocabularyMatcher {
     /// Evaluation-proven fallback for phonetic damage beyond edit distance 1.
     /// It searches only candidates sharing a character n-gram with the ASR
     /// span, requires a strong best score and an unambiguous runner-up margin,
-    /// and emits at most one mapping.
-    package static func alignedFallbackEntry(
-        transcript: String,
-        vocabulary: RepoVocabulary
-    ) -> ReplacementEntry? {
-        alignedFallbackOutcome(transcript: transcript, vocabulary: vocabulary).approved
-    }
-
+    /// and approves at most one mapping.
+    ///
     /// The aligned matcher has one deterministic approval channel and a small
     /// demotion channel for evidence that narrowly misses confidence. Only
     /// score ambiguity, a near score, or an unspoken extension can be useful
