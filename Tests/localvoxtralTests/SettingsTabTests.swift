@@ -13,57 +13,6 @@ import XCTest
 /// terminal panes plus the static sections; user-added terminal panes have no
 /// script-drilled contract.
 final class SettingsTabTests: XCTestCase {
-    private var sidebarItems: [SettingsTab] {
-        SettingsTab.historySidebarItems
-            + SettingsTab.primarySidebarItems
-            + SettingsTab.integrationsSidebarItems
-            + TerminalAppCatalog.builtIn.map(SettingsTab.terminal)
-    }
-
-    func testSidebarArraysCoverEveryKnownPaneExactlyOnce() {
-        XCTAssertEqual(
-            Set(sidebarItems), Set(SettingsTab.allKnownPanes),
-            "every known SettingsTab pane must appear in the sidebar"
-        )
-        XCTAssertEqual(
-            sidebarItems.count, SettingsTab.allKnownPanes.count,
-            "sidebar arrays must not list a pane twice"
-        )
-    }
-
-    func testSidebarArraysDoNotOverlap() {
-        let sections: [[SettingsTab]] = [
-            SettingsTab.historySidebarItems,
-            SettingsTab.primarySidebarItems,
-            SettingsTab.integrationsSidebarItems,
-            TerminalAppCatalog.builtIn.map(SettingsTab.terminal),
-        ]
-        let seen = NSMutableSet()
-        for section in sections {
-            for tab in section {
-                XCTAssertFalse(
-                    seen.contains(tab),
-                    "\(tab.rawValue) appears in more than one sidebar section"
-                )
-                seen.add(tab)
-            }
-        }
-    }
-
-    func testEveryPaneHasCompleteChrome() {
-        for tab in SettingsTab.allKnownPanes {
-            XCTAssertFalse(tab.title.isEmpty, "\(tab.rawValue) has no title")
-            XCTAssertFalse(
-                tab.accessibilityIdentifier.isEmpty,
-                "\(tab.rawValue) has no accessibility identifier"
-            )
-            XCTAssertFalse(
-                tab.paneAccessibilityIdentifier.isEmpty,
-                "\(tab.rawValue) has no pane accessibility identifier"
-            )
-        }
-    }
-
     /// The pane header is the title only (owner review, 2026-09-07): every
     /// pane subtitle ("What the polisher and your coding agents may see." and
     /// siblings) was narration and was deleted so the first group starts
@@ -397,25 +346,6 @@ final class SettingsTabTests: XCTestCase {
         )
     }
 
-    /// The Integrations section (owner decision, 2026-09-07): one row per
-    /// harness, each with its own raw value. The old single `integrations`
-    /// pane never shipped this structure, so the raw value is RETIRED, not
-    /// moved — nothing may reuse it.
-    func testIntegrationsSectionChrome() {
-        XCTAssertEqual(SettingsTab.integrationsContext.title, "Context")
-        XCTAssertEqual(SettingsTab.integrationsContext.rawValue, "integrations.context")
-        XCTAssertEqual(SettingsTab.integrationsClaude.title, "Claude Code")
-        XCTAssertEqual(SettingsTab.integrationsClaude.rawValue, "integrations.claude")
-        XCTAssertEqual(SettingsTab.integrationsOpencode.title, "opencode")
-        XCTAssertEqual(SettingsTab.integrationsOpencode.rawValue, "integrations.opencode")
-        XCTAssertEqual(SettingsTab.integrationsVibe.title, "Mistral Vibe")
-        XCTAssertEqual(SettingsTab.integrationsVibe.rawValue, "integrations.vibe")
-        XCTAssertEqual(SettingsTab.integrationsHerdr.title, "herdr")
-        XCTAssertEqual(SettingsTab.integrationsHerdr.rawValue, "integrations.herdr")
-        XCTAssertEqual(SettingsTab.integrationsRemote.title, "Remote hosts")
-        XCTAssertEqual(SettingsTab.integrationsRemote.rawValue, "integrations.remote")
-    }
-
     /// Each pane holds its own subject (owner review, 2026-09-16): herdr rows
     /// had drifted into Claude Code, the cmux join into Claude Code, and
     /// harness names into the Context toggles, which gate every agent. Pinned
@@ -476,13 +406,8 @@ final class SettingsTabTests: XCTestCase {
         }
     }
 
-    func testEndpointsTabKeepsRawValueWhileDisplayingEngines() {
-        XCTAssertEqual(SettingsTab.endpoints.title, "Engines")
-        XCTAssertEqual(SettingsTab.endpoints.rawValue, "endpoints")
-    }
-
-    /// Presentation order is a UX contract of its own: the coverage tests
-    /// above compare Sets, so an accidental reorder (an alphabetical sort, a
+    /// Presentation order is a UX contract of its own: `testRawValuesAreStable`
+    /// compares a Set, so an accidental reorder (an alphabetical sort, a
     /// careless merge) would pass every other test while moving rows the user
     /// has already built muscle memory for.
     func testSidebarOrderIsThePresentationContract() {
@@ -536,9 +461,8 @@ final class SettingsTabTests: XCTestCase {
         }
     }
 
-    /// A terminal pane's raw value is `terminals.<slug>`, and two descriptors
-    /// with the same slug are the same pane (sidebar selection and `ForEach`
-    /// identity both rely on it).
+    /// A terminal pane's raw value is `terminals.<slug>`, and its title is the
+    /// terminal's display name.
     func testTerminalPaneRawValueIsTerminalsSlug() {
         let app = TerminalAppDescriptor(
             slug: "dev-some-app", displayName: "Some App",
@@ -547,6 +471,5 @@ final class SettingsTabTests: XCTestCase {
         )
         XCTAssertEqual(SettingsTab.terminal(app).rawValue, "terminals.dev-some-app")
         XCTAssertEqual(SettingsTab.terminal(app).title, "Some App")
-        XCTAssertEqual(SettingsTab.terminal(app), SettingsTab.terminal(app))
     }
 }

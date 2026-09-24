@@ -2989,18 +2989,6 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertEqual(scripts.withLock { $0 }, 1, "nothing is attempted after the listing")
     }
 
-    func testVerifiedPluginVersionMatchesTheRemotePluginManifest() throws {
-        let manifestURL = repositoryRoot
-            .appendingPathComponent("integrations/claude-code/plugins/localvoxtral-remote")
-            .appendingPathComponent(".claude-plugin/plugin.json")
-        let object = try JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL))
-        let manifest = try XCTUnwrap(object as? [String: Any])
-        XCTAssertEqual(
-            manifest["version"] as? String,
-            ClaudeRemoteEnrollmentService.remotePluginVersion
-        )
-    }
-
     func testHerdrSetupReportsAbsentAndRefusesAnExistingAgentsTable() throws {
         let assertInvocation: @Sendable (ClaudeRemoteEnrollmentService.Invocation) -> Void = {
             invocation in

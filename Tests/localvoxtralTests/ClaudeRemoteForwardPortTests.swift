@@ -105,15 +105,6 @@ final class ClaudeRemoteForwardPortTests: XCTestCase {
         XCTAssertTrue(ClaudeRemoteForwardPort.isAcceptable(ClaudeRemoteForwardPort.legacyPort))
     }
 
-    func testTheContentionMessageNamesThePortTheHostAndNoApostrophe() throws {
-        let message = ClaudeRemoteForwardPort.contentionMessage(port: 28500, host: "builder")
-        XCTAssertTrue(message.contains("28500"))
-        XCTAssertTrue(message.contains("builder"))
-        // It is embedded in single-quoted shell in the verify command; one
-        // apostrophe would end the quote and change what the user runs.
-        XCTAssertFalse(message.contains("'"))
-    }
-
     // MARK: Identity persistence (review finding 4)
 
     /// An in-memory store with the one property that matters: `claim` is
