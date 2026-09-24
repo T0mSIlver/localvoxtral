@@ -18,6 +18,13 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     var beginFinalizingCalls: [BufferCall] = []
     var refreshCalls: [BufferCall] = []
     var commitCallCount = 0
+    /// The commit text the overlay held at each `commitIfNeeded`: the buffer
+    /// last handed to `beginFinalizing` or `refresh`.
+    var committedTexts: [String] = []
+    /// Runs inside `commitIfNeeded`, for tests that order the commit against
+    /// what follows it.
+    var onCommit: (() -> Void)?
+    private var commitBufferText = ""
     var dismissHoldVisibilities: [TimeInterval] = []
     var dismissAfterHoldCallCount: Int { dismissHoldVisibilities.count }
     var lastDismissAfterHoldMinimumVisibility: TimeInterval? { dismissHoldVisibilities.last }
@@ -40,12 +47,14 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
         beginFinalizingCalls.append(
             BufferCall(displayText: displayBufferText, commitText: commitBufferText)
         )
+        self.commitBufferText = commitBufferText
     }
 
     func refresh(displayBufferText: String, commitBufferText: String) {
         refreshCalls.append(
             BufferCall(displayText: displayBufferText, commitText: commitBufferText)
         )
+        self.commitBufferText = commitBufferText
     }
 
     @discardableResult
@@ -54,6 +63,8 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
         autoCopyEnabled _: Bool
     ) -> OverlayBufferCommitOutcome {
         commitCallCount += 1
+        committedTexts.append(commitBufferText)
+        onCommit?()
         return commitOutcome
     }
 

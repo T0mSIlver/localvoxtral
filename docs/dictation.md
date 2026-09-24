@@ -46,6 +46,17 @@ sees them.
   talking. Dictionary replacements are applied before text is typed;
   localvoxtral never backspaces over what an app has already drawn.
 
+**Say "send it" to press Return.** In a terminal, ending a dictation with
+"send it" or "send now" inserts the text without those words, then presses
+Return in the same app, so a coding agent gets the prompt without you
+touching the keyboard. It is off by default and set per mode in Settings →
+Dictation. In Overlay Buffer the words are removed before polishing, so the
+polisher never sees them. In Live Auto-Paste the trigger can only be removed
+before it is typed, so with the option on each phrase appears when you finish
+it rather than word by word. Neither mode presses Return in an app that is not
+a terminal, while Secure Keyboard Entry is on, or when the text could not be
+inserted.
+
 ## The menu bar popover
 
 localvoxtral lives in the menu bar: the popover shows dictation status at a
@@ -121,8 +132,8 @@ History; the panes sit under the sidebar's Settings header:
   use less compute.
 - **Dictation** — the trigger (single modifier key with tap/hold gestures, or
   per-mode keyboard shortcuts), the menu-bar mode, copy on stop, ducking other
-  audio, and the overlay's font size and how many lines it shows before
-  scrolling. **Lower other audio while dictating**, on unless you turn it off,
+  audio, the spoken "send it" trigger for each mode, and the overlay's font
+  size and how many lines it shows before scrolling. **Lower other audio while dictating**, on unless you turn it off,
   drops music and calls to a fifth of your volume for as long as a session
   runs, in both output modes, and fades back when it ends; **Fade** sets how
   long each fade takes. It moves the volume of

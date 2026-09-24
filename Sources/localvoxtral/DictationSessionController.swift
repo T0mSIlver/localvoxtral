@@ -349,6 +349,18 @@ final class DictationSessionController {
     var sessionModelName: String?
     @ObservationIgnored
     var sessionReplacementDictionary: ReplacementDictionary?
+    /// Live Auto-Paste with the spoken send trigger on, in a terminal: set at
+    /// session start, cleared at session end. While set, partials are not
+    /// typed; each segment is typed when its final arrives
+    /// (`DictationSessionController+SpokenSend.swift`).
+    @ObservationIgnored
+    var isLiveSpokenSendActive = false
+    @ObservationIgnored
+    var spokenSendLatch = SendNowResubmitLatch()
+    /// Whether a segment was typed since the last Return, so the next one
+    /// needs a space before it.
+    @ObservationIgnored
+    var liveSpokenSendTypedSinceReturn = false
     @ObservationIgnored
     var firstChunkPreprocessor = FirstChunkPreprocessor()
 

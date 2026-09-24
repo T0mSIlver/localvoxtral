@@ -237,6 +237,18 @@ struct DictationSettingsPane: View {
                         .labelsHidden()
                 }
 
+                // The Output group carries the Live Auto-Paste row because
+                // the pane has no Live Auto-Paste group, and a new one would
+                // change the pane's group structure (owner rule, 2026-07-04).
+                // The help line is the trade-off, visible before turning it on.
+                SettingsFieldRow(
+                    title: "Live Auto-Paste: say \u{201C}send it\u{201D} to press Return",
+                    help: "Text appears when you finish a phrase, not as you speak."
+                ) {
+                    Toggle("", isOn: $settings.liveSpokenSendEnabled)
+                        .labelsHidden()
+                }
+
                 SettingsFieldRow(title: "Lower other audio while dictating") {
                     Toggle("", isOn: $settings.audioDuckingEnabled)
                         .labelsHidden()
@@ -297,6 +309,14 @@ struct DictationSettingsPane: View {
                             .foregroundStyle(.secondary)
                             .frame(width: 44, alignment: .trailing)
                     }
+                }
+
+                SettingsFieldRow(
+                    title: "Say \u{201C}send it\u{201D} to press Return",
+                    help: "In a terminal, \u{201C}send it\u{201D} or \u{201C}send now\u{201D} at the end submits the text."
+                ) {
+                    Toggle("", isOn: $settings.overlaySpokenSendEnabled)
+                        .labelsHidden()
                 }
 
                 SettingsFieldRow(

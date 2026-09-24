@@ -138,6 +138,8 @@ final class TextInsertionService {
     private var debugModifierStateReader: (() -> Bool)?
     @ObservationIgnored
     private var debugAccessibilityInserter: ((String, pid_t?) -> Bool)?
+    @ObservationIgnored
+    private var debugReturnKeyPoster: ((pid_t) -> Bool)?
 #endif
 
     static let accessibilityErrorMessage = AccessibilityTrustManager.errorMessage
@@ -241,6 +243,35 @@ final class TextInsertionService {
             let pasteboard = NSPasteboard.general
             Self.restorePasteboardSnapshot(snapshot, to: pasteboard, expectedChangeCount: insertedChangeCount)
         }
+        return true
+    }
+
+    /// Presses Return once for the spoken send trigger (#318), only while
+    /// `pid` is the frontmost app. It never activates an app to do it: the
+    /// text went to `pid`, and a Return that landed anywhere else would submit
+    /// something the user never dictated.
+    func pressReturn(inAppPID pid: pid_t) -> Bool {
+#if DEBUG
+        if let debugReturnKeyPoster {
+            return debugReturnKeyPoster(pid)
+        }
+        // A test that did not pin the hook must never press Return in
+        // whatever the host has focused.
+        if TerminalTargetDetector.isRunningUnderXCTest { return false }
+#endif
+        guard pid != getpid(),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+              let source = CGEventSource(stateID: .combinedSessionState),
+              // 36 is kVK_Return.
+              let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: false)
+        else {
+            return false
+        }
+        keyDown.flags = []
+        keyUp.flags = []
+        keyDown.post(tap: .cgAnnotatedSessionEventTap)
+        keyUp.post(tap: .cgAnnotatedSessionEventTap)
         return true
     }
 
@@ -848,11 +879,13 @@ extension TextInsertionService {
     func debugConfigureInsertionHooks(
         unicodePoster: ((String) -> Bool)? = nil,
         modifierStateReader: (() -> Bool)? = nil,
-        accessibilityInserter: ((String, pid_t?) -> Bool)? = nil
+        accessibilityInserter: ((String, pid_t?) -> Bool)? = nil,
+        returnKeyPoster: ((pid_t) -> Bool)? = nil
     ) {
         debugUnicodePoster = unicodePoster
         debugModifierStateReader = modifierStateReader
         debugAccessibilityInserter = accessibilityInserter
+        debugReturnKeyPoster = returnKeyPoster
     }
 
     func debugInsertionSnapshot() -> DebugInsertionSnapshot {

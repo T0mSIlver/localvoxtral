@@ -131,6 +131,16 @@ enum TerminalTargetDetector {
         return verdict
     }
 
+    /// The same verdict for an app named by bundle ID rather than read from
+    /// the frontmost app: the Overlay Buffer's commit target, which is
+    /// frontmost again at commit time. Not logged; the caller logs its
+    /// decision.
+    static func verdict(forBundleID bundleID: String?, userBundleIDs: Set<String>) -> Decision {
+        decision(forBundleID: bundleID, userBundleIDs: userBundleIDs) {
+            probeFocusedElementLive()
+        }
+    }
+
     /// True when macOS Secure Keyboard Entry is active (e.g. Ghostty around
     /// password prompts, or enabled manually in Terminal.app/iTerm2). It
     /// blocks synthetic keyboard events, so dictated text silently lands

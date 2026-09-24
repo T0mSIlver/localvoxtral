@@ -61,6 +61,9 @@ extension DictationSessionController {
     /// committed by a task when polishing has a configuration, committed
     /// as-is otherwise.
     private func commitOverlayBufferSession(sessionMode: DictationOutputMode) {
+        // Before the dictionary and the polisher: the trigger is a command,
+        // not text, so neither may see it.
+        let spokenSendPID = stripOverlaySpokenSendTrigger()
         let preparation = StopCommitCoordinator.prepare(
             originalText: transcript.currentDictationEventText,
             latchedReplacementDictionary: sessionReplacementDictionary,
@@ -131,7 +134,8 @@ extension DictationSessionController {
                         outputMode: capturedOutputMode,
                         targetAppBundleID: capturedTargetBundleID
                     ),
-                    polishProfile: capturedPolishProfile
+                    polishProfile: capturedPolishProfile,
+                    spokenSendPID: spokenSendPID
                 )
             }
             return
@@ -146,6 +150,7 @@ extension DictationSessionController {
         if let failureMessage = overlayCommit.failureMessage {
             lastError = failureMessage
         }
+        pressOverlaySpokenSendReturnIfNeeded(pid: spokenSendPID, commit: overlayCommit)
 
         completeStoppedSessionCleanup(
             sessionMode: sessionMode,
@@ -186,7 +191,8 @@ extension DictationSessionController {
         promptTemplates: LLMPromptTemplates,
         capture: StopCommitCoordinator.Capture,
         record: StoppedSessionRecordFields,
-        polishProfile capturedPolishProfile: String
+        polishProfile capturedPolishProfile: String,
+        spokenSendPID: pid_t?
     ) async {
         let originalText = preparation.originalText
         let workingText = preparation.workingText
@@ -264,6 +270,7 @@ extension DictationSessionController {
         if let failureMessage = overlayCommit.failureMessage {
             self.lastError = failureMessage
         }
+        self.pressOverlaySpokenSendReturnIfNeeded(pid: spokenSendPID, commit: overlayCommit)
 
         self.completeStoppedSessionCleanup(
             sessionMode: sessionMode,
@@ -401,6 +408,9 @@ extension DictationSessionController {
     }
 
     func configureLiveAutoPasteReplacementCorrectorForSession() {
+        // After the stream and the target PID are set up, whichever way
+        // this returns.
+        defer { configureLiveSpokenSendForSession() }
         guard isLiveAutoPasteModeEnabled else {
             textInsertion.endLiveReplacementSession()
             return
@@ -436,6 +446,7 @@ extension DictationSessionController {
         isCompletingStoppedSession = false
         realtimeFinalizationLastActivityAt = nil
         polishAndCommitTask = nil
+        isLiveSpokenSendActive = false
         // Every stop funnels through here. The commit path has already
         // consumed the capture by now (it reconciles synchronously, before
         // spawning the polish Task), so this is a no-op there — it exists to

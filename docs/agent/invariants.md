@@ -97,6 +97,21 @@ there is not.
   so `LiveHoldBackReplacementStream` withholds the trailing partial word plus
   any suffix that is still a live prefix of a dictionary rule. Nothing is lost
   (`flushRemainder()` releases it at stop) but it costs latency of appearance.
+- **The spoken send trigger withholds whole segments in Live Auto-Paste.**
+  "send it" / "send now" at the end of a segment must be cut before it is
+  typed, and nothing typed can be taken back, so with the opt-in on in a
+  terminal NO partial is typed: each segment is typed at its final (or at the
+  promotion a stop or dropped socket does), then Return is pressed. That is
+  the owner's accepted cost (2026-09-24), shown next to the toggle. The
+  Return is pressed only in the PID the session pinned, only while that PID
+  is frontmost (it never activates an app for a Return), never under Secure
+  Keyboard Entry, and only once the hold-back stream has released every
+  word — a Return ahead of the last word would submit half a prompt. A
+  repeated final is refused by `SendNowResubmitLatch`, which judges the
+  backend's final text, not the accumulator's merge (that glues a straggling
+  partial onto the next final). In Overlay Buffer the trigger is cut from the
+  raw transcript before the dictionary and the polisher, and the Return
+  follows only a commit that reported `.succeeded`.
 - **The overlay panel's click-through is insertion machinery, not window
   chrome.** `NonActivatingPanel` refuses key and main and swallows every click
   on its body, because the panel is on screen exactly while the app it is
