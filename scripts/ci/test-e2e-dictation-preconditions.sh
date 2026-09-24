@@ -100,6 +100,20 @@ set -e
 grep -q "nc -z -w 3 stt.example 443" "$EVENTS" || fail "a portless wss endpoint was not probed on 443"
 echo "PASS: a portless endpoint is probed on its scheme's port"
 
+# The target app is built for the package's floor, not the SDK's macOS: an SDK
+# newer than the running system made `open` refuse it (-10825).
+: >"$EVENTS"
+stub swiftc <<'STUB'
+#!/bin/sh
+echo "swiftc $*" >>"$EVENTS"
+exit 1
+STUB
+STUB_DOGFOOD_STAMP=true LV_SCREEN_LOCK_STATE=unlocked STUB_NC_STATUS=0 run "$WORK/app.app"
+[ "$STATUS" -eq 3 ] || fail "a failed target compile exited $STATUS, want 3 (not runnable)"
+grep -qE '^swiftc .*-target [^ ]+-apple-macos15\.0 ' "$EVENTS" \
+  || fail "the target app was not compiled for macOS 15.0"
+echo "PASS: the target app is compiled for macOS 15.0"
+
 # The scenarios that ship must parse.
 for scenario in "$ROOT_DIR"/scripts/e2e/scenarios/*.scenario; do
   mode="$(sed -n 's/^mode=//p' "$scenario" | head -n 1)"
