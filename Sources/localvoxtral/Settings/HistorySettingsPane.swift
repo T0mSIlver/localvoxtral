@@ -279,11 +279,22 @@ private struct HistoryEntryRow: View {
     let entry: DictationHistoryEntry
     let model: DictationHistoryModel
 
+    @State private var isHovering = false
+
     private var isExpanded: Bool { model.expandedEntryID == entry.id }
+
+    /// Hover says the row opens on a click; an open row keeps a lighter fill
+    /// so it reads as the selected one.
+    private var rowFill: Color {
+        if isHovering { return Color.primary.opacity(0.06) }
+        return isExpanded ? Color.primary.opacity(0.03) : .clear
+    }
 
     var body: some View {
         SettingsGroupRow {
-            VStack(alignment: .leading, spacing: 6) {
+            // The header-to-text gap is the button label's 4pt in both
+            // states, so opening a row does not nudge its first line.
+            VStack(alignment: .leading, spacing: 4) {
                 Button {
                     model.toggleExpanded(entry)
                 } label: {
@@ -303,6 +314,9 @@ private struct HistoryEntryRow: View {
                 if isExpanded { expandedBody }
             }
         }
+        .background(rowFill)
+        .onHover { isHovering = $0 }
+        .animation(.easeInOut(duration: 0.12), value: isHovering)
         .contextMenu {
             Button("Copy") { model.copyFinalText(of: entry) }
             if entry.textWasChanged {
@@ -337,8 +351,15 @@ private struct HistoryEntryRow: View {
         .lineLimit(1)
     }
 
-    @ViewBuilder
     private var expandedBody: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            expandedText
+            actions
+        }
+    }
+
+    @ViewBuilder
+    private var expandedText: some View {
         if entry.textWasChanged {
             let diff = TranscriptDiff.words(from: entry.rawText, to: entry.finalText)
             Text(Self.marked(entry.finalText, ranges: diff.added, color: .green))
@@ -357,7 +378,9 @@ private struct HistoryEntryRow: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
 
+    private var actions: some View {
         HStack(spacing: 8) {
             Button("Copy") { model.copyFinalText(of: entry) }
                 .accessibilityIdentifier("history.row.copy")
