@@ -381,9 +381,9 @@ RUN_UNIT_SHARDS=0
 ENSURE_SERVER=""
 
 case "$CMD" in
-  build)   REMOTE_CMD=(swift build "$@") ;;
+  build)   REMOTE_CMD=(swift build --build-system native "$@") ;;
   test)
-    REMOTE_CMD=(swift test "${UNIT_TEST_SKIPS[@]}" "$@")
+    REMOTE_CMD=(swift test --build-system native "${UNIT_TEST_SKIPS[@]}" "$@")
     if [[ $# -eq 0 && "$UNIT_TEST_SHARDS" =~ ^[0-9]+$ && "$UNIT_TEST_SHARDS" -gt 1 ]]; then
       RUN_UNIT_SHARDS=1
     fi
@@ -393,7 +393,7 @@ case "$CMD" in
     # so its cases are slow on purpose (#430) and are out of the `test` lane.
     # CI runs them in their own required step of `build-test`; this is how you
     # run them here.
-    REMOTE_CMD=(swift test --filter PolishContextPreparationTests "$@")
+    REMOTE_CMD=(swift test --build-system native --filter PolishContextPreparationTests "$@")
     # A --filter that matches nothing runs zero tests and exits 0, so a renamed
     # or split suite would make this lane vacuously green while the `test`
     # lane's --skip quietly stopped skipping anything. The remote output is
@@ -404,7 +404,7 @@ case "$CMD" in
     ENSURE_SERVER="speechd"
     REMOTE_CMD=(env VLLM_REALTIME_TEST_ENABLE=1
       VLLM_REALTIME_TEST_MODEL=T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead
-      swift test --filter RealtimeAPIVLLMIntegrationTests "$@")
+      swift test --filter RealtimeAPIVLLMIntegrationTests --build-system native "$@")
     ;;
   integration-keychain)
     # Round-trips the real Security.framework path. Enablement travels as a
@@ -424,7 +424,7 @@ case "$CMD" in
     trap 'cleanup_transient_marker "$KEYCHAIN_MARKER"' EXIT
     (umask 077; : >"$KEYCHAIN_MARKER")
     printf '{"enabled": true}\n' >"$KEYCHAIN_MARKER"
-    REMOTE_CMD=(swift test --filter KeychainSecretStoreIntegrationTests)
+    REMOTE_CMD=(swift test --build-system native --filter KeychainSecretStoreIntegrationTests)
     ;;
   integration-mistral)
     # Live hosted Mistral realtime transcription API. The key comes from the
@@ -449,7 +449,7 @@ case "$CMD" in
     trap 'cleanup_transient_marker "$MISTRAL_MARKER"' EXIT
     (umask 077; : >"$MISTRAL_MARKER")
     printf '{"apiKey": "%s"}\n' "$MISTRAL_API_KEY" >"$MISTRAL_MARKER"
-    REMOTE_CMD=(swift test --filter MistralRealtimeIntegrationTests)
+    REMOTE_CMD=(swift test --build-system native --filter MistralRealtimeIntegrationTests)
     ;;
   integration-polishd)
     # Same marker-through-the-tree pattern as eval-llm (the gate pins env
@@ -477,7 +477,7 @@ case "$CMD" in
         "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
         >"$POLISHD_MARKER"
     fi
-    REMOTE_CMD=(swift test --filter PolishHelperIntegrationTests)
+    REMOTE_CMD=(swift test --build-system native --filter PolishHelperIntegrationTests)
     ;;
   integration-speechd)
     # Enablement travels in the rsynced tree because the SSH gate cannot pass
@@ -500,7 +500,7 @@ case "$CMD" in
         "dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd" \
         >"$SPEECHD_MARKER"
     fi
-    REMOTE_CMD=(swift test --filter SpeechHelperIntegrationTests)
+    REMOTE_CMD=(swift test --build-system native --filter SpeechHelperIntegrationTests)
     ;;
   integration-herdr)
     # Live herdr join machinery: a real `herdr` server, a real `ssh -L`
@@ -536,7 +536,7 @@ case "$CMD" in
     else
       printf '{}\n' >"$HERDR_MARKER"
     fi
-    REMOTE_CMD=(swift test --filter HerdrIntegrationTests)
+    REMOTE_CMD=(swift test --build-system native --filter HerdrIntegrationTests)
     ;;
   speechd-bench)
     # The SSH gate does not allow arbitrary packaged-binary execution. A marker-gated
@@ -598,7 +598,7 @@ case "$CMD" in
       "$SPEECHD_BENCH_MAX_UTTERANCE" \
       "$SPEECHD_BENCH_OPTIONAL" \
       >"$SPEECHD_BENCH_MARKER"
-    REMOTE_CMD=(swift test --filter SpeechdStreamingBenchTests)
+    REMOTE_CMD=(swift test --build-system native --filter SpeechdStreamingBenchTests)
     ;;
   eval-e2e)
     # Agent-dictation end-to-end eval (nightly + manual, never tier 0):
@@ -757,7 +757,7 @@ case "$CMD" in
         "$E2E_ASR_REPO" \
         >"$E2E_MARKER"
     fi
-    REMOTE_CMD=(swift test --filter AgentDictationE2EEvalTests)
+    REMOTE_CMD=(swift test --build-system native --filter AgentDictationE2EEvalTests)
     ;;
   eval-llm)
     # Enablement travels as a gitignored marker file inside the synced tree
@@ -811,7 +811,7 @@ case "$CMD" in
     else
       printf '{"endpoint": "%s"}\n' "$EVAL_ENDPOINT" >"$EVAL_MARKER"
     fi
-    REMOTE_CMD=(swift test --filter LLMPolishPromptEvalTests)
+    REMOTE_CMD=(swift test --build-system native --filter LLMPolishPromptEvalTests)
     ;;
   dogfood|dogfood-package)
     # The dogfooding capture is a COMPILE gate (Package.swift), and the build
@@ -832,7 +832,7 @@ case "$CMD" in
     if [[ "$CMD" == "dogfood-package" ]]; then
       REMOTE_CMD=(./scripts/package_app.sh release "$@")
     else
-      REMOTE_CMD=(swift test --filter Dogfood "$@")
+      REMOTE_CMD=(swift test --build-system native --filter Dogfood "$@")
     fi
     ;;
   package) REMOTE_CMD=(./scripts/package_app.sh release "$@") ;;
@@ -882,7 +882,7 @@ if [[ "$RUN_UNIT_SHARDS" == "1" ]]; then
   # and `swift test …`, and runs each in a process group of its own. -n keeps
   # the shards that run side by side off this terminal's stdin.
   lv_shard_swift() {
-    ssh -n "$HOST" "cd $(printf '%q' "$DIR") && $(quote_remote_command swift "$@")"
+    ssh -n "$HOST" "cd $(printf '%q' "$DIR") && $(quote_remote_command swift "$@" --build-system native)"
   }
   echo "==> Running the unit suite on $HOST:$DIR in $UNIT_TEST_SHARDS shards"
   REMOTE_PAYLOAD_ACTIVE=1

@@ -30,13 +30,13 @@ shift
 
 cd "$ROOT_DIR"
 lv_shard_swift() {
-  swift "$@"
+  swift "$@" --build-system native
 }
 
 codecov=""
 if (( coverage == 1 )); then
   export LV_SHARD_BUILD_ARGS="--enable-code-coverage"
-  codecov="$(swift build --show-bin-path)/codecov"
+  codecov="$(swift build --build-system native --show-bin-path)/codecov"
   rm -rf "$codecov"
   mkdir -p "$codecov"
   # The pattern SwiftPM itself sets: %p gives each process its own file, %m

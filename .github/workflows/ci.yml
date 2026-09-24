@@ -422,7 +422,7 @@ jobs:
           set -euo pipefail
           NSUnbufferedIO=YES ./scripts/ci/run-supervised-command.sh \
             300 "$RUNNER_TEMP/localvoxtral-cost-budget-tests.log" -- \
-            swift test \
+            swift test --build-system native \
             --filter PolishContextPreparationTests \
             --enable-code-coverage
           # A --filter that matches nothing runs zero tests and exits 0, so a
@@ -1122,7 +1122,7 @@ jobs:
         # without it SwiftPM treats the coverage-instrumented products as
         # stale and recompiles the whole app+test module a second time
         # (~12 s per run for zero information).
-        run: swift test --filter RealtimeAPIVLLMIntegrationTests --enable-code-coverage
+        run: swift test --build-system native --filter RealtimeAPIVLLMIntegrationTests --enable-code-coverage
 
       - name: Polishing helper unit tests (PolishHelper package)
         # Metal-free (HTTP layer, router, cache locator, watchdog); the Metal
@@ -1132,7 +1132,7 @@ jobs:
         # Path-gated by the decide step above — see its comment for why that
         # is sound and scripts/ci/helper-lane-filter.sh for the rules.
         if: steps.ci_scope.outputs.docs_only != 'true' && steps.helper_lanes.outputs.polish_run == 'true'
-        run: swift test --package-path PolishHelper
+        run: swift test --build-system native --package-path PolishHelper
 
       - name: Speech helper unit tests (SpeechHelper package)
         # Matching PolishHelper: the Metal-free codec/delta/watchdog suite,
@@ -1141,7 +1141,7 @@ jobs:
         # Path-gated by the decide step above — see its comment for why that
         # is sound and scripts/ci/helper-lane-filter.sh for the rules.
         if: steps.ci_scope.outputs.docs_only != 'true' && steps.helper_lanes.outputs.speech_run == 'true'
-        run: swift test --package-path SpeechHelper
+        run: swift test --build-system native --package-path SpeechHelper
 
       - name: Dogfood capture suite (instrumented build)
         # The dogfooding capture is behind a COMPILE flag (Package.swift), so
@@ -1165,7 +1165,7 @@ jobs:
         if: steps.ci_scope.outputs.docs_only != 'true'
         env:
           LOCALVOXTRAL_DOGFOOD: "1"
-        run: swift test --filter 'Dogfood' --scratch-path .build-dogfood
+        run: swift test --build-system native --filter 'Dogfood' --scratch-path .build-dogfood
 
       - name: Ensure Metal toolchain
         # Xcode 26 ships the Metal compiler as a separate component, and its
@@ -1431,7 +1431,7 @@ jobs:
         # rationale as the STT integration step above): without it this step rebuilds
         # the whole app+test module without coverage (~17 s), and the next
         # run's unit step rebuilds it back again.
-        run: swift test --filter SpeechHelperIntegrationTests --enable-code-coverage
+        run: swift test --build-system native --filter SpeechHelperIntegrationTests --enable-code-coverage
 
       - name: Polishing helper integration (live model + eval baseline)
         # Spawns the helper built by the packaging step with the real pinned
@@ -1447,7 +1447,7 @@ jobs:
           LOCALVOXTRAL_POLISHD_TEST_PATH: PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd
         # --enable-code-coverage: same flag-matching rationale as the speechd
         # step above.
-        run: swift test --filter PolishHelperIntegrationTests --enable-code-coverage
+        run: swift test --build-system native --filter PolishHelperIntegrationTests --enable-code-coverage
 
       - name: Live herdr integration (real server + real ssh -L forward)
         # Drives the remote-herdr join machinery against a live herdr server
@@ -1469,7 +1469,7 @@ jobs:
         # unchanged): if this step is red, suspect overlapping worker builds
         # on the Mac first and re-run the lane alone before debugging.
         run: >-
-          swift test --filter HerdrIntegrationTests --enable-code-coverage || {
+          swift test --build-system native --filter HerdrIntegrationTests --enable-code-coverage || {
           echo 'HERDR-LANE-HINT: red lane? check for overlapping worker builds
           (remote-build.sh) on the Mac and re-run this lane alone first —
           see docs/agent/test-tiers.md "Worker builds on the Mac must not

@@ -1084,7 +1084,9 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         }
 
         let sourceBuffer = buffer
-        let didConsume = Mutex(false)
+        // Not `Mutex`: Swift 6.4 (Xcode 27) crashes with "copy of noncopyable
+        // typed value" when the converter's escaping input block captures one.
+        let didConsume = OSAllocatedUnfairLock(initialState: false)
         var conversionError: NSError?
         let status = converter.convert(to: convertedBuffer, error: &conversionError) { _, outStatus in
             let alreadyConsumed = didConsume.withLock { consumed in
