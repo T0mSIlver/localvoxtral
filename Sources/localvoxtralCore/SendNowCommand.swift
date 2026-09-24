@@ -1,9 +1,9 @@
 import Foundation
 
-// Spoken send trigger for Live Auto-Paste (#318). Ported from @eastokes's
-// fork (eastokes/localvoxtral, `SendNowCommandParser.swift`): a finalized
-// segment that ends in a trigger phrase such as "send it" inserts the text
-// before the phrase and then presses Return.
+// Spoken send trigger (#318). Ported from @eastokes's fork
+// (eastokes/localvoxtral, `SendNowCommandParser.swift`): dictated text that
+// ends in a trigger phrase such as "send it" inserts the text before the
+// phrase and then presses Return.
 
 /// What a finalized segment asks for.
 package enum SendNowCommandAction: Equatable, Sendable {
@@ -45,7 +45,13 @@ package enum SendNowCommandParser {
         let trimmed = segment.trimmed
         guard !trimmed.isEmpty else { return .none }
 
-        let words = wordRanges(in: trimmed)
+        // A punctuation-only token at the end ("send it .") is not a word:
+        // dropped here so it neither hides the trigger nor moves the cut,
+        // which still uses the ranges in the original string.
+        var words = wordRanges(in: trimmed)
+        while let last = words.last, normalizedWord(trimmed[last]).isEmpty {
+            words.removeLast()
+        }
         let normalizedWords = words.map { normalizedWord(trimmed[$0]) }
 
         for phrase in triggerPhrases {
@@ -130,26 +136,33 @@ package enum SendNowCommandParser {
 /// empty or repeated prompt to the agent, which cannot be undone.
 ///
 /// The latch holds the normalized segment of the last submission. A final
-/// equal to it is a duplicate unless new partial text arrived in between —
-/// the user really did say the same thing twice. The caller claims the
-/// submission BEFORE the irreversible insertion or Return, so a failed
-/// Return leaves the latch set and a duplicate final cannot retry it.
+/// equal to it is a duplicate unless it is a new segment. None of the
+/// backends name their segments (speechd, vLLM and Mistral finals carry text
+/// only), so the segment's identity is its own partials: a new utterance
+/// streams partials from its first word, so the partials received since the
+/// last final must spell the start of the new final. A late partial of the
+/// utterance already submitted ("it." after "fix the build send it") is the
+/// tail of that utterance, not the start of a new one, and re-arms nothing.
+/// The caller claims the submission BEFORE the irreversible insertion or
+/// Return, so a failed Return leaves the latch set and a duplicate final
+/// cannot retry it.
 package struct SendNowResubmitLatch: Equatable, Sendable {
     package private(set) var lastSubmittedSegment: String?
-    private var sawPartialSinceLastFinal = false
+    /// The partial deltas since the last final, joined as they arrived.
+    private var partialsSinceLastFinal = ""
 
     package init() {}
 
-    /// New partial text arrived for the next segment.
-    package mutating func notePartial() {
-        sawPartialSinceLastFinal = true
+    /// A partial delta arrived.
+    package mutating func notePartial(_ delta: String) {
+        partialsSinceLastFinal.append(delta)
     }
 
     /// A final that inserts text without submitting. Clears the latch: the
     /// next submission follows new text, so it cannot be a duplicate.
     package mutating func noteNonSubmittingFinal() {
         lastSubmittedSegment = nil
-        sawPartialSinceLastFinal = false
+        partialsSinceLastFinal = ""
     }
 
     /// Returns true when `segment` may submit, and sets the latch in the same
@@ -157,8 +170,11 @@ package struct SendNowResubmitLatch: Equatable, Sendable {
     /// nothing at all, not even the insertion.
     package mutating func claimSubmission(of segment: String) -> Bool {
         let normalized = SendNowCommandParser.normalizedSegment(segment)
-        defer { sawPartialSinceLastFinal = false }
-        if !sawPartialSinceLastFinal, normalized == lastSubmittedSegment {
+        let partials = SendNowCommandParser.normalizedSegment(partialsSinceLastFinal)
+        partialsSinceLastFinal = ""
+        if normalized == lastSubmittedSegment,
+           !Self.partials(partials, openSegment: normalized)
+        {
             return false
         }
         lastSubmittedSegment = normalized
@@ -167,6 +183,25 @@ package struct SendNowResubmitLatch: Equatable, Sendable {
 
     package mutating func reset() {
         self = SendNowResubmitLatch()
+    }
+
+    /// Whether the normalized partials are the first words of the normalized
+    /// segment. The last partial word may still be growing ("fo" before
+    /// "focused"), so it only has to start the segment's word.
+    private static func partials(_ partials: String, openSegment segment: String) -> Bool {
+        let partialWords = partials.split(separator: " ")
+        let segmentWords = segment.split(separator: " ")
+        guard !partialWords.isEmpty, partialWords.count <= segmentWords.count else {
+            return false
+        }
+        for (index, word) in partialWords.enumerated() {
+            let isLast = index == partialWords.count - 1
+            let matches = isLast
+                ? segmentWords[index].hasPrefix(word)
+                : segmentWords[index] == word
+            guard matches else { return false }
+        }
+        return true
     }
 }
 

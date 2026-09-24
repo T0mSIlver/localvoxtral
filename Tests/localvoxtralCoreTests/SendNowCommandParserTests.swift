@@ -33,6 +33,15 @@ final class SendNowCommandParserTests: XCTestCase {
             ("send now or later", .insertText("send now or later"), #line),
             ("send", .insertText("send"), #line),
             ("it", .insertText("it"), #line),
+            // Codex review of #494: a punctuation-only last token is not a
+            // word, so it neither hides the trigger nor moves the cut.
+            ("send it .", .pressReturn, #line),
+            ("Send now !", .pressReturn, #line),
+            ("run the tests, send it .",
+             .insertTextAndPressReturn("run the tests"), #line),
+            ("run the tests send now ... !",
+             .insertTextAndPressReturn("run the tests"), #line),
+            ("send it later .", .insertText("send it later ."), #line),
         ]
         for testCase in cases {
             XCTAssertEqual(
