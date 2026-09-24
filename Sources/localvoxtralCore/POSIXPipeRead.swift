@@ -7,10 +7,10 @@ import Foundation
 /// from Swift, so it aborts the whole app — field-hit as a SIGABRT in
 /// `PipeLineReader` during a managed mlx-lm install. `read(2)` reports the
 /// same conditions as return values instead, which callers can treat as EOF.
-enum POSIXPipeRead {
+package enum POSIXPipeRead {
     /// Blocks until data is available, then returns it. Returns empty Data on
     /// EOF *or any read error* — for a pipe reader both mean "stop reading".
-    static func nextChunk(fromDescriptor descriptor: Int32) -> Data {
+    package static func nextChunk(fromDescriptor descriptor: Int32) -> Data {
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
             let count = buffer.withUnsafeMutableBytes { pointer in
