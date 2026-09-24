@@ -21,7 +21,19 @@ final class SpeechdStreamingBenchTests: XCTestCase {
         /// Catalog repo to benchmark. Absent means the catalog default, which
         /// is what every run measured before a second model existed.
         let model: String?
+        /// "speech" feeds a spoken passage from the system voice instead of the
+        /// helper's synthetic noise, which decodes to no words and so cannot show
+        /// when text appears (#486).
+        let audio: String?
     }
+
+    /// About twenty seconds of plain dictation. The bench loops it to fill the run.
+    private static let spokenPassage = """
+        Please open the settings file and change the step interval to two hundred \
+        and forty milliseconds. Then run the benchmark again for each model, write \
+        down the peak memory and the time to first text, and compare the numbers \
+        with the ones from yesterday before we decide what the pane should say.
+        """
 
     private var repoRoot: URL {
         URL(fileURLWithPath: #filePath)
@@ -66,7 +78,12 @@ final class SpeechdStreamingBenchTests: XCTestCase {
             "--seconds", "\(config.seconds)",
             "--cadence-ms", "\(config.cadenceMilliseconds)",
         ]
-        if let wavPath = config.wavPath, !wavPath.isEmpty {
+        let spokenAudio = config.audio == "speech"
+        let spokenWAV = spokenAudio ? try Self.makeSpokenWAV(Self.spokenPassage) : nil
+        defer { spokenWAV.map { try? FileManager.default.removeItem(at: $0) } }
+        if let spokenWAV {
+            arguments.append(contentsOf: ["--wav", spokenWAV.path])
+        } else if let wavPath = config.wavPath, !wavPath.isEmpty {
             arguments.append(contentsOf: ["--wav", wavPath])
         }
         if let cacheLimitMB = config.cacheLimitMB {
@@ -124,6 +141,38 @@ final class SpeechdStreamingBenchTests: XCTestCase {
                 "missing BENCH mark=\(mark)s"
             )
         }
+        let timeline = lines.first { $0.hasPrefix("BENCH timeline ") }
+        XCTAssertNotNil(timeline, "missing BENCH timeline summary")
+        if spokenAudio {
+            XCTAssertFalse(
+                timeline?.contains("first_text_s=none") ?? true,
+                "spoken audio decoded to no text; the timing columns measured nothing"
+            )
+        }
+    }
+
+    private static func makeSpokenWAV(_ phrase: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("speechd-bench-\(UUID().uuidString)")
+            .appendingPathExtension("wav")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+        process.arguments = [
+            "-o", url.path,
+            "--file-format=WAVE",
+            "--data-format=LEI16@16000",
+            phrase,
+        ]
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw NSError(
+                domain: "SpeechdStreamingBenchTests",
+                code: Int(process.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: "/usr/bin/say failed; no spoken audio to bench"]
+            )
+        }
+        return url
     }
 }
 
