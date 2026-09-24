@@ -439,6 +439,10 @@ extension DictationSessionController {
         clearLatchedSessionMetadata()
         sessionOutputMode = requestedOutputMode
         sessionStartedAt = Date()
+        // Latched here: a setting flipped mid-dictation applies to the next.
+        audio.sessionRecording.begin(
+            enabled: settings.dictationAudioEnabled
+                && settings.dictationHistoryRetention.savesDictations)
         sessionReplacementDictionary = StopCommitCoordinator.effectiveReplacementDictionary(
             settings: settings,
             appConfigStore: appConfigStore
@@ -475,8 +479,10 @@ extension DictationSessionController {
         let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
         do {
             let chunkBuffer = audio.audioChunkBuffer
+            let recording = audio.sessionRecording
             try audio.startSessionAudioCapture(preferredDeviceID: preferredInputID) { chunk in
                 chunkBuffer.append(chunk)
+                recording.append(chunk)
             }
 
             isConnectingRealtimeSession = false

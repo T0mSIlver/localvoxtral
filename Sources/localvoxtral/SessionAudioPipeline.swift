@@ -43,6 +43,9 @@ final class SessionAudioPipeline {
 
     @ObservationIgnored
     let audioChunkBuffer = AudioChunkBuffer()
+    /// The whole session's audio, for the opt-in audio store. Begun at session
+    /// start, taken at stop.
+    let sessionRecording = DictationAudioRecording()
     @ObservationIgnored
     let healthMonitor = AudioCaptureHealthMonitor()
     @ObservationIgnored

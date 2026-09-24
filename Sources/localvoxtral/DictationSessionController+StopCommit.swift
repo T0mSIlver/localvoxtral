@@ -31,6 +31,7 @@ extension DictationSessionController {
 
         // Cancelled overlay — dismiss immediately, no commit
         if shouldCommitOverlay, wasCancelled {
+            _ = audio.sessionRecording.finish()
             overlayBufferCoordinator.reset()
             completeStoppedSessionCleanup(
                 sessionMode: sessionMode,
@@ -55,6 +56,9 @@ extension DictationSessionController {
         let model: String
         let outputMode: String
         let targetAppBundleID: String?
+        /// Taken at stop, before a polish that can outlast the next session's
+        /// start.
+        let audio: Data?
     }
 
     /// An Overlay Buffer session that was not cancelled: polished and
@@ -92,6 +96,7 @@ extension DictationSessionController {
         let capturedModel = sessionModelName ?? settings.effectiveModelName
         let capturedOutputMode = sessionMode.rawValue
         let capturedTargetBundleID = resolveTargetAppBundleID()
+        let capturedAudio = audio.sessionRecording.finish()
         if let polishingConfig = preparation.polishingConfig {
             let polishProfile = StopCommitCoordinator.polishProfile(
                 forTargetBundleID: capturedTargetBundleID,
@@ -148,7 +153,8 @@ extension DictationSessionController {
                         provider: capturedProvider,
                         model: capturedModel,
                         outputMode: capturedOutputMode,
-                        targetAppBundleID: capturedTargetBundleID
+                        targetAppBundleID: capturedTargetBundleID,
+                        audio: capturedAudio
                     ),
                     polishProfile: capturedPolishProfile,
                     spokenSendPID: spokenSendPID
@@ -188,7 +194,8 @@ extension DictationSessionController {
             status: llmConfigurationFailure == nil ? .sttCompleted : .llmFailed,
             commitSucceeded: overlayCommit.succeeded,
             polishContextSummary: payloadProvenanceSummary,
-            clipboardPayload: clipboardPayload
+            clipboardPayload: clipboardPayload,
+            audio: capturedAudio
         )
 
         if let llmConfigurationFailure {
@@ -317,7 +324,8 @@ extension DictationSessionController {
                     clipboardVocabularyCount: assembly.clipboardVocabularyCount
                 )
             ),
-            clipboardPayload: preparation.clipboardPayload
+            clipboardPayload: preparation.clipboardPayload,
+            audio: record.audio
         )
 
         #if LOCALVOXTRAL_DOGFOOD
@@ -406,6 +414,7 @@ extension DictationSessionController {
         let capturedProvider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
         let capturedModel = sessionModelName ?? settings.effectiveModelName
         let capturedOutputMode = sessionMode.rawValue
+        let capturedAudio = audio.sessionRecording.finish()
         textInsertion.flushFinalLiveReplacementCorrections()
         completeStoppedSessionCleanup(
             sessionMode: sessionMode,
@@ -423,7 +432,8 @@ extension DictationSessionController {
             outputMode: capturedOutputMode,
             targetAppBundleID: nil,
             status: .sttCompleted,
-            commitSucceeded: true
+            commitSucceeded: true,
+            audio: capturedAudio
         )
     }
 
@@ -581,7 +591,8 @@ extension DictationSessionController {
         commitSucceeded: Bool,
         polishProfile: String? = nil,
         polishContextSummary: String? = nil,
-        clipboardPayload: String? = nil
+        clipboardPayload: String? = nil,
+        audio: Data? = nil
     ) {
         let trimmedRawText = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedRawText.isEmpty else {
@@ -624,7 +635,9 @@ extension DictationSessionController {
             applyDictationHistoryRetention(now: record.finishedAt)
             return
         }
-        sessionStore?.save(record)
+        // Checked again here: the setting was latched at start, and turning
+        // it off since has deleted the folder this would write into.
+        sessionStore?.save(record, audio: settings.dictationAudioEnabled ? audio : nil)
         if let cutoff = retention.cutoff(now: record.finishedAt) {
             sessionStore?.trim(olderThan: cutoff)
         }

@@ -451,3 +451,29 @@ can occasionally splice a status line into the sentinel-delimited JSONL report;
 the offline tools recover known XCTest diagnostics and warn only if an unknown
 corruption still forces a record to be skipped. Note any resulting denominator
 rather than silently treating it as a model failure.
+
+## Replaying stored dictations
+
+Whether localvoxtral learns a user is measured on that user's own recordings,
+run twice on identical input. With **Keep dictation audio** on (Settings →
+History), each saved dictation keeps its WAV. On the Mac that dictated, as
+that user, `./scripts/export-dictation-replay.sh <dir>` copies the history
+store, the recordings, the learned terms and Names and terms into a set.
+Copy it to the gitignored `EvalRecordings/replay/<set>/` of a checkout, then:
+
+```bash
+./scripts/remote-build.sh package
+./scripts/remote-build.sh eval-e2e --replay EvalRecordings/replay/<set>
+```
+
+`AgentDictationE2EEvalTests.testReplayStoredDictations` transcribes each
+Overlay Buffer dictation once on the live speech service, then polishes the
+transcript through the production stop-commit path twice: **day 0** with
+Names and terms only, **today** with every confirmed learned term added. It
+scores the transcript and both arms against the text the dictation inserted
+at the time: word accuracy, and recall of the terms that text spells. That
+text is what polishing produced then, not a checked reference, so a gain
+shows as today moving closer to it than day 0 on the same audio.
+
+The log prints numbers only (`replay:` lines); paste those, never
+transcripts. Delete the set from the checkout and the Mac when done.

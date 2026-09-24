@@ -81,7 +81,10 @@ set -euo pipefail
 #                  server, no `package` run, needs MISTRAL_API_KEY on THIS box,
 #                  and BILLS the owner's Mistral account (by hand only), e.g.
 #                  MISTRAL_API_KEY=... eval-e2e --provider mistral
-#     dogfood      build the instrumented (LOCALVOXTRAL_DOGFOOD) tree and run
+#                  `--replay EvalRecordings/replay/<set>` replays a user's
+#                  stored dictations instead, with and without the learned
+#                  terms (set from scripts/export-dictation-replay.sh)
+#     dogfood     build the instrumented (LOCALVOXTRAL_DOGFOOD) tree and run
 #                  the context-capture suite; the capture is a compile gate, so
 #                  no other lane ever builds it
 #     dogfood-package
@@ -616,6 +619,7 @@ case "$CMD" in
     # mode drives them. That arm needs no local server and no prior `package`
     # run — and it BILLS the owner's Mistral account, so it is by-hand only.
     E2E_RECORDING_DIR=""
+    E2E_REPLAY_DIR=""
     E2E_PROVIDER=""
     E2E_ASR=""
     E2E_ASR_GIVEN=0
@@ -651,6 +655,14 @@ case "$CMD" in
           E2E_PROVIDER="mistral"
           shift
           ;;
+        --replay)
+          if [[ $# -lt 2 ]]; then
+            echo "eval-e2e: --replay needs a set directory, EvalRecordings/replay/<set>" >&2
+            exit 1
+          fi
+          E2E_REPLAY_DIR="$2"
+          shift 2
+          ;;
         -*)
           echo "eval-e2e: unknown option $1" >&2
           exit 1
@@ -668,6 +680,23 @@ case "$CMD" in
     if [[ -n "$E2E_PROVIDER" && "$E2E_PROVIDER" != "mistral" ]]; then
       echo "eval-e2e: unknown provider '$E2E_PROVIDER' (only 'mistral')" >&2
       exit 1
+    fi
+    if [[ -n "$E2E_REPLAY_DIR" ]]; then
+      # A replay scores a user's stored dictations on the local services; it
+      # takes no corpus recording set and never bills a hosted provider.
+      if [[ -n "$E2E_RECORDING_DIR" || -n "$E2E_PROVIDER" ]]; then
+        echo "eval-e2e: --replay takes no recording set and no --provider" >&2
+        exit 1
+      fi
+      if [[ ! "$E2E_REPLAY_DIR" =~ ^EvalRecordings/replay/[A-Za-z0-9._-]+$ ]]; then
+        echo "eval-e2e replay set must be EvalRecordings/replay/<set>" >&2
+        exit 1
+      fi
+      if [[ ! -f "$ROOT_DIR/$E2E_REPLAY_DIR/default.store" ]]; then
+        echo "replay set not found: $E2E_REPLAY_DIR/default.store" >&2
+        echo "Export one on the Mac that dictated with scripts/export-dictation-replay.sh" >&2
+        exit 1
+      fi
     fi
     if [[ "$E2E_PROVIDER" == "mistral" && "$E2E_ASR_GIVEN" == 1 ]]; then
       echo "eval-e2e: --asr picks a speech test service on the Mac; --provider mistral uses none" >&2
@@ -743,6 +772,13 @@ case "$CMD" in
           "$MISTRAL_API_KEY" \
           >"$E2E_MARKER"
       fi
+    elif [[ -n "$E2E_REPLAY_DIR" ]]; then
+      printf '{"helperPath": "%s", "voxmlxEndpoint": "%s", "asrModel": "%s", "replayDirectory": "%s"}\n' \
+        "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
+        "ws://127.0.0.1:$E2E_ASR_PORT/v1/realtime" \
+        "$E2E_ASR_REPO" \
+        "$E2E_REPLAY_DIR" \
+        >"$E2E_MARKER"
     elif [[ -n "$E2E_RECORDING_DIR" ]]; then
       printf '{"helperPath": "%s", "voxmlxEndpoint": "%s", "asrModel": "%s", "recordingDirectory": "%s"}\n' \
         "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
