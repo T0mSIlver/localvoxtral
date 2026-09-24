@@ -648,6 +648,7 @@ extension DictationSessionController {
         context.closeRemoteHerdrForwards()
         cancelConnectTimeout()
         cancelRealtimeReconnect()
+        disarmSilenceAutoStop()
         finalizationWatchdogTask?.cancel()
         finalizationWatchdogTask = nil
         shortcuts.clearPushToTalkShortcutSessionAttempt()

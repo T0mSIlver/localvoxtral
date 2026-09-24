@@ -45,6 +45,9 @@ extension DictationSessionController {
         // audio drain is also what lets the buffer hold the gap: chunks the
         // send loop would have taken and dropped stay put for the replay.
         audio.cancelSendAndCommitTasks()
+        // No text can arrive while the socket is down; a silence stop now
+        // would end the session before the gap is replayed.
+        pauseSilenceAutoStopForReconnect()
 
         // The partial in flight can never be finalized by a session that no
         // longer exists. Promoting it keeps those words — and, because the
@@ -197,6 +200,7 @@ extension DictationSessionController {
             sleep: dependencies.clock.sleep
         )
         audio.restartCommitTask(client: activeRealtimeClient, sleep: dependencies.clock.sleep)
+        resumeSilenceAutoStopAfterReconnect()
     }
 
     private func exhaustRealtimeReconnect(policy: RealtimeReconnectPolicy) {

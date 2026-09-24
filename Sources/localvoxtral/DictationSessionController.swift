@@ -285,6 +285,10 @@ final class DictationSessionController {
     var silenceAutoStopTask: Task<Void, Never>?
     @ObservationIgnored
     var lastTranscriptTextAt: Date?
+    /// This session's silence threshold, kept across a reconnect so the
+    /// watch can resume without re-reading Settings. Nil: no watch.
+    @ObservationIgnored
+    var silenceAutoStopThreshold: TimeInterval?
     @ObservationIgnored
     var isResolvingConnectTimeout = false
     /// The connect snapshot THIS session opened with. A mid-session reconnect
