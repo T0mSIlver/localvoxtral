@@ -1084,17 +1084,10 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         }
 
         let sourceBuffer = buffer
-        // Not `Mutex`: Swift 6.4 (Xcode 27) crashes with "copy of noncopyable
-        // typed value" when the converter's escaping input block captures one.
-        let didConsume = OSAllocatedUnfairLock(initialState: false)
+        let handOff = ConverterInputHandOff()
         var conversionError: NSError?
         let status = converter.convert(to: convertedBuffer, error: &conversionError) { _, outStatus in
-            let alreadyConsumed = didConsume.withLock { consumed in
-                let was = consumed
-                consumed = true
-                return was
-            }
-            if !alreadyConsumed {
+            if handOff.takeFirst() {
                 outStatus.pointee = .haveData
                 return sourceBuffer
             }
@@ -1115,5 +1108,21 @@ final class MicrophoneCaptureService: @unchecked Sendable {
 
         let byteCount = frameCount * MemoryLayout<Int16>.size * Int(outputFormat.channelCount)
         return Data(bytes: int16ChannelData[0], count: byteCount)
+    }
+}
+
+/// Answers true once, for the converter's first request for input. A class
+/// around the `Mutex` rather than the `Mutex` itself: Swift 6.4 (Xcode 27)
+/// rejects capturing the noncopyable `Mutex` in the converter's input block
+/// ("copy of noncopyable typed value. This is a compiler bug"). The tests
+/// that drive a converter use it for the same reason.
+final class ConverterInputHandOff: Sendable {
+    private let consumed = Mutex(false)
+
+    func takeFirst() -> Bool {
+        consumed.withLock { consumed in
+            defer { consumed = true }
+            return !consumed
+        }
     }
 }

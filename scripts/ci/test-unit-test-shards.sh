@@ -81,6 +81,28 @@ weights="$(lv_unit_suite_seconds "$TMP_DIR/xctest.log")"
 [[ "$weights" == $'1.250 Alpha\n0.500 Beta' ]] || fail "weights from a log: $weights"
 [[ "$(lv_executed_test_count "$TMP_DIR/xctest.log")" == "3" ]] || fail "executed count"
 
+# Swift 6.4 runs each test bundle on its own: one run-level total per bundle,
+# the last one often an empty bundle's.
+cat >"$TMP_DIR/bundles.log" <<'LOG'
+Test Suite 'Selected tests' started at 2026-09-24 10:00:00.000.
+Test Suite 'Alpha' passed at 2026-09-24 10:00:01.000.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.900 (1.250) seconds
+Test Suite 'appTests.xctest' passed at 2026-09-24 10:00:01.000.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.900 (1.250) seconds
+Test Suite 'Selected tests' passed at 2026-09-24 10:00:01.000.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.900 (1.250) seconds
+Test Suite 'Selected tests' started at 2026-09-24 10:00:02.000.
+Test Suite 'Core' passed at 2026-09-24 10:00:02.000.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.100 (0.100) seconds
+Test Suite 'Selected tests' passed at 2026-09-24 10:00:02.000.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.100 (0.100) seconds
+Test Suite 'Selected tests' started at 2026-09-24 10:00:03.000.
+Test Suite 'Selected tests' passed at 2026-09-24 10:00:03.000.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+LOG
+[[ "$(lv_executed_test_count "$TMP_DIR/bundles.log")" == "7" ]] \
+  || fail "executed count over bundles: $(lv_executed_test_count "$TMP_DIR/bundles.log")"
+
 # --- a whole run against a stub swift ---------------------------------------
 
 # Prints what a real `swift test --filter` would: one Executed line per class
