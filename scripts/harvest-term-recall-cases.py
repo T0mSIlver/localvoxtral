@@ -564,15 +564,9 @@ def glued_key(text: str) -> str:
     return scorer_key(text).replace(" ", "")
 
 
-_LOOKUPS: dict[int, dict[str, str]] = {}
-
-
 def term_rank_lookup(term_rank: dict[str, int]) -> dict[str, str]:
-    lookup = _LOOKUPS.get(id(term_rank))
-    if lookup is None:
-        lookup = {glued_key(t): t for t in sorted(term_rank, key=term_rank.get, reverse=True)}
-        _LOOKUPS[id(term_rank)] = lookup
-    return lookup
+    """Glued key -> the term's spelling in the inventory."""
+    return {glued_key(t): t for t in term_rank}
 
 
 def find_terms_in_sentence(
@@ -585,6 +579,7 @@ def find_terms_in_sentence(
     toks = [t for t, _, _ in spans]
     claimed = [False] * len(toks)
     hits: list[tuple[int, str]] = []
+    lookup = term_rank_lookup(term_rank)
     for n in (3, 2, 1):
         for i in range(len(toks) - n + 1):
             if any(claimed[i : i + n]):
@@ -592,7 +587,7 @@ def find_terms_in_sentence(
             if n > 1 and not whitespace_adjacent(sentence, spans, i, n):
                 continue
             phrase = " ".join(toks[i : i + n])
-            key = term_rank_lookup(term_rank).get(glued_key(phrase))
+            key = lookup.get(glued_key(phrase))
             # Fewer words may glue to a term, more may not: "with a" is not
             # the term "witha", as the scorer sees it.
             if key is not None and len(scorer_key(phrase).split()) > len(scorer_key(key).split()):
@@ -680,8 +675,11 @@ def noise_terms_for(
 
 def scorer_key(text: str) -> str:
     """The words TermRecallScorer compares: lowercased, split on anything
-    that is not a letter or digit."""
-    return " ".join(re.findall(r"[^\W_]+", text.lower()))
+    that is not a letter or digit. NFC first, because Swift compares
+    characters, so a decomposed accent stays inside its word; and no final
+    sigma, which Swift's lowercased() never produces."""
+    lowered = unicodedata.normalize("NFC", text).lower().replace("ς", "σ")
+    return " ".join(re.findall(r"[^\W_]+", lowered))
 
 
 def select_cases(
@@ -798,9 +796,14 @@ def main() -> int:
         if key not in position:
             position[key] = len(ranked)
             ranked.append(entry)
-        elif len(scorer_key(entry[0]).split()) > len(scorer_key(ranked[position[key]][0]).split()):
-            _, stats, score = ranked[position[key]]
-            ranked[position[key]] = (entry[0], stats, score)
+        else:
+            # One identity: its counts are the sum of its spellings'.
+            spelling, stats, score = ranked[position[key]]
+            merged = TermStats(stats.count + entry[1].count, stats.sessions | entry[1].sessions)
+            if len(scorer_key(entry[0]).split()) > len(scorer_key(spelling).split()):
+                spelling = entry[0]
+            ranked[position[key]] = (spelling, merged, score + entry[2])
+    ranked.sort(key=lambda x: (-x[2], x[0]))
     print(f"technical terms extracted: {len(ranked)}")
     top = ranked[: args.top_terms]
     term_rank = {term: i for i, (term, _, _) in enumerate(top)}

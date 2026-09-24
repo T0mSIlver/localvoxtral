@@ -57,7 +57,9 @@ agent-dictation manifest format. The full option list is in the header of
 - `language`: `en` or `fr`, decided per sentence by function-word counts,
   else by its message.
 - `text`: the sentence `say` speaks and the reference it is scored against.
-- `terms`: the listed terms the sentence contains (1 to 3).
+- `terms`: the listed terms the scorer finds in the sentence, at least one.
+  The harvester takes them with a port of the scorer's matcher, so the two
+  agree; the eval fails a run on any disagreement.
 - `sessionTerms`: at most 100 terms from the sentence's session, topped up from
   its project, its own terms included. This is the list the session arm of
   #316 biases with.
