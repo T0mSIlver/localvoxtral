@@ -173,6 +173,15 @@ History; the panes sit under the sidebar's Settings header:
   the name on its own — including in dictations where nothing on screen
   mentions it. Those terms are offered as tags in **Suggestions** too, with
   no API credits. **Advanced → Learned terms** counts them and forgets them.
+  It also learns from your own fixes. When a dictation joined a coding-agent
+  session and you fix a misheard name before sending the prompt (`kwen` to
+  `Qwen`), the app compares the prompt you sent with what it typed and
+  remembers the new spelling for that project at once. "Learned “Qwen”"
+  shows at the top of the screen for a few seconds, with an **Undo** button.
+  Only a small fix, to a word that sounds like the one it replaced and looks
+  like a name or identifier, is learned; rewording teaches nothing. Changing
+  a learned spelling back forgets it. Your prompt is compared in memory and
+  never saved.
   Then the LLM Polishing switch, the agent prompt profile and spoken
   clipboard paste. **Advanced** holds the legacy replacement dictionary
   (fixed `replace_with`/`matches` rewrites from `replacement_dictionary.toml`,

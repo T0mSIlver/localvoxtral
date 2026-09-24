@@ -194,4 +194,83 @@ final class LearnedTermsTests: XCTestCase {
             ["Claude Code"]
         )
     }
+
+    // MARK: - Hand corrections
+
+    /// A fix the user made by hand is confirmed at once: the three-dictation
+    /// bar guards against polish repeating a mistake, which a hand fix is not.
+    func testCorrectionIsConfirmedAtOnce() {
+        var terms = LearnedTerms()
+        XCTAssertTrue(terms.recordCorrection("Qwen", project: project, now: start))
+
+        XCTAssertEqual(terms.confirmedTerms(projectKey: project.key), ["Qwen"])
+        XCTAssertEqual(terms.confirmedTerms(projectKey: other.key), [])
+        let stored = terms.projects.first?.terms.first
+        XCTAssertEqual(stored?.sources, [LearnedTerm.correctionSource])
+        XCTAssertEqual(stored?.dictations, 1)
+    }
+
+    /// Correcting a spelling polish was still counting confirms it, keeps its
+    /// history, and takes the user's spelling.
+    func testCorrectionConfirmsATermPolishWasCounting() {
+        var terms = LearnedTerms()
+        terms.record([observation("qwen")], project: project, now: start)
+        XCTAssertEqual(terms.confirmedTerms(projectKey: project.key), [])
+
+        XCTAssertTrue(terms.recordCorrection("Qwen", project: project, now: start + day))
+        let stored = terms.projects.first?.terms.first
+        XCTAssertEqual(stored?.term, "Qwen")
+        XCTAssertEqual(stored?.dictations, 2)
+        XCTAssertEqual(stored?.sources, ["repository", LearnedTerm.correctionSource])
+        XCTAssertEqual(terms.confirmedTerms(projectKey: project.key), ["Qwen"])
+    }
+
+    /// The same fix again is nothing new to tell the user.
+    func testRepeatedCorrectionIsNotNews() {
+        var terms = LearnedTerms()
+        XCTAssertTrue(terms.recordCorrection("Qwen", project: project, now: start))
+        XCTAssertFalse(terms.recordCorrection("qwen", project: project, now: start + day))
+        XCTAssertEqual(terms.projects.first?.terms.count, 1)
+    }
+
+    /// Forget removes the term whatever its count, so three more dictations
+    /// cannot quietly bring an undone term back.
+    func testForgetRemovesTheTermWhateverTaughtIt() {
+        var terms = LearnedTerms()
+        for offset in 0..<3 {
+            terms.record([observation("SessionStart")], project: project, now: start + Double(offset) * day)
+        }
+        terms.recordCorrection("Qwen", project: project, now: start)
+
+        terms.forget("sessionstart", projectKey: project.key)
+        terms.forget("Qwen", projectKey: other.key)
+        XCTAssertEqual(terms.projects.first?.terms.map(\.term), ["Qwen"])
+
+        terms.forget("Qwen", projectKey: project.key)
+        XCTAssertTrue(terms.projects.isEmpty)
+    }
+
+    /// A hand-confirmed term outranks polish-learned ones, so the per-project
+    /// cap never evicts it first.
+    func testCorrectionOutranksCountedTerms() {
+        var terms = LearnedTerms()
+        for offset in 0..<5 {
+            terms.record([observation("Voxtral")], project: project, now: start + Double(offset) * day)
+        }
+        terms.recordCorrection("Qwen", project: project, now: start)
+        XCTAssertEqual(terms.confirmedTerms(projectKey: project.key), ["Qwen", "Voxtral"])
+    }
+
+    /// A file written before the flag existed still decodes, its terms not
+    /// hand-confirmed.
+    func testFileWithoutTheCorrectionFlagDecodes() throws {
+        let json = """
+        {"version":1,"projects":[{"key":"/r","name":"r","lastSeen":"2026-09-20T00:00:00Z",
+        "terms":[{"term":"Voxtral","sources":["repository"],"dictations":1,
+        "firstSeen":"2026-09-20T00:00:00Z","lastSeen":"2026-09-20T00:00:00Z"}]}]}
+        """
+        let terms = LearnedTermStore.terms(fromFileContents: Data(json.utf8))
+        XCTAssertEqual(terms.termCount, 1)
+        XCTAssertEqual(terms.projects.first?.terms.first?.isConfirmedByCorrection, false)
+    }
 }

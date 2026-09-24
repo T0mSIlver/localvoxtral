@@ -194,6 +194,14 @@ final class DictationViewModel {
         set { session.learnedTermStore = newValue }
     }
     var termSuggestions: SpeakerTermSuggestionModel { session.termSuggestions }
+    /// Holds the "Learned … Undo" panel; the learner only keeps it weakly.
+    @ObservationIgnored
+    private var correctionLearnedPanel: CorrectionLearnedPanel?
+    /// The joined session submitted a prompt: correction learning compares it
+    /// with the dictation inserted into that session.
+    func promptSubmitted(sessionID: String, prompt: String) {
+        session.correctionLearning?.promptSubmitted(sessionID: sessionID, prompt: prompt)
+    }
 
     func toggleDictation(outputMode: DictationOutputMode? = nil) { session.toggleDictation(outputMode: outputMode) }
     func startDictation(outputMode: DictationOutputMode? = nil) { session.startDictation(outputMode: outputMode) }
@@ -585,6 +593,15 @@ final class DictationViewModel {
                     }
                 }
             )
+            if let learnedTermStore {
+                let correctionLearning = CorrectionLearning(
+                    store: learnedTermStore,
+                    knownTerms: { [settings] in settings.polishSpeakerTerms }
+                )
+                correctionLearnedPanel = CorrectionLearnedPanel()
+                correctionLearning.presenter = correctionLearnedPanel
+                session.correctionLearning = correctionLearning
+            }
             session.termSuggestionCadence = TermSuggestionCadence(
                 settings: settings,
                 model: { [weak self] in self?.termSuggestions },

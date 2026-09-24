@@ -590,6 +590,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             )
             viewModel.context.claudeSessionJoinResolver = resolver
+            // Correction learning compares each submitted prompt with the
+            // dictation the app inserted into that session. The registry
+            // calls this on the ingesting socket thread.
+            claudeSessionRegistry.setSubmittedPromptObserver { [weak viewModel] sessionID, prompt in
+                Task { @MainActor in
+                    viewModel?.promptSubmitted(sessionID: sessionID, prompt: prompt)
+                }
+            }
             // Pre-warm the Automation consent sheet OFF the dictation-start
             // path: the first Apple event to a terminal blocks in TCC until
             // the user answers, and that freeze must not land mid-dictation.

@@ -150,6 +150,10 @@ extension DictationSessionController {
         if let failureMessage = overlayCommit.failureMessage {
             lastError = failureMessage
         }
+        if overlayCommit.succeeded {
+            // Read before the cleanup below discards the join.
+            expectCorrection(of: displayWorkingText, join: context.claudeSessionJoin, project: nil)
+        }
         pressOverlaySpokenSendReturnIfNeeded(pid: spokenSendPID, commit: overlayCommit)
 
         completeStoppedSessionCleanup(
@@ -262,6 +266,7 @@ extension DictationSessionController {
 
         guard !Task.isCancelled else { return }
 
+        let insertedText = self.transcript.currentDictationEventText
         let overlayCommit = StopCommitCoordinator.commit(
             overlay: self.overlayBufferCoordinator,
             textInsertion: self.textInsertion,
@@ -269,6 +274,13 @@ extension DictationSessionController {
         )
         if let failureMessage = overlayCommit.failureMessage {
             self.lastError = failureMessage
+        }
+        if overlayCommit.succeeded {
+            self.expectCorrection(
+                of: insertedText,
+                join: capture.claudeJoin,
+                project: outcome.material.learnedProject
+            )
         }
         self.pressOverlaySpokenSendReturnIfNeeded(pid: spokenSendPID, commit: overlayCommit)
 
@@ -387,6 +399,8 @@ extension DictationSessionController {
         let capturedModel = sessionModelName ?? settings.effectiveModelName
         let capturedOutputMode = sessionMode.rawValue
         textInsertion.flushFinalLiveReplacementCorrections()
+        // Read before the cleanup below discards the join.
+        expectCorrection(of: liveTypedText(), join: context.claudeSessionJoin, project: nil)
         completeStoppedSessionCleanup(
             sessionMode: sessionMode,
             overlayCommitOutcome: nil,

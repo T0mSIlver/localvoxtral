@@ -114,6 +114,8 @@ public final class ClaudeSessionRegistry: Sendable {
     private let bootIdentity: @Sendable () -> String?
     private let localPeerUID: @Sendable () -> UInt32
     private let persistenceWriter: ClaudeSessionStoreWriter?
+    private let submittedPromptObserver =
+        Mutex<(@Sendable (_ sessionID: String, _ prompt: String) -> Void)?>(nil)
 
     /// - Parameters:
     ///   - now: injected clock. Nothing here reads the wall clock directly, so
@@ -198,7 +200,7 @@ public final class ClaudeSessionRegistry: Sendable {
         record.sessionID = ClaudeAgentSessionScope.scopedSessionID(
             agent: record.agent, sessionID: record.sessionID
         )
-        return state.withLock { state -> ClaudeSessionSnapshot? in
+        let ingested = state.withLock { state -> ClaudeSessionSnapshot? in
             let before = state.sessions
             defer {
                 if state.sessions != before { schedulePersistenceLocked(state) }
@@ -285,6 +287,28 @@ public final class ClaudeSessionRegistry: Sendable {
             enforceCapLocked(&state, keeping: record.sessionID)
             return snapshot
         }
+        // The record's own prompt, never the snapshot's: a submit without
+        // one leaves the PREVIOUS prompt in the snapshot, and announcing that
+        // would compare a new dictation with an old prompt.
+        if record.event == .userPromptSubmit,
+           let ingested,
+           let prompt = record.prompt,
+           !prompt.isEmpty,
+           let observer = submittedPromptObserver.withLock({ $0 }) {
+            observer(ingested.sessionID, prompt)
+        }
+        return ingested
+    }
+
+    /// Hands every prompt a session submits, once the registry holds it, to
+    /// correction learning (`CorrectionLearning`), which compares it with the
+    /// dictation the app inserted into that session. Called on the ingesting
+    /// thread, outside the registry lock, with the scoped session id the join
+    /// also carries. The observer must neither persist nor log it.
+    public func setSubmittedPromptObserver(
+        _ observer: (@Sendable (_ sessionID: String, _ prompt: String) -> Void)?
+    ) {
+        submittedPromptObserver.withLock { $0 = observer }
     }
 
     /// Look up a local workspace path.

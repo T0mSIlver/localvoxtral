@@ -217,6 +217,31 @@ there is not.
   dictations, not independent evidence, so one stale clipboard read across
   three dictations is three confirmations.
 
+- **A fix is learned only from the prompt the joined session submits** (#520).
+  `CorrectionLearning` compares the text a commit inserted with the next
+  `UserPromptSubmit` of the session the dictation JOINED, within 3 minutes,
+  once. No screen, AX field or keystroke is read for it: the agent hands over
+  the final prompt through the hook the join already trusts, so a fix is seen
+  only when the user sends it, and only in a positively joined session.
+  Screen reads were rejected as the source (comment on #520, 2026-09-24): a
+  Ghostty or `pane.read` grid re-wraps the prompt inside TUI chrome, and the
+  insertion path has no field read at all. Claude Code 2.1.280 hands a long
+  paste to the hook wrapped in `<pasted_content id=…>` markers, which the
+  classifier strips. The registry calls the observer outside its lock with
+  the scoped session id; the inserted text and the prompt live in memory for
+  one comparison, nothing but the spelling is written, and the log gets
+  verdict categories only. `CorrectionDiffClassifier` favours precision: one
+  substitution of at most 4 words, few other changed words, a spelling that
+  sounds like what it replaced, and a capital that is not a sentence start, a
+  digit or an inner joiner, unless the spelling is already a known term. A
+  hand fix is confirmed at once (`confirmedByCorrection`), bypassing the
+  three-dictation bar, because that bar guards against polish repeating
+  itself and a hand fix is not polish. Undo, or a later fix that changes a
+  learned spelling back, deletes the term outright rather than lowering its
+  count. The feature inherits the join's gates: no polish endpoint, both
+  context settings off, or an endpoint that is neither loopback nor trusted
+  means no join and nothing learned.
+
 - **"About you" is the only place the model is told to infer a misheard name.**
   `LLMPromptTemplates.withSpeakerProfile` appends the user's own text to the
   SYSTEM prompt (stable, so it stays inside the prefix polishd checkpoints —

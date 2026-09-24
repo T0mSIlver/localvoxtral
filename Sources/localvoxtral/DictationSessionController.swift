@@ -208,6 +208,10 @@ final class DictationSessionController {
     /// writes the user's file.
     @ObservationIgnored
     var learnedTermStore: LearnedTermStore?
+    /// Learns a spelling from the fix the user makes before sending a
+    /// dictation to the joined session. Nil without runtime services.
+    @ObservationIgnored
+    var correctionLearning: CorrectionLearning?
 
     @ObservationIgnored
     private var storedTermSuggestions: SpeakerTermSuggestionModel?
