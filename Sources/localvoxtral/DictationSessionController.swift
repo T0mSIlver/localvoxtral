@@ -71,9 +71,12 @@ final class DictationSessionController {
     /// keeps it: after a failed insertion it is the text the user still needs
     /// (#526). Seeded from History at launch, and it follows History when a
     /// dictation there is deleted.
-    var lastDictation: DictationHistoryEntry? {
+    private(set) var lastDictation: DictationHistoryEntry? {
         didSet { lastDictationGeneration &+= 1 }
     }
+    /// Whether `lastDictation` is also in History. Only then does an empty
+    /// History mean it was deleted.
+    @ObservationIgnored private var lastDictationIsInHistory = false
     /// A store read that started before the last change to `lastDictation`
     /// answers for an older History and must not overwrite it.
     @ObservationIgnored private var lastDictationGeneration = 0
@@ -773,10 +776,18 @@ final class DictationSessionController {
         query.limit = 1
         let newest = await store.entries(matching: query).first
         guard generation == lastDictationGeneration else { return }
-        // A dictation saved while History is off never reaches the store; a
-        // store that answers with nothing must not erase it.
-        guard newest != nil || settings.dictationHistoryRetention.savesDictations else { return }
+        // A dictation saved while History is off never reached the store, so
+        // an empty store says nothing about it. One that History held was
+        // deleted with it: turning History off deletes every dictation.
+        guard newest != nil || lastDictationIsInHistory else { return }
         lastDictation = newest
+        lastDictationIsInHistory = newest != nil
+    }
+
+    /// Called by the stop-commit for every dictation it saves.
+    func rememberLastDictation(_ entry: DictationHistoryEntry, isInHistory: Bool) {
+        lastDictation = entry
+        lastDictationIsInHistory = isInHistory
     }
 
     private func writeToPasteboard(_ text: String) {

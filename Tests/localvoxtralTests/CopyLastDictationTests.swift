@@ -49,6 +49,23 @@ final class CopyLastDictationTests: XCTestCase {
         XCTAssertEqual(written.values, ["keep me anyway"])
     }
 
+    /// History stores the clipboard placeholder; the copy is the text as it
+    /// was inserted, clipboard included.
+    func testAPasteClipboardDictationCopiesTheClipboardNotThePlaceholder() {
+        let (viewModel, written) = makeViewModel(polishing: nil)
+        viewModel.dependencies.pasteboardReader = { PasteboardStub(string: "ValueError: boom") }
+        var records: [DictationSessionRecord] = []
+        viewModel.dependencies.onSessionRecord = { records.append($0) }
+
+        finishOverlayDictation(viewModel, text: "here is the error paste clipboard")
+        viewModel.copyLastDictation()
+
+        XCTAssertEqual(records.first?.polishedText?.contains(ClipboardPayloadMacro.placeholder), true)
+        let copied = written.values.first ?? ""
+        XCTAssertTrue(copied.contains("ValueError: boom"), copied)
+        XCTAssertFalse(copied.contains(ClipboardPayloadMacro.placeholder), copied)
+    }
+
     func testWithNothingDictatedTheRowIsOffAndCopiesNothing() {
         let (viewModel, written) = makeViewModel(polishing: nil)
 
@@ -138,6 +155,21 @@ final class CopyLastDictationTests: XCTestCase {
         store.deleteAll()
         await viewModel.session.refreshLastDictationFromStore()
         XCTAssertNil(viewModel.session.lastDictation, "a dictation deleted from History is not copyable")
+    }
+
+    /// Turning History off deletes every dictation, the last one included.
+    func testTurningHistoryOffDeletesTheLastDictationToo() async throws {
+        let (viewModel, _) = makeViewModel(polishing: nil)
+        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        viewModel.sessionStore = store
+        finishOverlayDictation(viewModel, text: "saved while History was on")
+        XCTAssertTrue(viewModel.canCopyLastDictation)
+
+        viewModel.settings.dictationHistoryRetention = .off
+        viewModel.applyDictationHistoryRetention()
+        await viewModel.session.refreshLastDictationFromStore()
+
+        XCTAssertNil(viewModel.session.lastDictation)
     }
 
     /// With History off the store stays empty, and an empty answer must not

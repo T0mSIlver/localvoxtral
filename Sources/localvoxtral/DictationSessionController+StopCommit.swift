@@ -131,7 +131,8 @@ extension DictationSessionController {
                     targetAppBundleID: capturedTargetBundleID,
                     status: .sttCompleted,
                     commitSucceeded: false,
-                    polishContextSummary: payloadProvenanceSummary
+                    polishContextSummary: payloadProvenanceSummary,
+                    clipboardPayload: clipboardPayload
                 )
             }
             polishAndCommitTask = Task { @MainActor [weak self] in
@@ -186,7 +187,8 @@ extension DictationSessionController {
             targetAppBundleID: capturedTargetBundleID,
             status: llmConfigurationFailure == nil ? .sttCompleted : .llmFailed,
             commitSucceeded: overlayCommit.succeeded,
-            polishContextSummary: payloadProvenanceSummary
+            polishContextSummary: payloadProvenanceSummary,
+            clipboardPayload: clipboardPayload
         )
 
         if let llmConfigurationFailure {
@@ -314,7 +316,8 @@ extension DictationSessionController {
                     repoVocabularyCount: assembly.repoVocabularyCount,
                     clipboardVocabularyCount: assembly.clipboardVocabularyCount
                 )
-            )
+            ),
+            clipboardPayload: preparation.clipboardPayload
         )
 
         #if LOCALVOXTRAL_DOGFOOD
@@ -577,7 +580,8 @@ extension DictationSessionController {
         status: DictationSessionStatus,
         commitSucceeded: Bool,
         polishProfile: String? = nil,
-        polishContextSummary: String? = nil
+        polishContextSummary: String? = nil,
+        clipboardPayload: String? = nil
     ) {
         let trimmedRawText = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedRawText.isEmpty else {
@@ -601,8 +605,18 @@ extension DictationSessionController {
             polishContextSummary: polishContextSummary
         )
         dependencies.onSessionRecord?(record)
-        lastDictation = DictationHistoryEntry(record)
         let retention = settings.dictationHistoryRetention
+        // The record holds the clipboard placeholder; the copy the user takes
+        // gets the text as it was inserted.
+        let entry = DictationHistoryEntry(record)
+        rememberLastDictation(
+            clipboardPayload == nil
+                ? entry
+                : entry.replacingPolishedText(entry.polishedText.map {
+                    StopCommitCoordinator.substitutingPayload($0, payload: clipboardPayload)
+                }),
+            isInHistory: retention.savesDictations && sessionStore != nil
+        )
         guard retention.savesDictations else {
             Log.persistence.debug("Dictation history is off: not saving this dictation")
             // Turning history off deleted what was there. If that write

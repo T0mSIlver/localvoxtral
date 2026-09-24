@@ -47,6 +47,17 @@ final class LastDictationCopyTests: XCTestCase {
         )
     }
 
+    /// History keeps the clipboard placeholder, never the clipboard itself.
+    func testAStoredClipboardPlaceholderCopiesTheTranscript() {
+        XCTAssertEqual(
+            LastDictationCopy.text(
+                rawText: "fix this paste clipboard",
+                polishedText: "Fix this: \(ClipboardPayloadMacro.placeholder)",
+                polishFailed: false),
+            "fix this paste clipboard"
+        )
+    }
+
     func testNothingTranscribedCopiesNothing() {
         XCTAssertNil(LastDictationCopy.text(rawText: " \n ", polishedText: nil, polishFailed: false))
         XCTAssertNil(LastDictationCopy.text(rawText: "", polishedText: "x", polishFailed: true))

@@ -194,17 +194,7 @@ final class ShortcutController {
     func applyHotKeySettingsChange() {
         switch registerCurrentHotKeys() {
         case .success:
-            if !session.isDictating, !session.isFinalizingStop,
-               (session.currentStatusToken == .hotKeyHandlerRegistrationFailure
-                || session.currentStatusToken == .hotKeyShortcutUnavailable)
-            {
-                session.statusText = DictationViewModel.StatusStrings.ready
-            }
-            if session.currentErrorToken == .hotKeyShortcutUnavailable
-                || session.currentErrorToken == .hotKeyHandlerRegistrationFailure
-            {
-                session.lastError = nil
-            }
+            clearHotKeyErrors()
         case .failure(let reason):
             applyHotKeyRegistrationFailure(reason)
         }
@@ -267,18 +257,7 @@ final class ShortcutController {
 
         switch registerCurrentHotKeys() {
         case .success:
-            if !session.isDictating, !session.isFinalizingStop,
-               (session.currentStatusToken == .hotKeyHandlerRegistrationFailure
-                || session.currentStatusToken == .hotKeyShortcutUnavailable)
-            {
-                session.statusText = DictationViewModel.StatusStrings.ready
-            }
-
-            if session.currentErrorToken == .hotKeyShortcutUnavailable
-                || session.currentErrorToken == .hotKeyHandlerRegistrationFailure
-            {
-                session.lastError = nil
-            }
+            clearHotKeyErrors()
             return
         case .failure(let reason):
             if previousWasEnabled {
@@ -443,7 +422,7 @@ final class ShortcutController {
         settings.setCopyLastDictationShortcut(shortcut)
         switch hotKeyManager.registerCopyLastDictation(settings.copyLastDictationShortcut) {
         case .success:
-            clearHotKeyErrors()
+            clearHotKeyErrors(copyLastDictation: true)
         case .failure(let reason):
             settings.setCopyLastDictationShortcut(previous)
             hotKeyManager.registerCopyLastDictation(previous)
@@ -452,7 +431,18 @@ final class ShortcutController {
         return nil
     }
 
-    private func clearHotKeyErrors() {
+    /// Clears a hotkey registration error once a registration succeeded.
+    /// The dictation triggers and the copy shortcut register apart, so each
+    /// clears only its own error: a working copy shortcut must not hide a
+    /// dead dictation trigger, nor the reverse.
+    private func clearHotKeyErrors(copyLastDictation: Bool = false) {
+        if let lastError = session.lastError,
+           session.currentErrorToken == .hotKeyShortcutUnavailable
+            || session.currentErrorToken == .hotKeyHandlerRegistrationFailure
+        {
+            let standingErrorIsCopys = lastError == HotKeyManager.copyLastDictationUnavailableErrorMessage
+            guard standingErrorIsCopys == copyLastDictation else { return }
+        }
         if !session.isDictating, !session.isFinalizingStop,
            (session.currentStatusToken == .hotKeyHandlerRegistrationFailure
             || session.currentStatusToken == .hotKeyShortcutUnavailable)
