@@ -101,6 +101,13 @@ struct StatusPopoverView: View {
                 }
             }
 
+            // The last dictation's text, including one that never reached
+            // the target app (#526).
+            Button("Copy last dictation") {
+                viewModel.copyLastDictation()
+            }
+            .disabled(!viewModel.canCopyLastDictation)
+
             Button("Copy latest segment") {
                 viewModel.copyLatestSegment()
             }

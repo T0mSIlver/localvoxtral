@@ -283,6 +283,30 @@ final class RealtimeReconnectTests: XCTestCase {
         )
     }
 
+    /// A socket that never comes back ends the dictation, and what it had
+    /// transcribed, the partial in flight included, reaches History and
+    /// "Copy last dictation" (#526).
+    func testAnExhaustedReconnectKeepsWhatWasTranscribed() async {
+        let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
+        var records: [DictationSessionRecord] = []
+        viewModel.dependencies.onSessionRecord = { records.append($0) }
+        viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in
+            guard let viewModel, client.connectCount > 0 else { return }
+            viewModel.session.handle(event: .error("WebSocket failed: refused"))
+        }
+        viewModel.session.handle(event: .finalTranscript("the first half "))
+        viewModel.session.handle(event: .partialTranscript("and the"))
+
+        viewModel.session.handle(event: .disconnected)
+        await viewModel.session.reconnectTask?.value
+
+        XCTAssertFalse(viewModel.isDictating)
+        XCTAssertEqual(records.count, 1)
+        let copied = viewModel.session.lastDictation?.textToCopy ?? ""
+        XCTAssertTrue(copied.hasPrefix("the first half"), copied)
+        XCTAssertTrue(copied.hasSuffix("and the"), "the partial in flight survives: \(copied)")
+    }
+
     func testAnExhaustedRunsOwnClosingSocketDoesNotClearTheFailureIndicator() async {
         let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
         viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in

@@ -24,6 +24,7 @@ struct DictationSettingsPane: View {
     }
     @State private var overlayValidationError: String?
     @State private var livePasteValidationError: String?
+    @State private var copyLastDictationValidationError: String?
     @State private var pendingShortcutMove: PendingShortcutMove?
 
     /// A recording that would take the other mode's key, held until the user
@@ -59,7 +60,24 @@ struct DictationSettingsPane: View {
                 takenFrom: takenFrom,
                 shortcut: shortcut
             )
+        case .refused(let message):
+            pendingShortcutMove = nil
+            switch target {
+            case .overlayBuffer: overlayValidationError = message
+            case .liveAutoPaste: livePasteValidationError = message
+            }
         }
+    }
+
+    private func assignCopyLastDictationShortcut(_ shortcut: DictationShortcut?) {
+        copyLastDictationValidationError = viewModel.shortcuts.requestCopyLastDictationShortcut(shortcut)
+    }
+
+    private var copyLastDictationShortcutBinding: Binding<DictationShortcut?> {
+        Binding(
+            get: { settings.copyLastDictationShortcut },
+            set: { assignCopyLastDictationShortcut($0) }
+        )
     }
 
     private var overlayBufferShortcutBinding: Binding<DictationShortcut?> {
@@ -235,6 +253,32 @@ struct DictationSettingsPane: View {
                 SettingsFieldRow(title: "Copy on stop") {
                     Toggle("", isOn: $settings.autoCopyEnabled)
                         .labelsHidden()
+                }
+
+                // In this group rather than Trigger: it works whichever
+                // trigger method is picked.
+                SettingsFieldRow(
+                    title: "Copy last dictation",
+                    controlAlignment: .top
+                ) {
+                    HStack(alignment: .center, spacing: 8) {
+                        ShortcutRecorderField(
+                            shortcut: copyLastDictationShortcutBinding,
+                            validationError: $copyLastDictationValidationError,
+                            fixedWidth: 132
+                        )
+                        .frame(height: 24, alignment: .leading)
+
+                        Button("Clear") {
+                            copyLastDictationValidationError = nil
+                            assignCopyLastDictationShortcut(nil)
+                        }
+                        .disabled(settings.copyLastDictationShortcut == nil)
+                    }
+                } footer: {
+                    if let copyLastDictationValidationError {
+                        SettingsInlineMessage(copyLastDictationValidationError, color: .red)
+                    }
                 }
 
                 SettingsFieldRow(title: "Lower other audio while dictating") {

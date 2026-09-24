@@ -18,10 +18,12 @@ protocol ShortcutSessionControlling: AnyObject {
     func toggleDictation(outputMode: DictationOutputMode?)
     func clearSecureInputRefusalSignalsIfAttemptEnded()
     func overlayReachabilityDidChange(wasReachable: Bool)
+    func copyLastDictation()
 }
 
 /// The keyboard triggers: the push-to-talk, toggle and modifier-only
-/// gestures, hotkey registration and its retry, and the two shortcut slots.
+/// gestures, hotkey registration and its retry, the two shortcut slots, and
+/// the "Copy last dictation" shortcut.
 /// Owned by `DictationViewModel` and reached as `viewModel.shortcuts`. It
 /// drives the session through `ShortcutSessionControlling`, installed by
 /// the owner once it exists; until then, and after the owner is gone, a
@@ -60,6 +62,7 @@ final class ShortcutController {
         hotKeyManager.onRelease = { [weak self] in self?.handleDictationShortcutRelease() }
         hotKeyManager.onHoldStart = { [weak self] in self?.handleModifierOnlyHoldStart() }
         hotKeyManager.onModifierOnlyTap = { [weak self] mode in self?.handleModifierOnlyTap(mode: mode) }
+        hotKeyManager.onCopyLastDictation = { [weak self] in self?.session.copyLastDictation() }
     }
 
     func install(session: any ShortcutSessionControlling) {
@@ -69,10 +72,14 @@ final class ShortcutController {
     /// The launch registration; the owner calls it once runtime services run.
     func registerAtLaunch() {
         registerCurrentHotKeys()
+        if case .failure = hotKeyManager.registerCopyLastDictation(settings.copyLastDictationShortcut) {
+            applyHotKeyRegistrationFailure(.copyLastDictationShortcutUnavailable)
+        }
     }
 
     func unregister() {
         hotKeyManager.unregister()
+        hotKeyManager.registerCopyLastDictation(nil)
     }
 
     func handleDictationShortcutPress(mode: DictationOutputMode? = nil) {
@@ -185,17 +192,7 @@ final class ShortcutController {
     func applyHotKeySettingsChange() {
         switch registerCurrentHotKeys() {
         case .success:
-            if !session.isDictating, !session.isFinalizingStop,
-               (session.currentStatusToken == .hotKeyHandlerRegistrationFailure
-                || session.currentStatusToken == .hotKeyShortcutUnavailable)
-            {
-                session.statusText = DictationViewModel.StatusStrings.ready
-            }
-            if session.currentErrorToken == .hotKeyShortcutUnavailable
-                || session.currentErrorToken == .hotKeyHandlerRegistrationFailure
-            {
-                session.lastError = nil
-            }
+            clearHotKeyErrors()
         case .failure(let reason):
             applyHotKeyRegistrationFailure(reason)
         }
@@ -258,18 +255,7 @@ final class ShortcutController {
 
         switch registerCurrentHotKeys() {
         case .success:
-            if !session.isDictating, !session.isFinalizingStop,
-               (session.currentStatusToken == .hotKeyHandlerRegistrationFailure
-                || session.currentStatusToken == .hotKeyShortcutUnavailable)
-            {
-                session.statusText = DictationViewModel.StatusStrings.ready
-            }
-
-            if session.currentErrorToken == .hotKeyShortcutUnavailable
-                || session.currentErrorToken == .hotKeyHandlerRegistrationFailure
-            {
-                session.lastError = nil
-            }
+            clearHotKeyErrors()
             return
         case .failure(let reason):
             if previousWasEnabled {
@@ -292,13 +278,22 @@ final class ShortcutController {
         /// The shortcut rides along so the caller raising the question has no
         /// optional left to unwrap.
         case needsMoveConfirmation(shortcut: DictationShortcut, from: DictationOutputMode)
+        /// The key is the "Copy last dictation" shortcut. One key does one
+        /// job, and there is no dictation slot to move it from, so the
+        /// recorder says so and keeps what it had.
+        case refused(message: String)
     }
+
+    static let copyLastDictationConflictMessage = "Already the Copy last dictation shortcut."
 
     /// Records into the Overlay Buffer slot, unless Live Auto-Paste already
     /// holds the same key. Settings asks first and calls
     /// `moveShortcutToOverlayBuffer` if the answer is yes; nothing changes in
     /// the meantime, so a declined move leaves both slots as they were.
     func requestOverlayBufferShortcut(_ shortcut: DictationShortcut?) -> ShortcutAssignment {
+        if let shortcut, settings.copyLastDictationShortcut == shortcut.normalized {
+            return .refused(message: Self.copyLastDictationConflictMessage)
+        }
         if let shortcut, settings.livePasteShortcut == shortcut.normalized {
             return .needsMoveConfirmation(shortcut: shortcut.normalized, from: .liveAutoPaste)
         }
@@ -307,6 +302,9 @@ final class ShortcutController {
     }
 
     func requestLivePasteShortcut(_ shortcut: DictationShortcut?) -> ShortcutAssignment {
+        if let shortcut, settings.copyLastDictationShortcut == shortcut.normalized {
+            return .refused(message: Self.copyLastDictationConflictMessage)
+        }
         if let shortcut, settings.overlayBufferShortcut == shortcut.normalized {
             return .needsMoveConfirmation(shortcut: shortcut.normalized, from: .overlayBuffer)
         }
@@ -405,7 +403,46 @@ final class ShortcutController {
         }
     }
 
-    private func clearHotKeyErrors() {
+    /// Records the "Copy last dictation" shortcut, nil to clear it. Returns
+    /// the sentence the recorder shows when the key already starts a
+    /// dictation, nil once the shortcut is set. A key macOS refuses puts the
+    /// previous shortcut back, like the dictation slots.
+    func requestCopyLastDictationShortcut(_ shortcut: DictationShortcut?) -> String? {
+        if let key = shortcut?.normalized {
+            if settings.overlayBufferShortcut == key {
+                return "Already the \(DictationOutputMode.overlayBuffer.displayName) shortcut."
+            }
+            if settings.livePasteShortcut == key {
+                return "Already the \(DictationOutputMode.liveAutoPaste.displayName) shortcut."
+            }
+        }
+        let previous = settings.copyLastDictationShortcut
+        settings.setCopyLastDictationShortcut(shortcut)
+        switch hotKeyManager.registerCopyLastDictation(settings.copyLastDictationShortcut) {
+        case .success:
+            clearHotKeyErrors(copyLastDictation: true)
+        case .failure:
+            settings.setCopyLastDictationShortcut(previous)
+            hotKeyManager.registerCopyLastDictation(previous)
+            // Its own message whatever failed, a handler install included:
+            // that message is how `clearHotKeyErrors` tells the slots apart.
+            applyHotKeyRegistrationFailure(.copyLastDictationShortcutUnavailable)
+        }
+        return nil
+    }
+
+    /// Clears a hotkey registration error once a registration succeeded.
+    /// The dictation triggers and the copy shortcut register apart, so each
+    /// clears only its own error: a working copy shortcut must not hide a
+    /// dead dictation trigger, nor the reverse.
+    private func clearHotKeyErrors(copyLastDictation: Bool = false) {
+        if let lastError = session.lastError,
+           session.currentErrorToken == .hotKeyShortcutUnavailable
+            || session.currentErrorToken == .hotKeyHandlerRegistrationFailure
+        {
+            let standingErrorIsCopys = lastError == HotKeyManager.copyLastDictationUnavailableErrorMessage
+            guard standingErrorIsCopys == copyLastDictation else { return }
+        }
         if !session.isDictating, !session.isFinalizingStop,
            (session.currentStatusToken == .hotKeyHandlerRegistrationFailure
             || session.currentStatusToken == .hotKeyShortcutUnavailable)
@@ -433,6 +470,9 @@ final class ShortcutController {
         case .modifierOnlyHotKeyUnavailable:
             session.statusText = HotKeyManager.registrationErrorStatus
             session.lastError = HotKeyManager.modifierOnlyUnavailableErrorMessage
+        case .copyLastDictationShortcutUnavailable:
+            session.statusText = HotKeyManager.registrationErrorStatus
+            session.lastError = HotKeyManager.copyLastDictationUnavailableErrorMessage
         }
     }
 }
@@ -460,6 +500,7 @@ private final class DetachedShortcutSession: ShortcutSessionControlling {
     func toggleDictation(outputMode _: DictationOutputMode?) { note("toggleDictation") }
     func clearSecureInputRefusalSignalsIfAttemptEnded() { note("clearSecureInputRefusalSignals") }
     func overlayReachabilityDidChange(wasReachable _: Bool) { note("overlayReachabilityDidChange") }
+    func copyLastDictation() { note("copyLastDictation") }
 
     private func note(_ what: String) {
         Log.dictation.error("shortcut: \(what, privacy: .public) reached no session owner; nothing happened")
