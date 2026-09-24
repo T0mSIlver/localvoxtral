@@ -123,7 +123,7 @@ jobs:
           # app+test module uninstrumented, and the next morning's ci.yml
           # unit step rebuilt it back — the same flag-flip PR #157 fixed
           # inside ci.yml (PR #157 review finding).
-          swift test --filter AgentDictationE2EEvalTests --enable-code-coverage 2>&1 | tee logs/eval-e2e.log
+          swift test --build-system native --filter AgentDictationE2EEvalTests --enable-code-coverage 2>&1 | tee logs/eval-e2e.log
 
       - name: Scoreboard to step summary
         # Extract the section between the scoreboard markers (kept in sync

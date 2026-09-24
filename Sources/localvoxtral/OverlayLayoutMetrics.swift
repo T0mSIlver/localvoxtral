@@ -85,11 +85,21 @@ struct OverlayLayoutMetrics: Equatable {
     /// words, short enough that the ragged right edge it costs stays subtle.
     var liveWordReserveWidth: CGFloat { bodyTextWidth(of: "abcdefghij") }
 
-    /// A wrapper that breaks lines at this width — see
+    /// Width the body text gets once the buffer scrolls. The body's
+    /// `ScrollView` then takes a scroller's width off its content, even with
+    /// overlay scrollers (measured: 497pt of text width at 16pt body, 480pt
+    /// once scrolling). Lines broken for the full width would be wrapped again
+    /// by SwiftUI there, which pushes the last two words of a line down onto a
+    /// line of their own. Breaking at this width holds in both states.
+    var bodyTextWrapWidth: CGFloat {
+        textMeasurementWidth - NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
+    }
+
+    /// A wrapper that breaks lines at `bodyTextWrapWidth` — see
     /// `OverlayStableLineWrapper` for why the overlay wraps its own text.
     func makeStableLineWrapper() -> OverlayStableLineWrapper {
         OverlayStableLineWrapper(
-            availableWidth: textMeasurementWidth,
+            availableWidth: bodyTextWrapWidth,
             reserveWidth: liveWordReserveWidth,
             widthOf: bodyTextWidth(of:)
         )
