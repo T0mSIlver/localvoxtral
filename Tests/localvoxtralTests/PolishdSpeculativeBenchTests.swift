@@ -14,8 +14,12 @@ import XCTest
 /// token comes from the helper's `timings` object, so an arm running a helper
 /// that predates it reports only the client-side total.
 ///
-/// Print-only: no timing or score assertions (no wall-clock in tests). The
-/// asserted quality gate stays `PolishHelperIntegrationTests`.
+/// No timing or score assertions (no wall-clock in tests); the asserted
+/// quality gate stays `PolishHelperIntegrationTests`. What it does assert is
+/// that a speculative arm really speculated, and that it reproduced the first
+/// arm's output wherever both decode greedily: a head that loads wrong falls
+/// back to plain decoding or drafts garbage, and neither shows in a timing
+/// table.
 @MainActor
 final class PolishdSpeculativeBenchTests: XCTestCase {
     private static let markerFileName = ".polishd-bench-enable.json"
@@ -119,6 +123,20 @@ final class PolishdSpeculativeBenchTests: XCTestCase {
 
         print(Self.report(arms: marker.arms, rounds: rounds, samples: samples, outputs: outputs))
         fflush(stdout)
+
+        guard let reference = marker.arms.first else { return }
+        for arm in marker.arms where (arm.arguments ?? []).contains("mtp") {
+            let drafted = (samples[arm.name] ?? []).compactMap { $0.timings?.draftTokens }.reduce(0, +)
+            XCTAssertGreaterThan(drafted, 0, "arm \(arm.name) never speculated; see the helper log")
+            guard arm.temperature == 0, reference.temperature == 0, arm.name != reference.name
+            else { continue }
+            let expected = outputs[reference.name] ?? [:]
+            for (key, output) in outputs[arm.name] ?? [:] where expected[key] != output {
+                XCTFail(
+                    "arm \(arm.name) diverged from \(reference.name) on \(key): "
+                        + "\(output) vs \(expected[key] ?? "<missing>")")
+            }
+        }
     }
 
     /// Downloads the checkpoint's MTP head (config.json's `mtp_file`) into the
