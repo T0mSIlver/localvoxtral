@@ -21,6 +21,15 @@ public enum StreamingSpeechBenchmark {
             seconds: benchmark.seconds,
             wavPath: benchmark.wavPath
         )
+        warmUp(
+            engine: engine,
+            audio: audio,
+            options: options,
+            cadenceMilliseconds: benchmark.cadenceMilliseconds
+        )
+        // The warm-up session is gone by now; clear after the drop, as the server
+        // does between dictations, so its buffers do not start the measured one.
+        Memory.clearCache()
         // Same utterance limit the server applies, so a long benchmark measures what a
         // long dictation costs instead of an engine that silently stopped decoding (#314).
         let session = engine.makeSession(
@@ -95,6 +104,43 @@ public enum StreamingSpeechBenchmark {
             "BENCH done seconds=\(benchmark.seconds) limit_s=\(options.utteranceLimit.seconds) "
                 + "tokens=\(session.decodedTokenCount) "
                 + "stopped=\(session.utteranceStop.map(String.init(describing:)) ?? "none")"
+        )
+    }
+
+    /// The first steps after a load compile kernels and can take seconds, which only the
+    /// first dictation after the helper starts pays. A throwaway session absorbs that, so
+    /// the measured session shows what every later dictation costs; the warm-up's own
+    /// numbers are printed as that first dictation's.
+    private static func warmUp(
+        engine: any SpeechASREngine,
+        audio: [Float],
+        options: SpeechdLaunchOptions,
+        cadenceMilliseconds: Int
+    ) {
+        let warmupSamples = min(audio.count, 3 * sampleRate)
+        let session = engine.makeSession(
+            transcriptionDelayMs: options.transcriptionDelayMs,
+            utteranceLimit: options.utteranceLimit
+        )
+        var batcher = StepBatcher(cadenceMilliseconds: cadenceMilliseconds, sampleRate: sampleRate)
+        var timeline = RealtimeStepTimeline(sampleRate: sampleRate)
+        var stepped = 0
+        var slowest = 0.0
+        for batch in batcher.append(Array(audio.prefix(warmupSamples))) {
+            stepped += batch.count
+            let record = measureStep(session: session, samples: batch, at: stepped)
+            slowest = max(slowest, record.latencyMilliseconds)
+            timeline.record(
+                audioSamples: stepped,
+                latencySeconds: record.latencyMilliseconds / 1_000,
+                transcript: session.text
+            )
+        }
+        session.finish()
+        let firstText = timeline.firstTextSeconds.map { String(format: "%.3f", $0) } ?? "none"
+        print(
+            String(format: "BENCH warmup seconds=3 slowest_step_ms=%.1f ", slowest)
+                + "first_text_s=\(firstText)"
         )
     }
 
