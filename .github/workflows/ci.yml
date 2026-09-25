@@ -396,7 +396,9 @@ jobs:
         with:
           name: view-snapshots
           path: .build/snapshots
-          if-no-files-found: error
+          # Not `error`: a unit step that fails before ViewSnapshotTests runs
+          # leaves no folder, and the job is already red.
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Save SwiftPM build cache
