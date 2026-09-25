@@ -248,49 +248,55 @@ builds the styled DMG, verifies it with `hdiutil`, and uploads it for eyeballing
 
 ## `ui-smoke.yml`
 
-Lock-aware evening AX smoke drill on the self-hosted Mac runner: three
-scheduled slots (18:00/19:30/21:00 UTC, 20:00 Paris anchor), each gated by
-`scripts/ci/ui-smoke-guard.sh` — a slot skips green when the Mac is on
-battery power (scheduled lanes never drain the owner's MacBook,
-`scripts/ci/ac-power-guard.sh`, shared with eval-e2e.yml's weekly run), when
-the screen is locked (the drill needs an unlocked GUI session), or when a
-slot's drill already ran and passed that day, so at most one real drill runs
-per day. Manual dispatch bypasses the guard; agents dispatch through
-`scripts/ui-smoke-dispatch.sh`, which refuses a run the diff does not need, a
-second run on one commit and a run within an hour of the last (rules in
-`docs/agent/test-tiers.md`, "Proving a change with the e2e dictation check").
-Also runs on same-repo PRs when the owner adds the `needs-ui-smoke` label
-(re-add it to rerun after new pushes; fork PRs never reach the self-hosted
-runner, label or no label).
-It packages the app, launches a fresh menu bar instance, verifies the status
-item, checks that launch alone does not spawn managed backend processes, opens
-Settings from the status menu, selects the three settings tabs, checks the
-managed backend rows, and verifies clean quit. Failure uploads
-`ui-smoke-log`.
+Two jobs. Both run on manual dispatch and on same-repo PRs when the owner adds
+the `needs-ui-smoke` label (re-add it to rerun after new pushes). Agents
+dispatch through `scripts/ui-smoke-dispatch.sh`, which refuses a run the diff
+does not need, a second run on one commit and a run within an hour of the last
+(rules in `docs/agent/test-tiers.md`, "Proving a change with the e2e dictation
+check").
 
-The same job then repackages the app as a dogfood build and runs
-`scripts/e2e-dictation.sh`: the packaged app dictates from a WAV in place of
-the microphone into a throwaway target window, once per scenario in
-`scripts/e2e/scenarios/`, and the inserted text is scored against the spoken
-phrase. Both checks run even when the other failed. The script exits 3 when
-the Mac could not run it (locked, no STT server, no Accessibility grant), which
-a scheduled slot reports as a warning and a dispatch or label reports as a
-failure. `e2e-dictation-log` is uploaded on every run. The guard answers
-"already covered today" separately for the drill and for the dictation, so a
-red drill neither hides a missing dictation nor makes all three slots repeat
-one that passed.
+`ax-drill` runs the AX drill (`scripts/ui-smoke.sh`) on a GitHub-hosted
+`macos-latest` runner, at the 18:00 UTC slot and on every dispatch or label,
+fork PRs included. It packages the app ad-hoc signed and without the MLX
+helpers, copies the bundle out of the workspace and hides `.build` (the #87
+launch check), then launches a fresh menu bar instance, verifies the status
+item, checks that launch in External URL mode spawns no managed backend,
+opens Settings from the status menu, asserts every settings pane, and
+verifies a clean quit. The drill starts no dictation and has polishing off,
+so it reaches no server and needs no microphone; about 30 % of hosted runners
+have no audio device, and the job summary says which kind ran. The hosted
+image pre-grants Accessibility and Screen Recording to `bash` and
+`osascript`. The ad-hoc bundle has no Team ID, so the drill runs with
+`LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN=1` as it did on the Mac. Failure uploads
+`ui-smoke-log` with a screenshot.
 
-One-time runner TCC grants are required because the runner is a launchd agent
-inside the owner's GUI session:
+`e2e-dictation` stays on the self-hosted Mac: it repackages the app as a
+signed dogfood build and runs `scripts/e2e-dictation.sh`, where the packaged
+app dictates from a WAV in place of the microphone into a throwaway target
+window, once per scenario in `scripts/e2e/scenarios/`, and the inserted text
+is scored against the spoken phrase. It has three scheduled slots
+(18:00/19:30/21:00 UTC, 20:00 Paris anchor), each gated by
+`scripts/ci/ui-smoke-guard.sh`: a slot skips green when the Mac is on battery
+power (scheduled lanes never drain the owner's MacBook,
+`scripts/ci/ac-power-guard.sh`, shared with eval-e2e.yml's weekly run), when the
+screen is locked (the check needs an unlocked GUI session), or when an
+earlier slot's dictation was already scored that day. Manual dispatch and the
+label bypass the guard; fork PRs never reach this job. The script exits 3
+when the Mac could not run it (locked, no STT server, no Accessibility
+grant), which a scheduled slot reports as a warning and a dispatch or label
+reports as a failure. `e2e-dictation-log` is uploaded on every run.
+
+The GUI lanes on the self-hosted runner (`e2e-dictation` here,
+`capture-assets.yml`) need one-time TCC grants, because the runner is a
+launchd agent inside the owner's GUI session:
 
 - Accessibility: allow the self-hosted runner process so System Events can
-  drive the menu bar and settings window.
+  drive the app's windows.
 - Screen Recording: allow the self-hosted runner process so CoreGraphics
   preflight and screenshot capture can read window contents.
 
-When either grant is missing, the smoke script fails immediately with an
-actionable TCC message. Grant it once in System Settings > Privacy & Security,
-then rerun the workflow.
+Grant each once in System Settings > Privacy & Security, then rerun the
+workflow.
 
 ## `capture-assets.yml`
 
@@ -300,8 +306,8 @@ the selected ref, then uploads `assets/*.png` as the `readme-screenshots`
 artifact. Before the screenshot script lands, the workflow intentionally
 prints a clear skip message and exits successfully.
 
-It needs the same one-time Accessibility and Screen Recording TCC grants as
-`ui-smoke.yml`.
+It needs the one-time Accessibility and Screen Recording TCC grants described
+under `ui-smoke.yml`.
 
 ## `codeql.yml`
 
