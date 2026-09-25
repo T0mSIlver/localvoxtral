@@ -54,7 +54,9 @@ and the vocabulary matching: `RepoVocabulary`, `RepoIndexing`,
 `RepoVocabularyMatcher`, `ClipboardVocabulary`, `DoubleMetaphone`. Also
 `MistralStreamHealth`, `AudioChunkBuffer`, `ClaudeStatuslineCombine`,
 `FirstChunkPreprocessor`, `LaunchWindowPolicy`, `AppWindowOpener`, `POSIXPipeRead`,
-`PipeLineReader`, `OverlayStableLineWrapper`.
+`PipeLineReader`, `OverlayStableLineWrapper`, `PolishContextExcerptSelector`,
+`PolishContextPreparation`, and the clipboard reader's rules
+(`PolishContextClipboardReader`; its pasteboard half stays in the app).
 It builds and tests on Linux (`scripts/core-tests-linux.sh`); the app
 re-exports it.
 
