@@ -79,14 +79,14 @@ extension ClaudeIntegrationSettingsModel {
 
     public func dismissPluginUpdate() {
         switch enrollmentResultsAction {
-        case .updateRemotePlugin?, .updateHost?:
+        case .updateHost?:
             enrollmentStepStatuses = []
             enrollmentResultsAction = nil
         default:
             break
         }
         switch enrollmentConfirmation?.action {
-        case .updateRemotePlugin?, .updateHost?:
+        case .updateHost?:
             enrollmentConfirmation = nil
         default:
             break
@@ -94,26 +94,6 @@ extension ClaudeIntegrationSettingsModel {
         setupRun = nil
         setupManualInstructions = nil
         presentedPluginUpdate = nil
-    }
-
-    /// Ask before running the legacy plugin-only update path.
-    public func requestPluginUpdateRun() {
-        guard let presentation = presentedPluginUpdate,
-              presentation.canRun,
-              !isEnrollmentBusy
-        else { return }
-        enrollmentStepStatuses = []
-        enrollmentResultsAction = nil
-        verificationChecks = []
-        enrollmentConfirmation = EnrollmentConfirmation(
-            action: .updateRemotePlugin(hostID: presentation.hostID),
-            title: presentation.sshConfigSnippet == nil
-                ? "Update the plugin on this SSH host?"
-                : "Update ~/.ssh/config on this Mac and the plugin on this SSH host?",
-            preview: presentation.applicationText,
-            confirmButtonTitle: "Confirm update"
-        )
-        Log.claudeContext.info("Claude remote plugin update confirmation requested")
     }
 
     public func requestHostUpdateRun() {
@@ -135,43 +115,6 @@ extension ClaudeIntegrationSettingsModel {
             confirmButtonTitle: "Update Host"
         )
         Log.claudeContext.info("Claude remote host update confirmation requested")
-    }
-
-    public func requestSSHConfigInsertion() {
-        guard let presentation = presentedPlan, !isEnrollmentBusy, !presentation.isPreview else { return }
-        enrollmentStepStatuses = []
-        // The verdicts described the setup BEFORE this change. Leaving them up
-        // beside a fresh result reads as if they described the state after it
-        // (review finding, round 3).
-        verificationChecks = []
-        enrollmentResultsAction = nil
-        enrollmentConfirmation = EnrollmentConfirmation(
-            action: .insertSSHConfig,
-            title: "Insert this exact block into ~/.ssh/config?",
-            preview: presentation.plan.sshConfigSnippet,
-            confirmButtonTitle: "Confirm insert"
-        )
-        Log.claudeContext.info("Claude remote ssh config confirmation requested")
-    }
-
-    public func requestRemoteSetup() {
-        guard let presentation = presentedPlan,
-              // A placeholder alias must not reach ssh: automation would hand
-              // the new token to whatever answers to a name we invented.
-              presentation.canRunRemoteSetup,
-              !isEnrollmentBusy,
-              !presentation.isPreview
-        else { return }
-        enrollmentStepStatuses = []
-        enrollmentResultsAction = nil
-        verificationChecks = []
-        enrollmentConfirmation = EnrollmentConfirmation(
-            action: .runRemoteSetup,
-            title: "Run these commands on the SSH host?",
-            preview: Self.redactedRemoteCommands(for: presentation),
-            confirmButtonTitle: "Confirm run"
-        )
-        Log.claudeContext.info("Claude remote setup confirmation requested")
     }
 
     public func requestHostSetup() {
@@ -204,14 +147,8 @@ extension ClaudeIntegrationSettingsModel {
     public func confirmEnrollmentAction() async {
         guard let confirmation = enrollmentConfirmation, !isEnrollmentBusy else { return }
         switch confirmation.action {
-        case .insertSSHConfig, .runRemoteSetup:
-            await performPlanAction(confirmation)
-        case .updateRemotePlugin:
-            await performPluginUpdate(confirmation)
         case .setupHost, .updateHost:
             await performSetupRun(confirmation)
-        case .configureHerdrPanel:
-            await performHerdrPanelConfiguration(confirmation)
         case .configureLocalHerdrPanel:
             await performLocalHerdrPanelConfiguration(confirmation)
         }
@@ -253,97 +190,6 @@ extension ClaudeIntegrationSettingsModel {
         return "~/\(relative)"
     }
 
-    func performPlanAction(_ confirmation: EnrollmentConfirmation) async {
-        // Belt and braces: a preview sheet cannot raise a confirmation in the
-        // first place, and if one somehow existed it would run against a host
-        // the registry has never heard of.
-        guard let presentation = presentedPlan, !presentation.isPreview else { return }
-        let service = enrollmentService
-        let work: @Sendable () throws -> [ClaudeRemoteEnrollmentService.ExecutionStep]
-        switch confirmation.action {
-        case .insertSSHConfig:
-            work = {
-                try service.insertSSHConfig(presentation.plan, hostID: presentation.host.id)
-                return []
-            }
-        case .runRemoteSetup:
-            work = {
-                try service.executeRemoteSetup(
-                    presentation.plan,
-                    sshHostAlias: presentation.sshHostAlias,
-                    token: presentation.token
-                )
-            }
-        case .updateRemotePlugin, .setupHost, .updateHost:
-            // Routed to performPluginUpdate: that action belongs to a host row,
-            // has no plan and no token, and must not run against one.
-            return
-        case .configureHerdrPanel, .configureLocalHerdrPanel:
-            return
-        }
-        enrollmentConfirmation = nil
-        isPerformingEnrollmentAction = true
-        enrollmentStepStatuses = []
-        enrollmentResultsAction = nil
-        defer { isPerformingEnrollmentAction = false }
-
-        let attempt = await performEnrollmentAsync(work)
-
-        // The sheet may have been dismissed (window close) and even replaced
-        // while the detached work ran; a late result must not surface under a
-        // different sheet. The whole presentation must match, not just the
-        // host id — rotation REUSES the host id, and an id-only guard let an
-        // old-token outcome render beneath the new token's commands. Rotation
-        // mints a fresh token, so value equality distinguishes generations.
-        guard presentedPlan == presentation else { return }
-
-        publish(attempt, action: confirmation.action)
-    }
-
-    private func performPluginUpdate(_ confirmation: EnrollmentConfirmation) async {
-        guard let presentation = presentedPluginUpdate,
-              let alias = presentation.sshHostAlias
-        else { return }
-        enrollmentConfirmation = nil
-        isPerformingEnrollmentAction = true
-        enrollmentStepStatuses = []
-        enrollmentResultsAction = nil
-        defer { isPerformingEnrollmentAction = false }
-
-        let service = enrollmentService
-        // Copied out of self before the detached hop, like `service`: the
-        // closure is @Sendable and must not capture the main-actor model.
-        let port = remoteForwardPort
-        let hostID = presentation.hostID
-        // Only the block this path's confirmation disclosed, and only when the
-        // file does not already hold it. Unlike the setup run, whose consent
-        // names ~/.ssh/config either way, this one may have promised no local
-        // edit at all, so it never regenerates one.
-        let snippet = presentation.sshConfigSnippet
-            .flatMap { service.sshConfigBlockIsCurrent(snippet: $0, hostID: hostID) == true ? nil : $0 }
-        // ORDER IS THE SAFETY PROPERTY. The local block is rewritten first, and
-        // the remote is touched only if that succeeded. Reverse them and a
-        // refused local write (symlinked config, untrusted ~/.ssh) leaves the
-        // remote posting to a port this Mac does not forward — silently. This
-        // way the worst case is "nothing changed anywhere, with an error on
-        // screen", which is a state a user can act on.
-        let attempt = await performEnrollmentAsync {
-            if let snippet {
-                try service.insertSSHConfig(snippet: snippet, hostID: hostID)
-            }
-            return try service.executeRemotePluginUpdate(
-                sshHostAlias: alias, remoteForwardPort: port
-            )
-        }
-
-        // Same rule as the sheet: the row may have been closed, or another
-        // host's opened, while ssh was still running — one host's outcome must
-        // never render under another host's commands.
-        guard presentedPluginUpdate == presentation else { return }
-
-        publish(attempt, action: confirmation.action)
-    }
-
     /// Turn one finished attempt into the statuses its section renders.
     func publish(_ attempt: ClaudeEnrollmentActionAttempt, action: EnrollmentAction) {
         if let failure = attempt.failure {
@@ -351,7 +197,7 @@ extension ClaudeIntegrationSettingsModel {
             enrollmentResultsAction = action
             alert = DetailAlert(
                 title: Self.failureAlertTitle(for: action),
-                detail: Self.enrollmentFailureDetail(failure, action: action)
+                detail: Self.enrollmentFailureDetail(failure, subject: Self.failureSubject(for: action))
             )
             Log.claudeContext.error(
                 "Claude remote enrollment action failed: \(failure.describedError, privacy: .public)"
@@ -360,30 +206,6 @@ extension ClaudeIntegrationSettingsModel {
         }
 
         switch action {
-        case .insertSSHConfig:
-            enrollmentStepStatuses = [
-                EnrollmentStepStatus(
-                    id: 0, text: "Inserted this host's block into ~/.ssh/config.", succeeded: true, detail: ""
-                )
-            ]
-        case .runRemoteSetup, .updateRemotePlugin:
-            enrollmentStepStatuses = attempt.steps.map {
-                EnrollmentStepStatus(
-                    id: $0.index,
-                    text: "Step \($0.index + 1) succeeded.",
-                    succeeded: true,
-                    detail: $0.message
-                )
-            }
-        case .configureHerdrPanel:
-            enrollmentStepStatuses = [
-                EnrollmentStepStatus(
-                    id: 0,
-                    text: "Configured the remote herdr agents panel.",
-                    succeeded: true,
-                    detail: attempt.steps.first?.message ?? ""
-                )
-            ]
         case .configureLocalHerdrPanel:
             enrollmentStepStatuses = [
                 EnrollmentStepStatus(
@@ -401,11 +223,16 @@ extension ClaudeIntegrationSettingsModel {
 
     static func failureAlertTitle(for action: EnrollmentAction) -> String {
         switch action {
-        case .insertSSHConfig, .runRemoteSetup, .setupHost: return "Remote Claude Code setup"
-        case .updateRemotePlugin: return "Remote Claude Code plugin"
+        case .setupHost: return "Remote Claude Code setup"
         case .updateHost: return "Remote host update"
-        case .configureHerdrPanel: return "Remote herdr panel"
         case .configureLocalHerdrPanel: return "Local herdr panel"
+        }
+    }
+
+    static func failureSubject(for action: EnrollmentAction) -> String {
+        switch action {
+        case .setupHost, .updateHost: return "SSH setup"
+        case .configureLocalHerdrPanel: return "Local herdr panel setup"
         }
     }
 
@@ -413,10 +240,6 @@ extension ClaudeIntegrationSettingsModel {
         _ failure: ClaudeEnrollmentActionFailure,
         action: EnrollmentAction
     ) -> [EnrollmentStepStatus] {
-        guard action != .insertSSHConfig else {
-            return [EnrollmentStepStatus(id: 0, text: "SSH config update failed.", succeeded: false, detail: failure.describedError)]
-        }
-
         let failedStep: Int
         let detail: String
         switch failure.serviceError {
@@ -431,8 +254,6 @@ extension ClaudeIntegrationSettingsModel {
             detail = message
         default:
             var text = "Remote setup failed."
-            if case .updateRemotePlugin = action { text = "Plugin update failed." }
-            if case .configureHerdrPanel = action { text = "Herdr panel setup failed." }
             if case .configureLocalHerdrPanel = action { text = "Local herdr panel setup failed." }
             let detail: String
             if failure.serviceError == .herdrPanelConfigAlreadyCustomized
@@ -456,17 +277,13 @@ extension ClaudeIntegrationSettingsModel {
         ]
     }
 
-    /// The alert body. `action` names the work in the user's terms — an alert
-    /// that says "SSH setup" after they pressed Update Plugin reads as a
-    /// different failure than the one they are looking at.
+    /// The alert body. `subject` names the work in the user's terms — an alert
+    /// that says "SSH setup" after a herdr step failed reads as a different
+    /// failure than the one they are looking at.
     static func enrollmentFailureDetail(
         _ failure: ClaudeEnrollmentActionFailure,
-        action: EnrollmentAction
+        subject: String
     ) -> String {
-        var subject = "SSH setup"
-        if case .updateRemotePlugin = action { subject = "Plugin update" }
-        if case .configureHerdrPanel = action { subject = "Herdr panel setup" }
-        if case .configureLocalHerdrPanel = action { subject = "Local herdr panel setup" }
         switch failure.serviceError {
         case .commandTimedOut(_, _, let seconds, let message):
             let output = message.isEmpty ? "" : "\n\n\(message)"

@@ -62,10 +62,4 @@ extension ClaudeIntegrationSettingsModel {
         )
         Log.claudeContext.info("Claude remote enrollment sheet presented in preview mode")
     }
-
-    public static func redactedRemoteCommands(for presentation: EnrollmentPresentation) -> String {
-        presentation.plan.remoteCommands
-            .map { ClaudeRemoteTokenRedaction.redact($0, token: presentation.token) }
-            .joined(separator: "\n")
-    }
 }
