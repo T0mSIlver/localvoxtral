@@ -60,7 +60,9 @@ set -euo pipefail
 #                  cache, which integration-speechd provisions), and the
 #                  audio: `noise` (default, synthetic) or `speech` (a passage
 #                  from the Mac's system voice, needed for the time-to-first-
-#                  text and word timings to mean anything);
+#                  text and word timings to mean anything), and `vocabulary`
+#                  to run the helper twice on that audio, without and then
+#                  with a 100-term list, timing the term boost (#521);
 #                  requires a prior `package`
 #     polishd-bench
 #                  time the packaged polishing helper on the polish eval
@@ -104,7 +106,8 @@ set -euo pipefail
 #                  of counts and copies the run file back to
 #                  EvalRecordings/term-recall/runs/<label>.jsonl. Options:
 #                  `--asr <name>` (a row of scripts/mac/test-speech-models.tsv,
-#                  default voxtral), `--label <name>` (default <asr>-none),
+#                  default voxtral), `--label <name>` (default <asr>-<bias>, or
+#                  <asr>-helper-<bias> with --helper),
 #                  `--limit N`, `--case <id>` (repeatable),
 #                  `--recordings EvalRecordings/term-recall/<set>` (human WAVs
 #                  in the agent-dictation manifest format), or
@@ -747,8 +750,8 @@ case "$CMD" in
   speechd-bench)
     # The SSH gate does not allow arbitrary packaged-binary execution. A marker-gated
     # root XCTest launches the xcodebuild-produced helper and relays its BENCH output.
-    if [[ $# -gt 6 ]]; then
-      echo "speechd-bench accepts optional seconds, cadence-ms, cache-limit-mb, max-utterance-seconds, model, and audio arguments" >&2
+    if [[ $# -gt 7 ]]; then
+      echo "speechd-bench accepts optional seconds, cadence-ms, cache-limit-mb, max-utterance-seconds, model, audio, and vocabulary arguments" >&2
       exit 1
     fi
     SPEECHD_BENCH_SECONDS="${1:-60}"
@@ -759,6 +762,7 @@ case "$CMD" in
     SPEECHD_BENCH_MAX_UTTERANCE="${4:-$SPEECHD_BENCH_SECONDS}"
     SPEECHD_BENCH_MODEL="${5:-}"
     SPEECHD_BENCH_AUDIO="${6:-noise}"
+    SPEECHD_BENCH_VOCABULARY="${7:-}"
     if [[ ! "$SPEECHD_BENCH_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
       echo "speechd-bench seconds must be a positive integer" >&2
       exit 1
@@ -783,6 +787,10 @@ case "$CMD" in
       echo "speechd-bench audio must be noise or speech" >&2
       exit 1
     fi
+    if [[ -n "$SPEECHD_BENCH_VOCABULARY" && "$SPEECHD_BENCH_VOCABULARY" != vocabulary ]]; then
+      echo "speechd-bench's seventh argument must be vocabulary" >&2
+      exit 1
+    fi
     SPEECHD_BENCH_MARKER="$ROOT_DIR/.speechd-bench-enable.json"
     trap 'cleanup_transient_marker "$SPEECHD_BENCH_MARKER"' EXIT
     # The optional fields are omitted rather than nulled, so the test's decoder
@@ -796,6 +804,9 @@ case "$CMD" in
     fi
     if [[ "$SPEECHD_BENCH_AUDIO" == speech ]]; then
       SPEECHD_BENCH_OPTIONAL+=",\"audio\":\"speech\""
+    fi
+    if [[ "$SPEECHD_BENCH_VOCABULARY" == vocabulary ]]; then
+      SPEECHD_BENCH_OPTIONAL+=",\"vocabulary\":true"
     fi
     printf '{"helperPath":"%s","seconds":%s,"cadenceMilliseconds":%s,"maxUtteranceSeconds":%s%s}\n' \
       "dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd" \
@@ -945,13 +956,16 @@ case "$CMD" in
         fi
         speech_model_row "$TR_ASR" eval-term-recall
         TR_BIAS="${TR_BIAS:-none}"
-        TR_LABEL="${TR_LABEL:-$TR_ASR-$TR_BIAS}"
         if [[ "$TR_HELPER" == 1 ]]; then
+          # Its own default label, so a helper run never overwrites the test
+          # service's baseline of the same arm.
+          TR_LABEL="${TR_LABEL:-$TR_ASR-helper-$TR_BIAS}"
           TR_OPTIONAL+=",\"helperPath\":\"dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd\""
           if [[ -n "$TR_TERM_BOOST" ]]; then
             TR_OPTIONAL+=",\"helperArguments\":[\"--term-boost\",\"$TR_TERM_BOOST\"]"
           fi
         fi
+        TR_LABEL="${TR_LABEL:-$TR_ASR-$TR_BIAS}"
         printf '{"mode":"audio","label":"%s","asr":"%s","endpoint":"%s","asrModel":"%s","bias":"%s"%s}\n' \
           "$TR_LABEL" "$TR_ASR" "ws://127.0.0.1:$SPEECH_MODEL_PORT/v1/realtime" "$SPEECH_MODEL_REPO" \
           "$TR_BIAS" "$TR_OPTIONAL" >"$TR_MARKER"

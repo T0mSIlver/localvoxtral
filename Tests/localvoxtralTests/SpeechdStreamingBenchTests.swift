@@ -25,6 +25,9 @@ final class SpeechdStreamingBenchTests: XCTestCase {
         /// helper's synthetic noise, which decodes to no words and so cannot show
         /// when text appears (#486).
         let audio: String?
+        /// Runs the helper twice on the same audio, without and then with a
+        /// 100-term vocabulary, to time the term boost against a baseline (#521).
+        let vocabulary: Bool?
     }
 
     /// About twenty seconds of plain dictation. The bench loops it to fill the run.
@@ -93,6 +96,48 @@ final class SpeechdStreamingBenchTests: XCTestCase {
             arguments.append(contentsOf: ["--max-utterance-seconds", "\(maxUtteranceSeconds)"])
         }
 
+        guard config.vocabulary == true else {
+            try runHelper(binary: binary, arguments: arguments, config: config, spokenAudio: spokenAudio)
+            return
+        }
+        let vocabularyFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("speechd-bench-vocabulary-\(UUID().uuidString).txt")
+        try Self.benchVocabulary.joined(separator: "\n").write(to: vocabularyFile, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: vocabularyFile) }
+        print("BENCH arm=none")
+        try runHelper(binary: binary, arguments: arguments, config: config, spokenAudio: spokenAudio)
+        print("BENCH arm=vocabulary")
+        try runHelper(
+            binary: binary,
+            arguments: arguments + ["--vocabulary-file", vocabularyFile.path],
+            config: config,
+            spokenAudio: spokenAudio
+        )
+    }
+
+    /// The worst case for the boost's cost: every word of the spoken passage is
+    /// listed, so nearly every emitted piece extends a match, padded to the
+    /// helper's 100-term cap.
+    private static var benchVocabulary: [String] {
+        var seen = Set<String>()
+        var terms = spokenPassage
+            .split(whereSeparator: { !$0.isLetter })
+            .map { $0.lowercased() }
+            .filter { $0.count >= 3 && seen.insert($0).inserted }
+        var index = 0
+        while terms.count < 100 {
+            terms.append("benchterm\(index)")
+            index += 1
+        }
+        return Array(terms.prefix(100))
+    }
+
+    private func runHelper(
+        binary: URL,
+        arguments: [String],
+        config: MarkerConfig,
+        spokenAudio: Bool
+    ) throws {
         let process = Process()
         process.executableURL = binary
         process.arguments = arguments

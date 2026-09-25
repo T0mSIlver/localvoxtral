@@ -45,7 +45,7 @@ let package = Package(
         // incremental `NemotronASRStreamSession`, and the wider checkpoint loader).
         .package(
             url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
-            revision: "3cb528b1bd551e3adddfcb0ec2b58da9f4383910"
+            revision: "06ac8aedfec6b5d072f65323faf2654d9b9d59c8"
         ),
     ],
     targets: [

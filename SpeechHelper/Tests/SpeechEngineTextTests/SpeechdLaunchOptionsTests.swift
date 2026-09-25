@@ -33,6 +33,16 @@ final class SpeechdLaunchOptionsTests: XCTestCase {
         }
     }
 
+    func testBenchVocabularyFileIsABenchmarkOnlyFlag() throws {
+        let options = try SpeechdOptionParser.parse([
+            "--model", "example/model", "--bench", "--seconds", "10", "--vocabulary-file", "/tmp/terms.txt",
+        ])
+        XCTAssertEqual(options.benchmark?.vocabularyPath, "/tmp/terms.txt")
+        XCTAssertThrowsError(
+            try SpeechdOptionParser.parse(["--model", "example/model", "--vocabulary-file", "/tmp/terms.txt"])
+        )
+    }
+
     func testStepCadenceDefaultsToModelNativeCadence() throws {
         let options = try SpeechdOptionParser.parse(["--model", "example/model"])
 
