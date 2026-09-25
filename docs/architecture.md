@@ -56,7 +56,8 @@ and the vocabulary matching: `RepoVocabulary`, `RepoIndexing`,
 `FirstChunkPreprocessor`, `LaunchWindowPolicy`, `AppWindowOpener`, `POSIXPipeRead`,
 `PipeLineReader`, `OverlayStableLineWrapper`, `PolishContextExcerptSelector`,
 `PolishContextPreparation`, and the clipboard reader's rules
-(`PolishContextClipboardReader`; its pasteboard half stays in the app).
+(`PolishContextClipboardReader`; its pasteboard half stays in the app), and the model
+catalogs (`BackendCatalog`, `SpeechModelCatalog`, `PolishModelCatalog`).
 It builds and tests on Linux (`scripts/core-tests-linux.sh`); the app
 re-exports it.
 

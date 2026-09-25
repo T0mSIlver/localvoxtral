@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// `scripts/mac/README.md` is the owner runbook for the on-demand test
 /// services, and it embeds complete launchd plists plus `hf download` commands
@@ -50,7 +50,7 @@ final class MacTestServerRunbookPinTests: XCTestCase {
 
     private func runbook() throws -> String {
         let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent() // localvoxtralTests
+            .deletingLastPathComponent() // localvoxtralCoreTests
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // repo root
         return try String(

@@ -1,13 +1,13 @@
 import Foundation
 
-struct PolishSamplingDefaults: Equatable, Sendable {
-    let temperature: Double?
-    let topP: Double?
-    let topK: Int?
-    let minP: Double?
-    let presencePenalty: Double?
+package struct PolishSamplingDefaults: Equatable, Sendable {
+    package let temperature: Double?
+    package let topP: Double?
+    package let topK: Int?
+    package let minP: Double?
+    package let presencePenalty: Double?
 
-    init(
+    package init(
         temperature: Double? = nil,
         topP: Double? = nil,
         topK: Int? = nil,
@@ -22,8 +22,8 @@ struct PolishSamplingDefaults: Equatable, Sendable {
     }
 }
 
-struct PolishModelOption: Equatable, Sendable {
-    let repoID: String
+package struct PolishModelOption: Equatable, Sendable {
+    package let repoID: String
     /// Exact commit the app downloads and the helper loads. A repo id alone
     /// tracks `main`, and upstream rewrites reach every install the moment
     /// the cache re-resolves: on 2026-07-14 the OptiQ repos registered their
@@ -33,17 +33,17 @@ struct PolishModelOption: Equatable, Sendable {
     /// ("[load_safetensors] Failed to open file …/optiq/optiq_vision.safetensors").
     /// Pin, don't chase: bumping a pin is a reviewed change that reruns the
     /// eval lanes.
-    let revision: String
-    let displayName: String
-    let sizeOnDiskGB: Double
-    let estimatedRAMGB: Double
-    let samplingDefaults: PolishSamplingDefaults?
-    let chatTemplateArguments: [String: Bool]?
-    let summary: String
+    package let revision: String
+    package let displayName: String
+    package let sizeOnDiskGB: Double
+    package let estimatedRAMGB: Double
+    package let samplingDefaults: PolishSamplingDefaults?
+    package let chatTemplateArguments: [String: Bool]?
+    package let summary: String
 }
 
-enum PolishModelCatalog {
-    static let options: [PolishModelOption] = [
+package enum PolishModelCatalog {
+    package static let options: [PolishModelOption] = [
         // sizeOnDiskGB is DECIMAL GB of the files the downloader actually
         // fetches (weights + tokenizer + configs; the include patterns skip
         // optiq_vision/mtp extras), matching the download bar's
@@ -88,28 +88,28 @@ enum PolishModelCatalog {
     /// Owner decision 2026-07-11: the 4B is the default for ALL users (14/14
     /// on the punctuation eval vs the 0.8B's 10/14) — no RAM-based fallback;
     /// the 0.8B stays selectable in the picker for constrained Macs.
-    static let defaultOption: PolishModelOption = {
+    package static let defaultOption: PolishModelOption = {
         guard let option = option(forRepoID: "mlx-community/Qwen3.5-4B-OptiQ-4bit") else {
             preconditionFailure("Default polishing model missing from the catalog.")
         }
         return option
     }()
 
-    static func option(forRepoID repoID: String) -> PolishModelOption? {
+    package static func option(forRepoID repoID: String) -> PolishModelOption? {
         options.first { $0.repoID == repoID }
     }
 }
 
-struct PolishModelPickerEntry: Equatable, Identifiable, Sendable {
-    let repoID: String
-    let label: String
-    let option: PolishModelOption?
+package struct PolishModelPickerEntry: Equatable, Identifiable, Sendable {
+    package let repoID: String
+    package let label: String
+    package let option: PolishModelOption?
 
-    var id: String { repoID }
+    package var id: String { repoID }
 }
 
-enum PolishModelPickerSupport {
-    static func entries(storedRepoID: String) -> [PolishModelPickerEntry] {
+package enum PolishModelPickerSupport {
+    package static func entries(storedRepoID: String) -> [PolishModelPickerEntry] {
         var entries = PolishModelCatalog.options.map {
             PolishModelPickerEntry(repoID: $0.repoID, label: $0.displayName, option: $0)
         }
@@ -125,7 +125,7 @@ enum PolishModelPickerSupport {
         return entries
     }
 
-    static func helpText(
+    package static func helpText(
         for entry: PolishModelPickerEntry,
         isDownloaded: Bool
     ) -> String {

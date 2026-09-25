@@ -4,33 +4,33 @@ import Foundation
 /// The helper infers the same mapping from the repo id it is launched with
 /// (`SpeechASREngineKind`); this is the app-side declaration, used by the picker
 /// and pinned by a test on both sides.
-enum SpeechEngineKind: String, Equatable, Sendable {
+package enum SpeechEngineKind: String, Equatable, Sendable {
     case voxtral
     case nemotron
 }
 
-struct SpeechModelOption: Equatable, Sendable {
-    let repoID: String
+package struct SpeechModelOption: Equatable, Sendable {
+    package let repoID: String
     /// Exact commit downloaded by the app and loaded by speechd. The upstream
     /// loader otherwise resolves `main`, which would let a model-repo edit
     /// change strict weight keys beneath an installed app.
-    let revision: String
-    let displayName: String
-    let engine: SpeechEngineKind
+    package let revision: String
+    package let displayName: String
+    package let engine: SpeechEngineKind
     /// DECIMAL GB of the files the downloader actually fetches, matching the
     /// download bar's ByteCountFormatter units — HF model cards quote GiB,
     /// don't copy them (same trap as `PolishModelOption.sizeOnDiskGB`).
-    let sizeOnDiskGB: Double
+    package let sizeOnDiskGB: Double
     /// One clause for the picker's help line, before the size and download state.
-    let summary: String
+    package let summary: String
     /// Whether the Engines pane shows Memory limit for this model. `--cache-limit-mb`
     /// caps MLX's buffer cache; measure the model with `speechd-bench` before
     /// claiming the limit binds (#486).
-    let showsMemoryLimit: Bool
+    package let showsMemoryLimit: Bool
 }
 
-enum SpeechModelCatalog {
-    static let options: [SpeechModelOption] = [
+package enum SpeechModelCatalog {
+    package static let options: [SpeechModelOption] = [
         // Same mistralai/Voxtral-Mini-4B-Realtime-2602 4-bit conversion as the previous
         // mlx-community pin, plus a 4-bit/g64-quantized tied embedding/LM head — the
         // decode loop's dominant per-token cost (~30 ms -> ~3 ms on M1 Pro). Loading it
@@ -68,7 +68,7 @@ enum SpeechModelCatalog {
         ),
     ]
 
-    static let defaultOption: SpeechModelOption = {
+    package static let defaultOption: SpeechModelOption = {
         guard let option = option(
             forRepoID: "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead"
         ) else {
@@ -77,15 +77,15 @@ enum SpeechModelCatalog {
         return option
     }()
 
-    static func option(forRepoID repoID: String) -> SpeechModelOption? {
+    package static func option(forRepoID repoID: String) -> SpeechModelOption? {
         options.first { $0.repoID == repoID }
     }
 }
 
-enum SpeechModelPickerSupport {
+package enum SpeechModelPickerSupport {
     /// Same shape as the polishing picker's help line: what the model is for,
     /// what it costs on disk, and whether it is already there.
-    static func helpText(for option: SpeechModelOption, isDownloaded: Bool) -> String {
+    package static func helpText(for option: SpeechModelOption, isDownloaded: Bool) -> String {
         let downloadState = isDownloaded ? "downloaded" : "downloads on first use"
         let size = option.sizeOnDiskGB.formatted(.number.precision(.fractionLength(1)))
         return "\(option.summary). \(size) GB, \(downloadState)"
