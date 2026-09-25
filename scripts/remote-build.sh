@@ -6,7 +6,7 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|test-cost-budgets|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|eval-llm|eval-e2e|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
+#   ./scripts/remote-build.sh [build|test|test-cost-budgets|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|eval-llm|eval-e2e|eval-term-recall|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
 #     build        swift build
 #     test         swift build + unit tests (default; skips live-backend suites
 #                  and the cost-budget suite below). With no extra arguments
@@ -89,6 +89,21 @@ set -euo pipefail
 #                  `--replay EvalRecordings/replay/<set>` replays a user's
 #                  stored dictations instead, with and without the learned
 #                  terms (set from scripts/export-dictation-replay.sh)
+#     eval-term-recall
+#                  PRIVATE term-recall eval of the speech engine alone, on
+#                  EvalRecordings/term-recall/cases.json (made by
+#                  scripts/harvest-term-recall-cases.py). Prints a scoreboard
+#                  of counts and copies the run file back to
+#                  EvalRecordings/term-recall/runs/<label>.jsonl. Options:
+#                  `--asr <name>` (a row of scripts/mac/test-speech-models.tsv,
+#                  default voxtral), `--label <name>` (default <asr>-none),
+#                  `--limit N`, `--case <id>` (repeatable),
+#                  `--recordings EvalRecordings/term-recall/<set>` (human WAVs
+#                  in the agent-dictation manifest format), or
+#                  `--hypotheses EvalRecordings/term-recall/<file>.jsonl` to
+#                  score {"id","text"} rows with no speech engine;
+#                  `compare <before> <after>` pairs two runs by label, e.g.
+#                  eval-term-recall --asr nemotron
 #     dogfood     build the instrumented (LOCALVOXTRAL_DOGFOOD) tree and run
 #                  the context-capture suite; the capture is a compile gate, so
 #                  no other lane ever builds it
@@ -251,6 +266,34 @@ require_mistral_api_key_format() {
   if [[ ! "${MISTRAL_API_KEY:-}" =~ ^[A-Za-z0-9._-]+$ ]]; then
     echo "MISTRAL_API_KEY must be a plain token ([A-Za-z0-9._-]); check for stray quotes or whitespace" >&2
     exit 1
+  fi
+}
+
+# The port and pinned repo of a speech test service, from the same list the
+# Mac's services are installed from. Sets SPEECH_MODEL_PORT and
+# SPEECH_MODEL_REPO, or exits naming the verb.
+speech_model_row() {
+  local name="$1" verb="$2"
+  SPEECH_MODEL_PORT=""
+  SPEECH_MODEL_REPO=""
+  if [[ ! "$name" =~ ^[a-z0-9]+$ ]] \
+    || ! read -r SPEECH_MODEL_PORT SPEECH_MODEL_REPO < <(awk -v n="$name" \
+      '$1 == n { print $2, $3; found = 1 } END { exit !found }' \
+      "${LV_TEST_SPEECH_MODELS:-$ROOT_DIR/scripts/mac/test-speech-models.tsv}") \
+    || [[ ! "$SPEECH_MODEL_PORT" =~ ^80[0-7][0-9]$ \
+          || ! "$SPEECH_MODEL_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+    echo "$verb: no speech model '$name' in scripts/mac/test-speech-models.tsv" >&2
+    exit 1
+  fi
+}
+
+# The gate's `ensure` name for a speech test service. Voxtral goes by
+# `speechd`, which a gate older than the speech model list also accepts.
+speech_service_name() {
+  if [[ "$1" == "voxtral" ]]; then
+    echo "speechd"
+  else
+    echo "speechd-$1"
   fi
 }
 
@@ -470,6 +513,7 @@ esac
 # A suite name that must appear in the remote log for the run to count as
 # having proved anything (empty = no such requirement). See test-cost-budgets.
 REQUIRE_SUITE_IN_LOG=""
+TERM_RECALL_RUN_OUT=""
 
 UNIT_TEST_SKIP_NAMES=(RealtimeAPIVLLMIntegrationTests LLMPolishPromptEvalTests
   PolishHelperIntegrationTests SpeechHelperIntegrationTests
@@ -716,6 +760,133 @@ case "$CMD" in
       >"$SPEECHD_BENCH_MARKER"
     REMOTE_CMD=(swift test --build-system native --filter SpeechdStreamingBenchTests)
     ;;
+  eval-term-recall)
+    # The term-recall eval (#315): the speech engine alone, scored on the
+    # owner's technical terms. PRIVATE: the cases come from transcripts and
+    # live under the gitignored EvalRecordings/term-recall/; the scoreboard
+    # prints counts only. A marker-gated XCTest does the work, since the
+    # gate runs nothing else (EvalCorpus/term-recall/README.md).
+    TR_DIR="EvalRecordings/term-recall"
+    TR_ASR="voxtral"
+    TR_ASR_GIVEN=0
+    TR_LABEL=""
+    TR_LIMIT=""
+    TR_CASES=()
+    TR_RECORDINGS=""
+    TR_HYPOTHESES=""
+    TR_COMPARE=()
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --asr|--label|--limit|--case|--recordings|--hypotheses)
+          if [[ $# -lt 2 ]]; then
+            echo "eval-term-recall: $1 needs a value" >&2
+            exit 1
+          fi
+          case "$1" in
+            --asr) TR_ASR="$2"; TR_ASR_GIVEN=1 ;;
+            --label) TR_LABEL="$2" ;;
+            --limit) TR_LIMIT="$2" ;;
+            --case) TR_CASES+=("$2") ;;
+            --recordings) TR_RECORDINGS="$2" ;;
+            --hypotheses) TR_HYPOTHESES="$2" ;;
+          esac
+          shift 2
+          ;;
+        compare)
+          if [[ $# -ne 3 ]]; then
+            echo "eval-term-recall compare takes two run labels: compare <before> <after>" >&2
+            exit 1
+          fi
+          TR_COMPARE=("$2" "$3")
+          shift 3
+          ;;
+        *)
+          echo "eval-term-recall: unknown argument $1" >&2
+          exit 1
+          ;;
+      esac
+    done
+    # Names that land in JSON and paths: no quoting to get wrong.
+    for value in "$TR_LABEL" "${TR_CASES[@]+"${TR_CASES[@]}"}" "${TR_COMPARE[@]+"${TR_COMPARE[@]}"}"; do
+      if [[ -n "$value" && ! "$value" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        echo "eval-term-recall: '$value' must be [A-Za-z0-9._-]" >&2
+        exit 1
+      fi
+    done
+    if [[ -n "$TR_LIMIT" && ! "$TR_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
+      echo "eval-term-recall: --limit must be a positive integer" >&2
+      exit 1
+    fi
+    for private_only in session-map.json terms.json; do
+      if [[ -f "$ROOT_DIR/$TR_DIR/$private_only" ]]; then
+        echo "$TR_DIR/$private_only must never leave the harvest machine; the harvester" >&2
+        echo "now writes it outside the repo. Remove it from this tree before syncing." >&2
+        exit 1
+      fi
+    done
+    # Options that one mode would silently ignore are mistakes: refuse them.
+    if [[ ${#TR_COMPARE[@]} -eq 2 && ( "$TR_ASR_GIVEN" == 1 || -n "$TR_LABEL$TR_LIMIT$TR_RECORDINGS$TR_HYPOTHESES" \
+          || ${#TR_CASES[@]} -gt 0 ) ]]; then
+      echo "eval-term-recall compare takes no other options" >&2
+      exit 1
+    fi
+    if [[ -n "$TR_HYPOTHESES" && ( "$TR_ASR_GIVEN" == 1 || -n "$TR_RECORDINGS" ) ]]; then
+      echo "eval-term-recall: --hypotheses scores text, so --asr and --recordings do not apply" >&2
+      exit 1
+    fi
+    TR_MARKER="$ROOT_DIR/.term-recall-eval-enable.json"
+    trap 'cleanup_transient_marker "$TR_MARKER"' EXIT
+    if [[ ${#TR_COMPARE[@]} -eq 2 ]]; then
+      for label in "${TR_COMPARE[@]}"; do
+        if [[ ! -f "$ROOT_DIR/$TR_DIR/runs/$label.jsonl" ]]; then
+          echo "eval-term-recall: no run $TR_DIR/runs/$label.jsonl in this tree" >&2
+          exit 1
+        fi
+      done
+      printf '{"mode":"compare","before":"%s","after":"%s"}\n' \
+        "$TR_DIR/runs/${TR_COMPARE[0]}.jsonl" "$TR_DIR/runs/${TR_COMPARE[1]}.jsonl" >"$TR_MARKER"
+    else
+      if [[ ! -f "$ROOT_DIR/$TR_DIR/cases.json" ]]; then
+        echo "$TR_DIR/cases.json not found; run scripts/harvest-term-recall-cases.py first" >&2
+        exit 1
+      fi
+      TR_OPTIONAL=""
+      if [[ -n "$TR_LIMIT" ]]; then
+        TR_OPTIONAL+=",\"limit\":$TR_LIMIT"
+      fi
+      if [[ ${#TR_CASES[@]} -gt 0 ]]; then
+        TR_OPTIONAL+=",\"caseIDs\":[$(printf '"%s",' "${TR_CASES[@]}" | sed 's/,$//')]"
+      fi
+      if [[ -n "$TR_HYPOTHESES" ]]; then
+        if [[ ! "$TR_HYPOTHESES" =~ ^$TR_DIR/[A-Za-z0-9._-]+\.jsonl$ || ! -f "$ROOT_DIR/$TR_HYPOTHESES" ]]; then
+          echo "eval-term-recall: --hypotheses must be an existing $TR_DIR/<name>.jsonl" >&2
+          exit 1
+        fi
+        TR_LABEL="${TR_LABEL:-$(basename "$TR_HYPOTHESES" .jsonl)}"
+        printf '{"mode":"hypotheses","label":"%s","hypothesesFile":"%s"%s}\n' \
+          "$TR_LABEL" "$TR_HYPOTHESES" "$TR_OPTIONAL" >"$TR_MARKER"
+      else
+        if [[ -n "$TR_RECORDINGS" ]]; then
+          if [[ ! "$TR_RECORDINGS" =~ ^$TR_DIR/[A-Za-z0-9._-]+$ ]]; then
+            echo "eval-term-recall: --recordings must be $TR_DIR/<set>" >&2
+            exit 1
+          fi
+          TR_OPTIONAL+=",\"recordingDirectory\":\"$TR_RECORDINGS\""
+        fi
+        speech_model_row "$TR_ASR" eval-term-recall
+        TR_LABEL="${TR_LABEL:-$TR_ASR-none}"
+        printf '{"mode":"audio","label":"%s","asr":"%s","endpoint":"%s","asrModel":"%s","bias":"none"%s}\n' \
+          "$TR_LABEL" "$TR_ASR" "ws://127.0.0.1:$SPEECH_MODEL_PORT/v1/realtime" "$SPEECH_MODEL_REPO" \
+          "$TR_OPTIONAL" >"$TR_MARKER"
+        ENSURE_SERVER="$(speech_service_name "$TR_ASR")"
+      fi
+      # The run file comes back through the log: the Mac's copy is under a
+      # work dir that a fresh LV_BUILD_DIR or the gc verb can drop.
+      TERM_RECALL_RUN_OUT="$ROOT_DIR/$TR_DIR/runs/$TR_LABEL.jsonl"
+    fi
+    REMOTE_CMD=(swift test --build-system native --filter TermRecallEvalTests)
+    REQUIRE_SUITE_IN_LOG="TermRecallEvalTests"
+    ;;
   eval-e2e)
     # Agent-dictation end-to-end eval (nightly + manual, never tier 0):
     # human WAVs (when supplied) or TTS -> live speechd ASR -> bundled polishd
@@ -831,15 +1002,9 @@ case "$CMD" in
     E2E_ASR_PORT=""
     E2E_ASR_REPO=""
     if [[ "$E2E_PROVIDER" != "mistral" ]]; then
-      if [[ ! "$E2E_ASR" =~ ^[a-z0-9]+$ ]] \
-        || ! read -r E2E_ASR_PORT E2E_ASR_REPO < <(awk -v n="$E2E_ASR" \
-          '$1 == n { print $2, $3; found = 1 } END { exit !found }' \
-          "${LV_TEST_SPEECH_MODELS:-$ROOT_DIR/scripts/mac/test-speech-models.tsv}") \
-        || [[ ! "$E2E_ASR_PORT" =~ ^80[0-7][0-9]$ \
-              || ! "$E2E_ASR_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
-        echo "eval-e2e: no speech model '$E2E_ASR' in scripts/mac/test-speech-models.tsv" >&2
-        exit 1
-      fi
+      speech_model_row "$E2E_ASR" eval-e2e
+      E2E_ASR_PORT="$SPEECH_MODEL_PORT"
+      E2E_ASR_REPO="$SPEECH_MODEL_REPO"
     fi
     if [[ -n "$E2E_RECORDING_DIR" ]]; then
       # Keep the marker JSON trivially safe and make operator mistakes fail
@@ -860,11 +1025,7 @@ case "$CMD" in
     # Voxtral goes by `speechd`, which a gate older than the speech model list
     # also accepts.
     if [[ "$E2E_PROVIDER" != "mistral" ]]; then
-      if [[ "$E2E_ASR" == "voxtral" ]]; then
-        ENSURE_SERVER="speechd"
-      else
-        ENSURE_SERVER="speechd-$E2E_ASR"
-      fi
+      ENSURE_SERVER="$(speech_service_name "$E2E_ASR")"
     fi
     E2E_MARKER="$ROOT_DIR/.agent-eval-e2e-enable.json"
     # Trap registered before the marker exists, so no kill window leaves a
@@ -993,7 +1154,7 @@ case "$CMD" in
     REMOTE_CMD=("$@")
     ;;
   *)
-    echo "Usage: $0 [build|test|test-cost-budgets|integration|integration-polishd|integration-speechd|integration-herdr|speechd-bench|eval-llm|eval-e2e|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
+    echo "Usage: $0 [build|test|test-cost-budgets|integration|integration-polishd|integration-speechd|integration-herdr|speechd-bench|eval-llm|eval-e2e|eval-term-recall|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
     exit 1
     ;;
 esac
@@ -1072,6 +1233,31 @@ if [[ "$PAYLOAD_STATUS" -eq 0 && -n "$REQUIRE_SUITE_IN_LOG" ]]; then
   if ! grep -q "Test Suite '$REQUIRE_SUITE_IN_LOG'" "$REMOTE_LOG"; then
     echo "$CMD ran no cases of $REQUIRE_SUITE_IN_LOG: the --filter here and the --skip in the test lane must name the suite as it is spelled now" >&2
     PAYLOAD_STATUS=1
+  fi
+fi
+
+# eval-term-recall prints its run file between sentinels; keep a local copy,
+# since the Mac's copy lives in a work dir that can be dropped. A run that
+# failed some cases still printed the ones it scored. Only a block with both
+# sentinels is taken: a payload that died mid-print would leave a partial
+# file that a later compare would read as a complete run.
+if [[ -n "$TERM_RECALL_RUN_OUT" ]]; then
+  mkdir -p "$(dirname "$TERM_RECALL_RUN_OUT")"
+  # swift test prints its "--build-system native is deprecated" warning on
+  # stderr while the run file streams on stdout, sometimes mid-line. It is
+  # the one known intruder; drop it before checking the lines.
+  if perl -0pe "s/warning: '--build-system native' has been deprecated[^\\n]*\\n//g" "$REMOTE_LOG" \
+    | awk '/^=== TERM-RECALL-RUN-END ===$/ { if (inside) closed = 1; inside = 0; next }
+          inside { print }
+          /^=== TERM-RECALL-RUN-BEGIN ===$/ { inside = 1 }
+          END { exit !closed }' >"$TERM_RECALL_RUN_OUT.tmp" \
+    && ! grep -qv '^{.*}$' "$TERM_RECALL_RUN_OUT.tmp"; then
+    mv "$TERM_RECALL_RUN_OUT.tmp" "$TERM_RECALL_RUN_OUT"
+    echo "==> Run file: ${TERM_RECALL_RUN_OUT#"$ROOT_DIR/"}"
+  else
+    rm -f "$TERM_RECALL_RUN_OUT.tmp"
+    echo "==> No complete run file in the log, or a line in it is not JSON (a" >&2
+    echo "    diagnostic written into it); nothing copied back" >&2
   fi
 fi
 
