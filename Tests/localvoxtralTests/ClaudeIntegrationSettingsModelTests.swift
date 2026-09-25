@@ -821,6 +821,34 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         )
     }
 
+    /// Cancel is the user's only exit short of confirming: after it, the
+    /// confirm entry point must be a no-op.
+    func testCancellingTheLocalHerdrPanelConfirmationWritesNothing() async throws {
+        let fileSystem = LocalPanelMemoryFileSystem(
+            state: ClaudeLocalHerdrConfigState(
+                directoryExists: false,
+                configData: nil,
+                configPermissions: nil
+            )
+        )
+        let model = makeModel(
+            registry: nil,
+            listener: nil,
+            enrollmentService: ClaudeRemoteEnrollmentService(localHerdrConfigFileSystem: fileSystem),
+            hasEnabledHerdrMachineReport: { true }
+        )
+        await model.refreshIntegrationsStatuses()
+        model.requestLocalHerdrPanelConfiguration()
+        XCTAssertNotNil(model.enrollmentConfirmation)
+
+        model.cancelEnrollmentActionConfirmation()
+        await model.confirmEnrollmentAction()
+
+        XCTAssertNil(model.enrollmentConfirmation)
+        XCTAssertTrue(fileSystem.writes.isEmpty)
+        XCTAssertNil(model.localHerdrPanelResult)
+    }
+
     func testLocalHerdrPanelRowFollowsTheConfigAtRefresh() async {
         func refreshedModel(_ content: String?) async -> ClaudeIntegrationSettingsModel {
             let fileSystem = LocalPanelMemoryFileSystem(
