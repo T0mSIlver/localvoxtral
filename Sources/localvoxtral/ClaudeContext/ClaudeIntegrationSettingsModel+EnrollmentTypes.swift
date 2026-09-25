@@ -56,27 +56,13 @@ extension ClaudeIntegrationSettingsModel {
         /// by the fix for it.
         public var sshConfigSnippet: String?
         public var canRun: Bool { sshHostAlias != nil }
-
-        /// Exact generated text retained as a test seam. Settings never renders
-        /// or copies it; the user-facing command reference lives in the docs.
-        public var applicationText: String {
-            guard let sshConfigSnippet else { return commands.joined(separator: "\n") }
-            return "# 1. Replace this host's block in ~/.ssh/config on this Mac:\n"
-                + sshConfigSnippet
-                + "\n\n# 2. Then, on the SSH host:\n"
-                + commands.joined(separator: "\n")
-        }
     }
 
     public enum EnrollmentAction: Sendable, Equatable {
-        case insertSSHConfig
-        case runRemoteSetup
         case setupHost
         /// Per-host, because the pane shows one row per host and the outcome
         /// has to render in the row whose button ran it.
-        case updateRemotePlugin(hostID: String)
         case updateHost(hostID: String)
-        case configureHerdrPanel(hostID: String)
         case configureLocalHerdrPanel
     }
 

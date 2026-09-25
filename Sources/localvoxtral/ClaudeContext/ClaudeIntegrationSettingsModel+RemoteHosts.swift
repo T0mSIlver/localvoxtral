@@ -237,7 +237,7 @@ extension ClaudeIntegrationSettingsModel {
                 )
                 manualNotes.append(
                     "This host's block is still in ~/.ssh/config.\n\n"
-                        + Self.enrollmentFailureDetail(failure, action: .insertSSHConfig)
+                        + Self.enrollmentFailureDetail(failure, subject: "SSH setup")
                 )
             }
         }

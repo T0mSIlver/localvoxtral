@@ -65,7 +65,7 @@ extension ClaudeIntegrationSettingsModel {
             failSetup(
                 .sshConfig,
                 reason: "Could not update this Mac's SSH config.",
-                remedy: Self.enrollmentFailureDetail(failure, action: confirmation.action)
+                remedy: Self.enrollmentFailureDetail(failure, subject: "SSH setup")
             )
             return
         }
@@ -122,7 +122,7 @@ extension ClaudeIntegrationSettingsModel {
             failSetup(
                 .remotePlugin,
                 reason: "The remote plugin could not be installed or updated.",
-                remedy: Self.enrollmentFailureDetail(failure, action: confirmation.action)
+                remedy: Self.enrollmentFailureDetail(failure, subject: "SSH setup")
             )
             return
         }
@@ -159,7 +159,7 @@ extension ClaudeIntegrationSettingsModel {
             failSetup(
                 .environmentCrossing,
                 reason: "The terminal environment check could not run.",
-                remedy: Self.enrollmentFailureDetail(failure, action: confirmation.action)
+                remedy: Self.enrollmentFailureDetail(failure, subject: "SSH setup")
             )
             return
         }
@@ -192,7 +192,7 @@ extension ClaudeIntegrationSettingsModel {
             failSetup(
                 .remoteHerdr,
                 reason: "Remote herdr setup failed.",
-                remedy: Self.enrollmentFailureDetail(failure, action: .configureHerdrPanel(hostID: hostID))
+                remedy: Self.enrollmentFailureDetail(failure, subject: "Herdr panel setup")
             )
             return
         }
