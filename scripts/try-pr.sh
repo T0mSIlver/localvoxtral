@@ -114,7 +114,7 @@ watch_run() {
   echo "Watching run $1 (full CI + packaging; minutes when the Mac is free, longer behind a queue)..."
   if ! gh run watch "$1" --exit-status; then
     echo "CI run $1 did not finish green — see: gh run view $1" >&2
-    echo "(A push to main cancels a build of main still waiting for the Mac.)" >&2
+    [[ "$BRANCH" == "main" ]] && echo "(A push to main cancels a build of main still waiting for the Mac.)" >&2
     exit 1
   fi
   # The newest-dispatch heuristic in dispatch_and_wait can pick up someone
