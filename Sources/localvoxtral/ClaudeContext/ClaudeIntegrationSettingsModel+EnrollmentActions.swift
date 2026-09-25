@@ -45,10 +45,6 @@ extension ClaudeIntegrationSettingsModel {
         presentedPluginUpdate = PluginUpdatePresentation(
             hostID: hostID,
             sshHostAlias: alias,
-            commands: ClaudeRemoteEnrollmentService.updateCommands(
-                sshHostAlias: alias ?? Self.unknownAliasPlaceholder,
-                remoteForwardPort: remoteForwardPort
-            ),
             sshConfigSnippet: snippet
         )
     }
@@ -67,8 +63,8 @@ extension ClaudeIntegrationSettingsModel {
         )
     }
 
-    /// Stands in for an alias we were never told. It is not a valid target and
-    /// exists only for deterministic plans used by documentation and tests.
+    /// Stands in for an alias we were never told. It is not a valid target:
+    /// `canRun` and `canRunRemoteSetup` withhold every run that would use it.
     static let unknownAliasPlaceholder = "your-ssh-host"
 
     public func dismissPluginUpdate() {

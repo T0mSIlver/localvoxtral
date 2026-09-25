@@ -128,6 +128,14 @@ extension ClaudeRemoteEnrollmentService {
 
         let before = try installedVersion(command: "list remote plugins", listing: firstListing)
 
+        // Every branch ends in `install … --config 'port=…'`. `--config` is
+        // repeatable and MERGES per key on an installed plugin, and `plugin
+        // update` takes none (both verified on Claude Code 2.1.220), so that
+        // line is how a host enrolled before per-Mac ports (#215) learns this
+        // Mac's port without re-sending a credential. It changes no version:
+        // on an installed plugin `install` exits 0 with "already installed",
+        // which is why a stale plugin needs `marketplace update` then
+        // `plugin update`, in that order.
         let mutation: String
         let outcome: PluginSetupOutcome
         switch before {

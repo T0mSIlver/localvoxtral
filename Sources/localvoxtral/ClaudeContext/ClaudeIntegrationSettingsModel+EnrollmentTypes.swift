@@ -35,14 +35,13 @@ extension ClaudeIntegrationSettingsModel {
         public var isPreview: Bool = false
     }
 
-    /// The generated update plan for one enrolled host.
+    /// The update panel for one enrolled host.
     public struct PluginUpdatePresentation: Identifiable, Equatable, Sendable {
         public var id: String { hostID }
         public var hostID: String
         /// The alias automated execution uses, or nil for a legacy host that
         /// must be re-enrolled before the app can safely address it.
         public var sshHostAlias: String?
-        public var commands: [String]
         /// This host's regenerated ssh-config block, when the local one did
         /// not match it when the panel opened; nil when it did. The run
         /// regenerates a nil one and checks the file again before writing,

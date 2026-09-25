@@ -107,7 +107,6 @@ extension ClaudeIntegrationSettingsModel {
             let plan = try ClaudeRemoteEnrollmentService.plan(
                 host: enrollment.host,
                 sshHostAlias: alias,
-                token: enrollment.token,
                 listenerPort: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port,
                 remoteForwardPort: remoteForwardPort
             )
@@ -148,7 +147,6 @@ extension ClaudeIntegrationSettingsModel {
             let plan = try ClaudeRemoteEnrollmentService.plan(
                 host: enrollment.host,
                 sshHostAlias: alias ?? Self.unknownAliasPlaceholder,
-                token: enrollment.token,
                 listenerPort: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port,
                 remoteForwardPort: remoteForwardPort
             )

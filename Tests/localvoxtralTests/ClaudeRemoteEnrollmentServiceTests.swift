@@ -122,7 +122,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     }
 
     private func plan(alias: String = "builder") throws -> ClaudeRemoteEnrollmentService.SetupPlan {
-        try ClaudeRemoteEnrollmentService.plan(host: host, sshHostAlias: alias, token: token)
+        try ClaudeRemoteEnrollmentService.plan(host: host, sshHostAlias: alias)
     }
 
     private func runShellScript(
@@ -250,7 +250,6 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         try ClaudeRemoteEnrollmentService.plan(
             host: host,
             sshHostAlias: alias,
-            token: token,
             listenerPort: ClaudeRemoteListenerLimits.default.port,
             remoteForwardPort: remoteForwardPort
         )
@@ -272,9 +271,11 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         // Two halves of one setting. A block that forwards 28511 while the
         // plugin still posts to 8473 fails open — the silent state this whole
         // change exists to prevent — so they are emitted together, always.
-        let install = try XCTUnwrap(allocatedPlan().remoteCommands.last)
-        XCTAssertTrue(install.contains("--config '\(ClaudeRemoteEnrollmentService.tokenConfigKey)=\(token)'"))
-        XCTAssertTrue(install.contains("--config '\(ClaudeRemoteEnrollmentService.portConfigKey)=28511'"))
+        let install = try pluginSetupScripts(before: nil, token: token)[1]
+        XCTAssertTrue(install.contains(
+            "--config '\(ClaudeRemoteEnrollmentService.tokenConfigKey)=\(token)'"
+                + " --config '\(ClaudeRemoteEnrollmentService.portConfigKey)=28511'"
+        ))
         // Repeatable `--config` is documented by `claude plugin install --help`
         // and verified on 2.1.220; a comma-joined single flag is NOT the syntax.
         XCTAssertFalse(install.contains("token=\(token),"))
@@ -572,8 +573,8 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         // A host enrolled before #215 has no `port` option at all, so its shim
         // posts to 8473 while this Mac has moved. This line is the only fix
         // that does not re-send a credential.
-        let runnable = try allocatedPlan().updateCommands
-        let migration = try XCTUnwrap(runnable.last)
+        let update = try pluginSetupScripts(before: "1.4.0", token: nil)[1]
+        let migration = try XCTUnwrap(update.components(separatedBy: "\n").last)
         XCTAssertTrue(migration.contains("--config '\(ClaudeRemoteEnrollmentService.portConfigKey)=28511'"))
         XCTAssertFalse(migration.contains(token))
         XCTAssertFalse(migration.contains("\(ClaudeRemoteEnrollmentService.tokenConfigKey)="))
@@ -803,7 +804,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
         let firstSnippet = try plan(alias: "builder").sshConfigSnippet
         let secondSnippet = try ClaudeRemoteEnrollmentService.plan(
-            host: second, sshHostAlias: "other", token: token
+            host: second, sshHostAlias: "other"
         ).sshConfigSnippet
 
         var config = ClaudeRemoteEnrollmentService.applySSHConfigSnippet(
@@ -821,22 +822,32 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertTrue(pruned.contains("Host other"))
     }
 
-    // MARK: Remote commands
+    // MARK: Remote plugin scripts
+
+    /// The three scripts `setupRemotePlugin` can send as its install call, one
+    /// per state the first listing reports: absent (with the enrollment
+    /// token), stale and current (the update run's, without one).
+    private func pluginMutationScripts() throws -> (install: String, update: String, current: String) {
+        (
+            try pluginSetupScripts(before: nil, token: token)[1],
+            try pluginSetupScripts(before: "1.4.0", token: nil)[1],
+            try pluginSetupScripts(before: ClaudeRemoteEnrollmentService.remotePluginVersion, token: nil)[1]
+        )
+    }
 
     func testRemoteSetupGoesThroughTheClaudePluginCLI() throws {
         // Never by hand-editing the remote's ~/.claude/settings.json: that file
         // is the user's, Claude Code owns its schema, and the CLI is the
         // supported interface.
-        let commands = try plan().remoteCommands
-        XCTAssertEqual(commands.count, 2)
+        let scripts = try pluginSetupScripts(before: nil, token: token)
         XCTAssertEqual(
-            commands[0],
-            "claude plugin marketplace add \(ClaudeRemoteEnrollmentService.repositoryMarketplaceReference)"
+            scripts[1],
+            "set -eu\n" + ClaudeRemoteEnrollmentService.claudePathResolverPreamble
+                + "claude plugin marketplace add \(ClaudeRemoteEnrollmentService.repositoryMarketplaceReference)\n"
+                + "claude plugin install localvoxtral-remote@localvoxtral --config 'token=\(token)' --config 'port=28511'"
         )
-        XCTAssertTrue(commands[1].contains("claude plugin install localvoxtral-remote@localvoxtral"))
-        XCTAssertTrue(commands[1].contains("--config 'token=\(token)'"))
-        for command in commands {
-            XCTAssertFalse(command.contains("settings.json"), "never touch the user's Claude config")
+        for script in scripts {
+            XCTAssertFalse(script.contains("settings.json"), "never touch the user's Claude config")
         }
     }
 
@@ -845,18 +856,14 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         // versus a publisher-binary shim and peer credentials. Installing the
         // local one on a remote host would fail open forever and look like a
         // tunnel bug.
-        let commands = try plan().remoteCommands
-        XCTAssertTrue(commands[1].contains(ClaudePluginAssets.remotePluginName))
-        XCTAssertFalse(
-            commands[1].contains(" \(ClaudePluginAssets.pluginName)@"),
-            "must not install the local plugin on a remote host"
-        )
-    }
-
-    func testTheInstallCommandIsSpacePrefixedToDodgeShellHistory() throws {
-        let commands = try plan().remoteCommands
-        XCTAssertTrue(commands[1].hasPrefix(" "), "HISTCONTROL=ignorespace / HIST_IGNORE_SPACE")
-        XCTAssertFalse(commands[0].hasPrefix(" "), "only the one carrying the credential")
+        let scripts = try pluginMutationScripts()
+        for script in [scripts.install, scripts.update, scripts.current] {
+            XCTAssertTrue(script.contains("claude plugin install \(ClaudeRemoteEnrollmentService.remotePluginReference) "))
+            XCTAssertFalse(
+                script.contains(" \(ClaudePluginAssets.pluginName)@"),
+                "must not install the local plugin on a remote host"
+            )
+        }
     }
 
     func testTheMarketplaceReferenceIsTheCurrentRepoOwner() {
@@ -912,9 +919,8 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     /// functional — `applySSHConfigSnippet` and `sshConfigBlockIsCurrent` both
     /// find the block by them.
     func testNothingInThePlanCarriesACommentExceptTheTwoDelimiters() throws {
-        let plan = try allocatedPlan()
-        let commentLines = ([plan.sshConfigSnippet] + plan.remoteCommands + plan.updateCommands)
-            .flatMap { $0.components(separatedBy: "\n") }
+        let commentLines = try allocatedPlan().sshConfigSnippet
+            .components(separatedBy: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { $0.hasPrefix("#") }
         XCTAssertEqual(
@@ -936,80 +942,56 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     /// update` + `plugin update` is the only pair that delivers a plugin fix,
     /// and the order matters: `plugin update` installs whatever the local
     /// marketplace clone currently offers.
-    func testUpdateCommandsRefreshTheMarketplaceThenThePlugin() throws {
-        let commands = try plan().updateCommands
-        let runnable = commands.filter { !$0.hasPrefix("#") }
+    func testAStalePluginIsRefreshedMarketplaceFirstThenThePlugin() throws {
         // Three since per-Mac ports (#215): the third writes only the port, for
         // a host enrolled before the option existed. `plugin update` has no
         // `--config` on 2.1.220, so it cannot be folded into the second.
-        XCTAssertEqual(runnable.count, 3)
-        XCTAssertTrue(
-            runnable[2].contains(
-                "claude plugin install \(ClaudeRemoteEnrollmentService.remotePluginReference) "
-                    + "--config '\(ClaudeRemoteEnrollmentService.portConfigKey)=8473'"
-            ),
-            "the migration line must set the port and nothing else: \(runnable[2])"
-        )
-        XCTAssertTrue(runnable[0].hasPrefix("ssh builder '"))
-        XCTAssertTrue(runnable[1].hasPrefix("ssh builder '"))
-        XCTAssertTrue(
-            runnable[0].contains(
-                "claude plugin marketplace update \(ClaudePluginAssets.marketplaceName)"
-            )
-        )
-        XCTAssertTrue(runnable[1].contains("claude plugin update localvoxtral-remote@localvoxtral"))
-        XCTAssertTrue(
-            runnable[1].contains(ClaudeRemoteEnrollmentService.remotePluginReference),
-            "the reference must come from the shared constants, not a second literal"
-        )
-        XCTAssertFalse(
-            runnable[1].contains(" \(ClaudePluginAssets.pluginName)@"),
-            "the local plugin is not what a remote host runs"
+        XCTAssertEqual(
+            try pluginMutationScripts().update,
+            "set -eu\n" + ClaudeRemoteEnrollmentService.claudePathResolverPreamble
+                + "claude plugin marketplace update \(ClaudePluginAssets.marketplaceName)\n"
+                + "claude plugin update localvoxtral-remote@localvoxtral\n"
+                + "claude plugin install \(ClaudeRemoteEnrollmentService.remotePluginReference) "
+                + "--config '\(ClaudeRemoteEnrollmentService.portConfigKey)=28511'"
         )
     }
 
-    func testUpdateCommandsNeverCarryTheToken() throws {
+    func testTheUpdatePathNeverCarriesTheToken() throws {
         // `plugin update` preserves the stored config, so this path has no
-        // reason to hold the credential — and a command with no token in it
-        // cannot leak one into a log, a screenshot, or shell history.
-        let commands = try plan().updateCommands
-        for command in commands {
-            XCTAssertFalse(command.contains(token))
-            XCTAssertFalse(command.contains(ClaudeRemoteEnrollmentService.tokenConfigKey + "="))
+        // reason to hold the credential — and a script with no token in it
+        // cannot leak one into a log or an error.
+        let scripts = try pluginMutationScripts()
+        for script in [scripts.update, scripts.current] {
+            XCTAssertFalse(script.contains(token))
+            XCTAssertFalse(script.contains(ClaudeRemoteEnrollmentService.tokenConfigKey + "="))
             // Not a blanket ban on `--config` any more: the port migration is a
             // config write, and it is the whole point of this path since #215.
             // Every `--config` on it must be the port one — that is a stricter
             // statement than "no --config", not a looser one.
-            assertEveryConfigArgumentIsThePort(in: command)
+            assertEveryConfigArgumentIsThePort(in: script)
         }
     }
 
-    func testUpdateCommandsSurviveANonInteractiveSSHPath() throws {
-        // Same failure the verify probe hit: `ssh host 'claude …'` skips the
+    func testEveryPluginSetupScriptSurvivesANonInteractiveSSHPath() throws {
+        // Same failure the verify probe hit: `ssh host /bin/sh -s` skips the
         // login rc, so claude is routinely off PATH there.
-        let runnable = try plan().updateCommands.filter { !$0.hasPrefix("#") }
-        for command in runnable {
+        let scripts = try pluginSetupScripts(before: "1.4.0", token: nil)
+            + pluginSetupScripts(before: nil, token: token)
+        for script in scripts {
             XCTAssertTrue(
-                command.contains("PATH=\"$HOME/.claude/local:$HOME/.local/bin"),
-                "an update must not depend on the remote shell's rc-file PATH"
-            )
-            XCTAssertTrue(
-                command.contains(ClaudeRemoteEnrollmentService.nonInteractiveClaudePathPrefix),
-                "the prefix is shared with the verify commands, not re-spelled"
+                script.hasPrefix("set -eu\n" + ClaudeRemoteEnrollmentService.claudePathResolverPreamble),
+                "a setup script must not depend on the remote shell's rc-file PATH"
             )
         }
     }
 
     /// Ported from `testUpdateCommandsSayWhyReinstallingIsNotAnUpdate`.
     ///
-    /// The commands are comment-free now (owner rule), so the explanation a
-    /// person needs before pasting them — that re-running the install is NOT an
-    /// update, and that updating does not cost them their token — has to be
-    /// somewhere they will meet it: the panel's own line, and the docs page.
-    func testWhyReinstallingIsNotAnUpdateIsStatedOutsideTheCommands() throws {
-        let joined = try plan().updateCommands.joined(separator: "\n")
-        XCTAssertFalse(joined.contains("#"), "the commands are the commands")
-
+    /// The app runs the update itself now, so the explanation a person needs
+    /// before running it by hand — that re-running the install is NOT an
+    /// update, and that updating does not cost them their token — lives on
+    /// the docs page.
+    func testWhyReinstallingIsNotAnUpdateIsInTheDocs() throws {
         let documentation = try documentation()
         XCTAssertTrue(documentation.contains("plugin install"))
         XCTAssertTrue(documentation.lowercased().contains("already installed"))
@@ -1085,6 +1067,24 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertTrue(documentation.contains(ClaudeShellRCSetup.snippet(for: .zsh)))
         XCTAssertTrue(documentation.contains(ClaudeShellRCSetup.snippet(for: .fish)))
         XCTAssertTrue(documentation.contains(ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet))
+    }
+
+    /// The list above is literals; this ties the `claude` half of it to what
+    /// `setupRemotePlugin` actually sends, so a changed script cannot leave
+    /// the page describing the old one.
+    func testTheDocsPageListsEveryClaudeCommandThePluginSetupRuns() throws {
+        let documentation = try documentation()
+        let scripts = try pluginSetupScripts(before: "1.4.0", token: nil)
+            + pluginSetupScripts(before: nil, token: token)
+        let commands = Set(
+            scripts.flatMap { $0.components(separatedBy: "\n") }
+                .filter { $0.hasPrefix("claude ") }
+                .map { $0.components(separatedBy: " --config ")[0] }
+        )
+        XCTAssertEqual(commands.count, 5, "list, marketplace add/update, plugin update/install: \(commands)")
+        for command in commands {
+            XCTAssertTrue(documentation.contains(command), "missing command documentation: \(command)")
+        }
     }
 
     // MARK: SSH config writing
@@ -1360,21 +1360,15 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     }
 
     /// MINOR 5 (review round 2): the snippet's token-freedom assertion was lost
-    /// in the port and is restored here, extended to the update commands.
+    /// in the port and is restored here.
     ///
-    /// Both are text that outlives the sheet: `~/.ssh/config` gets copied
-    /// between machines and pasted into issues, and the update commands are
-    /// shown long after the one-time token is gone. Neither may ever carry it.
-    func testNeitherTheSnippetNorTheUpdateCommandsEverCarryTheToken() throws {
-        let plan = try allocatedPlan()
-        XCTAssertFalse(plan.sshConfigSnippet.contains(token))
-        for command in plan.updateCommands {
-            XCTAssertFalse(command.contains(token), command)
-            XCTAssertFalse(command.contains("\(ClaudeRemoteEnrollmentService.tokenConfigKey)="))
-        }
-        // The install command is the ONE place it belongs, so a test that
-        // passed because the token was mistyped would be worthless.
-        XCTAssertTrue(plan.remoteCommands.joined().contains(token))
+    /// `~/.ssh/config` gets copied between machines and pasted into issues, so
+    /// the block may never carry the token. The update path's scripts are
+    /// pinned token-free in `testTheUpdatePathNeverCarriesTheToken`, and the
+    /// install script's token in
+    /// `testTheInstallCommandCarriesBothTheTokenAndTheMatchingPort`.
+    func testTheSnippetNeverCarriesTheToken() throws {
+        XCTAssertFalse(try allocatedPlan().sshConfigSnippet.contains(token))
     }
 
     /// An error is the most-copied string in the app: alerts, the log, bug
@@ -2516,6 +2510,20 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             }
             return install
         }
+    }
+
+    /// The scripts one `setupRemotePlugin` run sends, in order: listing,
+    /// install call, read-back. `before` is the version the first listing
+    /// reports; the read-back reports the shipped one.
+    private func pluginSetupScripts(before: String?, token: String?) throws -> [String] {
+        let calls = PluginSetupCalls()
+        let service = ClaudeRemoteEnrollmentService(
+            runner: pluginSetupRunner(
+                before: before, after: ClaudeRemoteEnrollmentService.remotePluginVersion, calls: calls
+            )
+        )
+        _ = try service.setupRemotePlugin(sshHostAlias: "builder", token: token, remoteForwardPort: 28_511)
+        return calls.scripts
     }
 
     func testPluginSetupDecodesTheListingAndReportsAnAlreadyCurrentPlugin() throws {

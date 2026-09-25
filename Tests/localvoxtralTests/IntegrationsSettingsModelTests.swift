@@ -13,8 +13,6 @@ final class IntegrationsSettingsModelTests: XCTestCase {
     func testSetupSheetsRenderConsentButNoGeneratedCode() throws {
         let source = try SettingsSourceText.load()
         for forbidden in [
-            "plan.remoteCommands",
-            "plan.updateCommands",
             "plan.sshConfigSnippet",
             "herdrPanelConfigSnippet",
         ] {
