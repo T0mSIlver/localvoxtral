@@ -149,6 +149,8 @@ expect true "the clipboard vocabulary in the core target runs the lane" \
   Sources/localvoxtralCore/ClipboardVocabulary.swift
 expect true "the phonetic keys in the core target run the lane" \
   Sources/localvoxtralCore/DoubleMetaphone.swift
+expect true "the prompt loader and renderer in the core target run the lane" \
+  Sources/localvoxtralCore/AppConfigStore.swift
 expect true "the control-character sanitizer in the core target runs the lane" \
   Sources/localvoxtralCore/StringExtensions.swift
 expect false "the statusline combine script, moved to the core target, stays exempt" \

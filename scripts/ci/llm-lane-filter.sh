@@ -38,6 +38,7 @@ MARKER='[run-llm-eval]'
 PATTERNS=(
   'PolishHelper/*'                                   # helper engine, server, its own package
   'Sources/localvoxtral/Resources/Config/llm_*.toml' # bundled polish prompts
+  'Sources/localvoxtralCore/AppConfigStore.swift'    # loads, validates and renders those prompts
   '*PolishModelCatalog*'                             # model pins / catalog
   '*HFModelDownloader*'                              # which revision/files of the weights we fetch
   '*LLMPolishing*'                                   # polish client: request shape, sampling, kwargs
