@@ -2,6 +2,8 @@ import Foundation
 
 #if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
 #endif
 
 /// Filesystem and peer-credential preconditions for the broker's socket.
@@ -72,7 +74,7 @@ public enum ClaudeSocketGuard {
         return nil
     }
 
-    #if canImport(Darwin)
+    #if canImport(Darwin) || canImport(Glibc)
     public static func metadata(ofPath path: String) -> PathMetadata? {
         var info = stat()
         guard lstat(path, &info) == 0 else { return nil }
@@ -121,20 +123,24 @@ public enum ClaudeSocketGuard {
 
     /// Verify the connected peer runs as us.
     ///
-    /// `getpeereid` reads credentials the KERNEL attached at connect time — the
-    /// peer cannot forge them, unlike anything it might send us in a message.
-    /// Called before the first `read`, so an unauthorized peer never gets to
-    /// speak.
+    /// `getpeereid` (Linux: `SO_PEERCRED`) reads credentials the KERNEL
+    /// attached at connect time — the peer cannot forge them, unlike anything
+    /// it might send us in a message. Called before the first `read`, so an
+    /// unauthorized peer never gets to speak.
     public static func peerUID(ofDescriptor fd: Int32) -> UInt32? {
+        #if canImport(Darwin)
         var uid = uid_t()
         var gid = gid_t()
         guard getpeereid(fd, &uid, &gid) == 0 else { return nil }
         return UInt32(uid)
+        #else
+        return peerCredentials(ofDescriptor: fd).map { UInt32($0.uid) }
+        #endif
     }
 
     /// The pid of the process on the other end of a connected AF_UNIX socket,
     /// as the kernel recorded it at connect time (`LOCAL_PEERPID`,
-    /// `<sys/un.h>`). Same trust class as `peerUID`: transport evidence a
+    /// `<sys/un.h>`; Linux: `SO_PEERCRED`). Same trust class as `peerUID`: transport evidence a
     /// sender cannot forge.
     ///
     /// This exists for the opencode records' pid cross-check: that plugin runs
@@ -144,6 +150,7 @@ public enum ClaudeSocketGuard {
     /// its peer pid is never the Claude pid. That asymmetry is why this check
     /// is applied per agent, not universally.
     public static func peerPID(ofDescriptor fd: Int32) -> pid_t? {
+        #if canImport(Darwin)
         // Spelled numerically: the Darwin overlay does not export these two
         // <sys/un.h> constants. SOL_LOCAL is 0; LOCAL_PEERPID is 0x002.
         let solLocal: Int32 = 0
@@ -154,6 +161,27 @@ public enum ClaudeSocketGuard {
             return nil
         }
         return pid
+        #else
+        // A pid of 0 means the peer is in another pid namespace: no answer,
+        // as on Darwin.
+        guard let pid = peerCredentials(ofDescriptor: fd)?.pid, pid > 0 else { return nil }
+        return pid
+        #endif
     }
+
+    #if !canImport(Darwin)
+    /// `SO_PEERCRED`: the peer's pid and uid as the kernel recorded them when
+    /// the connection was made. Glibc keeps `struct ucred` behind
+    /// `_GNU_SOURCE`, so it is read as three 32-bit words (pid, uid, gid): a
+    /// homogeneous tuple has C array layout.
+    private static func peerCredentials(ofDescriptor fd: Int32) -> (pid: pid_t, uid: uid_t)? {
+        var words: (UInt32, UInt32, UInt32) = (0, 0, 0)
+        var length = socklen_t(MemoryLayout.size(ofValue: words))
+        guard getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &words, &length) == 0,
+              length == socklen_t(MemoryLayout.size(ofValue: words))
+        else { return nil }
+        return (pid_t(bitPattern: words.0), uid_t(words.1))
+    }
+    #endif
     #endif
 }

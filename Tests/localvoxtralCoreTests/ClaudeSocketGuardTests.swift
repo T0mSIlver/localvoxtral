@@ -1,9 +1,13 @@
 import Foundation
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
+#if canImport(Darwin) || canImport(Glibc)
 #if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 
 // MARK: - Socket directory preconditions
 
@@ -186,6 +190,40 @@ final class ClaudeSocketGuardFilesystemTests: XCTestCase {
 
     func testMetadataOfMissingPathIsNil() {
         XCTAssertNil(ClaudeSocketGuard.metadata(ofPath: root.appendingPathComponent("nope").path))
+    }
+}
+
+// MARK: - Peer credentials
+
+final class ClaudeSocketGuardPeerTests: XCTestCase {
+    /// Both ends of a socketpair belong to this process, so the kernel's
+    /// answer for the peer is our own uid and pid.
+    func testPeerOfAConnectedSocketIsThisProcess() throws {
+        var descriptors: [Int32] = [-1, -1]
+        #if canImport(Darwin)
+        let streamType = SOCK_STREAM
+        #else
+        let streamType = Int32(SOCK_STREAM.rawValue)
+        #endif
+        XCTAssertEqual(socketpair(AF_UNIX, streamType, 0, &descriptors), 0)
+        defer { descriptors.forEach { close($0) } }
+
+        XCTAssertEqual(ClaudeSocketGuard.peerUID(ofDescriptor: descriptors[0]), UInt32(geteuid()))
+        XCTAssertEqual(ClaudeSocketGuard.peerPID(ofDescriptor: descriptors[0]), getpid())
+    }
+
+    func testDescriptorThatIsNotASocketHasNoPeer() throws {
+        var descriptors: [Int32] = [-1, -1]
+        XCTAssertEqual(pipe(&descriptors), 0)
+        defer { descriptors.forEach { close($0) } }
+
+        XCTAssertNil(ClaudeSocketGuard.peerUID(ofDescriptor: descriptors[0]))
+        XCTAssertNil(ClaudeSocketGuard.peerPID(ofDescriptor: descriptors[0]))
+    }
+
+    func testClosedDescriptorHasNoPeer() {
+        XCTAssertNil(ClaudeSocketGuard.peerUID(ofDescriptor: -1))
+        XCTAssertNil(ClaudeSocketGuard.peerPID(ofDescriptor: -1))
     }
 }
 

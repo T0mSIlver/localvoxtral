@@ -80,6 +80,8 @@ expect true "the browser allowlist, split from the tab url reader, runs the lane
   Sources/localvoxtral/BrowserTabAllowlist.swift
 expect true "the git runner, split from repo vocabulary, runs the lane" \
   Sources/localvoxtral/RepoGitRunner.swift
+expect true "the socket guard, moved to the core target, runs the lane" \
+  Sources/localvoxtralCore/ClaudeSocketGuard.swift
 
 # --- Marker opt-in ----------------------------------------------------------
 
