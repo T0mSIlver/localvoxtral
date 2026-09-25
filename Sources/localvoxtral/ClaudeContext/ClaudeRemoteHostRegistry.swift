@@ -811,19 +811,6 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         }
     }
 
-    /// Drop this host's extra credentials for `purpose`. The tokens stop
-    /// working the instant this returns.
-    public func removeCredential(hostID: String, purpose: ClaudeRemoteCredentialPurpose) throws {
-        try transact { hosts in
-            guard let index = hosts.firstIndex(where: { $0.id == hostID }) else {
-                throw StoreError.unknownHost(hostID)
-            }
-            let remaining = (hosts[index].extraCredentials ?? []).filter { $0.purpose != purpose }
-            hosts[index].extraCredentials = remaining.isEmpty ? nil : remaining
-            hosts[index].vibeHooksVersionReport = nil
-        }
-    }
-
     /// Issue a credential for a new host.
     ///
     /// - Returns: the host and its plaintext token. This is the only time the

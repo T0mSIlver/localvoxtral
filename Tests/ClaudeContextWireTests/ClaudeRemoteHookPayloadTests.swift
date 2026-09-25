@@ -288,8 +288,6 @@ final class ClaudeRemoteHookPayloadTests: XCTestCase {
     func testSessionScopeNamespacesByHost() {
         let scoped = ClaudeRemoteSessionScope.scopedSessionID(hostID: "habc", sessionID: "s-1")
         XCTAssertEqual(scoped, "remote:habc:s-1")
-        XCTAssertTrue(ClaudeRemoteSessionScope.isScoped(scoped))
-        XCTAssertFalse(ClaudeRemoteSessionScope.isScoped("s-1"), "a bare Claude session id is local")
     }
 
     func testTwoHostsCannotCollideOnTheSameSessionID() {

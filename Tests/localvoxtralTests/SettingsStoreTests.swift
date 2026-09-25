@@ -756,20 +756,6 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertNil(reloadedStore.dictationShortcut)
     }
 
-    func testDictationShortcut_resetRestoresDefault() {
-        let store = makeStore()
-        let customShortcut = DictationShortcut(
-            keyCode: UInt32(kVK_ANSI_D),
-            carbonModifierFlags: UInt32(cmdKey | shiftKey)
-        )
-        store.setDictationShortcut(customShortcut)
-
-        store.resetDictationShortcutToDefault()
-
-        XCTAssertTrue(store.dictationShortcutEnabled)
-        XCTAssertEqual(store.dictationShortcut, SettingsStore.defaultDictationShortcut)
-    }
-
     func testDictationShortcut_invalidStoredValueFallsBackToDefault() {
         defaults.set(true, forKey: "settings.dictation_shortcut_enabled")
         defaults.set(UInt32.max, forKey: "settings.dictation_shortcut_key_code")

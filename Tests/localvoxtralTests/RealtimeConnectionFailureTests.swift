@@ -226,18 +226,6 @@ final class RealtimeConnectionFailureTests: XCTestCase {
         XCTAssertNotNil(description.technicalDetails)
     }
 
-    func testDescribeNetworkLostMatchesStatusTokenString() {
-        let description = RealtimeConnectionFailureClassifier.describe(
-            kind: .networkLost,
-            endpointDescription: endpoint,
-            rawError: nil
-        )
-        // Must equal StatusStrings.networkLostDictationStopped so the menu-bar /
-        // popover status token mapping still recognizes it.
-        XCTAssertEqual(description.status, "Dictation stopped after the network disconnected.")
-        XCTAssertTrue(description.message.contains(endpoint))
-    }
-
     func testDescribeUnknownNamesEndpoint() {
         let description = RealtimeConnectionFailureClassifier.describe(
             kind: .unknown,
@@ -341,6 +329,7 @@ final class RealtimeConnectionFailureTests: XCTestCase {
             rawError: nil
         )
         XCTAssertEqual(description.status, DictationViewModel.StatusStrings.networkLostDictationStopped)
+        XCTAssertTrue(description.message.contains(endpoint))
     }
 
     // MARK: - Missing credentials

@@ -17,8 +17,6 @@ final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendab
         var startCount = 0
         var stopCount = 0
         var isCapturing = false
-        var lastPreferredDeviceID: String?
-        var lastPreferredInputChannel = 0
         var onConfigurationChange: (@Sendable () -> Void)?
         var onInputDevicesChanged: (@Sendable () -> Void)?
         var onError: (@Sendable (String) -> Void)?
@@ -38,8 +36,6 @@ final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendab
 
     var startCount: Int { state.withLock { $0.startCount } }
     var stopCount: Int { state.withLock { $0.stopCount } }
-    var lastPreferredDeviceID: String? { state.withLock { $0.lastPreferredDeviceID } }
-    var lastPreferredInputChannel: Int { state.withLock { $0.lastPreferredInputChannel } }
     var pendingAccessRequestCount: Int { state.withLock { $0.pendingAccessCompletions.count } }
 
     func configureDevices(_ devices: [MicrophoneInputDevice], defaultInputDeviceID: String?) {
@@ -145,8 +141,6 @@ final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendab
             state.startCount += 1
             state.isCapturing = true
             state.chunkHandler = chunkHandler
-            state.lastPreferredDeviceID = preferredDeviceID
-            state.lastPreferredInputChannel = preferredInputChannel
             let waiters = state.startWaiters
             state.startWaiters = []
             return waiters

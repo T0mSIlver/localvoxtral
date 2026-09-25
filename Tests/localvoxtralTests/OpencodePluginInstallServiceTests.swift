@@ -25,6 +25,15 @@ final class OpencodePluginInstallServiceTests: XCTestCase {
         return (service, fs)
     }
 
+    /// The consent sheet names the files it edits, never the commands it runs.
+    func testConsentSentenceNamesTheTwoFilesItEdits() {
+        XCTAssertEqual(
+            OpencodePluginInstallService.consentSentence,
+            "localvoxtral will edit ~/.config/opencode/plugins/localvoxtral.js and "
+                + "~/.config/opencode/tui.json on this Mac."
+        )
+    }
+
     // MARK: - Status derivation
 
     func testAbsentFileIsNotInstalled() {

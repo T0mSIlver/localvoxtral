@@ -1531,7 +1531,6 @@ there is not.
   a Vibe installed later gets its hooks: the run is offered again after a
   relaunch. Removing a host contacts nothing, so the hook files stay there
   with a token that no longer authenticates, as the plugin does.
-  `removeRemoteVibeHooks` still exists and nothing in the app calls it.
   Host setup (`setUpRemoteVibeHooks`) follows the enrollment rules — BatchMode
   ssh, script on stdin, token in no argv on this Mac, fixed error strings — with
   one difference worth knowing: it EDITS A USER FILE on the host,

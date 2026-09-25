@@ -32,7 +32,6 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     var dismissAfterHoldCallCount: Int { dismissHoldVisibilities.count }
     var lastDismissAfterHoldMinimumVisibility: TimeInterval? { dismissHoldVisibilities.last }
     var resetCallCount = 0
-    var captureLiveCommitTargetAppPIDCallCount = 0
     var markPolishedCalls: [Bool] = []
 
     func resolveAnchorNow() -> OverlayAnchor {
@@ -79,9 +78,7 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
         resetCallCount += 1
     }
 
-    func captureLiveCommitTargetAppPID() {
-        captureLiveCommitTargetAppPIDCallCount += 1
-    }
+    func captureLiveCommitTargetAppPID() {}
 
     func markPolished(_ polished: Bool) {
         markPolishedCalls.append(polished)
