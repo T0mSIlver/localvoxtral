@@ -1,5 +1,5 @@
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 final class VerificationPromptSectionTests: XCTestCase {
     private let header = RepoVocabularyMatcher.verificationCandidatesHeader
