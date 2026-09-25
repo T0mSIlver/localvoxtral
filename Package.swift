@@ -70,6 +70,12 @@ var targets: [Target] = [
         name: "ClaudeHookPublisherCoreTests",
         dependencies: ["ClaudeHookPublisherCore", "ClaudeContextWire"]
     ),
+    // The wire contract's own tests: what the hook publisher sends and the
+    // app's broker and remote listener accept.
+    .testTarget(
+        name: "ClaudeContextWireTests",
+        dependencies: ["ClaudeContextWire"]
+    ),
     .testTarget(
         name: "localvoxtralCoreTests",
         dependencies: ["localvoxtralCore"]
