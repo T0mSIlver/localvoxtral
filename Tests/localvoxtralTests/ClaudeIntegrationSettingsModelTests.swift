@@ -8,76 +8,6 @@ import XCTest
 import Darwin
 #endif
 
-/// Records what the pane asked for, and fails on demand. No `claude` process is
-/// ever spawned — which is the point: the build host HAS Claude Code installed,
-/// so "reports when the CLI is missing" is untestable against the real thing.
-private final class StubPluginService: ClaudePluginInstalling {
-    private let calls = Mutex<[String]>([])
-    // Typed, not `any Error`: an existential is not Sendable, and this stub has
-    // to cross into the model's @Sendable action closure.
-    private let failure = Mutex<ClaudePluginInstallService.ServiceError?>(nil)
-
-    init(failWith error: ClaudePluginInstallService.ServiceError? = nil) {
-        failure.withLock { $0 = error }
-    }
-
-    var recordedCalls: [String] { calls.withLock { $0 } }
-
-    private func record(_ name: String) throws {
-        calls.withLock { $0.append(name) }
-        if let error = failure.withLock({ $0 }) { throw error }
-    }
-
-    func installPlugin() throws { try record("install") }
-    func updatePlugin() throws { try record("update") }
-    func updateInstalledPlugin() throws { try record("updateInstalled") }
-    func uninstallPlugin() throws { try record("uninstall") }
-}
-
-/// A listener that binds nothing.
-///
-/// Unit tests must not open 8473: it would conflict with the developer's own
-/// running app and with any other test in the same process. This stub is what
-/// makes "the port follows enrollment" assertable at all.
-@MainActor
-private final class StubListener: ClaudeRemoteListenerControlling {
-    private let hosts: ClaudeRemoteHostRegistry
-    var isListening = false
-    var boundPort: UInt16 = 8473
-    var reconcileCount = 0
-    /// Thrown on the next reconcile that would bind.
-    var bindError: (any Error)?
-    /// What the real listener would have counted. Set by a test to stand in for
-    /// a night of rejected connections.
-    var rejectionSnapshot = ClaudeRemoteRejectionTally.Snapshot()
-
-    /// Shared with the forward stubs so a test can assert the ORDER of the two
-    /// shutdowns, not just that both happened.
-    var journal: ShutdownJournal?
-
-    init(hosts: ClaudeRemoteHostRegistry) {
-        self.hosts = hosts
-    }
-
-    func reconcile() throws {
-        reconcileCount += 1
-        if isListening, !hosts.hasActiveHosts { journal?.note("listener.stop") }
-        if hosts.hasActiveHosts {
-            guard !isListening else { return }
-            if let bindError { throw bindError }
-            isListening = true
-        } else {
-            isListening = false
-        }
-    }
-}
-
-private final class MemoryStore: ClaudeRemoteHostStoreIO {
-    private let contents = Mutex<[String: Data]>([:])
-    func read(from url: URL) throws -> Data? { contents.withLock { $0[url.path] } }
-    func write(_ data: Data, to url: URL) throws { contents.withLock { $0[url.path] = data } }
-}
-
 /// A config the test can write into, so the read-only forward-state scan has
 /// something to read. Writes are accepted and ignored — no test here asserts
 /// them, and `RecordingSSHConfigFileSystem` is the one that counts.
@@ -262,35 +192,12 @@ private final class SetupFlowRecorder: @unchecked Sendable {
     var all: [ClaudeRemoteEnrollmentService.Invocation] { invocations.withLock { $0 } }
 }
 
-private final class LocalPanelMemoryFileSystem: ClaudeLocalHerdrConfigFileSystem, @unchecked Sendable {
-    var state: ClaudeLocalHerdrConfigState
-    var writes: [(data: Data, permissions: UInt16, expectedConfigPresent: Bool)] = []
-
-    init(state: ClaudeLocalHerdrConfigState) {
-        self.state = state
-    }
-
-    func readState() throws -> ClaudeLocalHerdrConfigState {
-        state
-    }
-
-    func createConfigDirectory(permissions: UInt16) throws {
-        state.directoryExists = true
-    }
-
-    func atomicWriteConfig(_ data: Data, permissions: UInt16, expectedConfigPresent: Bool) throws {
-        writes.append((data, permissions, expectedConfigPresent))
-        state.configData = data
-        state.configPermissions = permissions
-    }
-}
-
 @MainActor
 final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     private func makeRegistry() throws -> ClaudeRemoteHostRegistry {
         try ClaudeRemoteHostRegistry(
             fileURL: URL(fileURLWithPath: "/tmp/lvx-settings-test/hosts.json"),
-            io: MemoryStore(),
+            io: MemoryClaudeRemoteHostStore(),
             now: { Date(timeIntervalSince1970: 1_000_000) }
         )
     }
@@ -298,7 +205,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     private func makeModel(
         registry: ClaudeRemoteHostRegistry?,
         listener: (any ClaudeRemoteListenerControlling)?,
-        plugin: StubPluginService = StubPluginService(),
+        plugin: StubClaudePluginService = StubClaudePluginService(),
         enrollmentService: ClaudeRemoteEnrollmentService = ClaudeRemoteEnrollmentService(),
         // Frozen by default (AGENTS: no wall-clock in tests). The registry's
         // own clock is pinned to the same instant, so a host that just reported
@@ -435,7 +342,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let forwards = makeForwardCoordinator(registry: registry, stubs: stubs)
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             remoteForwardPort: 28542,
             forwards: forwards
         )
@@ -467,7 +374,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let forwards = makeForwardCoordinator(registry: registry, stubs: stubs)
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             remoteForwardPort: 28542,
             forwards: forwards
         )
@@ -510,7 +417,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let journal = ShutdownJournal()
         let stubs = ForwardStubs()
         stubs.journal = journal
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         listener.journal = journal
         let forwards = makeForwardCoordinator(registry: registry, stubs: stubs)
         let model = makeModel(
@@ -543,7 +450,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let enrollment = try registry.enroll(label: "buildhost")
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             remoteForwardPort: 28542,
             forwards: forwards
         )
@@ -557,7 +464,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
     func testNoTunnelIsOfferedWhenTheAppHasNoForwardCoordinator() async throws {
         let registry = try makeRegistry()
-        let model = makeModel(registry: registry, listener: StubListener(hosts: registry))
+        let model = makeModel(registry: registry, listener: StubClaudeRemoteListener(hosts: registry))
         _ = try registry.enroll(label: "buildhost", sshHostAlias: "builder")
         model.refreshHosts()
         XCTAssertFalse(try XCTUnwrap(model.hosts.first).canHoldForward)
@@ -566,7 +473,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     // MARK: Local plugin
 
     func testInstallOrUpdateRunsTheUpdatePathAndReportsShortSuccess() async {
-        let plugin = StubPluginService()
+        let plugin = StubClaudePluginService()
         let model = makeModel(registry: nil, listener: nil, plugin: plugin)
         await model.updatePlugin()
         XCTAssertEqual(plugin.recordedCalls, ["update"])
@@ -575,7 +482,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     }
 
     func testAMissingCLIIsAShortLineInThePaneAndLongDetailInTheAlert() async {
-        let plugin = StubPluginService(failWith: .claudeCLINotFound)
+        let plugin = StubClaudePluginService(failWith: .claudeCLINotFound)
         let model = makeModel(registry: nil, listener: nil, plugin: plugin)
         await model.installPlugin()
 
@@ -589,7 +496,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
     func testAFailedCommandNeverPutsTheCLIOutputInThePane() async {
         let noise = String(repeating: "stack trace line\n", count: 200)
-        let plugin = StubPluginService(failWith: .commandFailed(action: .install, exitCode: 2, message: noise))
+        let plugin = StubClaudePluginService(failWith: .commandFailed(action: .install, exitCode: 2, message: noise))
         let model = makeModel(registry: nil, listener: nil, plugin: plugin)
         await model.installPlugin()
 
@@ -602,7 +509,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
     func testTheFirstEnrollmentBindsTheListenerWithoutARelaunch() async throws {
         let registry = try makeRegistry()
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         let model = makeModel(registry: registry, listener: listener)
         XCTAssertFalse(listener.isListening)
         XCTAssertEqual(model.listenerStatus, .idle)
@@ -622,7 +529,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     func testLaunchSyncPreservesFailureStatusWithoutQueueingALateModal() throws {
         let registry = try makeRegistry()
         _ = try registry.enroll(label: "builder")
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         #if canImport(Darwin)
         listener.bindError = ClaudeRemoteContextListener.StartFailure.bindFailed(errno: EADDRINUSE)
         #else
@@ -647,7 +554,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
     func testRevokingTheLastHostStopsListening() async throws {
         let registry = try makeRegistry()
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         let model = makeModel(registry: registry, listener: listener)
         model.enrollLabel = "buildhost"
         model.enrollSSHAlias = "builder"
@@ -665,7 +572,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
     func testRevokingOneOfTwoHostsKeepsListening() async throws {
         let registry = try makeRegistry()
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         let model = makeModel(registry: registry, listener: listener)
         for alias in ["builder", "otherbox"] {
             model.enrollLabel = alias
@@ -682,7 +589,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
     func testRemovingTheLastHostStopsListening() async throws {
         let registry = try makeRegistry()
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         let model = makeModel(registry: registry, listener: listener)
         model.enrollLabel = "buildhost"
         model.enrollSSHAlias = "builder"
@@ -696,7 +603,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
     func testRotatingARevokedHostRebindsTheListener() async throws {
         let registry = try makeRegistry()
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         let model = makeModel(registry: registry, listener: listener)
         model.enrollLabel = "buildhost"
         model.enrollSSHAlias = "builder"
@@ -716,7 +623,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
     func testEnrollmentShowsTheTokenExactlyOnceAndThenForgetsIt() async throws {
         let registry = try makeRegistry()
-        let model = makeModel(registry: registry, listener: StubListener(hosts: registry))
+        let model = makeModel(registry: registry, listener: StubClaudeRemoteListener(hosts: registry))
         model.enrollLabel = "buildhost"
         model.enrollSSHAlias = "builder"
         await model.enroll()
@@ -738,7 +645,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
     func testTheFormIsClearedAfterEnrollingSoTheNextHostStartsBlank() async throws {
         let registry = try makeRegistry()
-        let model = makeModel(registry: registry, listener: StubListener(hosts: registry))
+        let model = makeModel(registry: registry, listener: StubClaudeRemoteListener(hosts: registry))
         model.enrollLabel = "buildhost"
         model.enrollSSHAlias = "builder"
         await model.enroll()
@@ -748,7 +655,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
     func testRotationPresentsTheNewTokenAndSaysItIsARotation() async throws {
         let registry = try makeRegistry()
-        let model = makeModel(registry: registry, listener: StubListener(hosts: registry))
+        let model = makeModel(registry: registry, listener: StubClaudeRemoteListener(hosts: registry))
         model.enrollLabel = "buildhost"
         model.enrollSSHAlias = "builder"
         await model.enroll()
@@ -767,7 +674,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     // MARK: - Local federated herdr panel offer
 
     func testLocalHerdrPanelOfferConfiguresTheRowAndReportsReload() async throws {
-        let fileSystem = LocalPanelMemoryFileSystem(
+        let fileSystem = StubLocalHerdrConfigFileSystem(
             state: ClaudeLocalHerdrConfigState(
                 directoryExists: false,
                 configData: nil,
@@ -815,7 +722,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     /// Cancel is the user's only exit short of confirming: after it, the
     /// confirm entry point must be a no-op.
     func testCancellingTheLocalHerdrPanelConfirmationWritesNothing() async throws {
-        let fileSystem = LocalPanelMemoryFileSystem(
+        let fileSystem = StubLocalHerdrConfigFileSystem(
             state: ClaudeLocalHerdrConfigState(
                 directoryExists: false,
                 configData: nil,
@@ -842,7 +749,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
     func testLocalHerdrPanelRowFollowsTheConfigAtRefresh() async {
         func refreshedModel(_ content: String?) async -> ClaudeIntegrationSettingsModel {
-            let fileSystem = LocalPanelMemoryFileSystem(
+            let fileSystem = StubLocalHerdrConfigFileSystem(
                 state: ClaudeLocalHerdrConfigState(
                     directoryExists: true,
                     configData: content.map { Data($0.utf8) },
@@ -876,7 +783,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             registry: nil,
             listener: nil,
             enrollmentService: ClaudeRemoteEnrollmentService(
-                localHerdrConfigFileSystem: LocalPanelMemoryFileSystem(
+                localHerdrConfigFileSystem: StubLocalHerdrConfigFileSystem(
                     state: ClaudeLocalHerdrConfigState(
                         directoryExists: true, configData: nil, configPermissions: nil,
                         configIsSymlink: true
@@ -894,7 +801,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             registry: nil,
             listener: nil,
             enrollmentService: ClaudeRemoteEnrollmentService(
-                localHerdrConfigFileSystem: LocalPanelMemoryFileSystem(
+                localHerdrConfigFileSystem: StubLocalHerdrConfigFileSystem(
                     state: ClaudeLocalHerdrConfigState(
                         directoryExists: true, configData: Data([0xFF, 0xFE, 0x00]),
                         configPermissions: 0o644
@@ -911,7 +818,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     /// The success line belongs to the row it wrote. Once the config no
     /// longer holds it, the sentence follows the config, not the old result.
     func testLocalHerdrPanelResultGivesWayWhenTheRowIsGone() async throws {
-        let fileSystem = LocalPanelMemoryFileSystem(
+        let fileSystem = StubLocalHerdrConfigFileSystem(
             state: ClaudeLocalHerdrConfigState(
                 directoryExists: true, configData: nil, configPermissions: nil
             )
@@ -939,7 +846,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
     func testLocalHerdrPanelOfferRefusesACustomizedConfig() async throws {
         let original = "[ui.sidebar.agents]\nrows = [[\"state_icon\"]]\n"
-        let fileSystem = LocalPanelMemoryFileSystem(
+        let fileSystem = StubLocalHerdrConfigFileSystem(
             state: ClaudeLocalHerdrConfigState(
                 directoryExists: true,
                 configData: Data(original.utf8),
@@ -988,7 +895,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
     func testLocalHerdrPanelOfferRechecksTheEnabledMachineAtPerformTime() async throws {
         let enabled = EnabledMachineBox()
-        let fileSystem = LocalPanelMemoryFileSystem(
+        let fileSystem = StubLocalHerdrConfigFileSystem(
             state: ClaudeLocalHerdrConfigState(
                 directoryExists: false,
                 configData: nil,
@@ -1025,7 +932,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         })
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             enrollmentService: service
         )
         model.enrollLabel = "first"
@@ -1058,7 +965,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         )
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             enrollmentService: service
         )
         model.enrollLabel = "buildhost"
@@ -1084,7 +991,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     ) async -> ClaudeIntegrationSettingsModel {
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             enrollmentService: service,
             remoteForwardPort: remoteForwardPort
         )
@@ -1229,7 +1136,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         )
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             enrollmentService: service,
             remoteForwardPort: 28542
         )
@@ -1293,7 +1200,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         )
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             enrollmentService: service,
             remoteForwardPort: 28542
         )
@@ -1358,7 +1265,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         )
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             enrollmentService: service,
             remoteForwardPort: 28542
         )
@@ -1407,7 +1314,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         )
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             enrollmentService: service,
             remoteForwardPort: 28542
         )
@@ -1461,7 +1368,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let enrollment = try registry.enroll(label: "buildhost")
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             enrollmentService: service
         )
 
@@ -1495,7 +1402,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let enrollment = try registry.enroll(label: "buildhost")
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             enrollmentService: service
         )
 
@@ -1549,7 +1456,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
     func testAnInvalidAliasIsReportedAndEnrollsNothing() async throws {
         let registry = try makeRegistry()
-        let model = makeModel(registry: registry, listener: StubListener(hosts: registry))
+        let model = makeModel(registry: registry, listener: StubClaudeRemoteListener(hosts: registry))
         model.enrollLabel = "buildhost"
         model.enrollSSHAlias = "bad alias"
         await model.enroll()
@@ -1561,7 +1468,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
     func testAPortConflictIsAShortActionableStatusPlusADetailedAlert() async throws {
         let registry = try makeRegistry()
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         listener.bindError = ClaudeRemoteContextListener.StartFailure.bindFailed(errno: EADDRINUSE)
         let model = makeModel(registry: registry, listener: listener)
         model.enrollLabel = "buildhost"
@@ -1580,7 +1487,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
     func testRetryAfterAPortConflictBindsOnceTheConflictClears() async throws {
         let registry = try makeRegistry()
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         listener.bindError = ClaudeRemoteContextListener.StartFailure.bindFailed(errno: EADDRINUSE)
         let model = makeModel(registry: registry, listener: listener)
         model.enrollLabel = "buildhost"
@@ -1641,7 +1548,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let registry = try makeRegistry()
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             // 10 minutes after the registry's frozen clock.
             now: { Date(timeIntervalSince1970: 1_000_600) }
         )
@@ -1693,7 +1600,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
     func testRefreshDerivesPluginNeedsUpdateFromTheRegistrysReports() async throws {
         let registry = try makeRegistry()
-        let model = makeModel(registry: registry, listener: StubListener(hosts: registry))
+        let model = makeModel(registry: registry, listener: StubClaudeRemoteListener(hosts: registry))
         model.enrollLabel = "buildhost"
         model.enrollSSHAlias = "builder"
         await model.enroll()
@@ -1722,7 +1629,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     /// saying "Revoked" rather than hijack the status position.
     func testARevokedHostNeverShowsThePluginUpdateHint() async throws {
         let registry = try makeRegistry()
-        let model = makeModel(registry: registry, listener: StubListener(hosts: registry))
+        let model = makeModel(registry: registry, listener: StubClaudeRemoteListener(hosts: registry))
         model.enrollLabel = "buildhost"
         model.enrollSSHAlias = "builder"
         await model.enroll()
@@ -1750,7 +1657,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             runner: setupFlowRunner(script: SetupFlowScript(), recorder: SetupFlowRecorder()),
             sshConfigFileSystem: sshFS
         )
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         listener.isListening = true
         let model = setupFlowModel(registry: registry, listener: listener, service: service)
         model.enrollLabel = "buildhost"
@@ -1791,7 +1698,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             runner: setupFlowRunner(script: script, recorder: recorder),
             sshConfigFileSystem: sshFS
         )
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         listener.isListening = true
         let rcFS = StubRCFileSystem(state: ClaudeShellRCState())
         let model = setupFlowModel(
@@ -1860,7 +1767,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             runner: setupFlowRunner(script: script, recorder: recorder),
             sshConfigFileSystem: sshFS
         )
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         listener.isListening = true
         let model = setupFlowModel(registry: registry, listener: listener, service: service)
         model.enrollLabel = "buildhost"
@@ -1898,7 +1805,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     /// rejected and said nothing anywhere the user would look.
     func testRejectedConnectionsSurfaceAsOneShortInlineMessage() throws {
         let registry = try makeRegistry()
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         let model = makeModel(registry: registry, listener: listener)
         XCTAssertNil(model.rejectionHint, "nothing rejected, nothing to say")
 
@@ -1950,7 +1857,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     /// phantom into the pane, where the user cannot even go read the detail.
     func testAnUnauthenticatedProbeRaisesNoHintAtAll() throws {
         let registry = try makeRegistry()
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         let model = makeModel(registry: registry, listener: listener)
 
         listener.rejectionSnapshot = ClaudeRemoteRejectionTally.Snapshot(absentAuthorization: 9)
@@ -2011,7 +1918,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     ) async -> ClaudeIntegrationSettingsModel {
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             enrollmentService: service,
             remoteForwardPort: remoteForwardPort
         )
@@ -2043,7 +1950,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     /// Review finding, round 1: the 401 verdict needs a fact only this Mac has.
     func testA401WithNoLocalListenerIsReportedAsASquatterNotAPass() async throws {
         let registry = try makeRegistry()
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         listener.bindError = ClaudeRemoteContextListener.StartFailure.bindFailed(errno: EADDRINUSE)
         let model = makeModel(
             registry: registry,
@@ -2141,8 +2048,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let (gate, releaseGate) = AsyncStream.makeStream(of: Void.self)
         let model = ClaudeIntegrationSettingsModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
-            pluginService: { StubPluginService() },
+            listener: StubClaudeRemoteListener(hosts: registry),
+            pluginService: { StubClaudePluginService() },
             enrollmentService: healthyVerificationService(),
             performAsync: { _ in nil },
             performEnrollmentAsync: { _ in ClaudeEnrollmentActionAttempt(steps: [], failure: nil) },
@@ -2187,8 +2094,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let (gate, releaseGate) = AsyncStream.makeStream(of: Void.self)
         let model = ClaudeIntegrationSettingsModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
-            pluginService: { StubPluginService() },
+            listener: StubClaudeRemoteListener(hosts: registry),
+            pluginService: { StubClaudePluginService() },
             enrollmentService: healthyVerificationService(),
             performAsync: { _ in nil },
             performEnrollmentAsync: { _ in ClaudeEnrollmentActionAttempt(steps: [], failure: nil) },
@@ -2261,11 +2168,11 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     func testAListenerThatDiesDuringTheProbesCannotLeaveAStalePass() async throws {
         let registry = try makeRegistry()
         let (gate, releaseGate) = AsyncStream.makeStream(of: Void.self)
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         let model = ClaudeIntegrationSettingsModel(
             registry: registry,
             listener: listener,
-            pluginService: { StubPluginService() },
+            pluginService: { StubClaudePluginService() },
             enrollmentService: healthyVerificationService(),
             performAsync: { _ in nil },
             performEnrollmentAsync: { _ in ClaudeEnrollmentActionAttempt(steps: [], failure: nil) },
@@ -2323,7 +2230,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         })
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             enrollmentService: service
         )
         // A host from before aliases were persisted.
@@ -2351,7 +2258,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let filesystem = StubSSHConfigFileSystem()
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             enrollmentService: ClaudeRemoteEnrollmentService(
                 runner: { invocation in
                     log.record(invocation)
@@ -2395,7 +2302,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let filesystem = StubSSHConfigFileSystem()
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             enrollmentService: ClaudeRemoteEnrollmentService(
                 runner: { invocation in
                     log.record(invocation)
@@ -2427,7 +2334,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let log = InvocationLog()
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             enrollmentService: ClaudeRemoteEnrollmentService(
                 runner: { invocation in
                     log.record(invocation)
@@ -2482,7 +2389,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         )
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             enrollmentService: service
         )
 
@@ -2511,7 +2418,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
     func testThePreviewNeverReplacesARealSheet() async throws {
         let registry = try makeRegistry()
-        let model = makeModel(registry: registry, listener: StubListener(hosts: registry))
+        let model = makeModel(registry: registry, listener: StubClaudeRemoteListener(hosts: registry))
         model.enrollLabel = "buildhost"
         model.enrollSSHAlias = "builder"
         await model.enroll()
@@ -2574,7 +2481,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         return ClaudeIntegrationSettingsModel(
             registry: nil,
             listener: nil,
-            pluginService: { StubPluginService() },
+            pluginService: { StubClaudePluginService() },
             performAsync: { body in
                 do {
                     try body()
@@ -2806,7 +2713,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     @MainActor
     private func setupFlowModel(
         registry: ClaudeRemoteHostRegistry,
-        listener: StubListener,
+        listener: StubClaudeRemoteListener,
         service: ClaudeRemoteEnrollmentService,
         shell: ClaudeShellKind? = .zsh,
         rcFileSystem: StubRCFileSystem? = nil,
@@ -2848,7 +2755,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             runner: setupFlowRunner(script: script, recorder: recorder, vibeHost: vibeHost),
             sshConfigFileSystem: sshFS
         )
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         // Bound, or the final 401 reads as a squatter and the run cannot pass.
         listener.isListening = true
         let model = setupFlowModel(
@@ -3179,7 +3086,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             runner: setupFlowRunner(script: SetupFlowScript(), recorder: recorder),
             sshConfigFileSystem: sshFS
         )
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         listener.isListening = true
         let model = setupFlowModel(
             registry: registry,
@@ -3323,7 +3230,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             runner: setupFlowRunner(script: script, recorder: recorder),
             sshConfigFileSystem: sshFS
         )
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         listener.isListening = true
         let model = setupFlowModel(registry: registry, listener: listener, service: service)
         model.enrollLabel = "buildhost"
@@ -3362,7 +3269,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             runner: setupFlowRunner(script: script, recorder: recorder),
             sshConfigFileSystem: sshFS
         )
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         listener.isListening = true
         let model = setupFlowModel(registry: registry, listener: listener, service: service)
         model.enrollLabel = "buildhost"
@@ -3414,7 +3321,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             permissions: 0o644
         ))
         let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: sshFS)
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         let model = setupFlowModel(
             registry: registry, listener: listener, service: service, rcFileSystem: rcFS
         )
@@ -3450,7 +3357,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         // held hostage by it — the registry entry is the off switch.
         sshFS.setSymlinked(true)
         let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: sshFS)
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         let model = setupFlowModel(
             registry: registry, listener: listener, service: service, rcFileSystem: nil
         )
@@ -3479,7 +3386,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             fileExists: true, data: Data("export EDITOR=vim\n".utf8), permissions: 0o644
         ))
         let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: sshFS)
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         let model = setupFlowModel(
             registry: registry, listener: listener, service: service, rcFileSystem: rcFS
         )

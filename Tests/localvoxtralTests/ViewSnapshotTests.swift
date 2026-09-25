@@ -20,28 +20,50 @@ final class ViewSnapshotTests: XCTestCase {
 
     // MARK: - Settings
 
-    func testSettingsPanes() throws {
+    func testSettingsPanes() async throws {
         let panes: [SettingsTab] =
             SettingsTab.historySidebarItems
             + SettingsTab.primarySidebarItems
-            + SettingsTab.integrationsSidebarItems
             + [SettingsTab.terminal(TerminalAppCatalog.builtIn[0])]
         for pane in panes {
-            let (settings, viewModel) = makeViewModel()
-            let navigator = SettingsNavigator()
-            navigator.selectedTab = pane
-            let view = SettingsView(
-                settings: settings,
-                viewModel: viewModel,
-                backendManager: BackendManager(),
-                navigator: navigator,
-                loginItem: LoginItemController(registrar: FakeLoginItemRegistrar(state: .disabled))
-            )
-            .environment(\.shortcutRecorderStandIn, true)
-            try record(
-                view, name: "settings-\(pane.rawValue)",
-                width: Self.settingsSize.width, height: Self.settingsSize.height, growToFit: true)
+            try await recordSettings(pane: pane, name: "settings-\(pane.rawValue)", setUp: false)
         }
+    }
+
+    /// Each harness pane twice: before anything is set up, and with the
+    /// plugin, hooks, status line and herdr panel installed and one host
+    /// enrolled. The model reads all of it through the doubles below.
+    func testIntegrationPanes() async throws {
+        for pane in SettingsTab.integrationsSidebarItems {
+            for setUp in [false, true] {
+                try await recordSettings(
+                    pane: pane,
+                    name: "settings-\(pane.rawValue)-\(setUp ? "set-up" : "not-set-up")",
+                    setUp: setUp)
+            }
+        }
+    }
+
+    private func recordSettings(pane: SettingsTab, name: String, setUp: Bool) async throws {
+        let (settings, viewModel) = makeViewModel()
+        let claude = try makeClaudeIntegrationModel(setUp: setUp)
+        // What the pane's onAppear starts, finished before the render so the
+        // first frame is not "Checking…".
+        await claude.refreshIntegrationsStatuses()
+        viewModel.claudeIntegrationSettings = claude
+        let navigator = SettingsNavigator()
+        navigator.selectedTab = pane
+        let view = SettingsView(
+            settings: settings,
+            viewModel: viewModel,
+            backendManager: BackendManager(),
+            navigator: navigator,
+            loginItem: LoginItemController(registrar: FakeLoginItemRegistrar(state: .disabled))
+        )
+        .environment(\.shortcutRecorderStandIn, true)
+        try record(
+            view, name: name,
+            width: Self.settingsSize.width, height: Self.settingsSize.height, growToFit: true)
     }
 
     // MARK: - Status popover
@@ -144,6 +166,94 @@ final class ViewSnapshotTests: XCTestCase {
         viewModel.appConfigStore = MockAppConfigStore()
         retainForTestProcessLifetime(viewModel)
         return (settings, viewModel)
+    }
+
+    /// The Claude Code integrations' model over in-memory doubles: no home
+    /// directory, keychain, process or port. `setUp` picks every probe's
+    /// answer at once.
+    private func makeClaudeIntegrationModel(setUp: Bool) throws -> ClaudeIntegrationSettingsModel {
+        let frozen = Date(timeIntervalSince1970: 1_790_000_000)
+        let registry = try ClaudeRemoteHostRegistry(
+            fileURL: URL(fileURLWithPath: "/nonexistent/lvx-snapshot/hosts.json"),
+            io: MemoryClaudeRemoteHostStore(),
+            now: { frozen }
+        )
+        if setUp {
+            _ = try registry.enroll(label: "build-host", sshHostAlias: "build-host")
+        }
+
+        let pluginVersion = "1.3.0"
+        let pluginList =
+            setUp
+            ? "[{\"id\":\"localvoxtral@localvoxtral\",\"version\":\"\(pluginVersion)\",\"scope\":\"user\",\"enabled\":true}]"
+            : "[]"
+
+        let statuslineHook = "/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook --statusline"
+        let statuslineState =
+            setUp
+            ? ClaudeStatuslineState(
+                fileExists: true,
+                data: ClaudeStatuslineInstallService.updatedSettingsData(
+                    existing: nil, hookCommand: statuslineHook))
+            : ClaudeStatuslineState(fileExists: false)
+        let statusline = ClaudeStatuslineInstallService(
+            fileSystem: StubStatuslineFileSystem(state: statuslineState),
+            isExecutableFile: { _ in true })
+
+        let opencodePlugin = Data("// localvoxtral opencode plugin\n".utf8)
+        let opencodeState =
+            setUp
+            ? OpencodePluginState(
+                pluginFileExists: true, pluginData: opencodePlugin, tuiFileExists: true,
+                tuiData: try JSONSerialization.data(
+                    withJSONObject: ["plugin": [OpencodePluginInstallService.tuiPluginEntry]]))
+            : OpencodePluginState()
+        let opencode = OpencodePluginInstallService(
+            bundledPluginData: { opencodePlugin },
+            fileSystem: StubOpencodeFileSystem(state: opencodeState))
+
+        let vibeShim = Data("#!/bin/sh\n".utf8)
+        let vibeBlock = """
+            # >>> localvoxtral >>>
+            [[hooks]]
+            name = "localvoxtral-turn"
+            type = "post_agent"
+            command = "sh \\"$HOME/.vibe/localvoxtral/publish.sh\\""
+            # <<< localvoxtral <<<
+
+            """
+        let vibeState =
+            setUp
+            ? VibeHooksState(
+                shimFileExists: true, shimData: vibeShim, shimPermissions: 0o700,
+                hooksFileExists: true, hooksData: Data(vibeBlock.utf8), hooksPermissions: 0o644)
+            : VibeHooksState()
+        let vibe = VibeHooksInstallService(
+            bundledShimData: { vibeShim }, bundledHooksBlock: { vibeBlock },
+            fileSystem: StubVibeHooksFileSystem(state: vibeState))
+
+        let herdrConfig = StubLocalHerdrConfigFileSystem(
+            state: ClaudeLocalHerdrConfigState(
+                directoryExists: setUp,
+                configData: setUp ? Data(ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet.utf8) : nil,
+                configPermissions: setUp ? 0o644 : nil))
+
+        return ClaudeIntegrationSettingsModel(
+            registry: registry,
+            listener: StubClaudeRemoteListener(hosts: registry),
+            pluginService: { StubClaudePluginService() },
+            enrollmentService: ClaudeRemoteEnrollmentService(
+                localHerdrConfigFileSystem: herdrConfig, now: { frozen }),
+            now: { frozen },
+            fetchPluginListOutput: { pluginList },
+            bundledPluginVersion: pluginVersion,
+            statuslineService: { statusline },
+            statuslineHookCommand: { statuslineHook },
+            opencodeService: { opencode },
+            vibeService: { vibe },
+            herdrBinaryAvailable: { setUp },
+            herdrPresenceReport: { setUp }
+        )
     }
 
     private func record<V: View>(
