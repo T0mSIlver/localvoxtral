@@ -50,8 +50,10 @@ dogfood capture suite (`LOCALVOXTRAL_DOGFOOD=1 swift test --filter Dogfood`),
 the only build of the capture in CI. It needs the app target, so macOS, and it
 runs cold with no build cache.
 
-The jobs run in parallel and share no artifact; the two Mac jobs each compute the
-docs-only fast-path decision themselves rather than serialising behind a `needs:`.
+The jobs run in parallel and share no artifact; `build-test` and `mac-lanes`
+each compute the docs-only fast-path decision themselves rather than
+serialising behind a `needs:`. `dogfood` has no fast path and builds on every
+event.
 
 **Any step that launches the app on the self-hosted Mac must set
 `LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN: "1"`** (the launch smoke's
