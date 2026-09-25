@@ -3,17 +3,17 @@ import Foundation
 /// Best-effort removal of the retired app-managed voxmlx installation. Every
 /// candidate is constructed beneath the app-owned backend root; shared Hugging
 /// Face model snapshots live elsewhere and are deliberately untouched.
-struct LegacyVoxmlxCleanup {
+package struct LegacyVoxmlxCleanup {
     private let layout: BackendInstallLayout
     private let fileManager: FileManager
 
-    init(layout: BackendInstallLayout = BackendInstallLayout(), fileManager: FileManager = .default) {
+    package init(layout: BackendInstallLayout = BackendInstallLayout(), fileManager: FileManager = .default) {
         self.layout = layout
         self.fileManager = fileManager
     }
 
     @discardableResult
-    func run() -> [URL] {
+    package func run() -> [URL] {
         var removed: [URL] = []
 
         removeIfPresent(
