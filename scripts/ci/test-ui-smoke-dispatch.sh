@@ -45,7 +45,7 @@ filter_expect true "a session controller extension" "Sources/localvoxtral/Dictat
 filter_expect true "the stop-commit" Sources/localvoxtral/StopCommitCoordinator.swift
 filter_expect true "a realtime client" Sources/localvoxtral/MistralRealtimeWebSocketClient.swift
 filter_expect true "the reconnect schedule" Sources/localvoxtral/RealtimeReconnectPolicy.swift
-filter_expect true "the live correction" Sources/localvoxtral/LiveReplacementCorrector.swift
+filter_expect true "the live correction" Sources/localvoxtralCore/LiveReplacementCorrector.swift
 filter_expect true "transcript merging in core" Sources/localvoxtralCore/TextMergingAlgorithms.swift
 filter_expect true "text insertion" Sources/localvoxtral/TextInsertionService.swift
 filter_expect true "the overlay commit" Sources/localvoxtral/OverlayBufferSessionCoordinator.swift

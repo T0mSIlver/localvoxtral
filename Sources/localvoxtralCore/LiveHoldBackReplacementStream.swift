@@ -56,7 +56,7 @@ import Foundation
 /// character to a terminal, which the TUI-autocomplete trailing-space policy
 /// relies on (`TUIAutocompleteTrailingSpace`). Collapse runs at the very
 /// start of the session produce no leading space.
-struct LiveHoldBackReplacementStream {
+package struct LiveHoldBackReplacementStream {
     /// How much text `safeReleaseLimit()` may release mid-session, chosen
     /// once per rule set (see the type doc's caveats, most conservative
     /// first): deletion rules hold everything until flush; chaining potential
@@ -96,7 +96,7 @@ struct LiveHoldBackReplacementStream {
     private var pendingPlainWhitespace = ""
     private var pendingRunNeedsCollapse = false
 
-    init(dictionary: ReplacementDictionary, sanitizesNewlines: Bool) {
+    package init(dictionary: ReplacementDictionary, sanitizesNewlines: Bool) {
         let corrector = LiveReplacementCorrector(dictionary: dictionary)
         self.corrector = corrector
         self.sanitizesNewlines = sanitizesNewlines
@@ -118,14 +118,14 @@ struct LiveHoldBackReplacementStream {
         }
     }
 
-    var ruleCount: Int {
+    package var ruleCount: Int {
         corrector.ruleCount
     }
 
     /// Ingests the next stabilized transcript chunk and returns the text that
     /// is now safe to type, with dictionary replacements already applied (and
     /// newlines sanitized when the policy is on).
-    mutating func ingest(_ text: String) -> String {
+    package mutating func ingest(_ text: String) -> String {
         guard !text.isEmpty else { return "" }
         corrector.recordInsertedText(text)
         applyCompletedBoundaryCorrections()
@@ -135,7 +135,7 @@ struct LiveHoldBackReplacementStream {
     /// Session stop: applies a final unbounded-word match (mirroring
     /// `completedBoundaryCorrectedText(_:dictionary:includeFinalUnboundedWord:)`)
     /// and releases everything still held.
-    mutating func flushRemainder() -> String {
+    package mutating func flushRemainder() -> String {
         applyCompletedBoundaryCorrections()
         if let correction = corrector.finalUnboundedCorrection() {
             applyIfInsideHoldBack(correction)

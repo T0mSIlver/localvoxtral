@@ -61,7 +61,8 @@ catalogs (`BackendCatalog`, `SpeechModelCatalog`, `PolishModelCatalog`), and the
 Claude session snapshot and its reducer (`ClaudeSessionState`), and the
 config store (`AppConfigStore`, `BundledConfigDefaultHistory`, `SpeakerTerms`;
 the app hands it the resource bundle, and on Linux it hashes with
-`PortableSHA256` instead of CryptoKit).
+`PortableSHA256` instead of CryptoKit), and the live replacement rewriters
+(`LiveReplacementCorrector`, `LiveHoldBackReplacementStream`).
 It builds and tests on Linux (`scripts/core-tests-linux.sh`); the app
 re-exports it.
 
