@@ -238,9 +238,22 @@ final class ViewSnapshotTests: XCTestCase {
                 configData: setUp ? Data(ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet.utf8) : nil,
                 configPermissions: setUp ? 0o644 : nil))
 
+        // The app's coordinator reconciles on enrollment; without it the
+        // pane reads "not listening" next to an enrolled host.
+        let listener = StubClaudeRemoteListener(hosts: registry)
+        try listener.reconcile()
+        let herdrMachines: HerdrMachineCatalogReading =
+            setUp
+            ? .catalog(HerdrMachineCatalog(
+                profiles: [HerdrMachineProfile(
+                    id: "build-host", label: "build-host", target: "build-host",
+                    session: "default", enabled: true)],
+                selectedProfileID: nil))
+            : .absent
+
         return ClaudeIntegrationSettingsModel(
             registry: registry,
-            listener: StubClaudeRemoteListener(hosts: registry),
+            listener: listener,
             pluginService: { StubClaudePluginService() },
             enrollmentService: ClaudeRemoteEnrollmentService(
                 localHerdrConfigFileSystem: herdrConfig, now: { frozen }),
@@ -252,7 +265,9 @@ final class ViewSnapshotTests: XCTestCase {
             opencodeService: { opencode },
             vibeService: { vibe },
             herdrBinaryAvailable: { setUp },
-            herdrPresenceReport: { setUp }
+            herdrPresenceReport: { setUp },
+            herdrMachineCatalogReading: { herdrMachines },
+            hasEnabledHerdrMachineReport: { setUp }
         )
     }
 
