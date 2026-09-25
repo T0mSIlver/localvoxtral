@@ -119,7 +119,7 @@ when a matching change (or the marker) triggers it.
 
 ## Which runner a lane lands on
 
-`ci.yml` is three parallel jobs, and which one a lane is in is a statement about
+`ci.yml` is four parallel jobs, and which one a lane is in is a statement about
 what it needs, not about cost:
 
 - **`build-test`, GitHub-hosted `macos-latest`, every event and every
@@ -128,8 +128,11 @@ what it needs, not about cost:
   lint, the unit suite, coverage. A fork PR gets ONLY this job, so it also
   packages/uploads/smokes an ad-hoc-signed bundle there.
 - **`linux`, GitHub-hosted Ubuntu, every event and every contributor** —
-  not a required check yet. Every `scripts/ci/test-*.sh` suite, by glob, and
+  a required check. Every `scripts/ci/test-*.sh` suite, by glob, and
   the Linux-buildable Swift targets through `scripts/core-tests-linux.sh`.
+  `build-test` runs the shell suites too, for the Mac's bash 3.2.
+- **`dogfood`, GitHub-hosted `macos-latest`, every event** — not required.
+  The dogfood capture suite, built with `LOCALVOXTRAL_DOGFOOD=1`.
 - **`mac-lanes`, the self-hosted Mac, same-repo PRs that are NOT drafts +
   pushes + dispatches** — a draft gets `build-test` only, and marking it ready
   (`gh pr ready <n>`) starts the run. The literal `[mac-lanes]` in a draft's PR
