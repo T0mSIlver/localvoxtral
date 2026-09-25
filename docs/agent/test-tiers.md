@@ -519,7 +519,7 @@ rather than silently treating it as a model failure.
 ## Replaying stored dictations
 
 Whether localvoxtral learns a user is measured on that user's own recordings,
-run twice on identical input. With **Keep dictation audio** on (Settings →
+run twice on identical input. With **Keep dictation audio on this Mac** on (Settings →
 History), each saved dictation keeps its WAV. On the Mac that dictated, as
 that user, `./scripts/export-dictation-replay.sh <dir>` copies the history
 store, the recordings, the learned terms and Names and terms into a set.

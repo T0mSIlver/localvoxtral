@@ -210,10 +210,7 @@ struct ClaudeCmuxPasswordSettingsRow: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
 
     var body: some View {
-        SettingsFieldRow(
-            title: "Socket password",
-            help: "Stored in your Keychain, sent only to cmux's local socket."
-        ) {
+        SettingsFieldRow(title: "Socket password") {
             HStack(alignment: .center, spacing: 8) {
                 SecureField("cmux socket password", text: $model.cmuxPasswordField)
                     .labelsHidden()

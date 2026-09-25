@@ -21,8 +21,6 @@ package struct SpeechModelOption: Equatable, Sendable {
     /// download bar's ByteCountFormatter units — HF model cards quote GiB,
     /// don't copy them (same trap as `PolishModelOption.sizeOnDiskGB`).
     package let sizeOnDiskGB: Double
-    /// One clause for the picker's help line, before the size and download state.
-    package let summary: String
     /// Whether the Engines pane shows Memory limit for this model. `--cache-limit-mb`
     /// caps MLX's buffer cache; measure the model with `speechd-bench` before
     /// claiming the limit binds (#486).
@@ -42,7 +40,6 @@ package enum SpeechModelCatalog {
             displayName: "Voxtral Mini 4B Realtime (4-bit, quantized head)",
             engine: .voxtral,
             sizeOnDiskGB: 2.6,
-            summary: "Most accurate",
             // Its cache fills to whatever limit is set: 4.9 GB total at 2 GB, 10.9 GB at 8 GB.
             showsMemoryLimit: true
         ),
@@ -62,7 +59,6 @@ package enum SpeechModelCatalog {
             displayName: "Nemotron 3.5 ASR Streaming 0.6B (8-bit)",
             engine: .nemotron,
             sizeOnDiskGB: 0.8,
-            summary: "Lowest memory, less accurate",
             // Its cache never passes ~10 MB, so every limit gives the same 0.75 GB.
             showsMemoryLimit: false
         ),
@@ -83,11 +79,15 @@ package enum SpeechModelCatalog {
 }
 
 package enum SpeechModelPickerSupport {
-    /// Same shape as the polishing picker's help line: what the model is for,
-    /// what it costs on disk, and whether it is already there.
-    package static func helpText(for option: SpeechModelOption, isDownloaded: Bool) -> String {
-        let downloadState = isDownloaded ? "downloaded" : "downloads on first use"
-        let size = option.sizeOnDiskGB.formatted(.number.precision(.fractionLength(1)))
-        return "\(option.summary). \(size) GB, \(downloadState)"
+    /// The picker's menu item: the model and what it costs on disk. Whether
+    /// it is downloaded shows on the Status row.
+    package static func menuLabel(for option: SpeechModelOption) -> String {
+        "\(option.displayName) — \(ModelSizeLabel.gigabytes(option.sizeOnDiskGB))"
+    }
+}
+
+package enum ModelSizeLabel {
+    package static func gigabytes(_ value: Double) -> String {
+        "\(value.formatted(.number.precision(.fractionLength(1)))) GB"
     }
 }

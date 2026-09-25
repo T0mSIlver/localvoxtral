@@ -461,7 +461,7 @@ assert_tab "textProcessing" "Text Processing" "Polishing"
 # The consent-grade context sources live on their own pane (moved off Text
 # Processing). Asserted on the group title, which exists nowhere else.
 assert_tab "integrations.context" "Context" "Polish context"
-assert_tab "integrations.context" "Context" "Agent session"
+assert_tab "integrations.context" "Context" "Send diff, recent files and last prompt"
 # --- Integrations section: one pane per harness (2026-09-07 owner decision) ---
 assert_tab "integrations.claude" "Claude Code" "Plugin"
 assert_tab "integrations.claude" "Claude Code" "Status line"

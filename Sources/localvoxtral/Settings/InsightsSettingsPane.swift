@@ -179,13 +179,11 @@ struct InsightsSettingsPane: View {
     private func learningGroup(_ trend: DictationLearningTrend) -> some View {
         SettingsGroup(title: "Learning, last 12 weeks") {
             TrendRow(
-                title: "Terms the recognizer spelled right",
-                help: "Names and terms and learned terms, before any fix.",
+                title: "Your terms recognized correctly",
                 weeks: trend.weeks,
                 share: \.termsSpelledRightShare)
             TrendRow(
-                title: "Transcripts inserted as recognized",
-                help: "Of the polished dictations.",
+                title: "Polished dictations needing no fix",
                 weeks: trend.weeks,
                 share: \.transcriptKeptShare)
         }
@@ -240,14 +238,13 @@ struct InsightsSettingsPane: View {
 /// them. A week with too few dictations to count draws no bar.
 private struct TrendRow: View {
     let title: String
-    let help: String
     let weeks: [DictationLearningTrend.Week]
     let share: KeyPath<DictationLearningTrend.Week, Double?>
 
     private var latest: Double? { weeks.last { $0[keyPath: share] != nil }?[keyPath: share] ?? nil }
 
     var body: some View {
-        SettingsFieldRow(title: title, help: help) {
+        SettingsFieldRow(title: title) {
             HStack(spacing: 10) {
                 if weeks.contains(where: { $0[keyPath: share] != nil }) {
                     // By position, not by date: the weeks are 7-day steps back

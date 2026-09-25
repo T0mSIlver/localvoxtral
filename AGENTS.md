@@ -166,7 +166,8 @@ and order it with blocked-by links, not prose.
   `BundledConfigDefaultHistory`, keeping the old hashes. A tier-0 test fails
   with the exact hash if you forget.
 - Settings panes: a mode picker or toggle may switch a group's content, never
-  the number or identity of the groups.
+  the number or identity of the groups. A row has no subtitle: its title says
+  what it does, and anything more goes behind the group's Learn more link.
 - Menu bar popover: one short sentence at most, never raw errors, stderr or
   URLs. Full details go to the alert and the log.
   `StatusPopoverView.statusDetailView`'s line limit is the backstop; keep it.

@@ -84,7 +84,7 @@ final class SpeechModelCatalogTests: XCTestCase {
         }
     }
 
-    func testPickerHelpTextNamesTheSizeAndDownloadState() throws {
+    func testPickerMenuLabelNamesTheSize() throws {
         let option = try XCTUnwrap(
             SpeechModelCatalog.option(
                 forRepoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
@@ -92,13 +92,9 @@ final class SpeechModelCatalogTests: XCTestCase {
         )
         // The size renders in the user's locale (0.8 / 0,8), so assert around it.
         XCTAssertEqual(option.sizeOnDiskGB, 0.8)
-        let pending = SpeechModelPickerSupport.helpText(for: option, isDownloaded: false)
-        XCTAssertTrue(pending.hasPrefix("Lowest memory, less accurate. "), pending)
-        XCTAssertTrue(pending.hasSuffix(" GB, downloads on first use"), pending)
-        XCTAssertTrue(
-            SpeechModelPickerSupport.helpText(for: option, isDownloaded: true)
-                .hasSuffix(" GB, downloaded")
-        )
+        let label = SpeechModelPickerSupport.menuLabel(for: option)
+        XCTAssertTrue(label.hasPrefix("Nemotron 3.5 ASR Streaming 0.6B (8-bit) — "), label)
+        XCTAssertTrue(label.hasSuffix(" GB"), label)
     }
 
     /// Measured in #486: Voxtral's cache fills to the limit, Nemotron's stays near
