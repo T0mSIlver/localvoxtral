@@ -76,6 +76,7 @@ PATTERNS=(
   '*ClaudeTransportOrigin*'                          # workspace trust: whether a cwd can be read at all
   '*ClaudeBridgeSessionURL*'                         # strict parse of the Remote Control join URL (also core: ClaudeSessionPageURL)
   '*ClaudeDesktopSessionURL*'                        # strict parse of the Claude Desktop join URL
+  '*ClaudeSocketGuard*'                              # who may hand the broker a hook record at all
   'Sources/localvoxtral/ClaudeContext/*'             # every gate/collector/renderer feeding the Claude blocks
   '*ClaudeContextBroker*'                            # the socket that feeds the registry
   '*ClaudeHookWire*'                                 # the record shape the snapshot is reduced from

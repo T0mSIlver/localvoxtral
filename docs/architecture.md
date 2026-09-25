@@ -62,7 +62,10 @@ Claude session snapshot and its reducer (`ClaudeSessionState`), and the
 config store (`AppConfigStore`, `BundledConfigDefaultHistory`, `SpeakerTerms`;
 the app hands it the resource bundle, and on Linux it hashes with
 `PortableSHA256` instead of CryptoKit), and the live replacement rewriters
-(`LiveReplacementCorrector`, `LiveHoldBackReplacementStream`).
+(`LiveReplacementCorrector`, `LiveHoldBackReplacementStream`), and the Claude
+socket guard (`ClaudeSocketGuard`: `getpeereid` and `LOCAL_PEERPID` on Darwin,
+`SO_PEERCRED` on Linux), with the SHA-256 and HMAC helpers the Claude code
+hashes through.
 It builds and tests on Linux (`scripts/core-tests-linux.sh`); the app
 re-exports it.
 
