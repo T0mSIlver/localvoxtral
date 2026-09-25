@@ -210,8 +210,8 @@ History; the panes sit under the sidebar's Settings header:
   it, and its spellings were imported into your terms once) and the prompt
   files
 - **Context** — what the polisher may see (repo vocabulary, clipboard, the
-  agent's screen and session); each toggle's help is one line naming what
-  leaves this Mac, and the full terms are in
+  agent's screen and session); each toggle's title names what leaves this
+  Mac, and the full terms are in
   [Terminals & coding agents](coding-agents.md#polish-context-what-each-toggle-sends)
 - **Integrations** — one pane per harness, each with a status dot: green
   means detected and set up, yellow means a setup step is pending, grey
