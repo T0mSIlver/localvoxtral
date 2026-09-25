@@ -15,7 +15,7 @@ import Foundation
 /// answered by the one process that can scope it to the joined pane.
 struct SocketPaneScreenCapture: Sendable, Equatable {
     /// Sanitized, capped pane text — the SAME pipeline as an AX screen read
-    /// (`TerminalScreenAXReader.sanitizedScreenText`), so start/stop compares
+    /// (`TerminalScreenText.sanitizedScreenText`), so start/stop compares
     /// and the excerpt bytes follow identical rules on every transport.
     let text: String
     /// The pane the text came from: a herdr pane id or a cmux surface id.
@@ -73,7 +73,7 @@ enum SocketPaneScreenContext {
             return nil
         }
         guard let raw = await paneText(join: join, resolver: resolver),
-              let text = TerminalScreenAXReader.sanitizedScreenText(raw)
+              let text = TerminalScreenText.sanitizedScreenText(raw)
         else {
             // Loud by convention: from here the session behaves exactly as
             // before the socket read existed — AX text, vocabulary-only.
@@ -146,7 +146,7 @@ enum SocketPaneScreenContext {
             return fallback
         }
         guard let raw = await paneText(join: join, resolver: resolver),
-              let stopText = TerminalScreenAXReader.sanitizedScreenText(raw)
+              let stopText = TerminalScreenText.sanitizedScreenText(raw)
         else {
             Log.claudeContext.info(
                 "Socket pane stop re-read failed; screen context falls back to the AX decision"

@@ -1,7 +1,11 @@
 import Foundation
 
+#if canImport(Darwin) || canImport(Glibc)
 #if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 
 /// Is a herdr client (app-mode `herdr` process) attached to this TTY device?
 /// This is what binds "Ghostty's focused surface" to "herdr is what that

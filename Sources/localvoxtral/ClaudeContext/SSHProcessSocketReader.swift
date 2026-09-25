@@ -1,8 +1,12 @@
 import ClaudeContextWire
 import Foundation
 
+#if canImport(Darwin) || canImport(Glibc)
 #if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 
 /// One ESTABLISHED TCP connection held by a process, as this machine's kernel
 /// describes it.
@@ -74,6 +78,7 @@ enum SSHConnectionAddressMatch {
     }
 }
 
+#if canImport(Darwin)
 /// Reads a process's established TCP sockets out of the kernel.
 ///
 /// `proc_pidinfo(PROC_PIDLISTFDS)` then `proc_pidfdinfo(PROC_PIDFDSOCKETINFO)`
@@ -184,4 +189,11 @@ enum SSHProcessSocketReader {
         return text.isEmpty ? nil : text
     }
 }
+#else
+/// No process socket table without `libproc`: every read is "unknown", so
+/// the plain-ssh join abstains.
+enum SSHProcessSocketReader {
+    static let live: @Sendable (Int32) -> [SSHClientSocket]? = { _ in nil }
+}
+#endif
 #endif

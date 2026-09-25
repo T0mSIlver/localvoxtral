@@ -1,7 +1,11 @@
 import Foundation
 
+#if canImport(Darwin) || canImport(Glibc)
 #if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 
 /// What herdr's saved-machine feature says about the client on this Mac.
 ///

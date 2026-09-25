@@ -1,7 +1,11 @@
 import Foundation
 
+#if canImport(Darwin) || canImport(Glibc)
 #if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 
 /// What an ssh remote command says about herdr — a CLASSIFICATION, not a
 /// boolean, because "mentions herdr first" spans shapes that display entirely
@@ -920,12 +924,16 @@ enum SSHDestinationTTYProbe {
     /// The real executable behind a pid — which `p_comm` (16 bytes, and a name
     /// the process chose) and argv[0] (chosen by whoever exec'd it) are not.
     static func executablePath(pid: Int32) -> String? {
+        #if canImport(Darwin)
         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 2)
         let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
         guard length > 0 else { return nil }
         return String(
             decoding: buffer.prefix(Int(length)).map { UInt8(bitPattern: $0) }, as: UTF8.self
         )
+        #else
+        return nil
+        #endif
     }
 
     /// argv of one process via `KERN_PROCARGS2`.
@@ -935,6 +943,7 @@ enum SSHDestinationTTYProbe {
     /// environment — which this deliberately stops before. Another process's
     /// environment is not ours to read, and nothing here needs it.
     static func processArguments(pid: Int32) -> [String]? {
+        #if canImport(Darwin)
         var argumentMax: Int32 = 0
         var size = MemoryLayout<Int32>.size
         var maxMIB = [Int32(CTL_KERN), Int32(KERN_ARGMAX)]
@@ -951,6 +960,9 @@ enum SSHDestinationTTYProbe {
         guard status == 0, length > MemoryLayout<Int32>.size else { return nil }
 
         return parseProcessArguments(Array(buffer.prefix(length)))
+        #else
+        return nil
+        #endif
     }
 
     /// Pure parser over a `KERN_PROCARGS2` buffer, so the layout handling is
@@ -1037,13 +1049,25 @@ enum TTYProcessTable {
         // dev_t is Int32 on Darwin, so this is an identity conversion today —
         // but if the type ever widens, a device that does not fit must abstain,
         // not trap mid-dictation.
+        #if canImport(Darwin)
         guard let deviceMIB = Int32(exactly: device) else { return nil }
         return scan(mib: [Int32(CTL_KERN), Int32(KERN_PROC), Int32(KERN_PROC_TTY), deviceMIB])
+        #else
+        return nil
+        #endif
     }
 
+    /// Every process on the machine. Nil without `sysctl(KERN_PROC)`, which
+    /// Linux does not have: the probes then abstain.
     static func allProcesses() -> [Entry]? {
+        #if canImport(Darwin)
         scan(mib: [Int32(CTL_KERN), Int32(KERN_PROC), Int32(KERN_PROC_ALL), 0])
+        #else
+        nil
+        #endif
     }
+
+    #if canImport(Darwin)
 
     /// `p_starttime` as a `Date`, or nil for a value that cannot be one.
     ///
@@ -1096,5 +1120,6 @@ enum TTYProcessTable {
             )
         }
     }
+    #endif
 }
 #endif

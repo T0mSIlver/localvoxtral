@@ -82,6 +82,10 @@ expect true "the git runner, split from repo vocabulary, runs the lane" \
   Sources/localvoxtral/RepoGitRunner.swift
 expect true "the socket guard, moved to the core target, runs the lane" \
   Sources/localvoxtralCore/ClaudeSocketGuard.swift
+expect true "the Claude Desktop allowlist, split from its reader, runs the lane" \
+  Sources/localvoxtral/ClaudeDesktopAllowlist.swift
+expect false "the forward process seam, split from the supervisor, stays exempt" \
+  Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardProcess.swift
 
 # --- Marker opt-in ----------------------------------------------------------
 
