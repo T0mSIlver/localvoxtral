@@ -439,6 +439,10 @@ extension DictationSessionController {
         clearLatchedSessionMetadata()
         sessionOutputMode = requestedOutputMode
         sessionStartedAt = Date()
+        // Latched here: a setting flipped mid-dictation applies to the next.
+        audio.sessionRecording.begin(
+            enabled: settings.dictationAudioEnabled
+                && settings.dictationHistoryRetention.savesDictations)
         sessionReplacementDictionary = StopCommitCoordinator.effectiveReplacementDictionary(
             settings: settings,
             appConfigStore: appConfigStore
@@ -475,8 +479,10 @@ extension DictationSessionController {
         let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
         do {
             let chunkBuffer = audio.audioChunkBuffer
+            let recording = audio.sessionRecording
             try audio.startSessionAudioCapture(preferredDeviceID: preferredInputID) { chunk in
                 chunkBuffer.append(chunk)
+                recording.append(chunk)
             }
 
             isConnectingRealtimeSession = false
@@ -533,6 +539,7 @@ extension DictationSessionController {
 
     func makeHealthMonitorCallbacks() -> AudioCaptureHealthMonitor.Callbacks {
         let chunkBuffer = audio.audioChunkBuffer
+        let recording = audio.sessionRecording
         let mic = audio.microphone
         return AudioCaptureHealthMonitor.Callbacks(
             refreshMicrophoneInputs: { [weak self] in
@@ -564,7 +571,10 @@ extension DictationSessionController {
                     preferredDeviceID: preferredInputID,
                     preferredInputChannel: self?.selectedInputChannel ?? 0
                 ) { chunk in
+                    // The same two destinations as the first start: a
+                    // recovered microphone keeps feeding the kept audio.
                     chunkBuffer.append(chunk)
+                    recording.append(chunk)
                 }
             }
         )

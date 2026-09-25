@@ -100,6 +100,17 @@ list, newest first:
 A shorter setting says how many dictations it deletes and asks before it does.
 Term suggestions read this history, so they stop under Don't keep.
 
+**Keep dictation audio**, off by default, also saves what the microphone
+heard for each dictation, as a WAV file in
+`~/Library/Application Support/localvoxtral/dictation-audio`. The app never
+sends the audio anywhere, the term suggestion pass included. It is there so
+you can replay your own dictations and measure whether localvoxtral got
+better at them; the replay tool copies the files only where you run it. Each file goes when its dictation goes: Delete, Delete
+All, and the Keep dictations period remove the audio with the text, and Don't
+keep turns the audio off with the history. Turning the option off asks, then
+deletes every recording and keeps the dictations. A minute of audio takes
+about 2 MB; a dictation longer than 20 minutes is saved without audio.
+
 ### Insights
 
 **Insights**, under History in the sidebar, counts the saved dictations over

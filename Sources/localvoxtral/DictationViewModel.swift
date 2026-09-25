@@ -582,6 +582,11 @@ final class DictationViewModel {
                 Task { await self?.session.refreshLastDictationFromStore() }
             }
             Task { [weak self] in await self?.session.refreshLastDictationFromStore() }
+            // Attached whatever the setting says, so Delete and retention
+            // still clear recordings kept before it was turned off.
+            sessionStore?.audioStore = DictationAudioStore(
+                directoryURL: DictationAudioStore.defaultDirectoryURL())
+            sessionStore?.removeOrphanedAudio()
             applyDictationHistoryRetention()
             learnedTermStore = LearnedTermStore(
                 fileURL: LearnedTermStore.defaultFileURL(),
