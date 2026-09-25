@@ -1,4 +1,3 @@
-import CoreGraphics
 import Foundation
 
 /// Breaks the overlay buffer's lines itself, so streamed text never re-wraps.
@@ -27,8 +26,8 @@ import Foundation
 ///
 /// Widths come from an injected measurer so the rules can be tested exactly,
 /// without a text engine. `DictationOverlayController` passes the real one.
-struct OverlayStableLineWrapper {
-    typealias WidthMeasure = (String) -> CGFloat
+package struct OverlayStableLineWrapper {
+    package typealias WidthMeasure = (String) -> CGFloat
 
     /// Width the rendered text has to fit into.
     private let availableWidth: CGFloat
@@ -55,7 +54,7 @@ struct OverlayStableLineWrapper {
     private var previousCharacters: [Character] = []
     private var widthCache: [String: CGFloat] = [:]
 
-    init(
+    package init(
         availableWidth: CGFloat,
         reserveWidth: CGFloat,
         safetyMargin: CGFloat = 4,
@@ -68,14 +67,14 @@ struct OverlayStableLineWrapper {
     }
 
     /// Ends the session: the next wrap starts with no remembered breaks.
-    mutating func reset() {
+    package mutating func reset() {
         forcedBreakOffsets.removeAll()
         previousCharacters.removeAll()
         widthCache.removeAll()
     }
 
     /// Returns `text` with the line breaks written in.
-    mutating func wrapped(_ text: String) -> String {
+    package mutating func wrapped(_ text: String) -> String {
         let characters = Array(text)
         guard !characters.isEmpty else { return text }
         forcedBreakOffsets = retainedBreakOffsets(forNew: characters)

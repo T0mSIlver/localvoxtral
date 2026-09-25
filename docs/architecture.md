@@ -53,7 +53,8 @@ assembler, `PolishTokenGuard`, `ClipboardPayloadMacro`,
 and the vocabulary matching: `RepoVocabulary`, `RepoIndexing`,
 `RepoVocabularyMatcher`, `ClipboardVocabulary`, `DoubleMetaphone`. Also
 `MistralStreamHealth`, `AudioChunkBuffer`, `ClaudeStatuslineCombine`,
-`FirstChunkPreprocessor`, `LaunchWindowPolicy`.
+`FirstChunkPreprocessor`, `LaunchWindowPolicy`, `AppWindowOpener`, `POSIXPipeRead`,
+`PipeLineReader`, `OverlayStableLineWrapper`.
 It builds and tests on Linux (`scripts/core-tests-linux.sh`); the app
 re-exports it.
 

@@ -15,7 +15,7 @@ import Foundation
 /// Every dependency is a closure so the schedule can be tested without a
 /// window server, which the build host does not have.
 @MainActor
-struct AppWindowOpener {
+package struct AppWindowOpener {
     /// Sends the action that asks for the window.
     let show: () -> Void
     /// Whether the window is on screen now.
@@ -27,6 +27,16 @@ struct AppWindowOpener {
     static let attemptLimit = 8
     static let interval = Duration.milliseconds(250)
 
+    package init(
+        show: @escaping () -> Void,
+        isOnScreen: @escaping () -> Bool,
+        sleepFor: @escaping (Duration) async -> Void
+    ) {
+        self.show = show
+        self.isOnScreen = isOnScreen
+        self.sleepFor = sleepFor
+    }
+
     /// Asks until the window is there. Returns the attempt that worked, or nil
     /// if the window never appeared.
     ///
@@ -35,7 +45,7 @@ struct AppWindowOpener {
     /// screen, and it has to bring the window forward rather than decide there
     /// is nothing to do. (The menu bar item's History does not come through
     /// here — a SwiftUI view can use the `openSettings` action directly.)
-    func open() async -> Int? {
+    package func open() async -> Int? {
         for attempt in 1...Self.attemptLimit {
             show()
             if isOnScreen() { return attempt }
