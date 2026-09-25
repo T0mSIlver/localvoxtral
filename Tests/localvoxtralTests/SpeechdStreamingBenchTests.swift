@@ -141,6 +141,10 @@ final class SpeechdStreamingBenchTests: XCTestCase {
                 "missing BENCH mark=\(mark)s"
             )
         }
+        XCTAssertTrue(
+            lines.contains { $0.hasPrefix("BENCH transcript sha256=") },
+            "missing BENCH transcript digest"
+        )
         let timeline = lines.first { $0.hasPrefix("BENCH timeline ") }
         XCTAssertNotNil(timeline, "missing BENCH timeline summary")
         if spokenAudio {

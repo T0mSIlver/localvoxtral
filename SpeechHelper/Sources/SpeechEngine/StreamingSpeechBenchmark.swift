@@ -105,6 +105,7 @@ public enum StreamingSpeechBenchmark {
                 + "tokens=\(session.decodedTokenCount) "
                 + "stopped=\(session.utteranceStop.map(String.init(describing:)) ?? "none")"
         )
+        print(BenchTranscriptDigest.line(for: session.text))
     }
 
     /// The first steps after a load compile kernels and can take seconds, which only the
