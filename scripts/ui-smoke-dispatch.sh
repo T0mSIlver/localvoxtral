@@ -11,6 +11,10 @@
 #           concluded: a NOT RUN or lost-focus red is not retried; say so in
 #           the PR's Proof section and leave the rerun to the owner
 #
+# The last two count only runs whose job ran a step. Any label other than
+# needs-ui-smoke creates a run that is skipped, or cancelled by the next
+# label's run, without reaching the Mac (#570).
+#
 # Usage:
 #   scripts/ui-smoke-dispatch.sh [--dry-run] [--override <why>] <branch>
 #
@@ -94,11 +98,20 @@ while IFS=$'\t' read -r id status run_sha created conclusion; do
   if [[ "$status" != completed ]]; then
     active_id="$id"
     active_status="$status"
-  elif [[ "$age" -lt "$COOLDOWN_SECONDS" ]] && ! $cooling; then
+    continue
+  fi
+  [[ "$age" -lt "$COOLDOWN_SECONDS" || "$run_sha" == "$sha" ]] || continue
+  steps="$(gh api "repos/{owner}/{repo}/actions/runs/$id/jobs" --jq '[.jobs[].steps | length] | add // 0')" \
+    || api_error "cannot read the jobs of run $id"
+  if [[ "$steps" == 0 ]]; then
+    echo "ignored: run $id never started (no job step ran)"
+    continue
+  fi
+  if [[ "$age" -lt "$COOLDOWN_SECONDS" ]] && ! $cooling; then
     cooling=true
     refusals+=("run $id started $((age / 60)) min ago; wait an hour between runs")
   fi
-  if [[ "$run_sha" == "$sha" && "$status" == completed ]]; then
+  if [[ "$run_sha" == "$sha" ]]; then
     refusals+=("run $id already ran on ${sha:0:9} ($conclusion); report it in Proof, the owner decides on a rerun")
   fi
 done <<<"$runs"

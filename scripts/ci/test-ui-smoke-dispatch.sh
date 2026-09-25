@@ -84,6 +84,15 @@ case "$1 ${2:-}" in
     case "$url" in
       */compare/*) jq -r "$jq_filter" "$SCEN/compare.json" ;;
       */check-runs*) jq -r "$jq_filter" "$SCEN/check-runs.json" ;;
+      */actions/runs/*/jobs*)
+        run_id="${url#*/actions/runs/}"
+        run_id="${run_id%%/*}"
+        if [[ -f "$SCEN/jobs-$run_id.json" ]]; then
+          jq -r "$jq_filter" "$SCEN/jobs-$run_id.json"
+        else
+          jq -r "$jq_filter" <<<'{"jobs":[{"name":"ui-smoke","conclusion":"failure","steps":[{"name":"Set up job"}]}]}'
+        fi
+        ;;
       */actions/workflows/ui-smoke.yml/runs*)
         echo "$url" >"$SCEN/runs-url"
         jq -r "$jq_filter" "$SCEN/runs.json"
@@ -186,6 +195,23 @@ expect 0 "a new commit an hour after the last run dispatches" newcommit "dispatc
 
 scenario override "$DOCS" completed/success "[$(run_json 11 completed "$HEAD_SHA" "$ISO_10M_AGO" failure)]"
 expect 0 "--override dispatches past the path, cooldown and same-commit refusals" override "override: owner asked for a rerun" --override "owner asked for a rerun"
+
+# A label other than needs-ui-smoke creates a run whose job is skipped, or
+# which the concurrency group cancels before it has a job (#570). Neither
+# touched the Mac, so neither blocks the real check, not even on the head.
+scenario labelnoise "$SESSION" completed/success "[$(run_json 21 completed "$HEAD_SHA" "$ISO_10M_AGO" cancelled),$(run_json 20 completed "$HEAD_SHA" "$ISO_10M_AGO" skipped)]"
+echo '{"jobs":[]}' >"$TMP_DIR/labelnoise/jobs-21.json"
+echo '{"jobs":[{"name":"ui-smoke","conclusion":"skipped","steps":[]}]}' >"$TMP_DIR/labelnoise/jobs-20.json"
+expect 0 "runs whose job never started block nothing" labelnoise "ignored: run 20 never started"
+# A dispatch cancelled while it waited for the Mac has a job but no steps.
+scenario queuecancel "$SESSION" completed/success "[$(run_json 22 completed "$HEAD_SHA" "$ISO_10M_AGO" cancelled)]"
+echo '{"jobs":[{"name":"ui-smoke","conclusion":"cancelled","steps":[]}]}' >"$TMP_DIR/queuecancel/jobs-22.json"
+expect 0 "a run cancelled before its first step blocks nothing" queuecancel "ignored: run 22 never started"
+# A red that reached the Mac (NOT RUN, lost focus) still counts, behind noise.
+scenario noisyred "$SESSION" completed/success "[$(run_json 24 completed "$HEAD_SHA" "$ISO_10M_AGO" skipped),$(run_json 23 completed "$HEAD_SHA" "$ISO_10M_AGO" failure)]"
+echo '{"jobs":[{"name":"ui-smoke","conclusion":"skipped","steps":[]}]}' >"$TMP_DIR/noisyred/jobs-24.json"
+expect 1 "a red run that started still blocks the head" noisyred "refused: run 23 already ran on aaaaaaaaa (failure)"
+expect 1 "a red run that started still starts the hour" noisyred "refused: run 23 started 10 min ago"
 
 # An unencoded '&' would split the query: the lookup would find no runs and
 # every run-history refusal would pass.
