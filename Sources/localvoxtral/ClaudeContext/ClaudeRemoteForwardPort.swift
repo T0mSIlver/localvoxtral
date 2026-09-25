@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 
 /// Which port on the REMOTE host this Mac's `RemoteForward` binds.
@@ -71,10 +70,10 @@ public enum ClaudeRemoteForwardPort {
     /// forever, on every machine — which is what makes the plan reproducible
     /// after a relaunch.
     public static func port(forInstallIdentity identity: String) -> UInt16 {
-        var hasher = SHA256()
+        var hasher = SHA256Hasher()
         hasher.update(data: Data(derivationDomain.utf8))
         hasher.update(data: Data(identity.utf8))
-        let digest = Array(hasher.finalize())
+        let digest = hasher.finalize()
         // 32 bits folded into the range: 16 would be only ~32 whole
         // multiples of a 2000-slot range, which skews the low slots by ~3%.
         // Not a security property, but a needless bias in the one number that

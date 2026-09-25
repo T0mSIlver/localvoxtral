@@ -59,6 +59,7 @@ PATTERNS=(
   '*PolishContextPreparation*'                       # matching + selection over the retained buffer
   '*ClipboardPayloadMacro*'                          # spoken paste-clipboard macro placeholders
   '*RepoVocabulary*'                                 # repo vocabulary hints fed to the polisher
+  '*RepoGitRunner*'                                  # the git subprocess both repo vocabulary and repo context read through
   '*ClipboardVocabulary*'                            # clipboard identifiers matched like repo vocabulary
   'Sources/localvoxtralCore/StringExtensions.swift'  # the control-character sanitizer for context and prompt terms
   '*LearnedTerm*'                                    # what earlier dictations taught, fed back into the prompt
@@ -88,10 +89,12 @@ PATTERNS=(
   '*VibeHookPublisher*'                              # the Vibe pid/tty the joins key on
   '*ClaudeRemoteAgent*'                              # which agent a remote session is filed under
   '*TerminalScreenContext*'                          # screen context source/policy feeding the prompt
-  '*TerminalScreenAXReader*'                         # screen text sanitization/compaction: the excerpt's exact bytes
+  '*TerminalScreenAXReader*'                         # the AX screen read: which pane's text becomes the excerpt
+  '*TerminalScreenText*'                             # screen text sanitization/compaction: the excerpt's exact bytes
   '*TerminalScreenAppleScriptReader*'                # iTerm2/Terminal.app focused-pane contents: the excerpt's exact bytes
   '*TerminalFocusedTTYReader*'                       # per-terminal tty readers: which session the context comes from
   '*BrowserTabURLReader*'                            # per-browser focused-tab url reads: which session the context comes from
+  '*BrowserTabAllowlist*'                            # which browsers may be asked for that url at all
   '*ClaudeDesktopSessionReader*'                     # Claude Desktop focused web view address: which session the context comes from
   '*SessionContextResolver*'                        # the context gates themselves (#432 step 4b)
   '*PolishRequestAssembler*'                        # sections, pre-application, prompts, blocks (#432 step 5)
