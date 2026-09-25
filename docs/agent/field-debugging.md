@@ -5,6 +5,8 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
 - **Trying a PR build on the Mac**: `./scripts/try-pr.sh <pr-number|main>`
   downloads the exact CI-built artifact and launches it. No checkout, no
   build. Push → CI (~1.5 min) → try-pr.sh is the whole owner iteration loop.
+  Pushes to main build no bundle, so `main` takes the newest dispatched
+  build and, when it is behind main, offers to dispatch one and wait.
   `--dogfood` fetches the instrumented `localvoxtral-app-dogfood` artifact
   instead, verifies its `LVXDogfoodCapture` stamp, arms the runtime capture
   default, and launches — the one-command dogfood install. That artifact is

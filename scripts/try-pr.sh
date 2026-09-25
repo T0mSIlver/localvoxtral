@@ -7,7 +7,8 @@ set -euo pipefail
 #
 # Usage:
 #   ./scripts/try-pr.sh <pr-number>            # e.g. ./scripts/try-pr.sh 30
-#   ./scripts/try-pr.sh main                   # latest green build of main
+#   ./scripts/try-pr.sh main                   # main's newest build; offers to
+#                                              # build main's head when behind
 #   ./scripts/try-pr.sh main --dogfood         # instrumented dogfood build
 #   ./scripts/try-pr.sh 42 --dogfood --ui-gate # install where the UI gate can launch it
 #
@@ -108,6 +109,51 @@ run_has_artifact() {
   grep -qxF "$ARTIFACT" <<<"$names"
 }
 
+# Watch a CI run to the end and make it the one to download.
+watch_run() {
+  echo "Watching run $1 (full CI + packaging; minutes when the Mac is free, longer behind a queue)..."
+  if ! gh run watch "$1" --exit-status; then
+    echo "CI run $1 did not finish green — see: gh run view $1" >&2
+    [[ "$BRANCH" == "main" ]] && echo "(A push to main cancels a build of main still waiting for the Mac.)" >&2
+    exit 1
+  fi
+  # The newest-dispatch heuristic in dispatch_and_wait can pick up someone
+  # else's concurrent dispatch (possibly with other inputs); verify the
+  # watched run actually produced the artifact before downloading.
+  if ! run_has_artifact "$1"; then
+    echo "Run $1 finished green but has no $ARTIFACT artifact — a concurrent" >&2
+    echo "dispatch may have been picked up instead of ours. Rerun this script." >&2
+    exit 1
+  fi
+  RUN_ID="$1"
+}
+
+# Dispatch CI on $BRANCH with the extra inputs given, then watch_run it.
+# herdr=false: see the --dogfood note in the header.
+dispatch_and_wait() {
+  # gh workflow run doesn't return the run id; detect the new run by
+  # comparing against the newest dispatch run that existed beforehand.
+  local prev cand new_run=""
+  prev="$(gh run list --workflow CI --event workflow_dispatch --branch "$BRANCH" \
+    --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+  gh workflow run CI --ref "$BRANCH" -f herdr=false "$@"
+  echo "Dispatched. Waiting for the run to register..."
+  for _ in $(seq 1 24); do
+    sleep 5
+    cand="$(gh run list --workflow CI --event workflow_dispatch --branch "$BRANCH" \
+      --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+    if [[ -n "$cand" && "$cand" != "$prev" ]]; then
+      new_run="$cand"
+      break
+    fi
+  done
+  if [[ -z "$new_run" ]]; then
+    echo "Dispatched run never appeared — check: gh run list --workflow CI --event workflow_dispatch" >&2
+    exit 1
+  fi
+  watch_run "$new_run"
+}
+
 # A draft PR's run is green without mac-lanes, the job that builds the bundle
 # (ci.yml), so say that instead of letting `gh run download` fail on a name.
 if (( ! DOGFOOD )) && ! run_has_artifact "$RUN_ID"; then
@@ -127,7 +173,8 @@ if (( ! DOGFOOD )) && ! run_has_artifact "$RUN_ID"; then
       --jq '[.[] | select(.status != "completed")][0].databaseId // empty')"
   elif [[ "$TARGET" == "main" ]]; then
     # A push to main skips mac-lanes, so main's newest green run has no
-    # bundle; take the newest one that does (a dispatch), and say how old.
+    # bundle; take the newest one that does (a dispatch). The staleness
+    # check below offers to build main's head when this one is behind.
     for candidate in $(gh run list --workflow CI --branch main --status success --limit 30 \
         --json databaseId --jq '.[].databaseId'); do
       if run_has_artifact "$candidate"; then
@@ -135,33 +182,77 @@ if (( ! DOGFOOD )) && ! run_has_artifact "$RUN_ID"; then
         break
       fi
     done
-    # A dispatch already building main: point at it rather than invite a
-    # second one onto the single Mac.
-    ACTIVE_RUN="$(gh run list --workflow CI --branch main --event workflow_dispatch --limit 10 \
-      --json databaseId,status --jq '[.[] | select(.status != "completed")][0].databaseId // empty')"
   fi
-  if [[ -n "$WITH_ARTIFACT" && "$TARGET" == "main" ]]; then
+  if [[ -n "$WITH_ARTIFACT" ]]; then
     RUN_ID="$WITH_ARTIFACT"
-    echo "Using main's newest signed build, run $RUN_ID ($(gh run view "$RUN_ID" --json headSha --jq '.headSha[0:7]'))." >&2
-    if [[ -n "$ACTIVE_RUN" ]]; then
-      echo "Run $ACTIVE_RUN is building a newer one: ./scripts/watch-checks.sh --run $ACTIVE_RUN" >&2
-    else
-      echo "For a build of main's head: gh workflow run CI --ref main -f herdr=false" >&2
-    fi
-  elif [[ -n "$WITH_ARTIFACT" ]]; then
-    RUN_ID="$WITH_ARTIFACT"
+  elif [[ "$TARGET" == "main" ]]; then
+    RUN_ID=""
   elif [[ -n "$ACTIVE_RUN" ]]; then
     echo "CI run $ACTIVE_RUN is still building '$TARGET'. Wait for it: ./scripts/watch-checks.sh --run $ACTIVE_RUN" >&2
     exit 1
   else
     echo "No green CI run for '$TARGET' carries the $ARTIFACT artifact." >&2
-    if [[ "$TARGET" == "main" ]]; then
-      echo "Pushes to main skip mac-lanes. Build one: gh workflow run CI --ref main -f herdr=false" >&2
-      exit 1
-    fi
     echo "A draft PR skips mac-lanes, the job that builds it: gh pr ready $TARGET, or put [mac-lanes] in its body and push." >&2
     echo "A docs-only diff builds no bundle either; [mac-lanes] in the body forces the full run." >&2
     exit 1
+  fi
+fi
+
+# Main's bundles come only from dispatches, so the newest one is usually
+# behind main. Say by how much, and offer to build main's head.
+if [[ "$TARGET" == "main" ]] && (( ! DOGFOOD )); then
+  MAIN_HEAD="$(gh api "repos/{owner}/{repo}/commits/main" --jq '.sha')"
+  BUILT_SHA=""
+  [[ -n "$RUN_ID" ]] && BUILT_SHA="$(gh run view "$RUN_ID" --json headSha --jq '.headSha')"
+  if [[ "$BUILT_SHA" != "$MAIN_HEAD" ]]; then
+    if [[ -n "$BUILT_SHA" ]]; then
+      BEHIND="$(gh api "repos/{owner}/{repo}/compare/$BUILT_SHA...$MAIN_HEAD" --jq '.ahead_by')"
+      echo "main's newest build (run $RUN_ID, ${BUILT_SHA:0:7}) is $BEHIND commit(s) behind main (${MAIN_HEAD:0:7})."
+    else
+      echo "No green CI run of main carries the $ARTIFACT artifact; pushes to main skip mac-lanes."
+    fi
+    # A dispatch already building main: wait for it rather than put a
+    # second one on the single Mac.
+    IFS=$'\t' read -r ACTIVE_RUN ACTIVE_SHA < <(gh run list --workflow CI --branch main \
+      --event workflow_dispatch --limit 10 --json databaseId,status,headSha \
+      --jq '[.[] | select(.status != "completed")][0] | if . == null then "\t" else "\(.databaseId)\t\(.headSha)" end')
+    if [[ ! -t 0 ]]; then
+      if [[ -n "$ACTIVE_RUN" ]]; then
+        echo "Run $ACTIVE_RUN is building main at ${ACTIVE_SHA:0:7}: ./scripts/watch-checks.sh --run $ACTIVE_RUN" >&2
+      else
+        echo "To build main's head: gh workflow run CI --ref main -f herdr=false" >&2
+      fi
+      if [[ -z "$RUN_ID" ]]; then
+        echo "stdin is not a TTY, so nothing to launch." >&2
+        exit 1
+      fi
+      echo "stdin is not a TTY; launching the older build." >&2
+    else
+      echo
+      if [[ -n "$ACTIVE_RUN" ]]; then
+        echo "  [b] wait for run $ACTIVE_RUN, already building main at ${ACTIVE_SHA:0:7} (default)"
+      else
+        echo "  [b] build main's head on CI and wait for it (default)"
+      fi
+      [[ -n "$RUN_ID" ]] && echo "  [o] launch the older build"
+      echo "  [q] quit"
+      read -r -p "Choice: " CHOICE
+      case "${CHOICE:-b}" in
+        b|B)
+          if [[ -n "$ACTIVE_RUN" ]]; then
+            watch_run "$ACTIVE_RUN"
+          else
+            dispatch_and_wait
+          fi
+          ;;
+        o|O)
+          [[ -n "$RUN_ID" ]] || exit 0
+          ;;
+        *)
+          exit 0
+          ;;
+      esac
+    fi
   fi
 fi
 
@@ -212,41 +303,7 @@ if (( DOGFOOD )) && ! run_has_artifact "$RUN_ID"; then
         echo "Push the branch to this repo instead." >&2
         exit 1
       fi
-      # gh workflow run doesn't return the run id; detect the new run by
-      # comparing against the newest dispatch run that existed beforehand.
-      PREV_DISPATCH="$(gh run list --workflow CI --event workflow_dispatch --branch "$BRANCH" \
-        --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
-      # herdr=false: see the --dogfood note in the header.
-      gh workflow run CI --ref "$BRANCH" -f dogfood=true -f herdr=false
-      echo "Dispatched. Waiting for the run to register..."
-      NEW_RUN=""
-      for _ in $(seq 1 24); do
-        sleep 5
-        CAND="$(gh run list --workflow CI --event workflow_dispatch --branch "$BRANCH" \
-          --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
-        if [[ -n "$CAND" && "$CAND" != "$PREV_DISPATCH" ]]; then
-          NEW_RUN="$CAND"
-          break
-        fi
-      done
-      if [[ -z "$NEW_RUN" ]]; then
-        echo "Dispatched run never appeared — check: gh run list --workflow CI --event workflow_dispatch" >&2
-        exit 1
-      fi
-      echo "Watching run $NEW_RUN (full CI + dogfood packaging; ~a few minutes on a warm runner)..."
-      if ! gh run watch "$NEW_RUN" --exit-status; then
-        echo "CI run failed — see: gh run view $NEW_RUN" >&2
-        exit 1
-      fi
-      # The newest-dispatch heuristic above can pick up someone else's
-      # concurrent dispatch (possibly without dogfood=true); verify the
-      # watched run actually produced the artifact before downloading.
-      if ! run_has_artifact "$NEW_RUN"; then
-        echo "Run $NEW_RUN finished green but has no dogfood artifact — a concurrent" >&2
-        echo "dispatch may have been picked up instead of ours. Rerun this script." >&2
-        exit 1
-      fi
-      RUN_ID="$NEW_RUN"
+      dispatch_and_wait -f dogfood=true
       ;;
     l|L)
       if [[ -z "$LATEST_RUN" ]]; then
