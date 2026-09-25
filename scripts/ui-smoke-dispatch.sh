@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Dispatches UI Smoke on a branch, or refuses. The run's AX drill is on a
 # GitHub-hosted runner; its e2e dictation check holds the only Mac for several
-# minutes and takes the owner's keyboard, so a run happens once per PR, on the
-# final diff (#544):
+# minutes and takes the owner's keyboard. Releases require that check
+# (scripts/release.sh, #574); a PR takes at most one run, on the final diff,
+# and only for what the check alone reaches (#544):
 #
 #   refuse  the diff touches no insertion, focus or commit file (scripts/ci/e2e-dictation-filter.sh)
 #   refuse  build-test is not green on the branch head

@@ -255,7 +255,8 @@ the `needs-ui-smoke` label (re-add it to rerun after new pushes). Agents
 dispatch through `scripts/ui-smoke-dispatch.sh`, which refuses a run the diff
 does not need, a second run on one commit and a run within an hour of the last
 (rules in `docs/agent/test-tiers.md`, "Proving a change with the e2e dictation
-check").
+check"). `scripts/release.sh` refuses a stable release unless a run on the
+release commit has its `E2E dictation scored` step green (#574).
 
 `ax-drill` runs the AX drill (`scripts/ui-smoke.sh`) on a GitHub-hosted
 `macos-latest` runner, at the 18:00 UTC slot and on every dispatch or label,
