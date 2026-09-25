@@ -86,7 +86,8 @@ reuses its original event payload — after adding the marker, push (an empty
 commit works, or put the marker in the commit message). The exact path list
 lives in
 `scripts/ci/llm-lane-filter.sh` — PolishHelper/**, the bundled
-`llm_*.toml` prompts, model catalog/pins, the polish client, token guard,
+`llm_*.toml` prompts and `AppConfigStore.swift`, which loads and renders
+them, model catalog/pins, the polish client, token guard,
 prompt warmup, clipboard context/macro, repo vocabulary, the polish-commit
 path (`StopCommitCoordinator.swift`, the steps it calls, and
 `DictationSessionController+StopCommit.swift`, which hands it the
