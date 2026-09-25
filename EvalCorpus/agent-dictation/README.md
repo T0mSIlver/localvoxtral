@@ -165,7 +165,8 @@ the complete request payload hash. Stale entries may remain in the append-only
 JSONL but are excluded from the current report. The runner explicitly sends a
 deterministic Qwen eval shape for paired reproducibility
 (`temperature=0`, `top_p=1`, `top_k=0`, `min_p=0`, presence penalty 0, thinking
-off); this is intentionally stricter than the app client's default temperature.
+off); the app sends only the temperature, so the other fields are stricter than
+its request.
 Preserve it when adding variants. The generated
 `.build/agent-eval-ablation.html` compares every stage per case. Its aggregate
 scoring is Markdown-neutral: backticks, headings, and list markers remain

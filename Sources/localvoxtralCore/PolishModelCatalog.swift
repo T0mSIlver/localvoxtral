@@ -42,10 +42,12 @@ package struct PolishModelOption: Equatable, Sendable {
 }
 
 package enum PolishModelCatalog {
-    /// Every catalog model decodes greedily (temperature 0). On both polish
-    /// corpora the 4B scored the same at 0 as at the request default of 0.3
-    /// (#533), and greedy output repeats exactly, which the evals and
-    /// learning from edits rely on. Mistral and External URL keep 0.3.
+    /// The 4B and 9B decode greedily (temperature 0): greedy output repeats
+    /// exactly, which the evals and learning from edits rely on, and on the
+    /// polish eval lane neither lost a case to it (#533, #563). The 0.8B
+    /// keeps the 0.3 request default: at 0 it lost a required case
+    /// (fr-colon-missing-space) and two known-hard ones. Mistral and External
+    /// URL keep 0.3 too.
     package static let options: [PolishModelOption] = [
         // sizeOnDiskGB is DECIMAL GB of the files the downloader actually
         // fetches (weights + tokenizer + configs; the include patterns skip
@@ -58,7 +60,7 @@ package enum PolishModelCatalog {
             displayName: "Qwen3.5 0.8B (fastest)",
             sizeOnDiskGB: 1.0,
             estimatedRAMGB: 1.2,
-            samplingDefaults: PolishSamplingDefaults(temperature: 0),
+            samplingDefaults: nil,
             chatTemplateArguments: nil
         ),
         PolishModelOption(

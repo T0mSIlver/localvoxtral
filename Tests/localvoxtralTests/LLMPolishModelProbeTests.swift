@@ -222,7 +222,8 @@ final class LLMPolishModelProbeTests: XCTestCase {
             report.append("P3-fewshot \(hardCase.id): \(ok ? "PASS" : "FAIL") — got \"\(oneLine(out))\"")
         }
 
-        // P4: production default prompts, but temperature 0 instead of 0.3.
+        // P4: production default prompts at temperature 0 (0.3 was the
+        // production default when this probe was written).
         let templates = AppConfigStore(
             configDirectoryOverride: FileManager.default.temporaryDirectory
                 .appendingPathComponent("lv-probe-\(UUID().uuidString)", isDirectory: true)

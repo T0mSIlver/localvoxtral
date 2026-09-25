@@ -488,8 +488,9 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(configuration?.chatTemplateArguments, ["enable_thinking": false])
     }
 
-    /// The bundled helper's catalog models decode greedily (#563); Mistral and
-    /// External URL, which nothing measured at 0, keep the 0.3 default.
+    /// The bundled helper's 4B and 9B decode greedily (#563). The 0.8B lost
+    /// eval cases at 0, and nothing measured Mistral or External URL at 0, so
+    /// they keep the 0.3 default.
     func testPolishRequestTemperature_helperGreedy_mistralAndExternalKeepDefault() throws {
         let request = LLMPolishingRequest(
             inputText: "hello", systemPrompt: "system", userPrompts: ["hello"])
@@ -503,9 +504,15 @@ final class SettingsStoreTests: XCTestCase {
 
         let store = makeStore()
         store.llmPolishingEnabled = true
-        for option in PolishModelCatalog.options {
-            store.managedLLMPolishingModel = option.repoID
-            XCTAssertEqual(try temperature(store.llmPolishingConfiguration), 0, option.repoID)
+        let expected: [String: Double] = [
+            "mlx-community/Qwen3.5-0.8B-8bit": 0.3,
+            "mlx-community/Qwen3.5-4B-OptiQ-4bit": 0,
+            "mlx-community/Qwen3.5-9B-OptiQ-4bit": 0,
+        ]
+        XCTAssertEqual(Set(expected.keys), Set(PolishModelCatalog.options.map(\.repoID)))
+        for (repoID, value) in expected {
+            store.managedLLMPolishingModel = repoID
+            XCTAssertEqual(try temperature(store.llmPolishingConfiguration), value, repoID)
         }
         // A custom managed repo is not in the catalog, so nothing measured it.
         store.managedLLMPolishingModel = "mlx-community/custom-polisher"

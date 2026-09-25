@@ -10,13 +10,18 @@ final class PolishModelCatalogTests: XCTestCase {
         XCTAssertEqual(defaultOption.repoID, "mlx-community/Qwen3.5-4B-OptiQ-4bit")
         XCTAssertEqual(PolishModelCatalog.option(forRepoID: defaultOption.repoID), defaultOption)
         XCTAssertNil(PolishModelCatalog.option(forRepoID: "unknown/model"))
-        // Greedy decoding scored the same as temperature 0.3 on both polish
-        // corpora (#533) and repeats exactly (#563). Only the temperature is
-        // set: Qwen's recommended sampling lost to it on the eval (#97).
-        for option in PolishModelCatalog.options {
-            XCTAssertEqual(
-                option.samplingDefaults, PolishSamplingDefaults(temperature: 0), option.repoID)
-        }
+        // The 4B and 9B decode greedily (#563); the 0.8B lost cases at 0 and
+        // keeps the 0.3 request default. Only the temperature is set: Qwen's
+        // recommended sampling lost to 0.3 on the eval (#97).
+        XCTAssertEqual(defaultOption.samplingDefaults, PolishSamplingDefaults(temperature: 0))
+        XCTAssertEqual(
+            PolishModelCatalog.option(forRepoID: "mlx-community/Qwen3.5-9B-OptiQ-4bit")?
+                .samplingDefaults,
+            PolishSamplingDefaults(temperature: 0)
+        )
+        XCTAssertNil(
+            PolishModelCatalog.option(forRepoID: "mlx-community/Qwen3.5-0.8B-8bit")?.samplingDefaults
+        )
         XCTAssertEqual(defaultOption.chatTemplateArguments, ["enable_thinking": false])
         // The 0.8B stays selectable with its legacy request shape (nil kwargs).
         XCTAssertNil(
