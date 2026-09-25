@@ -178,7 +178,8 @@ def parse(reply: str) -> list[tuple[str, list[str]]]:
                 continue
             if isinstance(array, list):
                 terms = [(e, []) if isinstance(e, str)
-                         else (e["term"], [h for h in e.get("heard") or [] if isinstance(h, str)])
+                         else (e["term"], [h for h in e["heard"] if isinstance(h, str)]
+                               if isinstance(e.get("heard"), list) else [])
                          for e in array
                          if isinstance(e, str) or (isinstance(e, dict) and isinstance(e.get("term"), str))]
                 if terms or not array:
