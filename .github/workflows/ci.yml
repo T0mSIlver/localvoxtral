@@ -621,7 +621,7 @@ jobs:
           # runs the job on an empty list.
           if [[ "$GITHUB_EVENT_NAME" == "pull_request" && -n "$PR_BASE_SHA" ]] \
               && git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"; then
-            git diff --name-only "$PR_BASE_SHA" HEAD -- > "$FILES" || : > "$FILES"
+            git diff --name-only --no-renames "$PR_BASE_SHA" HEAD -- > "$FILES" || : > "$FILES"
           fi
           if ! DECISION="$(./scripts/ci/dogfood-filter.sh "$FILES" "$GITHUB_EVENT_NAME")"; then
             DECISION=$'run=true\nreason=dogfood filter failed — failing open'
