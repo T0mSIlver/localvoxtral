@@ -9,8 +9,6 @@ extension ClaudeRemoteEnrollmentService {
     ///   - sshHostAlias: the `Host` stanza name in `~/.ssh/config`. Validated,
     ///     not escaped — an alias is a bare token and anything else is a mistake
     ///     we should surface rather than quietly rewrite.
-    ///   - token: the plaintext embedded in the generated documentation/test
-    ///     plan and, after consent, its SSH stdin script. Not stored or logged.
     ///   - listenerPort: the port the app listens on, HERE, on this Mac. The
     ///     forward's target.
     ///   - remoteForwardPort: the port the forward binds THERE, on the remote
@@ -22,7 +20,6 @@ extension ClaudeRemoteEnrollmentService {
     public static func plan(
         host: ClaudeRemoteHost,
         sshHostAlias: String,
-        token: String,
         listenerPort: UInt16 = ClaudeRemoteListenerLimits.default.port,
         remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort
     ) throws -> SetupPlan {
@@ -34,10 +31,6 @@ extension ClaudeRemoteEnrollmentService {
                 sshHostAlias: sshHostAlias,
                 listenerPort: listenerPort,
                 remoteForwardPort: remoteForwardPort
-            ),
-            remoteCommands: remoteCommands(token: token, remoteForwardPort: remoteForwardPort),
-            updateCommands: updateCommands(
-                sshHostAlias: sshHostAlias, remoteForwardPort: remoteForwardPort
             )
         )
     }
@@ -55,8 +48,7 @@ extension ClaudeRemoteEnrollmentService {
     /// reaches `ssh`'s argv as an option, and OpenSSH then prints its version
     /// and exits 0 without connecting — every step reports success while
     /// nothing ran on any host (review finding, PR #197). Argv termination in
-    /// `execute` is the second layer; this is the first, and it is the one that
-    /// also covers the commands the user pastes by hand.
+    /// `execute` is the second layer; this is the first.
     public static func isValidHostAlias(_ alias: String) -> Bool {
         guard !alias.isEmpty, alias.count <= 128 else { return false }
         guard !alias.hasPrefix("-") else { return false }
@@ -104,73 +96,5 @@ extension ClaudeRemoteEnrollmentService {
             SendEnv LC_LVX_TTY
         \(blockEnd(hostID: host.id))
         """
-    }
-
-    /// The first-time setup pair.
-    ///
-    /// Both are idempotent, but only in the weak sense: on a host that already
-    /// has them, `marketplace add` exits 0 without refreshing the clone and
-    /// `plugin install` exits 0 without changing the installed version (verified
-    /// on Claude Code 2.1.220). `install` DOES apply a new `--config token=`,
-    /// which is why rotation reuses this exact command — and why shipping a new
-    /// plugin version needs `updateCommands` instead.
-    /// `--config` is repeatable and MERGES per key on an already-installed
-    /// plugin: verified on Claude Code 2.1.220 (`--help` documents "repeatable";
-    /// a second install with only `--config port=` kept the stored token and
-    /// replaced only the port). That is what makes the port migratable without
-    /// ever re-sending a credential.
-    static func remoteCommands(token: String, remoteForwardPort: UInt16) -> [String] {
-        [
-            "claude plugin marketplace add \(repositoryMarketplaceReference)",
-            // Leading space: with HISTCONTROL=ignorespace (bash) or
-            // HIST_IGNORE_SPACE (zsh) the token stays out of the remote shell
-            // history. See `docs/remote-claude-context.md` ("Shell history and
-            // rotation") — it is a habit, not a guarantee.
-            " claude plugin install \(remotePluginReference) --config '\(tokenConfigKey)=\(token)'"
-                + " --config '\(portConfigKey)=\(remoteForwardPort)'",
-        ]
-    }
-
-    /// PATH prefix for a `claude` invocation inside `ssh <host> '<command>'`.
-    ///
-    /// Non-interactive SSH skips the login rc, so `claude` is routinely off PATH
-    /// there on a host where it works fine interactively. The stdin script has
-    /// its own resolver (`claudePathResolverPreamble`); this is the one-liner
-    /// equivalent for the commands a person pastes.
-    static let nonInteractiveClaudePathPrefix =
-        "PATH=\"$HOME/.claude/local:$HOME/.local/bin:$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\" "
-
-    /// The remote-side commands, in order, with nothing wrapped around them.
-    /// Execution sends these through the SSH stdin script;
-    /// `updateCommands(sshHostAlias:remoteForwardPort:)` is the same set written
-    /// for a person to paste from this Mac.
-    ///
-    /// The third command is the port MIGRATION, and it is why update takes a
-    /// port at all: a host enrolled before #215 has no `port` option, so its
-    /// shim posts to the legacy 8473 while this Mac has moved its forward to an
-    /// allocated one — two halves that disagree, failing open in silence.
-    /// `plugin update` has no `--config` (Claude Code 2.1.220), and `install`
-    /// on an installed plugin merges config per key without touching the stored
-    /// token, so this line is both the only way and a token-free one.
-    static func remotePluginUpdateCommands(remoteForwardPort: UInt16) -> [String] {
-        [
-            "claude plugin marketplace update \(ClaudePluginAssets.marketplaceName)",
-            "claude plugin update \(remotePluginReference)",
-            "claude plugin install \(remotePluginReference) --config '\(portConfigKey)=\(remoteForwardPort)'",
-        ]
-    }
-
-    /// Bring an enrolled host to the plugin version this app ships.
-    ///
-    /// The generated commands remain a documentation and test seam. The docs
-    /// explain that re-running setup is NOT an update (on Claude Code 2.1.220
-    /// `plugin install` exits 0 with "already installed" and `marketplace add`
-    /// does not refresh a clone it has), the stored token is preserved, and the
-    /// third command only points this host at THIS Mac's allocated port —
-    /// required once for a host enrolled before per-Mac ports, harmless after.
-    static func updateCommands(sshHostAlias: String, remoteForwardPort: UInt16) -> [String] {
-        remotePluginUpdateCommands(remoteForwardPort: remoteForwardPort).map {
-            "ssh \(sshHostAlias) '\(nonInteractiveClaudePathPrefix)\($0)'"
-        }
     }
 }

@@ -631,9 +631,9 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let plan = try XCTUnwrap(model.presentedPlan)
         XCTAssertFalse(plan.isRotation)
         XCTAssertTrue(ClaudeRemoteTokenDigest.isWellFormed(plan.token))
-        XCTAssertTrue(plan.plan.remoteCommands.joined().contains(plan.token))
-        // The install command needs it; the ssh config must not have it. That
-        // file gets copied between machines and pasted into issues.
+        // The install script needs it (`testTheSetupRunInstallsTheSheetsTokenThroughStdinOnly`);
+        // the ssh config must not have it. That file gets copied between
+        // machines and pasted into issues.
         XCTAssertFalse(plan.plan.sshConfigSnippet.contains(plan.token))
 
         model.dismissPlan()
@@ -1005,7 +1005,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     /// `claude plugin install` is not an update — on Claude Code 2.1.220 it
     /// exits 0 on an installed plugin and leaves the old version in place — so
     /// an enrolled host has no way to receive a plugin fix without this action.
-    func testPluginUpdateShowsThatHostsCommandsAndRunsNothingYet() async throws {
+    func testPluginUpdateTargetsThatHostsAliasAndRunsNothingYet() async throws {
         let registry = try makeRegistry()
         let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
         let service = ClaudeRemoteEnrollmentService(
@@ -1034,10 +1034,6 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             "the update must target the enrolled alias, never the display name"
         )
         XCTAssertTrue(update.canRun)
-        let commands = update.commands.joined(separator: "\n")
-        XCTAssertTrue(commands.contains("ssh builder "))
-        XCTAssertFalse(commands.contains("ssh prod "), "updating the wrong host is the whole risk")
-        XCTAssertTrue(commands.contains("claude plugin update"))
         XCTAssertTrue(calls.withLock { $0 }.isEmpty, "disclosure must not run anything")
         XCTAssertNil(model.enrollmentConfirmation)
     }
@@ -1150,8 +1146,6 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             plan.sshConfigSnippet.contains("RemoteForward 28542 127.0.0.1:8473"),
             plan.sshConfigSnippet
         )
-        XCTAssertTrue(plan.remoteCommands.joined().contains("--config 'port=28542'"))
-        XCTAssertTrue(plan.updateCommands.joined().contains("--config 'port=28542'"))
         // The check probes the same allocation: the verify commands became an
         // in-app action, so what used to be asserted on their text is now
         // asserted on what the presentation hands the probe.
@@ -1163,7 +1157,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let hostID = try XCTUnwrap(model.hosts.first).id
         model.requestPluginUpdate(hostID: hostID)
         let update = try XCTUnwrap(model.presentedPluginUpdate)
-        XCTAssertTrue(update.commands.joined().contains("--config 'port=28542'"))
+        XCTAssertTrue(try XCTUnwrap(update.sshConfigSnippet).contains("RemoteForward 28542 127.0.0.1:8473"))
         XCTAssertTrue(
             // Fresh enrollment. The UPDATE path for an ALREADY-enrolled host
             // regenerates this same snippet and inserts it, which is what the
@@ -1250,6 +1244,10 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertTrue(
             scripts.contains { $0.contains("--config 'port=28542'") },
             "the plugin-side port write must have run too: \(scripts)"
+        )
+        XCTAssertFalse(
+            scripts.contains { $0.contains("\(ClaudeRemoteEnrollmentService.tokenConfigKey)=") },
+            "the update run has no token to send"
         )
         let run = try XCTUnwrap(model.setupRun)
         XCTAssertEqual(run.items[0].state, .done("The SSH config block is current."))
@@ -1341,7 +1339,11 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     /// FRESH token to whatever answers to the guessed name.
     func testRotationTargetsTheEnrolledAliasNotTheDisplayName() async throws {
         let registry = try makeRegistry()
-        let service = ClaudeRemoteEnrollmentService(runner: { _ in .init(exitCode: 0, message: "ok") })
+        let recorder = SetupFlowRecorder()
+        let service = ClaudeRemoteEnrollmentService(
+            runner: setupFlowRunner(script: SetupFlowScript(), recorder: recorder),
+            sshConfigFileSystem: StubSSHConfigFileSystem()
+        )
         let model = await enrolledModel(
             label: "prod", alias: "builder", registry: registry, service: service
         )
@@ -1352,8 +1354,15 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let presentation = try XCTUnwrap(model.presentedPlan)
         XCTAssertEqual(presentation.sshHostAlias, "builder")
         XCTAssertTrue(presentation.canRunRemoteSetup)
-        XCTAssertTrue(presentation.plan.updateCommands.joined().contains("ssh builder"))
-        XCTAssertFalse(presentation.plan.updateCommands.joined().contains("ssh prod"))
+
+        model.requestHostSetup()
+        await model.confirmEnrollmentAction()
+        let argvs = recorder.all.map(\.argv)
+        XCTAssertFalse(argvs.isEmpty, "the rotated host's setup must have run")
+        for argv in argvs {
+            XCTAssertTrue(argv.contains("builder"), "\(argv)")
+            XCTAssertFalse(argv.contains("prod"), "a fresh token to the wrong host is the whole risk: \(argv)")
+        }
     }
 
     func testRotatingAHostEnrolledBeforeAliasesWereRecordedRequiresReenrollment() async throws {
@@ -1411,10 +1420,9 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let update = try XCTUnwrap(model.presentedPluginUpdate)
         XCTAssertNil(update.sshHostAlias)
         XCTAssertFalse(update.canRun)
-        XCTAssertTrue(
-            update.commands.joined(separator: "\n")
-                .contains(ClaudeIntegrationSettingsModel.unknownAliasPlaceholder)
-        )
+        let snippet = try XCTUnwrap(update.sshConfigSnippet)
+        XCTAssertTrue(snippet.contains("Host \(ClaudeIntegrationSettingsModel.unknownAliasPlaceholder)\n"))
+        XCTAssertFalse(snippet.contains("Host buildhost"), "the label is not a stand-in for an alias")
 
         model.requestHostUpdateRun()
         await model.confirmEnrollmentAction()
@@ -2717,13 +2725,15 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         service: ClaudeRemoteEnrollmentService,
         shell: ClaudeShellKind? = .zsh,
         rcFileSystem: StubRCFileSystem? = nil,
-        vibeFiles: @escaping @Sendable () -> VibeRemoteHooksFiles? = { nil }
+        vibeFiles: @escaping @Sendable () -> VibeRemoteHooksFiles? = { nil },
+        remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort
     ) -> ClaudeIntegrationSettingsModel {
         let rc = rcFileSystem
         return makeModel(
             registry: registry,
             listener: listener,
             enrollmentService: service,
+            remoteForwardPort: remoteForwardPort,
             loginShell: { shell },
             shellRCWriter: { _ in rc.map { ClaudeShellRCWriter(fileSystem: $0) } },
             vibeRemoteFiles: vibeFiles
@@ -2741,7 +2751,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         )),
         vibeHost: VibeFakeHost? = nil,
         registry suppliedRegistry: ClaudeRemoteHostRegistry? = nil,
-        vibeFiles suppliedVibeFiles: (@Sendable () -> VibeRemoteHooksFiles?)? = nil
+        vibeFiles suppliedVibeFiles: (@Sendable () -> VibeRemoteHooksFiles?)? = nil,
+        remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort
     ) async throws -> (
         model: ClaudeIntegrationSettingsModel,
         hostID: String,
@@ -2765,7 +2776,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             shell: shell,
             rcFileSystem: rcFileSystem,
             vibeFiles: try suppliedVibeFiles
-                ?? { [files = vibeHost == nil ? nil : try XCTUnwrap(VibeRemoteHooksFiles.bundled())] in files }
+                ?? { [files = vibeHost == nil ? nil : try XCTUnwrap(VibeRemoteHooksFiles.bundled())] in files },
+            remoteForwardPort: remoteForwardPort
         )
         model.enrollLabel = "buildhost"
         model.enrollSSHAlias = "builder"
@@ -2849,6 +2861,25 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             ],
             "each step must finish before the next one starts"
         )
+    }
+
+    /// The token the sheet shows is the one the install stores, beside this
+    /// Mac's allocated port, and it rides stdin: no argv on this Mac carries it.
+    @MainActor
+    func testTheSetupRunInstallsTheSheetsTokenThroughStdinOnly() async throws {
+        let (model, _, _, recorder) = try await enrollAndRunSetup(remoteForwardPort: 28542)
+        let token = try XCTUnwrap(model.presentedPlan).token
+        let scripts = recorder.all.map { String(decoding: $0.standardInput, as: UTF8.self) }
+        XCTAssertEqual(
+            scripts.filter { $0.contains(token) }.count, 1,
+            "only the install call carries the token"
+        )
+        XCTAssertTrue(scripts.contains {
+            $0.contains("--config 'token=\(token)' --config 'port=28542'")
+        })
+        for invocation in recorder.all {
+            XCTAssertFalse(invocation.argv.joined(separator: " ").contains(token), "\(invocation.argv)")
+        }
     }
 
     // MARK: - Mistral Vibe inside the host's one run

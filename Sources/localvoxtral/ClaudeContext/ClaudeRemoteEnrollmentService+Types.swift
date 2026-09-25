@@ -1,30 +1,24 @@
 import Foundation
 
 extension ClaudeRemoteEnrollmentService {
-    /// The text the user actually has to apply, and nothing else.
+    /// What the setup run writes on this Mac for one host.
     ///
-    /// Everything here is comment-free (owner rule, 2026-08-04: "commands you
-    /// have to copy-paste have comments, that's just dumb — display it in the
-    /// app or not at all"). The explanations that used to ride along as `#`
-    /// lines are now either decided by the app (verification — see
-    /// `executeVerification`) or written as prose in
-    /// `docs/remote-claude-context.md`. The only `#` lines that survive are the
-    /// snippet's BEGIN/END delimiters, which are functional: the idempotent
-    /// replace and `sshConfigBlockIsCurrent` both key on them.
+    /// Comment-free (owner rule, 2026-08-04: "commands you have to copy-paste
+    /// have comments, that's just dumb — display it in the app or not at all").
+    /// The explanations that used to ride along as `#` lines are now either
+    /// decided by the app (verification — see `executeVerification`) or
+    /// written as prose in `docs/remote-claude-context.md`. The only `#` lines
+    /// that survive are the snippet's BEGIN/END delimiters, which are
+    /// functional: the idempotent replace and `sshConfigBlockIsCurrent` both
+    /// key on them.
     ///
-    /// `verifyCommands`, `uninstallCommands` and `notes` are gone with them —
-    /// the first became an in-app action, the other two are documentation.
+    /// The remote half is not text here: `setupRemotePlugin` and its siblings
+    /// build the scripts they send, and the docs page lists every command.
     public struct SetupPlan: Sendable, Equatable {
         /// Idempotent `~/.ssh/config` block. Contains NO token — the credential
         /// belongs to the Claude plugin's userConfig on the remote host, not to
         /// a file that gets copied between machines and pasted into issues.
         public var sshConfigSnippet: String
-        /// Run on the REMOTE host, once.
-        public var remoteCommands: [String]
-        /// Bring an already-enrolled host to the plugin version this app ships.
-        /// Carries no token: `claude plugin update` keeps the config the install
-        /// already stored.
-        public var updateCommands: [String]
     }
 
     /// One interpreted verdict from `executeVerification`.

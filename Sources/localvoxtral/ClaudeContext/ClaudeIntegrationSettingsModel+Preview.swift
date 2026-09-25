@@ -43,7 +43,6 @@ extension ClaudeIntegrationSettingsModel {
         guard let plan = try? ClaudeRemoteEnrollmentService.plan(
             host: host,
             sshHostAlias: "build-host",
-            token: token,
             listenerPort: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port,
             remoteForwardPort: remoteForwardPort
         ) else { return }
