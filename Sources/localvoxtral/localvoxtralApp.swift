@@ -543,6 +543,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 focusedDesktopSessionURL: {
                     await desktopSessionReader.focusedSessionURL(applicationPID: $0)
                 },
+                focusedWindowID: { TerminalScreenAXReader.focusedWindowIdentity(applicationPID: $0) },
                 herdrClientProbe: {
                     HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0)
                 },

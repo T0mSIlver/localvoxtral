@@ -303,13 +303,3 @@ enum TerminalScreenAXReader {
     static var debugFocusedWindowIDOverride: ((pid_t) -> CGWindowID?)?
     #endif
 }
-
-extension TerminalScreenAXReader {
-    /// `TerminalScreenText`'s cap and sanitizer under their former names, for
-    /// `SocketPaneScreenContext` until it calls them there (#591).
-    nonisolated static let screenCharacterCap = TerminalScreenText.screenCharacterCap
-
-    static func sanitizedScreenText(_ raw: String) -> String? {
-        TerminalScreenText.sanitizedScreenText(raw)
-    }
-}

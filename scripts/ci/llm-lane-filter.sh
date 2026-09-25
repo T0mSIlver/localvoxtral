@@ -97,6 +97,7 @@ PATTERNS=(
   '*BrowserTabURLReader*'                            # per-browser focused-tab url reads: which session the context comes from
   '*BrowserTabAllowlist*'                            # which browsers may be asked for that url at all
   '*ClaudeDesktopSessionReader*'                     # Claude Desktop focused web view address: which session the context comes from
+  '*ClaudeDesktopAllowlist*'                         # which app may be asked for that address at all
   '*SessionContextResolver*'                        # the context gates themselves (#432 step 4b)
   '*PolishRequestAssembler*'                        # sections, pre-application, prompts, blocks (#432 step 5)
   '*PolishOutcomeClassifier*'                       # placeholder integrity, failure copy (#432 step 5)
@@ -194,6 +195,7 @@ EXEMPT=(
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardPidLedger.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardPort.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardSupervisor.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardProcess.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteTokenRedaction.swift'      # log redaction
   'Sources/localvoxtral/ClaudeContext/ClaudeSurfaceProbeCommand.swift'       # the --probe-surface CLI wrapper
 )

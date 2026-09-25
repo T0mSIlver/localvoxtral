@@ -1,5 +1,7 @@
 import ClaudeContextWire
+#if canImport(CoreGraphics)
 import CoreGraphics
+#endif
 import Foundation
 
 /// Authorizes raw screen attachment from an already-resolved join.

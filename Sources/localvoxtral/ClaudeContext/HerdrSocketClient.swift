@@ -1,7 +1,11 @@
 import Foundation
 
+#if canImport(Darwin) || canImport(Glibc)
 #if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 
 /// What the resolver needs to know about herdr's focused pane.
 struct HerdrFocusedPane: Sendable, Equatable {
@@ -315,7 +319,7 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
         // The protocol is exactly one request. Half-closing makes that
         // invariant explicit without preventing the response half from being
         // read.
-        shutdown(fd, SHUT_WR)
+        shutdown(fd, Int32(SHUT_WR))
         guard let response = readLine(fd: fd, deadline: deadline) else {
             Log.claudeContext.info("Herdr query abstained: response deadline, framing, or size failure")
             return nil
@@ -326,7 +330,7 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
     private func openConnection(to socketPath: String, deadline: UInt64) -> Int32? {
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
-        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        POSIXSocket.setLength(of: &address)
         let pathBytes = Array(socketPath.utf8)
         let capacity = MemoryLayout.size(ofValue: address.sun_path)
         guard pathBytes.count < capacity else { return nil }
@@ -335,7 +339,7 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
             raw[pathBytes.count] = 0
         }
 
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        let fd = socket(AF_UNIX, POSIXSocket.stream, 0)
         guard fd >= 0 else { return nil }
         guard makeNonBlocking(fd) else {
             close(fd)
@@ -344,6 +348,8 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
         // A failed SO_NOSIGPIPE is fatal to the CALLER, not just this query: a
         // peer closing mid-write would then SIGPIPE the whole app (the same
         // class of crash as the FileHandle field bug, PR #60). Abstain instead.
+        // Linux has no such option; its sends pass `MSG_NOSIGNAL`.
+        #if canImport(Darwin)
         var noSigPipe: Int32 = 1
         guard setsockopt(
             fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe,
@@ -352,10 +358,11 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
             close(fd)
             return nil
         }
+        #endif
 
         let status = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                LibC.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
         if status == 0 { return fd }
@@ -387,7 +394,9 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
             guard let base = raw.baseAddress else { return false }
             var offset = 0
             while offset < raw.count {
-                let written = Darwin.send(fd, base.advanced(by: offset), raw.count - offset, 0)
+                let written = LibC.send(
+                    fd, base.advanced(by: offset), raw.count - offset, POSIXSocket.sendFlags
+                )
                 if written > 0 {
                     offset += written
                     continue
@@ -418,7 +427,7 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
             let remainingThroughSentinel = Self.maxResponseLineBytes + 1 - buffer.count
             guard remainingThroughSentinel > 0 else { return nil }
             let readCapacity = min(chunk.count, remainingThroughSentinel)
-            let count = Darwin.read(fd, &chunk, readCapacity)
+            let count = LibC.read(fd, &chunk, readCapacity)
             if count < 0 {
                 if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
                 return nil
@@ -442,7 +451,7 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
             let roundedMillis = remaining / 1_000_000 + (remaining % 1_000_000 == 0 ? 0 : 1)
             let timeoutMillis = Int32(min(roundedMillis, UInt64(Int32.max)))
             var descriptor = pollfd(fd: fd, events: events, revents: 0)
-            let ready = Darwin.poll(&descriptor, 1, timeoutMillis)
+            let ready = LibC.poll(&descriptor, 1, timeoutMillis)
             if ready < 0, errno == EINTR { continue }
             return ready > 0
         }
