@@ -125,7 +125,8 @@ forces the full run.
 The two helper unit suites are additionally path-gated per helper
 (`scripts/ci/helper-lane-filter.sh`): a PR runs a helper's suite only when the
 diff touches that helper's directory or the shared CI plumbing, while
-dispatches and every push to main run both.
+dispatches run both. Pushes to main skip `mac-lanes` altogether; the nightly
+release covers main.
 
 One tier-0 guard deliberately survives the fast path: `AGENTS.md` and the deep
 guides are `*.md`, so a diff that touches only them is `docs_only=true` and the
@@ -196,7 +197,7 @@ merges.
 The unit-test gate mirrors `ci.yml`'s tier-0 unit step skip for skip, under
 the same supervisor. Two of those skips are load-bearing:
 `HerdrIntegrationTests` starts a live herdr server and carries no `XCTSkip`
-by design, and `AgentDictationE2EEvalTests` is the nightly eval lane. A
+by design, and `AgentDictationE2EEvalTests` is the weekly eval lane. A
 release gate must not start either by accident.
 
 Release notes: GitHub's generated PR list is always included, and a release
@@ -251,7 +252,7 @@ Lock-aware evening AX smoke drill on the self-hosted Mac runner: three
 scheduled slots (18:00/19:30/21:00 UTC, 20:00 Paris anchor), each gated by
 `scripts/ci/ui-smoke-guard.sh` — a slot skips green when the Mac is on
 battery power (scheduled lanes never drain the owner's MacBook,
-`scripts/ci/ac-power-guard.sh`, shared with eval-e2e.yml's nightly), when
+`scripts/ci/ac-power-guard.sh`, shared with eval-e2e.yml's weekly run), when
 the screen is locked (the drill needs an unlocked GUI session), or when a
 slot's drill already ran and passed that day, so at most one real drill runs
 per day. Manual dispatch bypasses the guard; agents dispatch through

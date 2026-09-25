@@ -636,9 +636,16 @@ jobs:
   # on the current head. A draft that needs the signed artifact (try-pr.sh) or
   # a live lane carries the literal [mac-lanes] in its PR BODY. The body and
   # not the commit message, because a job-level `if:` sees only the event.
+  #
+  # Skips a push to main. Every PR that merged ran this job when it went
+  # ready, and the nightly release (release.yml) runs the unit suite, the live
+  # STT lane, packaging and the launch smoke on main every night, so a
+  # push-time rerun only took the Mac for about five minutes per merge. A
+  # dispatch still runs it: `gh workflow run CI --ref main -f herdr=false`
+  # builds main's signed bundle for try-pr.sh.
   mac-lanes:
     if: >-
-      github.event_name != 'pull_request' ||
+      github.event_name == 'workflow_dispatch' ||
       (github.event.pull_request.head.repo.full_name == github.repository &&
        (!github.event.pull_request.draft || contains(github.event.pull_request.body, '[mac-lanes]')))
     runs-on: [self-hosted, macOS, ARM64]

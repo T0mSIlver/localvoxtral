@@ -90,8 +90,8 @@ and order it with blocked-by links, not prose.
   advances it; on the default wall clock the timers fire into the
   process-retained view model after the test ends. New timers go on the clock.
 - UI change: say exactly what you verified by hand and how.
-- Session-path change (view model start/stop, realtime clients, merging,
-  insertion, overlay commit): run the e2e dictation check and paste its lines
+- Change to text insertion, focus handling or the stop and overlay commit
+  (`scripts/ci/e2e-dictation-filter.sh`): run the e2e dictation check and paste its lines
   (`docs/agent/test-tiers.md`). It is the only check where the packaged app
   dictates, and it holds the Mac and the owner's keyboard: dispatch it only
   with `scripts/ui-smoke-dispatch.sh`, once per PR (per stack, from the top),

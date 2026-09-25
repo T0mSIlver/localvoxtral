@@ -31,7 +31,7 @@ set -euo pipefail
 # only adds time and one more way for `gh run watch --exit-status` to give up
 # before downloading anything. The herdr
 # contract is held where it belongs: the path filter + [run-herdr-integration]
-# marker on PRs, and every push to main.
+# marker on PRs.
 #
 # Requires: gh (authenticated). Artifacts exist for CI runs made after the
 # artifact-upload step landed; use "gh run rerun <run-id>" on older PRs.
@@ -125,14 +125,32 @@ if (( ! DOGFOOD )) && ! run_has_artifact "$RUN_ID"; then
     done
     ACTIVE_RUN="$(gh run list --workflow CI --commit "$HEAD_SHA" --limit 10 --json databaseId,status \
       --jq '[.[] | select(.status != "completed")][0].databaseId // empty')"
+  elif [[ "$TARGET" == "main" ]]; then
+    # A push to main skips mac-lanes, so main's newest green run has no
+    # bundle; take the newest one that does (a dispatch), and say how old.
+    for candidate in $(gh run list --workflow CI --branch main --status success --limit 30 \
+        --json databaseId --jq '.[].databaseId'); do
+      if run_has_artifact "$candidate"; then
+        WITH_ARTIFACT="$candidate"
+        break
+      fi
+    done
   fi
-  if [[ -n "$WITH_ARTIFACT" ]]; then
+  if [[ -n "$WITH_ARTIFACT" && "$TARGET" == "main" ]]; then
+    RUN_ID="$WITH_ARTIFACT"
+    echo "Using main's newest signed build, run $RUN_ID ($(gh run view "$RUN_ID" --json headSha --jq '.headSha[0:7]'))." >&2
+    echo "For a build of main's head: gh workflow run CI --ref main -f herdr=false" >&2
+  elif [[ -n "$WITH_ARTIFACT" ]]; then
     RUN_ID="$WITH_ARTIFACT"
   elif [[ -n "$ACTIVE_RUN" ]]; then
     echo "CI run $ACTIVE_RUN is still building '$TARGET'. Wait for it: ./scripts/watch-checks.sh --run $ACTIVE_RUN" >&2
     exit 1
   else
     echo "No green CI run for '$TARGET' carries the $ARTIFACT artifact." >&2
+    if [[ "$TARGET" == "main" ]]; then
+      echo "Pushes to main skip mac-lanes. Build one: gh workflow run CI --ref main -f herdr=false" >&2
+      exit 1
+    fi
     echo "A draft PR skips mac-lanes, the job that builds it: gh pr ready $TARGET, or put [mac-lanes] in its body and push." >&2
     echo "A docs-only diff builds no bundle either; [mac-lanes] in the body forces the full run." >&2
     exit 1

@@ -17,33 +17,21 @@
 # Exits 0 for both decisions; non-zero only on usage errors.
 set -euo pipefail
 
-# The session path between the capture callback and the focused app, as
-# AGENTS.md (Proof) names it: session start and stop, the realtime clients,
-# transcript merging, text insertion, the overlay commit. Plus the check
-# itself, and the dogfood capture it dictates through.
+# Only what no other check reaches: text insertion into another app's
+# window, focus handling and the commit that inserts (stop-commit and the
+# overlay commit). Plus the check itself, and the dogfood capture it dictates
+# through (owner decision 2026-09-25, to take load off the Mac).
 #
-# Deliberately NOT here: the polish path (polishing is off in every scenario;
+# Deliberately NOT here: session start and stop, audio capture, the realtime
+# clients, transcript merging and live correction (unit suites and the live
+# STT lane cover them), the polish path (polishing is off in every scenario;
 # PolishRequestGoldenTests proves it), the overlay's look (wrap, layout,
 # anchor; UI change rules apply), settings, onboarding, the Claude context
 # path, the helpers (their integration lanes), docs and CI plumbing. The
 # evening runs on main catch what a path list misses.
 PATTERNS=(
-  'Sources/localvoxtral/DictationViewModel.swift'
-  'Sources/localvoxtral/DictationSessionController*.swift' # start, stop, realtime events, reconnect, spoken send
+  'Sources/localvoxtral/DictationSessionController+StopCommit.swift'
   'Sources/localvoxtral/StopCommitCoordinator*.swift'      # the stop-commit, in both modes
-  'Sources/localvoxtral/SessionAudioPipeline*.swift'       # capture callback to the client
-  'Sources/localvoxtral/MicrophoneCapturing.swift'
-  'Sources/localvoxtral/MicrophoneCaptureService.swift'
-  'Sources/localvoxtralCore/AudioChunkBuffer.swift'
-  'Sources/localvoxtralCore/FirstChunkPreprocessor.swift'
-  'Sources/localvoxtral/RealtimeClient.swift'
-  'Sources/localvoxtral/*RealtimeWebSocketClient.swift'   # Base, RealtimeAPI, Mistral
-  'Sources/localvoxtral/RealtimeReconnectPolicy.swift'
-  'Sources/localvoxtralCore/TranscriptAccumulator.swift'
-  'Sources/localvoxtralCore/TextMergingAlgorithms.swift'
-  'Sources/localvoxtral/TranscriptDiff.swift'
-  'Sources/localvoxtralCore/LiveHoldBackReplacementStream.swift'
-  'Sources/localvoxtralCore/LiveReplacementCorrector.swift'
   'Sources/localvoxtral/LiveTerminalNewlineGuard.swift'
   'Sources/localvoxtral/TUIAutocompleteTrailingSpace.swift'
   'Sources/localvoxtral/TextInsertionService.swift'
@@ -77,7 +65,7 @@ while IFS= read -r file; do
     case "$file" in
       $pattern)
         echo "run=true"
-        echo "reason=session path: $file"
+        echo "reason=insertion path: $file"
         exit 0
         ;;
     esac
@@ -85,4 +73,4 @@ while IFS= read -r file; do
 done <"$CHANGED_FILES_FILE"
 
 echo "run=false"
-echo "reason=no session-path file changed; the e2e dictation check is not needed"
+echo "reason=no insertion, focus or commit file changed; the e2e dictation check is not needed"

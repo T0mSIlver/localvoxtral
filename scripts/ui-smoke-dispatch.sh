@@ -3,7 +3,7 @@
 # or refuses. Each run holds the only Mac for about ten minutes and takes the
 # owner's keyboard, so it runs once per PR, on the final diff (#544):
 #
-#   refuse  the diff touches no session-path file (scripts/ci/e2e-dictation-filter.sh)
+#   refuse  the diff touches no insertion, focus or commit file (scripts/ci/e2e-dictation-filter.sh)
 #   refuse  build-test is not green on the branch head
 #   refuse  a UI Smoke run on the branch is still queued or running
 #   refuse  a UI Smoke run on the branch started less than an hour ago
