@@ -248,6 +248,10 @@ It refuses when:
   redispatch. A later commit may run again after the hour; take that run only
   when the commit changed session-path code since the last one.
 
+The last two count only runs whose job ran a step. Adding any other label to
+a PR creates a UI Smoke run that is skipped or cancelled before it reaches the
+Mac; the wrapper lists those as ignored.
+
 `--override "<why>"` skips all but the queued-run refusal, for a rerun the
 owner asked for; quote the reason in the PR. The `needs-ui-smoke` label
 dispatches without these checks, so it is the owner's, not an agent's.
