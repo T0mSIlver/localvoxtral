@@ -1,17 +1,17 @@
 import Foundation
 
-struct LiveReplacementCorrection: Sendable {
-    let replacementText: String
+package struct LiveReplacementCorrection: Sendable {
+    package let replacementText: String
 
     /// Where in the corrected text this correction begins rewriting.
     /// `LiveHoldBackReplacementStream` asserts it never precedes text it has
     /// already released for typing.
-    let startOffset: Int
+    package let startOffset: Int
 
     fileprivate let endOffset: Int
 }
 
-struct LiveReplacementCorrector {
+package struct LiveReplacementCorrector {
     private let rules: [LiveReplacementRule]
     private let maxKeyWordCount: Int
     private var typedText = ""
@@ -53,7 +53,7 @@ struct LiveReplacementCorrector {
     /// ordinary dictionaries with the floor for a contrived hazard; instead
     /// the stream's runtime release-boundary guard backstops it by dropping
     /// the violating correction with an error log.
-    let hasChainingPotential: Bool
+    package let hasChainingPotential: Bool
 
     /// True when some rule's replacement contains no words at all (empty or
     /// whitespace-only replaceWith) — a DELETION rule. Deletion rules chain
@@ -67,9 +67,9 @@ struct LiveReplacementCorrector {
     /// words still existed. `LiveHoldBackReplacementStream` therefore
     /// releases nothing until flush when this is true — with no releases
     /// before corrections, no correction can precede the release boundary.
-    let hasDeletionRule: Bool
+    package let hasDeletionRule: Bool
 
-    init(dictionary: ReplacementDictionary) {
+    package init(dictionary: ReplacementDictionary) {
         let rules = dictionary.liveReplacementRules()
         self.rules = rules
         maxKeyWordCount = max(1, rules.map(\.wordCount).max() ?? 1)
@@ -79,28 +79,28 @@ struct LiveReplacementCorrector {
         }
     }
 
-    var hasRules: Bool {
+    package var hasRules: Bool {
         !rules.isEmpty
     }
 
-    var ruleCount: Int {
+    package var ruleCount: Int {
         rules.count
     }
 
     /// The corrected text accumulated so far (inserted text with applied
     /// corrections). `LiveHoldBackReplacementStream` releases stable prefixes
     /// of this text for typing.
-    var correctedText: String {
+    package var correctedText: String {
         typedText
     }
 
     /// The maximum whitespace-separated word count across all rules — the
     /// lookback window corrections can reach back into.
-    var maxRuleWordCount: Int {
+    package var maxRuleWordCount: Int {
         maxKeyWordCount
     }
 
-    static func completedBoundaryCorrectedText(
+    package static func completedBoundaryCorrectedText(
         _ text: String,
         dictionary: ReplacementDictionary,
         includeFinalUnboundedWord: Bool = false
@@ -120,12 +120,12 @@ struct LiveReplacementCorrector {
         return corrector.typedText
     }
 
-    mutating func recordInsertedText(_ text: String) {
+    package mutating func recordInsertedText(_ text: String) {
         guard !text.isEmpty else { return }
         typedText.append(text)
     }
 
-    mutating func nextCompletedBoundaryCorrection() -> LiveReplacementCorrection? {
+    package mutating func nextCompletedBoundaryCorrection() -> LiveReplacementCorrection? {
         guard !rules.isEmpty, !typedText.isEmpty else { return nil }
 
         while scanOffset < typedText.count {
@@ -168,7 +168,7 @@ struct LiveReplacementCorrector {
         return nil
     }
 
-    mutating func finalUnboundedCorrection() -> LiveReplacementCorrection? {
+    package mutating func finalUnboundedCorrection() -> LiveReplacementCorrection? {
         guard !rules.isEmpty, !typedText.isEmpty else { return nil }
         let characters = Array(typedText)
         guard let last = characters.last, !Self.isCompletionBoundary(last) else { return nil }
@@ -179,7 +179,7 @@ struct LiveReplacementCorrector {
         )
     }
 
-    mutating func apply(_ correction: LiveReplacementCorrection) {
+    package mutating func apply(_ correction: LiveReplacementCorrection) {
         let startIndex = typedText.index(typedText.startIndex, offsetBy: correction.startOffset)
         let endIndex = typedText.index(typedText.startIndex, offsetBy: correction.endOffset)
         typedText.replaceSubrange(startIndex ..< endIndex, with: correction.replacementText)
@@ -283,7 +283,7 @@ struct LiveReplacementCorrector {
     /// Errs toward `true` (hold more): a completed match stays viable even
     /// though its correction has, in practice, already been applied. Never
     /// erring toward `false` is what keeps released text immutable.
-    func isViableRulePrefix(_ tail: String) -> Bool {
+    package func isViableRulePrefix(_ tail: String) -> Bool {
         guard let firstCharacter = tail.first,
               let lastCharacter = tail.last,
               !Self.isWhitespace(firstCharacter)
@@ -354,7 +354,7 @@ struct LiveReplacementCorrector {
     // hold-back window with the exact same word segmentation as
     // `lookbackStart(before:)` so its released prefix can never be reached by
     // a future correction.
-    static func isWhitespace(_ character: Character) -> Bool {
+    package static func isWhitespace(_ character: Character) -> Bool {
         character.unicodeScalars.allSatisfy {
             CharacterSet.whitespacesAndNewlines.contains($0)
         }
@@ -368,7 +368,7 @@ struct LiveReplacementCorrector {
     /// matches inside `foo-voxtral`. The hold-back scan must treat every such
     /// offset as a candidate, or it would release text a later correction
     /// reaches back into.
-    static func isCandidateMatchStart(_ characters: [Character], _ offset: Int) -> Bool {
+    package static func isCandidateMatchStart(_ characters: [Character], _ offset: Int) -> Bool {
         guard offset < characters.count, !isWhitespace(characters[offset]) else { return false }
         guard offset > 0 else { return true }
         return !isLetterOrNumber(characters[offset - 1])
