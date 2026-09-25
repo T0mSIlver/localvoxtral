@@ -1,4 +1,6 @@
+#if canImport(AppKit)
 import AppKit
+#endif
 import Foundation
 
 #if canImport(Darwin)
@@ -75,7 +77,7 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
         },
         peerPID: @escaping @Sendable (Int32) -> pid_t? = { CmuxSocketClient.localPeerPID($0) },
         bundleIDOfRunningPID: @escaping @Sendable (pid_t) -> String? = {
-            NSRunningApplication(processIdentifier: $0)?.bundleIdentifier
+            CmuxSocketClient.runningBundleID(ofPID: $0)
         }
     ) {
         self.socketPaths = socketPaths
@@ -85,6 +87,16 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
         self.socketMetadata = socketMetadata
         self.peerPID = peerPID
         self.bundleIDOfRunningPID = bundleIDOfRunningPID
+    }
+
+    /// LaunchServices' bundle id for a running pid. There is none without
+    /// AppKit, and no bundle id matches no cmux, so the join abstains.
+    static func runningBundleID(ofPID pid: pid_t) -> String? {
+        #if canImport(AppKit)
+        NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+        #else
+        nil
+        #endif
     }
 
     /// `LOCAL_PEERPID` for a connected AF_UNIX descriptor: the kernel's answer
