@@ -1,16 +1,18 @@
+#if canImport(CryptoKit)
 import CryptoKit
+#endif
 import Foundation
 
 /// Which polishing prompt profile to load. `standard` is the general STT
 /// cleanup prompt used everywhere; `agent` is the terminal/coding-agent
 /// dictation profile that additionally normalizes spoken symbols, backticks
 /// paths/flags, etc. — while never answering or expanding the dictated prompt.
-enum PolishPromptProfile: String, Sendable {
+package enum PolishPromptProfile: String, Sendable {
     case standard
     case agent
 }
 
-protocol AppConfigServing {
+package protocol AppConfigServing {
     func configDirectoryURL() -> URL
     func loadReplacementDictionary() -> ReplacementDictionary
     /// A REQUIREMENT, not only an extension method: called through
@@ -25,22 +27,26 @@ protocol AppConfigServing {
 extension AppConfigServing {
     /// The user's dictionary, or nil when the file could not be read or parsed
     /// (`loadReplacementDictionary` hides that behind the bundled default).
-    func loadReplacementDictionaryIfReadable() -> ReplacementDictionary? {
+    package func loadReplacementDictionaryIfReadable() -> ReplacementDictionary? {
         loadReplacementDictionary()
     }
 
     /// Default conformance so existing callers/mocks that only implement the
     /// zero-arg loader keep the standard behavior for every profile. The real
     /// `AppConfigStore` overrides this to load the agent files for `.agent`.
-    func loadLLMPromptTemplates(profile: PolishPromptProfile) -> LLMPromptTemplates {
+    package func loadLLMPromptTemplates(profile: PolishPromptProfile) -> LLMPromptTemplates {
         loadLLMPromptTemplates()
     }
 }
 
-struct ReplacementDictionary: Equatable, Sendable {
-    let entries: [ReplacementEntry]
+package struct ReplacementDictionary: Equatable, Sendable {
+    package let entries: [ReplacementEntry]
 
-    func liveReplacementRules() -> [LiveReplacementRule] {
+    package init(entries: [ReplacementEntry]) {
+        self.entries = entries
+    }
+
+    package func liveReplacementRules() -> [LiveReplacementRule] {
         var rules: [LiveReplacementRule] = []
         rules.reserveCapacity(entries.reduce(0) { $0 + $1.matches.count })
 
@@ -69,7 +75,7 @@ struct ReplacementDictionary: Equatable, Sendable {
         return rules
     }
 
-    func apply(to text: String) -> String {
+    package func apply(to text: String) -> String {
         guard !entries.isEmpty, !text.isEmpty else { return text }
 
         let rules = prioritizedRules()
@@ -132,7 +138,7 @@ struct ReplacementDictionary: Equatable, Sendable {
         return output
     }
 
-    func renderedPromptSection() -> String {
+    package func renderedPromptSection() -> String {
         guard !entries.isEmpty else { return "" }
 
         let rules = entries.map { entry in
@@ -181,10 +187,10 @@ struct ReplacementDictionary: Equatable, Sendable {
     }
 }
 
-struct LiveReplacementRule: Comparable {
-    let regex: NSRegularExpression
-    let replaceWith: String
-    let matchLength: Int
+package struct LiveReplacementRule: Comparable {
+    package let regex: NSRegularExpression
+    package let replaceWith: String
+    package let matchLength: Int
     /// The match key's whitespace-separated words, each fully case-folded.
     ///
     /// `makeRegex` escapes every key with `escapedPattern` and joins the words
@@ -194,14 +200,14 @@ struct LiveReplacementRule: Comparable {
     /// because the regex matches case-insensitively with FULL case folding,
     /// which can change length (`ß` matches `ss`); comparing raw characters
     /// would miss live prefixes and release text a correction still rewrites.
-    let foldedKeyWords: [String]
-    let originalOrder: Int
+    package let foldedKeyWords: [String]
+    package let originalOrder: Int
 
-    var wordCount: Int {
+    package var wordCount: Int {
         foldedKeyWords.count
     }
 
-    static func == (lhs: LiveReplacementRule, rhs: LiveReplacementRule) -> Bool {
+    package static func == (lhs: LiveReplacementRule, rhs: LiveReplacementRule) -> Bool {
         lhs.matchLength == rhs.matchLength
             && lhs.foldedKeyWords == rhs.foldedKeyWords
             && lhs.originalOrder == rhs.originalOrder
@@ -209,7 +215,7 @@ struct LiveReplacementRule: Comparable {
             && lhs.regex.pattern == rhs.regex.pattern
     }
 
-    static func < (lhs: LiveReplacementRule, rhs: LiveReplacementRule) -> Bool {
+    package static func < (lhs: LiveReplacementRule, rhs: LiveReplacementRule) -> Bool {
         if lhs.matchLength != rhs.matchLength {
             return lhs.matchLength > rhs.matchLength
         }
@@ -217,9 +223,14 @@ struct LiveReplacementRule: Comparable {
     }
 }
 
-struct LLMPromptTemplates: Equatable, Sendable {
-    let systemContent: String
-    let userContent: String
+package struct LLMPromptTemplates: Equatable, Sendable {
+    package let systemContent: String
+    package let userContent: String
+
+    package init(systemContent: String, userContent: String) {
+        self.systemContent = systemContent
+        self.userContent = userContent
+    }
 
     private static let requiredUserPlaceholders = ["{{input_text}}"]
     private static let optionalUserPlaceholders = ["{{replacement_dictionary}}"]
@@ -230,13 +241,13 @@ struct LLMPromptTemplates: Equatable, Sendable {
     /// The placeholder is documented as removable; features that ride in that
     /// slot (repo vocabulary) must check this BEFORE doing any work, because
     /// `renderTemplate` silently drops the section when the slot is absent.
-    var supportsReplacementDictionary: Bool {
+    package var supportsReplacementDictionary: Bool {
         userContent.contains("{{replacement_dictionary}}")
     }
 
-    static let speakerProfileMaxCharacters = 1500
+    package static let speakerProfileMaxCharacters = 1500
 
-    static let speakerProfileHeader =
+    package static let speakerProfileHeader =
         "About the speaker (written by them). Use it to recognize names and terms the "
         + "speech-to-text system misheard: when a word or phrase sounds like one of these "
         + "and makes less sense than it would in that sentence, write the term as spelled "
@@ -246,7 +257,7 @@ struct LLMPromptTemplates: Equatable, Sendable {
     /// to the system prompt. It rides the SYSTEM message because it is stable
     /// across dictations, so it stays inside the prefix polishd checkpoints;
     /// the warmup applies the same call so both prefixes match.
-    func withSpeakerProfile(_ profile: String, terms: [String] = []) -> LLMPromptTemplates {
+    package func withSpeakerProfile(_ profile: String, terms: [String] = []) -> LLMPromptTemplates {
         let trimmed = String(
             PolishContextClipboardReader.sanitizeControlCharacters(profile)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -266,7 +277,7 @@ struct LLMPromptTemplates: Equatable, Sendable {
         )
     }
 
-    func renderedUserPrompt(
+    package func renderedUserPrompt(
         inputText: String,
         replacementDictionary: String
     ) -> String {
@@ -280,7 +291,7 @@ struct LLMPromptTemplates: Equatable, Sendable {
     /// Splits the rendered user prompt into a stable prefix and a dynamic suffix
     /// at the first placeholder boundary. Serving the static prefix as a separate
     /// message enables LLM prompt-cache reuse across requests with different input.
-    func renderedUserPrompts(
+    package func renderedUserPrompts(
         inputText: String,
         replacementDictionary: String
     ) -> [String] {
@@ -346,7 +357,7 @@ struct LLMPromptTemplates: Equatable, Sendable {
             .min()
     }
 
-    func validateUserTemplate(fileName: String) throws {
+    package func validateUserTemplate(fileName: String) throws {
         let missingRequiredPlaceholders = Self.requiredUserPlaceholders.filter {
             !userContent.contains($0)
         }
@@ -404,12 +415,12 @@ private struct ReplacementMatchCandidate {
     let priority: ReplacementPriority
 }
 
-enum AppConfigError: Error, LocalizedError {
+package enum AppConfigError: Error, LocalizedError {
     case missingBundledResource(String)
     case invalidFile(fileName: String, reason: String)
     case unableToResolveConfigDirectory
 
-    var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .missingBundledResource(let fileName):
             return "Missing bundled config resource: \(fileName)"
@@ -421,7 +432,7 @@ enum AppConfigError: Error, LocalizedError {
     }
 }
 
-struct AppConfigStore: AppConfigServing {
+package struct AppConfigStore: AppConfigServing {
     private enum ConfigFile: CaseIterable {
         case replacementDictionary
         case llmSystemPrompt
@@ -446,14 +457,10 @@ struct AppConfigStore: AppConfigServing {
                 return "terminal_apps.toml"
             }
         }
-
-        var resourceName: String {
-            fileName.replacingOccurrences(of: ".toml", with: "")
-        }
     }
 
     private let fileManager: FileManager
-    private let bundle: Bundle
+    private let bundledResourceURL: @Sendable (_ fileName: String) -> URL?
     private let configDirectoryOverride: URL?
     /// Seams for `reconcileBundledDefaults()`: tests inject a fixed clock for
     /// deterministic backup names and a custom hash table to simulate old
@@ -461,27 +468,29 @@ struct AppConfigStore: AppConfigServing {
     private let knownDefaultHashes: [String: Set<String>]
     private let now: @Sendable () -> Date
 
-    init(
+    /// `bundledResourceURL` finds a bundled default by file name
+    /// (`llm_system_prompt.toml`); the app passes its resource bundle.
+    package init(
         fileManager: FileManager = .default,
-        bundle: Bundle = .localvoxtralResources,
+        bundledResourceURL: @escaping @Sendable (_ fileName: String) -> URL?,
         configDirectoryOverride: URL? = nil,
         knownDefaultHashes: [String: Set<String>] = BundledConfigDefaultHistory.knownDefaultHashes,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.fileManager = fileManager
-        self.bundle = bundle
+        self.bundledResourceURL = bundledResourceURL
         self.configDirectoryOverride = configDirectoryOverride
         self.knownDefaultHashes = knownDefaultHashes
         self.now = now
     }
 
-    func configDirectoryURL() -> URL {
+    package func configDirectoryURL() -> URL {
         let url = resolvedConfigDirectoryURL()
         ensureConfigFilesExist(at: url)
         return url
     }
 
-    func loadReplacementDictionary() -> ReplacementDictionary {
+    package func loadReplacementDictionary() -> ReplacementDictionary {
         let defaultDictionary = loadBundledReplacementDictionary()
         let file = ConfigFile.replacementDictionary
         let url = userConfigURL(for: file)
@@ -498,14 +507,14 @@ struct AppConfigStore: AppConfigServing {
         }
     }
 
-    func loadReplacementDictionaryIfReadable() -> ReplacementDictionary? {
+    package func loadReplacementDictionaryIfReadable() -> ReplacementDictionary? {
         let file = ConfigFile.replacementDictionary
         ensureConfigFilesExist(at: resolvedConfigDirectoryURL())
         guard let data = try? Data(contentsOf: userConfigURL(for: file)) else { return nil }
         return try? Self.parseReplacementDictionary(data: data, fileName: file.fileName)
     }
 
-    func loadLLMPromptTemplates() -> LLMPromptTemplates {
+    package func loadLLMPromptTemplates() -> LLMPromptTemplates {
         let defaultTemplates = loadBundledPromptTemplates()
         let systemPrompt = loadPromptContent(
             file: .llmSystemPrompt,
@@ -537,7 +546,7 @@ struct AppConfigStore: AppConfigServing {
     /// chain and falls back to the STANDARD templates on ANY failure, so a
     /// corrupt, missing, or placeholder-invalid agent file never leaves polish
     /// promptless.
-    func loadLLMPromptTemplates(profile: PolishPromptProfile) -> LLMPromptTemplates {
+    package func loadLLMPromptTemplates(profile: PolishPromptProfile) -> LLMPromptTemplates {
         switch profile {
         case .standard:
             return loadLLMPromptTemplates()
@@ -578,7 +587,7 @@ struct AppConfigStore: AppConfigServing {
     /// User-listed bundle IDs to treat as terminals, on top of
     /// `TerminalTargetDetector`'s built-in allowlist. Any read/parse failure
     /// falls back to an empty list (the built-in detection still applies).
-    func loadTerminalAppBundleIDs() -> [String] {
+    package func loadTerminalAppBundleIDs() -> [String] {
         let file = ConfigFile.terminalApps
         let url = userConfigURL(for: file)
 
@@ -655,7 +664,7 @@ struct AppConfigStore: AppConfigServing {
     }
 
     private func bundledResourceURL(for file: ConfigFile) -> URL? {
-        bundle.url(forResource: file.resourceName, withExtension: "toml")
+        bundledResourceURL(file.fileName)
     }
 
     private func resolvedConfigDirectoryURL() -> URL {
@@ -997,7 +1006,7 @@ extension AppConfigStore {
         var resolvedBundledHashes: [String: String] = [:]
     }
 
-    func reconcileBundledDefaults() -> BundledDefaultsReconciliation {
+    package func reconcileBundledDefaults() -> BundledDefaultsReconciliation {
         let directory = resolvedConfigDirectoryURL()
         ensureConfigFilesExist(at: directory)
 
@@ -1057,7 +1066,7 @@ extension AppConfigStore {
     /// Replaces the named user config files with the current bundled defaults,
     /// saving each existing file alongside as `<name>.backup-<timestamp>`.
     /// Returns the backup file names that were created.
-    func adoptBundledDefaults(fileNames: [String]) -> [String] {
+    package func adoptBundledDefaults(fileNames: [String]) -> [String] {
         let directory = resolvedConfigDirectoryURL()
         var state = readBundledDefaultsState(in: directory)
         var stateChanged = false
@@ -1105,7 +1114,7 @@ extension AppConfigStore {
     /// Records that the user chose to keep their customized versions of the
     /// named files for the CURRENTLY bundled defaults — no further prompt
     /// until the bundled defaults change again.
-    func recordKeptCustomizedDefaults(fileNames: [String]) {
+    package func recordKeptCustomizedDefaults(fileNames: [String]) {
         let directory = resolvedConfigDirectoryURL()
         var state = readBundledDefaultsState(in: directory)
         var stateChanged = false
@@ -1187,15 +1196,19 @@ extension AppConfigStore {
         )
     }
 
-    static func sha256Hex(_ data: Data) -> String {
+    package static func sha256Hex(_ data: Data) -> String {
+        #if canImport(CryptoKit)
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        #else
+        PortableSHA256.hex(of: data)
+        #endif
     }
 
     #if DEBUG
     /// Test seam: the canonical config file list, so the
     /// `BundledConfigDefaultHistory` guard-rail test can't drift from the
     /// private `ConfigFile` enum when a new config file is added.
-    static var debugAllConfigFileNames: [String] {
+    package static var debugAllConfigFileNames: [String] {
         ConfigFile.allCases.map(\.fileName)
     }
     #endif

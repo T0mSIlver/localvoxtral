@@ -14,8 +14,8 @@ import Foundation
 /// what lets existing installs adopt your change.
 /// `AppConfigDefaultsReconcileTests.testCurrentBundledDefaultsAreRegisteredInHistory`
 /// fails with the exact hash to paste if you forget.
-enum BundledConfigDefaultHistory {
-    static let knownDefaultHashes: [String: Set<String>] = [
+package enum BundledConfigDefaultHistory {
+    package static let knownDefaultHashes: [String: Set<String>] = [
         "llm_system_prompt.toml": [
             // 2026-09-20 no added em dash or semicolon
             "407ac73b0ce6a60d968002abedd75a49217a4d660cb221852d2c0fab0b46ece9",
@@ -66,11 +66,13 @@ enum BundledConfigDefaultHistory {
 }
 
 /// Outcome of `AppConfigStore.reconcileBundledDefaults()`.
-struct BundledDefaultsReconciliation: Equatable, Sendable {
+package struct BundledDefaultsReconciliation: Equatable, Sendable {
     /// Files whose on-disk content was an unedited older default; they were
     /// silently replaced with the current bundled default.
-    var refreshedFileNames: [String] = []
+    package var refreshedFileNames: [String] = []
     /// Files the user customized while this build ships a newer default, with
     /// no decision recorded for that default yet. The caller should prompt.
-    var customizedOutdatedFileNames: [String] = []
+    package var customizedOutdatedFileNames: [String] = []
+
+    package init() {}
 }

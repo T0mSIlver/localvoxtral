@@ -1,7 +1,7 @@
 import Foundation
 import XCTest
 
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// `AppConfigStore.reconcileBundledDefaults()`: existing installs must pick up
 /// improved bundled config defaults — silently when the seeded file was never
@@ -241,9 +241,8 @@ final class AppConfigDefaultsReconcileTests: XCTestCase {
     }
 
     private func bundledData(for fileName: String) throws -> Data {
-        let resourceName = fileName.replacingOccurrences(of: ".toml", with: "")
         let url = try XCTUnwrap(
-            Bundle.localvoxtralResources.url(forResource: resourceName, withExtension: "toml"),
+            BundledConfigSources.url(for: fileName),
             "Missing bundled resource \(fileName)"
         )
         return try Data(contentsOf: url)

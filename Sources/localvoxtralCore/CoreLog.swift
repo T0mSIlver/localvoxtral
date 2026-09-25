@@ -23,6 +23,7 @@ package struct SilentLogger: Sendable {
     package func notice(_ message: SilentLogMessage) {}
     package func warning(_ message: SilentLogMessage) {}
     package func error(_ message: SilentLogMessage) {}
+    package func fault(_ message: SilentLogMessage) {}
 }
 
 package struct SilentLogMessage: ExpressibleByStringInterpolation {

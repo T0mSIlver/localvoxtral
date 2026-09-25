@@ -8,12 +8,12 @@ import Foundation
 /// casing/spacing fixes that need no model (so they also work in Live
 /// Auto-Paste), and the one-time import of what the user had already typed
 /// into `replacement_dictionary.toml`.
-enum SpeakerTerms {
-    static let maxTerms = 80
-    static let maxTermCharacters = 60
+package enum SpeakerTerms {
+    package static let maxTerms = 80
+    package static let maxTermCharacters = 60
 
     /// Single-line, trimmed, first spelling wins a case-insensitive duplicate.
-    static func sanitized(_ raw: [String]) -> [String] {
+    package static func sanitized(_ raw: [String]) -> [String] {
         var seen = Set<String>()
         var result: [String] = []
         for candidate in raw {
@@ -31,7 +31,7 @@ enum SpeakerTerms {
     }
 
     /// What one submission of the field adds: "Qwen, Claude Code" is two terms.
-    static func adding(_ input: String, to terms: [String]) -> [String] {
+    package static func adding(_ input: String, to terms: [String]) -> [String] {
         sanitized(terms + input.split(whereSeparator: { $0 == "," || $0 == "\n" }).map(String.init))
     }
 
@@ -42,14 +42,14 @@ enum SpeakerTerms {
     /// or "IT" in the list it would rewrite the ordinary word in every
     /// sentence, and nothing without a model can tell the product from the
     /// noun. Those terms reach the polish prompt only.
-    static func replacementEntries(for terms: [String]) -> [ReplacementEntry] {
+    package static func replacementEntries(for terms: [String]) -> [ReplacementEntry] {
         sanitized(terms).compactMap { term in
             guard hasDistinctiveShape(term) else { return nil }
             return ReplacementEntry(replaceWith: term, matches: [term])
         }
     }
 
-    static func hasDistinctiveShape(_ term: String) -> Bool {
+    package static func hasDistinctiveShape(_ term: String) -> Bool {
         if term.contains(where: \.isWhitespace) { return true }
         if term.contains(where: { !$0.isLetter }) { return true }
         // Mixed case, not "any inner capital": an acronym is all capitals, and
@@ -59,7 +59,7 @@ enum SpeakerTerms {
     }
 
     /// The spellings the user already maintains in the replacement dictionary.
-    static func migrated(from dictionary: ReplacementDictionary) -> [String] {
+    package static func migrated(from dictionary: ReplacementDictionary) -> [String] {
         sanitized(dictionary.entries.map(\.replaceWith))
     }
 }
@@ -67,7 +67,7 @@ enum SpeakerTerms {
 extension ReplacementDictionary {
     /// File entries first, so a rule the user wrote by hand wins a tie against
     /// the casing rule derived from a term.
-    func adding(speakerTerms terms: [String]) -> ReplacementDictionary {
+    package func adding(speakerTerms terms: [String]) -> ReplacementDictionary {
         ReplacementDictionary(entries: entries + SpeakerTerms.replacementEntries(for: terms))
     }
 }

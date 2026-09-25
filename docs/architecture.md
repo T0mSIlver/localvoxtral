@@ -58,7 +58,10 @@ and the vocabulary matching: `RepoVocabulary`, `RepoIndexing`,
 `PolishContextPreparation`, and the clipboard reader's rules
 (`PolishContextClipboardReader`; its pasteboard half stays in the app), and the model
 catalogs (`BackendCatalog`, `SpeechModelCatalog`, `PolishModelCatalog`), and the
-Claude session snapshot and its reducer (`ClaudeSessionState`).
+Claude session snapshot and its reducer (`ClaudeSessionState`), and the
+config store (`AppConfigStore`, `BundledConfigDefaultHistory`, `SpeakerTerms`;
+the app hands it the resource bundle, and on Linux it hashes with
+`PortableSHA256` instead of CryptoKit).
 It builds and tests on Linux (`scripts/core-tests-linux.sh`); the app
 re-exports it.
 
