@@ -17,6 +17,11 @@ final class SpeakerTermSuggestionsTests: XCTestCase {
         XCTAssertEqual(SpeakerTermSuggestions.parse("I could not find anything."), [])
         XCTAssertEqual(SpeakerTermSuggestions.parse("[not json"), [])
         XCTAssertEqual(
+            SpeakerTermSuggestions.parseCandidates(#"[{"term": "Qwen", "heard": ["Coin", 3, "Kuen"]}]"#)
+                .map { "\($0.term): \($0.heard)" },
+            [#"Qwen: ["Coin", "Kuen"]"#]
+        )
+        XCTAssertEqual(
             SpeakerTermSuggestions.parse("<think>maybe [x] or [1]</think> [\"Qwen\"] (see [1])"),
             ["Qwen"]
         )
@@ -83,7 +88,7 @@ final class SpeakerTermSuggestionsTests: XCTestCase {
         let configuration = try XCTUnwrap(settings.llmPolishingConfiguration)
 
         let data = try LLMPolishingService.requestBody(
-            request: SpeakerTermSuggestions.request(texts: ["a"], terms: [], dismissed: []),
+            request: SpeakerTermSuggestions.request(dictations: [.init(raw: "a", final: "a")], terms: [], dismissed: []),
             configuration: configuration
         )
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -102,7 +107,7 @@ final class SpeakerTermSuggestionsTests: XCTestCase {
                 model: "any", requestShape: .mistral, mistralReasoningEffort: polishEffort
             )
             let request = deep
-                ? SpeakerTermSuggestions.request(texts: ["a"], terms: [], dismissed: [])
+                ? SpeakerTermSuggestions.request(dictations: [.init(raw: "a", final: "a")], terms: [], dismissed: [])
                 : LLMPolishingRequest(inputText: "a", systemPrompt: "s", userPrompts: ["a"])
             let json = try XCTUnwrap(JSONSerialization.jsonObject(
                 with: LLMPolishingService.requestBody(request: request, configuration: configuration)
@@ -124,7 +129,7 @@ final class SpeakerTermSuggestionsTests: XCTestCase {
         )
         let json = try XCTUnwrap(JSONSerialization.jsonObject(
             with: LLMPolishingService.requestBody(
-                request: SpeakerTermSuggestions.request(texts: ["a"], terms: [], dismissed: []),
+                request: SpeakerTermSuggestions.request(dictations: [.init(raw: "a", final: "a")], terms: [], dismissed: []),
                 configuration: configuration
             )
         ) as? [String: Any])
@@ -133,7 +138,8 @@ final class SpeakerTermSuggestionsTests: XCTestCase {
 
     func testRequestNamesKnownAndRefusedTermsAndAllowsALongWait() {
         let request = SpeakerTermSuggestions.request(
-            texts: ["first", "second"], terms: ["Qwen"], dismissed: ["SessionStart"]
+            dictations: [.init(raw: "first", final: "first"), .init(raw: "coin", final: "Qwen")],
+            terms: ["Qwen"], dismissed: ["SessionStart"]
         )
         XCTAssertEqual(
             request.userPrompts,
@@ -143,10 +149,11 @@ final class SpeakerTermSuggestionsTests: XCTestCase {
             Refused by the user (do not list): SessionStart
 
             [text 1]
-            first
+            heard: first
 
             [text 2]
-            second
+            heard: coin
+            final: Qwen
             """]
         )
         XCTAssertEqual(request.timeoutSeconds, SpeakerTermSuggestions.timeoutSeconds)
@@ -296,9 +303,30 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
 
         XCTAssertEqual(model.suggestions, ["Qwen", "MCP"])
         XCTAssertEqual(
-            service.requests.first?.userPrompts.first?.contains("Qwen runs on the IBM box."), true,
-            "the model still reads the final text"
+            service.requests.first?.userPrompts.first?.contains(
+                "heard: coin runs on the IBM box\nfinal: Qwen runs on the IBM box."
+            ),
+            true
         )
+    }
+
+    /// #612: a mistake polishing left in place shows only in what was heard.
+    /// The model's quoted wrong form keeps the term when it is really in a
+    /// transcript, and counts for nothing when it is not.
+    func testAHeardFormFoundInATranscriptKeepsTheTerm() async {
+        let settings = makePolishingSettings()
+        let service = Service()
+        service.reply = .success(#"""
+            [{"term": "vLLM", "heard": ["v l l m"]}, {"term": "Mac", "heard": ["mack"]}]
+            """#)
+        let model = makeModel(settings: settings, service: service, dictations: [
+            .init(raw: "vLLM on my Mac", final: "vLLM on my Mac."),
+            .init(raw: "restart v l l m", final: "Restart v l l m."),
+        ])
+
+        await model.suggest()
+
+        XCTAssertEqual(model.suggestions, ["vLLM"])
     }
 
     func testNothingIsAddedWithoutAClick() async {

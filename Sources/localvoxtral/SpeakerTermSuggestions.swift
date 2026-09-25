@@ -17,18 +17,21 @@ enum SpeakerTermSuggestions {
     /// Mistral Medium at high effort took 170 s on 74 dictations.
     static let timeoutSeconds: TimeInterval = 420
 
-    /// Measured on the owner's 74-dictation history (2026-09-18): one batch
-    /// request with this wording gave the cleanest list on GLM 5.3 — it
-    /// recovered "Qwen" from Coin/Kuen/QN and dropped Cohere, OpenShift and
-    /// `toolInput`, all of which sat in the final texts as polish mistakes.
+    /// The first wording, measured on the owner's 74-dictation history
+    /// (2026-09-18), recovered "Qwen" from Coin/Kuen and dropped polish
+    /// mistakes, but read only polished text and so also listed words the
+    /// recognizer spells right (IBM, Mac, Word: #612). This one shows what
+    /// was heard and asks only for the recognizer's mistakes, each with the
+    /// wrong forms `TermSuggestionScreen` can check against the transcripts.
     static let instructions = """
-        You are given many short texts dictated by ONE person over several weeks (speech recognition output, some of it wrong). Build the list of proper names and technical terms this person really uses, so a dictation app can learn to spell them: products, tools, models, companies, people, projects, acronyms. Any language.
+        You are given many short texts dictated by ONE person over several weeks. "heard:" is what the speech recognizer wrote. "final:", present only when it differs, is the corrected text that was kept; its corrections can be wrong too. Build the list of proper names and technical terms that the recognizer gets WRONG for this person, so a dictation app can learn to spell them: products, tools, models, companies, people, projects, acronyms. Any language.
         Rules:
-        - Only terms that appear in at least 3 different texts (count variants and misrecognitions of the same name together).
-        - Spell each term the correct, canonical way. If the same name shows up under several spellings, some of them recognition errors, output the ONE right spelling.
-        - Do NOT list ordinary words or ordinary phrases of the language, even technical ones ("functional specifications", "tech lead", "knowledge graph"): a speech recognizer already spells those. Do NOT list things that look like recognition errors or that do not fit the sentences they appear in (for example a code identifier dropped into ordinary prose).
+        - List a term only if the recognizer got it wrong in at least one "heard:" line: misspelled, split or joined, wrong capitals, or heard as other words. A term the recognizer writes right every time does NOT belong, however rare or technical: the list exists only to fix its mistakes.
+        - Only terms that appear in at least 3 different texts, right and wrong spellings counted together.
+        - Spell each term the correct, canonical way. If one name shows up under several spellings, output the ONE right spelling.
+        - Do NOT list ordinary words or ordinary phrases of the language, even technical ones ("functional specifications", "tech lead", "knowledge graph"). Do NOT list a term found only in "final:" lines that does not fit what was heard or the sentence around it (a correction mistake, for example a code identifier dropped into ordinary prose).
         - Do NOT list anything from the "already known" or "refused" lists in the message.
-        Return only a JSON array of strings, most frequent first, no commentary. Return [] if there is nothing.
+        Return only a JSON array, most frequent mistakes first, no commentary. Each item is {"term": "<canonical spelling>", "heard": ["<each wrong form, copied exactly from the heard: lines>"]}. Return [] if there is nothing.
         """
 
     /// One key per term however it is cased, spaced or punctuated, so
@@ -41,19 +44,22 @@ enum SpeakerTermSuggestions {
 
     /// Newest first in, newest first out, cut where the request would get too
     /// large for one call. `reserved` is what the rest of the message already
-    /// spends (the known and refused lists can reach tens of kilobytes). The
-    /// model reads the final text; the raw text rides along for `screened`.
+    /// spends (the known and refused lists can reach tens of kilobytes); a
+    /// dictation spends what `block` renders of it.
     static func selected(
         _ dictations: [TermSuggestionScreen.Dictation], reserved: Int = 0
     ) -> [TermSuggestionScreen.Dictation] {
         var budget = maxRequestCharacters - reserved
         var result: [TermSuggestionScreen.Dictation] = []
         for dictation in dictations.prefix(maxDictations) {
-            let trimmed = dictation.final.trimmed
-            guard !trimmed.isEmpty else { continue }
-            guard trimmed.count <= budget else { break }
-            budget -= trimmed.count
-            result.append(TermSuggestionScreen.Dictation(raw: dictation.raw, final: trimmed))
+            let trimmed = TermSuggestionScreen.Dictation(
+                raw: dictation.raw.trimmed, final: dictation.final.trimmed
+            )
+            guard !trimmed.raw.isEmpty || !trimmed.final.isEmpty else { continue }
+            let cost = block(trimmed).count
+            guard cost <= budget else { break }
+            budget -= cost
+            result.append(trimmed)
         }
         return result
     }
@@ -71,10 +77,12 @@ enum SpeakerTermSuggestions {
 
     /// ONE user message and no system message: see `LLMPolishingService
     /// .requestBody` — this keeps the request out of polishd's prompt cache.
-    static func request(texts: [String], terms: [String], dismissed: [String]) -> LLMPolishingRequest {
+    static func request(
+        dictations: [TermSuggestionScreen.Dictation], terms: [String], dismissed: [String]
+    ) -> LLMPolishingRequest {
         let sections = [instructions]
             + listSections(terms: terms, dismissed: dismissed)
-            + [texts.enumerated().map { "[text \($0.offset + 1)]\n\($0.element)" }
+            + [dictations.enumerated().map { "[text \($0.offset + 1)]\n" + block($0.element) }
                 .joined(separator: "\n\n")]
         let message = sections.joined(separator: "\n\n")
         return LLMPolishingRequest(
@@ -86,11 +94,23 @@ enum SpeakerTermSuggestions {
         )
     }
 
+    /// One dictation as the model reads it: what was heard, and what was kept
+    /// when that differs.
+    static func block(_ dictation: TermSuggestionScreen.Dictation) -> String {
+        dictation.final == dictation.raw
+            ? "heard: \(dictation.raw)"
+            : "heard: \(dictation.raw)\nfinal: \(dictation.final)"
+    }
+
+    static func parse(_ reply: String) -> [String] {
+        parseCandidates(reply).map(\.term)
+    }
+
     /// The first span of the reply that parses as a JSON array; strings, or
-    /// objects carrying a `term`. A reply wrapped in prose, a code fence or a
+    /// objects carrying a `term` and, optionally, its `heard` forms. A reply wrapped in prose, a code fence or a
     /// reasoning trace with its own brackets still gets read; a reply with no
     /// array is no suggestions rather than an error.
-    static func parse(_ reply: String) -> [String] {
+    static func parseCandidates(_ reply: String) -> [(term: String, heard: [String])] {
         var searchStart = reply.startIndex
         while let start = reply[searchStart...].firstIndex(of: "[") {
             var end = reply.endIndex
@@ -98,8 +118,12 @@ enum SpeakerTermSuggestions {
                 if let data = String(reply[start...close]).data(using: .utf8),
                    let array = try? JSONSerialization.jsonObject(with: data) as? [Any]
                 {
-                    let terms = array.compactMap { element in
-                        (element as? String) ?? ((element as? [String: Any])?["term"] as? String)
+                    let terms = array.compactMap { element -> (term: String, heard: [String])? in
+                        if let term = element as? String { return (term, []) }
+                        guard let object = element as? [String: Any],
+                              let term = object["term"] as? String
+                        else { return nil }
+                        return (term, (object["heard"] as? [Any])?.compactMap { $0 as? String } ?? [])
                     }
                     if !terms.isEmpty || array.isEmpty { return terms }
                 }
@@ -312,19 +336,21 @@ final class SpeakerTermSuggestionModel {
         do {
             let result = try await service().polish(
                 request: SpeakerTermSuggestions.request(
-                    texts: dictations.map(\.final), terms: terms, dismissed: dismissed
+                    dictations: dictations, terms: terms, dismissed: dismissed
                 ),
                 configuration: configuration
             )
             // Stopped while waiting: the row already went back to its button.
             guard ownsRow else { return .notRun }
+            let candidates = SpeakerTermSuggestions.parseCandidates(result.polishedText)
             let found = TermSuggestionScreen.screened(
                 SpeakerTermSuggestions.filtered(
-                    SpeakerTermSuggestions.parse(result.polishedText),
+                    candidates.map(\.term),
                     terms: settings.polishSpeakerTerms,
                     dismissed: settings.polishDismissedTermSuggestions
                 ),
-                dictations: dictations
+                dictations: dictations,
+                heard: Dictionary(candidates.map { ($0.term, $0.heard) }, uniquingKeysWith: +)
             )
             // What the run found leads — it is what the user waited minutes for
             // — and the chips already on screen keep their place behind it, as

@@ -30,6 +30,22 @@ final class TermSuggestionScreenTests: XCTestCase {
         XCTAssertEqual(TermSuggestionScreen.screened(["vLLM"], dictations: dictations), ["vLLM"])
     }
 
+    /// A quoted wrong form counts only where a transcript really has it,
+    /// and never when it is the term itself.
+    func testHeardFormsCountOnlyWhenTheTranscriptHasThem() {
+        let dictations = [
+            Dictation(raw: "IBM and vLLM", final: "IBM and vLLM."),
+            Dictation(raw: "v l l m is down", final: "v l l m is down."),
+        ]
+        XCTAssertEqual(
+            TermSuggestionScreen.screened(
+                ["IBM", "vLLM"], dictations: dictations,
+                heard: ["IBM": ["eye bee em", "IBM"], "vLLM": ["v l l m"]]
+            ),
+            ["vLLM"]
+        )
+    }
+
     func testMatchesWholeWordsOnly() {
         let dictations = [Dictation(raw: "my MacBook and iMac", final: "My MacBook and iMac.")]
         XCTAssertEqual(TermSuggestionScreen.screened(["Mac"], dictations: dictations), ["Mac"])
