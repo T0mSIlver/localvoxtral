@@ -8,7 +8,8 @@
     "endpointURL" : "http://127.0.0.1:8472/v1/chat/completions",
     "model" : "mlx-community/Qwen3.5-4B-OptiQ-4bit",
     "passthroughExtraParameters" : false,
-    "requestShape" : "openAICompatible"
+    "requestShape" : "openAICompatible",
+    "samplingTemperature" : 0
   },
   "learnedTermsRecorded" : [
 

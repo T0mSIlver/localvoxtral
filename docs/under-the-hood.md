@@ -60,8 +60,10 @@ supervises two inference engines for you — no terminal required:
   Apple's [MLX Swift](https://github.com/ml-explore/mlx-swift-lm), runs
   [Qwen3.5-4B-OptiQ in 4-bit](https://huggingface.co/mlx-community/Qwen3.5-4B-OptiQ-4bit)
   by default (a lighter 0.8B and a larger 9B are one click away in
-  Settings). A warm prompt cache keeps polish latency low, and turning
-  polishing off frees its memory immediately. The helper builds against an
+  Settings). All three decode greedily (temperature 0), so the same
+  dictation always polishes the same way; Mistral API and External URL
+  polishing send temperature 0.3. A warm prompt cache keeps polish latency
+  low, and turning polishing off frees its memory immediately. The helper builds against an
   mlx-swift-lm `main` commit from 2026-09-22 (`ee673d6`), not a release:
   no release yet loads OptiQ checkpoints correctly, because they ship
   extra weight files next to the model's.

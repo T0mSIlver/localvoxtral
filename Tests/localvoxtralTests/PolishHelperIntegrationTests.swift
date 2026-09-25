@@ -465,11 +465,11 @@ final class PolishHelperIntegrationTests: XCTestCase {
     /// EXPERIMENT (2026-07-09, print-only — no score assertions): run the
     /// same corpus with the Qwen3.5 model card's recommended non-thinking
     /// text sampling (temperature 1.0, top_p 1.0, top_k 20, min_p 0,
-    /// presence_penalty 2.0) instead of the production temperature-0.3
-    /// request, to test the hypothesis that the recommended set — tuned for
-    /// open-ended generation — hurts a copy-editing task where the output
-    /// should mostly repeat the input (presence_penalty penalizes exactly
-    /// that repetition). Compare this scoreboard against the baseline test's.
+    /// presence_penalty 2.0) instead of the production request (temperature
+    /// 0.3 then, 0 since #563), to test the hypothesis that the recommended
+    /// set — tuned for open-ended generation — hurts a copy-editing task
+    /// where the output should mostly repeat the input (presence_penalty
+    /// penalizes exactly that repetition). Compare this scoreboard against the baseline test's.
     func testEvalScoreboardWithQwenRecommendedSampling() async throws {
         let (binary, model) = try helperConfiguration()
         try await ensurePolishModelCached(model)
