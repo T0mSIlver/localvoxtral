@@ -256,7 +256,7 @@ final class ViewSnapshotTests: XCTestCase {
             listener: listener,
             pluginService: { StubClaudePluginService() },
             enrollmentService: ClaudeRemoteEnrollmentService(
-                localHerdrConfigFileSystem: herdrConfig, now: { frozen }),
+                localHerdrConfigFileSystem: herdrConfig),
             now: { frozen },
             fetchPluginListOutput: { pluginList },
             bundledPluginVersion: pluginVersion,
