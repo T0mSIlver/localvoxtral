@@ -180,9 +180,9 @@ final class ClaudeRemoteForwardLiveProcess: ClaudeRemoteForwardProcess, @uncheck
         let childGroup = getpgid(pid)
         let ownGroup = getpgid(0)
         if childGroup > 0, childGroup != ownGroup {
-            _ = Darwin.kill(-childGroup, signalNumber)
+            _ = LibC.kill(-childGroup, signalNumber)
         } else {
-            _ = Darwin.kill(pid, signalNumber)
+            _ = LibC.kill(pid, signalNumber)
         }
     }
 }

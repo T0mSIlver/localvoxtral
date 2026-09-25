@@ -4,6 +4,8 @@ import Synchronization
 
 #if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
 #endif
 
 public struct ClaudeBrokerLimits: Sendable, Equatable {
@@ -37,7 +39,7 @@ public struct ClaudeBrokerLimits: Sendable, Equatable {
     public static let `default` = ClaudeBrokerLimits()
 }
 
-#if canImport(Darwin)
+#if canImport(Darwin) || canImport(Glibc)
 
 /// Raw AF_UNIX ingest for Claude Code hook records.
 ///
@@ -142,9 +144,9 @@ public final class ClaudeContextBroker: Sendable {
                 raw.copyBytes(from: pathBytes)
                 raw[pathBytes.count] = 0
             }
-            address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+            POSIXSocket.setLength(of: &address)
 
-            let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+            let fd = socket(AF_UNIX, POSIXSocket.stream, 0)
             guard fd >= 0 else { throw StartFailure.socketCreationFailed(errno: errno) }
 
             // Bind under a restrictive umask so the socket is never briefly
@@ -228,7 +230,7 @@ public final class ClaudeContextBroker: Sendable {
             // stop() writes to this pipe; the accept loop's defer closes the
             // read end. Without NOSIGPIPE a stop() racing a loop that already
             // exited would kill the whole app with SIGPIPE.
-            _ = fcntl(wakePipe[1], F_SETNOSIGPIPE, 1)
+            POSIXSocket.suppressSIGPIPE(onPipe: wakePipe[1])
             state.wakeWriteFD = wakePipe[1]
             let exitSignal = DispatchSemaphore(value: 0)
             state.loopExit = exitSignal
@@ -315,9 +317,9 @@ public final class ClaudeContextBroker: Sendable {
             raw.copyBytes(from: pathBytes)
             raw[pathBytes.count] = 0
         }
-        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        POSIXSocket.setLength(of: &address)
 
-        let probe = socket(AF_UNIX, SOCK_STREAM, 0)
+        let probe = socket(AF_UNIX, POSIXSocket.stream, 0)
         guard probe >= 0 else { return true }
         defer { close(probe) }
         let connected = withUnsafePointer(to: &address) { pointer in
@@ -476,8 +478,7 @@ public final class ClaudeContextBroker: Sendable {
         // why it applies to opencode records and cannot apply to Claude's.
         let peerPID = ClaudeSocketGuard.peerPID(ofDescriptor: fd)
 
-        var noSigPipe: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+        POSIXSocket.suppressSIGPIPE(onSocket: fd)
         let deadline = uptimeNanos() &+ UInt64(max(0, limits.readTimeout) * 1_000_000_000)
 
         var pending = Data()
@@ -584,7 +585,7 @@ public final class ClaudeContextBroker: Sendable {
             var offset = 0
             while offset < raw.count {
                 let written = retryingOnEINTRInt {
-                    send(fd, base.advanced(by: offset), raw.count - offset, 0)
+                    send(fd, base.advanced(by: offset), raw.count - offset, POSIXSocket.sendFlags)
                 }
                 if written <= 0 { return offset } // Peer gone: nothing to do.
                 offset += written

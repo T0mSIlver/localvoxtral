@@ -291,7 +291,7 @@ public struct ClaudeRemoteHostFileStoreIO: ClaudeRemoteHostStoreIO {
             var offset = 0
             while offset < raw.count {
                 let written = ClaudeRemoteHostFileStoreIO.retryingOnEINTR {
-                    Darwin.write(fd, base.advanced(by: offset), raw.count - offset)
+                    LibC.write(fd, base.advanced(by: offset), raw.count - offset)
                 }
                 guard written > 0 else {
                     throw ClaudeRemoteHostRegistry.StoreError.writeFailed(path: url.path)

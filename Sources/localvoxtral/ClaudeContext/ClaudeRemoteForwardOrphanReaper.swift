@@ -82,7 +82,7 @@ public struct ClaudeRemoteForwardOrphanReaper: Sendable {
     /// the poll reads it as "gone".
     private static let defaultSendSignal: SendSignal = { pid, signalNumber in
         #if canImport(Darwin)
-        if Darwin.kill(pid, signalNumber) != 0, errno != ESRCH {
+        if LibC.kill(pid, signalNumber) != 0, errno != ESRCH {
             Log.claudeContext.error(
                 "Claude remote forward orphan reaper could not signal pid \(pid, privacy: .public): errno \(errno, privacy: .public)"
             )
