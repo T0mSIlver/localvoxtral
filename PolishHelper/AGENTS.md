@@ -13,9 +13,11 @@ SwiftPM package so the root build never compiles the MLX C++ core.
   fetch fails transiently sometimes; retry). `xcrun --find metal` succeeding
   does NOT mean the toolchain is installed; only invoking `metal` proves it.
 - Engine, model-pin, prompt, or request-shape changes here MUST run the LLM
-  lanes (`./scripts/remote-build.sh integration-polishd`, eval scoreboard in
-  the PR's Proof section) — the rule and triggers are in
-  `../docs/agent/test-tiers.md` ("When must the LLM lanes run?").
+  lanes, once, on the final diff: the PR's CI lane runs them when its filter
+  matches, so run `./scripts/remote-build.sh integration-polishd` by hand
+  only when it doesn't. The eval scoreboard goes in the PR's Proof section;
+  the rule and triggers are in `../docs/agent/test-tiers.md` ("When must the
+  LLM lanes run?").
 - Adding a model option to `PolishModelCatalog`: run
   `./scripts/remote-build.sh integration-polishd <hf-repo>` as the per-model
   gate (it self-provisions the weights).

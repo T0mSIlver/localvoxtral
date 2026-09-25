@@ -40,19 +40,21 @@ filter_expect() {
   pass "filter: $description"
 }
 
-filter_expect true "session start and stop" Sources/localvoxtral/DictationViewModel.swift
-filter_expect true "a session controller extension" "Sources/localvoxtral/DictationSessionController+StopCommit.swift"
+filter_expect false "session start and stop" Sources/localvoxtral/DictationViewModel.swift
+filter_expect true "the controller's stop-commit" "Sources/localvoxtral/DictationSessionController+StopCommit.swift"
+filter_expect false "another session controller file" "Sources/localvoxtral/DictationSessionController+Realtime.swift"
 filter_expect true "the stop-commit" Sources/localvoxtral/StopCommitCoordinator.swift
-filter_expect true "a realtime client" Sources/localvoxtral/MistralRealtimeWebSocketClient.swift
-filter_expect true "the reconnect schedule" Sources/localvoxtral/RealtimeReconnectPolicy.swift
-filter_expect true "the live correction" Sources/localvoxtralCore/LiveReplacementCorrector.swift
-filter_expect true "transcript merging in core" Sources/localvoxtralCore/TextMergingAlgorithms.swift
+filter_expect false "a realtime client" Sources/localvoxtral/MistralRealtimeWebSocketClient.swift
+filter_expect false "the reconnect schedule" Sources/localvoxtral/RealtimeReconnectPolicy.swift
+filter_expect false "the live correction" Sources/localvoxtralCore/LiveReplacementCorrector.swift
+filter_expect false "transcript merging in core" Sources/localvoxtralCore/TextMergingAlgorithms.swift
 filter_expect true "text insertion" Sources/localvoxtral/TextInsertionService.swift
+filter_expect true "focus handling" Sources/localvoxtral/SystemAccessibilityFocus.swift
 filter_expect true "the overlay commit" Sources/localvoxtral/OverlayBufferSessionCoordinator.swift
 filter_expect true "the WAV source the check dictates from" Sources/localvoxtral/Dogfood/DogfoodAudioFileSource.swift
 filter_expect true "a scenario" scripts/e2e/scenarios/overlay-buffer.scenario
 filter_expect true "the lane's workflow" .github/workflows/ui-smoke.yml
-filter_expect true "one match among unrelated files" docs/README.md Sources/localvoxtral/RealtimeClient.swift
+filter_expect true "one match among unrelated files" docs/README.md Sources/localvoxtral/RealtimeClient.swift Sources/localvoxtral/TextInsertionService.swift
 filter_expect false "the polish path (goldens prove it)" Sources/localvoxtral/PolishRequestAssembler.swift Sources/localvoxtral/LLMPolishingService.swift
 filter_expect false "the overlay's look" Sources/localvoxtral/OverlayStableLineWrapper.swift Sources/localvoxtral/DictationOverlayView.swift
 filter_expect false "settings and docs" Sources/localvoxtral/Settings/DictationSettingsPane.swift docs/agent/test-tiers.md AGENTS.md
