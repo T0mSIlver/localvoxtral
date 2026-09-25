@@ -202,7 +202,13 @@ History; the panes sit under the sidebar's Settings header:
   spelling for that project, and after three dictations it starts correcting
   the name on its own — including in dictations where nothing on screen
   mentions it. Those terms are offered as tags in **Suggestions** too, with
-  no API credits. **Advanced → Learned terms** counts them and forgets them.
+  no API credits. **Advanced → Learned terms → Show** lists them by
+  project, with how often each was applied and when it last was. Pin a term
+  to keep it: it is used at once and never expires. Forget one, or all of
+  them with **Forget**. A learned name that you say as ordinary words in a
+  sentence ("we should use auth tokens" with `useAuth` learned) is not
+  rewritten; polishing decides from the sentence. Next to a code word ("call
+  use auth", "the session start hook") it is.
   It also learns from your own fixes. When a dictation joined a coding-agent
   session and you fix a misheard name before sending the prompt (`kwen` to
   `Qwen`), the app compares the prompt you sent with what it typed and

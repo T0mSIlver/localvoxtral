@@ -137,6 +137,14 @@ final class LearnedTermStore: @unchecked Sendable {
         Log.polishing.info("Learned terms: one term forgotten")
     }
 
+    /// Settings' pin: keeps one spelling past decay and caps.
+    func setPinned(_ pinned: Bool, term: String, projectKey: String) {
+        mutate { terms in
+            terms.setPinned(pinned, term: term, projectKey: projectKey)
+        }
+        Log.polishing.info("Learned terms: one term \(pinned ? "pinned" : "unpinned", privacy: .public)")
+    }
+
     /// Folds `change` in on the write queue, behind the launch load and every
     /// earlier write, so an Undo can never land before the term it undoes.
     private func mutate(_ change: @escaping @Sendable (inout LearnedTerms) -> Void) {
