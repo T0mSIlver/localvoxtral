@@ -13,28 +13,32 @@ daily users, so nothing ships on "it compiles".
 The app only compiles on macOS. From Linux, `./scripts/remote-build.sh` rsyncs
 the working tree to the Mac build host and runs the toolchain there; no commit
 needed. Set the host once per clone: `git config localvoxtral.buildhost
-<ssh-destination>`. The script's header lists every verb; the usual ones are
-`test` (the default), `test --filter <Suite>` and `package`.
+<ssh-destination>`. The script's header lists every verb.
 
-- `localvoxtralCore` (the Foundation-only pieces: transcript merge, text
-  merging, polish token guard, outcome and connection-failure classifiers,
-  session clock) builds and tests on Linux, no Mac:
-  `./scripts/core-tests-linux.sh` (Swift 6.2; `SWIFT=` names the toolchain).
-  The app re-exports it, so a core declaration the app uses needs `package`
-  access. With a Swift here, `remote-build.sh test` runs those suites locally
-  and sends the Mac only the rest; `LV_TEST_ON_MAC=1` sends it everything.
-- Run `./scripts/mac-health.sh` before long remote work. A sleeping Mac makes
+The Mac is the owner's working machine and the only self-hosted runner. Spend
+it only where nothing else can do the job:
+
+- Linux first. `localvoxtralCore` (the Foundation-only pieces) builds and
+  tests here: `./scripts/core-tests-linux.sh` (Swift 6.2; `SWIFT=` names the
+  toolchain), and so do `scripts/ci/test-*.sh`. The app re-exports core, so a
+  core declaration the app uses needs `package` access.
+- On the Mac, run only the suites your change touches:
+  `remote-build.sh test --filter <Suite>`, the flag repeated per suite (the
+  host's SSH gate refuses `|`). Never run the full suite there: the PR's
+  hosted `build-test` runs it on every push, drafts included.
+- Live lanes and evals (`integration*`, `eval-e2e`, `eval-term-recall`) run
+  minutes to half an hour of inference. Run one only when a rule below
+  requires it, once, on the final diff. When the PR's CI lane runs it, don't
+  run it by hand too. Iterate on polish against a frozen eval log with
+  `scripts/ablate-agent-eval.py`.
+- Run `./scripts/mac-health.sh` before remote work. A sleeping Mac makes
   rsync hang instead of fail.
-- `--filter` takes no `|`; the host's SSH gate refuses it. Repeat the flag,
-  once per suite.
 - Never pipe `remote-build.sh` through grep: a crash eats the failing test's
   name. The full output is in `.build/last-remote.log`, and the local Linux
   part's in `.build/last-linux.log`.
 - An interrupted run can leave a stale SwiftPM lock. Switch to a fresh
   `LV_BUILD_DIR` instead of debugging it. Never hand-clean `~/work` on the
   Mac; abandoned build dirs are garbage-collected.
-- On a Mac, bare `swift test` needs `--skip HerdrIntegrationTests`: that suite
-  starts a live herdr and has no skip condition by design.
 - Only `package_app.sh` produces working Metal kernels for the two MLX
   helpers. Read `PolishHelper/AGENTS.md` or `SpeechHelper/AGENTS.md` before
   touching either.
@@ -48,9 +52,8 @@ needed. Set the host once per clone: `git config localvoxtral.buildhost
 2. **Check the spec.** Work starts from an issue that states scope,
    constraints and the proof its PR must carry. If one is missing, write it
    into the issue and wait for the maintainer's OK.
-3. **Iterate on the build host** with `remote-build.sh test --filter`, and run
-   `scripts/ci/test-*.sh` locally; they all run on Linux. CI is for a
-   finished change.
+3. **Iterate** on Linux and with filtered Mac suites (Build and test). Push
+   the draft for the full suite on hosted `build-test`.
 4. **Open the PR as a draft** (`gh pr create --draft`) with `Closes #<n>` in
    the body. The link moves the issue's card on the project board
    (github.com/users/T0mSIlver/projects/1) to In progress, and the merge moves
@@ -58,11 +61,11 @@ needed. Set the host once per clone: `git config localvoxtral.buildhost
 5. **Mark it ready** (`gh pr ready <n>`) only once `build-test` is green and
    none of your other PRs is waiting on `mac-lanes`. Ready starts the Mac
    lanes; see CI below.
-6. **After the merge**, list what your issue was blocking
+6. **After the merge**, move each issue your issue was blocking
    (`gh api repos/T0mSIlver/localvoxtral/issues/<n>/dependencies/blocking`)
-   and move each issue whose blockers are now all closed from Blocked to Todo
-   on the board; GitHub does not. If you stop before the merge, leave a
-   handoff comment on the issue: state, what's left, decisions made.
+   from Blocked to Todo once all its blockers are closed; GitHub does not.
+   Stopping before the merge? Leave a handoff comment: state, what's left,
+   decisions made.
 
 New issues get one area label (`asr`, `polish`, `ci`, `claude-join`,
 `mistral`, `session`) plus `bug` or `enhancement`. Group work with sub-issues
@@ -74,7 +77,7 @@ and order it with blocked-by links, not prose.
   test that demonstrates the change. "CI is green" is not proof of a behavior
   change.
 - A bug fix adds a regression test, shown failing before the fix and passing
-  after: two runs, both in the PR body.
+  after: two filtered runs, both in the PR body.
 - Never weaken a test to get green: no moved thresholds, deleted assertions,
   new `XCTSkip` or wider timing tolerances. Investigate, or stop and report.
 - No wall-clock in tests: no `Date()`, no real `Task.sleep` polling. Inject
@@ -83,16 +86,15 @@ and order it with blocked-by links, not prose.
 - Test classes run in several xctest processes at once (#442). A test that
   listens binds port 0 or takes `unusedLoopbackPort()`, never a fixed port
   or a counter from one. Files and sockets get unique names.
-- The session's timers (connect timeout, mic prompt, finalization poll and
-  watchdog, the audio loops, the failure-icon reset) sleep on
-  `Dependencies.clock`, the reconnect run on `Dependencies.reconnectSleep`. A
-  test that starts or stops a session passes a `ManualSessionClock` and
-  advances it; on the default wall clock the timers fire into the
-  process-retained view model after the test ends. New timers go on the clock.
+- The session's timers sleep on `Dependencies.clock`, the reconnect run on
+  `Dependencies.reconnectSleep`. A test that starts or stops a session passes
+  a `ManualSessionClock` and advances it; on the wall clock the timers fire
+  into the process-retained view model after the test ends. New timers go on
+  the clock.
 - UI change: say exactly what you verified by hand and how.
 - Change to text insertion, focus handling or the stop and overlay commit
-  (`scripts/ci/e2e-dictation-filter.sh`): run the e2e dictation check and paste its lines
-  (`docs/agent/test-tiers.md`). It is the only check where the packaged app
+  (`scripts/ci/e2e-dictation-filter.sh`): run the e2e dictation check and
+  paste its lines (`docs/agent/test-tiers.md`). It is the only check where the packaged app
   dictates, and it holds the Mac and the owner's keyboard: dispatch it only
   with `scripts/ui-smoke-dispatch.sh`, once per PR (per stack, from the top),
   after review fixes and a green `build-test`. The PR body quotes its
@@ -104,23 +106,21 @@ and order it with blocked-by links, not prose.
   created; a rerun reuses the old payload. Changes to prompts, model pins or
   the catalog, sampling, the polish request shape, the helper engines, or the
   eval corpus, scorer or TTS→ASR→polish harness REQUIRE the matching lane
-  plus the eval-e2e scoreboard, or a one-line justification for skipping.
+  plus one eval-e2e scoreboard on the final diff, or a one-line
+  justification for skipping.
   Changes to what the app sends herdr, what it believes herdr answered, or how
   its ssh forward opens REQUIRE `integration-herdr`. Details:
   `docs/agent/test-tiers.md`.
 
 ## CI
 
-- Three required jobs: `build-test` (GitHub-hosted macOS, every event),
-  `linux` (GitHub-hosted Ubuntu: every `scripts/ci/test-*.sh` by glob and
-  `scripts/core-tests-linux.sh`) and `mac-lanes` (the owner's MacBook, the
-  only self-hosted runner). `mac-lanes`
-  never runs fork PRs, and runs a draft only when its body held `[mac-lanes]`
-  at run creation. Never move fork-PR work onto that Mac. New lanes go in
-  `build-test` unless they need something only that Mac has: signing
-  identity, Metal, the STT service, the herdr fixture, a GUI session.
-- `dogfood` (GitHub-hosted macOS, not required) builds and tests the
-  compile-gated dogfood capture.
+- Three required jobs: `build-test` (hosted macOS), `linux` (hosted Ubuntu:
+  `scripts/ci/test-*.sh` and the core suites) and `mac-lanes` (the owner's
+  MacBook). `mac-lanes` skips pushes to main and fork PRs, and runs a draft
+  only when its body held `[mac-lanes]` at run creation. Never move fork-PR
+  work onto that Mac. New lanes go in `build-test` unless they need something
+  only that Mac has: signing identity, Metal, the STT service, the herdr
+  fixture, a GUI session.
 - One Mac runs every agent's `mac-lanes`, one job at a time, so the queue is
   what everyone waits for. A push to a ready PR cancels its running Mac job
   and queues another: `gh pr ready <n> --undo` before a series of pushes. Keep
@@ -134,8 +134,9 @@ and order it with blocked-by links, not prose.
   `gh api -X PATCH repos/<owner>/<repo>/pulls/<n> -F body=@file`; editing
   starts no run, so paste Proof after the run finishes.
 - Red run: read its log first. `gh run rerun <id> --failed` reruns only the
-  failed job. Watch checks with `./scripts/watch-checks.sh <n>`; unlike bare
-  `gh`, it notices when the Mac stops answering.
+  failed job; a red Mac job gets one rerun, then goes to the owner. Watch
+  checks with `./scripts/watch-checks.sh <n>`; unlike bare `gh`, it notices
+  when the Mac stops answering.
 - Releases go through `./scripts/release.sh`. Never push a release tag by hand.
 - Never patch SwiftPM-generated DerivedSources; that shipped launch-broken
   builds (#87). App resources resolve through `Bundle.localvoxtralResources`.
