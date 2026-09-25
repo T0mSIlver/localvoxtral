@@ -35,6 +35,9 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         /// suffix when the final purely extends what was typed; nil when the
         /// final revises typed text, which live mode cannot rewrite.
         package let liveInsertion: String?
+        /// Whether the segment starts inside the word the text before it
+        /// ends on, so whatever types it whole adds no space in front.
+        package var startsMidWord = false
     }
 
     /// Appends one preprocessed partial delta.
@@ -96,7 +99,11 @@ package struct TranscriptAccumulator: Equatable, Sendable {
                 liveInsertedText: liveInsertedText
             )
         }
-        return FinalizedSegment(text: finalizedSegment, liveInsertion: liveInsertion)
+        return FinalizedSegment(
+            text: finalizedSegment,
+            liveInsertion: liveInsertion,
+            startsMidWord: segmentStartsMidWord
+        )
     }
 
     /// Promotes the buffered partial into the dictation event, as if a final
@@ -109,7 +116,7 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         currentDictationEventText = TextMergingAlgorithms.appendToCurrentDictationEvent(
             segment: pendingSegment,
             existingText: currentDictationEventText,
-            segmentStartsMidWord: startsMidWord(bufferedRawText)
+            segmentStartsMidWord: pendingStartsMidWord
         )
         lastFinalSegment = currentDictationEventText
         livePartialText = ""
@@ -170,13 +177,19 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         hasSeenSpacePrefixedDelta && TextMergingAlgorithms.startsMidWord(rawText)
     }
 
+    /// Whether the partial in flight starts mid-word: read before
+    /// `promotePendingToLatestSegment`, which clears it.
+    package var pendingStartsMidWord: Bool {
+        startsMidWord(bufferedRawText)
+    }
+
     /// The overlay's text while the user speaks, before streaming correction.
     package var overlayDisplayText: String {
         OverlayBufferTextAssembler.displayText(
             committedText: currentDictationEventText,
             pendingText: pendingSegmentText,
             fallbackPendingText: livePartialText,
-            pendingStartsMidWord: startsMidWord(bufferedRawText)
+            pendingStartsMidWord: pendingStartsMidWord
         )
     }
 
@@ -186,7 +199,7 @@ package struct TranscriptAccumulator: Equatable, Sendable {
             committedText: currentDictationEventText,
             pendingText: pendingSegmentText,
             fallbackPendingText: livePartialText,
-            pendingStartsMidWord: startsMidWord(bufferedRawText)
+            pendingStartsMidWord: pendingStartsMidWord
         )
     }
 
