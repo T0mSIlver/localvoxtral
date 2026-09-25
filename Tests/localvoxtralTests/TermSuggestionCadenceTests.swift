@@ -78,7 +78,7 @@ final class TermSuggestionCadenceTests: XCTestCase {
         let service = Service()
         let model = SpeakerTermSuggestionModel(
             settings: settings,
-            recentTexts: { ["a text", "another"] },
+            recentDictations: { ["a text", "another"].map { .init(raw: $0, final: $0) } },
             service: { service },
             unavailableReason: { hosted ? nil : "Needs a hosted polishing model." }
         )
@@ -350,7 +350,7 @@ final class TermSuggestionCadenceTests: XCTestCase {
         let settings = makeFixture().settings
         let model = SpeakerTermSuggestionModel(
             settings: settings,
-            recentTexts: { [] },
+            recentDictations: { [] },
             learnedTerms: { ["Voxtral", "polishd"] },
             service: { Service() }
         )

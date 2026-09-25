@@ -41,16 +41,19 @@ enum SpeakerTermSuggestions {
 
     /// Newest first in, newest first out, cut where the request would get too
     /// large for one call. `reserved` is what the rest of the message already
-    /// spends (the known and refused lists can reach tens of kilobytes).
-    static func selected(_ texts: [String], reserved: Int = 0) -> [String] {
+    /// spends (the known and refused lists can reach tens of kilobytes). The
+    /// model reads the final text; the raw text rides along for `screened`.
+    static func selected(
+        _ dictations: [TermSuggestionScreen.Dictation], reserved: Int = 0
+    ) -> [TermSuggestionScreen.Dictation] {
         var budget = maxRequestCharacters - reserved
-        var result: [String] = []
-        for text in texts.prefix(maxDictations) {
-            let trimmed = text.trimmed
+        var result: [TermSuggestionScreen.Dictation] = []
+        for dictation in dictations.prefix(maxDictations) {
+            let trimmed = dictation.final.trimmed
             guard !trimmed.isEmpty else { continue }
             guard trimmed.count <= budget else { break }
             budget -= trimmed.count
-            result.append(trimmed)
+            result.append(TermSuggestionScreen.Dictation(raw: dictation.raw, final: trimmed))
         }
         return result
     }
@@ -122,30 +125,6 @@ enum SpeakerTermSuggestions {
                 && seen.insert(candidateKey).inserted
         })
     }
-
-    /// Checks the model's "at least 3 texts" claim by counting: candidates
-    /// that really occur in three or more dictations come first, the rest keep
-    /// the model's order behind them. Nothing is dropped — a name the model
-    /// recovered from misrecognitions ("Qwen" from Coin/Kuen) occurs in no
-    /// text at all and is the most valuable suggestion there is. A weaker
-    /// model that lists everything it saw (Mistral Medium, 2026-09-18) gets
-    /// its first twelve from what the user actually keeps saying.
-    static func ranked(_ candidates: [String], texts: [String]) -> [String] {
-        let folded = texts.map(\.caseFoldedForMatching)
-        func occurrences(of term: String) -> Int {
-            let escaped = NSRegularExpression.escapedPattern(for: term.caseFoldedForMatching)
-            guard let regex = try? NSRegularExpression(
-                pattern: "(?<![\\p{L}\\p{N}])\(escaped)(?![\\p{L}\\p{N}])"
-            ) else { return 0 }
-            return folded.reduce(0) { count, text in
-                let range = NSRange(text.startIndex..., in: text)
-                return count + (regex.firstMatch(in: text, range: range) == nil ? 0 : 1)
-            }
-        }
-        let confirmed = candidates.filter { occurrences(of: $0) >= 3 }
-        let confirmedSet = Set(confirmed)
-        return confirmed + candidates.filter { !confirmedSet.contains($0) }
-    }
 }
 
 /// The Suggestions row, fed by two producers with one rule between them.
@@ -198,7 +177,7 @@ final class SpeakerTermSuggestionModel {
     private(set) var startedAt: Date?
 
     private let settings: SettingsStore
-    private let recentTexts: @MainActor () async -> [String]
+    private let recentDictations: @MainActor () async -> [TermSuggestionScreen.Dictation]
     /// Terms the app has watched polishing fix, strongest evidence first.
     /// Offered with no model call and no API credits — the evidence is
     /// already on this machine.
@@ -218,14 +197,14 @@ final class SpeakerTermSuggestionModel {
 
     init(
         settings: SettingsStore,
-        recentTexts: @escaping @MainActor () async -> [String],
+        recentDictations: @escaping @MainActor () async -> [TermSuggestionScreen.Dictation],
         learnedTerms: @escaping @MainActor () -> [String] = { [] },
         service: @escaping @MainActor () -> any LLMPolishingServicing,
         unavailableReason: @escaping @MainActor () -> String? = { nil },
         now: @escaping @MainActor () -> Date = { Date() }
     ) {
         self.settings = settings
-        self.recentTexts = recentTexts
+        self.recentDictations = recentDictations
         self.learnedTerms = learnedTerms
         self.service = service
         self.unavailableReasonProvider = unavailableReason
@@ -322,30 +301,30 @@ final class SpeakerTermSuggestionModel {
         let reserved = SpeakerTermSuggestions.instructions.count
             + SpeakerTermSuggestions.listSections(terms: terms, dismissed: dismissed)
                 .reduce(0) { $0 + $1.count }
-        let texts = SpeakerTermSuggestions.selected(await recentTexts(), reserved: reserved)
+        let dictations = SpeakerTermSuggestions.selected(await recentDictations(), reserved: reserved)
         guard ownsRow else { return .notRun }
-        guard !texts.isEmpty else {
+        guard !dictations.isEmpty else {
             phase = background ? .idle : .failed("No dictations to read yet.")
             return .notRun
         }
-        readingCount = texts.count
-        Log.polishing.info("Term suggestions requested: \(texts.count, privacy: .public) dictations")
+        readingCount = dictations.count
+        Log.polishing.info("Term suggestions requested: \(dictations.count, privacy: .public) dictations")
         do {
             let result = try await service().polish(
                 request: SpeakerTermSuggestions.request(
-                    texts: texts, terms: terms, dismissed: dismissed
+                    texts: dictations.map(\.final), terms: terms, dismissed: dismissed
                 ),
                 configuration: configuration
             )
             // Stopped while waiting: the row already went back to its button.
             guard ownsRow else { return .notRun }
-            let found = SpeakerTermSuggestions.ranked(
+            let found = TermSuggestionScreen.screened(
                 SpeakerTermSuggestions.filtered(
                     SpeakerTermSuggestions.parse(result.polishedText),
                     terms: settings.polishSpeakerTerms,
                     dismissed: settings.polishDismissedTermSuggestions
                 ),
-                texts: texts
+                dictations: dictations
             )
             // What the run found leads — it is what the user waited minutes for
             // — and the chips already on screen keep their place behind it, as
