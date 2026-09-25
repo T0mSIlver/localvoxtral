@@ -1,0 +1,109 @@
+name: View Snapshots
+
+# Renders the app's views to PNG on a hosted runner, for an agent that has to
+# show the owner what a view looks like: `scripts/view-snapshots.sh` dispatches
+# it on a pushed branch and downloads the `view-snapshots` artifact. The owner's
+# Mac is never involved. See docs/agent/view-snapshots.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: "swift test --filter: a ViewSnapshotTests case, or the whole class"
+        required: false
+        default: ViewSnapshotTests
+      request_id:
+        description: "Echoed in the run name so the dispatching script finds its run"
+        required: false
+        default: ""
+  # Its own edits prove it: a PR that changes this file renders every view.
+  pull_request:
+    paths:
+      - .github/workflows/view-snapshots.yml
+
+run-name: View snapshots ${{ inputs.request_id }}
+
+concurrency:
+  group: view-snapshots-${{ github.ref }}-${{ inputs.request_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # restore-mtimes.sh diffs against the commit the cache was saved at.
+          fetch-depth: 0
+
+      - name: Check the filter
+        env:
+          FILTER: ${{ inputs.filter || 'ViewSnapshotTests' }}
+        run: |
+          # Only snapshot cases: this workflow is not a way to run other suites.
+          if [[ ! "$FILTER" =~ ^ViewSnapshotTests(/[A-Za-z0-9_]+)?$ ]]; then
+            echo "filter must be ViewSnapshotTests or ViewSnapshotTests/<test>, got: $FILTER" >&2
+            exit 1
+          fi
+
+      - name: Record hosted toolchain
+        id: hosted_toolchain
+        run: |
+          # Same slug as ci.yml's build-test, so its cache entries match.
+          SLUG="$(swift --version | head -1 | tr -cs 'a-zA-Z0-9.' '-' | cut -c1-48)"
+          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+
+      - name: Restore SwiftPM build cache
+        id: build_cache
+        # Restore only: main's build-test saves these entries.
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build
+          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.hosted_toolchain.outputs.slug }}-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+          restore-keys: |
+            swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.hosted_toolchain.outputs.slug }}-${{ hashFiles('Package.resolved') }}-
+            swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.hosted_toolchain.outputs.slug }}-
+
+      - name: Restore tracked-file mtimes from git
+        env:
+          MATCHED_KEY: ${{ steps.build_cache.outputs.cache-matched-key }}
+        run: |
+          CACHE_BASE=""
+          if [[ "$MATCHED_KEY" =~ -([0-9a-f]{40})$ ]]; then
+            CACHE_BASE="${BASH_REMATCH[1]}"
+          fi
+          ./scripts/ci/restore-mtimes.sh . "$CACHE_BASE"
+
+      - name: Render
+        env:
+          FILTER: ${{ inputs.filter || 'ViewSnapshotTests' }}
+        run: |
+          set -euo pipefail
+          # The cache can hold snapshots from an older tree.
+          rm -rf .build/snapshots
+          NSUnbufferedIO=YES ./scripts/ci/run-supervised-command.sh \
+            900 "$RUNNER_TEMP/view-snapshots.log" -- \
+            swift test --build-system native --filter "$FILTER"
+
+      - name: Upload view snapshots
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: view-snapshots
+          path: .build/snapshots
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload test log
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: view-snapshots-log
+          path: ${{ runner.temp }}/view-snapshots.log
+          if-no-files-found: warn
+          retention-days: 7
