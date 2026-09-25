@@ -90,7 +90,9 @@ def export(store: Path, terms: Path | None, refused: Path | None, out: Path) -> 
 
 # --- request --------------------------------------------------------------
 
-def instructions(ref: str | None) -> str:
+def instructions(ref: str | None) -> tuple[str, bool]:
+    """The arm's instructions, and whether its request shows what was heard
+    (#612) or only the final text (the layout before it)."""
     source = (
         (ROOT / SOURCE).read_text() if ref is None
         else subprocess.run(["git", "-C", str(ROOT), "show", f"{ref}:{SOURCE}"],
@@ -100,23 +102,35 @@ def instructions(ref: str | None) -> str:
     if not match:
         sys.exit(f"no instructions literal in {SOURCE} at {ref or 'working tree'}")
     indent = len(match.group(2))
-    return "\n".join(line[indent:] for line in match.group(1).split("\n"))
+    prompt = "\n".join(line[indent:] for line in match.group(1).split("\n"))
+    return prompt, '"heard: \\(' in source
 
 
 def key(term: str) -> str:
     return "".join(c for c in term.casefold() if c.isalnum())
 
 
-def selected(dictations: list[dict], reserved: int) -> list[dict]:
+def block(dictation: dict, heard: bool) -> str:
+    """`SpeakerTermSuggestions.block`, or the bare final text before #612."""
+    if not heard:
+        return dictation["final"]
+    if dictation["final"] == dictation["raw"]:
+        return f"heard: {dictation['raw']}"
+    return f"heard: {dictation['raw']}\nfinal: {dictation['final']}"
+
+
+def selected(dictations: list[dict], reserved: int, heard: bool) -> list[dict]:
     budget, result = MAX_REQUEST_CHARACTERS - reserved, []
     for dictation in dictations[:MAX_DICTATIONS]:
-        final = dictation["final"].strip()
-        if not final:
+        trimmed = {"raw": dictation["raw"].strip(), "final": dictation["final"].strip()}
+        shown = trimmed["raw"] or trimmed["final"] if heard else trimmed["final"]
+        if not shown:
             continue
-        if len(final) > budget:
+        cost = len(block(trimmed, heard))
+        if cost > budget:
             break
-        budget -= len(final)
-        result.append({"raw": dictation["raw"], "final": final})
+        budget -= cost
+        result.append(trimmed)
     return result
 
 
@@ -140,9 +154,10 @@ def self_check() -> None:
     if not match:
         sys.exit(f"self-check: the layout test is gone from {TEST}")
     indent = len(match.group(2))
-    want = instructions(None) + "\n\n" + "\n".join(
-        line[indent:] for line in match.group(1).split("\n"))
-    got = message(instructions(None), ["first", "second"], ["Qwen"], ["SessionStart"])
+    prompt, heard = instructions(None)
+    want = prompt + "\n\n" + "\n".join(line[indent:] for line in match.group(1).split("\n"))
+    dictations = [{"raw": "first", "final": "first"}, {"raw": "coin", "final": "Qwen"}]
+    got = message(prompt, [block(d, heard) for d in dictations], ["Qwen"], ["SessionStart"])
     if got != want:
         sys.exit("self-check failed: the script's request no longer matches the app's")
     print("self-check ok")
@@ -150,8 +165,9 @@ def self_check() -> None:
 
 # --- scoring --------------------------------------------------------------
 
-def parse(reply: str) -> list[str]:
-    """`SpeakerTermSuggestions.parse`: the first span that is a JSON array."""
+def parse(reply: str) -> list[tuple[str, list[str]]]:
+    """`SpeakerTermSuggestions.parseCandidates`: the first span that is a JSON
+    array, as (term, heard forms)."""
     for start in (i for i, c in enumerate(reply) if c == "["):
         end = len(reply)
         while (close := reply.rfind("]", start, end)) != -1:
@@ -161,7 +177,9 @@ def parse(reply: str) -> list[str]:
                 end = close
                 continue
             if isinstance(array, list):
-                terms = [e if isinstance(e, str) else e.get("term") for e in array
+                terms = [(e, []) if isinstance(e, str)
+                         else (e["term"], [h for h in e.get("heard") or [] if isinstance(h, str)])
+                         for e in array
                          if isinstance(e, str) or (isinstance(e, dict) and isinstance(e.get("term"), str))]
                 if terms or not array:
                     return terms
@@ -173,22 +191,26 @@ def whole_word(term: str, flags: int = 0) -> re.Pattern:
     return re.compile(rf"(?<![^\W_]){re.escape(term.strip())}(?![^\W_])", flags)
 
 
-def spelled_right(term: str, dictations: list[dict]) -> bool:
+def spelled_right(term: str, heard: list[str], dictations: list[dict]) -> bool:
     """The recognizer wrote it exactly right somewhere, and no dictation shows
-    polishing fixing it (#610's definition of a useless chip)."""
+    it getting it wrong: no polish fix, no quoted wrong form found in a
+    transcript (`TermSuggestionScreen.screened`'s definition of a useless chip)."""
     exact, loose = whole_word(term), whole_word(term, re.I)
+    wrong = [whole_word(h) for h in heard if h.strip() and h.strip() != term.strip()]
     right = sum(bool(exact.search(d["raw"])) for d in dictations)
-    fixed = sum(not exact.search(d["raw"]) and bool(loose.search(d["final"])) for d in dictations)
-    return right > 0 and fixed == 0
+    missed = sum(not exact.search(d["raw"]) and (bool(loose.search(d["final"]))
+                 or any(w.search(d["raw"]) for w in wrong)) for d in dictations)
+    return right > 0 and missed == 0
 
 
-def score(terms: list[str], dictations: list[dict], accepted: list[str], refused: list[str]) -> dict:
+def score(terms: list[tuple[str, list[str]]], dictations: list[dict],
+          accepted: list[str], refused: list[str]) -> dict:
     accepted_keys, refused_keys = {key(t) for t in accepted}, {key(t) for t in refused}
     return {
         "proposed": len(terms),
-        "spelled": sum(spelled_right(t, dictations) for t in terms),
-        "accepted": sum(key(t) in accepted_keys for t in terms),
-        "refused": sum(key(t) in refused_keys for t in terms),
+        "spelled": sum(spelled_right(t, h, dictations) for t, h in terms),
+        "accepted": sum(key(t) in accepted_keys for t, _ in terms),
+        "refused": sum(key(t) in refused_keys for t, _ in terms),
     }
 
 
@@ -233,16 +255,15 @@ def run(args: argparse.Namespace) -> None:
     spend = 0.0
     results: dict[str, list[dict]] = {arm: [] for arm in arms}
     for repeat in range(args.repeats):
-        for arm, prompt in arms.items():  # interleaved, so drift hits both arms
-            reserved = len(prompt)
-            chosen = selected(data["dictations"], reserved)
-            texts = [d["final"] for d in chosen]
+        for arm, (prompt, heard) in arms.items():  # interleaved, so drift hits both arms
+            chosen = selected(data["dictations"], len(prompt), heard)
+            texts = [block(d, heard) for d in chosen]
             reply, usage, seconds = ask(args.model, message(prompt, texts, known, dismissed), secret)
             seen, terms = set(), []
-            for term in parse(reply):
+            for term, forms in parse(reply):
                 if key(term) and key(term) not in seen:
                     seen.add(key(term))
-                    terms.append(term)
+                    terms.append((term, forms))
             row = score(terms, chosen, data["accepted"], data["refused"])
             cost = (usage.get("prompt_tokens", 0) * PRICE_IN
                     + usage.get("completion_tokens", 0) * PRICE_OUT) / 1e6
@@ -257,7 +278,7 @@ def run(args: argparse.Namespace) -> None:
                   f"{cost:.3f} EUR, " + ", ".join(f"{k} {v}" for k, v in row.items()))
     for arm, rows in results.items():
         if len(rows) >= 2:
-            first, second = ({key(t) for t in r["terms"]} for r in rows[:2])
+            first, second = ({key(t) for t, _ in r["terms"]} for r in rows[:2])
             union = first | second
             overlap = len(first & second) / len(union) if union else 1.0
             print(f"{arm} repeat overlap: {overlap:.0%} of {len(union)} distinct terms")
