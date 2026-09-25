@@ -86,9 +86,11 @@ jobs:
           set -euo pipefail
           # The cache can hold snapshots from an older tree.
           rm -rf .build/snapshots
+          # With coverage, like the build-test cache it restored: without the
+          # flag SwiftPM relinks everything the cache already holds.
           NSUnbufferedIO=YES ./scripts/ci/run-supervised-command.sh \
             900 "$RUNNER_TEMP/view-snapshots.log" -- \
-            swift test --build-system native --filter "$FILTER"
+            swift test --build-system native --enable-code-coverage --filter "$FILTER"
 
       - name: Upload view snapshots
         if: always()
