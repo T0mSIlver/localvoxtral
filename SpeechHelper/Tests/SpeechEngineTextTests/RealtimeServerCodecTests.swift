@@ -126,39 +126,6 @@ final class RealtimeServerCodecTests: XCTestCase {
         XCTAssertEqual(try RealtimeClientMessage.parse(Data(#"{"type":"input_audio_buffer.commit"}"#.utf8)), .commit(final: false))
     }
 
-    func testSessionUpdateWithoutVocabularyKeepsTheList() throws {
-        XCTAssertEqual(
-            try RealtimeClientMessage.parse(Data(#"{"type":"session.update","model":"m"}"#.utf8)),
-            .sessionUpdate(vocabulary: nil)
-        )
-    }
-
-    func testSessionUpdateCarriesItsVocabulary() throws {
-        XCTAssertEqual(
-            try RealtimeClientMessage.parse(Data(#"{"type":"session.update","vocabulary":["mlx-lm"," Claude  Code "]}"#.utf8)),
-            .sessionUpdate(vocabulary: SessionVocabulary(["mlx-lm", "Claude Code"]))
-        )
-        XCTAssertEqual(
-            try RealtimeClientMessage.parse(Data(#"{"type":"session.update","vocabulary":[]}"#.utf8)),
-            .sessionUpdate(vocabulary: .empty)
-        )
-    }
-
-    func testSessionUpdateRejectsAVocabularyThatIsNotAListOfStrings() {
-        for body in [#""mlx-lm""#, #"["mlx-lm",3]"#, "null"] {
-            XCTAssertThrowsError(
-                try RealtimeClientMessage.parse(Data(#"{"type":"session.update","vocabulary":\#(body)}"#.utf8))
-            ) { XCTAssertEqual($0 as? RealtimeClientMessage.ParseError, .invalidVocabulary, body) }
-        }
-    }
-
-    func testVocabularyDropsBlankLongAndRepeatedTermsAndCapsTheCount() {
-        let long = String(repeating: "a", count: SessionVocabulary.maxTermCharacters + 1)
-        XCTAssertEqual(SessionVocabulary(["", "  ", long, "herdr", "HERDR", "\tspeechd\n"]).terms, ["herdr", "speechd"])
-        let many = (0..<(SessionVocabulary.maxTerms + 20)).map { "term\($0)" }
-        XCTAssertEqual(SessionVocabulary(many).terms, Array(many.prefix(SessionVocabulary.maxTerms)))
-    }
-
     func testUnknownTypeIsIgnoredNotAnError() throws {
         XCTAssertEqual(try RealtimeClientMessage.parse(Data(#"{"type":"response.created"}"#.utf8)), .ignored(type: "response.created"))
     }

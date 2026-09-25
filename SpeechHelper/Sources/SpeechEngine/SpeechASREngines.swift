@@ -59,11 +59,6 @@ final class VoxtralASRSession: SpeechASRStreamingSession, @unchecked Sendable {
 
     var decodedTokenCount: Int { session.tokens.count }
 
-    /// The Voxtral decoder has no logits hook yet (#316).
-    func setVocabulary(_ vocabulary: SessionVocabulary) -> Bool { false }
-
-    var biasedTokenCount: Int? { nil }
-
     var utteranceStop: UtteranceStop? {
         // `session.tokens` hands out a copy of the whole array — never touch it
         // while the session is still decoding.
@@ -80,17 +75,9 @@ final class VoxtralASRSession: SpeechASRStreamingSession, @unchecked Sendable {
 
 final class NemotronASREngine: SpeechASREngine, @unchecked Sendable {
     private let model: NemotronASRModel
-    private let termBoost: NemotronASRTermBoostConfig
 
-    init(model: NemotronASRModel, termBoost: TermBoostSettings?) {
+    init(model: NemotronASRModel) {
         self.model = model
-        self.termBoost = termBoost.map {
-            NemotronASRTermBoostConfig(
-                firstTokenBoost: $0.firstTokenBoost,
-                continuationBoost: $0.continuationBoost,
-                margin: $0.margin
-            )
-        } ?? NemotronASRTermBoostConfig()
     }
 
     func makeSession(
@@ -104,8 +91,7 @@ final class NemotronASREngine: SpeechASREngine, @unchecked Sendable {
                     forTranscriptionDelayMs: transcriptionDelayMs
                 )
             ),
-            utteranceLimit: utteranceLimit,
-            termBoost: termBoost
+            utteranceLimit: utteranceLimit
         )
     }
 }
@@ -115,24 +101,11 @@ final class NemotronASRSession: SpeechASRStreamingSession, @unchecked Sendable {
     /// The engine has no token budget to cap, so the limit is enforced on the audio
     /// this session accepts — see `UtteranceAudioCap`.
     private var cap: UtteranceAudioCap
-    private let termBoost: NemotronASRTermBoostConfig
 
-    init(
-        session: NemotronASRStreamSession,
-        utteranceLimit: UtteranceLimit,
-        termBoost: NemotronASRTermBoostConfig
-    ) {
+    init(session: NemotronASRStreamSession, utteranceLimit: UtteranceLimit) {
         self.session = session
         self.cap = UtteranceAudioCap(limit: utteranceLimit)
-        self.termBoost = termBoost
     }
-
-    func setVocabulary(_ vocabulary: SessionVocabulary) -> Bool {
-        session.setBoostTerms(vocabulary.terms, config: termBoost)
-        return true
-    }
-
-    var biasedTokenCount: Int? { session.boostedTokenCount }
 
     func step(_ samples: [Float]) -> SpeechStreamDelta {
         let accepted = cap.accept(samples.count)

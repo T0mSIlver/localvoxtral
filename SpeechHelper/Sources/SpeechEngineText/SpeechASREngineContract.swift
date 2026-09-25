@@ -33,14 +33,6 @@ public protocol SpeechASRStreamingSession: AnyObject, Sendable {
     /// Voxtral's decoder counts tokens, Nemotron's RNN-T never ends a stream
     /// so its session counts the audio it was fed.
     var utteranceStop: UtteranceStop? { get }
-    /// Bias decoding toward `vocabulary` from the next step on; an empty list
-    /// turns the bias off. Returns false when this engine cannot bias, so the
-    /// server can say the list went unused.
-    @discardableResult
-    func setVocabulary(_ vocabulary: SessionVocabulary) -> Bool
-    /// Tokens the vocabulary bias changed so far, for the helper's log line;
-    /// nil when this engine does not bias.
-    var biasedTokenCount: Int? { get }
 }
 
 /// A loaded ASR model that opens one streaming session per utterance.

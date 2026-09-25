@@ -272,24 +272,69 @@ final class SpeechHelperIntegrationTests: XCTestCase {
         binary: URL,
         model: String,
         extraArguments: [String] = []
-    ) async throws -> (process: Process, stderrLog: SpeechHelperLineLog) {
-        let helper: PackagedSpeechHelper
-        do {
-            helper = try await PackagedSpeechHelper.launch(
-                binary: binary,
-                model: model,
-                port: Self.testPort,
-                extraArguments: extraArguments,
-                readyTimeout: Self.readyTimeout
+    ) async throws -> (process: Process, stderrLog: LineLog) {
+        let process = Process()
+        process.executableURL = binary
+        var arguments = [
+            "--model", model,
+            "--port", "\(Self.testPort)",
+        ]
+        if let revision = SpeechModelCatalog.option(forRepoID: model)?.revision {
+            arguments.append(contentsOf: ["--model-revision", revision])
+        }
+        process.arguments = arguments + extraArguments
+
+        let stderr = Pipe()
+        process.standardError = stderr
+        let readyOrExited = expectation(description: "speech helper ready or exited")
+        readyOrExited.assertForOverFulfill = false
+        let ready = LockedFlag()
+        let stderrLog = LineLog()
+        let readyLine = "ready on 127.0.0.1:\(Self.testPort)"
+        let reader = PipeLineReader(fileHandle: stderr.fileHandleForReading) { line in
+            stderrLog.append(line)
+            if line.contains(readyLine), ready.set() {
+                readyOrExited.fulfill()
+            }
+        }
+        process.terminationHandler = { _ in readyOrExited.fulfill() }
+
+        try process.run()
+        reader.start()
+        addTeardownBlock {
+            await Self.reap(process)
+        }
+
+        await fulfillment(of: [readyOrExited], timeout: Self.readyTimeout)
+        guard ready.value else {
+            let status = process.isRunning
+                ? "still running, no ready line after \(Int(Self.readyTimeout))s"
+                : "exited with status \(process.terminationStatus)"
+            XCTFail(
+                """
+                Speech helper failed to become ready (\(status)). stderr tail:
+                \(stderrLog.tail(30))
+                """
             )
-        } catch {
-            XCTFail("\(error)")
             throw XCTSkip("speech helper did not become ready")
         }
-        addTeardownBlock {
-            await helper.stop()
+        return (process, stderrLog)
+    }
+
+    private static func reap(_ process: Process) async {
+        if process.isRunning {
+            process.terminate()
         }
-        return (helper.process, helper.stderrLog)
+        let reaped = XCTestExpectation(description: "speech helper exited after SIGTERM")
+        DispatchQueue.global().async {
+            process.waitUntilExit()
+            reaped.fulfill()
+        }
+        _ = await XCTWaiter.fulfillment(of: [reaped], timeout: 10)
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+            process.waitUntilExit()
+        }
     }
 
     func testRealAudioMeetsAccuracyAndAppendOnlyDeltaContract() async throws {
@@ -665,6 +710,42 @@ private final class TranscriptCapture: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return Snapshot(deltas: deltas, doneTexts: doneTexts)
+    }
+}
+
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = false
+
+    var value: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func set() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !storage else { return false }
+        storage = true
+        return true
+    }
+}
+
+private final class LineLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+
+    func append(_ line: String) {
+        lock.lock()
+        lines.append(line)
+        lock.unlock()
+    }
+
+    func tail(_ count: Int) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return lines.suffix(count).joined(separator: "\n")
     }
 }
 

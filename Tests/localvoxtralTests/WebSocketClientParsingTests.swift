@@ -8,17 +8,6 @@ final class WebSocketClientParsingTests: XCTestCase {
         RealtimeAPIWebSocketClient()
     }
 
-    // MARK: - session.update
-
-    func testSessionUpdateCarriesTheVocabularyOnlyWhenThereIsOne() {
-        let plain = RealtimeAPIWebSocketClient.sessionUpdateEvent(model: "m", vocabulary: [])
-        XCTAssertEqual(plain as NSDictionary, ["type": "session.update", "model": "m"] as NSDictionary)
-
-        let biased = RealtimeAPIWebSocketClient.sessionUpdateEvent(model: "m", vocabulary: ["herdr", "mlx-lm"])
-        XCTAssertEqual(biased["vocabulary"] as? [String], ["herdr", "mlx-lm"])
-        XCTAssertEqual(biased["type"] as? String, "session.update")
-    }
-
     // MARK: - findString
 
     func testFindString_directKeyMatch() {
