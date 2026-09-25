@@ -205,7 +205,6 @@ extension ClaudeIntegrationSettingsModel {
             markSetup(.remoteHerdr, .skipped("The existing herdr agents table was left unchanged."))
         default:
             markSetup(.remoteHerdr, .done("The remote herdr agents panel is configured."))
-            herdrPanelStatus = .ok
         }
         guard continueSetup(hostID: hostID) else { return }
 

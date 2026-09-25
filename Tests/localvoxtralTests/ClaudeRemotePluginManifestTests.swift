@@ -137,6 +137,10 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
                     FileManager.default.isExecutableFile(atPath: full.path),
                     "\(path) must be executable"
                 )
+                let firstLine = try String(contentsOf: full, encoding: .utf8)
+                    .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+                    .first.map(String.init)
+                XCTAssertEqual(firstLine, "#!/bin/sh", "\(path) must be POSIX sh, not bash — remote hosts vary")
                 continue
             }
             XCTAssertFalse(
@@ -412,17 +416,6 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     // parses it as control JSON; on UserPromptSubmit non-JSON stdout is
     // appended to the user's prompt), no stderr.
 
-    func testShimIsPOSIXShAndExecutable() throws {
-        XCTAssertTrue(
-            FileManager.default.isExecutableFile(atPath: shimURL.path),
-            "Claude Code executes this directly; without +x every hook errors"
-        )
-        let firstLine = try shimSource()
-            .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
-            .first.map(String.init)
-        XCTAssertEqual(firstLine, "#!/bin/sh", "must be POSIX sh, not bash — remote hosts vary")
-    }
-
     // MARK: Connection-status stamp + status-line renderer
     //
     // post.sh records each dial's outcome in a one-line `hook-status` stamp;
@@ -433,17 +426,6 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
 
     private var statusLineRendererURL: URL {
         pluginRoot.appendingPathComponent("hooks/statusline.sh")
-    }
-
-    func testStatusLineRendererIsPOSIXShAndExecutable() throws {
-        XCTAssertTrue(
-            FileManager.default.isExecutableFile(atPath: statusLineRendererURL.path),
-            "documented as copy-then-run; without +x the copied file breaks"
-        )
-        let firstLine = try String(contentsOf: statusLineRendererURL, encoding: .utf8)
-            .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
-            .first.map(String.init)
-        XCTAssertEqual(firstLine, "#!/bin/sh", "must be POSIX sh, not bash — remote hosts vary")
     }
 
     func testShimStampsTheOutcomeOfEveryCompletedDial() throws {

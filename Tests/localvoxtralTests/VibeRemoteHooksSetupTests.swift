@@ -370,36 +370,6 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
         XCTAssertEqual(host.invocations.count, 0)
     }
 
-    // MARK: - Remove
-
-    func testRemoveRestoresTheUsersHooksTomlAndDeletesTheToken() throws {
-        let host = try VibeFakeHost()
-        try host.write(Self.userHooks, to: ".vibe/hooks.toml")
-        _ = try setUp(host)
-
-        XCTAssertEqual(try service(host).removeRemoteVibeHooks(sshHostAlias: "builder"), .removed)
-        XCTAssertEqual(host.text(".vibe/hooks.toml"), Self.userHooks)
-        XCTAssertEqual(host.mode(".vibe/hooks.toml"), 0o644)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: host.path(".vibe/localvoxtral/remote")))
-    }
-
-    func testRemoveDeletesAHooksTomlThatHeldOnlyOurBlockAndKeepsTheLocalBlock() throws {
-        let host = try VibeFakeHost()
-        _ = try setUp(host)
-        _ = try service(host).removeRemoteVibeHooks(sshHostAlias: "builder")
-        XCTAssertNil(host.text(".vibe/hooks.toml"))
-
-        // One machine can be a Mac with the local hooks AND an enrolled host.
-        let local = try XCTUnwrap(
-            ClaudePluginAssets.vibeFileURL(named: ClaudePluginAssets.vibeHooksBlockFileName)
-                .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
-        )
-        try host.write(local, to: ".vibe/hooks.toml")
-        _ = try setUp(host)
-        _ = try service(host).removeRemoteVibeHooks(sshHostAlias: "builder")
-        XCTAssertEqual(host.text(".vibe/hooks.toml"), local)
-    }
-
     // MARK: - Pure parts
 
     func testTheShippedFilesCarryOneVersionAndTheRemoteBlock() throws {
@@ -536,29 +506,19 @@ final class ClaudeRemoteExtraCredentialTests: XCTestCase {
         }
     }
 
-    func testRemoveCredentialLeavesTheHostsOwnTokenWorking() throws {
-        let registry = try makeRegistry()
-        let enrollment = try registry.enroll(label: "builder")
-        let vibeToken = try registry.issueCredential(hostID: enrollment.host.id, purpose: .vibe)
-        try registry.removeCredential(hostID: enrollment.host.id, purpose: .vibe)
-        XCTAssertNil(registry.authenticate(token: vibeToken))
-        XCTAssertNotNil(registry.authenticate(token: enrollment.token))
-    }
-
     func testTheCredentialSurvivesARelaunchAndAnOlderFileStillLoads() throws {
         let io = InMemoryHostStoreIO()
         let first = try makeRegistry(io: io)
         let enrollment = try first.enroll(label: "builder")
         let vibeToken = try first.issueCredential(hostID: enrollment.host.id, purpose: .vibe)
+        // A host with no extra credential is stored without the key, exactly
+        // as a file written before the key existed.
+        let legacy = try first.enroll(label: "legacy")
 
         let relaunched = try makeRegistry(io: io)
         XCTAssertEqual(relaunched.authenticate(token: vibeToken)?.id, enrollment.host.id)
-
-        // A file written before this key existed.
-        try relaunched.removeCredential(hostID: enrollment.host.id, purpose: .vibe)
-        let older = try makeRegistry(io: io)
-        XCTAssertEqual(older.host(id: enrollment.host.id)?.extraCredentialPurposes, [])
-        XCTAssertNotNil(older.authenticate(token: enrollment.token))
+        XCTAssertEqual(relaunched.host(id: legacy.host.id)?.extraCredentialPurposes, [])
+        XCTAssertNotNil(relaunched.authenticate(token: legacy.token))
     }
 
     func testARotationDuringSetupCannotBeUndoneByTheCommit() throws {

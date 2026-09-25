@@ -220,10 +220,6 @@ public enum ClaudeRemoteSessionScope {
         "\(prefix)\(hostID):\(sessionID)"
     }
 
-    public static func isScoped(_ sessionID: String) -> Bool {
-        sessionID.hasPrefix(prefix)
-    }
-
     /// Transport channel label for a host, used as `ClaudeTransportOrigin.remote`'s
     /// channel. Identifies WHICH remote, so two hosts never share an origin.
     public static func channel(hostID: String) -> String {

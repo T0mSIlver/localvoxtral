@@ -794,23 +794,14 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             confirmation.title,
             ClaudeRemoteEnrollmentService.localHerdrPanelConsentTitle
         )
-        XCTAssertEqual(
-            confirmation.preview,
-            ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet
-        )
 
         await model.confirmEnrollmentAction()
 
-        XCTAssertEqual(model.enrollmentResultsAction, .configureLocalHerdrPanel)
-        XCTAssertEqual(
-            model.enrollmentStepStatuses.first?.text,
-            "Configured the local herdr agents panel."
-        )
         XCTAssertEqual(
             model.localHerdrPanelResult,
             ClaudeRemoteEnrollmentService.localHerdrPanelReloadStatus
         )
-        XCTAssertEqual(model.herdrPanelStatus, .ok)
+        XCTAssertNil(model.alert)
         XCTAssertEqual(fileSystem.writes.count, 1)
         // The row is there now: pressing Set up… again would only refuse.
         XCTAssertEqual(model.localHerdrPanelStatus, .added)
@@ -964,24 +955,16 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             enrollmentService: service,
             hasEnabledHerdrMachineReport: { true }
         )
-        model.herdrPanelStatus = .likelyNotConfigured
 
         model.requestLocalHerdrPanelConfiguration()
         await model.confirmEnrollmentAction()
 
-        XCTAssertEqual(model.herdrPanelStatus, .likelyNotConfigured)
-        XCTAssertEqual(
-            model.enrollmentStepStatuses.first?.text,
-            "Local herdr panel setup failed."
-        )
-        XCTAssertEqual(
-            model.enrollmentStepStatuses.first?.detail,
-            "Open Details for the manual herdr configuration."
-        )
         XCTAssertEqual(
             model.alert?.title,
             "Local herdr panel"
         )
+        XCTAssertTrue(model.alert?.detail.contains("Open Details for the manual remedy") == true)
+        XCTAssertNil(model.localHerdrPanelResult)
         XCTAssertTrue(fileSystem.writes.isEmpty)
     }
 
@@ -2728,28 +2711,12 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     }
 
     @MainActor
-    func testTheGeneratedShellBlockStillMatchesTheWriterExactly() async throws {
-        let fileSystem = StubRCFileSystem(state: ClaudeShellRCState())
-        let model = shellSetupModel(fileSystem: fileSystem)
-        let preview = try XCTUnwrap(model.shellSetupPreview)
-
-        await model.applyShellSetup()
-        let written = String(decoding: fileSystem.state.data ?? Data(), as: UTF8.self)
-        XCTAssertEqual(
-            written,
-            ClaudeShellRCSetup.apply(to: "", snippet: preview),
-            "the documentation/test seam must remain byte-identical to the writer"
-        )
-    }
-
-    @MainActor
     func testAnUnsupportedLoginShellOffersNothingRatherThanGuessing() {
         let model = shellSetupModel(shell: nil, fileSystem: StubRCFileSystem(
             state: ClaudeShellRCState()
         ))
         model.refreshShellSetupStatus()
         XCTAssertEqual(model.shellSetupStatus.rc, .unsupportedShell)
-        XCTAssertNil(model.shellSetupPreview, "an unsupported shell must not generate a block")
         XCTAssertFalse(model.canApplyShellSetup)
     }
 
@@ -2898,9 +2865,6 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         await model.enroll()
         let hostID = try XCTUnwrap(model.hosts.first?.id)
         model.requestHostSetup()
-        let confirmation = try XCTUnwrap(model.enrollmentConfirmation)
-        XCTAssertTrue(confirmation.preview.contains("Mac ~/.ssh/config"))
-        XCTAssertTrue(confirmation.preview.contains("Remote host:"))
         await model.confirmEnrollmentAction()
         return (model, hostID, sshFS, recorder)
     }

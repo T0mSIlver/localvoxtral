@@ -4,13 +4,10 @@ import Foundation
 extension ClaudeIntegrationSettingsModel {
     public func requestLocalHerdrPanelConfiguration() {
         guard !isPerformingEnrollmentAction, hasEnabledHerdrMachine else { return }
-        enrollmentStepStatuses = []
-        enrollmentResultsAction = nil
         localHerdrPanelResult = nil
         enrollmentConfirmation = EnrollmentConfirmation(
             action: .configureLocalHerdrPanel,
             title: ClaudeRemoteEnrollmentService.localHerdrPanelConsentTitle,
-            preview: ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet,
             confirmButtonTitle: "Confirm configuration"
         )
         Log.claudeContext.info("Claude local herdr panel configuration confirmation requested")
@@ -26,8 +23,6 @@ extension ClaudeIntegrationSettingsModel {
         else { return }
         enrollmentConfirmation = nil
         isPerformingEnrollmentAction = true
-        enrollmentStepStatuses = []
-        enrollmentResultsAction = nil
         localHerdrPanelResult = nil
         defer { isPerformingEnrollmentAction = false }
 
@@ -35,9 +30,15 @@ extension ClaudeIntegrationSettingsModel {
         let attempt = await performEnrollmentAsync {
             try service.configureLocalHerdrPanel()
         }
-        publish(attempt, action: confirmation.action)
-        if attempt.failure == nil {
-            herdrPanelStatus = .ok
+        if let failure = attempt.failure {
+            alert = DetailAlert(
+                title: "Local herdr panel",
+                detail: Self.enrollmentFailureDetail(failure, subject: "Local herdr panel setup")
+            )
+            Log.claudeContext.error(
+                "Claude local herdr panel configuration failed: \(failure.describedError, privacy: .public)"
+            )
+        } else {
             localHerdrPanelResult = attempt.steps.first?.message
                 ?? ClaudeRemoteEnrollmentService.localHerdrPanelReloadStatus
         }

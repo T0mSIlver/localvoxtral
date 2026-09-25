@@ -35,10 +35,6 @@ extension SettingsStore {
         dictationShortcutEnabled = true
     }
 
-    func resetDictationShortcutToDefault() {
-        setDictationShortcut(Self.defaultDictationShortcut)
-    }
-
     // MARK: - Dual Shortcuts (per output mode)
 
     var overlayBufferShortcut: DictationShortcut? {

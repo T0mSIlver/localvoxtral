@@ -115,8 +115,6 @@ extension ClaudeIntegrationSettingsModel {
             // a still-running earlier action can repopulate the statuses after
             // dismissPlan() cleared them.
             enrollmentConfirmation = nil
-            enrollmentStepStatuses = []
-            enrollmentResultsAction = nil
             verificationChecks = []
             presentedPlan = EnrollmentPresentation(
                 host: enrollment.host,
@@ -155,8 +153,6 @@ extension ClaudeIntegrationSettingsModel {
                 remoteForwardPort: remoteForwardPort
             )
             enrollmentConfirmation = nil
-            enrollmentStepStatuses = []
-            enrollmentResultsAction = nil
             verificationChecks = []
             presentedPlan = EnrollmentPresentation(
                 host: enrollment.host,

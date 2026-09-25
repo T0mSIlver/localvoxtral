@@ -70,15 +70,7 @@ extension ClaudeIntegrationSettingsModel {
         public var id = UUID()
         public var action: EnrollmentAction
         public var title: String
-        public var preview: String
         public var confirmButtonTitle: String
-    }
-
-    public struct EnrollmentStepStatus: Identifiable, Equatable, Sendable {
-        public var id: Int
-        public var text: String
-        public var succeeded: Bool
-        public var detail: String
     }
 
     /// Long-form detail. Alerts and the log take this; the pane never renders it

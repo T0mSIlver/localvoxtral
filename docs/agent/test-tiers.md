@@ -348,8 +348,8 @@ un-authorizing field joins.
 What is real in the lane: `HerdrSocketClient` on a forwarded unix socket,
 `ClaudeRemoteHerdrForwardService` spawning a real supervised `ssh -N -L`,
 `SSHDestinationCanonicalizer.live()` running real `ssh -G`,
-`ClaudeRemoteEnrollmentService.configureRemoteHerdrPanel` patching a real
-the fixture server's own herdr `config.toml` over a real ssh session, and
+`ClaudeRemoteEnrollmentService.setupRemoteHerdr` (the setup run's herdr step)
+patching the fixture server's own herdr `config.toml` over a real ssh session, and
 `HerdrPanelBindingProbe` / `HerdrPanelMicIndicator` on top of all of it. The
 ONE fixture is the focused surface: a real herdr client on a pty, read from
 its typescript instead of through accessibility.

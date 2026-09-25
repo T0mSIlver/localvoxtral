@@ -48,8 +48,6 @@ extension ClaudeIntegrationSettingsModel {
             remoteForwardPort: remoteForwardPort
         ) else { return }
         enrollmentConfirmation = nil
-        enrollmentStepStatuses = []
-        enrollmentResultsAction = nil
         verificationChecks = []
         presentedPlan = EnrollmentPresentation(
             host: host,

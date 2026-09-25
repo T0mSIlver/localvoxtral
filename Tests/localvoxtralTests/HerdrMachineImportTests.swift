@@ -237,7 +237,6 @@ final class HerdrMachineImportTests: XCTestCase {
         XCTAssertEqual(model.enrollSSHAlias, "")
         // Consent-gated: the sheet is up, but no step has run anywhere.
         XCTAssertNil(model.setupRun)
-        XCTAssertTrue(model.enrollmentStepStatuses.isEmpty)
         // The same refresh re-derived the row as enrolled.
         XCTAssertEqual(
             try candidates(of: model.herdrMachines).first?.status,
