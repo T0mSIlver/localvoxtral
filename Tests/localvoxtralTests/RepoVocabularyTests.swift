@@ -378,6 +378,21 @@ final class RepoVocabularyCacheTests: XCTestCase {
         )
         XCTAssertNil(miss)
     }
+
+    func testMissWhenDictationFileMTimeChanged() {
+        let cache = RepoVocabularyCache(ttl: 300)
+        let start = Date(timeIntervalSince1970: 1_000)
+        let head = Date(timeIntervalSince1970: 500)
+        cache.insert(root: "/r", vocabulary: vocab, headModificationDate: head, now: start)
+
+        let miss = cache.lookup(
+            root: "/r",
+            now: start,
+            currentHeadModificationDate: head,
+            currentDictationFileModificationDate: Date(timeIntervalSince1970: 700)
+        )
+        XCTAssertNil(miss)
+    }
 }
 
 // MARK: - Service orchestration (injected subprocess + fixture .git)
@@ -448,6 +463,74 @@ final class RepoVocabularyServiceTests: XCTestCase {
         )
         let count = await runCount.value
         XCTAssertEqual(count, 1)
+    }
+
+    func testDictationFileTermsJoinTheVocabularyFirstAndReachTheMatcher() async throws {
+        let repo = makeFixtureRepo()
+        try writeDictationFile("- Claude Code — the agent\n- `useAuth.ts`\n", repo: repo)
+        let vocab = await RepoVocabularyService.vocabulary(
+            forWorkingDirectory: repo.path,
+            cache: RepoVocabularyCache(),
+            runLsFiles: { _ in
+                RepoGitRunner.Output(
+                    data: "src/useAuth.ts\u{0}src/SessionClock.swift\u{0}".data(using: .utf8)!,
+                    exitCode: 0, timedOut: false, capped: false
+                )
+            }
+        )
+        let terms = try XCTUnwrap(vocab?.terms)
+        XCTAssertEqual(Array(terms.prefix(2)), ["Claude Code", "useAuth.ts"])
+        XCTAssertEqual(terms.filter { $0 == "useAuth.ts" }.count, 1)
+        XCTAssertTrue(terms.contains("SessionClock.swift"))
+
+        let outcome = RepoVocabularyMatcher.groundedCandidates(
+            transcript: "open clothes code please", vocabulary: try XCTUnwrap(vocab)
+        )
+        XCTAssertEqual(
+            outcome.verificationCandidates,
+            [ReplacementEntry(replaceWith: "Claude Code", matches: ["clothes code"])]
+        )
+    }
+
+    /// An agent that writes a term expects the next dictation to use it, not
+    /// one five minutes later when the cache would expire on its own.
+    func testEditingTheDictationFileInvalidatesTheCachedVocabulary() async throws {
+        let repo = makeFixtureRepo()
+        let runCount = RunCounter()
+        let cache = RepoVocabularyCache()
+        let clock: @Sendable () -> Date = { Date(timeIntervalSince1970: 5_000) }
+        let run: @Sendable (String) async -> RepoGitRunner.Output? = { _ in
+            await runCount.increment()
+            return RepoGitRunner.Output(
+                data: "useAuth.ts\u{0}".data(using: .utf8)!,
+                exitCode: 0, timedOut: false, capped: false
+            )
+        }
+
+        let before = await RepoVocabularyService.vocabulary(
+            forWorkingDirectory: repo.path, cache: cache, now: clock, runLsFiles: run
+        )
+        XCTAssertEqual(before?.terms.contains("Voxtral"), false)
+
+        let file = try writeDictationFile("- Voxtral\n", repo: repo)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 4_000)], ofItemAtPath: file.path
+        )
+        let after = await RepoVocabularyService.vocabulary(
+            forWorkingDirectory: repo.path, cache: cache, now: clock, runLsFiles: run
+        )
+        XCTAssertEqual(after?.terms.first, "Voxtral")
+        let count = await runCount.value
+        XCTAssertEqual(count, 2)
+    }
+
+    @discardableResult
+    private func writeDictationFile(_ text: String, repo: URL) throws -> URL {
+        let github = repo.appendingPathComponent(".github")
+        try FileManager.default.createDirectory(at: github, withIntermediateDirectories: true)
+        let file = github.appendingPathComponent("dictation.md")
+        try text.write(to: file, atomically: true, encoding: .utf8)
+        return file
     }
 
     private actor RunCounter {

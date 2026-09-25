@@ -378,12 +378,14 @@ final class RepoVocabularyFlightGate: Sendable {
 // MARK: - TTL cache
 
 /// Root-keyed cache of harvested vocabularies. TTL-bounded and invalidated when
-/// `.git/HEAD` mtime changes. `Mutex`-guarded per repo conventions (no actors).
-/// The clock is injected at every call so tests never touch wall-clock.
+/// the `.git/HEAD` or `.github/dictation.md` mtime changes. `Mutex`-guarded per
+/// repo conventions (no actors). The clock is injected at every call so tests
+/// never touch wall-clock.
 final class RepoVocabularyCache: Sendable {
     private struct Cached {
         let vocabulary: RepoVocabulary
         let headModificationDate: Date?
+        let dictationFileModificationDate: Date?
         let cachedAt: Date
     }
 
@@ -394,22 +396,35 @@ final class RepoVocabularyCache: Sendable {
         self.ttl = ttl
     }
 
-    /// The cached vocabulary for `root` when still within TTL AND the HEAD mtime
-    /// is unchanged, else nil (a fresh index is required).
-    func lookup(root: String, now: Date, currentHeadModificationDate: Date?) -> RepoVocabulary? {
+    /// The cached vocabulary for `root` when still within TTL AND both mtimes
+    /// are unchanged, else nil (a fresh index is required).
+    func lookup(
+        root: String,
+        now: Date,
+        currentHeadModificationDate: Date?,
+        currentDictationFileModificationDate: Date? = nil
+    ) -> RepoVocabulary? {
         storage.withLock { store in
             guard let cached = store[root] else { return nil }
             if now.timeIntervalSince(cached.cachedAt) > ttl { return nil }
             if cached.headModificationDate != currentHeadModificationDate { return nil }
+            if cached.dictationFileModificationDate != currentDictationFileModificationDate { return nil }
             return cached.vocabulary
         }
     }
 
-    func insert(root: String, vocabulary: RepoVocabulary, headModificationDate: Date?, now: Date) {
+    func insert(
+        root: String,
+        vocabulary: RepoVocabulary,
+        headModificationDate: Date?,
+        dictationFileModificationDate: Date? = nil,
+        now: Date
+    ) {
         storage.withLock { store in
             store[root] = Cached(
                 vocabulary: vocabulary,
                 headModificationDate: headModificationDate,
+                dictationFileModificationDate: dictationFileModificationDate,
                 cachedAt: now
             )
         }
@@ -435,8 +450,14 @@ enum RepoVocabularyService {
             return nil
         }
         let headModificationDate = RepoIndexing.headModificationDate(root: root, fileManager: fileManager)
+        let dictationFileModificationDate = DictationTermsFile.modificationDate(
+            root: root, fileManager: fileManager
+        )
         if let cached = cache.lookup(
-            root: root, now: now(), currentHeadModificationDate: headModificationDate
+            root: root,
+            now: now(),
+            currentHeadModificationDate: headModificationDate,
+            currentDictationFileModificationDate: dictationFileModificationDate
         ) {
             return cached
         }
@@ -454,15 +475,30 @@ enum RepoVocabularyService {
         }
 
         let paths = RepoIndexing.parseNullDelimitedPaths(output.data)
-        let vocabulary = RepoIndexing.buildVocabulary(paths: paths, branch: branch)
-        guard !vocabulary.terms.isEmpty else {
+        // The file's terms come first: where one normalizes like a path-derived
+        // term, the matcher keeps the first, and the spelling someone wrote
+        // down beats the one inferred from a file name. They skip
+        // `isTechnicalTerm` because a person chose them; "Voxtral" has no
+        // machine-checkable signal and is exactly what the file is for.
+        let fileTerms = DictationTermsFile.read(root: root, fileManager: fileManager)
+        if !fileTerms.isEmpty {
+            Log.polishing.info(
+                "Repo vocabulary: \(fileTerms.count, privacy: .public) term(s) from \(DictationTermsFile.relativePath, privacy: .public)"
+            )
+        }
+        var seen = Set(fileTerms)
+        let terms = fileTerms + RepoIndexing.buildVocabularyTerms(paths: paths, branch: branch)
+            .filter { seen.insert($0).inserted }
+        guard !terms.isEmpty else {
             Log.polishing.info("Repo vocabulary: repo yielded no technical terms")
             return nil
         }
+        let vocabulary = RepoVocabulary(terms: terms, branch: branch)
         cache.insert(
             root: root,
             vocabulary: vocabulary,
             headModificationDate: headModificationDate,
+            dictationFileModificationDate: dictationFileModificationDate,
             now: now()
         )
         return vocabulary

@@ -35,7 +35,8 @@ how developers talk:
 - **Repo vocabulary** (opt-in) — the focused repo (found from the tab title,
   or from a joined Claude Code session's own working directory) is indexed
   with a single sandboxed `git ls-files`, and up to 12 relevant terms reach
-  the polisher, so "use auth dot t s" comes out as `useAuth.ts`. An ambiguous
+  the polisher, so "use auth dot t s" comes out as `useAuth.ts`. The terms in
+  the repo's `.github/dictation.md` join the index (see below). An ambiguous
   repo safely sends no hints, and only high-confidence, boundary-checked
   matches are corrected in the working text — everything else stays a hint,
   never a rewrite of the model's output
@@ -52,6 +53,23 @@ polisher running on this Mac. To send enabled context sources to a configured
 non-local polishing endpoint, turn on **Send context to non-local polishing
 servers** in **Settings → Context**. Use it only with an endpoint you trust.
 
+## Project terms in `.github/dictation.md`
+
+With **Send repo file names** on, localvoxtral also reads the repo's
+`.github/dictation.md`, the file VS Code's dictation reads too. Only its terms
+are used: inline code spans, and the first words of a list item up to a dash
+or colon. Headings, paragraphs and fenced blocks are ignored, and none of the
+file's text reaches the polisher except a term the transcript matched.
+
+```markdown
+- Voxtral — the speech model
+- **Claude Code**: the agent
+- `useAuth.ts`
+```
+
+A coding agent can add a term by editing this file, and the next dictation in
+that repo uses it.
+
 ## Polish context: what each toggle sends
 
 Each **Settings → Context** toggle names what it sends; this section is the
@@ -62,7 +80,8 @@ runs on this Mac (the bundled helper). **Send context to non-local polishing
 servers** is the single toggle that relaxes that.
 
 - **Send repo file names** — reads file names from the git repo in your terminal
-  (one sandboxed `git ls-files`) so near-miss spellings resolve to real names.
+  (one sandboxed `git ls-files`) and the terms in its `.github/dictation.md`,
+  so near-miss spellings resolve to real names.
 - **Send clipboard excerpt** — sends an excerpt of your clipboard text to the polisher,
   sanitized and length-capped, used only as a spelling reference.
 - **Send agent's terminal screen** — reads file and identifier names from your coding
