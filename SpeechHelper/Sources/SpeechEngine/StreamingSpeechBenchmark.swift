@@ -15,8 +15,18 @@ public enum StreamingSpeechBenchmark {
         let engine = try await SpeechModelLoader.load(
             modelID: options.modelID,
             modelRevision: options.modelRevision,
-            modelDirectory: options.modelDirectory
+            modelDirectory: options.modelDirectory,
+            termBoost: options.termBoost
         )
+        let vocabulary = try benchmark.vocabularyPath.map { path in
+            SessionVocabulary(
+                try String(contentsOfFile: path, encoding: .utf8)
+                    .split(whereSeparator: \.isNewline).map(String.init)
+            )
+        }
+        if let vocabulary {
+            print("BENCH vocabulary terms=\(vocabulary.terms.count)")
+        }
         let audio = try BenchmarkAudio.make(
             seconds: benchmark.seconds,
             wavPath: benchmark.wavPath
@@ -25,7 +35,8 @@ public enum StreamingSpeechBenchmark {
             engine: engine,
             audio: audio,
             options: options,
-            cadenceMilliseconds: benchmark.cadenceMilliseconds
+            cadenceMilliseconds: benchmark.cadenceMilliseconds,
+            vocabulary: vocabulary
         )
         // The warm-up session is gone by now; clear after the drop, as the server
         // does between dictations, so its buffers do not start the measured one.
@@ -36,6 +47,7 @@ public enum StreamingSpeechBenchmark {
             transcriptionDelayMs: options.transcriptionDelayMs,
             utteranceLimit: options.utteranceLimit
         )
+        if let vocabulary { session.setVocabulary(vocabulary) }
         var batcher = StepBatcher(
             cadenceMilliseconds: benchmark.cadenceMilliseconds,
             sampleRate: sampleRate
@@ -103,6 +115,7 @@ public enum StreamingSpeechBenchmark {
         print(
             "BENCH done seconds=\(benchmark.seconds) limit_s=\(options.utteranceLimit.seconds) "
                 + "tokens=\(session.decodedTokenCount) "
+                + "boosted=\(session.biasedTokenCount.map(String.init) ?? "none") "
                 + "stopped=\(session.utteranceStop.map(String.init(describing:)) ?? "none")"
         )
     }
@@ -115,13 +128,15 @@ public enum StreamingSpeechBenchmark {
         engine: any SpeechASREngine,
         audio: [Float],
         options: SpeechdLaunchOptions,
-        cadenceMilliseconds: Int
+        cadenceMilliseconds: Int,
+        vocabulary: SessionVocabulary?
     ) {
         let warmupSamples = min(audio.count, 3 * sampleRate)
         let session = engine.makeSession(
             transcriptionDelayMs: options.transcriptionDelayMs,
             utteranceLimit: options.utteranceLimit
         )
+        if let vocabulary { session.setVocabulary(vocabulary) }
         var batcher = StepBatcher(cadenceMilliseconds: cadenceMilliseconds, sampleRate: sampleRate)
         var timeline = RealtimeStepTimeline(sampleRate: sampleRate)
         var stepped = 0

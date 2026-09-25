@@ -14,6 +14,9 @@ public struct SpeechdLaunchOptions: Equatable {
     /// Maximum length of one utterance (one engine stream session); see `UtteranceLimit`.
     public var utteranceLimit = UtteranceLimit()
     public var benchmark: SpeechdBenchmarkOptions?
+    /// `--term-boost first,continuation,margin`: vocabulary bonus sizes for tuning
+    /// runs. Nil keeps the engine's defaults, which is what the app ships.
+    public var termBoost: TermBoostSettings?
 
     public init() {}
 }
@@ -22,11 +25,15 @@ public struct SpeechdBenchmarkOptions: Equatable, Sendable {
     public let seconds: Int
     public let cadenceMilliseconds: Int
     public let wavPath: String?
+    /// One term per line, applied to every benchmark session as its vocabulary,
+    /// to time the term boost against a run without it.
+    public let vocabularyPath: String?
 
-    public init(seconds: Int, cadenceMilliseconds: Int, wavPath: String?) {
+    public init(seconds: Int, cadenceMilliseconds: Int, wavPath: String?, vocabularyPath: String? = nil) {
         self.seconds = seconds
         self.cadenceMilliseconds = cadenceMilliseconds
         self.wavPath = wavPath
+        self.vocabularyPath = vocabularyPath
     }
 }
 
@@ -56,6 +63,7 @@ public enum SpeechdOptionParser {
         var benchmarkSeconds: Int?
         var benchmarkCadenceMilliseconds = 100
         var benchmarkWAVPath: String?
+        var benchmarkVocabularyPath: String?
         var sawBenchmarkOnlyFlag: String?
         var iterator = arguments.makeIterator()
         func value(_ flag: String) throws -> String {
@@ -107,6 +115,11 @@ public enum SpeechdOptionParser {
                     throw SpeechdOptionError.invalidValue(flag)
                 }
                 options.utteranceLimit = UtteranceLimit(seconds: seconds)
+            case "--term-boost":
+                guard let settings = TermBoostSettings(parsing: try value(flag)) else {
+                    throw SpeechdOptionError.invalidValue(flag)
+                }
+                options.termBoost = settings
             case "--bench":
                 benchmarkEnabled = true
             case "--seconds":
@@ -130,6 +143,11 @@ public enum SpeechdOptionParser {
                 guard !path.isEmpty else { throw SpeechdOptionError.invalidValue(flag) }
                 benchmarkWAVPath = path
                 sawBenchmarkOnlyFlag = flag
+            case "--vocabulary-file":
+                let path = try value(flag)
+                guard !path.isEmpty else { throw SpeechdOptionError.invalidValue(flag) }
+                benchmarkVocabularyPath = path
+                sawBenchmarkOnlyFlag = flag
             default:
                 throw SpeechdOptionError.unknownFlag(flag)
             }
@@ -142,7 +160,8 @@ public enum SpeechdOptionParser {
             options.benchmark = SpeechdBenchmarkOptions(
                 seconds: benchmarkSeconds,
                 cadenceMilliseconds: benchmarkCadenceMilliseconds,
-                wavPath: benchmarkWAVPath
+                wavPath: benchmarkWAVPath,
+                vocabularyPath: benchmarkVocabularyPath
             )
         } else if let sawBenchmarkOnlyFlag {
             throw SpeechdOptionError.invalidValue(sawBenchmarkOnlyFlag)

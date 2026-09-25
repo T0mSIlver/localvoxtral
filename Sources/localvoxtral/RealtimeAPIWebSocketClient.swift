@@ -25,6 +25,7 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         var finalCommitCompletionGate: FinalCommitCompletionGate = .idle
         var pendingMessages: [String] = []
         var pendingModelName = ""
+        var pendingVocabulary: [String] = []
         #if DEBUG
         var skipsSocketCreationForTesting = false
         var lastConnectConfigurationForTesting: RealtimeSessionConfiguration?
@@ -99,6 +100,7 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
             s.base.isUserInitiatedDisconnect = false
             s.pendingMessages.removeAll(keepingCapacity: true)
             s.pendingModelName = modelName
+            s.pendingVocabulary = configuration.vocabulary
             s.hasReceivedSessionCreated = false
             s.hasBypassedSessionCreatedGate = false
             s.hasSentSessionUpdate = false
@@ -195,7 +197,7 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         switch type {
         case "session.created":
             emit(.status("Session ready."), from: generation)
-            let startup: (modelName: String, shouldSendUpdate: Bool, queuedMessages: [String])? =
+            let startup: (modelName: String, vocabulary: [String], shouldSendUpdate: Bool, queuedMessages: [String])? =
                 state.withLock { s in
                     // The socket this frame was read from, not whichever one
                     // the client holds now: a stale handshake applied here
@@ -214,14 +216,15 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
                     let queuedMessages = s.pendingMessages
                     s.pendingMessages.removeAll(keepingCapacity: true)
                     return (
-                        modelName: modelName, shouldSendUpdate: shouldSendUpdate,
+                        modelName: modelName, vocabulary: s.pendingVocabulary,
+                        shouldSendUpdate: shouldSendUpdate,
                         queuedMessages: queuedMessages
                     )
                 }
 
             guard let startup else { return }
             if startup.shouldSendUpdate {
-                send(event: ["type": "session.update", "model": startup.modelName])
+                send(event: Self.sessionUpdateEvent(model: startup.modelName, vocabulary: startup.vocabulary))
             }
             for message in startup.queuedMessages {
                 sendText(message)
@@ -399,7 +402,7 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         timer.setEventHandler { [weak self] in
             guard let self else { return }
             let startup:
-                (modelName: String, shouldSendUpdate: Bool, queuedMessages: [String])? = self.state
+                (modelName: String, vocabulary: [String], shouldSendUpdate: Bool, queuedMessages: [String])? = self.state
                     .withLock { s in
                         // Cancelling a DispatchSourceTimer does not unqueue a
                         // handler already on its way: without this, a timer
@@ -418,7 +421,8 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
                         let queuedMessages = s.pendingMessages
                         s.pendingMessages.removeAll(keepingCapacity: true)
                         return (
-                            modelName: modelName, shouldSendUpdate: shouldSendUpdate,
+                            modelName: modelName, vocabulary: s.pendingVocabulary,
+                        shouldSendUpdate: shouldSendUpdate,
                             queuedMessages: queuedMessages
                         )
                     }
@@ -427,7 +431,8 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
                 .status("Connected without session.created; using compatibility mode."),
                 from: generation)
             if startup.shouldSendUpdate {
-                self.send(event: ["type": "session.update", "model": startup.modelName])
+                self.send(
+                    event: Self.sessionUpdateEvent(model: startup.modelName, vocabulary: startup.vocabulary))
             }
             for message in startup.queuedMessages {
                 self.sendText(message)
@@ -485,6 +490,17 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         s.finalCommitCompletionGate = .idle
         s.pendingMessages.removeAll(keepingCapacity: false)
         s.pendingModelName = ""
+        s.pendingVocabulary = []
+    }
+
+    /// The `session.update` frame. `vocabulary` goes out only when non-empty,
+    /// so a server that has never heard of it sees the frame it always did.
+    static func sessionUpdateEvent(model: String, vocabulary: [String]) -> [String: Any] {
+        var event: [String: Any] = ["type": "session.update", "model": model]
+        if !vocabulary.isEmpty {
+            event["vocabulary"] = vocabulary
+        }
+        return event
     }
 
     // MARK: - JSON Helpers

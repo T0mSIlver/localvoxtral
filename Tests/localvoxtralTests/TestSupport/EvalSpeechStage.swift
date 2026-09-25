@@ -117,6 +117,7 @@ enum EvalSpeechStage {
         pcm: Data,
         client: any RealtimeClient,
         endpoint: Endpoint,
+        vocabulary: [String] = [],
         timeout: TimeInterval
     ) async throws -> String {
         let chunks = IntegrationTestSupport.splitPCM16IntoChunks(pcm, chunkSizeBytes: 3_200)
@@ -152,7 +153,8 @@ enum EvalSpeechStage {
             configuration: .init(
                 endpoint: endpoint.url,
                 apiKey: endpoint.apiKey,
-                model: endpoint.model
+                model: endpoint.model,
+                vocabulary: vocabulary
             )
         )
         let outcome = await XCTWaiter.fulfillment(of: [firstFinal], timeout: timeout)

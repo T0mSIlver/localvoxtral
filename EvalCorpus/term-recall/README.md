@@ -40,6 +40,28 @@ From the same machine, against the Mac's speech test services:
 ./scripts/remote-build.sh eval-term-recall compare voxtral-none nemotron-none
 ```
 
+To measure a helper or engine change, such as term biasing, run every arm
+against the packaged helper built from the branch (`remote-build.sh
+package` first), so they share one binary and one Mac:
+
+```bash
+./scripts/remote-build.sh eval-term-recall --asr nemotron --helper --bias none
+```
+
+```bash
+./scripts/remote-build.sh eval-term-recall --asr nemotron --helper --bias session
+```
+
+```bash
+./scripts/remote-build.sh eval-term-recall --asr nemotron --helper --bias noise
+```
+
+`--bias session` sends each case's `sessionTerms` as the `session.update`
+vocabulary, and `--bias noise` sends the set's `noiseTerms`: the noise arm
+counts false insertions. `--term-boost first,continuation,margin` overrides
+the helper's boost sizes for a tuning run. With `--helper`, the log also
+reports how many tokens the helper boosted (a count, never the terms).
+
 Each run prints a scoreboard and leaves its run file in
 `EvalRecordings/term-recall/runs/<label>.jsonl`. `--hypotheses
 EvalRecordings/term-recall/<file>.jsonl` scores `{"id", "text"}` rows with no

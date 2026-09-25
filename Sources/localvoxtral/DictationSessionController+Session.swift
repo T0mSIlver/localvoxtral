@@ -378,10 +378,23 @@ extension DictationSessionController {
             "beginDictationSession endpoint=\(endpoint.absoluteString) model=\(model) input=\(preferredInputID ?? "default")"
         )
 
+        // Only the bundled helper reads `vocabulary`; an external server or
+        // Mistral never gets the user's terms.
+        let vocabulary = settings.dictationBackendMode == .managedLocal
+            ? SpeechSessionVocabulary.terms(
+                speakerTerms: settings.polishSpeakerTerms,
+                learnedTerms: learnedTermStore?.snapshot().confirmedEverywhere().map(\.term) ?? []
+            )
+            : []
+        if !vocabulary.isEmpty {
+            Log.backends.info("speech vocabulary: \(vocabulary.count, privacy: .public) terms")
+        }
+
         return RealtimeSessionConfiguration(
             endpoint: endpoint,
             apiKey: apiKey,
-            model: model
+            model: model,
+            vocabulary: vocabulary
         )
     }
 
