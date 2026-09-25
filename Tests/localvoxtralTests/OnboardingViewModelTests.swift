@@ -29,7 +29,7 @@ final class OnboardingViewModelTests: XCTestCase {
     ) -> (
         model: OnboardingViewModel,
         settings: SettingsStore,
-        driver: PreviewOnboardingBootstrapDriver,
+        driver: FakeOnboardingBootstrapDriver,
         closeCount: () -> Int,
         openEndpointsCount: () -> Int
     ) {
@@ -44,7 +44,7 @@ final class OnboardingViewModelTests: XCTestCase {
         // The wizard's key check must never reach api.mistral.ai from a test
         // or a preview.
         viewModel.engines.mistralAPIKeyVerifier = FakeOnboardingKeyVerifier(result: keyVerification)
-        let driver = PreviewOnboardingBootstrapDriver()
+        let driver = FakeOnboardingBootstrapDriver()
         let model = OnboardingViewModel(settings: settings, viewModel: viewModel, driver: driver)
 
         let closeBox = Counter()

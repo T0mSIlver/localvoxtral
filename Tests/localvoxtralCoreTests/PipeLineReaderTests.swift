@@ -2,7 +2,7 @@ import Foundation
 import Synchronization
 import XCTest
 
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 // Retained crash coverage for the shared child-process reader after retirement
 // of the installer that originally housed it.

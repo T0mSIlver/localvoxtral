@@ -26,6 +26,7 @@ enum AgentDictationE2EEvalSupport {
     static let polishEndpointEnvKey = "LV_AGENT_EVAL_E2E_POLISH_ENDPOINT"
     static let recordingDirectoryEnvKey = "LV_AGENT_EVAL_E2E_RECORDING_DIRECTORY"
     static let recordingSubsetEnvKey = "LV_AGENT_EVAL_E2E_RECORDING_SUBSET"
+    static let replayDirectoryEnvKey = "LV_AGENT_EVAL_E2E_REPLAY_DIRECTORY"
     static let caseIDsEnvKey = "LV_AGENT_EVAL_E2E_CASE_IDS"
     /// Which provider runs BOTH live stages (`Provider.rawValue`).
     static let providerEnvKey = "LV_AGENT_EVAL_E2E_PROVIDER"
@@ -68,6 +69,7 @@ enum AgentDictationE2EEvalSupport {
         let recordingSubset: Bool?
         let provider: String?
         let apiKey: String?
+        let replayDirectory: String?
 
         init(
             helperPath: String? = nil,
@@ -78,8 +80,10 @@ enum AgentDictationE2EEvalSupport {
             recordingDirectory: String? = nil,
             recordingSubset: Bool? = nil,
             provider: String? = nil,
-            apiKey: String? = nil
+            apiKey: String? = nil,
+            replayDirectory: String? = nil
         ) {
+            self.replayDirectory = replayDirectory
             self.helperPath = helperPath
             self.voxmlxEndpoint = voxmlxEndpoint
             self.asrModel = asrModel
@@ -116,6 +120,9 @@ enum AgentDictationE2EEvalSupport {
         /// Bearer token for the hosted provider; empty for `.speechd`, which
         /// authenticates nothing.
         let apiKey: String
+        /// Non-nil replays a user's stored dictations
+        /// (`testReplayStoredDictations`) instead of scoring the corpus.
+        var replayDirectory: String? = nil
 
         /// The bundled polishd helper is only in the loop for the local arm
         /// with no explicit external endpoint. A hosted arm needs no `package`
@@ -223,7 +230,8 @@ enum AgentDictationE2EEvalSupport {
             recordingSubset: recordingSubset,
             caseIDs: caseIDs,
             provider: provider,
-            apiKey: pickOptional(apiKeyEnvKey, marker?.apiKey) ?? ""
+            apiKey: pickOptional(apiKeyEnvKey, marker?.apiKey) ?? "",
+            replayDirectory: pickOptional(replayDirectoryEnvKey, marker?.replayDirectory)
         )
     }
 

@@ -83,6 +83,7 @@ final class DictationViewModel {
             if message == HotKeyManager.unavailableErrorMessage
                 || message == HotKeyManager.livePasteUnavailableErrorMessage
                 || message == HotKeyManager.modifierOnlyUnavailableErrorMessage
+                || message == HotKeyManager.copyLastDictationUnavailableErrorMessage
             {
                 return .hotKeyShortcutUnavailable
             }
@@ -112,6 +113,8 @@ final class DictationViewModel {
         static let microphoneAccessDenied = "Microphone access denied."
         static let finalizing = "Finalizing..."
         static let reconnecting = "Reconnecting..."
+        static let lastDictationCopied = "Last dictation copied."
+        static let noDictationToCopy = "No dictation to copy yet."
     }
 
     /// Where a dictation lands when the realtime socket is gone for good:
@@ -208,6 +211,8 @@ final class DictationViewModel {
     func copyTranscript() { session.copyTranscript() }
     func copyLatestSegment(updateStatus: Bool = true) { session.copyLatestSegment(updateStatus: updateStatus) }
     func copyRawTranscript() { session.copyRawTranscript() }
+    var canCopyLastDictation: Bool { session.canCopyLastDictation }
+    func copyLastDictation() { session.copyLastDictation() }
     func pasteLatestSegment() { session.pasteLatestSegment() }
     func applyDictationHistoryRetention(now: Date = Date()) { session.applyDictationHistoryRetention(now: now) }
     func prepareLLMPolishingPromptAccessIfNeeded() { session.prepareLLMPolishingPromptAccessIfNeeded() }
@@ -572,7 +577,16 @@ final class DictationViewModel {
         textInsertion.refreshAccessibilityTrustState()
         if startRuntimeServices {
             sessionStore = DictationSessionStore()
-            sessionStore?.onChange = { [weak self] in self?.dictationHistoryRevision += 1 }
+            sessionStore?.onChange = { [weak self] in
+                self?.dictationHistoryRevision += 1
+                Task { await self?.session.refreshLastDictationFromStore() }
+            }
+            Task { [weak self] in await self?.session.refreshLastDictationFromStore() }
+            // Attached whatever the setting says, so Delete and retention
+            // still clear recordings kept before it was turned off.
+            sessionStore?.audioStore = DictationAudioStore(
+                directoryURL: DictationAudioStore.defaultDirectoryURL())
+            sessionStore?.removeOrphanedAudio()
             applyDictationHistoryRetention()
             learnedTermStore = LearnedTermStore(
                 fileURL: LearnedTermStore.defaultFileURL(),

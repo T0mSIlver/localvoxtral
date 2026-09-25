@@ -37,6 +37,24 @@ struct DictationHistoryEntry: Identifiable, Equatable, Sendable {
     /// A polish request answered for this dictation. Only the polish path
     /// records a duration.
     var polishRan: Bool { polishingDurationSeconds != nil && status != .llmFailed }
+
+    /// This entry with `polishedText` replaced, for the in-memory copy that
+    /// may hold what History must not (the clipboard payload).
+    func replacingPolishedText(_ text: String?) -> DictationHistoryEntry {
+        DictationHistoryEntry(
+            id: id, startedAt: startedAt, finishedAt: finishedAt, rawText: rawText,
+            polishedText: text, polishingDurationSeconds: polishingDurationSeconds,
+            provider: provider, model: model, outputMode: outputMode,
+            targetAppBundleID: targetAppBundleID, status: status,
+            commitSucceeded: commitSucceeded, polishProfile: polishProfile,
+            polishContextSummary: polishContextSummary)
+    }
+
+    /// What "Copy last dictation" copies, nil when there is no text.
+    var textToCopy: String? {
+        LastDictationCopy.text(
+            rawText: rawText, polishedText: polishedText, polishFailed: status == .llmFailed)
+    }
 }
 
 extension DictationHistoryEntry {
@@ -110,6 +128,9 @@ final class DictationSessionStore {
     /// Called after every write that changed something, so an open History
     /// pane reads again.
     var onChange: (@MainActor () -> Void)?
+    /// Where each dictation's audio goes when the user keeps it. Set once, at
+    /// launch; nil keeps no audio and deletes none.
+    var audioStore: DictationAudioStore?
 
     convenience init?() {
         self.init(inMemory: false)
@@ -117,10 +138,21 @@ final class DictationSessionStore {
 
     /// `inMemory` is for tests: the default configuration writes the user's
     /// real `default.store`.
-    init?(inMemory: Bool) {
+    convenience init?(inMemory: Bool) {
+        let schema = Schema([DictationSessionRecord.self])
+        self.init(configuration: ModelConfiguration(schema: schema, isStoredInMemoryOnly: inMemory))
+    }
+
+    /// A store file somewhere else: a copy of a user's history, for the replay
+    /// eval.
+    convenience init?(url: URL) {
+        let schema = Schema([DictationSessionRecord.self])
+        self.init(configuration: ModelConfiguration(schema: schema, url: url))
+    }
+
+    private init?(configuration: ModelConfiguration) {
         do {
             let schema = Schema([DictationSessionRecord.self])
-            let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: inMemory)
             self.modelContainer = try ModelContainer(for: schema, configurations: [configuration])
             Log.persistence.info("DictationSessionStore initialized")
         } catch {
@@ -135,38 +167,116 @@ final class DictationSessionStore {
 
     /// The returned task finishes once the record is on disk; production
     /// callers drop it.
+    /// `audio` is the dictation's 16 kHz mono PCM16, written beside the
+    /// record in the same step, so no trim can run between the two. The
+    /// record is saved first: a save that fails leaves no file behind.
     @discardableResult
-    func save(_ record: DictationSessionRecord) -> Task<Void, Never> {
+    func save(_ record: DictationSessionRecord, audio: Data? = nil) -> Task<Void, Never> {
         let entry = DictationHistoryEntry(record)
+        let audioStore = audio == nil ? nil : audioStore
         return enqueueWrite("save dictation \(entry.id)") { context in
             context.insert(entry.makeRecord())
+            try context.save()
+            if let audio, let audioStore {
+                do {
+                    try audioStore.write(pcm16: audio, for: entry.id)
+                    Log.persistence.info(
+                        "History: saved \(audio.count / AudioChunkBuffer.bytesPerSecond, privacy: .public) s of audio for dictation \(entry.id, privacy: .public)"
+                    )
+                } catch {
+                    Log.persistence.error(
+                        "History: audio write failed: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+            }
             return 1
         }
     }
 
     @discardableResult
     func delete(id: UUID) -> Task<Void, Never> {
-        enqueueWrite("delete dictation \(id)") { context in
-            try Self.deleteRecords(
+        let audioStore = audioStore
+        // The record goes first: a save that fails keeps the dictation with its
+        // audio, and a file that will not go is retried by the next sweep.
+        return enqueueWrite("delete dictation \(id)") { context in
+            let deleted = try Self.deleteRecords(
                 matching: #Predicate<DictationSessionRecord> { $0.id == id }, in: context)
+            try context.save()
+            audioStore?.remove([id])
+            return deleted
         }
     }
 
     @discardableResult
     func deleteAll() -> Task<Void, Never> {
-        enqueueWrite("delete all dictations") { context in
-            try Self.deleteRecords(matching: nil, in: context)
+        let audioStore = audioStore
+        return enqueueWrite("delete all dictations") { context in
+            let deleted = try Self.deleteRecords(matching: nil, in: context)
+            try context.save()
+            audioStore?.removeAll()
+            return deleted
         }
     }
 
     /// Deletes every dictation that started before `cutoff`
-    /// (`DictationHistoryRetention.cutoff(now:)`).
+    /// (`DictationHistoryRetention.cutoff(now:)`), and the audio of every
+    /// dictation no longer in the store.
     @discardableResult
     func trim(olderThan cutoff: Date) -> Task<Void, Never> {
-        enqueueWrite("trim dictations") { context in
-            try Self.deleteRecords(
+        let audioStore = audioStore
+        return enqueueWrite("trim dictations") { context in
+            let deleted = try Self.deleteRecords(
                 matching: #Predicate<DictationSessionRecord> { $0.startedAt < cutoff },
                 in: context)
+            if let audioStore {
+                if deleted > 0 { try context.save() }
+                try Self.removeOrphanedAudio(audioStore, context: context)
+            }
+            return deleted
+        }
+    }
+
+    /// Deletes the recordings whose dictation is gone. Run at launch, where
+    /// Forever retention never trims: it is what retries a delete that failed
+    /// and clears a file a crash left behind.
+    @discardableResult
+    func removeOrphanedAudio() -> Task<Void, Never> {
+        let audioStore = audioStore
+        return enqueueWrite("sweep dictation audio") { context in
+            if let audioStore {
+                audioStore.removeStrayFiles()
+                try Self.removeOrphanedAudio(audioStore, context: context)
+            }
+            return 0
+        }
+    }
+
+    /// Only the recordings on disk are looked up: most users keep none, and
+    /// this runs after every saved dictation.
+    private nonisolated static func removeOrphanedAudio(
+        _ audioStore: DictationAudioStore, context: ModelContext
+    ) throws {
+        let stored = Array(audioStore.storedIDs())
+        guard !stored.isEmpty else { return }
+        let kept = try Set(context.fetch(FetchDescriptor<DictationSessionRecord>(
+            predicate: #Predicate { stored.contains($0.id) })).map(\.id))
+        let removed = audioStore.removeAll(except: kept)
+        if removed > 0 {
+            Log.persistence.info(
+                "History: deleted \(removed, privacy: .public) recording(s) whose dictation is gone"
+            )
+        }
+    }
+
+    /// Deletes every recording and keeps the dictations: the audio setting
+    /// turned off.
+    @discardableResult
+    func deleteAllAudio() -> Task<Void, Never> {
+        let audioStore = audioStore
+        return enqueueWrite("delete all dictation audio") { _ in
+            let removed = audioStore?.removeAll() ?? 0
+            Log.persistence.info("History: deleted \(removed, privacy: .public) recording(s)")
+            return 0
         }
     }
 
@@ -252,6 +362,14 @@ final class DictationSessionStore {
             )
             return try context.fetch(descriptor).map(DictationHistoryEntry.init)
         } ?? []
+    }
+
+    /// Recordings on disk and their size, for the Settings row.
+    func audioSummary() async -> (recordings: Int, bytes: Int) {
+        guard let audioStore else { return (0, 0) }
+        return await read("summarize dictation audio") { _ in
+            (audioStore.storedIDs().count, audioStore.totalBytes())
+        } ?? (0, 0)
     }
 
     func count() async -> Int {

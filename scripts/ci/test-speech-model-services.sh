@@ -13,7 +13,9 @@ SERVERS="$ROOT_DIR/scripts/mac/lv-test-servers.sh"
 GATE="$ROOT_DIR/scripts/mac/localvoxtral-build-gate.sh"
 REMOTE_BUILD="$ROOT_DIR/scripts/remote-build.sh"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lv-speech-services-test.XXXXXX")"
-trap 'rm -rf "$TMP_DIR"' EXIT
+# remote-build.sh's background GC can still be writing here as this script
+# exits: retry the removal rather than fail the suite on its own cleanup.
+trap 'for _ in 1 2 3 4 5 6 7 8 9 10; do rm -rf "$TMP_DIR" 2>/dev/null && break; /bin/sleep 0.1; done' EXIT
 
 fail() {
   printf 'FAIL: %s\n' "$*" >&2
@@ -231,8 +233,22 @@ remote_build() {
     "$REMOTE_BUILD" eval-e2e "$@"
 }
 
+# A run that syncs ends by firing remote-build.sh's GC over ssh in the
+# background, and that ssh can land in $CALLS after the next case has emptied
+# it: a refused case then looks as if it reached the host. Wait for it.
+wait_for_background_gc() {
+  local polls=0
+  while (( polls < 250 )); do
+    grep -q ' fake-host gc$' "$CALLS" && return 0
+    /bin/sleep 0.02
+    polls=$((polls + 1))
+  done
+  fail "the background gc of a synced eval-e2e never reached the host stub"
+}
+
 : >"$CALLS"
 remote_build --asr nemotron >"$TMP_DIR/out" 2>&1 || fail "eval-e2e --asr nemotron failed: $(cat "$TMP_DIR/out")"
+wait_for_background_gc
 assert_has "$CALLS" "ssh fake-host ensure speechd-nemotron"
 assert_has "$CALLS" '"voxmlxEndpoint": "ws://127.0.0.1:8001/v1/realtime"'
 assert_has "$CALLS" '"asrModel": "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"'
@@ -240,6 +256,7 @@ assert_has "$CALLS" '"asrModel": "mlx-community/nemotron-3.5-asr-streaming-0.6b-
 
 : >"$CALLS"
 remote_build >"$TMP_DIR/out" 2>&1 || fail "eval-e2e without --asr failed"
+wait_for_background_gc
 assert_has "$CALLS" "ssh fake-host ensure speechd"
 assert_has "$CALLS" '"voxmlxEndpoint": "ws://127.0.0.1:8000/v1/realtime"'
 assert_has "$CALLS" '"asrModel": "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead"'

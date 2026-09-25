@@ -59,11 +59,6 @@ extension ClaudeIntegrationSettingsModel {
         )
     }
 
-    /// Exactly what `performPluginUpdate` will do, retained as a test seam.
-    static func updatePreview(for presentation: PluginUpdatePresentation) -> String {
-        presentation.applicationText
-    }
-
     /// The ssh-config block this build writes for `host`, or nil when it has
     /// no valid alias to write it for.
     func expectedSSHConfigSnippet(for host: ClaudeRemoteHost) -> String? {
@@ -115,7 +110,7 @@ extension ClaudeIntegrationSettingsModel {
             title: presentation.sshConfigSnippet == nil
                 ? "Update the plugin on this SSH host?"
                 : "Update ~/.ssh/config on this Mac and the plugin on this SSH host?",
-            preview: Self.updatePreview(for: presentation),
+            preview: presentation.applicationText,
             confirmButtonTitle: "Confirm update"
         )
         Log.claudeContext.info("Claude remote plugin update confirmation requested")

@@ -1,7 +1,7 @@
 import Foundation
 import XCTest
 
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// The bounded ask-until-it-is-there schedule behind "Open the window at
 /// launch" (#449). No real clock: the sleep is a closure that records what it

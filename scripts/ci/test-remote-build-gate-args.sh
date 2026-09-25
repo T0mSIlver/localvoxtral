@@ -12,7 +12,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd -P)"
 REMOTE_BUILD="$ROOT_DIR/scripts/remote-build.sh"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lv-remote-gate-args-test.XXXXXX")"
-trap 'rm -rf "$TMP_DIR"' EXIT
+# remote-build.sh's background GC can still be writing here as this script
+# exits: retry the removal rather than fail the suite on its own cleanup.
+trap 'for _ in 1 2 3 4 5 6 7 8 9 10; do rm -rf "$TMP_DIR" 2>/dev/null && break; /bin/sleep 0.1; done' EXIT
 
 fail() {
   printf 'FAIL: %s\n' "$*" >&2
@@ -34,6 +36,8 @@ transport_log="$TMP_DIR/transport.log"
 common_env=(
   "PATH=$TMP_DIR/bin:$PATH"
   "LV_BUILD_HOST=fake-host"
+  # The Mac path; test-remote-build-linux-routing.sh covers the Linux one.
+  "LV_TEST_ON_MAC=1"
   "LV_BUILD_DIR=work/localvoxtral-gate-args-regression"
   "LV_TEST_TRANSPORT_LOG=$transport_log"
   "LOCALVOXTRAL_REMOTE_LOG=$TMP_DIR/remote-build.log"

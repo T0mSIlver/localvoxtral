@@ -80,14 +80,14 @@ import XCTest
 /// `say` entirely.
 @MainActor
 final class AgentDictationE2EEvalTests: XCTestCase {
-    private typealias Support = AgentDictationE2EEvalSupport
+    typealias Support = AgentDictationE2EEvalSupport
 
     /// Generous: the first request after a cold Metal JIT cache can pay
     /// kernel-compilation time on top of model load.
     private static let helperReadyTimeout: TimeInterval = 300
     private static let asrTimeout: TimeInterval = 90
 
-    private var repoRoot: URL {
+    var repoRoot: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()  // localvoxtralTests
             .deletingLastPathComponent()  // Tests
@@ -98,6 +98,9 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
     func testAgentDictationE2EEvalScoreboard() async throws {
         let enablement = try resolveEnablementOrSkip()
+        if enablement.replayDirectory != nil {
+            throw XCTSkip("a replay run scores stored dictations, not the corpus")
+        }
         let asrConfiguration = Support.asrStageConfiguration(enablement)
         let binary: URL?
         if enablement.usesBundledPolishHelper {
@@ -673,7 +676,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
     // MARK: - ASR (production websocket client vs live speechd STT service)
 
-    private func transcribe(
+    func transcribe(
         pcm: Data,
         enablement: Support.Enablement
     ) async throws -> String {
@@ -754,7 +757,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
     // MARK: - Enablement
 
-    private func resolveEnablementOrSkip() throws -> Support.Enablement {
+    func resolveEnablementOrSkip() throws -> Support.Enablement {
         let markerURL = repoRoot.appendingPathComponent(Support.markerFileName)
         var marker: Support.MarkerConfig?
         if FileManager.default.fileExists(atPath: markerURL.path) {
@@ -782,7 +785,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         return enablement
     }
 
-    private func resolveHelperBinary(_ helperPath: String) throws -> URL {
+    func resolveHelperBinary(_ helperPath: String) throws -> URL {
         let binary =
             helperPath.hasPrefix("/")
             ? URL(fileURLWithPath: helperPath)
@@ -807,7 +810,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
     /// HFModelDownloader, idempotent. Mirrors
     /// `PolishHelperIntegrationTests.ensureModelCached` (kept private there;
     /// the two suites wait on different plumbing, so the copy is deliberate).
-    private func ensureModelCached(_ repoID: String) async throws {
+    func ensureModelCached(_ repoID: String) async throws {
         let cacheRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".cache/huggingface/hub")
         let repoDir = cacheRoot.appendingPathComponent(
@@ -909,7 +912,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
     /// Spawns the helper on an ephemeral port (--port 0) and waits for its
     /// stderr readiness line. Event-driven via the descriptor-safe
     /// PipeLineReader (never FileHandle.availableData — PR #60).
-    private func launchHelper(
+    func launchHelper(
         binary: URL,
         model: String
     ) async throws -> (process: Process, port: UInt16) {
@@ -962,7 +965,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
     /// Reap, don't just signal (#111): bounded wait for the exit, escalate to
     /// SIGKILL, idempotent for an already-exited process.
-    private static func reap(_ process: Process) async {
+    static func reap(_ process: Process) async {
         if process.isRunning {
             process.terminate()
         }
@@ -982,7 +985,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
     /// slots): bounded retries — a client-side timeout still leaves the
     /// helper prefilling, so the next attempt (and the eval) hits the warm
     /// checkpoint. Mirrors testHelperAgentProfileScoreboard's warmup.
-    private func warmPromptPrefixes(
+    func warmPromptPrefixes(
         configStore: AppConfigStore,
         configuration: LLMPolishingConfiguration
     ) async {
@@ -1016,7 +1019,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 /// column) plus the request itself (inspection report). The
 /// request is assembled by the production stop-commit path; this wrapper
 /// adds no request shaping.
-private actor EvalRecordingPolishingService: LLMPolishingServicing {
+actor EvalRecordingPolishingService: LLMPolishingServicing {
     private let underlying = LLMPolishingService()
     private let configuration: LLMPolishingConfiguration
     private(set) var lastRawPolishedText: String?
@@ -1037,7 +1040,7 @@ private actor EvalRecordingPolishingService: LLMPolishingServicing {
     }
 }
 
-private struct EvalInfraError: Error, CustomStringConvertible {
+struct EvalInfraError: Error, CustomStringConvertible {
     let description: String
 
     init(_ description: String) {
