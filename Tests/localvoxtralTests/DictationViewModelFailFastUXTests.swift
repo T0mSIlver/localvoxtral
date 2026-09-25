@@ -235,24 +235,6 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         )
     }
 
-    /// The user's terms reach the bundled speech helper only (#521): an
-    /// external server gets the frame it always did.
-    func testOnlyTheManagedHelperIsSentTheSpeakerVocabulary() async {
-        let viewModel = makeViewModel(outputMode: .overlayBuffer)
-        viewModel.settings.polishSpeakerTerms = ["herdr", "mlx-lm"]
-        retainForTestProcessLifetime(viewModel)
-
-        viewModel.settings.dictationBackendMode = .managedLocal
-        let managed = await viewModel.session.prepareDictationSession()
-        XCTAssertEqual(managed?.vocabulary, ["herdr", "mlx-lm"])
-
-        viewModel.settings.dictationBackendMode = .externalURL
-        viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:9/v1/realtime"
-        let external = await viewModel.session.prepareDictationSession()
-        XCTAssertNotNil(external)
-        XCTAssertEqual(external?.vocabulary, [])
-    }
-
     /// A dictation start suspends between reading Settings and opening the
     /// socket (screen-context capture: AppleScript, ssh). If the user flips
     /// the dictation mode in that window, the session must still dial the

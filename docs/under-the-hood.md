@@ -56,17 +56,6 @@ supervises two inference engines for you — no terminal required:
   the helper and downloads the new checkpoint. Both models are pinned to an
   exact Hugging Face commit, and the app downloads and loads that commit,
   never the repo's moving `main`.
-
-  Nemotron also favors your own terms while it decodes. At the start of each
-  dictation the app sends the helper your custom terms and the learned terms
-  polish has confirmed across several dictations, at most 100. When the model
-  is unsure between spellings, a listed spelling wins. On a 260-sentence test
-  set spoken by the system voice, it spelled 61.0% of listed terms right
-  instead of 54.3%, with no rise in errors on the other words. The list goes
-  only to the bundled helper, never to an external server or Mistral, and the
-  helper's log records how many tokens it changed, never the terms. Voxtral
-  receives the list too but cannot use it yet (#316). The change lives on a
-  fork of mlx-audio-swift until it merges upstream.
 - **Polishing — `localvoxtral-polishd`**, a bundled Swift helper built on
   Apple's [MLX Swift](https://github.com/ml-explore/mlx-swift-lm), runs
   [Qwen3.5-4B-OptiQ in 4-bit](https://huggingface.co/mlx-community/Qwen3.5-4B-OptiQ-4bit)
