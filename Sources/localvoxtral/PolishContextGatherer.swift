@@ -449,9 +449,15 @@ enum PolishContextGatherer {
         let terms = learnedTermStore.confirmedTerms(projectKey: project.key)
         guard !terms.isEmpty else { return .empty }
         return await Task.detached(priority: .userInitiated) {
-            RepoVocabularyMatcher.groundedCandidates(
-                transcript: transcript,
-                vocabulary: RepoVocabulary(terms: terms, branch: nil)
+            // Memory, not evidence on screen now: a learned term spoken as
+            // plain words in prose is offered to the model rather than
+            // pre-applied (`withholdingOrdinaryReadings`, #522).
+            RepoVocabularyMatcher.withholdingOrdinaryReadings(
+                RepoVocabularyMatcher.groundedCandidates(
+                    transcript: transcript,
+                    vocabulary: RepoVocabulary(terms: terms, branch: nil)
+                ),
+                transcript: transcript
             )
         }.value
     }

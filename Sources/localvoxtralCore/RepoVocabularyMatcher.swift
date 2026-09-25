@@ -63,7 +63,7 @@ package enum RepoVocabularyMatcher {
 
     /// Spoken separator words map to the symbols the file side already strips,
     /// so "use auth dot t s" normalizes identically to `useAuth.ts`.
-    private static let spokenSeparators: Set<String> =
+    static let spokenSeparators: Set<String> =
         ["dot", "point", "slash", "dash", "hyphen", "underscore"]
 
     /// Small stopword set: an n-gram made up entirely of these (or spoken
@@ -896,7 +896,7 @@ package enum RepoVocabularyMatcher {
     /// Splits on whitespace and trims each word of leading/trailing
     /// non-alphanumerics (STT-sprinkled commas/periods) so the normalized form
     /// and the "as spoken" match string are both clean.
-    private static func tokenize(_ transcript: String) -> [String] {
+    static func tokenize(_ transcript: String) -> [String] {
         transcript
             .split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" })
             .map { $0.trimmingCharacters(in: nonAlphanumericEdges) }
@@ -1002,7 +1002,7 @@ package enum RepoVocabularyMatcher {
         }
     }
 
-    private static func hasTechnicalBoundaries(
+    static func hasTechnicalBoundaries(
         in text: String,
         range: Range<String.Index>
     ) -> Bool {

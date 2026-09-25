@@ -205,10 +205,11 @@ there is not.
   configured. What the app owes in exchange is stated here rather than
   enforced by a gate: each term keeps the sources that proposed it, so a
   later setting can drop what one source taught; nothing below the
-  three-dictation bar is ever sent; a remembered term never outranks a live
+  three-dictation bar is ever sent unless the user pinned it or fixed it by
+  hand; a remembered term never outranks a live
   source (`.learned` is LAST in `PolishContextSource`, so a contested span
-  abstains); terms decay at 90 days; and Text processing → Advanced →
-  Learned terms → Forget drops the file. Verification candidates are never
+  abstains); unpinned terms decay at 90 days; and Text processing →
+  Advanced → Learned terms → Forget drops the file (Show forgets one). Verification candidates are never
   recorded — they are questions put to the model, not answers. A dictation
   whose project cannot be established teaches nothing at all, which is not
   the same as one with no project: the latter teaches the shared bucket,
@@ -216,6 +217,22 @@ there is not.
   project-less dictation reads them. Known limit of the bar: it counts
   dictations, not independent evidence, so one stale clipboard read across
   three dictations is three confirmations.
+
+- **A learned term does not rewrite ordinary words** (#522). The exact tier
+  pre-applies any span that normalizes to a term, so a learned `useAuth`
+  would turn "we should use auth tokens" into code. For the `.learned`
+  source only, `RepoVocabularyMatcher.withholdingOrdinaryReadings` moves a
+  two-word span of plain lowercase words with no code word next to it
+  (`codeNounCues`, `codeVerbCues`) from the pre-applied entries to the
+  verification pairs: the model sees the sentence and decides. Live sources
+  are not guarded: a term on screen now is evidence this dictation is about
+  it; memory is not. A withheld term is neither recorded nor counted as
+  applied, which also stops a learned term confirming itself on prose.
+  Single words (the exact tier only changes their case), spans of three
+  words or more, acronyms and spans with a capital, digit or spoken
+  separator are applied as before. `LearnedTermOverApplicationEvalTests`
+  pins the numbers; its known misses are a three-word join said as prose
+  ("push to talk") and identifiers said with no code word nearby.
 
 - **A fix is learned only from the prompt the joined session submits** (#520).
   `CorrectionLearning` compares the text a commit inserted with the next
