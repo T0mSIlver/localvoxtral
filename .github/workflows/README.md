@@ -45,15 +45,17 @@ pinned by digest. A required check on main. `build-test` keeps its own
 shell-suite step anyway: the scripts those suites test run on the Mac under
 `/bin/bash` 3.2 and BSD tools, which only a macOS runner reproduces.
 
-**`dogfood` — GitHub-hosted macOS, every event, not required (#545).** The
+**`dogfood` — GitHub-hosted macOS, not required (#545).** The
 dogfood capture suite (`LOCALVOXTRAL_DOGFOOD=1 swift test --filter Dogfood`),
 the only build of the capture in CI. It needs the app target, so macOS, and it
-runs cold with no build cache.
+runs cold with no build cache. A PR that changes nothing under `Sources/` or
+`Tests/`, no `Package.swift`/`Package.resolved`, `ci.yml` or the filter
+itself skips the build (`scripts/ci/dogfood-filter.sh`); pushes to main and
+dispatches always run it.
 
 The jobs run in parallel and share no artifact; `build-test` and `mac-lanes`
 each compute the docs-only fast-path decision themselves rather than
-serialising behind a `needs:`. `dogfood` has no fast path and builds on every
-event.
+serialising behind a `needs:`.
 
 **Any step that launches the app on the self-hosted Mac must set
 `LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN: "1"`** (the launch smoke's
