@@ -157,7 +157,7 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
         }
     }
 
-    init(
+    package init(
         sessionID: String,
         origin: ClaudeTransportOrigin,
         agent: ClaudeHookAgent = .claude,
@@ -305,7 +305,7 @@ public enum ClaudeSessionReducer {
     /// Dedup is on the whole snippet, not the label: the same `Edit new_string`
     /// label with different text is two different facts, while a hook that fires
     /// twice for one edit is one fact reported twice.
-    static func attach(_ snapshot: inout ClaudeSessionSnapshot, snippet: ClaudeContentSnippet) {
+    package static func attach(_ snapshot: inout ClaudeSessionSnapshot, snippet: ClaudeContentSnippet) {
         guard !snippet.text.isEmpty else { return }
         snapshot.recentSnippets.removeAll { $0 == snippet }
         snapshot.recentSnippets.insert(snippet, at: 0)

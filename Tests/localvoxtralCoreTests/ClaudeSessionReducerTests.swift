@@ -1,7 +1,7 @@
 import ClaudeContextWire
 import Foundation
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 // MARK: - Event reduction
 

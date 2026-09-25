@@ -62,8 +62,9 @@ var targets: [Target] = [
     // What the app computes without AppKit: the transcript merge, the text
     // merging algorithms, the polish token guard, the payload macro, the
     // polish-outcome and connection-failure classifiers, the session clock
-    // (#432 step 9). The app re-exports it.
-    .target(name: "localvoxtralCore"),
+    // (#432 step 9), and the Claude session snapshot, which is why it depends
+    // on the wire contract. The app re-exports it.
+    .target(name: "localvoxtralCore", dependencies: ["ClaudeContextWire"]),
     // The hook publisher and its Linux process-table reader; runs on both
     // platforms.
     .testTarget(
@@ -78,7 +79,7 @@ var targets: [Target] = [
     ),
     .testTarget(
         name: "localvoxtralCoreTests",
-        dependencies: ["localvoxtralCore"]
+        dependencies: ["localvoxtralCore", "ClaudeContextWire"]
     ),
 ]
 
