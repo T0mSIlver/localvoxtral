@@ -11,7 +11,7 @@
 | 1 | `SpeechHelperIntegrationTests`: packaged speechd vs real spoken audio/model through the production realtime client — word accuracy, append-only delta/done parity, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches speechd-relevant paths or the PR opts in with `[run-speechd-integration]`; locally via `remote-build.sh integration-speechd` | minutes (4B weights + live inference) |
 | 1 | `HerdrIntegrationTests`: the remote-herdr join machinery vs a LIVE `herdr` server over a REAL `ssh -L` forward — real socket client, real forward coordinator, real `ssh -G` canonicalization, real herdr `config.toml` patch (the fixture server's own, beside any herdr the account runs); the only fixture is the focused surface (a real herdr client on a pty) | conditional in CI (self-hosted): only when the diff touches herdr-relevant paths or the PR opts in with `[run-herdr-integration]`; locally via `remote-build.sh integration-herdr [ssh-destination]` | ~1 min (no model weights) |
 | 1 | `MistralRealtimeIntegrationTests`: the realtime client vs the LIVE hosted Mistral transcription API — handshake, synthetic spoken audio through the production frames, word accuracy, delta/done parity, and the 401 rejection path | NEVER in CI (the runner holds no Mistral key and the lane bills per minute of audio); by hand from the dev box via `MISTRAL_API_KEY=... ./scripts/remote-build.sh integration-mistral` | ~1 min + a few cents |
-| 2 | `ui-smoke.yml`, two checks in one lane. The AX smoke drill (status item, settings tabs, lazy managed-backend launch invariant), then `scripts/e2e-dictation.sh`: the packaged dogfood app dictates from a WAV in place of the microphone into a throwaway target window, once per scenario file in `scripts/e2e/scenarios/` (Live Auto-Paste, Overlay Buffer), and the inserted text is scored against the spoken phrase. The only check that launches the packaged app AND dictates; polishing is off and `MicrophoneCaptureService` is bypassed. Exit 3 = the Mac could not run it (locked, no STT server, no Accessibility grant): green with a warning on a schedule, red on a dispatch or label | evening lock-aware slots (18:00/19:30/21:00 UTC; `ui-smoke-guard.sh` skips green when the Mac is on battery, the screen is locked, or a slot's drill already ran and passed that day — the drill needs an unlocked GUI session) + manual on the self-hosted GUI runner | — |
+| 2 | `ui-smoke.yml`, two checks in one lane. The AX smoke drill (status item, settings tabs, lazy managed-backend launch invariant), then `scripts/e2e-dictation.sh`: the packaged dogfood app dictates from a WAV in place of the microphone into a throwaway target window, once per scenario file in `scripts/e2e/scenarios/` (Live Auto-Paste, Overlay Buffer), and the inserted text is scored against the spoken phrase. The only check that launches the packaged app AND dictates; polishing is off and `MicrophoneCaptureService` is bypassed. Exit 3 = the Mac could not run it (locked, no STT server, no Accessibility grant, a speech service lagging past what the app waits for): green with a warning on a schedule, red on a dispatch or label | evening lock-aware slots (18:00/19:30/21:00 UTC; `ui-smoke-guard.sh` skips green when the Mac is on battery, the screen is locked, or a slot's drill already ran and passed that day — the drill needs an unlocked GUI session) + manual on the self-hosted GUI runner | — |
 | 2 | `AgentDictationE2EEvalTests` (`eval-e2e.yml`): wide agent-dictation eval — human WAVs or TTS(`say`) → live speechd ASR → bundled polishd through the production stop-commit path, scored against `EvalCorpus/agent-dictation/` (7 migrated required cases asserted; the rest XFAIL; WER informational; raw-model pre-safety diagnostic column) | nightly (skips green when the Mac is on battery — `ac-power-guard.sh`, owner rule 2026-07-24: scheduled lanes never run unplugged; manual dispatch always runs) + manual, NEVER per-PR (owner decision 2026-07-11); locally via `remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]` (run `package` first) | many minutes (live ASR/4B polish over ~160 cases; TTS WAVs cached on the host) |
 | 2 | `TermRecallEvalTests`: the speech engine alone on the owner's technical terms — `say` or human WAVs → one live speech test service, scored by `TermRecallScorer` for term recall, false insertions of listed terms and non-term WER, English and French apart; also scores a file of hypotheses and pairs two runs. PRIVATE cases (`EvalCorpus/term-recall/README.md`) | by hand only, never in CI (the cases never leave the owner's machines): `remote-build.sh eval-term-recall [--asr <name>]`. Required proof for engine term biasing (#316, #521) and a second pass on stop (#524) | 260 cases: ~10 min on Nemotron, ~35 min on Voxtral (measured 2026-09-25; TTS WAVs cached on the host) |
 | 2 | `release.yml` NIGHTLY channel: the whole release pipeline (unit suite, live STT integration, packaging, launch smoke) against `main`, published as a `vX.Y.Z-nightly.YYYYMMDD` prerelease that never touches `/releases/latest`; nightlies beyond the newest 7 are pruned | cron 03:15 UTC + `./scripts/release.sh nightly`; a scheduled run skips green on battery (`ac-power-guard.sh`) and when `main` is already the newest nightly or stable tag. To exercise the pipeline without releasing anything: `./scripts/release.sh rehearse [target] [ref]` (every gate, artifacts on the run, no tag, any ref). That rehearsal is the proof a change to release.yml carries | ~10-20 min |
@@ -242,9 +242,9 @@ It refuses when:
 - a UI Smoke run on the branch is queued or running, or started less than an
   hour ago.
 - a run already ran on this head commit, whatever it concluded. `NOT RUN:`
-  (exit 3: the Mac was locked, the STT test service was down or the app had
-  no Accessibility grant) and a lost keyboard focus measure the Mac, not the
-  change. Put the line in the Proof section and ask the owner; don't
+  (exit 3: the Mac was locked, the STT test service was down or lagging, or
+  the app had no Accessibility grant) and a lost keyboard focus measure the
+  Mac, not the change. Put the line in the Proof section and ask the owner; don't
   redispatch. A later commit may run again after the hour; take that run only
   when the commit changed session-path code since the last one.
 
@@ -258,6 +258,17 @@ session-path code still needs that one run; it does not need one per step.
 The evening runs on main (18:00 to 21:00 UTC) cover what no PR claimed.
 
 Paste the `spoken:` / `inserted:` / `PASS:` lines in the Proof section.
+
+The speech service on the Mac is shared, and other agents' model work can put
+it seconds behind the audio, which fails a correct app (#548).
+`scripts/e2e/speech-service-probe.py` plays the scenario's WAV to the service
+without the app and times the final transcript from the end of the speech. It
+runs before the app starts and after any failed scenario. A failure becomes
+`NOT RUN:` with the measured lag only when the probe finds the service past
+3.5 s: the check's 2 s of silence plus the app's 1.5 s minimum finalization
+wait. An idle service measures about 2.6 s. A probe within the limit, or one
+that measured nothing, leaves the failure a `FAIL:`, so a broken session still
+fails. The `speech service probe:` lines are in the log either way.
 
 A new scenario is a file in `scripts/e2e/scenarios/` (`mode`, `phrase`,
 `min_word_accuracy`), not a new script. Polishing is off in every scenario so

@@ -132,7 +132,8 @@ jobs:
         # The packaged app hears a WAV, dictates into a throwaway window, and
         # the inserted text is scored (scripts/e2e-dictation.sh). Exit 3 means
         # the Mac was not in a state to run it (locked, no STT server, no
-        # Accessibility grant): a scheduled slot reports that and stays green,
+        # Accessibility grant, a lagging speech service): a scheduled slot
+        # reports that and stays green,
         # like the guard's own skips, while a dispatch or a label is an operator
         # asking for a result and goes red.
         id: e2e
