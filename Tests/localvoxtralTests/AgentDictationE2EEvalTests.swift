@@ -808,7 +808,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
     /// the suite provisions the shared HF cache itself when the model is
     /// absent — same cache layout + include patterns as the app's
     /// HFModelDownloader, idempotent. Mirrors
-    /// `PolishHelperIntegrationTests.ensureModelCached` (kept private there;
+    /// `ensurePolishModelCached` (TestSupport/PolishHelperProcess.swift;
     /// the two suites wait on different plumbing, so the copy is deliberate).
     func ensureModelCached(_ repoID: String) async throws {
         let cacheRoot = FileManager.default.homeDirectoryForCurrentUser
@@ -827,7 +827,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         // rewriting the SHARED cache's main ref would lie to other tools on
         // the host). Same scheme as PolishHelperIntegrationTests.
         if let pinnedRevision {
-            if PolishHelperIntegrationTests.snapshotIsProvisioned(
+            if PolishModelSnapshot.isProvisioned(
                 snapshotsDir.appendingPathComponent(pinnedRevision)
             ) {
                 return
@@ -838,7 +838,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         )
         .trimmingCharacters(in: .whitespacesAndNewlines),
             !revision.isEmpty,
-            PolishHelperIntegrationTests.snapshotIsProvisioned(
+            PolishModelSnapshot.isProvisioned(
                 snapshotsDir.appendingPathComponent(revision)
             )
         {
@@ -904,7 +904,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             try Data("\(info.sha)\n".utf8).write(to: repoDir.appendingPathComponent("refs/main"))
         }
         try Data().write(
-            to: snapshotDir.appendingPathComponent(PolishHelperIntegrationTests.provisionedSentinel)
+            to: snapshotDir.appendingPathComponent(PolishModelSnapshot.provisionedSentinel)
         )
         print("agent-e2e: model provisioned (\(wanted.count) files)")
     }
