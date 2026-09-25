@@ -111,8 +111,10 @@ final class TermRecallEvalTests: XCTestCase {
         // (as in the agent-dictation eval).
         fflush(stdout)
 
-        let failed = run.scores.filter { $0.hypothesis.isEmpty }.count
-        XCTAssertEqual(failed, 0, "\(failed) case(s) got no transcript; see the log")
+        XCTAssertEqual(
+            run.header.unscoredCases, 0,
+            "\(run.header.unscoredCases) case(s) left unscored; the FAILED lines in the log say why"
+        )
         let corpusErrors = TermRecallScorer.tally(run.scores)["all"]?.corpusErrors ?? 0
         XCTAssertEqual(corpusErrors, 0, "listed terms missing from their case text; re-harvest")
     }
@@ -154,8 +156,9 @@ final class TermRecallEvalTests: XCTestCase {
 
         let endpoint = EvalSpeechStage.Endpoint(url: endpointURL, apiKey: "", model: model)
         var scores: [TermRecallCaseScore] = []
+        var unscored = 0
         for (index, evalCase) in cases.enumerated() {
-            var hypothesis = ""
+            let hypothesis: String
             do {
                 let pcm: Data
                 if let recordings {
@@ -181,6 +184,8 @@ final class TermRecallEvalTests: XCTestCase {
                 // Infrastructure, not a score: the case id and the error, no
                 // case text.
                 progress("term-recall: [\(index + 1)/\(cases.count)] \(evalCase.id) FAILED: \(error)")
+                unscored += 1
+                continue
             }
             scores.append(TermRecallScorer.score(evalCase, hypothesis: hypothesis, noiseTerms: noiseTerms))
             progress("term-recall: [\(index + 1)/\(cases.count)] \(evalCase.id) done")
@@ -188,7 +193,8 @@ final class TermRecallEvalTests: XCTestCase {
         let audio = config.recordingDirectory.map { "human/\(URL(fileURLWithPath: $0).lastPathComponent)" } ?? "say"
         return TermRecallRun(
             header: .init(
-                label: config.label ?? "\(asr)-\(bias)", source: asr, model: model, bias: bias, audio: audio
+                label: config.label ?? "\(asr)-\(bias)", source: asr, model: model, bias: bias, audio: audio,
+                unscoredCases: unscored
             ),
             scores: scores
         )

@@ -473,6 +473,9 @@ def normalize_sentence(s: str) -> str:
     s = re.sub(r"^(?:[-*>•]|\d+[.)])\s+", "", s)
     # Strip markdown emphasis/inline-code markers; the words remain speakable.
     s = s.replace("**", "").replace("`", "")
+    # Anything before the first word ("-- yes, ..."): `say` reads a leading
+    # dash as an option and fails, and nobody speaks it.
+    s = re.sub(r"^[^\w\"'(]+", "", s)
     return s.strip()
 
 

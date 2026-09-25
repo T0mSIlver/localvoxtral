@@ -494,13 +494,24 @@ package struct TermRecallRunHeader: Codable, Equatable, Sendable {
     package var bias: String
     /// `say`, `human/<set>`, or `none` for a hypotheses file.
     package var audio: String
+    /// Cases left unscored because the speech stage failed (no audio, no
+    /// transcript): infrastructure, never counted as misses.
+    package var unscoredCases: Int
 
-    package init(label: String, source: String, model: String?, bias: String, audio: String) {
+    package init(
+        label: String,
+        source: String,
+        model: String?,
+        bias: String,
+        audio: String,
+        unscoredCases: Int = 0
+    ) {
         self.label = label
         self.source = source
         self.model = model
         self.bias = bias
         self.audio = audio
+        self.unscoredCases = unscoredCases
     }
 }
 
@@ -569,6 +580,9 @@ package enum TermRecallReport {
                     "\(percent(tally.nonTermErrors, tally.nonTermWords)) (\(tally.nonTermErrors)/\(tally.nonTermWords))",
                 ].joined(separator: "  ")
             )
+        }
+        if run.header.unscoredCases > 0 {
+            lines.append("unscored: \(run.header.unscoredCases) case(s) the speech stage failed on")
         }
         let corpusErrors = tallies["all"]?.corpusErrors ?? 0
         if corpusErrors > 0 {

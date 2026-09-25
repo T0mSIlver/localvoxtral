@@ -1077,10 +1077,14 @@ fi
 # file that a later compare would read as a complete run.
 if [[ -n "$TERM_RECALL_RUN_OUT" ]]; then
   mkdir -p "$(dirname "$TERM_RECALL_RUN_OUT")"
-  if awk '/^=== TERM-RECALL-RUN-END ===$/ { if (inside) closed = 1; inside = 0; next }
+  # swift test prints its "--build-system native is deprecated" warning on
+  # stderr while the run file streams on stdout, sometimes mid-line. It is
+  # the one known intruder; drop it before checking the lines.
+  if perl -0pe "s/warning: '--build-system native' has been deprecated[^\\n]*\\n//g" "$REMOTE_LOG" \
+    | awk '/^=== TERM-RECALL-RUN-END ===$/ { if (inside) closed = 1; inside = 0; next }
           inside { print }
           /^=== TERM-RECALL-RUN-BEGIN ===$/ { inside = 1 }
-          END { exit !closed }' "$REMOTE_LOG" >"$TERM_RECALL_RUN_OUT.tmp" \
+          END { exit !closed }' >"$TERM_RECALL_RUN_OUT.tmp" \
     && ! grep -qv '^{.*}$' "$TERM_RECALL_RUN_OUT.tmp"; then
     mv "$TERM_RECALL_RUN_OUT.tmp" "$TERM_RECALL_RUN_OUT"
     echo "==> Run file: ${TERM_RECALL_RUN_OUT#"$ROOT_DIR/"}"
