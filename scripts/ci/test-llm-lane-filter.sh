@@ -73,6 +73,14 @@ expect true "opencode integration docs stay lane-relevant (claude-code parity)" 
 expect true "claude-code plugin change runs the lane" \
   integrations/claude-code/plugins/localvoxtral/hooks/hooks.json
 
+# Split out of files the lane already watched; they still shape the context.
+expect true "the screen text rules, split from the AX reader, run the lane" \
+  Sources/localvoxtral/TerminalScreenText.swift
+expect true "the browser allowlist, split from the tab url reader, runs the lane" \
+  Sources/localvoxtral/BrowserTabAllowlist.swift
+expect true "the git runner, split from repo vocabulary, runs the lane" \
+  Sources/localvoxtral/RepoGitRunner.swift
+
 # --- Marker opt-in ----------------------------------------------------------
 
 expect true "[run-llm-eval] marker forces the lane on any diff" \

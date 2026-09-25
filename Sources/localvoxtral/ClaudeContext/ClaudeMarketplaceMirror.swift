@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 
 /// A copy of the bundled Claude Code marketplace at a fixed path, refreshed
@@ -112,7 +111,7 @@ public enum ClaudeMarketplaceMirror {
     /// digest is the only thing deciding whether a stale mirror gets refreshed
     /// (review, 2026-09-21).
     static func digest(of directory: URL, fileManager: FileManager = .default) throws -> String {
-        var hasher = SHA256()
+        var hasher = SHA256Hasher()
         let base = directory.standardizedFileURL.path
         let contents = try fileManager.subpathsOfDirectory(atPath: base).sorted()
         for relative in contents {
