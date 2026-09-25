@@ -111,14 +111,16 @@ and order it with blocked-by links, not prose.
 
 ## CI
 
-- Two required jobs: `build-test` (GitHub-hosted, every event) and
-  `mac-lanes` (the owner's MacBook, the only self-hosted runner). `mac-lanes`
+- Three required jobs: `build-test` (GitHub-hosted macOS, every event),
+  `linux` (GitHub-hosted Ubuntu: every `scripts/ci/test-*.sh` by glob and
+  `scripts/core-tests-linux.sh`) and `mac-lanes` (the owner's MacBook, the
+  only self-hosted runner). `mac-lanes`
   never runs fork PRs, and runs a draft only when its body held `[mac-lanes]`
   at run creation. Never move fork-PR work onto that Mac. New lanes go in
   `build-test` unless they need something only that Mac has: signing
   identity, Metal, the STT service, the herdr fixture, a GUI session.
-- A third job, `linux` (GitHub-hosted Ubuntu, not required yet), runs every
-  `scripts/ci/test-*.sh` by glob and `scripts/core-tests-linux.sh`.
+- `dogfood` (GitHub-hosted macOS, not required) builds and tests the
+  compile-gated dogfood capture.
 - One Mac runs every agent's `mac-lanes`, one job at a time, so the queue is
   what everyone waits for. A push to a ready PR cancels its running Mac job
   and queues another: `gh pr ready <n> --undo` before a series of pushes. Keep

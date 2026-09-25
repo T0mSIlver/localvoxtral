@@ -2,7 +2,7 @@
 
 ## `ci.yml`
 
-`ci.yml` runs **three jobs in parallel**, split by what actually needs the
+`ci.yml` runs **four jobs in parallel**, split by what actually needs the
 owner's Mac (owner decision 2026-09-05):
 
 **`build-test` — GitHub-hosted macOS (`macos-latest`), every event, every
@@ -34,15 +34,21 @@ launch-smoking the bundle signed with the stable `localvoxtral-dev` identity
 live STT-service integration (path-gated on PRs by `scripts/ci/stt-lane-filter.sh`,
 always on main), the conditional polishd/speechd/herdr live-model
 lanes, the two MLX helper unit suites (kept here for the warm Cmlx build), the
-dogfood capture suite and packaging, the UI-gate install, and the process leak
+opt-in dogfood packaging, the UI-gate install, and the process leak
 check. It keeps `clean: false` — the persistent warm `.build` that makes those
 lanes affordable.
 
 **`linux` — GitHub-hosted Ubuntu, every event, every contributor (#545).**
 Every `scripts/ci/test-*.sh` suite, taken by glob so a new suite needs no
 workflow edit, and `scripts/core-tests-linux.sh` in the `swift:6.2.0` image
-pinned by digest. It is not a required check yet, so `build-test` keeps its
-own shell-suite step and nothing that gated a merge stops gating it.
+pinned by digest. A required check on main. `build-test` keeps its own
+shell-suite step anyway: the scripts those suites test run on the Mac under
+`/bin/bash` 3.2 and BSD tools, which only a macOS runner reproduces.
+
+**`dogfood` — GitHub-hosted macOS, every event, not required (#545).** The
+dogfood capture suite (`LOCALVOXTRAL_DOGFOOD=1 swift test --filter Dogfood`),
+the only build of the capture in CI. It needs the app target, so macOS, and it
+runs cold with no build cache.
 
 The jobs run in parallel and share no artifact; the two Mac jobs each compute the
 docs-only fast-path decision themselves rather than serialising behind a `needs:`.

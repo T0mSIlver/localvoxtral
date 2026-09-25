@@ -562,8 +562,11 @@ jobs:
   # GitHub-hosted Ubuntu, every event, every contributor (#545). What builds
   # and runs without a Mac: every shell suite under scripts/ci, and the
   # Linux-buildable Swift targets (localvoxtralCore, the Claude hook publisher)
-  # with their tests. Not a required check yet: build-test still runs the
-  # shell suites, so nothing that gated a merge before stops gating it.
+  # with their tests. A required check on main. build-test runs the shell
+  # suites too, on purpose: the scripts they test run on the Mac under
+  # /bin/bash 3.2 and BSD tools, and only a macOS runner reproduces that
+  # (test-ui-gate.sh, test-run-supervised-command.sh and
+  # test-build-gate-process-cleanup.sh each guard a bash 3.2 failure).
   #
   # The shell suites are taken by glob, not listed, so a new one runs here
   # without a workflow edit; on Linux the whole set, test-ui-gate.sh included,
@@ -585,6 +588,27 @@ jobs:
           docker run --rm -v "$PWD:/src" -w /src \
             swift:6.2.0-bookworm@sha256:1fc848c3953417e3ba101ff35458fc0ad048b2401899fd51853bc5979f6220f5 \
             ./scripts/core-tests-linux.sh
+
+  # The dogfood capture suite. The capture is behind a COMPILE flag
+  # (Package.swift), so neither it nor its tests exist in the unit suite,
+  # which compiles the shipping shape; without this job nothing in CI would
+  # build it. The app target needs AppKit, so this is hosted macOS, not
+  # Linux. Moved off mac-lanes (#545): a cold debug build here costs about as
+  # much as build-test's, and runs beside it. No build cache: the define
+  # changes what the app and test modules contain, so it could not share
+  # build-test's, and a second one would double the main-push saves. Not a
+  # required check.
+  dogfood:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Dogfood capture suite (instrumented build)
+        env:
+          LOCALVOXTRAL_DOGFOOD: "1"
+        run: swift test --build-system native --filter 'Dogfood'
 
   # EVERYTHING THAT NEEDS THIS PARTICULAR MAC, and nothing else.
   #
@@ -1171,30 +1195,6 @@ jobs:
         # is sound and scripts/ci/helper-lane-filter.sh for the rules.
         if: steps.ci_scope.outputs.docs_only != 'true' && steps.helper_lanes.outputs.speech_run == 'true'
         run: swift test --build-system native --package-path SpeechHelper
-
-      - name: Dogfood capture suite (instrumented build)
-        # The dogfooding capture is behind a COMPILE flag (Package.swift), so
-        # neither it nor its tests exist in any of the lanes above — the normal
-        # unit suite compiles the shipping shape, which is the point. Without
-        # this step the capture would rot silently: nothing else in CI ever
-        # builds it, and it is only ever exercised by hand.
-        #
-        # Kept on the Mac, matching the helper suites: it is a second full
-        # compile of the app target, which a cold hosted runner would pay
-        # from scratch.
-        #
-        # Its OWN scratch path, never the shared .build. The define changes
-        # what the app and test modules contain, and SwiftPM did not recompile
-        # the test objects when the define went away again: with `clean:
-        # false` the next run's first Swift step on this workspace linked the
-        # previous run's dogfood-only `DogfoodControlProtocolTests.swift.o`
-        # against a non-dogfood app module and died with undefined symbols
-        # (runs 34146743103 and 34147271131, 2026-09-07). Two caches cost disk,
-        # not correctness; one cache cost every Mac lane.
-        if: steps.ci_scope.outputs.docs_only != 'true'
-        env:
-          LOCALVOXTRAL_DOGFOOD: "1"
-        run: swift test --build-system native --filter 'Dogfood' --scratch-path .build-dogfood
 
       - name: Ensure Metal toolchain
         # Xcode 26 ships the Metal compiler as a separate component, and its
