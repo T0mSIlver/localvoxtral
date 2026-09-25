@@ -1,11 +1,13 @@
 import Foundation
 import Synchronization
+import XCTest
 @testable import localvoxtral
 
 /// A microphone that never touches CoreAudio or TCC: the permission it
 /// reports, the devices it lists and the access requests it holds are the
 /// test's to set. Injected through `DictationViewModel.Dependencies` and
-/// reached back as `viewModel.fakeMicrophone`.
+/// reached back as `viewModel.fakeMicrophone`. `deliver` plays a chunk into
+/// the handler the session started capture with, as the capture tap would.
 final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendable {
     private struct State {
         var authorization: MicrophoneAuthorizationStatus = .authorized
@@ -20,6 +22,8 @@ final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendab
         var onConfigurationChange: (@Sendable () -> Void)?
         var onInputDevicesChanged: (@Sendable () -> Void)?
         var onError: (@Sendable (String) -> Void)?
+        var chunkHandler: MicrophoneCaptureService.ChunkHandler?
+        var startWaiters: [BoundedWait] = []
     }
 
     private let state = Mutex(State())
@@ -54,6 +58,39 @@ final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendab
             return pending
         }
         for completion in completions { completion(granted) }
+    }
+
+    /// Hands `chunk` to the running capture's handler. Returns false, and
+    /// delivers nothing, when no capture runs: after `stop` no chunk reaches
+    /// the session, as with the real service.
+    @discardableResult
+    func deliver(_ chunk: Data) -> Bool {
+        guard let handler = state.withLock({ $0.isCapturing ? $0.chunkHandler : nil }) else {
+            return false
+        }
+        handler(chunk)
+        return true
+    }
+
+    /// Returns once a capture is running: how a test knows the session got
+    /// past its connect and opened the microphone. Fails after `failAfter`
+    /// seconds of wall time rather than hanging; a passing test never waits
+    /// that long.
+    func waitUntilCapturing(
+        failAfter: TimeInterval = 10,
+        isolation: isolated (any Actor)? = #isolation,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let started = BoundedWait()
+        let capturing = state.withLock { state -> Bool in
+            if state.isCapturing { return true }
+            state.startWaiters.append(started)
+            return false
+        }
+        if capturing { started.resolve() }
+        if await started.value(failAfter: failAfter) { return }
+        XCTFail("the session never started the microphone", file: file, line: line)
     }
 
     // MARK: - MicrophoneCapturing
@@ -102,20 +139,26 @@ final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendab
     func start(
         preferredDeviceID: String?,
         preferredInputChannel: Int,
-        chunkHandler _: @escaping MicrophoneCaptureService.ChunkHandler
+        chunkHandler: @escaping MicrophoneCaptureService.ChunkHandler
     ) throws {
-        state.withLock {
-            $0.startCount += 1
-            $0.isCapturing = true
-            $0.lastPreferredDeviceID = preferredDeviceID
-            $0.lastPreferredInputChannel = preferredInputChannel
+        let waiters = state.withLock { state -> [BoundedWait] in
+            state.startCount += 1
+            state.isCapturing = true
+            state.chunkHandler = chunkHandler
+            state.lastPreferredDeviceID = preferredDeviceID
+            state.lastPreferredInputChannel = preferredInputChannel
+            let waiters = state.startWaiters
+            state.startWaiters = []
+            return waiters
         }
+        waiters.forEach { $0.resolve() }
     }
 
     func stop() {
         state.withLock {
             $0.stopCount += 1
             $0.isCapturing = false
+            $0.chunkHandler = nil
         }
     }
 
