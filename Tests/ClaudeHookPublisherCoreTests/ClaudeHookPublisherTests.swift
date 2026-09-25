@@ -1,5 +1,9 @@
 import ClaudeContextWire
+#if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 import Foundation
 import Synchronization
 import XCTest
@@ -474,7 +478,12 @@ final class ClaudeHookControllingTTYTests: XCTestCase {
             close(slave)
         }
 
+        // Darwin types these as opaque pointers, Glibc as structs.
+        #if canImport(Darwin)
         var actions: posix_spawn_file_actions_t?
+        #else
+        var actions = posix_spawn_file_actions_t()
+        #endif
         posix_spawn_file_actions_init(&actions)
         defer { posix_spawn_file_actions_destroy(&actions) }
         // Opened IN THE CHILD, after it became a session leader: the first
@@ -484,12 +493,20 @@ final class ClaudeHookControllingTTYTests: XCTestCase {
             _ = posix_spawn_file_actions_addopen(&actions, 0, $0, O_RDWR, 0)
         }
 
+        #if canImport(Darwin)
         var attributes: posix_spawnattr_t?
+        #else
+        var attributes = posix_spawnattr_t()
+        #endif
         posix_spawnattr_init(&attributes)
         defer { posix_spawnattr_destroy(&attributes) }
-        // POSIX_SPAWN_SETSID (spawn.h): the child starts its own session, so
-        // it CAN acquire a controlling terminal of its own.
+        // POSIX_SPAWN_SETSID (spawn.h; 0x80 in glibc's): the child starts its
+        // own session, so it CAN acquire a controlling terminal of its own.
+        #if canImport(Darwin)
         posix_spawnattr_setflags(&attributes, Int16(0x0400))
+        #else
+        posix_spawnattr_setflags(&attributes, Int16(0x80))
+        #endif
 
         var childPID: pid_t = 0
         let argv: [UnsafeMutablePointer<CChar>?] = [strdup("/bin/sleep"), strdup("30"), nil]

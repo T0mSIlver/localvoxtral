@@ -64,10 +64,11 @@ var targets: [Target] = [
     // polish-outcome and connection-failure classifiers, the session clock
     // (#432 step 9). The app re-exports it.
     .target(name: "localvoxtralCore"),
-    // The hook publisher's Linux process-table reader; runs on both platforms.
+    // The hook publisher and its Linux process-table reader; runs on both
+    // platforms.
     .testTarget(
         name: "ClaudeHookPublisherCoreTests",
-        dependencies: ["ClaudeHookPublisherCore"]
+        dependencies: ["ClaudeHookPublisherCore", "ClaudeContextWire"]
     ),
     .testTarget(
         name: "localvoxtralCoreTests",
