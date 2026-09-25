@@ -4,9 +4,11 @@ import XCTest
 
 @testable import localvoxtral
 
-/// Pictures of the app's views, one PNG per view and state, for a reviewer
-/// who cannot open the app: `build-test` uploads them as the `view-snapshots`
-/// artifact. Record-only: nothing is compared against a stored image.
+/// Pictures of the app's views, one PNG per view and state, for an agent that
+/// has to show the owner a view: `scripts/view-snapshots.sh` renders them on a
+/// hosted runner (docs/agent/view-snapshots.md). Record-only: nothing is
+/// compared against a stored image. `build-test` runs them too, so a view
+/// that stops rendering fails there.
 ///
 /// Every model is built here from fakes over throwaway defaults, so no image
 /// holds anything from the machine that ran it: no transcripts, no paths, no

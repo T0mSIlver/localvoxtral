@@ -13,7 +13,7 @@ import XCTest
 @MainActor
 enum ViewSnapshot {
     /// Where the PNGs go: `LOCALVOXTRAL_SNAPSHOT_DIR` when set, else
-    /// `.build/snapshots` in the package. CI uploads the second.
+    /// `.build/snapshots` in the package, which `view-snapshots.yml` uploads.
     static var directory: URL {
         if let path = ProcessInfo.processInfo.environment["LOCALVOXTRAL_SNAPSHOT_DIR"], !path.isEmpty {
             return URL(fileURLWithPath: path, isDirectory: true)

@@ -179,6 +179,8 @@ and order it with blocked-by links, not prose.
   `docs/agent/field-debugging.md`. Dispatch `mac-crashlog.yml` before
   theorizing; install builds with `./scripts/try-pr.sh`.
 - CI lanes and evals: `docs/agent/test-tiers.md`.
+- Showing the owner what a view looks like: `docs/agent/view-snapshots.md`
+  (hosted runner, no Mac).
 - Either MLX helper: `PolishHelper/AGENTS.md`, `SpeechHelper/AGENTS.md`.
 - The eval corpus: `EvalCorpus/agent-dictation/AGENTS.md`.
 - Claude Code, opencode or Vibe integrations: `integrations/claude-code/AGENTS.md`
