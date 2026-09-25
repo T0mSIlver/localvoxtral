@@ -71,13 +71,14 @@ STUB
 # Instant, and it records what it was asked to wait: the owner's 3 s warning
 # pause is a `sleep 3` the lease tests (section 29) need to see on the first
 # verb of a burst and NOT on the ones that follow. With STUB_SLEEP_HOLD_SECONDS
-# set, a call for exactly that duration blocks until STUB_SLEEP_HOLD_FILE
-# exists (bounded), which is how the suite holds a done-announcer's `sleep
-# <lease>` open while a later verb rewrites the lease's nonce.
+# set (one duration, or several separated by spaces), a call for exactly one
+# of those durations blocks until STUB_SLEEP_HOLD_FILE exists (bounded), which
+# is how the suite holds a done-announcer's `sleep <lease>` open while a later
+# verb rewrites the lease's nonce.
 cat >"$STUB_BIN/sleep" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${STUB_SLEEP_LOG:-/dev/null}"
-if [[ -n "${STUB_SLEEP_HOLD_SECONDS:-}" && "$*" == "$STUB_SLEEP_HOLD_SECONDS" ]]; then
+if [[ -n "${STUB_SLEEP_HOLD_SECONDS:-}" && " $STUB_SLEEP_HOLD_SECONDS " == *" $* "* ]]; then
   hold_polls=0
   while (( hold_polls < 500 )); do
     [[ -e "${STUB_SLEEP_HOLD_FILE:-/nonexistent}" ]] && exit 0
@@ -1431,8 +1432,8 @@ echo "== 13. the embedded Swift helper compiles =="
 # The gate's CoreGraphics/AX helper is a heredoc, so nothing else ever type
 # checks it — and a helper that does not compile turns every GUI verb into a
 # runtime failure the owner only discovers by hand. On the macOS runner this
-# is a real compile; on a Linux dev box it is skipped (and says so).
-if command -v swiftc >/dev/null 2>&1; then
+# is a real compile; off a Mac (no AppKit) it is skipped, and says so.
+if [[ "$(uname -s)" == Darwin ]] && command -v swiftc >/dev/null 2>&1; then
   HELPER_DIR="$TMP_DIR/helper"
   mkdir -p "$HELPER_DIR"
   awk '/^  cat <<.SWIFT.$/ { capture = 1; next }
@@ -1446,7 +1447,7 @@ if command -v swiftc >/dev/null 2>&1; then
     || fail "the embedded Swift helper does not type check"
   pass "the embedded Swift helper type checks"
 else
-  printf 'SKIP: swiftc not available — the embedded Swift helper was not type checked\n'
+  printf 'SKIP: no macOS swiftc — the embedded Swift helper was not type checked\n'
 fi
 
 # ---------------------------------------------------------------------------
@@ -3279,6 +3280,11 @@ pass "done retires the lease, so the burst after it warns again"
 # the burst ended in silence with the lease standing. Here the gate is stopped
 # with SIGKILL while `launch` waits for the app to appear — no EXIT trap runs
 # — and the burst still announces itself.
+#
+# Both waits are held until the kill has landed: launch's 0.5 s poll, or the
+# gate ends before the kill, and the announcer's `sleep <lease>`, or it speaks
+# "done" and retires the lease before this case can see it armed. Either one
+# left instant made the case a race it won only on a fast machine.
 clear_state
 : >"$TMP_DIR/say.log"
 rm -f "$TMP_DIR/release-launch-wait"
@@ -3286,8 +3292,9 @@ NOW_EPOCH=4000
 SKIP_ANNOUNCER_WAIT=1
 # 2>/dev/null: the kill below is the point of the case, and the shell's
 # "Killed" notice for it would read like a suite failure in the CI log.
-( run_gate "launch $CLEAN_APP" "${APP_ENV[@]}" LAUNCH_WAIT=30 \
-    STUB_SLEEP_HOLD_SECONDS=0.5 STUB_SLEEP_HOLD_FILE="$TMP_DIR/release-launch-wait" ) 2>/dev/null &
+( LAUNCH_WAIT=30; run_gate "launch $CLEAN_APP" "${APP_ENV[@]}" \
+    STUB_SLEEP_HOLD_SECONDS="0.5 $LEASE_SECONDS" \
+    STUB_SLEEP_HOLD_FILE="$TMP_DIR/release-launch-wait" ) 2>/dev/null &
 killed_gate=""
 for (( i = 0; i < 1000; i++ )); do
   killed_gate="$(pgrep -f "bash $GATE" 2>/dev/null | head -n 1 || true)"
