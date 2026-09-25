@@ -312,6 +312,18 @@ prints a clear skip message and exits successfully.
 It needs the one-time Accessibility and Screen Recording TCC grants described
 under `ui-smoke.yml`.
 
+## `view-snapshots.yml`
+
+Manual dispatch on a GitHub-hosted macOS runner, never the Mac. It runs
+`ViewSnapshotTests` (or one of its cases, the `filter` input) and uploads the
+PNGs as the `view-snapshots` artifact. Agents dispatch it through
+`scripts/view-snapshots.sh`, which finds the run by the `request_id` input
+echoed in the run name and downloads the PNGs. It restores `build-test`'s
+SwiftPM cache but never saves one. A PR that edits the workflow file runs it
+too, which is how a change to it gets proved before it reaches main (dispatch
+works only once a workflow is on the default branch). See
+`docs/agent/view-snapshots.md`.
+
 ## `codeql.yml`
 
 Code scanning of the workflows themselves, on Ubuntu, on every push to main,

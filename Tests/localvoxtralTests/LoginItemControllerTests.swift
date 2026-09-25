@@ -8,39 +8,10 @@ import XCTest
 /// launchd reads — is `LaunchAgentLoginItemRegistrarTests`.
 @MainActor
 final class LoginItemControllerTests: XCTestCase {
-    private final class FakeRegistrar: LoginItemRegistering {
-        var state: LoginItemState
-        /// What `register()` lands on when it does not throw — the system, not
-        /// the caller, decides whether approval is still needed.
-        var stateAfterRegister: LoginItemState = .enabled
-        var registerError: Error?
-        var unregisterError: Error?
-        private(set) var registerCount = 0
-        private(set) var unregisterCount = 0
-
-        init(state: LoginItemState) {
-            self.state = state
-        }
-
-        func currentState() -> LoginItemState { state }
-
-        func register() throws {
-            registerCount += 1
-            if let registerError { throw registerError }
-            state = stateAfterRegister
-        }
-
-        func unregister() throws {
-            unregisterCount += 1
-            if let unregisterError { throw unregisterError }
-            state = .disabled
-        }
-    }
-
     private struct RefusedByTheSystem: Error {}
 
     func testTurningItOnRegistersTheLoginItem() {
-        let registrar = FakeRegistrar(state: .disabled)
+        let registrar = FakeLoginItemRegistrar(state: .disabled)
         let controller = LoginItemController(registrar: registrar)
         XCTAssertFalse(controller.isOn)
 
@@ -52,7 +23,7 @@ final class LoginItemControllerTests: XCTestCase {
     }
 
     func testTurningItOffUnregistersTheLoginItem() {
-        let registrar = FakeRegistrar(state: .enabled)
+        let registrar = FakeLoginItemRegistrar(state: .enabled)
         let controller = LoginItemController(registrar: registrar)
         XCTAssertTrue(controller.isOn)
 
@@ -67,7 +38,7 @@ final class LoginItemControllerTests: XCTestCase {
     /// that names another copy of localvoxtral is on, and says so.
     func testALoginItemForAnotherCopyReadsAsOnAndSaysSo() {
         let controller = LoginItemController(
-            registrar: FakeRegistrar(state: .enabledForAnotherCopy))
+            registrar: FakeLoginItemRegistrar(state: .enabledForAnotherCopy))
 
         XCTAssertTrue(controller.isOn)
         XCTAssertTrue(controller.isAvailable)
@@ -75,7 +46,7 @@ final class LoginItemControllerTests: XCTestCase {
     }
 
     func testARefusedRegistrationLeavesTheSwitchOffAndExplains() {
-        let registrar = FakeRegistrar(state: .disabled)
+        let registrar = FakeLoginItemRegistrar(state: .disabled)
         registrar.registerError = RefusedByTheSystem()
         let controller = LoginItemController(registrar: registrar)
 
@@ -87,7 +58,7 @@ final class LoginItemControllerTests: XCTestCase {
     }
 
     func testARefusedRemovalLeavesTheSwitchOnAndExplains() {
-        let registrar = FakeRegistrar(state: .enabled)
+        let registrar = FakeLoginItemRegistrar(state: .enabled)
         registrar.unregisterError = RefusedByTheSystem()
         let controller = LoginItemController(registrar: registrar)
 
@@ -101,7 +72,7 @@ final class LoginItemControllerTests: XCTestCase {
     /// The login item can be removed while the app is running, so the pane
     /// re-reads it rather than trusting what it last saw.
     func testRefreshTakesTheSystemsAnswerAndClearsAStaleFailure() {
-        let registrar = FakeRegistrar(state: .enabled)
+        let registrar = FakeLoginItemRegistrar(state: .enabled)
         registrar.unregisterError = RefusedByTheSystem()
         let controller = LoginItemController(registrar: registrar)
         controller.setOn(false)
@@ -117,7 +88,7 @@ final class LoginItemControllerTests: XCTestCase {
     /// An unbundled build (`swift run`) has nothing to open at login. The row
     /// says why instead of offering a switch that cannot work.
     func testAnUnavailableLoginItemDisablesTheRow() {
-        let controller = LoginItemController(registrar: FakeRegistrar(state: .unavailable))
+        let controller = LoginItemController(registrar: FakeLoginItemRegistrar(state: .unavailable))
 
         XCTAssertFalse(controller.isAvailable)
         XCTAssertFalse(controller.isOn)
