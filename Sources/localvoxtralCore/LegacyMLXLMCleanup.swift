@@ -8,7 +8,7 @@ import Foundation
 /// The part-3 transition deliberately left voxmlx and the shared installer
 /// support for part 4. `LegacyVoxmlxCleanup` now owns that final sweep.
 /// Downloaded model weights remain untouched in the shared HF cache.
-struct LegacyMLXLMCleanup {
+package struct LegacyMLXLMCleanup {
     private let layout: BackendInstallLayout
     private let fileManager: FileManager
 
@@ -25,7 +25,7 @@ struct LegacyMLXLMCleanup {
     /// Wheels the installer parked in `downloads/`.
     private static let legacyWheelPrefix = "mlx_lm-"
 
-    init(layout: BackendInstallLayout = BackendInstallLayout(), fileManager: FileManager = .default) {
+    package init(layout: BackendInstallLayout = BackendInstallLayout(), fileManager: FileManager = .default) {
         self.layout = layout
         self.fileManager = fileManager
     }
@@ -34,7 +34,7 @@ struct LegacyMLXLMCleanup {
     /// there was nothing to do). Failures are logged and skipped — cleanup
     /// must never block launch.
     @discardableResult
-    func run() -> [URL] {
+    package func run() -> [URL] {
         var removed: [URL] = []
 
         removeIfPresent(

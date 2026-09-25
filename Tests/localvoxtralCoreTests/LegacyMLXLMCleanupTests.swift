@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 final class LegacyMLXLMCleanupTests: XCTestCase {
     private var temporaryDirectories: [URL] = []

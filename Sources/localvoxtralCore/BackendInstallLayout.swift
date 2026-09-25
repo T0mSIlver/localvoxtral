@@ -1,9 +1,9 @@
 import Foundation
 
-struct BackendInstallLayout: Equatable, Sendable {
-    let root: URL
+package struct BackendInstallLayout: Equatable, Sendable {
+    package let root: URL
 
-    init(root: URL? = nil) {
+    package init(root: URL? = nil) {
         if let root {
             self.root = root
         } else {
@@ -19,15 +19,15 @@ struct BackendInstallLayout: Equatable, Sendable {
 
     // The remaining child paths describe only legacy installs swept at launch.
     // Bundled executables and Hugging Face snapshots never live under root.
-    var tools: URL {
+    package var tools: URL {
         root.appendingPathComponent("tools", isDirectory: true)
     }
 
-    var toolBin: URL {
+    package var toolBin: URL {
         root.appendingPathComponent("bin", isDirectory: true)
     }
 
-    var downloads: URL {
+    package var downloads: URL {
         root.appendingPathComponent("downloads", isDirectory: true)
     }
 }
