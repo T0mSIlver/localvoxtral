@@ -90,7 +90,7 @@ if $GATE_E2E; then
   # Encoded: a branch name may hold '#', '&' or '?'.
   ref_uri="$(jq -rn --arg r "$REF" '$r | @uri')"
   RELEASE_SHA="$(gh api "repos/{owner}/{repo}/commits/$ref_uri" --jq '.sha')"
-  runs="$(gh api "repos/{owner}/{repo}/actions/workflows/ui-smoke.yml/runs?head_sha=$RELEASE_SHA&status=completed&per_page=20" \
+  runs="$(gh api "repos/{owner}/{repo}/actions/workflows/ui-smoke.yml/runs?head_sha=$RELEASE_SHA&status=completed&per_page=100" \
     --jq '.workflow_runs[].id')"
   scored_run=""
   for id in $runs; do
@@ -122,19 +122,36 @@ if [[ "$PUBLISH" == "true" ]]; then
 else
   echo "Dispatching release REHEARSAL ($ARG, ref=$REF) — no tag, no release..."
 fi
+# Our run is the one on this ref that was not there before the dispatch: the
+# newest run can be the 03:15 cron's or an earlier dispatch's while ours has
+# not registered yet.
+list_runs() {
+  gh run list --workflow "Release App" --branch "$REF" --limit 20 --json databaseId --jq '.[].databaseId'
+}
+RUNS_BEFORE="$(list_runs)"
 gh workflow run "Release App" --ref "$REF" "${DISPATCH_ARGS[@]}"
-sleep 5
-# Newest run on the dispatched ref, not the newest run of the workflow: the
-# 03:15 cron or another dispatch can create a run inside that 5 s window.
-RUN_ID="$(gh run list --workflow "Release App" --branch "$REF" --limit 1 --json databaseId --jq '.[0].databaseId')"
+RUN_ID=""
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  sleep 5
+  RUN_ID="$(list_runs | grep -vxF -f <(printf '%s\n' "$RUNS_BEFORE") | head -n 1 || true)"
+  [[ -n "$RUN_ID" ]] && break
+done
+if [[ -z "$RUN_ID" ]]; then
+  echo "Dispatched, but no new Release App run on $REF appeared within a minute. Find it with:" >&2
+  echo "  gh run list --workflow 'Release App' --branch $REF" >&2
+  exit 1
+fi
 if $GATE_E2E; then
   # The ref may have moved between the check and the dispatch. The workflow
   # gates for minutes before it tags, so cancelling now leaves no tag.
   run_sha="$(gh run view "$RUN_ID" --json headSha --jq '.headSha')"
   if [[ "$run_sha" != "$RELEASE_SHA" ]]; then
-    gh run cancel "$RUN_ID"
     echo "Refused: $REF moved to ${run_sha:0:9} after the e2e dictation check passed on ${RELEASE_SHA:0:9}." >&2
-    echo "Cancelled run $RUN_ID before it tagged anything. Run the check on the new head, then release again." >&2
+    if gh run cancel "$RUN_ID"; then
+      echo "Cancelled run $RUN_ID before it tagged anything. Run the check on the new head, then release again." >&2
+    else
+      echo "Could not cancel run $RUN_ID; cancel it by hand before it tags: gh run cancel $RUN_ID" >&2
+    fi
     exit 1
   fi
 fi

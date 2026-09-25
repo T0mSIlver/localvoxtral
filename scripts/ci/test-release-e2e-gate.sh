@@ -43,9 +43,25 @@ for ((i = 0; i < ${#args[@]}; i++)); do
   esac
 done
 case "$1 ${2:-}" in
-  "workflow run") echo "$*" >>"$SCEN/dispatched" ;;
-  "run list") jq -r "$jq_filter" <<<'[{"databaseId":900}]' ;;
-  "run view") jq -r "$jq_filter" <<<"{\"headSha\":\"$(cat "$SCEN/dispatched-sha")\"}" ;;
+  "workflow run")
+    # The dispatch registers run 900 on top of the older run 800 (an earlier
+    # nightly on another commit), but only from the second listing on: GitHub
+    # lists a dispatched run seconds late.
+    echo "$*" >>"$SCEN/dispatched"
+    ;;
+  "run list")
+    if [[ -f "$SCEN/dispatched" ]]; then
+      if [[ -f "$SCEN/listed-after-dispatch" ]]; then
+        echo '[{"databaseId":900},{"databaseId":800}]' >"$SCEN/release-runs.json"
+      fi
+      touch "$SCEN/listed-after-dispatch"
+    fi
+    jq -r "$jq_filter" "$SCEN/release-runs.json"
+    ;;
+  "run view")
+    if [[ "$3" == 900 ]]; then sha="$(cat "$SCEN/dispatched-sha")"; else sha=0000000000000000000000000000000000000000; fi
+    jq -r "$jq_filter" <<<"{\"headSha\":\"$sha\"}"
+    ;;
   "run cancel") echo "$*" >>"$SCEN/cancelled" ;;
   "run watch") ;;
   api\ *)
@@ -89,6 +105,7 @@ scenario() {
   mkdir -p "$dir"
   echo "$HEAD_SHA" >"$dir/ref-sha"
   echo "$HEAD_SHA" >"$dir/dispatched-sha"
+  echo '[{"databaseId":800}]' >"$dir/release-runs.json"
   local ids=() entry
   for entry in "$@"; do
     ids+=("${entry%%:*}")
@@ -118,6 +135,7 @@ grep -q "Refused: the e2e dictation check has not passed on main at aaaaaaaaa" "
 grep -q "gh workflow run ui-smoke.yml --ref main" "$dir/out" \
   || fail "the refusal says how to run the check: $(cat "$dir/out")"
 grep -q "head_sha=$HEAD_SHA" "$dir/runs-url" || fail "the runs are looked up by the release commit"
+grep -q "per_page=100" "$dir/runs-url" || fail "a week of evening runs on an unmoved main fits the lookup"
 [[ ! -f "$dir/dispatched" ]] || fail "a refused release dispatched"
 
 dir="$(scenario unscored 11:absent 12:skipped)"
@@ -145,7 +163,8 @@ dir="$(scenario dispatch 31:success)"
 expect 0 "a gated release dispatches and watches its run" "$dir" patch
 grep -q "workflow run Release App --ref main -f channel=stable -f bump=patch -f publish=true" "$dir/dispatched" \
   || fail "dispatched: $(cat "$dir/dispatched")"
-[[ ! -f "$dir/cancelled" ]] || fail "a run on the checked commit was cancelled"
+[[ ! -f "$dir/cancelled" ]] || fail "a run on the checked commit, or the older run, was cancelled"
+grep -q "Watching run 900" "$dir/out" || fail "it watches the run it dispatched, not the older one: $(cat "$dir/out")"
 
 dir="$(scenario moved 41:success)"
 echo "$OTHER_SHA" >"$dir/dispatched-sha"
