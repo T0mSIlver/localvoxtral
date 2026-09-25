@@ -36,7 +36,7 @@ let package = Package(
         // exact reviewed tree is reproducible — see DEPENDENCY.md for the upgrade procedure.
         //
         // TEMPORARY fork pin: T0mSIlver/mlx-audio-swift branch feat/nemotron-term-boost,
-        // upstream main 01dec7c (the merge of Blaizzy/mlx-audio-swift#265) plus one commit,
+        // upstream main 01dec7c (the merge of Blaizzy/mlx-audio-swift#265) plus
         // Nemotron streaming term boost (#521). Switch back to Blaizzy once that change
         // merges upstream — see DEPENDENCY.md. 01dec7c carries #232 (quantized-tied-embedding
         // loader, required by the catalog's -qhead model, SpeechModelCatalog), #263-#265
@@ -45,7 +45,7 @@ let package = Package(
         // incremental `NemotronASRStreamSession`, and the wider checkpoint loader).
         .package(
             url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
-            revision: "c2211b7563306ce265e6da404da108846c8d76a1"
+            revision: "3cb528b1bd551e3adddfcb0ec2b58da9f4383910"
         ),
     ],
     targets: [

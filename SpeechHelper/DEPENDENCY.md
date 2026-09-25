@@ -21,14 +21,14 @@ checkout — we no longer keep a copy here.
 ```
 .package(
     url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
-    revision: "c2211b7563306ce265e6da404da108846c8d76a1"
+    revision: "3cb528b1bd551e3adddfcb0ec2b58da9f4383910"
 )
 ```
 
 Pinned to a full-SHA **revision**, not a tag, so the exact reviewed tree is reproducible and
 can't move under us.
 
-**Temporary fork pin (#521).** `c2211b7` is upstream `01dec7c` (below) plus one commit on the
+**Temporary fork pin (#521).** `3cb528b` is upstream `01dec7c` (below) plus the commits on the
 fork's `feat/nemotron-term-boost` branch: term boosting in Nemotron's greedy streaming decoder
 (`NemotronASRStreamSession.setBoostTerms`). The helper hands it the `vocabulary` list from
 `session.update`. Once the change merges upstream, switch the URL back to Blaizzy at the merge
