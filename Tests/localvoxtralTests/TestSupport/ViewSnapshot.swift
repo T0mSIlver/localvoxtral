@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import SwiftUI
 import XCTest
 
@@ -74,6 +75,10 @@ enum ViewSnapshot {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("\(name).png")
         try png.write(to: url, options: .atomic)
+        // In the log so two runs can be compared without their artifacts:
+        // equal hashes are pixel-identical renders.
+        let digest = SHA256.hash(data: png).map { String(format: "%02x", $0) }.joined()
+        print("view-snapshot \(name).png sha256=\(digest)")
         return url
     }
 
