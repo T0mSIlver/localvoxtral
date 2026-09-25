@@ -57,8 +57,8 @@ struct TerminalAppDescriptor: Identifiable, Equatable, Hashable, Sendable {
 /// DERIVATION ONLY — the runtime gates stay where they are (the allowlist,
 /// the join resolver); if the two ever disagree the fix is here, not there.
 struct TerminalCapabilities: Equatable, Hashable, Sendable {
-    /// The reason a capability is absent, one line, e.g. "Ghostty 1.4 or
-    /// newer needed." Nil when the capability is present.
+    /// What a capability is missing, short enough to be the row's value
+    /// (e.g. "Needs Ghostty 1.4+"). Nil when the capability is present.
     let joinRequirement: String?
     let screenRequirement: String?
 
@@ -88,12 +88,12 @@ enum TerminalAppCatalog {
     /// needs Ghostty ≥ 1.4's focused terminal).
     static let ghosttyJoinFloor = (major: 1, minor: 4)
 
-    /// The reason string the Ghostty rows carry below the join/screen rows
-    /// when the floor is not met. Fixed by the owner decision's example.
-    static let ghosttyVersionReason = "Ghostty 1.4 or newer needed."
+    /// The Ghostty join/screen rows' value when the floor is not met.
+    static let ghosttyVersionReason = "Needs Ghostty 1.4+"
 
-    static let cmuxSocketReason =
-        "Set cmux's socket to password mode, then save the same password below."
+    /// cmux's join/screen rows' value until the socket is set up; the steps
+    /// are behind the Automation socket group's Learn more link.
+    static let cmuxSocketReason = "Needs socket password"
 
     /// cmux's two-step setup doc, linked from the cmux pane.
     static let cmuxDocsURL = URL(
@@ -154,49 +154,49 @@ enum TerminalAppCatalog {
                 "dev.warp.Warp-Stable", "dev.warp.Warp-Public", "dev.warp.Warp",
                 "dev.warp.Warp-Preview", "dev.warp.Warp-Dev",
             ],
-            capabilities: .dictationOnly(reason: "Not available in this terminal yet."),
+            capabilities: .dictationOnly(reason: "Not yet"),
             isUserAdded: false
         ),
         TerminalAppDescriptor(
             slug: "wezterm",
             displayName: "WezTerm",
             detectionBundleIDs: ["com.github.wez.wezterm"],
-            capabilities: .dictationOnly(reason: "Not available in this terminal yet."),
+            capabilities: .dictationOnly(reason: "Not yet"),
             isUserAdded: false
         ),
         TerminalAppDescriptor(
             slug: "kitty",
             displayName: "kitty",
             detectionBundleIDs: ["net.kovidgoyal.kitty"],
-            capabilities: .dictationOnly(reason: "Not available in this terminal yet."),
+            capabilities: .dictationOnly(reason: "Not yet"),
             isUserAdded: false
         ),
         TerminalAppDescriptor(
             slug: "alacritty",
             displayName: "Alacritty",
             detectionBundleIDs: ["org.alacritty"],
-            capabilities: .dictationOnly(reason: "Not available in this terminal yet."),
+            capabilities: .dictationOnly(reason: "Not yet"),
             isUserAdded: false
         ),
         TerminalAppDescriptor(
             slug: "hyper",
             displayName: "Hyper",
             detectionBundleIDs: ["co.zeit.hyper"],
-            capabilities: .dictationOnly(reason: "Not available in this terminal yet."),
+            capabilities: .dictationOnly(reason: "Not yet"),
             isUserAdded: false
         ),
         TerminalAppDescriptor(
             slug: "tabby",
             displayName: "Tabby",
             detectionBundleIDs: ["org.tabby"],
-            capabilities: .dictationOnly(reason: "Not available in this terminal yet."),
+            capabilities: .dictationOnly(reason: "Not yet"),
             isUserAdded: false
         ),
         TerminalAppDescriptor(
             slug: "rio",
             displayName: "Rio",
             detectionBundleIDs: ["com.raphaelamorim.rio"],
-            capabilities: .dictationOnly(reason: "Not available in this terminal yet."),
+            capabilities: .dictationOnly(reason: "Not yet"),
             isUserAdded: false
         ),
     ]
@@ -618,7 +618,7 @@ final class TerminalAppsSettingsModel {
             slug: slug(forBundleID: app.bundleID),
             displayName: app.displayName,
             detectionBundleIDs: [app.bundleID],
-            capabilities: .dictationOnly(reason: "Added apps get dictation only."),
+            capabilities: .dictationOnly(reason: "No"),
             isUserAdded: true
         )
     }

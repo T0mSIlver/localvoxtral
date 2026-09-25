@@ -48,13 +48,7 @@ struct AboutSettingsPane: View {
                 // time before (docs/agent/field-debugging.md), and version
                 // alone can't answer it —
                 // dogfood builds keep the same version and bundle id.
-                SettingsFieldRow(
-                    title: "Build",
-                    help: DogfoodBuildStatus.detail(
-                        isDogfoodBuild: DogfoodBuildStatus.isDogfoodBuild,
-                        captureArmed: dogfoodCaptureArmed
-                    )
-                ) {
+                SettingsFieldRow(title: "Build") {
                     Text(
                         DogfoodBuildStatus.label(
                             isDogfoodBuild: DogfoodBuildStatus.isDogfoodBuild,
@@ -80,10 +74,7 @@ struct AboutSettingsPane: View {
             }
 
             SettingsGroup(title: "Diagnostics") {
-                SettingsFieldRow(
-                    title: "Report",
-                    help: "Writes a redacted report to the Desktop. Review before sharing."
-                ) {
+                SettingsFieldRow(title: "Report") {
                     Button("Export diagnostics…") {
                         viewModel.engines.exportDiagnostics()
                     }

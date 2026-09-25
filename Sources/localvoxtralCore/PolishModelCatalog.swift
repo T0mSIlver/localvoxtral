@@ -39,7 +39,6 @@ package struct PolishModelOption: Equatable, Sendable {
     package let estimatedRAMGB: Double
     package let samplingDefaults: PolishSamplingDefaults?
     package let chatTemplateArguments: [String: Bool]?
-    package let summary: String
 }
 
 package enum PolishModelCatalog {
@@ -56,8 +55,7 @@ package enum PolishModelCatalog {
             sizeOnDiskGB: 1.0,
             estimatedRAMGB: 1.2,
             samplingDefaults: nil,
-            chatTemplateArguments: nil,
-            summary: "Lightest option for constrained Macs"
+            chatTemplateArguments: nil
         ),
         PolishModelOption(
             repoID: "mlx-community/Qwen3.5-4B-OptiQ-4bit",
@@ -69,8 +67,7 @@ package enum PolishModelCatalog {
             sizeOnDiskGB: 3.3,
             estimatedRAMGB: 3.8,
             samplingDefaults: nil,
-            chatTemplateArguments: ["enable_thinking": false],
-            summary: "Fits any Apple Silicon Mac"
+            chatTemplateArguments: ["enable_thinking": false]
         ),
         PolishModelOption(
             repoID: "mlx-community/Qwen3.5-9B-OptiQ-4bit",
@@ -80,8 +77,7 @@ package enum PolishModelCatalog {
             sizeOnDiskGB: 7.1,
             estimatedRAMGB: 7.5,
             samplingDefaults: nil,
-            chatTemplateArguments: ["enable_thinking": false],
-            summary: "Needs a 32 GB or larger Mac"
+            chatTemplateArguments: ["enable_thinking": false]
         ),
     ]
 
@@ -111,7 +107,11 @@ package struct PolishModelPickerEntry: Equatable, Identifiable, Sendable {
 package enum PolishModelPickerSupport {
     package static func entries(storedRepoID: String) -> [PolishModelPickerEntry] {
         var entries = PolishModelCatalog.options.map {
-            PolishModelPickerEntry(repoID: $0.repoID, label: $0.displayName, option: $0)
+            PolishModelPickerEntry(
+                repoID: $0.repoID,
+                label: "\($0.displayName) — \(ModelSizeLabel.gigabytes($0.sizeOnDiskGB))",
+                option: $0
+            )
         }
         if PolishModelCatalog.option(forRepoID: storedRepoID) == nil {
             entries.append(
@@ -123,17 +123,5 @@ package enum PolishModelPickerSupport {
             )
         }
         return entries
-    }
-
-    package static func helpText(
-        for entry: PolishModelPickerEntry,
-        isDownloaded: Bool
-    ) -> String {
-        let downloadState = isDownloaded ? "downloaded" : "downloads on first use"
-        guard let option = entry.option else {
-            return "Custom managed model. \(downloadState)."
-        }
-        return
-            "\(option.summary). \(option.sizeOnDiskGB.formatted(.number.precision(.fractionLength(1)))) GB, \(downloadState)"
     }
 }

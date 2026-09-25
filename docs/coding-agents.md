@@ -49,35 +49,35 @@ and the raw transcript stays one click away in the menu bar popover.
 
 By default, clipboard, terminal screen, and project context goes only to a
 polisher running on this Mac. To send enabled context sources to a configured
-non-local polishing endpoint, turn on **Non-local endpoints** in **Settings →
-Context**. Use it only with an endpoint you trust.
+non-local polishing endpoint, turn on **Send context to non-local polishing
+servers** in **Settings → Context**. Use it only with an endpoint you trust.
 
 ## Polish context: what each toggle sends
 
-Each **Settings → Context** row states its consequence
-in one line; this section is the full text behind those lines.
+Each **Settings → Context** toggle names what it sends; this section is the
+full text behind those names.
 
 The first four sources share one default: they run only while the polisher
-runs on this Mac (the bundled helper). **Non-local endpoints** is the single
-toggle that relaxes that.
+runs on this Mac (the bundled helper). **Send context to non-local polishing
+servers** is the single toggle that relaxes that.
 
-- **Repo vocabulary** — reads file names from the git repo in your terminal
+- **Send repo file names** — reads file names from the git repo in your terminal
   (one sandboxed `git ls-files`) so near-miss spellings resolve to real names.
-- **Clipboard** — sends an excerpt of your clipboard text to the polisher,
+- **Send clipboard excerpt** — sends an excerpt of your clipboard text to the polisher,
   sanitized and length-capped, used only as a spelling reference.
-- **Agent screen** — reads file and identifier names from your coding
+- **Send agent's terminal screen** — reads file and identifier names from your coding
   agent's terminal to fix spellings. When that terminal runs a joined Claude
   Code or opencode session, part of the text on screen also goes to the
   polisher, verbatim. Ghostty, iTerm2, Terminal.app, cmux, and herdr panes
   only; in cmux this needs the cmux join as well (see the next section).
-- **Agent session** — sends your uncommitted changes, the files the agent
+- **Send diff, recent files and last prompt** — sends your uncommitted changes, the files the agent
   recently touched, and the last request you sent that session. For a
   session on a remote host, only the session request and the short excerpts
   its hooks report go; no files are read from that host. Needs a joined
   Claude Code or opencode session in a supported terminal, a Claude Code
   Remote Control session in the focused browser tab, or a Claude Code session
   focused in Claude Desktop's Code tab.
-- **Non-local endpoints** — when on, the context enabled above also goes to
+- **Send context to non-local polishing servers** — when on, the context enabled above also goes to
   the polishing endpoint you configured. Enable it only for an endpoint you
   trust, such as a server on your own network.
 

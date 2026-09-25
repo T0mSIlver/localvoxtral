@@ -135,8 +135,7 @@ struct HistorySettingsPane: View {
                 }
             }
             SettingsFieldRow(
-                title: "Keep dictation audio",
-                help: "Stays on this Mac and is never sent anywhere. About 2 MB a minute.",
+                title: "Keep dictation audio on this Mac",
                 status: audioStatus
             ) {
                 Toggle("", isOn: audioBinding)

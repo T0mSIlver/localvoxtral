@@ -64,8 +64,8 @@ struct SettingsPage<Content: View>: View {
 struct SettingsGroup<Content: View>: View {
     let title: String
     /// When set, the group's header row carries ONE "Learn more" link to this
-    /// page (owner review, 2026-09-07): details a row's one-line help can no
-    /// longer carry live in the docs, not repeated under every toggle.
+    /// page (owner review, 2026-09-07): what a row's title cannot say lives in
+    /// the docs, never in a line under the row.
     var learnMoreURL: URL?
     @ViewBuilder var content: Content
 
@@ -188,15 +188,11 @@ struct SettingsAvailabilityCard: View {
     }
 }
 
-/// Label leading, control trailing, explanation on its own full-width line
-/// underneath — the macOS System Settings idiom.
+/// Label leading, control trailing — the macOS System Settings idiom.
 ///
 /// The label no longer sits in a fixed 128pt column: long labels used to wrap
-/// inside it while short ones left a gutter, and the explanation started at the
-/// column's edge, which made every card's text a ragged second column. The label
-/// now takes the leftover width (`layoutPriority(0)`, so the control keeps its
-/// intrinsic size) and the explanation is a row of its own, aligned to the
-/// label's leading edge.
+/// inside it while short ones left a gutter. The label now takes the leftover
+/// width (`layoutPriority(0)`, so the control keeps its intrinsic size).
 enum SettingsFieldRowLayout {
     /// Label leading, control trailing on the same line. The default.
     case inline
@@ -206,19 +202,11 @@ enum SettingsFieldRowLayout {
     case stacked
 }
 
+/// No subtitle slot, on purpose (owner ruling, 2026-09-25, #578): the title
+/// says what the row does. What it cannot say goes in the group's Learn more
+/// page; `status` and `footer` carry state only.
 struct SettingsFieldRow<Content: View, Footer: View>: View {
     let title: String
-    /// The secondary explanation. A parameter rather than a view inside
-    /// `content`: a row cannot pull a nested view out of its control column, and
-    /// the whole point is that this text is NOT in that column.
-    ///
-    /// This is the STATIC explanation of what the row does, ONE line at
-    /// `.callout` (owner review, 2026-09-07: readable size, secondary colour,
-    /// never a wall of text — the details live in the docs behind the group's
-    /// Learn more link). Anything that changes with the row's state — "Not
-    /// set.", a validation error, "Password saved." — belongs in `status` or
-    /// `footer:` instead.
-    var help: String?
     /// One-line dynamic status, rendered next to the label in the LEADING
     /// column so a row with buttons reads "label + status … [buttons]" on a
     /// single line instead of stacking them into a tall row.
@@ -244,7 +232,6 @@ struct SettingsFieldRow<Content: View, Footer: View>: View {
 
     init(
         title: String,
-        help: String? = nil,
         status: String? = nil,
         statusAccessibilityIdentifier: String? = nil,
         layout: SettingsFieldRowLayout = .inline,
@@ -253,7 +240,6 @@ struct SettingsFieldRow<Content: View, Footer: View>: View {
         @ViewBuilder footer: () -> Footer
     ) {
         self.title = title
-        self.help = help
         self.status = status
         self.statusAccessibilityIdentifier = statusAccessibilityIdentifier
         self.layout = layout
@@ -265,7 +251,6 @@ struct SettingsFieldRow<Content: View, Footer: View>: View {
 
     init(
         title: String,
-        help: String? = nil,
         status: String? = nil,
         statusAccessibilityIdentifier: String? = nil,
         layout: SettingsFieldRowLayout = .inline,
@@ -273,7 +258,6 @@ struct SettingsFieldRow<Content: View, Footer: View>: View {
         @ViewBuilder content: () -> Content
     ) where Footer == EmptyView {
         self.title = title
-        self.help = help
         self.status = status
         self.statusAccessibilityIdentifier = statusAccessibilityIdentifier
         self.layout = layout
@@ -293,16 +277,9 @@ struct SettingsFieldRow<Content: View, Footer: View>: View {
                     stackedRow
                 }
 
-                // Status first, explanation last: the footer reports what the
-                // control above it currently is, so it belongs next to it; the
-                // help text explains the row as a whole and closes it.
                 if hasFooter {
                     footer
                         .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                if let help {
-                    SettingsHelpText(help)
                 }
             }
         }
@@ -369,27 +346,6 @@ struct SettingsFieldRow<Content: View, Footer: View>: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-    }
-}
-
-struct SettingsHelpText: View {
-    let text: String
-
-    init(_ text: String) {
-        self.text = text
-    }
-
-    var body: some View {
-        // ONE line, at a readable size (owner review, 2026-09-07): `.callout`
-        // in secondary colour, truncating rather than wrapping, so no row can
-        // grow a wall of text under its control. What does not fit lives in
-        // the docs behind the group's Learn more link.
-        Text(text)
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

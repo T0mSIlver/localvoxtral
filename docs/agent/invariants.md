@@ -208,7 +208,7 @@ there is not.
   three-dictation bar is ever sent; a remembered term never outranks a live
   source (`.learned` is LAST in `PolishContextSource`, so a contested span
   abstains); terms decay at 90 days; and Text processing → Advanced →
-  Learned terms → Forget drops the file. Verification candidates are never
+  Terms learned from polishing → Forget drops the file. Verification candidates are never
   recorded — they are questions put to the model, not answers. A dictation
   whose project cannot be established teaches nothing at all, which is not
   the same as one with no project: the latter teaches the shared bucket,
