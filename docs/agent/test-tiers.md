@@ -108,7 +108,22 @@ UI, insertion, audio, backend-supervision, or test-only changes elsewhere.
 Either way, the PR's Proof section states one of the two: the lane's
 scoreboard, or a one-line justification for skipping. If the path filter
 misses a change that belongs above, add `[run-llm-eval]` AND extend the
-filter list in the same PR. The other direction has a list too: `EXEMPT` in
+filter list in the same PR.
+
+The filter matches by name, so it also catches changes that cannot alter what
+reaches the model: a test file or a Foundation-only type moved between targets
+(the #545 series), a rename with no content change. For those, put
+`[skip-llm-eval: <reason>]` in the PR body or head commit message, under the
+same run-creation rule as the opt-in marker, and the lane skips even though the
+path matched. Use it only when the change cannot affect the prompt, model pins
+or catalog, sampling, the polish request shape, the helper engines, or the eval
+corpus, scorer or harness; when in doubt, let the lane run. The reason is the
+Proof section's one-line justification, and the decide step echoes it as a
+"LLM eval lane WAIVED" warning on the run page. A bare `[skip-llm-eval]` or an
+empty reason waives nothing (the run page says why), and `[run-llm-eval]`
+beside it wins. The filter stays the default rather than an opt-in because it
+has caught files whose role in the prompt was not obvious from their names:
+`AppConfigStore` renders the polish prompt and joined the list late (#564). The other direction has a list too: `EXEMPT` in
 the same script names the `ClaudeContext/` files that install, configure or
 keep a tunnel open, so an enrollment or settings diff does not buy live 4B
 inference on the owner's Mac. A new file in that directory runs the lane until
