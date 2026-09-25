@@ -58,7 +58,10 @@ cat >"$BIN/open" <<'STUB'
 echo "open $*" >>"$EVENTS"
 case "$1" in
   -n|--env) ;;
-  *) echo 4242 >"$RUNNING" ;;
+  *)
+    echo 4242 >"$RUNNING"
+    env | grep -E '^(RUNNER_TRACKING_ID|LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN)=' >>"$EVENTS"
+    ;;
 esac
 exit 0
 STUB
@@ -88,7 +91,7 @@ run_drill() {
   rm -rf "$WORK/home"
   mkdir -p "$WORK/home"
   # The drill's own exit status is not under test here: every case ends red.
-  HOME="$WORK/home" PATH="$BIN:$PATH" LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN=1 \
+  HOME="$WORK/home" PATH="$BIN:$PATH" LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN=1 RUNNER_TRACKING_ID=github_job \
     UI_SMOKE_LAUNCH_TIMEOUT_SECONDS=1 bash "$ROOT_DIR/scripts/ui-smoke.sh" "$APP" >"$WORK/out" 2>&1 || true
 }
 
@@ -124,6 +127,11 @@ relaunch_line="$(line_of "open $OWNER_BUNDLE")"
 [ -n "$import_line" ] || fail "the owner's defaults were not restored"
 [ "$import_line" -lt "$relaunch_line" ] || fail "the owner's app was relaunched before its defaults were restored"
 grep -q "^open --env.*$OWNER_BUNDLE" "$EVENTS" && fail "the owner relaunch carried the CI-only env"
+# The runner kills every process that carries the job's tracking id when the
+# job ends; on 2026-09-25 that was the relaunched owner app, seven seconds
+# after the e2e check brought it back.
+grep -q "^RUNNER_TRACKING_ID=" "$EVENTS" && fail "the owner relaunch carried the runner's tracking id, so the job's end kills it"
+grep -q "^LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN=" "$EVENTS" && fail "the owner relaunch inherited the lane's keychain flag"
 [ -s "$RUNNING" ] || fail "the owner's app is not running after the drill"
 grep -q "Relaunched the owner's app" "$WORK/out" || fail "the relaunch is not reported in the drill output"
 echo "PASS: the owner's app is quit before defaults change and relaunched after they are restored"
