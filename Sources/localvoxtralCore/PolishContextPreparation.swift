@@ -18,13 +18,13 @@ import Foundation
 /// runs on `@MainActor`, so this must not run there — hence `prepared` is
 /// `nonisolated async`, which under this package's settings executes on the
 /// generic executor while remaining a structured child of the caller.
-struct PolishContextPreparation: Sendable, Equatable {
+package struct PolishContextPreparation: Sendable, Equatable {
     /// Grounding matched over the COMPLETE retained text — never the excerpt.
-    let grounding: RepoVocabularyMatcher.GroundingOutcome
+    package let grounding: RepoVocabularyMatcher.GroundingOutcome
     /// What actually renders into the prompt, within the granted budget.
-    let excerpt: String
+    package let excerpt: String
 
-    static let empty = PolishContextPreparation(grounding: .empty, excerpt: "")
+    package static let empty = PolishContextPreparation(grounding: .empty, excerpt: "")
 
     /// Prepares `text` off the main actor.
     ///
@@ -50,7 +50,7 @@ struct PolishContextPreparation: Sendable, Equatable {
     /// the wait is bounded — but on a hyphen-dense 2M-character paste (the
     /// residual noted on `PolishTokenGuard`'s filename recognizer) cancellation
     /// still waits out the sweep.
-    nonisolated static func prepared(
+    package nonisolated static func prepared(
         text: String,
         transcript: String,
         renderBudget: Int
@@ -65,7 +65,7 @@ struct PolishContextPreparation: Sendable, Equatable {
     /// The pure computation, synchronous and actor-agnostic. Exposed for tests;
     /// production callers should prefer `prepared`, which runs it off the main
     /// actor.
-    nonisolated static func prepare(
+    package nonisolated static func prepare(
         text: String,
         transcript: String,
         renderBudget: Int

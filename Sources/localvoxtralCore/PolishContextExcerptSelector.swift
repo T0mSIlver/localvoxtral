@@ -11,11 +11,11 @@ import Foundation
 /// Pure and deterministic: same lines + same transcript + same cap ⇒ same
 /// output, byte for byte. No I/O, no clock, no randomness, no dictionary
 /// iteration order in any decision.
-enum PolishContextExcerptSelector {
+package enum PolishContextExcerptSelector {
     /// Stands in for the lines dropped between two kept, non-adjacent lines, so
     /// the model cannot read a selection as contiguous text and infer a
     /// relationship (or a call order) that the source never had.
-    static let elisionMarker = "[…]"
+    package static let elisionMarker = "[…]"
 
     /// Elision markers are NOT capped by count, deliberately.
     ///
@@ -40,7 +40,7 @@ enum PolishContextExcerptSelector {
     ///
     /// Affordable because scoring a line is now a few linear scans, not nine
     /// `NSRegularExpression` passes — see `score(line:against:)`.
-    static let maxConsideredLines = 50_000
+    package static let maxConsideredLines = 50_000
 
     /// A line's score is dominated by the exact technical terms it shares with
     /// the transcript — those are the spellings this whole feature exists to
@@ -62,7 +62,7 @@ enum PolishContextExcerptSelector {
     /// recognizer entirely: the expensive extraction has happened once over the
     /// buffer, so a line only has to be checked for containment of a handful of
     /// known strings. Omit them and scoring degrades to word overlap.
-    static func select(
+    package static func select(
         text: String,
         transcript: String,
         characterCap: Int,
@@ -91,7 +91,7 @@ enum PolishContextExcerptSelector {
     /// ten relevant lines under it. With no transcript match anywhere, the
     /// fallback is deterministic head-of-source order — the old behavior,
     /// line-aligned.
-    static func select(
+    package static func select(
         lines: [String],
         transcript: String,
         characterCap: Int,
