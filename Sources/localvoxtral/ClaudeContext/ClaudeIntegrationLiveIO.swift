@@ -48,7 +48,7 @@ enum ClaudeIntegrationLiveIO {
             guard let baseAddress = raw.baseAddress else { return }
             var offset = 0
             while offset < raw.count {
-                let written = Darwin.write(
+                let written = LibC.write(
                     descriptor, baseAddress.advanced(by: offset), raw.count - offset
                 )
                 if written == -1, errno == EINTR { continue }

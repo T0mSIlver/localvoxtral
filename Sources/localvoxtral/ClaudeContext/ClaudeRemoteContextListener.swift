@@ -4,6 +4,8 @@ import Synchronization
 
 #if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
 #endif
 
 public struct ClaudeRemoteListenerLimits: Sendable, Equatable {
@@ -46,7 +48,7 @@ public struct ClaudeRemoteListenerLimits: Sendable, Equatable {
     public static let `default` = ClaudeRemoteListenerLimits()
 }
 
-#if canImport(Darwin)
+#if canImport(Darwin) || canImport(Glibc)
 
 /// Loopback HTTP ingest for REMOTE Claude Code sessions.
 ///
@@ -179,7 +181,7 @@ public final class ClaudeRemoteContextListener: Sendable {
             try state.withLock { state in
                 guard !state.isRunning else { throw StartFailure.alreadyRunning }
 
-            let fd = socket(AF_INET, SOCK_STREAM, 0)
+            let fd = socket(AF_INET, POSIXSocket.stream, 0)
             guard fd >= 0 else { throw StartFailure.socketCreationFailed(errno: errno) }
 
             // SO_REUSEADDR only, never SO_REUSEPORT: REUSEADDR lets us rebind a
@@ -190,7 +192,7 @@ public final class ClaudeRemoteContextListener: Sendable {
             setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
 
             var address = sockaddr_in()
-            address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            POSIXSocket.setLength(of: &address)
             address.sin_family = sa_family_t(AF_INET)
             address.sin_port = limits.port.bigEndian
             // INADDR_LOOPBACK, explicitly — never INADDR_ANY. The tunnel's local
@@ -223,7 +225,7 @@ public final class ClaudeRemoteContextListener: Sendable {
                 close(fd)
                 throw StartFailure.socketCreationFailed(errno: code)
             }
-            _ = fcntl(wakePipe[1], F_SETNOSIGPIPE, 1)
+            POSIXSocket.suppressSIGPIPE(onPipe: wakePipe[1])
             state.wakeWriteFD = wakePipe[1]
             let exitSignal = DispatchSemaphore(value: 0)
             state.loopExit = exitSignal
@@ -388,8 +390,7 @@ public final class ClaudeRemoteContextListener: Sendable {
     private func serve(connectionFD fd: Int32) {
         defer { close(fd) }
 
-        var noSigPipe: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+        POSIXSocket.suppressSIGPIPE(onSocket: fd)
         // Monotonic, not wall clock. See `init(uptimeNanos:)`.
         let deadline = uptimeNanos() &+ UInt64(limits.connectionTimeout * 1_000_000_000)
 
@@ -731,7 +732,7 @@ public final class ClaudeRemoteContextListener: Sendable {
             var offset = 0
             while offset < raw.count {
                 let written = retryingOnEINTRInt {
-                    send(fd, base.advanced(by: offset), raw.count - offset, 0)
+                    send(fd, base.advanced(by: offset), raw.count - offset, POSIXSocket.sendFlags)
                 }
                 if written <= 0 { return offset } // Peer gone: nothing to do.
                 offset += written
