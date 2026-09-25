@@ -786,11 +786,13 @@ jobs:
         # because the owner and parallel worktrees may run legitimate tests.
         run: ./scripts/ci/cleanup-stale-test-processes.sh "$GITHUB_WORKSPACE"
 
-      - name: Decide LLM eval lane (path filter + [run-llm-eval] marker)
+      - name: Decide LLM eval lane (path filter + run and skip markers)
         # CI must not pay ~8 min of 4B weight-loading + live inference on
         # every push: the polishd live-model integration step below runs only
         # when the diff touches LLM-relevant paths, or when the PR body /
         # head commit message contains the literal marker [run-llm-eval].
+        # A [skip-llm-eval: <reason>] marker waives a path match; the waiver
+        # is raised as a warning annotation carrying its reason.
         # The path list and the matching logic live in
         # scripts/ci/llm-lane-filter.sh (kept out of the workflow so it is
         # testable locally); the human-judgment rule is docs/agent/test-tiers.md
@@ -859,6 +861,12 @@ jobs:
           else
             echo "LLM eval lane: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
+          # A waiver, or a skip marker that did not take, is worth an
+          # annotation on the run page, not just a line in the step log.
+          case "$(sed -n 's/^skip_marker=//p' <<<"$DECISION")" in
+            waived) echo "::warning title=LLM eval lane WAIVED::$REASON" ;;
+            no-reason|overridden) echo "::notice title=LLM eval lane skip marker not applied::$REASON" ;;
+          esac
 
       - name: Decide speechd integration lane (path filter + [run-speechd-integration] marker)
         # Real speechd inference loads the multi-GB Voxtral model on the

@@ -107,7 +107,10 @@ and order it with blocked-by links, not prose.
   the catalog, sampling, the polish request shape, the helper engines, or the
   eval corpus, scorer or TTS→ASR→polish harness REQUIRE the matching lane
   plus one eval-e2e scoreboard on the final diff, or a one-line
-  justification for skipping.
+  justification for skipping. When the LLM filter matches a change that
+  touches none of those (a test file moved between targets, a rename with no
+  content change), waive the lane with `[skip-llm-eval: <that justification>]`
+  at run creation; without a reason it is ignored, and `[run-llm-eval]` wins.
   Changes to what the app sends herdr, what it believes herdr answered, or how
   its ssh forward opens REQUIRE `integration-herdr`. Details:
   `docs/agent/test-tiers.md`.
