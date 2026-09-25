@@ -57,7 +57,8 @@ and the vocabulary matching: `RepoVocabulary`, `RepoIndexing`,
 `PipeLineReader`, `OverlayStableLineWrapper`, `PolishContextExcerptSelector`,
 `PolishContextPreparation`, and the clipboard reader's rules
 (`PolishContextClipboardReader`; its pasteboard half stays in the app), and the model
-catalogs (`BackendCatalog`, `SpeechModelCatalog`, `PolishModelCatalog`).
+catalogs (`BackendCatalog`, `SpeechModelCatalog`, `PolishModelCatalog`), and the
+Claude session snapshot and its reducer (`ClaudeSessionState`).
 It builds and tests on Linux (`scripts/core-tests-linux.sh`); the app
 re-exports it.
 
