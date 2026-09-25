@@ -1697,39 +1697,6 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertTrue(payload.contains("--config 'port=28542'"))
     }
 
-    func testThePluginUpdatePlanAndConfirmationTestSeamsUseOneSource() async throws {
-        let registry = try makeRegistry()
-        let service = ClaudeRemoteEnrollmentService(
-            runner: { _ in .init(exitCode: 0, message: "ok") },
-            sshConfigFileSystem: RecordingSSHConfigFileSystem()
-        )
-        let model = makeModel(
-            registry: registry,
-            listener: StubListener(hosts: registry),
-            enrollmentService: service,
-            remoteForwardPort: 28542
-        )
-        model.enrollLabel = "buildhost"
-        model.enrollSSHAlias = "builder"
-        await model.enroll()
-        model.dismissPlan()
-        let hostID = try XCTUnwrap(model.hosts.first).id
-
-        model.requestPluginUpdate(hostID: hostID)
-        model.requestPluginUpdateRun()
-
-        let update = try XCTUnwrap(model.presentedPluginUpdate)
-        XCTAssertEqual(
-            try XCTUnwrap(model.enrollmentConfirmation).preview,
-            update.applicationText,
-            "the retained confirmation seam must use the generated plan"
-        )
-        XCTAssertEqual(
-            ClaudeIntegrationSettingsModel.updatePreview(for: update),
-            update.applicationText
-        )
-    }
-
     func testAHostWhoseBlockIsAlreadyCurrentIsNotRewritten() async throws {
         let registry = try makeRegistry()
         let filesystem = RecordingSSHConfigFileSystem()
@@ -1882,9 +1849,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertEqual(confirmation.action, .updateRemotePlugin(hostID: hostID))
         XCTAssertEqual(
             confirmation.preview,
-            ClaudeIntegrationSettingsModel.updatePreview(
-                for: try XCTUnwrap(model.presentedPluginUpdate)
-            ),
+            try XCTUnwrap(model.presentedPluginUpdate).applicationText,
             "the confirmation must repeat the exact mutations the row displays"
         )
         XCTAssertTrue(
@@ -2251,15 +2216,6 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertFalse(ClaudeIntegrationSettingsModel.pluginIsCurrent(reported: .version("1.9.0"), expected: expected))
         XCTAssertTrue(ClaudeIntegrationSettingsModel.pluginIsCurrent(reported: .version(expected), expected: expected))
         XCTAssertTrue(ClaudeIntegrationSettingsModel.pluginIsCurrent(reported: .version("99.0.0"), expected: expected))
-    }
-
-    func testVersionComparisonIsNumericPerComponent() {
-        // The comparison itself lives in ClaudeRemotePluginVersionTests now
-        // (one implementation, shared with the registry's monotone record);
-        // the four-case verdict below is this model's own logic and stays.
-        let expected = ClaudeRemoteEnrollmentService.remotePluginVersion
-        XCTAssertTrue(ClaudeRemotePluginVersionCodec.isVersion("1.9.0", olderThan: expected))
-        XCTAssertFalse(ClaudeRemotePluginVersionCodec.isVersion(expected, olderThan: expected))
     }
 
     func testRefreshDerivesPluginNeedsUpdateFromTheRegistrysReports() async throws {

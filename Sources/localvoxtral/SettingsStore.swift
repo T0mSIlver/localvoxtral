@@ -89,6 +89,7 @@ final class SettingsStore {
         static let termSuggestionDictationsSinceRun = "settings.term_suggestion_dictations_since_run"
         static let termSuggestionRetryAt = "settings.term_suggestion_retry_at"
         static let dictationHistoryRetention = "settings.dictation_history_retention"
+        static let dictationAudioEnabled = "settings.dictation_audio_enabled"
         static let clipboardPayloadMacroEnabled = "settings.clipboard_payload_macro_enabled"
         static let terminalScreenContextEnabled = "settings.terminal_screen_context_enabled"
         static let repoVocabularyEnabled = "settings.repo_vocabulary_enabled"
@@ -134,6 +135,10 @@ final class SettingsStore {
         static let livePasteShortcutKeyCode = "settings.live_paste_shortcut_key_code"
         static let livePasteShortcutModifiers = "settings.live_paste_shortcut_carbon_modifiers"
         static let livePasteShortcutEnabled = "settings.live_paste_shortcut_enabled"
+        static let copyLastDictationShortcutKeyCode = "settings.copy_last_dictation_shortcut_key_code"
+        static let copyLastDictationShortcutModifiers =
+            "settings.copy_last_dictation_shortcut_carbon_modifiers"
+        static let copyLastDictationShortcutEnabled = "settings.copy_last_dictation_shortcut_enabled"
     }
 
     let defaults: UserDefaults
@@ -477,6 +482,12 @@ final class SettingsStore {
         }
     }
 
+    /// Keep each saved dictation's audio on this Mac, for the replay eval.
+    /// Off by default: audio is the most sensitive thing the app could keep.
+    var dictationAudioEnabled: Bool {
+        didSet { defaults.set(dictationAudioEnabled, forKey: Keys.dictationAudioEnabled) }
+    }
+
     func dismissTermSuggestion(_ term: String) {
         let key = SpeakerTermSuggestions.key(term)
         guard !key.isEmpty,
@@ -786,6 +797,26 @@ final class SettingsStore {
         didSet { defaults.set(livePasteShortcutEnabled, forKey: Keys.livePasteShortcutEnabled) }
     }
 
+    var copyLastDictationShortcutEnabled: Bool {
+        didSet {
+            defaults.set(copyLastDictationShortcutEnabled, forKey: Keys.copyLastDictationShortcutEnabled)
+        }
+    }
+
+    var copyLastDictationShortcutKeyCode: UInt32 {
+        didSet {
+            defaults.set(copyLastDictationShortcutKeyCode, forKey: Keys.copyLastDictationShortcutKeyCode)
+        }
+    }
+
+    var copyLastDictationShortcutCarbonModifierFlags: UInt32 {
+        didSet {
+            defaults.set(
+                copyLastDictationShortcutCarbonModifierFlags,
+                forKey: Keys.copyLastDictationShortcutModifiers)
+        }
+    }
+
     var livePasteShortcutKeyCode: UInt32 {
         didSet { defaults.set(livePasteShortcutKeyCode, forKey: Keys.livePasteShortcutKeyCode) }
     }
@@ -1019,6 +1050,8 @@ final class SettingsStore {
         dictationHistoryRetention =
             defaults.string(forKey: Keys.dictationHistoryRetention)
             .flatMap(DictationHistoryRetention.init(rawValue:)) ?? .forever
+        dictationAudioEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.dictationAudioEnabled, fallback: false)
         termSuggestionRetryAt = max(0, defaults.integer(forKey: Keys.termSuggestionRetryAt))
         termSuggestionDictationsSinceRun = max(
             0, defaults.integer(forKey: Keys.termSuggestionDictationsSinceRun))
@@ -1133,6 +1166,14 @@ final class SettingsStore {
             livePasteShortcutCarbonModifierFlags = 0
             livePasteShortcutEnabled = false
         }
+
+        // Off until the user records one.
+        copyLastDictationShortcutKeyCode =
+            (defaults.object(forKey: Keys.copyLastDictationShortcutKeyCode) as? NSNumber)?.uint32Value ?? 0
+        copyLastDictationShortcutCarbonModifierFlags =
+            (defaults.object(forKey: Keys.copyLastDictationShortcutModifiers) as? NSNumber)?.uint32Value ?? 0
+        copyLastDictationShortcutEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.copyLastDictationShortcutEnabled, fallback: false)
 
         if needsOverlayMigrationPersist {
             defaults.set(overlayBufferShortcutKeyCode, forKey: Keys.overlayBufferShortcutKeyCode)

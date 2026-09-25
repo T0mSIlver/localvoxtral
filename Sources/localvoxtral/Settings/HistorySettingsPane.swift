@@ -12,6 +12,9 @@ struct HistorySettingsPane: View {
     /// A shorter retention waiting for the user's yes, with what it deletes.
     @State private var pendingRetention: PendingRetention?
     @State private var isConfirmingDeleteAll = false
+    /// Recordings on disk, and the yes that turning audio off waits for.
+    @State private var audioSummary: (recordings: Int, bytes: Int) = (0, 0)
+    @State private var isConfirmingAudioOff = false
 
     /// Bumped by every pick in the retention menu. A count that comes back
     /// for an older pick is dropped: two quick picks must end on the second.
@@ -66,6 +69,9 @@ struct HistorySettingsPane: View {
                 guard !Task.isCancelled else { return }
             }
             await model.reload()
+        }
+        .task(id: viewModel.dictationHistoryRevision) {
+            audioSummary = await viewModel.sessionStore?.audioSummary() ?? (0, 0)
         }
     }
 
@@ -128,6 +134,27 @@ struct HistorySettingsPane: View {
                     .accessibilityIdentifier("history.storage.deleteAll")
                 }
             }
+            SettingsFieldRow(
+                title: "Keep dictation audio",
+                help: "Stays on this Mac and is never sent anywhere. About 2 MB a minute.",
+                status: audioStatus
+            ) {
+                Toggle("", isOn: audioBinding)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .disabled(!settings.dictationHistoryRetention.savesDictations)
+                    .accessibilityIdentifier("history.storage.audio")
+            }
+        }
+        .confirmationDialog(
+            audioSummary.recordings == 1
+                ? "Delete 1 recording?"
+                : "Delete \(audioSummary.recordings.formatted()) recordings?",
+            isPresented: $isConfirmingAudioOff
+        ) {
+            Button("Delete Recordings", role: .destructive) { turnAudioOff() }
+        } message: {
+            Text("The dictations stay. This can't be undone.")
         }
         .confirmationDialog(
             "Delete all \(model.totalCount.formatted()) dictations?",
@@ -157,6 +184,44 @@ struct HistorySettingsPane: View {
                     ? "This can't be undone."
                     : "New dictations won't be saved, and term suggestions stop. This can't be undone."
             )
+        }
+    }
+
+    /// Nil when there is nothing kept; history off disables the switch and
+    /// the retention picker already says why.
+    private var audioStatus: String? {
+        guard audioSummary.recordings > 0 else { return nil }
+        let size = ByteCountFormatter.string(
+            fromByteCount: Int64(audioSummary.bytes), countStyle: .file)
+        return audioSummary.recordings == 1
+            ? "1 recording, \(size)."
+            : "\(audioSummary.recordings.formatted()) recordings, \(size)."
+    }
+
+    private var audioBinding: Binding<Bool> {
+        Binding(
+            get: { settings.dictationAudioEnabled && settings.dictationHistoryRetention.savesDictations },
+            set: { keep in
+                if keep {
+                    settings.dictationAudioEnabled = true
+                } else if audioSummary.recordings > 0 {
+                    isConfirmingAudioOff = true
+                } else {
+                    turnAudioOff()
+                }
+            }
+        )
+    }
+
+    private func turnAudioOff() {
+        settings.dictationAudioEnabled = false
+        // A dictation in progress keeps nothing either, even if the switch
+        // goes back on before it stops.
+        viewModel.session.audio.sessionRecording.begin(enabled: false)
+        let deleting = viewModel.sessionStore?.deleteAllAudio()
+        Task {
+            await deleting?.value
+            audioSummary = await viewModel.sessionStore?.audioSummary() ?? (0, 0)
         }
     }
 

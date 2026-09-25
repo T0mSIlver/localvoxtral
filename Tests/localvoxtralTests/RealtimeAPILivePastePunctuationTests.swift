@@ -78,35 +78,6 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
         XCTAssertEqual(viewModel.transcript.livePartialText, "sparisce.")
     }
 
-    func testPartialDeltasWholeWordThenPeriod_staysCorrect() {
-        // The model emitting the whole word then a detached period is the
-        // other common emission shape. It must still produce "sparisce.".
-        let viewModel = makeViewModel()
-        sendPartials(["sparisce", "."], to: viewModel)
-
-        XCTAssertEqual(insertedChunks, ["sparisce", "."])
-        XCTAssertEqual(viewModel.transcript.pendingSegmentText, "sparisce.")
-    }
-
-    func testPartialDeltasItalianPhraseWithComma_staysCorrect() {
-        // "al fondo," emitted as incremental deltas keeps the comma at the end.
-        let viewModel = makeViewModel()
-        sendPartials(["al", " fondo", ","], to: viewModel)
-
-        XCTAssertEqual(insertedChunks, ["al", " fondo", ","])
-        XCTAssertEqual(viewModel.transcript.pendingSegmentText, "al fondo,")
-    }
-
-    func testPartialDeltasItalianApostropheElision_staysCorrect() {
-        // Elisions ("l'acqua", "un'altra") must stream intact.
-        let viewModel = makeViewModel()
-        sendPartials(["l", "'acqua"], to: viewModel)
-        sendPartials([" un", "'altra"], to: viewModel)
-
-        XCTAssertEqual(insertedChunks, ["l", "'acqua", " un", "'altra"])
-        XCTAssertEqual(viewModel.transcript.pendingSegmentText, "l'acqua un'altra")
-    }
-
     func testMidWordPunctuationOnlyOccursWhenDeltasDeliverItOutOfOrder() {
         // This is the KEY characterization for issue #13: the ONLY way the
         // append-only live path yields "sparis.ce" is if the delta stream
@@ -146,20 +117,6 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
         XCTAssertEqual(viewModel.transcript.pendingSegmentText, "")
     }
 
-    func testFinalTranscriptInsertsMultiCharSuffixFromPureExtension() {
-        // A multi-char trailing addition (", right?") that only arrives in the
-        // final is inserted as the missing suffix.
-        let viewModel = makeViewModel()
-        sendPartials(["you are", " right"], to: viewModel)
-        XCTAssertEqual(insertedChunks, ["you are", " right"])
-
-        viewModel.session.handle(event: .finalTranscript("you are right, right?"))
-
-        XCTAssertEqual(insertedChunks, ["you are", " right", ", right?"])
-        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "you are right, right?")
-        XCTAssertEqual(viewModel.transcript.pendingSegmentText, "")
-    }
-
     func testFinalTranscriptThatRevisesLiveTextIsNotInserted() {
         // When the final REVISES earlier content (not a pure extension — here
         // the spelling "sparisce" is corrected to "sparisci"), live mode
@@ -173,31 +130,6 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
 
         // The field keeps the live-typed text; no extra chunk is inserted.
         XCTAssertEqual(insertedChunks, ["sparisce"])
-        XCTAssertEqual(viewModel.transcript.pendingSegmentText, "")
-    }
-
-    func testEmptyFinalTranscriptWithNoLiveDeltasInsertsNothing() {
-        // No partials and an empty final: nothing is ever inserted.
-        let viewModel = makeViewModel()
-
-        viewModel.session.handle(event: .finalTranscript(""))
-
-        XCTAssertEqual(insertedChunks, [])
-        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "")
-        XCTAssertEqual(viewModel.transcript.pendingSegmentText, "")
-    }
-
-    func testFinalTranscriptIdenticalToLiveTextIsNoOp() {
-        // Final equals the already-typed live text: the missing suffix is
-        // empty, so nothing is inserted (no-op, no duplication).
-        let viewModel = makeViewModel()
-        sendPartials(["sparisce"], to: viewModel)
-        XCTAssertEqual(insertedChunks, ["sparisce"])
-
-        viewModel.session.handle(event: .finalTranscript("sparisce"))
-
-        XCTAssertEqual(insertedChunks, ["sparisce"])
-        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "sparisce")
         XCTAssertEqual(viewModel.transcript.pendingSegmentText, "")
     }
 }

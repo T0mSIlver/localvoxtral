@@ -13,6 +13,7 @@
 | 1 | `MistralRealtimeIntegrationTests`: the realtime client vs the LIVE hosted Mistral transcription API — handshake, synthetic spoken audio through the production frames, word accuracy, delta/done parity, and the 401 rejection path | NEVER in CI (the runner holds no Mistral key and the lane bills per minute of audio); by hand from the dev box via `MISTRAL_API_KEY=... ./scripts/remote-build.sh integration-mistral` | ~1 min + a few cents |
 | 2 | `ui-smoke.yml`, two checks in one lane. The AX smoke drill (status item, settings tabs, lazy managed-backend launch invariant), then `scripts/e2e-dictation.sh`: the packaged dogfood app dictates from a WAV in place of the microphone into a throwaway target window, once per scenario file in `scripts/e2e/scenarios/` (Live Auto-Paste, Overlay Buffer), and the inserted text is scored against the spoken phrase. The only check that launches the packaged app AND dictates; polishing is off and `MicrophoneCaptureService` is bypassed. Exit 3 = the Mac could not run it (locked, no STT server, no Accessibility grant): green with a warning on a schedule, red on a dispatch or label | evening lock-aware slots (18:00/19:30/21:00 UTC; `ui-smoke-guard.sh` skips green when the Mac is on battery, the screen is locked, or a slot's drill already ran and passed that day — the drill needs an unlocked GUI session) + manual on the self-hosted GUI runner | — |
 | 2 | `AgentDictationE2EEvalTests` (`eval-e2e.yml`): wide agent-dictation eval — human WAVs or TTS(`say`) → live speechd ASR → bundled polishd through the production stop-commit path, scored against `EvalCorpus/agent-dictation/` (7 migrated required cases asserted; the rest XFAIL; WER informational; raw-model pre-safety diagnostic column) | nightly (skips green when the Mac is on battery — `ac-power-guard.sh`, owner rule 2026-07-24: scheduled lanes never run unplugged; manual dispatch always runs) + manual, NEVER per-PR (owner decision 2026-07-11); locally via `remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]` (run `package` first) | many minutes (live ASR/4B polish over ~160 cases; TTS WAVs cached on the host) |
+| 2 | `TermRecallEvalTests`: the speech engine alone on the owner's technical terms — `say` or human WAVs → one live speech test service, scored by `TermRecallScorer` for term recall, false insertions of listed terms and non-term WER, English and French apart; also scores a file of hypotheses and pairs two runs. PRIVATE cases (`EvalCorpus/term-recall/README.md`) | by hand only, never in CI (the cases never leave the owner's machines): `remote-build.sh eval-term-recall [--asr <name>]`. Required proof for engine term biasing (#316, #521) and a second pass on stop (#524) | 260 cases: ~10 min on Nemotron, ~35 min on Voxtral (measured 2026-09-25; TTS WAVs cached on the host) |
 | 2 | `release.yml` NIGHTLY channel: the whole release pipeline (unit suite, live STT integration, packaging, launch smoke) against `main`, published as a `vX.Y.Z-nightly.YYYYMMDD` prerelease that never touches `/releases/latest`; nightlies beyond the newest 7 are pruned | cron 03:15 UTC + `./scripts/release.sh nightly`; a scheduled run skips green on battery (`ac-power-guard.sh`) and when `main` is already the newest nightly or stable tag. To exercise the pipeline without releasing anything: `./scripts/release.sh rehearse [target] [ref]` (every gate, artifacts on the run, no tag, any ref). That rehearsal is the proof a change to release.yml carries | ~10-20 min |
 
 Tier 1 details: the suite is env-gated (`VLLM_REALTIME_TEST_ENABLE=1`) and
@@ -118,7 +119,7 @@ when a matching change (or the marker) triggers it.
 
 ## Which runner a lane lands on
 
-`ci.yml` is two parallel jobs, and which one a lane is in is a statement about
+`ci.yml` is three parallel jobs, and which one a lane is in is a statement about
 what it needs, not about cost:
 
 - **`build-test`, GitHub-hosted `macos-latest`, every event and every
@@ -126,6 +127,9 @@ what it needs, not about cost:
   Anything that needs only a macOS toolchain: the pure-shell gate suites, the installer test, format
   lint, the unit suite, coverage. A fork PR gets ONLY this job, so it also
   packages/uploads/smokes an ad-hoc-signed bundle there.
+- **`linux`, GitHub-hosted Ubuntu, every event and every contributor** —
+  not a required check yet. Every `scripts/ci/test-*.sh` suite, by glob, and
+  the Linux-buildable Swift targets through `scripts/core-tests-linux.sh`.
 - **`mac-lanes`, the self-hosted Mac, same-repo PRs that are NOT drafts +
   pushes + dispatches** — a draft gets `build-test` only, and marking it ready
   (`gh pr ready <n>`) starts the run. The literal `[mac-lanes]` in a draft's PR
@@ -207,25 +211,49 @@ avoidable run costs far more than its own duration.
 and puts text into another app's window. Run it for any change to the session
 path between the capture callback and the focused app: `DictationViewModel`
 session start and stop, the realtime clients, transcript merging, text
-insertion, the overlay commit. A refactor of those files passes it before and
-after.
+insertion, the overlay commit.
 
 No agent account can run it directly, since the build gate has no GUI session
-and the UI gate reaches only the app under test. The runner can:
+and the UI gate reaches only the app under test. The runner can, and each run
+holds it for about ten minutes, takes the owner's keyboard and queues every
+other agent's `mac-lanes` behind it. So it runs once per PR, and only through
+the wrapper, which refuses when the run is not justified:
 
 ```bash
-gh run list --workflow ui-smoke.yml --branch <branch>   # nothing queued already?
-gh workflow run "UI Smoke" --ref <branch>
+./scripts/ui-smoke-dispatch.sh --dry-run <branch>   # does this diff need it?
+./scripts/ui-smoke-dispatch.sh <branch>
+gh run list --workflow ui-smoke.yml --branch <branch> -L 1
 ./scripts/watch-checks.sh --run <run-id>
 gh run view <run-id> --log | grep -E "spoken:|inserted:|PASS:|FAIL:|NOT RUN:"
 ```
 
-On a PR, the `needs-ui-smoke` label does the same. Paste the `spoken:` /
-`inserted:` / `PASS:` lines in the Proof section. The run takes the owner's
-keyboard for about a minute and says so out loud first, so dispatch it once per
-change, not once per commit. Exit 3 (`NOT RUN:`) means the Mac was locked, the
-STT test service was down or the app had no Accessibility grant, and nothing
-was measured.
+It refuses when:
+
+- the diff against main touches no session-path file. The list is
+  `scripts/ci/e2e-dictation-filter.sh`; the polish path, the overlay's look,
+  settings and docs are off it. The PR body quotes the `path:` line either
+  way, as it does for the live lanes.
+- `build-test` is not green on the pushed head. Dispatch after the review
+  fixes, on the final diff, never per commit.
+- a UI Smoke run on the branch is queued or running, or started less than an
+  hour ago.
+- a run already ran on this head commit, whatever it concluded. `NOT RUN:`
+  (exit 3: the Mac was locked, the STT test service was down or the app had
+  no Accessibility grant) and a lost keyboard focus measure the Mac, not the
+  change. Put the line in the Proof section and ask the owner; don't
+  redispatch. A later commit may run again after the hour; take that run only
+  when the commit changed session-path code since the last one.
+
+`--override "<why>"` skips all but the queued-run refusal, for a rerun the
+owner asked for; quote the reason in the PR. The `needs-ui-smoke` label
+dispatches without these checks, so it is the owner's, not an agent's.
+
+A stack of PRs gets one run, from its top branch, before its lowest layer
+merges: the top's diff against main holds every layer. A refactor that moves
+session-path code still needs that one run; it does not need one per step.
+The evening runs on main (18:00 to 21:00 UTC) cover what no PR claimed.
+
+Paste the `spoken:` / `inserted:` / `PASS:` lines in the Proof section.
 
 A new scenario is a file in `scripts/e2e/scenarios/` (`mode`, `phrase`,
 `min_word_accuracy`), not a new script. Polishing is off in every scenario so
@@ -451,3 +479,31 @@ can occasionally splice a status line into the sentinel-delimited JSONL report;
 the offline tools recover known XCTest diagnostics and warn only if an unknown
 corruption still forces a record to be skipped. Note any resulting denominator
 rather than silently treating it as a model failure.
+
+## Replaying stored dictations
+
+Whether localvoxtral learns a user is measured on that user's own recordings,
+run twice on identical input. With **Keep dictation audio** on (Settings →
+History), each saved dictation keeps its WAV. On the Mac that dictated, as
+that user, `./scripts/export-dictation-replay.sh <dir>` copies the history
+store, the recordings, the learned terms and Names and terms into a set.
+Copy it to the gitignored `EvalRecordings/replay/<set>/` of a checkout. The run
+below rsyncs the checkout, set included, to the build host, so the
+dictations' text and audio land there too. Then:
+
+```bash
+./scripts/remote-build.sh package
+./scripts/remote-build.sh eval-e2e --replay EvalRecordings/replay/<set>
+```
+
+`AgentDictationE2EEvalTests.testReplayStoredDictations` transcribes each
+Overlay Buffer dictation once on the live speech service, then polishes the
+transcript through the production stop-commit path twice: **day 0** with
+Names and terms only, **today** with every confirmed learned term added. It
+scores the transcript and both arms against the text the dictation inserted
+at the time: word accuracy, and recall of the terms that text spells. That
+text is what polishing produced then, not a checked reference, so a gain
+shows as today moving closer to it than day 0 on the same audio.
+
+The log prints numbers only (`replay:` lines); paste those, never
+transcripts. Delete the set from the checkout and the Mac when done.

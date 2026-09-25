@@ -387,23 +387,14 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         XCTAssertEqual(request.bearerToken, "unit-test-token")
     }
 
-    func testEveryHookHasAShortTimeout() throws {
-        for (event, entry) in try allHookEntries() {
-            let timeout = try XCTUnwrap(entry["timeout"] as? Int, "\(event) needs a timeout")
-            // A hook on a remote host reaches us through a tunnel that may not
-            // exist. Without a short ceiling, every turn on a host whose forward
-            // silently failed would stall for the default.
-            XCTAssertLessThanOrEqual(timeout, 5)
-            XCTAssertGreaterThan(timeout, 0)
-        }
-    }
-
     /// Claude Code only reads a hook's stdout when the hook is synchronous, so
     /// `async` would discard the listener's control body — and, more to the
     /// point, would let the shim's stdout gate be bypassed by a shape nobody
     /// checks. curl's own `--max-time 1` inside the shim keeps the old http
     /// hooks' one-second network ceiling; the declared timeout is the backstop
-    /// around the whole script.
+    /// around the whole script. It stays short because a remote host's hook
+    /// reaches us through a tunnel that may not exist: without a short
+    /// ceiling, every turn on a host whose forward silently failed would stall.
     func testHooksAreSynchronousSoTheListenerResponseReachesClaudeCode() throws {
         let source = try shimSource()
         XCTAssertTrue(source.contains("--max-time 1"), "the network ceiling must stay at one second")

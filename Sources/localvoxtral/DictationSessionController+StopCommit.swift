@@ -31,6 +31,7 @@ extension DictationSessionController {
 
         // Cancelled overlay — dismiss immediately, no commit
         if shouldCommitOverlay, wasCancelled {
+            _ = audio.sessionRecording.finish()
             overlayBufferCoordinator.reset()
             completeStoppedSessionCleanup(
                 sessionMode: sessionMode,
@@ -55,6 +56,9 @@ extension DictationSessionController {
         let model: String
         let outputMode: String
         let targetAppBundleID: String?
+        /// Taken at stop, before a polish that can outlast the next session's
+        /// start.
+        let audio: Data?
     }
 
     /// An Overlay Buffer session that was not cancelled: polished and
@@ -92,6 +96,7 @@ extension DictationSessionController {
         let capturedModel = sessionModelName ?? settings.effectiveModelName
         let capturedOutputMode = sessionMode.rawValue
         let capturedTargetBundleID = resolveTargetAppBundleID()
+        let capturedAudio = audio.sessionRecording.finish()
         if let polishingConfig = preparation.polishingConfig {
             let polishProfile = StopCommitCoordinator.polishProfile(
                 forTargetBundleID: capturedTargetBundleID,
@@ -119,6 +124,22 @@ extension DictationSessionController {
                 pasteboardReader: dependencies.pasteboardReader
             )
 
+            saveInterruptedPolishCommit = { [weak self] in
+                self?.saveSessionRecord(
+                    startedAt: capturedSessionStartedAt,
+                    rawText: originalText,
+                    polishedText: workingText != originalText ? workingText : nil,
+                    polishingDuration: nil,
+                    provider: capturedProvider,
+                    model: capturedModel,
+                    outputMode: capturedOutputMode,
+                    targetAppBundleID: capturedTargetBundleID,
+                    status: .sttCompleted,
+                    commitSucceeded: false,
+                    polishContextSummary: payloadProvenanceSummary,
+                    clipboardPayload: clipboardPayload
+                )
+            }
             polishAndCommitTask = Task { @MainActor [weak self] in
                 guard let self else { return }
                 await self.polishAndCommitOverlayBuffer(
@@ -132,7 +153,8 @@ extension DictationSessionController {
                         provider: capturedProvider,
                         model: capturedModel,
                         outputMode: capturedOutputMode,
-                        targetAppBundleID: capturedTargetBundleID
+                        targetAppBundleID: capturedTargetBundleID,
+                        audio: capturedAudio
                     ),
                     polishProfile: capturedPolishProfile,
                     spokenSendPID: spokenSendPID
@@ -175,7 +197,9 @@ extension DictationSessionController {
             targetAppBundleID: capturedTargetBundleID,
             status: llmConfigurationFailure == nil ? .sttCompleted : .llmFailed,
             commitSucceeded: overlayCommit.succeeded,
-            polishContextSummary: payloadProvenanceSummary
+            polishContextSummary: payloadProvenanceSummary,
+            clipboardPayload: clipboardPayload,
+            audio: capturedAudio
         )
 
         if let llmConfigurationFailure {
@@ -265,6 +289,8 @@ extension DictationSessionController {
         }
 
         guard !Task.isCancelled else { return }
+        // From here the task commits and saves the dictation itself.
+        self.saveInterruptedPolishCommit = nil
 
         let insertedText = self.transcript.currentDictationEventText
         let overlayCommit = StopCommitCoordinator.commit(
@@ -309,7 +335,9 @@ extension DictationSessionController {
                     repoVocabularyCount: assembly.repoVocabularyCount,
                     clipboardVocabularyCount: assembly.clipboardVocabularyCount
                 )
-            )
+            ),
+            clipboardPayload: preparation.clipboardPayload,
+            audio: record.audio
         )
 
         #if LOCALVOXTRAL_DOGFOOD
@@ -398,6 +426,7 @@ extension DictationSessionController {
         let capturedProvider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
         let capturedModel = sessionModelName ?? settings.effectiveModelName
         let capturedOutputMode = sessionMode.rawValue
+        let capturedAudio = audio.sessionRecording.finish()
         textInsertion.flushFinalLiveReplacementCorrections()
         // Read before the cleanup below discards the join.
         if liveDictationCanTeachACorrection {
@@ -419,7 +448,8 @@ extension DictationSessionController {
             outputMode: capturedOutputMode,
             targetAppBundleID: nil,
             status: .sttCompleted,
-            commitSucceeded: true
+            commitSucceeded: true,
+            audio: capturedAudio
         )
     }
 
@@ -470,6 +500,7 @@ extension DictationSessionController {
         isCompletingStoppedSession = false
         realtimeFinalizationLastActivityAt = nil
         polishAndCommitTask = nil
+        saveInterruptedPolishCommit = nil
         liveSpokenSendSegmentMode = .undecided
         // Every stop funnels through here. The commit path has already
         // consumed the capture by now (it reconciles synchronously, before
@@ -575,7 +606,9 @@ extension DictationSessionController {
         status: DictationSessionStatus,
         commitSucceeded: Bool,
         polishProfile: String? = nil,
-        polishContextSummary: String? = nil
+        polishContextSummary: String? = nil,
+        clipboardPayload: String? = nil,
+        audio: Data? = nil
     ) {
         let trimmedRawText = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedRawText.isEmpty else {
@@ -600,6 +633,17 @@ extension DictationSessionController {
         )
         dependencies.onSessionRecord?(record)
         let retention = settings.dictationHistoryRetention
+        // The record holds the clipboard placeholder; the copy the user takes
+        // gets the text as it was inserted.
+        let entry = DictationHistoryEntry(record)
+        rememberLastDictation(
+            clipboardPayload == nil
+                ? entry
+                : entry.replacingPolishedText(entry.polishedText.map {
+                    StopCommitCoordinator.substitutingPayload($0, payload: clipboardPayload)
+                }),
+            isInHistory: retention.savesDictations && sessionStore != nil
+        )
         guard retention.savesDictations else {
             Log.persistence.debug("Dictation history is off: not saving this dictation")
             // Turning history off deleted what was there. If that write
@@ -607,7 +651,9 @@ extension DictationSessionController {
             applyDictationHistoryRetention(now: record.finishedAt)
             return
         }
-        sessionStore?.save(record)
+        // Checked again here: the setting was latched at start, and turning
+        // it off since has deleted the folder this would write into.
+        sessionStore?.save(record, audio: settings.dictationAudioEnabled ? audio : nil)
         if let cutoff = retention.cutoff(now: record.finishedAt) {
             sessionStore?.trim(olderThan: cutoff)
         }

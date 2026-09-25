@@ -91,7 +91,7 @@ final class RealtimeReconnectTests: XCTestCase {
             "the audio spoken into the gap waits for the restarted send loop to replay it"
         )
         XCTAssertEqual(
-            viewModel.transcript.currentDictationEventText, "hello\nworld",
+            viewModel.transcript.currentDictationEventText, "hello world",
             "the transcript must carry across the gap, dangling partial included"
         )
         XCTAssertTrue(viewModel.transcript.pendingSegmentText.isEmpty)
@@ -151,7 +151,7 @@ final class RealtimeReconnectTests: XCTestCase {
         await viewModel.session.reconnectTask?.value
 
         XCTAssertEqual(insertedChunks, ["hello", " world"], "the reconnect itself types nothing")
-        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "hello\nworld")
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "hello world")
         XCTAssertTrue(viewModel.transcript.pendingSegmentText.isEmpty)
         XCTAssertTrue(viewModel.transcript.livePartialText.isEmpty)
 
@@ -161,7 +161,7 @@ final class RealtimeReconnectTests: XCTestCase {
         viewModel.session.handle(event: .finalTranscript(" again"))
 
         XCTAssertEqual(insertedChunks, ["hello", " world", " again"])
-        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "hello\nworld\nagain")
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "hello world again")
     }
 
     func testAttemptsRetryUntilOneConnects() async {
@@ -281,6 +281,30 @@ final class RealtimeReconnectTests: XCTestCase {
             EscapeCancelHandler.stopCallCount, escapeStopsBefore,
             "the exhaustion teardown must disarm the Escape hotkey like every other teardown"
         )
+    }
+
+    /// A socket that never comes back ends the dictation, and what it had
+    /// transcribed, the partial in flight included, reaches History and
+    /// "Copy last dictation" (#526).
+    func testAnExhaustedReconnectKeepsWhatWasTranscribed() async {
+        let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
+        var records: [DictationSessionRecord] = []
+        viewModel.dependencies.onSessionRecord = { records.append($0) }
+        viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in
+            guard let viewModel, client.connectCount > 0 else { return }
+            viewModel.session.handle(event: .error("WebSocket failed: refused"))
+        }
+        viewModel.session.handle(event: .finalTranscript("the first half "))
+        viewModel.session.handle(event: .partialTranscript("and the"))
+
+        viewModel.session.handle(event: .disconnected)
+        await viewModel.session.reconnectTask?.value
+
+        XCTAssertFalse(viewModel.isDictating)
+        XCTAssertEqual(records.count, 1)
+        let copied = viewModel.session.lastDictation?.textToCopy ?? ""
+        XCTAssertTrue(copied.hasPrefix("the first half"), copied)
+        XCTAssertTrue(copied.hasSuffix("and the"), "the partial in flight survives: \(copied)")
     }
 
     func testAnExhaustedRunsOwnClosingSocketDoesNotClearTheFailureIndicator() async {

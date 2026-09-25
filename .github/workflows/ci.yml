@@ -236,8 +236,10 @@ jobs:
             ./scripts/ci/test-remote-build-gc.sh \
             ./scripts/ci/test-remote-build-gate-args.sh \
             ./scripts/ci/test-remote-build-shards.sh \
+            ./scripts/ci/test-remote-build-linux-routing.sh \
             ./scripts/ci/test-run-supervised-command.sh \
             ./scripts/ci/test-ui-smoke-guard.sh \
+            ./scripts/ci/test-ui-smoke-dispatch.sh \
             ./scripts/ci/test-ui-smoke-owner-app.sh \
             ./scripts/ci/test-runner-node-resign.sh \
             ./scripts/ci/test-launch-app-shim.sh \
@@ -556,6 +558,33 @@ jobs:
             process.kill()
             process.wait(timeout=5)
           PY
+
+  # GitHub-hosted Ubuntu, every event, every contributor (#545). What builds
+  # and runs without a Mac: every shell suite under scripts/ci, and the
+  # Linux-buildable Swift targets (localvoxtralCore, the Claude hook publisher)
+  # with their tests. Not a required check yet: build-test still runs the
+  # shell suites, so nothing that gated a merge before stops gating it.
+  #
+  # The shell suites are taken by glob, not listed, so a new one runs here
+  # without a workflow edit; on Linux the whole set, test-ui-gate.sh included,
+  # takes about 16 s. Swift runs in the swift.org image pinned by digest, the
+  # same 6.2.0 release scripts/core-tests-linux.sh is written against; the
+  # runner image's own Swift moves with the image.
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Shell suites
+        run: ./scripts/ci/run-shell-suites.sh scripts/ci/test-*.sh
+
+      - name: Core tests (localvoxtralCore, hook publisher)
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            swift:6.2.0-bookworm@sha256:1fc848c3953417e3ba101ff35458fc0ad048b2401899fd51853bc5979f6220f5 \
+            ./scripts/core-tests-linux.sh
 
   # EVERYTHING THAT NEEDS THIS PARTICULAR MAC, and nothing else.
   #

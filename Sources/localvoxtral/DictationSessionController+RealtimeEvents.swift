@@ -164,7 +164,7 @@ extension DictationSessionController {
             // trigger: typed text cannot be taken back.
         } else if isLiveAutoPasteModeEnabled {
             textInsertion.enqueueRealtimeInsertion(processedDelta)
-            liveSpokenSendTypedSinceReturn = true
+            noteLiveTextTyped(processedDelta)
             if let accessibilityError = textInsertion.lastAccessibilityError {
                 lastError = accessibilityError
             }
@@ -190,12 +190,16 @@ extension DictationSessionController {
 
         if isLiveAutoPasteModeEnabled, liveSpokenSendWithholdsSegment() {
             // No partial of this segment was typed, so the whole segment is.
-            deliverLiveSpokenSendFinal(processedText, merged: finalized.text)
+            deliverLiveSpokenSendFinal(
+                processedText,
+                merged: finalized.text,
+                startsMidWord: finalized.startsMidWord
+            )
         } else if isLiveAutoPasteModeEnabled {
             liveSpokenSendSegmentMode = .undecided
             if let liveInsertion = finalized.liveInsertion {
                 textInsertion.enqueueRealtimeInsertion(liveInsertion)
-                liveSpokenSendTypedSinceReturn = true
+                noteLiveTextTyped(liveInsertion)
             }
             if let accessibilityError = textInsertion.lastAccessibilityError {
                 lastError = accessibilityError
@@ -262,12 +266,13 @@ extension DictationSessionController {
 
     @discardableResult
     func promotePendingRealtimeTextToLatestSegment() -> String? {
+        let startsMidWord = transcript.pendingStartsMidWord
         guard let pendingSegment = transcript.promotePendingToLatestSegment() else { return nil }
 
         // Withheld partials are typed nowhere else: a promotion (stop,
         // dropped socket) stands in for the final they never got.
         if isLiveAutoPasteModeEnabled {
-            deliverPromotedLiveSpokenSendSegment(pendingSegment)
+            deliverPromotedLiveSpokenSendSegment(pendingSegment, startsMidWord: startsMidWord)
         }
 
         if isLiveAutoPasteModeEnabled, settings.autoCopyEnabled {

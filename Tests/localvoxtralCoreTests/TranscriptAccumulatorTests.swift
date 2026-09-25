@@ -199,4 +199,94 @@ final class TranscriptAccumulatorTests: XCTestCase {
         transcript.appendPartial("next")
         XCTAssertEqual(transcript.fullTranscript, "typing done.\nnext")
     }
+
+    // MARK: - A generation that ends mid-take (#516)
+
+    // vLLM's realtime endpoint ends a generation with `transcription.done`
+    // (the concatenated deltas) and the commit loop starts the next one on
+    // the audio that follows, which can begin inside a word. Voxtral's
+    // tokenizer carries a word's leading space on its first token, so the
+    // next generation's first delta is the rest of that word with no space
+    // in front ("e help" after "Pleas").
+
+    /// Feeds one generation's raw deltas, then its `transcription.done`.
+    private func feedGeneration(_ deltas: [String], into transcript: inout TranscriptAccumulator) {
+        for delta in deltas {
+            transcript.appendPartial(delta)
+        }
+        _ = transcript.applyFinal(deltas.joined())
+    }
+
+    func testAWordSplitAcrossGenerationsIsRejoined() {
+        let specimens: [(first: [String], second: [String], expected: String)] = [
+            (["So", " I", " need", " you", ".", " Pleas"], ["e", " help", " me", " construct"],
+             "So I need you. Please help me construct"),
+            (["Returni"], ["ng", " to", " the", " plan", ",", " what", " do", " I", " need", "?"],
+             "Returning to the plan, what do I need?"),
+            (["So", " ye"], ["ah", "'m", " going"], "So yeah'm going"),
+        ]
+        for specimen in specimens {
+            var transcript = TranscriptAccumulator()
+            feedGeneration(specimen.first, into: &transcript)
+            feedGeneration(specimen.second, into: &transcript)
+
+            XCTAssertEqual(transcript.currentDictationEventText, specimen.expected)
+            XCTAssertEqual(transcript.overlayCommitText, specimen.expected)
+        }
+    }
+
+    func testTheOverlayRejoinsTheWordBeforeTheNextGenerationEnds() {
+        var transcript = TranscriptAccumulator()
+        feedGeneration(["So", " I", " need", " you", ".", " Pleas"], into: &transcript)
+        transcript.appendPartial("e")
+        transcript.appendPartial(" help")
+
+        XCTAssertEqual(transcript.overlayDisplayText, "So I need you. Please help")
+        XCTAssertEqual(transcript.overlayCommitText, "So I need you. Please help")
+    }
+
+    func testAGenerationBoundaryIsNotALineBreak() {
+        var transcript = TranscriptAccumulator()
+        feedGeneration(["That", " is", " all", " the", " information", "."], into: &transcript)
+        feedGeneration(["s"], into: &transcript)
+        XCTAssertEqual(transcript.currentDictationEventText, "That is all the information. s")
+
+        var wordBoundary = TranscriptAccumulator()
+        feedGeneration(["First", " part", "."], into: &wordBoundary)
+        feedGeneration([" Second", " part", "."], into: &wordBoundary)
+        XCTAssertEqual(wordBoundary.currentDictationEventText, "First part. Second part.")
+    }
+
+    func testOneSharedLetterIsNotAnAlignment() {
+        var transcript = TranscriptAccumulator()
+        feedGeneration(["I", " need"], into: &transcript)
+        feedGeneration([" doing", " this"], into: &transcript)
+        XCTAssertEqual(transcript.currentDictationEventText, "I need doing this")
+
+        var inFlight = TranscriptAccumulator()
+        feedGeneration(["I", " need"], into: &inFlight)
+        inFlight.appendPartial(" doing")
+        XCTAssertEqual(inFlight.overlayDisplayText, "I need doing")
+    }
+
+    func testAMidWordSegmentThatRepeatsTheWordsTailIsNotDoubled() {
+        var transcript = TranscriptAccumulator()
+        feedGeneration(["The", " information"], into: &transcript)
+        feedGeneration(["ation", " overload"], into: &transcript)
+        XCTAssertEqual(transcript.currentDictationEventText, "The information overload")
+    }
+
+    func testAServerThatNeverSendsALeadingSpaceIsNotGlued() {
+        // One final per utterance, lowercase, no leading space: nothing on
+        // this wire says a segment starts mid-word.
+        var transcript = TranscriptAccumulator()
+        _ = transcript.applyFinal("hello world")
+        _ = transcript.applyFinal("goodbye now")
+        XCTAssertEqual(transcript.currentDictationEventText, "hello world goodbye now")
+
+        var streamed = TranscriptAccumulator()
+        feedGeneration(["hello", "world"], into: &streamed)
+        feedGeneration(["goodbye"], into: &streamed)
+        XCTAssertEqual(streamed.currentDictationEventText, "helloworld goodbye")
+    }
 }

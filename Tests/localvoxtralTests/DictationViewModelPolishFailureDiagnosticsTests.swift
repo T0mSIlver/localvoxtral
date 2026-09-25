@@ -95,7 +95,7 @@ final class DictationViewModelPolishFailureDiagnosticsTests: XCTestCase {
         viewModel.llmPolishingService = FakePolishingService(
             failing: LLMPolishingService.polishingError(
                 forTransportError: URLError(.timedOut),
-                timeoutSeconds: LLMPolishingService.requestTimeoutInterval
+                timeoutSeconds: PolishRequestTimeout.floorSeconds
             )
         )
         // Same modal-alert guard as the sibling tests (AGENTS.md).

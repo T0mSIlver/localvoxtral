@@ -95,6 +95,7 @@ PATTERNS=(
   '*PolishHelperIntegrationTests*'                   # the lane's own suite
   '*AgentDictationE2EEval*'                          # agent-dictation E2E eval harness (suite + support + its unit tests)
   '*AgentDictationEvalCorpus*'                       # the E2E corpus loader/schema
+  '*EvalSpeechStage*'                                # the E2E harness's TTS and ASR stage, shared with term recall
   '*EvalCorpus/*'                                    # standalone eval corpora
 )
 

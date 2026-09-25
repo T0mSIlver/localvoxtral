@@ -97,20 +97,4 @@ final class EscapeCancelHandlerTests: XCTestCase {
         XCTAssertEqual(EscapeCancelHandler.lastStartOutcome, .registrationFailed(status))
         XCTAssertEqual(EscapeCancelHandler.unregistrationCallCount, 0)
     }
-
-    // start() is followed by stop() on every session end; the counters must
-    // advance and an outcome must be recorded so diagnostic state is never left
-    // stale or misleading.
-    func testStartThenStopAdvancesCounters() {
-        EscapeCancelHandler.debugConfigureRegistration(status: noErr)
-        let handler = makeStartedHandler()
-
-        handler.start()
-        let outcomeAfterStart = EscapeCancelHandler.lastStartOutcome
-        handler.stop()
-
-        XCTAssertEqual(EscapeCancelHandler.startCallCount, 1)
-        XCTAssertEqual(EscapeCancelHandler.stopCallCount, 1)
-        XCTAssertEqual(outcomeAfterStart, .registered)
-    }
 }

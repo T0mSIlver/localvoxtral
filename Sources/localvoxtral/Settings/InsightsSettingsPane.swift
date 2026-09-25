@@ -1,3 +1,4 @@
+import Charts
 import SwiftUI
 
 /// What the saved dictations add up to over a period. Every number comes from
@@ -14,20 +15,25 @@ struct InsightsSettingsPane: View {
     @State private var countedPeriod: DictationInsightsPeriod?
     /// Where the counted period started, for the History rows Show opens.
     @State private var countedSince: Date?
+    /// The last twelve weeks, whatever the period says: a trend inside a
+    /// 7-day period is one bar.
+    @State private var trend: DictationLearningTrend?
     /// LaunchServices is asked once per bundle id, not once per render.
     @State private var appNames: [String: String] = [:]
 
     /// For a caller that needs the pane showing given numbers (a rendering
     /// check); the app lets the pane read the store.
     private let fixedInsights: DictationInsights?
+    private let fixedTrend: DictationLearningTrend?
 
     init(
         viewModel: DictationViewModel, navigator: SettingsNavigator? = nil,
-        insights: DictationInsights? = nil
+        insights: DictationInsights? = nil, trend: DictationLearningTrend? = nil
     ) {
         self.viewModel = viewModel
         self.navigator = navigator
         fixedInsights = insights
+        fixedTrend = trend
     }
 
     private var period: Binding<DictationInsightsPeriod> {
@@ -58,6 +64,7 @@ struct InsightsSettingsPane: View {
             activityGroup(shown)
             reliabilityGroup(shown)
             polishingGroup(shown)
+            learningGroup(fixedTrend ?? trend ?? DictationLearningTrend())
             recurringFixesGroup(shown)
             appsGroup(shown)
         }
@@ -74,20 +81,32 @@ struct InsightsSettingsPane: View {
         let period = period.wrappedValue
         guard let store = viewModel.sessionStore else {
             insights = DictationInsights()
+            trend = DictationLearningTrend()
             countedPeriod = period
             return
         }
-        let since = period.start(now: Date())
+        let now = Date()
+        let since = period.start(now: now)
         let entries = await store.entries(since: since)
+        let trendStart = DictationLearningTrend.start(now: now)
+        let trendEntries = since.map { $0 <= trendStart } == true
+            ? entries.filter { $0.startedAt >= trendStart }
+            : await store.entries(since: trendStart)
+        let terms = viewModel.settings.polishSpeakerTerms
+            + (viewModel.learnedTermStore?.snapshot().confirmedEverywhere().map(\.term) ?? [])
         // A year of dictations is thousands of word diffs: not on the main
         // actor, and stopped when the pane closes or the period changes.
-        let counting = Task.detached { DictationInsights(entries: entries) }
-        let computed = await withTaskCancellationHandler {
+        let counting = Task.detached {
+            (DictationInsights(entries: entries),
+             DictationLearningTrend(entries: trendEntries, terms: terms, now: now))
+        }
+        let (computed, computedTrend) = await withTaskCancellationHandler {
             await counting.value
         } onCancel: {
             counting.cancel()
         }
         guard !Task.isCancelled else { return }
+        trend = computedTrend
         for app in computed.topApps where appNames[app.bundleID] == nil {
             appNames[app.bundleID] =
                 DictationHistoryModel.installedAppName(bundleID: app.bundleID) ?? app.bundleID
@@ -157,6 +176,21 @@ struct InsightsSettingsPane: View {
         }
     }
 
+    private func learningGroup(_ trend: DictationLearningTrend) -> some View {
+        SettingsGroup(title: "Learning, last 12 weeks") {
+            TrendRow(
+                title: "Terms the recognizer spelled right",
+                help: "Names and terms and learned terms, before any fix.",
+                weeks: trend.weeks,
+                share: \.termsSpelledRightShare)
+            TrendRow(
+                title: "Transcripts inserted as recognized",
+                help: "Of the polished dictations.",
+                weeks: trend.weeks,
+                share: \.transcriptKeptShare)
+        }
+    }
+
     private func recurringFixesGroup(_ insights: DictationInsights) -> some View {
         SettingsGroup(title: "What polishing keeps fixing") {
             if insights.recurringFixes.isEmpty {
@@ -199,6 +233,62 @@ struct InsightsSettingsPane: View {
 
     private static func seconds(_ value: Double) -> String {
         "\(value.formatted(.number.precision(.fractionLength(1)))) s"
+    }
+}
+
+/// A weekly share as bars, and the most recent counted week's value beside
+/// them. A week with too few dictations to count draws no bar.
+private struct TrendRow: View {
+    let title: String
+    let help: String
+    let weeks: [DictationLearningTrend.Week]
+    let share: KeyPath<DictationLearningTrend.Week, Double?>
+
+    private var latest: Double? { weeks.last { $0[keyPath: share] != nil }?[keyPath: share] ?? nil }
+
+    var body: some View {
+        SettingsFieldRow(title: title, help: help) {
+            HStack(spacing: 10) {
+                if weeks.contains(where: { $0[keyPath: share] != nil }) {
+                    // By position, not by date: the weeks are 7-day steps back
+                    // from now, which calendar-week bins would split.
+                    Chart(Array(weeks.enumerated()), id: \.offset) { index, week in
+                        if let value = week[keyPath: share] {
+                            BarMark(x: .value("Week", String(index)), y: .value("Share", value))
+                        }
+                    }
+                    // Every week keeps its slot, so an empty one is a gap.
+                    .chartXScale(domain: weeks.indices.map(String.init))
+                    .chartYScale(domain: 0...1)
+                    .chartXAxis(.hidden)
+                    .chartYAxis(.hidden)
+                    .frame(width: 120, height: 24)
+                    .accessibilityLabel(accessibilitySummary)
+                }
+                Text(latest.map { $0.formatted(.percent.precision(.fractionLength(0))) } ?? "—")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .frame(minWidth: 36, alignment: .trailing)
+            }
+        }
+    }
+
+    private var accessibilitySummary: String {
+        let counted = weeks.enumerated().compactMap { index, week in
+            week[keyPath: share].map { (weeksAgo: weeks.count - 1 - index, value: $0) }
+        }
+        guard let first = counted.first, let last = counted.last else { return "No weeks counted" }
+        let percent = FloatingPointFormatStyle<Double>.Percent().precision(.fractionLength(0))
+        func when(_ weeksAgo: Int) -> String {
+            switch weeksAgo {
+            case 0: "in the last 7 days"
+            case 1: "1 week ago"
+            default: "\(weeksAgo) weeks ago"
+            }
+        }
+        return "\(first.value.formatted(percent)) \(when(first.weeksAgo)), "
+            + "\(last.value.formatted(percent)) \(when(last.weeksAgo)), "
+            + "\(counted.count) of \(weeks.count) weeks counted"
     }
 }
 

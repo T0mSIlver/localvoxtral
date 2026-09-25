@@ -233,7 +233,6 @@
 0.001 PipeLineReaderTests
 0.001 PolishContextComposerTests
 0.001 PolishContextGroundingVerificationTests
-0.001 PreviewOnboardingBootstrapDriverTests
 0.001 SSHConnectionReportTests
 0.001 SSHProcessSocketReaderTests
 0.001 ShortcutValidationTests

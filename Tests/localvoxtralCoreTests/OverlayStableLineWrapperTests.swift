@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 final class OverlayStableLineWrapperTests: XCTestCase {
     /// Ten points per character, so a line's capacity is stated in characters.

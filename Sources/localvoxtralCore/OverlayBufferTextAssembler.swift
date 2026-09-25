@@ -16,12 +16,14 @@ package enum OverlayBufferTextAssembler {
     package static func displayText(
         committedText: String,
         pendingText: String,
-        fallbackPendingText: String
+        fallbackPendingText: String,
+        pendingStartsMidWord: Bool = false
     ) -> String {
         mergedText(
             committedText: committedText,
             pendingText: pendingText,
             fallbackPendingText: fallbackPendingText,
+            pendingStartsMidWord: pendingStartsMidWord,
             normalizeNewlinesForDisplay: true
         )
     }
@@ -30,12 +32,14 @@ package enum OverlayBufferTextAssembler {
     package static func commitText(
         committedText: String,
         pendingText: String,
-        fallbackPendingText: String
+        fallbackPendingText: String,
+        pendingStartsMidWord: Bool = false
     ) -> String {
         mergedText(
             committedText: committedText,
             pendingText: pendingText,
             fallbackPendingText: fallbackPendingText,
+            pendingStartsMidWord: pendingStartsMidWord,
             normalizeNewlinesForDisplay: false
         )
     }
@@ -44,6 +48,7 @@ package enum OverlayBufferTextAssembler {
         committedText: String,
         pendingText: String,
         fallbackPendingText: String,
+        pendingStartsMidWord: Bool,
         normalizeNewlinesForDisplay: Bool
     ) -> String {
         let pendingCandidate = pendingText.trimmed.isEmpty ? fallbackPendingText : pendingText
@@ -63,7 +68,8 @@ package enum OverlayBufferTextAssembler {
 
         return TextMergingAlgorithms.appendWithTailOverlap(
             existing: mergedCommitted,
-            incoming: mergedPending
+            incoming: mergedPending,
+            incomingStartsMidWord: pendingStartsMidWord
         ).merged
     }
 

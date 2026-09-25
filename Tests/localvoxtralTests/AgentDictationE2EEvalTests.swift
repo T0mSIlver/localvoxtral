@@ -80,14 +80,14 @@ import XCTest
 /// `say` entirely.
 @MainActor
 final class AgentDictationE2EEvalTests: XCTestCase {
-    private typealias Support = AgentDictationE2EEvalSupport
+    typealias Support = AgentDictationE2EEvalSupport
 
     /// Generous: the first request after a cold Metal JIT cache can pay
     /// kernel-compilation time on top of model load.
     private static let helperReadyTimeout: TimeInterval = 300
     private static let asrTimeout: TimeInterval = 90
 
-    private var repoRoot: URL {
+    var repoRoot: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()  // localvoxtralTests
             .deletingLastPathComponent()  // Tests
@@ -98,6 +98,9 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
     func testAgentDictationE2EEvalScoreboard() async throws {
         let enablement = try resolveEnablementOrSkip()
+        if enablement.replayDirectory != nil {
+            throw XCTSkip("a replay run scores stored dictations, not the corpus")
+        }
         let asrConfiguration = Support.asrStageConfiguration(enablement)
         let binary: URL?
         if enablement.usesBundledPolishHelper {
@@ -200,11 +203,13 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         await warmPromptPrefixes(configStore: configStore, configuration: polishConfiguration)
 
         let enVoice = recordedAudio == nil
-            ? Self.resolveVoice(languagePrefix: "en", preferred: ["Samantha", "Alex"])
+            ? Self.resolveVoice(
+                languagePrefix: "en", preferred: EvalSpeechStage.englishVoicePreference
+            )
             : nil
         let frVoice = recordedAudio == nil
             ? Self.resolveVoice(
-                languagePrefix: "fr", preferred: ["Thomas", "Amélie", "Aurélie", "Audrey"]
+                languagePrefix: "fr", preferred: EvalSpeechStage.frenchVoicePreference
             )
             : nil
         if let recordedAudio {
@@ -662,150 +667,32 @@ final class AgentDictationE2EEvalTests: XCTestCase {
     }
 
     private func synthesizedPCM16(text: String, voice: String?) throws -> Data {
-        let cacheDirectory = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Caches/localvoxtral-eval/wav", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: cacheDirectory, withIntermediateDirectories: true
-        )
-        let key = Support.wavCacheKey(text: text, voice: voice)
-        let wavURL = cacheDirectory.appendingPathComponent("\(key).wav")
-
-        if FileManager.default.fileExists(atPath: wavURL.path) {
-            // A corrupt cached file (crash mid-write on an old run) must not
-            // poison the cache: fall through to re-synthesis.
-            if let pcm = try? IntegrationTestSupport.extractPCMDataFromWAV(at: wavURL),
-                !pcm.isEmpty
-            {
-                return pcm
-            }
-            try? FileManager.default.removeItem(at: wavURL)
-        }
-
-        // Synthesize to a temp name, then move into place, so a crash
-        // mid-`say` never leaves a half-written file under the final key.
-        let temporary = cacheDirectory.appendingPathComponent("tmp-\(UUID().uuidString).wav")
-        defer { try? FileManager.default.removeItem(at: temporary) }
-        var arguments = [
-            "-o", temporary.path,
-            "--file-format=WAVE",
-            "--data-format=\(Support.ttsDataFormat)",
-        ]
-        if let voice {
-            arguments += ["-v", voice]
-        }
-        arguments.append(text)
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        process.arguments = arguments
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw EvalInfraError(
-                "say failed (status \(process.terminationStatus)) for voice \(voice ?? "default")"
-            )
-        }
-        try FileManager.default.moveItem(at: temporary, to: wavURL)
-        return try IntegrationTestSupport.extractPCMDataFromWAV(at: wavURL)
+        try EvalSpeechStage.synthesizedPCM16(text: text, voice: voice)
     }
 
-    /// `say -v ?` through a temp file (no pipes — descriptor-safe by
-    /// construction), parsed by the unit-tested picker.
     private static func resolveVoice(languagePrefix: String, preferred: [String]) -> String? {
-        let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("lv-agent-e2e-voices-\(UUID().uuidString).txt")
-        defer { try? FileManager.default.removeItem(at: outputURL) }
-        _ = FileManager.default.createFile(atPath: outputURL.path, contents: nil)
-        guard let handle = try? FileHandle(forWritingTo: outputURL) else { return nil }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        process.arguments = ["-v", "?"]
-        process.standardOutput = handle
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
-        process.waitUntilExit()
-        try? handle.close()
-        guard process.terminationStatus == 0,
-            let output = try? String(contentsOf: outputURL, encoding: .utf8)
-        else { return nil }
-        return Support.pickVoice(
-            fromSayVoicesOutput: output, languagePrefix: languagePrefix, preferred: preferred
-        )
+        EvalSpeechStage.resolveVoice(languagePrefix: languagePrefix, preferred: preferred)
     }
 
     // MARK: - ASR (production websocket client vs live speechd STT service)
 
-    private func transcribe(
+    func transcribe(
         pcm: Data,
         enablement: Support.Enablement
     ) async throws -> String {
         // The provider decides the client, endpoint, key and model; the event
-        // choreography below is identical for both. Mistral has no
-        // partial-commit concept and ignores the non-final commit, and its
-        // `.finalTranscript` carries the whole utterance in one event, which
-        // the join below handles as the one-element case it already is.
+        // choreography is EvalSpeechStage's, shared with the term-recall eval.
         let configuration = Support.asrStageConfiguration(enablement)
-        let chunks = IntegrationTestSupport.splitPCM16IntoChunks(pcm, chunkSizeBytes: 3_200)
-        let client = Support.makeRealtimeClient(for: enablement.provider)
-        let finals = LockedStrings()
-        let socketErrors = LockedStrings()
-        let firstFinal = XCTestExpectation(description: "final transcript")
-        firstFinal.assertForOverFulfill = false
-
-        client.setEventHandler { event, _ in
-            switch event {
-            case .connected:
-                // Safe to enqueue before session.created; the client gates
-                // outbound sends until session readiness (tier-1 pattern).
-                for chunk in chunks {
-                    client.sendAudioChunk(chunk)
-                }
-                client.sendCommit(final: false)
-                client.sendCommit(final: true)
-            case .finalTranscript(let text):
-                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { return }
-                finals.append(trimmed)
-                firstFinal.fulfill()
-            case .error(let message):
-                socketErrors.append(message)
-                firstFinal.fulfill()  // fail fast, don't wait the full timeout
-            default:
-                break
-            }
-        }
-
-        try client.connect(
-            configuration: .init(
-                endpoint: configuration.endpoint,
+        return try await EvalSpeechStage.transcribe(
+            pcm: pcm,
+            client: Support.makeRealtimeClient(for: enablement.provider),
+            endpoint: .init(
+                url: configuration.endpoint,
                 apiKey: configuration.apiKey,
                 model: configuration.model
-            )
+            ),
+            timeout: Self.asrTimeout
         )
-        let outcome = await XCTWaiter.fulfillment(of: [firstFinal], timeout: Self.asrTimeout)
-        // Short grace so trailing final segments of a longer utterance land.
-        try? await Task.sleep(for: .seconds(1))
-        client.disconnect()
-
-        let transcript = finals.snapshot().joined(separator: " ")
-        if !transcript.isEmpty {
-            return transcript
-        }
-        let errors = socketErrors.snapshot()
-        if !errors.isEmpty {
-            throw EvalInfraError("realtime socket error: \(errors.joined(separator: " | "))")
-        }
-        if outcome != .completed {
-            throw EvalInfraError(
-                "no final transcript within \(Int(Self.asrTimeout))s from \(configuration.endpoint)"
-            )
-        }
-        throw EvalInfraError("empty final transcript from \(configuration.endpoint)")
     }
 
     // MARK: - Fixture repos (real git, env-isolated)
@@ -870,7 +757,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
     // MARK: - Enablement
 
-    private func resolveEnablementOrSkip() throws -> Support.Enablement {
+    func resolveEnablementOrSkip() throws -> Support.Enablement {
         let markerURL = repoRoot.appendingPathComponent(Support.markerFileName)
         var marker: Support.MarkerConfig?
         if FileManager.default.fileExists(atPath: markerURL.path) {
@@ -898,7 +785,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         return enablement
     }
 
-    private func resolveHelperBinary(_ helperPath: String) throws -> URL {
+    func resolveHelperBinary(_ helperPath: String) throws -> URL {
         let binary =
             helperPath.hasPrefix("/")
             ? URL(fileURLWithPath: helperPath)
@@ -923,7 +810,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
     /// HFModelDownloader, idempotent. Mirrors
     /// `PolishHelperIntegrationTests.ensureModelCached` (kept private there;
     /// the two suites wait on different plumbing, so the copy is deliberate).
-    private func ensureModelCached(_ repoID: String) async throws {
+    func ensureModelCached(_ repoID: String) async throws {
         let cacheRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".cache/huggingface/hub")
         let repoDir = cacheRoot.appendingPathComponent(
@@ -1025,7 +912,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
     /// Spawns the helper on an ephemeral port (--port 0) and waits for its
     /// stderr readiness line. Event-driven via the descriptor-safe
     /// PipeLineReader (never FileHandle.availableData — PR #60).
-    private func launchHelper(
+    func launchHelper(
         binary: URL,
         model: String
     ) async throws -> (process: Process, port: UInt16) {
@@ -1078,7 +965,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
     /// Reap, don't just signal (#111): bounded wait for the exit, escalate to
     /// SIGKILL, idempotent for an already-exited process.
-    private static func reap(_ process: Process) async {
+    static func reap(_ process: Process) async {
         if process.isRunning {
             process.terminate()
         }
@@ -1098,7 +985,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
     /// slots): bounded retries — a client-side timeout still leaves the
     /// helper prefilling, so the next attempt (and the eval) hits the warm
     /// checkpoint. Mirrors testHelperAgentProfileScoreboard's warmup.
-    private func warmPromptPrefixes(
+    func warmPromptPrefixes(
         configStore: AppConfigStore,
         configuration: LLMPolishingConfiguration
     ) async {
@@ -1132,7 +1019,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 /// column) plus the request itself (inspection report). The
 /// request is assembled by the production stop-commit path; this wrapper
 /// adds no request shaping.
-private actor EvalRecordingPolishingService: LLMPolishingServicing {
+actor EvalRecordingPolishingService: LLMPolishingServicing {
     private let underlying = LLMPolishingService()
     private let configuration: LLMPolishingConfiguration
     private(set) var lastRawPolishedText: String?
@@ -1153,7 +1040,7 @@ private actor EvalRecordingPolishingService: LLMPolishingServicing {
     }
 }
 
-private struct EvalInfraError: Error, CustomStringConvertible {
+struct EvalInfraError: Error, CustomStringConvertible {
     let description: String
 
     init(_ description: String) {
