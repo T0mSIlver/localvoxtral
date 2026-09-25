@@ -50,7 +50,7 @@ final class MacTestServerRunbookPinTests: XCTestCase {
 
     private func runbook() throws -> String {
         let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent() // localvoxtralTests
+            .deletingLastPathComponent() // localvoxtralCoreTests
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // repo root
         return try String(

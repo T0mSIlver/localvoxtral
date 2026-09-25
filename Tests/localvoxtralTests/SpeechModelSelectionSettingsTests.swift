@@ -35,7 +35,4 @@ final class SpeechModelSelectionSettingsTests: XCTestCase {
         XCTAssertEqual(settings.resolvedManagedSpeechModel, SpeechModelCatalog.defaultOption)
         XCTAssertEqual(settings.managedSpeechModel, SpeechModelCatalog.defaultOption.repoID)
     }
-
-    /// Measured in #486: Voxtral's cache fills to the limit, Nemotron's stays near
-    /// 10 MB, so only Voxtral gets the Memory limit row.
 }

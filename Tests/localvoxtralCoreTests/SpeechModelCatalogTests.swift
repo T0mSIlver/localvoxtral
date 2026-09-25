@@ -101,6 +101,8 @@ final class SpeechModelCatalogTests: XCTestCase {
         )
     }
 
+    /// Measured in #486: Voxtral's cache fills to the limit, Nemotron's stays near
+    /// 10 MB, so only Voxtral gets the Memory limit row.
     func testOnlyVoxtralShowsTheMemoryLimitRow() {
         let shown = SpeechModelCatalog.options.filter(\.showsMemoryLimit).map(\.engine)
         XCTAssertEqual(shown, [.voxtral])
