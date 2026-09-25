@@ -167,10 +167,6 @@ final class ModifierOnlyHotKeyManager {
     }
 
     func stop() {
-        #if DEBUG
-        Self.stopCallCount += 1
-        #endif
-
         removeEventMonitors()
         resetGestureState()
     }
@@ -388,13 +384,11 @@ final class ModifierOnlyHotKeyManager {
     #if DEBUG
     static var lastStartOutcome: ModifierOnlyHotKeyStartOutcome = .none
     static var startCallCount = 0
-    static var stopCallCount = 0
     static var forcedStartOutcome: ModifierOnlyHotKeyStartOutcome?
 
     static func resetDebugState() {
         lastStartOutcome = .none
         startCallCount = 0
-        stopCallCount = 0
         forcedStartOutcome = nil
     }
 

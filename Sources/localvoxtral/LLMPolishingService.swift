@@ -207,11 +207,6 @@ struct LLMPolishingService: LLMPolishingServicing {
         self.usageRecorder = usageRecorder
     }
 
-    /// The polish timeout for an empty transcript; longer transcripts get
-    /// more (`PolishRequestTimeout`). Polish is async behind the overlay: a
-    /// slow polish beats a discarded one.
-    static let requestTimeoutInterval: TimeInterval = PolishRequestTimeout.floorSeconds
-
     /// One rule for every backend. The timeout is only the client's cap: a
     /// fast hosted model finishes long before it, and a long transcript takes
     /// longer on an external server or Mistral too.

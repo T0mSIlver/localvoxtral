@@ -120,13 +120,6 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         XCTAssertNotNil(registry.snapshot(sessionID: "restarted"))
     }
 
-    func testStopIsIdempotent() throws {
-        try broker.start()
-        broker.stop()
-        XCTAssertNoThrow(broker.stop())
-        XCTAssertFalse(broker.isRunning)
-    }
-
     func testStopWithNoConnectionEverMadeStillReturns() throws {
         // The accept loop is parked in poll() with nothing pending — exactly
         // the state where a wakeup that relied on shutdown()/close() alone

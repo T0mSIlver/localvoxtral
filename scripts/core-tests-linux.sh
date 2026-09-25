@@ -21,7 +21,9 @@ SCRATCH="${LV_LINUX_SCRATCH:-.build/linux}"
 # afresh: put the pins back whatever happens.
 resolved_backup="$(mktemp)"
 cp Package.resolved "$resolved_backup"
-trap 'cp "$resolved_backup" Package.resolved; rm -f "$resolved_backup"' EXIT
+# `cat`, not `cp`: the backup is mktemp's 0600, and the restored file keeps
+# the mode it would have been created with.
+trap 'cat "$resolved_backup" >Package.resolved; rm -f "$resolved_backup"' EXIT
 
 "$SWIFT" build --scratch-path "$SCRATCH" --product localvoxtral-claude-hook
 "$SWIFT" build --scratch-path "$SCRATCH" --product localvoxtralPackageTests

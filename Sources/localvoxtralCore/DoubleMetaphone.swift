@@ -43,16 +43,6 @@ enum DoubleMetaphone {
         var encoder = Encoder(letters: letters)
         return encoder.encode()
     }
-
-    /// True when any primary/secondary pairing of the two keys is equal and
-    /// non-empty.
-    static func keysMatch(_ a: Key, _ b: Key) -> Bool {
-        let left = [a.primary, a.secondary]
-        let right = [b.primary, b.secondary]
-        return left.contains { candidate in
-            !candidate.isEmpty && right.contains(candidate)
-        }
-    }
 }
 
 private extension DoubleMetaphone {

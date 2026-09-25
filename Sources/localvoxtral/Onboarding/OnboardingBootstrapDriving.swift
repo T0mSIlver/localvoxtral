@@ -36,9 +36,8 @@ enum OnboardingItemState: Equatable, Sendable {
 
 /// Drives the wizard's Downloads page. The wizard depends ONLY on this small
 /// surface, so the live implementation can evolve with the backend API without
-/// the wizard changing. Two implementations ship: `LiveOnboardingBootstrapDriver`
-/// (wraps `BackendManager`) and `PreviewOnboardingBootstrapDriver` (scripted, for
-/// tests and previews).
+/// the wizard changing. `LiveOnboardingBootstrapDriver` wraps `BackendManager`;
+/// tests use `FakeOnboardingBootstrapDriver`.
 @MainActor
 protocol OnboardingBootstrapDriving: AnyObject {
     /// Observable per-item state. Empty until `start` is called.

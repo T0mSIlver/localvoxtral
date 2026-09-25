@@ -94,14 +94,6 @@ public enum ClaudeRemoteForwardPort {
     /// generated verify step and the supervised forward watch for this exact
     /// substring. Stable across OpenSSH releases (verified on 10.0p2, 2026-08-03).
     public static let forwardFailureSignature = "remote port forwarding failed"
-
-    /// One short sentence that names the fix rather than the symptom. Shared so
-    /// the pasted verify command and any in-app status say the same thing.
-    ///
-    /// Apostrophe-free on purpose: it is embedded in single-quoted shell.
-    public static func contentionMessage(port: UInt16, host: String) -> String {
-        "Another machine or stale connection holds port \(port) on \(host)."
-    }
 }
 
 /// Where the per-install identity lives.

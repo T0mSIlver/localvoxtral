@@ -19,6 +19,12 @@ extension DictationSessionController {
         debugLog("cancel in-flight polishing to start a new dictation session")
         polishAndCommitTask?.cancel()
         polishAndCommitTask = nil
+        // Before the cleanup below clears it: the dictation being polished
+        // is not inserted, and History is where the user finds it again.
+        if let saveInterruptedPolishCommit {
+            Log.polishing.notice("polish cancelled by a new dictation; saving the transcript as not inserted")
+            saveInterruptedPolishCommit()
+        }
 
         completeStoppedSessionCleanup(
             sessionMode: sessionOutputMode ?? settings.dictationOutputMode,
