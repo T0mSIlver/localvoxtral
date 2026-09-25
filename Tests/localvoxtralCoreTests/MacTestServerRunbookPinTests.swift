@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// `scripts/mac/README.md` is the owner runbook for the on-demand test
 /// services, and it embeds complete launchd plists plus `hf download` commands

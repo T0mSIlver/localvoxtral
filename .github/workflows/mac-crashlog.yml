@@ -120,8 +120,8 @@ jobs:
             ls -la "$snapshot" 2>&1 | sed "s|$HOME|~|g" || echo "<snapshot absent>"
           }
 
-          SPEECH_CATALOG="Sources/localvoxtral/Backends/SpeechModelCatalog.swift"
-          POLISH_CATALOG="Sources/localvoxtral/Backends/PolishModelCatalog.swift"
+          SPEECH_CATALOG="Sources/localvoxtralCore/SpeechModelCatalog.swift"
+          POLISH_CATALOG="Sources/localvoxtralCore/PolishModelCatalog.swift"
           speech_repo="$(catalog_default_repo "$SPEECH_CATALOG")"
           speech_revision="$(catalog_revision "$SPEECH_CATALOG" "$speech_repo")"
           polish_repo="$(catalog_default_repo "$POLISH_CATALOG")"
