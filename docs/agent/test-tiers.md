@@ -228,18 +228,36 @@ avoidable run costs far more than its own duration.
 ## Proving a change with the e2e dictation check
 
 `scripts/e2e-dictation.sh` is the one check where the packaged app hears audio
-and puts text into another app's window. Run it for a change to what only it
-reaches: text insertion into another app, focus handling, and the commit that
-inserts (the stop-commit and the overlay commit). Session start and stop, the
-realtime clients and transcript merging are left to their unit suites and the
-live STT lane, to take load off the owner's Mac (owner decision 2026-09-25).
+and puts text into another app's window. Each run holds the owner's Mac for
+several minutes, takes the keyboard and queues every other agent's
+`mac-lanes` behind it, so it runs at release time, when the owner is at the
+Mac, and a PR proves the session path in process (#574).
 
-No agent account can run it directly, since the build gate has no GUI session
-and the UI gate reaches only the app under test. The runner can, and each run
-holds it for several minutes, takes the owner's keyboard and queues every
-other agent's `mac-lanes` behind it. So it runs once per PR, and only through
-the wrapper, which refuses when the run is not justified. A dispatch also runs
-the AX drill on a GitHub-hosted runner, which costs the Mac nothing:
+`DictationPipelineTests` runs one dictation per e2e scenario, from
+`startDictation` to the stop's commit, through the real session code and the
+real `RealtimeAPIWebSocketClient` over a loopback socket
+(`TestSupport/FakeRealtimeServer`). Only the microphone, the speech model and
+the target app are fakes. A session-path change extends it or the suites
+beside it. The link-by-link map, and the broken link each test catches, are
+in #583.
+
+At release, `scripts/release.sh` refuses a stable release (not a nightly or a
+rehearsal) unless a UI Smoke run on the release commit has its
+`E2E dictation scored` step green. That step runs only when every scenario
+was scored and passed; the dictation step itself also goes green on a locked
+Mac. An evening run on main counts while main has not moved. Otherwise:
+
+```bash
+gh workflow run ui-smoke.yml --ref main   # the Mac unlocked, the owner at it
+./scripts/release.sh --dry-run patch      # the gate's answer, no dispatch
+```
+
+On a PR the run is optional, for what only it reaches: text insertion into
+another app's window, focus handling and TCC. No agent account can run it
+directly, since the build gate has no GUI session and the UI gate reaches
+only the app under test. It goes through the wrapper, which refuses when the
+run is not justified. A dispatch also runs the AX drill on a GitHub-hosted
+runner, which costs the Mac nothing:
 
 ```bash
 ./scripts/ui-smoke-dispatch.sh --dry-run <branch>   # does this diff need it?
@@ -274,10 +292,10 @@ Mac; the wrapper lists those as ignored.
 owner asked for; quote the reason in the PR. The `needs-ui-smoke` label
 dispatches without these checks, so it is the owner's, not an agent's.
 
-A stack of PRs gets one run, from its top branch, before its lowest layer
-merges: the top's diff against main holds every layer. A refactor that moves
-those files still needs that one run; it does not need one per step.
-The evening runs on main (18:00 to 21:00 UTC) cover what no PR claimed.
+A stack of PRs takes at most one run, from its top branch, before its lowest
+layer merges: the top's diff against main holds every layer. The evening runs
+on main (18:00 to 21:00 UTC) cover what no PR claimed, and the release gate
+covers the rest.
 
 Paste the `spoken:` / `inserted:` / `PASS:` lines in the Proof section.
 

@@ -23,10 +23,27 @@ set -euo pipefail
 #                                             # the run instead. Any ref.
 #                                             # target defaults to patch and
 #                                             # may be nightly.
+#   ./scripts/release.sh --dry-run ...        # check, print what would be
+#                                             # dispatched, dispatch nothing
+#
+# A stable release (every form but nightly and rehearse) needs the e2e
+# dictation check to have passed on the release commit. That check
+# (scripts/e2e-dictation.sh) is the only one where the packaged app dictates
+# into another app's window; it holds the owner's Mac and keyboard, so it
+# runs here, when the owner is at the Mac, rather than on every PR (#574).
+# Run it with the Mac unlocked:
+#   gh workflow run ui-smoke.yml --ref <ref>
+# The evening UI Smoke runs on main count too, while main has not moved.
 #
 # The channels: stable follows GitHub's /releases/latest and is cut by hand
 # when the owner decides; nightly is a prerelease of main that never touches
 # that pointer. Same pipeline, same gates.
+
+DRY_RUN=false
+if [[ "${1:-}" == "--dry-run" ]]; then
+  DRY_RUN=true
+  shift
+fi
 
 PUBLISH=true
 if [[ "${1:-}" == "rehearse" ]]; then
@@ -47,7 +64,7 @@ case "$ARG" in
     if [[ "$ARG" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
       DISPATCH_ARGS=(-f channel=stable -f "version=$ARG")
     else
-      echo "Usage: $0 [patch|minor|major|X.Y.Z|X.Y.Z-rc.N [ref]|nightly] | $0 rehearse [patch|minor|major|X.Y.Z|X.Y.Z-rc.N|nightly] [ref]" >&2
+      echo "Usage: $0 [--dry-run] [patch|minor|major|X.Y.Z|X.Y.Z-rc.N [ref]|nightly] | $0 [--dry-run] rehearse [patch|minor|major|X.Y.Z|X.Y.Z-rc.N|nightly] [ref]" >&2
       exit 1
     fi
     ;;
@@ -57,6 +74,47 @@ DISPATCH_ARGS+=(-f "publish=$PUBLISH")
 if [[ "$ARG" == "nightly" && "$PUBLISH" == "true" && "$REF" != "main" ]]; then
   echo "Nightly releases publish from main only. Use 'rehearse nightly $REF' to exercise the pipeline from that ref." >&2
   exit 1
+fi
+
+# Must match the step name in ui-smoke.yml, as scripts/ci/ui-smoke-guard.sh
+# does: the step runs only when every scenario was scored and passed. The
+# dictation step itself also concludes success when the Mac could not run it.
+E2E_STEP="E2E dictation scored"
+
+GATE_E2E=false
+if [[ "$PUBLISH" == "true" && "$ARG" != "nightly" ]]; then
+  GATE_E2E=true
+fi
+RELEASE_SHA=""
+if $GATE_E2E; then
+  # Encoded: a branch name may hold '#', '&' or '?'.
+  ref_uri="$(jq -rn --arg r "$REF" '$r | @uri')"
+  RELEASE_SHA="$(gh api "repos/{owner}/{repo}/commits/$ref_uri" --jq '.sha')"
+  runs="$(gh api "repos/{owner}/{repo}/actions/workflows/ui-smoke.yml/runs?head_sha=$RELEASE_SHA&status=completed&per_page=20" \
+    --jq '.workflow_runs[].id')"
+  scored_run=""
+  for id in $runs; do
+    conclusion="$(gh api "repos/{owner}/{repo}/actions/runs/$id/jobs" \
+      --jq "[.jobs[].steps[] | select(.name == \"$E2E_STEP\") | .conclusion] | first // empty")"
+    if [[ "$conclusion" == "success" ]]; then
+      scored_run="$id"
+      break
+    fi
+  done
+  if [[ -z "$scored_run" ]]; then
+    echo "Refused: the e2e dictation check has not passed on $REF at ${RELEASE_SHA:0:9}." >&2
+    echo "Run it with the Mac unlocked, then release again:" >&2
+    echo "  gh workflow run ui-smoke.yml --ref $REF" >&2
+    exit 1
+  fi
+  echo "e2e dictation check: passed on ${RELEASE_SHA:0:9} in UI Smoke run $scored_run"
+else
+  echo "e2e dictation check: not required for a nightly or a rehearsal"
+fi
+
+if $DRY_RUN; then
+  echo "Dry run: would dispatch Release App ($ARG, ref=$REF, publish=$PUBLISH)"
+  exit 0
 fi
 
 if [[ "$PUBLISH" == "true" ]]; then
@@ -69,6 +127,17 @@ sleep 5
 # Newest run on the dispatched ref, not the newest run of the workflow: the
 # 03:15 cron or another dispatch can create a run inside that 5 s window.
 RUN_ID="$(gh run list --workflow "Release App" --branch "$REF" --limit 1 --json databaseId --jq '.[0].databaseId')"
+if $GATE_E2E; then
+  # The ref may have moved between the check and the dispatch. The workflow
+  # gates for minutes before it tags, so cancelling now leaves no tag.
+  run_sha="$(gh run view "$RUN_ID" --json headSha --jq '.headSha')"
+  if [[ "$run_sha" != "$RELEASE_SHA" ]]; then
+    gh run cancel "$RUN_ID"
+    echo "Refused: $REF moved to ${run_sha:0:9} after the e2e dictation check passed on ${RELEASE_SHA:0:9}." >&2
+    echo "Cancelled run $RUN_ID before it tagged anything. Run the check on the new head, then release again." >&2
+    exit 1
+  fi
+fi
 echo "Watching run $RUN_ID (Ctrl+C detaches; the release continues remotely)"
 gh run watch "$RUN_ID" --exit-status
 if [[ "$PUBLISH" != "true" ]]; then
