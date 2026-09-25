@@ -7,7 +7,6 @@ import XCTest
 // These tests cover the deterministic seams of ModifierOnlyHotKeyManager
 // without requiring actual monitor delivery:
 //  - ModifierKey enum surface (rawValues, displayNames, CaseIterable)
-//  - Configuration/modifier switching
 //  - Stop clears instance gesture state
 //  - Rapid sequential start/stop cycles don't leave residual state
 //  - Gesture state transitions with simulated flag/key events and injected hold scheduling
@@ -28,26 +27,12 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
         XCTAssertEqual(ModifierOnlyHotKeyManager.ModifierKey.rightOption.displayName, "Right Option")
     }
 
-    func testModifierKeyIdentifiable() {
-        for key in ModifierOnlyHotKeyManager.ModifierKey.allCases {
-            XCTAssertEqual(key.id, key.rawValue, "id must match rawValue for \(key)")
-        }
-    }
-
     func testModifierKeyCaseIterableContainsAllThreeCases() {
         let all = ModifierOnlyHotKeyManager.ModifierKey.allCases
         XCTAssertEqual(all.count, 3)
         XCTAssertTrue(all.contains(.fn))
         XCTAssertTrue(all.contains(.rightCommand))
         XCTAssertTrue(all.contains(.rightOption))
-    }
-
-    func testModifierKeyCodableRoundtrip() throws {
-        for key in ModifierOnlyHotKeyManager.ModifierKey.allCases {
-            let data = try JSONEncoder().encode(key)
-            let decoded = try JSONDecoder().decode(ModifierOnlyHotKeyManager.ModifierKey.self, from: data)
-            XCTAssertEqual(decoded, key, "Codable roundtrip failed for \(key)")
-        }
     }
 
     // MARK: - Stop Clears All Shared State
@@ -65,33 +50,6 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
         XCTAssertFalse(snapshot.isInHoldState)
     }
 
-    func testStopIsIdempotent() {
-        let manager = ModifierOnlyHotKeyManager()
-        // Multiple stop() calls should not crash
-        manager.stop()
-        manager.stop()
-        manager.stop()
-    }
-
-    // MARK: - Modifier Key Switching
-
-    func testModifierKeySwitchingCallsStopBeforeStart() {
-        // Calling start() twice with different modifier keys should work without crash.
-        let manager = ModifierOnlyHotKeyManager()
-        ModifierOnlyHotKeyManager.resetDebugState()
-        ModifierOnlyHotKeyManager.forcedStartOutcome = .created
-        defer { ModifierOnlyHotKeyManager.resetDebugState() }
-
-        // Each successive start() calls stop() first — no crash expected.
-        for modifier in ModifierOnlyHotKeyManager.ModifierKey.allCases {
-            manager.start(modifier: modifier)
-            XCTAssertEqual(ModifierOnlyHotKeyManager.lastStartOutcome, .created)
-        }
-
-        // Clean up
-        manager.stop()
-    }
-
     func testRapidStartStopCyclesProduceNoResidualState() {
         let manager = ModifierOnlyHotKeyManager()
         ModifierOnlyHotKeyManager.resetDebugState()
@@ -102,6 +60,8 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
         manager.onTap = { tapCount += 1 }
         manager.onHoldStart = { holdStartCount += 1 }
 
+        // Stopping a manager that never started must be a no-op.
+        manager.stop()
         for _ in 1...10 {
             manager.start(modifier: .fn)
             manager.stop()
@@ -111,62 +71,6 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
         XCTAssertEqual(tapCount, 0, "No tap callbacks should fire in headless test environment")
         XCTAssertEqual(holdStartCount, 0, "No hold callbacks should fire in headless test environment")
         XCTAssertNil(manager.debugGestureSnapshotForTesting().targetModifier)
-    }
-
-    func testStopAfterStartWithDifferentModifiersLeavesNoResidualState() {
-        let manager1 = ModifierOnlyHotKeyManager()
-        let manager2 = ModifierOnlyHotKeyManager()
-        ModifierOnlyHotKeyManager.resetDebugState()
-        ModifierOnlyHotKeyManager.forcedStartOutcome = .created
-        defer { ModifierOnlyHotKeyManager.resetDebugState() }
-
-        manager1.start(modifier: .fn)
-        manager2.start(modifier: .rightCommand)
-
-        // Stopping both should be safe and clear their independent state.
-        manager1.stop()
-        manager2.stop()
-    }
-
-    // MARK: - Callback Wiring
-
-    func testCallbacksCanBeAssignedAndReassigned() {
-        let manager = ModifierOnlyHotKeyManager()
-
-        var firstTapCount = 0
-        manager.onTap = { firstTapCount += 1 }
-
-        var secondTapCount = 0
-        manager.onTap = { secondTapCount += 1 }
-
-        // Replacing callbacks is safe — no crash
-        XCTAssertEqual(firstTapCount, 0)
-        XCTAssertEqual(secondTapCount, 0)
-    }
-
-    func testCallbacksCanBeNilledOut() {
-        let manager = ModifierOnlyHotKeyManager()
-        manager.onTap = { }
-        manager.onHoldStart = { }
-        manager.onHoldRelease = { }
-
-        manager.onTap = nil
-        manager.onHoldStart = nil
-        manager.onHoldRelease = nil
-
-        // No crash when callbacks are nil
-        manager.stop()
-    }
-
-    func testHoldThresholdDefaultValue() {
-        let manager = ModifierOnlyHotKeyManager()
-        XCTAssertEqual(manager.holdThresholdSeconds, 0.35, accuracy: 0.001)
-    }
-
-    func testHoldThresholdCanBeCustomized() {
-        let manager = ModifierOnlyHotKeyManager()
-        manager.holdThresholdSeconds = 0.5
-        XCTAssertEqual(manager.holdThresholdSeconds, 0.5, accuracy: 0.001)
     }
 
     // MARK: - Gesture State

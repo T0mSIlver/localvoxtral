@@ -273,12 +273,6 @@ final class RepoVocabularyPhoneticTests: XCTestCase {
             Set(outcome.verification.map(\.replaceWith)),
             Set(["AuthService.ts", "AuthServices.ts"])
         )
-        XCTAssertNil(
-            RepoVocabularyMatcher.alignedFallbackEntry(
-                transcript: "Open auth sir vice here.",
-                vocabulary: vocabulary
-            )
-        )
     }
 
     func testAlignedNearScoreDemotesBestCandidate() {
@@ -292,12 +286,6 @@ final class RepoVocabularyPhoneticTests: XCTestCase {
         XCTAssertEqual(
             outcome.verification,
             [ReplacementEntry(replaceWith: "abcdefghij", matches: ["abcx efyy"])]
-        )
-        XCTAssertNil(
-            RepoVocabularyMatcher.alignedFallbackEntry(
-                transcript: "abcx efyy",
-                vocabulary: vocabulary
-            )
         )
     }
 
@@ -318,12 +306,6 @@ final class RepoVocabularyPhoneticTests: XCTestCase {
                 ),
             ]
         )
-        XCTAssertNil(
-            RepoVocabularyMatcher.alignedFallbackEntry(
-                transcript: "Fix the user session manager.",
-                vocabulary: vocabulary
-            )
-        )
     }
 
     func testAlignedSingleWordLengthInflationRemainsHardDrop() {
@@ -337,12 +319,12 @@ final class RepoVocabularyPhoneticTests: XCTestCase {
         XCTAssertTrue(outcome.verification.isEmpty)
     }
 
-    func testAlignedWrapperStillReturnsApprovedFallback() {
+    func testAlignedFallbackApprovesAConfidentSingleCandidate() {
         XCTAssertEqual(
-            RepoVocabularyMatcher.alignedFallbackEntry(
+            RepoVocabularyMatcher.alignedFallbackOutcome(
                 transcript: "Open uzoft.ts and add a null check.",
                 vocabulary: makeVocabulary(["useAuth.ts"])
-            ),
+            ).approved,
             ReplacementEntry(replaceWith: "useAuth.ts", matches: ["uzoft.ts"])
         )
     }

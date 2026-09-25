@@ -21,13 +21,15 @@ needed. Set the host once per clone: `git config localvoxtral.buildhost
   session clock) builds and tests on Linux, no Mac:
   `./scripts/core-tests-linux.sh` (Swift 6.2; `SWIFT=` names the toolchain).
   The app re-exports it, so a core declaration the app uses needs `package`
-  access.
+  access. With a Swift here, `remote-build.sh test` runs those suites locally
+  and sends the Mac only the rest; `LV_TEST_ON_MAC=1` sends it everything.
 - Run `./scripts/mac-health.sh` before long remote work. A sleeping Mac makes
   rsync hang instead of fail.
 - `--filter` takes no `|`; the host's SSH gate refuses it. Repeat the flag,
   once per suite.
 - Never pipe `remote-build.sh` through grep: a crash eats the failing test's
-  name. The full output is in `.build/last-remote.log`.
+  name. The full output is in `.build/last-remote.log`, and the local Linux
+  part's in `.build/last-linux.log`.
 - An interrupted run can leave a stale SwiftPM lock. Switch to a fresh
   `LV_BUILD_DIR` instead of debugging it. Never hand-clean `~/work` on the
   Mac; abandoned build dirs are garbage-collected.
@@ -91,7 +93,11 @@ and order it with blocked-by links, not prose.
 - Session-path change (view model start/stop, realtime clients, merging,
   insertion, overlay commit): run the e2e dictation check and paste its lines
   (`docs/agent/test-tiers.md`). It is the only check where the packaged app
-  dictates.
+  dictates, and it holds the Mac and the owner's keyboard: dispatch it only
+  with `scripts/ui-smoke-dispatch.sh`, once per PR (per stack, from the top),
+  after review fixes and a green `build-test`. The PR body quotes its
+  `--dry-run` `path:` line. A NOT RUN or lost-focus red goes in Proof for the
+  owner, not into a second dispatch.
 - Live lanes run only on a lane-filter path match or a marker
   (`[run-stt-integration]`, `[run-llm-eval]`, `[run-speechd-integration]`,
   `[run-herdr-integration]`) in the PR body or head commit when the run is
@@ -111,6 +117,8 @@ and order it with blocked-by links, not prose.
   at run creation. Never move fork-PR work onto that Mac. New lanes go in
   `build-test` unless they need something only that Mac has: signing
   identity, Metal, the STT service, the herdr fixture, a GUI session.
+- A third job, `linux` (GitHub-hosted Ubuntu, not required yet), runs every
+  `scripts/ci/test-*.sh` by glob and `scripts/core-tests-linux.sh`.
 - One Mac runs every agent's `mac-lanes`, one job at a time, so the queue is
   what everyone waits for. A push to a ready PR cancels its running Mac job
   and queues another: `gh pr ready <n> --undo` before a series of pushes. Keep

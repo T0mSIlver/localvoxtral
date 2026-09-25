@@ -37,6 +37,24 @@ struct DictationHistoryEntry: Identifiable, Equatable, Sendable {
     /// A polish request answered for this dictation. Only the polish path
     /// records a duration.
     var polishRan: Bool { polishingDurationSeconds != nil && status != .llmFailed }
+
+    /// This entry with `polishedText` replaced, for the in-memory copy that
+    /// may hold what History must not (the clipboard payload).
+    func replacingPolishedText(_ text: String?) -> DictationHistoryEntry {
+        DictationHistoryEntry(
+            id: id, startedAt: startedAt, finishedAt: finishedAt, rawText: rawText,
+            polishedText: text, polishingDurationSeconds: polishingDurationSeconds,
+            provider: provider, model: model, outputMode: outputMode,
+            targetAppBundleID: targetAppBundleID, status: status,
+            commitSucceeded: commitSucceeded, polishProfile: polishProfile,
+            polishContextSummary: polishContextSummary)
+    }
+
+    /// What "Copy last dictation" copies, nil when there is no text.
+    var textToCopy: String? {
+        LastDictationCopy.text(
+            rawText: rawText, polishedText: polishedText, polishFailed: status == .llmFailed)
+    }
 }
 
 extension DictationHistoryEntry {

@@ -2,7 +2,7 @@
 
 ## `ci.yml`
 
-`ci.yml` runs **two jobs in parallel**, split by what actually needs the
+`ci.yml` runs **three jobs in parallel**, split by what actually needs the
 owner's Mac (owner decision 2026-09-05):
 
 **`build-test` — GitHub-hosted macOS (`macos-latest`), every event, every
@@ -38,8 +38,14 @@ dogfood capture suite and packaging, the UI-gate install, and the process leak
 check. It keeps `clean: false` — the persistent warm `.build` that makes those
 lanes affordable.
 
-The two jobs run in parallel and share no artifact; each computes the
-docs-only fast-path decision itself rather than serialising behind a `needs:`.
+**`linux` — GitHub-hosted Ubuntu, every event, every contributor (#545).**
+Every `scripts/ci/test-*.sh` suite, taken by glob so a new suite needs no
+workflow edit, and `scripts/core-tests-linux.sh` in the `swift:6.2.0` image
+pinned by digest. It is not a required check yet, so `build-test` keeps its
+own shell-suite step and nothing that gated a merge stops gating it.
+
+The jobs run in parallel and share no artifact; the two Mac jobs each compute the
+docs-only fast-path decision themselves rather than serialising behind a `needs:`.
 
 **Any step that launches the app on the self-hosted Mac must set
 `LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN: "1"`** (the launch smoke's
@@ -98,7 +104,7 @@ for one release so a scripted `-f hosted=true` does not fail on an unknown
 input, and cannot be repurposed to move `mac-lanes` — that job exists
 precisely because its work needs that Mac.
 
-The docs/scripts-only fast path applies to both jobs when every changed file
+The docs/scripts-only fast path applies to `build-test` and `mac-lanes` when every changed file
 passes `scripts/ci/docs-only-filter.sh`; they then skip all Swift, helper,
 packaging, artifact, smoke, warm, and integration steps. The filter fails open
 to the full run for unknown or ambiguous diffs and excludes CI control files,
@@ -240,10 +246,13 @@ battery power (scheduled lanes never drain the owner's MacBook,
 `scripts/ci/ac-power-guard.sh`, shared with eval-e2e.yml's nightly), when
 the screen is locked (the drill needs an unlocked GUI session), or when a
 slot's drill already ran and passed that day, so at most one real drill runs
-per day. Manual dispatch bypasses the guard.
-Also runs on same-repo PRs when the `needs-ui-smoke` label is added — the
-on-demand proof path for UI-affecting PRs (re-add the label to rerun after
-new pushes; fork PRs never reach the self-hosted runner, label or no label).
+per day. Manual dispatch bypasses the guard; agents dispatch through
+`scripts/ui-smoke-dispatch.sh`, which refuses a run the diff does not need, a
+second run on one commit and a run within an hour of the last (rules in
+`docs/agent/test-tiers.md`, "Proving a change with the e2e dictation check").
+Also runs on same-repo PRs when the owner adds the `needs-ui-smoke` label
+(re-add it to rerun after new pushes; fork PRs never reach the self-hosted
+runner, label or no label).
 It packages the app, launches a fresh menu bar instance, verifies the status
 item, checks that launch alone does not spawn managed backend processes, opens
 Settings from the status menu, selects the three settings tabs, checks the

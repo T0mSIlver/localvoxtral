@@ -119,6 +119,22 @@ extension DictationSessionController {
                 pasteboardReader: dependencies.pasteboardReader
             )
 
+            saveInterruptedPolishCommit = { [weak self] in
+                self?.saveSessionRecord(
+                    startedAt: capturedSessionStartedAt,
+                    rawText: originalText,
+                    polishedText: workingText != originalText ? workingText : nil,
+                    polishingDuration: nil,
+                    provider: capturedProvider,
+                    model: capturedModel,
+                    outputMode: capturedOutputMode,
+                    targetAppBundleID: capturedTargetBundleID,
+                    status: .sttCompleted,
+                    commitSucceeded: false,
+                    polishContextSummary: payloadProvenanceSummary,
+                    clipboardPayload: clipboardPayload
+                )
+            }
             polishAndCommitTask = Task { @MainActor [weak self] in
                 guard let self else { return }
                 await self.polishAndCommitOverlayBuffer(
@@ -171,7 +187,8 @@ extension DictationSessionController {
             targetAppBundleID: capturedTargetBundleID,
             status: llmConfigurationFailure == nil ? .sttCompleted : .llmFailed,
             commitSucceeded: overlayCommit.succeeded,
-            polishContextSummary: payloadProvenanceSummary
+            polishContextSummary: payloadProvenanceSummary,
+            clipboardPayload: clipboardPayload
         )
 
         if let llmConfigurationFailure {
@@ -261,6 +278,8 @@ extension DictationSessionController {
         }
 
         guard !Task.isCancelled else { return }
+        // From here the task commits and saves the dictation itself.
+        self.saveInterruptedPolishCommit = nil
 
         let overlayCommit = StopCommitCoordinator.commit(
             overlay: self.overlayBufferCoordinator,
@@ -297,7 +316,8 @@ extension DictationSessionController {
                     repoVocabularyCount: assembly.repoVocabularyCount,
                     clipboardVocabularyCount: assembly.clipboardVocabularyCount
                 )
-            )
+            ),
+            clipboardPayload: preparation.clipboardPayload
         )
 
         #if LOCALVOXTRAL_DOGFOOD
@@ -454,6 +474,7 @@ extension DictationSessionController {
         isCompletingStoppedSession = false
         realtimeFinalizationLastActivityAt = nil
         polishAndCommitTask = nil
+        saveInterruptedPolishCommit = nil
         liveSpokenSendSegmentMode = .undecided
         // Every stop funnels through here. The commit path has already
         // consumed the capture by now (it reconciles synchronously, before
@@ -559,7 +580,8 @@ extension DictationSessionController {
         status: DictationSessionStatus,
         commitSucceeded: Bool,
         polishProfile: String? = nil,
-        polishContextSummary: String? = nil
+        polishContextSummary: String? = nil,
+        clipboardPayload: String? = nil
     ) {
         let trimmedRawText = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedRawText.isEmpty else {
@@ -584,6 +606,17 @@ extension DictationSessionController {
         )
         dependencies.onSessionRecord?(record)
         let retention = settings.dictationHistoryRetention
+        // The record holds the clipboard placeholder; the copy the user takes
+        // gets the text as it was inserted.
+        let entry = DictationHistoryEntry(record)
+        rememberLastDictation(
+            clipboardPayload == nil
+                ? entry
+                : entry.replacingPolishedText(entry.polishedText.map {
+                    StopCommitCoordinator.substitutingPayload($0, payload: clipboardPayload)
+                }),
+            isInHistory: retention.savesDictations && sessionStore != nil
+        )
         guard retention.savesDictations else {
             Log.persistence.debug("Dictation history is off: not saving this dictation")
             // Turning history off deleted what was there. If that write

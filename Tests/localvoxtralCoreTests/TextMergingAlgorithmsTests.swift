@@ -25,26 +25,6 @@ final class TextMergingAlgorithmsTests: XCTestCase {
         }
     }
 
-    // MARK: - mergeIncrementalText
-
-    func testMergeIncremental() {
-        let cases: [(name: String, existing: String, incoming: String, merged: String, delta: String)] = [
-            ("emptyIncoming", "hello", "", "hello", ""),
-            ("emptyExisting", "", "hello", "hello", "hello"),
-            ("exactMatch", "hello", "hello", "hello", ""),
-            ("incomingPrefixedByExisting", "hello", "hello world", "hello world", " world"),
-            ("existingSuffixesIncoming", "hello world", "world", "hello world", ""),
-            ("existingContainsIncoming", "hello world", "lo wor", "hello world", ""),
-            ("suffixPrefixOverlap", "hello wor", "world", "hello world", "ld"),
-            ("noOverlap", "abc", "xyz", "abcxyz", "xyz"),
-        ]
-        for (name, existing, incoming, merged, delta) in cases {
-            let result = TextMergingAlgorithms.mergeIncrementalText(existing: existing, incoming: incoming)
-            XCTAssertEqual(result.merged, merged, "\(name): merged")
-            XCTAssertEqual(result.appendedDelta, delta, "\(name): appendedDelta")
-        }
-    }
-
     // MARK: - appendToCurrentDictationEvent
 
     func testAppendEvent() {
@@ -55,8 +35,10 @@ final class TextMergingAlgorithmsTests: XCTestCase {
             ("segmentPrefixesExisting", "hello world", "hello", "hello world"),
             ("existingSuffixesSegment", "world", "hello world", "hello world"),
             ("suffixPrefixOverlap", "world today", "hello wor", "hello world today"),
-            ("noOverlap_newlineJoin", "goodbye", "hello", "hello\ngoodbye"),
-            ("whitespaceNormalization", "  world  ", "  hello  ", "hello\nworld"),
+            ("noOverlap_spaceJoin", "goodbye", "hello", "hello goodbye"),
+            ("whitespaceNormalization", "  world  ", "  hello  ", "hello world"),
+            ("oneLetterInsideAWordIsNotAnOverlap", "doing this", "I need", "I need doing this"),
+            ("wholeWordOverlap", "the plan", "back to the", "back to the plan"),
         ]
         for (name, segment, existingText, expected) in cases {
             XCTAssertEqual(
@@ -65,6 +47,30 @@ final class TextMergingAlgorithmsTests: XCTestCase {
                 name
             )
         }
+    }
+
+    func testAppendEventRejoinsASegmentThatStartsMidWord() {
+        let cases: [(name: String, segment: String, existingText: String, expected: String)] = [
+            ("gluesOntoAWord", "e help me", "Pleas", "Please help me"),
+            ("afterPunctuationKeepsTheSpace", "s", "information.", "information. s"),
+        ]
+        for (name, segment, existingText, expected) in cases {
+            XCTAssertEqual(
+                TextMergingAlgorithms.appendToCurrentDictationEvent(
+                    segment: segment, existingText: existingText, segmentStartsMidWord: true),
+                expected,
+                name
+            )
+        }
+    }
+
+    func testStartsMidWord() {
+        XCTAssertTrue(TextMergingAlgorithms.startsMidWord("e help"))
+        XCTAssertTrue(TextMergingAlgorithms.startsMidWord("ng"))
+        XCTAssertFalse(TextMergingAlgorithms.startsMidWord(" help"))
+        XCTAssertFalse(TextMergingAlgorithms.startsMidWord("Second"))
+        XCTAssertFalse(TextMergingAlgorithms.startsMidWord("."))
+        XCTAssertFalse(TextMergingAlgorithms.startsMidWord(""))
     }
 
     // MARK: - normalizeTranscriptionFormatting
@@ -202,12 +208,25 @@ final class TextMergingAlgorithmsTests: XCTestCase {
             // Overlap merge when the incoming segment replays the prefix and grows:
             // "spari" + "sparisce." → "sparisce." (the boundary stays at the end).
             ("replayedGrowingWord_keepsOnlySuffix_italian", "spari", "sparisce.", "sparisce.", "sce."),
+            // #516: one letter shared inside a word is not an alignment.
+            ("oneLetterInsideAWordIsNotAnOverlap", "I need", "doing", "I need doing", " doing"),
         ]
         for (name, existing, incoming, merged, delta) in cases {
             let result = TextMergingAlgorithms.appendWithTailOverlap(existing: existing, incoming: incoming)
             XCTAssertEqual(result.merged, merged, "\(name): merged")
             XCTAssertEqual(result.appendedDelta, delta, "\(name): appendedDelta")
         }
+    }
+
+    func testTailOverlap_incomingThatStartsMidWordGluesOntoTheLastWord() {
+        let glued = TextMergingAlgorithms.appendWithTailOverlap(
+            existing: "Pleas", incoming: "e help", incomingStartsMidWord: true)
+        XCTAssertEqual(glued.merged, "Please help")
+        XCTAssertEqual(glued.appendedDelta, "e help")
+
+        let afterPunctuation = TextMergingAlgorithms.appendWithTailOverlap(
+            existing: "information.", incoming: "s", incomingStartsMidWord: true)
+        XCTAssertEqual(afterPunctuation.merged, "information. s")
     }
 
     func testTailOverlap_wordReplayWithFormattingArtifacts_keepsOnlySuffix() {

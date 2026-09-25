@@ -5,38 +5,12 @@ import XCTest
 /// What must hold when the terminal screen and the clipboard both feed ONE
 /// polish request.
 ///
-/// These are the invariants the two features can only break together, so
-/// neither source's own suite can catch them: a shared budget that is actually
-/// shared, a merge that both sources vote in, one attachment that keeps the
-/// prompt cache intact, and a fixed order.
+/// The budget and the merge never branch on the source, so their cross-source
+/// rules live in `PolishContextBudgetTests` and `PolishContextGroundingTests`.
+/// This file holds what the app adds: one attachment that keeps the prompt
+/// cache intact, a fixed order, and grounding on the full text.
 final class PolishContextMultiSourceTests: XCTestCase {
     // MARK: - One budget across sources
-
-    // The regression this file exists for: two sources each allocating from
-    // `totalCharacterBudget` would each believe they had all of it and together
-    // spend double. One allocation, one total.
-    func testCombinedGrantsNeverExceedTheTotalBudget() {
-        let allocation = PolishContextBudget.allocate(demands: [
-            .terminal: 20_000,
-            .clipboard: 500_000,
-        ])
-        let granted = allocation.values.reduce(0, +)
-        XCTAssertLessThanOrEqual(granted, PolishContextBudget.totalCharacterBudget)
-        XCTAssertGreaterThan(allocation[.terminal] ?? 0, 0, "an overflowing source still gets its floor")
-        XCTAssertGreaterThan(allocation[.clipboard] ?? 0, 0)
-    }
-
-    // Everything fits ⇒ everyone renders in full. This is the common case: a
-    // short clipboard and one screen of terminal both attach verbatim, and
-    // neither is trimmed just because the other exists.
-    func testBothSourcesRenderCompletelyWhenTheCombinedContentFits() {
-        let allocation = PolishContextBudget.allocate(demands: [
-            .terminal: 1_200,
-            .clipboard: 800,
-        ])
-        XCTAssertEqual(allocation[.terminal], 1_200, "a terminal viewport that fits attaches whole")
-        XCTAssertEqual(allocation[.clipboard], 800)
-    }
 
     // A source that renders nothing must not reserve budget it cannot spend —
     // an unjoined pane declares no demand, so the clipboard gets everything.
@@ -150,66 +124,6 @@ final class PolishContextMultiSourceTests: XCTestCase {
             block?.rendered,
             PolishContextClipboardReader.contextMessage(excerpt: excerpt, characterCap: 2000)
         )
-    }
-
-    // MARK: - Cross-source grounding
-
-    // Two sources reading the same heard span DIFFERENTLY cannot both be right,
-    // and pre-applying either edits words the user did not say. Abstain.
-    func testTerminalAndClipboardConflictOnASpanAbstains() {
-        let merged = PolishContextGrounding.merge([
-            PolishContextGrounding.Candidate(
-                source: .terminal,
-                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth ts"])],
-                isFallbackOnly: false
-            ),
-            PolishContextGrounding.Candidate(
-                source: .clipboard,
-                entries: [ReplacementEntry(replaceWith: "useAuthz.ts", matches: ["use auth ts"])],
-                isFallbackOnly: false
-            ),
-        ])
-        XCTAssertTrue(merged.all.isEmpty, "a contested span must not be pre-applied by either source")
-        XCTAssertTrue(merged.entries(from: .terminal).isEmpty)
-        XCTAssertTrue(merged.entries(from: .clipboard).isEmpty)
-    }
-
-    // Agreement is corroboration, not conflict: one entry, attributed to the
-    // earlier rank, never rendered twice under two headers.
-    func testTerminalAndClipboardAgreeingOnATermCollapsesToOneEntry() {
-        let entry = ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth ts"])
-        let merged = PolishContextGrounding.merge([
-            PolishContextGrounding.Candidate(source: .terminal, entries: [entry], isFallbackOnly: false),
-            PolishContextGrounding.Candidate(source: .clipboard, entries: [entry], isFallbackOnly: false),
-        ])
-        XCTAssertEqual(merged.all.map(\.replaceWith), ["useAuth.ts"])
-        XCTAssertEqual(
-            merged.entries(from: .terminal).map(\.replaceWith), ["useAuth.ts"],
-            "the earlier allocationRank keeps the term"
-        )
-        XCTAssertTrue(
-            merged.entries(from: .clipboard).isEmpty,
-            "an agreed term must not be duplicated into both sources' prompt sections"
-        )
-    }
-
-    // A terminal fallback GUESS must yield to a solidly grounded repo hit on the
-    // same span rather than compete with it.
-    func testTerminalFallbackGuessYieldsToASolidRepoHit() {
-        let merged = PolishContextGrounding.merge([
-            PolishContextGrounding.Candidate(
-                source: .repository,
-                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth ts"])],
-                isFallbackOnly: false
-            ),
-            PolishContextGrounding.Candidate(
-                source: .terminal,
-                entries: [ReplacementEntry(replaceWith: "UseAuthTS", matches: ["use auth ts"])],
-                isFallbackOnly: true
-            ),
-        ])
-        XCTAssertEqual(merged.all.map(\.replaceWith), ["useAuth.ts"])
-        XCTAssertTrue(merged.entries(from: .terminal).isEmpty)
     }
 
     // MARK: - Grounding survives a reduced excerpt

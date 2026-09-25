@@ -12,7 +12,12 @@ set -euo pipefail
 #                  and the cost-budget suite below). With no extra arguments
 #                  it runs LV_TEST_SHARDS (default 6) xctest processes at once
 #                  and merges their output into one log; any argument (e.g.
-#                  --filter) runs one plain `swift test`
+#                  --filter) runs one plain `swift test`. Off a Mac, with a
+#                  Swift toolchain here (SWIFT, else `swift` on PATH), the
+#                  suites that build on Linux run here instead
+#                  (.build/last-linux.log): a --filter naming only those never
+#                  reaches the Mac, and a plain `test` runs them beside the
+#                  Mac's part. LV_TEST_ON_MAC=1 runs everything on the Mac
 #     test-cost-budgets
 #                  PolishContextPreparationTests, the suite whose assertions
 #                  are about how much work a preparation costs (#430)
@@ -157,6 +162,7 @@ handle_remote_signal() {
   # A second Ctrl-C while the best-effort reap SSH is running must not skip
   # existing EXIT traps that remove transient eval markers.
   trap '' HUP INT TERM
+  declare -F stop_linux_suites >/dev/null && stop_linux_suites
   if [[ "$REMOTE_PAYLOAD_ACTIVE" == "1" ]]; then
     reap_remote_workdir
   fi
@@ -258,6 +264,108 @@ cleanup_transient_marker() {
       "$ROOT_DIR/" "$HOST:$DIR/" 2>/dev/null || true
   fi
 }
+
+# The Linux suites (#545). On a box that is not a Mac and has a Swift
+# toolchain (SWIFT, else `swift` on PATH), `test` runs the suites that build
+# on Linux here, through scripts/core-tests-linux.sh, and sends only the rest
+# to the Mac: a `--filter` that names Linux suites alone never reaches the
+# Mac, and a plain `test` runs the Linux part here while the Mac runs the
+# rest. scripts/lib/linux-suites.sh says which suites those are.
+# LV_TEST_ON_MAC=1 sends everything to the Mac, as before.
+LINUX_SWIFT=""
+LINUX_RUN=0
+LINUX_ARGS=()
+LINUX_LOG="${LOCALVOXTRAL_LINUX_LOG:-$ROOT_DIR/.build/last-linux.log}"
+if [[ "${1:-test}" == test && "$(uname -s)" != Darwin && "${LV_TEST_ON_MAC:-0}" != 1 ]]; then
+  LINUX_SWIFT="${SWIFT:-$(command -v swift 2>/dev/null || true)}"
+  if [[ -z "$LINUX_SWIFT" ]]; then
+    echo "==> No Swift on this box (SWIFT= names one): the Linux suites run on the Mac" >&2
+  fi
+fi
+
+run_linux_suites() {
+  mkdir -p "$(dirname "$LINUX_LOG")"
+  SWIFT="$LINUX_SWIFT" "$ROOT_DIR/scripts/core-tests-linux.sh" \
+    ${LINUX_ARGS[@]+"${LINUX_ARGS[@]}"} >"$LINUX_LOG" 2>&1
+}
+
+# The run beside the Mac's goes in a process group of its own (job control,
+# `set -m`, as scripts/ci/run-supervised-command.sh does; macOS has no
+# setsid), so a signal to this script can stop the whole of it, swift
+# included, rather than leave a build holding .build/linux;
+# handle_remote_signal does. That also keeps a terminal's Ctrl-C from reaching
+# it twice.
+LINUX_PID=""
+start_linux_suites() {
+  set -m
+  run_linux_suites </dev/null &
+  LINUX_PID=$!
+  set +m
+}
+
+stop_linux_suites() {
+  [[ -n "$LINUX_PID" ]] || return 0
+  kill -TERM -- "-$LINUX_PID" 2>/dev/null || true
+  wait "$LINUX_PID" 2>/dev/null || true
+  LINUX_PID=""
+}
+
+# Prints the outcome of run_linux_suites, given its exit status.
+report_linux_suites() {
+  local status="$1" executed
+  # A build that fails prints no summary: grep finds nothing, and that must
+  # not end the script under pipefail before the failure is reported.
+  executed="$(grep -E 'Executed [0-9]+ tests?, with' "$LINUX_LOG" | tail -n 1 | sed 's/^[[:space:]]*//' || true)"
+  if [[ "$status" == "0" ]]; then
+    echo "==> Linux suites passed here: ${executed:-no XCTest summary}"
+  else
+    tail -n 60 "$LINUX_LOG"
+    echo "==> Linux suites FAILED here (exit $status)"
+  fi
+  echo "==> Full Linux output: $LINUX_LOG"
+}
+
+if [[ -n "$LINUX_SWIFT" ]]; then
+  # shellcheck source=lib/linux-suites.sh
+  . "$ROOT_DIR/scripts/lib/linux-suites.sh"
+  if [[ $# -le 1 ]]; then
+    LINUX_RUN=1
+  else
+    # Only a list of --filter values is split; any other argument keeps the
+    # whole run on the Mac.
+    linux_filters=()
+    mac_filters=()
+    only_filters=1
+    rest=("${@:2}")
+    i=0
+    while (( i < ${#rest[@]} )); do
+      case "${rest[i]}" in
+        --filter) value="${rest[i+1]:-}"; i=$((i + 2)) ;;
+        --filter=*) value="${rest[i]#--filter=}"; i=$((i + 1)) ;;
+        *) only_filters=0; break ;;
+      esac
+      # A --filter with no value goes to the Mac as typed, and fails there.
+      if [[ -z "$value" ]]; then only_filters=0; break; fi
+      if lv_filter_is_linux_only "$value"; then
+        linux_filters+=(--filter "$value")
+      else
+        mac_filters+=(--filter "$value")
+      fi
+    done
+    if (( only_filters && ${#linux_filters[@]} > 0 )); then
+      LINUX_RUN=1
+      LINUX_ARGS=("${linux_filters[@]}")
+      if (( ${#mac_filters[@]} == 0 )); then
+        echo "==> Every suite named runs on Linux: running here with $LINUX_SWIFT"
+        status=0
+        run_linux_suites || status=$?
+        report_linux_suites "$status"
+        exit "$status"
+      fi
+      set -- test "${mac_filters[@]}"
+    fi
+  fi
+fi
 
 if [[ -z "$HOST" ]]; then
   cat >&2 <<'MSG'
@@ -365,6 +473,11 @@ UNIT_TEST_SKIP_NAMES=(RealtimeAPIVLLMIntegrationTests LLMPolishPromptEvalTests
   SpeechdStreamingBenchTests AgentDictationE2EEvalTests
   HerdrIntegrationTests MistralRealtimeSoakTests
   PolishContextPreparationTests)
+if [[ "$LINUX_RUN" == "1" && "$CMD" == test && $# -eq 0 ]]; then
+  # The Linux part of a plain `test` runs here; build-test still runs it on
+  # macOS.
+  for name in $(lv_linux_test_modules); do UNIT_TEST_SKIP_NAMES+=("$name"); done
+fi
 UNIT_TEST_SKIPS=()
 for name in "${UNIT_TEST_SKIP_NAMES[@]}"; do UNIT_TEST_SKIPS+=(--skip "$name"); done
 
@@ -874,6 +987,13 @@ rsync -az --delete \
 # cleanup rsync now has something to delete.
 TREE_SYNCED=1
 
+# Started only now: core-tests-linux.sh removes Package.resolved while it
+# builds, and the sync above must carry it.
+if [[ "$LINUX_RUN" == "1" ]]; then
+  echo "==> Running the Linux suites here with $LINUX_SWIFT, beside the Mac run"
+  start_linux_suites
+fi
+
 PAYLOAD_STATUS=0
 if [[ "$RUN_UNIT_SHARDS" == "1" ]]; then
   # shellcheck source=lib/unit-test-shards.sh
@@ -898,6 +1018,16 @@ if [[ "$RUN_UNIT_SHARDS" == "1" ]]; then
 else
   run_remote_payload "cd $(printf '%q' "$DIR") && $(printf '%q ' "${REMOTE_CMD[@]}")" \
     || PAYLOAD_STATUS=$?
+fi
+
+if [[ -n "$LINUX_PID" ]]; then
+  LINUX_STATUS=0
+  wait "$LINUX_PID" || LINUX_STATUS=$?
+  LINUX_PID=""
+  report_linux_suites "$LINUX_STATUS"
+  if [[ "$PAYLOAD_STATUS" == "0" && "$LINUX_STATUS" != "0" ]]; then
+    PAYLOAD_STATUS="$LINUX_STATUS"
+  fi
 fi
 
 # A lane that names a suite it must have run checks the log for it. Only on an
