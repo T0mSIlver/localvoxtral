@@ -110,8 +110,14 @@ set -euo pipefail
 #                  in the agent-dictation manifest format), or
 #                  `--hypotheses EvalRecordings/term-recall/<file>.jsonl` to
 #                  score {"id","text"} rows with no speech engine;
+#                  `--bias none|session|noise` (the term list each case sends
+#                  in session.update: none, its session's terms, or the set's
+#                  noise terms), `--helper` (launch the packaged helper from a
+#                  prior `package` run instead of the test service; needed to
+#                  measure a helper or engine change) and `--term-boost
+#                  first,continuation,margin` (passed to that helper);
 #                  `compare <before> <after>` pairs two runs by label, e.g.
-#                  eval-term-recall --asr nemotron
+#                  eval-term-recall --asr nemotron --helper --bias session
 #     dogfood     build the instrumented (LOCALVOXTRAL_DOGFOOD) tree and run
 #                  the context-capture suite; the capture is a compile gate, so
 #                  no other lane ever builds it
@@ -815,9 +821,16 @@ case "$CMD" in
     TR_RECORDINGS=""
     TR_HYPOTHESES=""
     TR_COMPARE=()
+    TR_BIAS=""
+    TR_HELPER=0
+    TR_TERM_BOOST=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
-        --asr|--label|--limit|--case|--recordings|--hypotheses)
+        --helper)
+          TR_HELPER=1
+          shift
+          ;;
+        --asr|--label|--limit|--case|--recordings|--hypotheses|--bias|--term-boost)
           if [[ $# -lt 2 ]]; then
             echo "eval-term-recall: $1 needs a value" >&2
             exit 1
@@ -829,6 +842,8 @@ case "$CMD" in
             --case) TR_CASES+=("$2") ;;
             --recordings) TR_RECORDINGS="$2" ;;
             --hypotheses) TR_HYPOTHESES="$2" ;;
+            --bias) TR_BIAS="$2" ;;
+            --term-boost) TR_TERM_BOOST="$2" ;;
           esac
           shift 2
           ;;
@@ -857,6 +872,20 @@ case "$CMD" in
       echo "eval-term-recall: --limit must be a positive integer" >&2
       exit 1
     fi
+    if [[ -n "$TR_BIAS" && "$TR_BIAS" != none && "$TR_BIAS" != session && "$TR_BIAS" != noise ]]; then
+      echo "eval-term-recall: --bias must be none, session or noise" >&2
+      exit 1
+    fi
+    if [[ -n "$TR_TERM_BOOST" ]]; then
+      if [[ ! "$TR_TERM_BOOST" =~ ^[0-9]+(\.[0-9]+)?,[0-9]+(\.[0-9]+)?,[0-9]+(\.[0-9]+)?$ ]]; then
+        echo "eval-term-recall: --term-boost must be first,continuation,margin (three non-negative numbers)" >&2
+        exit 1
+      fi
+      if [[ "$TR_HELPER" != 1 ]]; then
+        echo "eval-term-recall: --term-boost configures the packaged helper, so it needs --helper" >&2
+        exit 1
+      fi
+    fi
     for private_only in session-map.json terms.json; do
       if [[ -f "$ROOT_DIR/$TR_DIR/$private_only" ]]; then
         echo "$TR_DIR/$private_only must never leave the harvest machine; the harvester" >&2
@@ -865,13 +894,14 @@ case "$CMD" in
       fi
     done
     # Options that one mode would silently ignore are mistakes: refuse them.
-    if [[ ${#TR_COMPARE[@]} -eq 2 && ( "$TR_ASR_GIVEN" == 1 || -n "$TR_LABEL$TR_LIMIT$TR_RECORDINGS$TR_HYPOTHESES" \
+    if [[ ${#TR_COMPARE[@]} -eq 2 && ( "$TR_ASR_GIVEN" == 1 || "$TR_HELPER" == 1 \
+          || -n "$TR_LABEL$TR_LIMIT$TR_RECORDINGS$TR_HYPOTHESES$TR_BIAS$TR_TERM_BOOST" \
           || ${#TR_CASES[@]} -gt 0 ) ]]; then
       echo "eval-term-recall compare takes no other options" >&2
       exit 1
     fi
-    if [[ -n "$TR_HYPOTHESES" && ( "$TR_ASR_GIVEN" == 1 || -n "$TR_RECORDINGS" ) ]]; then
-      echo "eval-term-recall: --hypotheses scores text, so --asr and --recordings do not apply" >&2
+    if [[ -n "$TR_HYPOTHESES" && ( "$TR_ASR_GIVEN" == 1 || "$TR_HELPER" == 1 || -n "$TR_RECORDINGS$TR_BIAS" ) ]]; then
+      echo "eval-term-recall: --hypotheses scores text, so --asr, --helper, --bias and --recordings do not apply" >&2
       exit 1
     fi
     TR_MARKER="$ROOT_DIR/.term-recall-eval-enable.json"
@@ -914,11 +944,22 @@ case "$CMD" in
           TR_OPTIONAL+=",\"recordingDirectory\":\"$TR_RECORDINGS\""
         fi
         speech_model_row "$TR_ASR" eval-term-recall
-        TR_LABEL="${TR_LABEL:-$TR_ASR-none}"
-        printf '{"mode":"audio","label":"%s","asr":"%s","endpoint":"%s","asrModel":"%s","bias":"none"%s}\n' \
+        TR_BIAS="${TR_BIAS:-none}"
+        TR_LABEL="${TR_LABEL:-$TR_ASR-$TR_BIAS}"
+        if [[ "$TR_HELPER" == 1 ]]; then
+          TR_OPTIONAL+=",\"helperPath\":\"dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd\""
+          if [[ -n "$TR_TERM_BOOST" ]]; then
+            TR_OPTIONAL+=",\"helperArguments\":[\"--term-boost\",\"$TR_TERM_BOOST\"]"
+          fi
+        fi
+        printf '{"mode":"audio","label":"%s","asr":"%s","endpoint":"%s","asrModel":"%s","bias":"%s"%s}\n' \
           "$TR_LABEL" "$TR_ASR" "ws://127.0.0.1:$SPEECH_MODEL_PORT/v1/realtime" "$SPEECH_MODEL_REPO" \
-          "$TR_OPTIONAL" >"$TR_MARKER"
-        ENSURE_SERVER="$(speech_service_name "$TR_ASR")"
+          "$TR_BIAS" "$TR_OPTIONAL" >"$TR_MARKER"
+        # The packaged helper loads its own copy of the weights; the test
+        # service would only hold a second one.
+        if [[ "$TR_HELPER" != 1 ]]; then
+          ENSURE_SERVER="$(speech_service_name "$TR_ASR")"
+        fi
       fi
       # The run file comes back through the log: the Mac's copy is under a
       # work dir that a fresh LV_BUILD_DIR or the gc verb can drop.

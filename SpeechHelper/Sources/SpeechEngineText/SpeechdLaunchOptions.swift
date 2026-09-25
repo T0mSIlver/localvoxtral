@@ -14,6 +14,9 @@ public struct SpeechdLaunchOptions: Equatable {
     /// Maximum length of one utterance (one engine stream session); see `UtteranceLimit`.
     public var utteranceLimit = UtteranceLimit()
     public var benchmark: SpeechdBenchmarkOptions?
+    /// `--term-boost first,continuation,margin`: vocabulary bonus sizes for tuning
+    /// runs. Nil keeps the engine's defaults, which is what the app ships.
+    public var termBoost: TermBoostSettings?
 
     public init() {}
 }
@@ -107,6 +110,11 @@ public enum SpeechdOptionParser {
                     throw SpeechdOptionError.invalidValue(flag)
                 }
                 options.utteranceLimit = UtteranceLimit(seconds: seconds)
+            case "--term-boost":
+                guard let settings = TermBoostSettings(parsing: try value(flag)) else {
+                    throw SpeechdOptionError.invalidValue(flag)
+                }
+                options.termBoost = settings
             case "--bench":
                 benchmarkEnabled = true
             case "--seconds":

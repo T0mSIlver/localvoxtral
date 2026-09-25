@@ -4,7 +4,9 @@ import Foundation
 /// Matches what `RealtimeAPIWebSocketClient` sends and expects (verified against the client),
 /// so this Swift server is a drop-in for the Python `voxmlx` process. Pure and Metal-free.
 public enum RealtimeClientMessage: Equatable, Sendable {
-    case sessionUpdate
+    /// `vocabulary` is nil when the frame has no `vocabulary` field, which keeps the
+    /// connection's current list; an empty list clears it.
+    case sessionUpdate(vocabulary: SessionVocabulary?)
     /// 16 kHz mono PCM16LE, base64-encoded.
     case audioAppend(base64PCM16: String)
     /// `final == true` finalizes the utterance; a non-final commit is a no-op (matches voxmlx).
@@ -17,6 +19,7 @@ public enum RealtimeClientMessage: Equatable, Sendable {
         case notJSONObject
         case missingType
         case invalidAudioPayload
+        case invalidVocabulary
     }
 
     public static func parse(_ data: Data) throws -> RealtimeClientMessage {
@@ -27,7 +30,9 @@ public enum RealtimeClientMessage: Equatable, Sendable {
 
         switch type {
         case "session.update":
-            return .sessionUpdate
+            guard let field = obj["vocabulary"] else { return .sessionUpdate(vocabulary: nil) }
+            guard let terms = field as? [String] else { throw ParseError.invalidVocabulary }
+            return .sessionUpdate(vocabulary: SessionVocabulary(terms))
         case "input_audio_buffer.append":
             guard let audio = obj["audio"] as? String, !audio.isEmpty else {
                 throw ParseError.invalidAudioPayload

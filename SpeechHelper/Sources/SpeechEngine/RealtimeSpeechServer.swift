@@ -19,6 +19,8 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
     private let transcriptionDelayMs: Int?
     private let stepMilliseconds: Int
     private let utteranceLimit: UtteranceLimit
+    /// Whether the log already said this engine ignores vocabulary lists.
+    private var reportedUnusedVocabulary = false
     private let listener: NWListener
     private let netQueue = DispatchQueue(label: "localvoxtral.speechd.net")
     private let inferenceQueue = DispatchQueue(label: "localvoxtral.speechd.inference")
@@ -38,13 +40,15 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         transcriptionDelayMs: Int?,
         cacheLimitMB: Int,
         stepMilliseconds: Int = 100,
-        utteranceLimit: UtteranceLimit = UtteranceLimit()
+        utteranceLimit: UtteranceLimit = UtteranceLimit(),
+        termBoost: TermBoostSettings? = nil
     ) async throws -> RealtimeSpeechServer {
         Memory.cacheLimit = cacheLimitMB * 1024 * 1024
         let engine = try await SpeechModelLoader.load(
             modelID: modelID,
             modelRevision: modelRevision,
-            modelDirectory: modelDirectory
+            modelDirectory: modelDirectory,
+            termBoost: termBoost
         )
         return try RealtimeSpeechServer(
             engine: engine,
@@ -137,6 +141,9 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         // Latches an early engine stop (length cap or end-of-stream) so it is reported once
         // per engine session. Inference queue only, like `session`.
         var stopReporter = UtteranceStopReporter()
+        /// The client's latest `session.update` list; every session this connection
+        /// opens starts with it. Inference queue only, like `session`.
+        var vocabulary = SessionVocabulary.empty
         enum Phase { case http, webSocket }
 
         init(stepMilliseconds: Int) {
@@ -236,7 +243,13 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         inferenceQueue.async { [weak self] in
             guard let self else { return }
             switch message {
-            case .sessionUpdate:
+            case .sessionUpdate(let vocabulary):
+                if let vocabulary {
+                    ctx.vocabulary = vocabulary
+                    FileHandle.standardError.write(Data(
+                        "speechd: session vocabulary set: \(vocabulary.terms.count) terms\n".utf8))
+                    if let session = ctx.session { self.applyVocabulary(vocabulary, to: session) }
+                }
                 self.sendServer(connection, .sessionUpdated)
             case .audioAppend(let base64):
                 guard let samples = PCM16.decode(base64: base64) else {
@@ -263,6 +276,11 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                 // read as the model stopping early.
                 self.reportEarlyStopIfNeeded(session, connection, ctx)
                 session.finish()
+                if !ctx.vocabulary.terms.isEmpty, let biased = session.biasedTokenCount {
+                    FileHandle.standardError.write(Data(
+                        ("speechd: utterance done: \(session.decodedTokenCount) tokens, \(biased) boosted, "
+                            + "\(ctx.vocabulary.terms.count) vocabulary terms\n").utf8))
+                }
                 let tail = ctx.deltas.emit(fullText: session.text)
                 if !tail.isEmpty { self.sendServer(connection, .transcriptDelta(tail)) }
                 // Use the append-only emitted text (== sum of every delta), so the final
@@ -300,8 +318,19 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
             transcriptionDelayMs: transcriptionDelayMs,
             utteranceLimit: utteranceLimit
         )
+        if !ctx.vocabulary.terms.isEmpty { applyVocabulary(ctx.vocabulary, to: s) }
         ctx.session = s
         return s
+    }
+
+    /// Must be called on `inferenceQueue`.
+    private func applyVocabulary(_ vocabulary: SessionVocabulary, to session: SpeechASRStreamingSession) {
+        guard !session.setVocabulary(vocabulary), !vocabulary.terms.isEmpty, !reportedUnusedVocabulary else {
+            return
+        }
+        reportedUnusedVocabulary = true
+        FileHandle.standardError.write(Data(
+            "speechd: this engine cannot bias toward a vocabulary; the list is unused\n".utf8))
     }
 
     /// An engine session that stops before the client's final commit returns nothing from
@@ -351,7 +380,8 @@ enum SpeechModelLoader {
     static func load(
         modelID: String?,
         modelRevision: String?,
-        modelDirectory: String?
+        modelDirectory: String?,
+        termBoost: TermBoostSettings?
     ) async throws -> SpeechASREngine {
         switch engineKind(modelID: modelID, modelDirectory: modelDirectory) {
         case .voxtral:
@@ -369,7 +399,7 @@ enum SpeechModelLoader {
                 modelDirectory: modelDirectory,
                 fromDirectory: { try NemotronASRModel.fromDirectory($0) },
                 fromPretrained: { try await NemotronASRModel.fromPretrained($0) }
-            ))
+            ), termBoost: termBoost)
         }
     }
 

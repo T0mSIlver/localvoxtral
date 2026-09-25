@@ -20,6 +20,19 @@ final class SpeechdLaunchOptionsTests: XCTestCase {
         XCTAssertEqual(options.stepMilliseconds, 240)
     }
 
+    func testTermBoostIsOffByDefaultAndParsesThreeBonuses() throws {
+        XCTAssertNil(try SpeechdOptionParser.parse(["--model", "example/model"]).termBoost)
+        XCTAssertEqual(
+            try SpeechdOptionParser.parse(["--model", "example/model", "--term-boost", "1.5,3,4"]).termBoost,
+            TermBoostSettings(firstTokenBoost: 1.5, continuationBoost: 3, margin: 4)
+        )
+        for value in ["1,2", "1,2,3,4", "1,-2,3", "a,b,c", "1,,3", "inf,1,1"] {
+            XCTAssertThrowsError(
+                try SpeechdOptionParser.parse(["--model", "example/model", "--term-boost", value]), value
+            )
+        }
+    }
+
     func testStepCadenceDefaultsToModelNativeCadence() throws {
         let options = try SpeechdOptionParser.parse(["--model", "example/model"])
 

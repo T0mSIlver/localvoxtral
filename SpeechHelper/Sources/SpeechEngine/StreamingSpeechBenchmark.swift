@@ -15,7 +15,8 @@ public enum StreamingSpeechBenchmark {
         let engine = try await SpeechModelLoader.load(
             modelID: options.modelID,
             modelRevision: options.modelRevision,
-            modelDirectory: options.modelDirectory
+            modelDirectory: options.modelDirectory,
+            termBoost: options.termBoost
         )
         let audio = try BenchmarkAudio.make(
             seconds: benchmark.seconds,

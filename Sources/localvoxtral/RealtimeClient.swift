@@ -5,11 +5,16 @@ struct RealtimeSessionConfiguration: Sendable {
     let endpoint: URL
     let apiKey: String
     let model: String
+    /// Terms the speech engine may bias its decoding toward, sent as
+    /// `vocabulary` in `session.update`. Only the bundled speech helper reads
+    /// it; leave it empty for any other server.
+    let vocabulary: [String]
 
-    init(endpoint: URL, apiKey: String, model: String) {
+    init(endpoint: URL, apiKey: String, model: String, vocabulary: [String] = []) {
         self.endpoint = endpoint
         self.apiKey = apiKey
         self.model = model
+        self.vocabulary = vocabulary
     }
 }
 

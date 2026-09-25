@@ -26,6 +26,7 @@ final class TermRecallEvalTests: XCTestCase {
     static let casesPath = "EvalRecordings/term-recall/cases.json"
     static let runsDirectory = "EvalRecordings/term-recall/runs"
     private static let asrTimeout: TimeInterval = 90
+    private static let helperReadyTimeout: TimeInterval = 300
 
     struct MarkerConfig: Decodable, Equatable {
         enum Mode: String, Decodable {
@@ -40,8 +41,14 @@ final class TermRecallEvalTests: XCTestCase {
         var asr: String?
         var endpoint: String?
         var asrModel: String?
-        /// audio: only `none` until an engine accepts a list (#316, #521).
+        /// audio: the list each case's `session.update` carries: `none`, `session`
+        /// (the case's session terms) or `noise` (the set's noise terms).
         var bias: String?
+        /// audio: a packaged speech helper to launch for this run instead of the
+        /// test service at `endpoint`, e.g. one built from the branch under test,
+        /// plus extra launch arguments such as `--term-boost`.
+        var helperPath: String?
+        var helperArguments: [String]?
         /// audio: `EvalRecordings/term-recall/<set>` with a manifest.json in
         /// the agent-dictation format. Absent = `say`.
         var recordingDirectory: String?
@@ -132,10 +139,8 @@ final class TermRecallEvalTests: XCTestCase {
             throw EvalSpeechStage.Failure("audio mode needs asr, endpoint and asrModel in the marker")
         }
         let bias = config.bias ?? "none"
-        guard bias == "none" else {
-            throw EvalSpeechStage.Failure(
-                "bias=\(bias): no speech engine accepts a term list yet (#316, #521)"
-            )
+        guard ["none", "session", "noise"].contains(bias) else {
+            throw EvalSpeechStage.Failure("bias=\(bias): want none, session or noise")
         }
 
         let recordings = try config.recordingDirectory.map { try loadRecordings($0, cases: cases) }
@@ -154,7 +159,22 @@ final class TermRecallEvalTests: XCTestCase {
             progress("term-recall: voices en=\(englishVoice ?? "default") fr=\(frenchVoice ?? "none")")
         }
 
-        let endpoint = EvalSpeechStage.Endpoint(url: endpointURL, apiKey: "", model: model)
+        var endpoint = EvalSpeechStage.Endpoint(url: endpointURL, apiKey: "", model: model)
+        var helper: PackagedSpeechHelper?
+        if let helperPath = config.helperPath {
+            let port = try unusedLoopbackPort()
+            helper = try await PackagedSpeechHelper.launch(
+                binary: repoRoot.appendingPathComponent(helperPath),
+                model: model,
+                port: port,
+                extraArguments: config.helperArguments ?? [],
+                readyTimeout: Self.helperReadyTimeout
+            )
+            endpoint = EvalSpeechStage.Endpoint(
+                url: URL(string: "ws://127.0.0.1:\(port)/v1/realtime")!, apiKey: "", model: model
+            )
+            progress("term-recall: launched \(helperPath) \((config.helperArguments ?? []).joined(separator: " "))")
+        }
         var scores: [TermRecallCaseScore] = []
         var unscored = 0
         for (index, evalCase) in cases.enumerated() {
@@ -174,10 +194,17 @@ final class TermRecallEvalTests: XCTestCase {
                     }
                     pcm = try EvalSpeechStage.synthesizedPCM16(text: evalCase.text, voice: voice)
                 }
+                let vocabulary: [String]
+                switch bias {
+                case "session": vocabulary = evalCase.sessionTerms
+                case "noise": vocabulary = noiseTerms
+                default: vocabulary = []
+                }
                 hypothesis = try await EvalSpeechStage.transcribe(
                     pcm: pcm,
                     client: AgentDictationE2EEvalSupport.makeRealtimeClient(for: .speechd),
                     endpoint: endpoint,
+                    vocabulary: vocabulary,
                     timeout: Self.asrTimeout
                 )
             } catch {
@@ -189,6 +216,13 @@ final class TermRecallEvalTests: XCTestCase {
             }
             scores.append(TermRecallScorer.score(evalCase, hypothesis: hypothesis, noiseTerms: noiseTerms))
             progress("term-recall: [\(index + 1)/\(cases.count)] \(evalCase.id) done")
+        }
+        if let helper {
+            // Counts only: the helper never logs the terms.
+            let done = helper.stderrLog.lines(containing: "speechd: utterance done:")
+            let boosted = done.compactMap(Self.boostedTokenCount(inLogLine:)).reduce(0, +)
+            progress("term-recall: helper boosted \(boosted) token(s) over \(done.count) utterance(s)")
+            await helper.stop()
         }
         let audio = config.recordingDirectory.map { "human/\(URL(fileURLWithPath: $0).lastPathComponent)" } ?? "say"
         return TermRecallRun(
@@ -248,6 +282,12 @@ final class TermRecallEvalTests: XCTestCase {
             }
         }
         print(TermRecallReport.comparison(before: try load(before), after: try load(after)))
+    }
+
+    /// `B` from the helper's "…, B boosted, …" utterance line.
+    static func boostedTokenCount(inLogLine line: String) -> Int? {
+        guard let range = line.range(of: " boosted") else { return nil }
+        return line[..<range.lowerBound].split(separator: " ").last.flatMap { Int($0) }
     }
 
     /// A progress line, flushed so a long run shows where it is.

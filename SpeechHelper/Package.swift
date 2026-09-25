@@ -35,15 +35,17 @@ let package = Package(
         // vendored+patched before #226). Pinned to a full-SHA revision, not a tag, so the
         // exact reviewed tree is reproducible — see DEPENDENCY.md for the upgrade procedure.
         //
-        // 01dec7c is upstream main at the merge of Blaizzy/mlx-audio-swift#265. It carries
-        // #232 (quantized-tied-embedding loader, required by the catalog's -qhead model,
-        // SpeechModelCatalog), #263-#265 (bounded streaming memory: consumed conv/adapter
-        // rows dropped, KV appended in place, incremental detokenize), and #195/#196/#208/#236
-        // (the Nemotron ASR model, its incremental `NemotronASRStreamSession`, and the wider
-        // checkpoint loader) — so the second catalog entry needs no pin change.
+        // TEMPORARY fork pin: T0mSIlver/mlx-audio-swift branch feat/nemotron-term-boost,
+        // upstream main 01dec7c (the merge of Blaizzy/mlx-audio-swift#265) plus one commit,
+        // Nemotron streaming term boost (#521). Switch back to Blaizzy once that change
+        // merges upstream — see DEPENDENCY.md. 01dec7c carries #232 (quantized-tied-embedding
+        // loader, required by the catalog's -qhead model, SpeechModelCatalog), #263-#265
+        // (bounded streaming memory: consumed conv/adapter rows dropped, KV appended in place,
+        // incremental detokenize), and #195/#196/#208/#236 (the Nemotron ASR model, its
+        // incremental `NemotronASRStreamSession`, and the wider checkpoint loader).
         .package(
-            url: "https://github.com/Blaizzy/mlx-audio-swift.git",
-            revision: "01dec7c9bdce3088a6b6b7ab9f2e403458195efb"
+            url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
+            revision: "c2211b7563306ce265e6da404da108846c8d76a1"
         ),
     ],
     targets: [

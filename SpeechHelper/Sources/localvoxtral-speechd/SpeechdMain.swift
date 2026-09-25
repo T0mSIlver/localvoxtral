@@ -34,7 +34,8 @@ struct SpeechdMain {
             transcriptionDelayMs: options.transcriptionDelayMs,
             cacheLimitMB: options.cacheLimitMB,
             stepMilliseconds: options.stepMilliseconds,
-            utteranceLimit: options.utteranceLimit
+            utteranceLimit: options.utteranceLimit,
+            termBoost: options.termBoost
         )
 
         // Exit if the supervising app dies, so a killed app never orphans the model.
