@@ -36,6 +36,8 @@ transport_log="$TMP_DIR/transport.log"
 common_env=(
   "PATH=$TMP_DIR/bin:$PATH"
   "LV_BUILD_HOST=fake-host"
+  # The Mac path; test-remote-build-linux-routing.sh covers the Linux one.
+  "LV_TEST_ON_MAC=1"
   "LV_BUILD_DIR=work/localvoxtral-gate-args-regression"
   "LV_TEST_TRANSPORT_LOG=$transport_log"
   "LOCALVOXTRAL_REMOTE_LOG=$TMP_DIR/remote-build.log"
