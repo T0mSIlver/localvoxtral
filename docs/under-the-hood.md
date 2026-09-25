@@ -70,7 +70,7 @@ Both helpers ship inside the app bundle. Their model weights download from
 Hugging Face at exact pinned commits, so an upstream edit to a model repo
 can never change what your install runs. The app supervises both helpers,
 and a watchdog stops them even if the app crashes. Transcription-and-polish
-quality is held by a nightly end-to-end eval — real audio through the
+quality is held by a weekly end-to-end eval — real audio through the
 production ASR and polishing path, scored against an agent-dictation corpus
 of ~160 cases — so a model or prompt change that regresses dictation gets
 caught before it ships.

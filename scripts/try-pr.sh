@@ -135,11 +135,19 @@ if (( ! DOGFOOD )) && ! run_has_artifact "$RUN_ID"; then
         break
       fi
     done
+    # A dispatch already building main: point at it rather than invite a
+    # second one onto the single Mac.
+    ACTIVE_RUN="$(gh run list --workflow CI --branch main --event workflow_dispatch --limit 10 \
+      --json databaseId,status --jq '[.[] | select(.status != "completed")][0].databaseId // empty')"
   fi
   if [[ -n "$WITH_ARTIFACT" && "$TARGET" == "main" ]]; then
     RUN_ID="$WITH_ARTIFACT"
     echo "Using main's newest signed build, run $RUN_ID ($(gh run view "$RUN_ID" --json headSha --jq '.headSha[0:7]'))." >&2
-    echo "For a build of main's head: gh workflow run CI --ref main -f herdr=false" >&2
+    if [[ -n "$ACTIVE_RUN" ]]; then
+      echo "Run $ACTIVE_RUN is building a newer one: ./scripts/watch-checks.sh --run $ACTIVE_RUN" >&2
+    else
+      echo "For a build of main's head: gh workflow run CI --ref main -f herdr=false" >&2
+    fi
   elif [[ -n "$WITH_ARTIFACT" ]]; then
     RUN_ID="$WITH_ARTIFACT"
   elif [[ -n "$ACTIVE_RUN" ]]; then
