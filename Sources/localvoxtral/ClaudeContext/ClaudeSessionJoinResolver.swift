@@ -62,7 +62,6 @@ struct ClaudeSessionJoinResolver {
     let panelSleepFor: HerdrPanelBindingProbe.SleepFor
     let panelRandomBits: HerdrPanelBindingProbe.RandomBits
     let indicatorSleepFor: HerdrPanelMicIndicator.SleepFor
-    let reportPanelStatus: @MainActor (HerdrPanelConfigurationStatus) -> Void
 
     /// - Parameters:
     ///   - focusedTerminalTTY: reads the focused pane's controlling TTY for a
@@ -170,8 +169,7 @@ struct ClaudeSessionJoinResolver {
         },
         indicatorSleepFor: @escaping HerdrPanelMicIndicator.SleepFor = { seconds in
             try? await Task.sleep(for: .seconds(seconds))
-        },
-        reportPanelStatus: @escaping @MainActor (HerdrPanelConfigurationStatus) -> Void = { _ in }
+        }
     ) {
         self.registry = registry
         self.focusedTerminalTTY = focusedTerminalTTY
@@ -197,7 +195,6 @@ struct ClaudeSessionJoinResolver {
         self.panelSleepFor = panelSleepFor
         self.panelRandomBits = panelRandomBits
         self.indicatorSleepFor = indicatorSleepFor
-        self.reportPanelStatus = reportPanelStatus
     }
 
     /// The join for `target`, or nil on any abstention.

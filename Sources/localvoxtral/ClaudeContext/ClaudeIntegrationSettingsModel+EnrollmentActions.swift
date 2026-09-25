@@ -6,8 +6,6 @@ extension ClaudeIntegrationSettingsModel {
         // The plaintext goes with it. Nothing else holds a copy.
         presentedPlan = nil
         enrollmentConfirmation = nil
-        enrollmentStepStatuses = []
-        enrollmentResultsAction = nil
         verificationChecks = []
         setupRun = nil
         setupManualInstructions = nil
@@ -25,11 +23,7 @@ extension ClaudeIntegrationSettingsModel {
         let alias = host.sshHostAlias.flatMap {
             ClaudeRemoteEnrollmentService.isValidHostAlias($0) ? $0 : nil
         }
-        // A fresh panel must not inherit another action's results, for the same
-        // reason a fresh enrollment sheet must not (field report 2026-07-26).
         enrollmentConfirmation = nil
-        enrollmentStepStatuses = []
-        enrollmentResultsAction = nil
         // Regenerate the block unless it is already current. `nil` from the
         // service means "cannot tell", and cannot-tell must regenerate: the
         // cost of a redundant idempotent rewrite is nothing, and the cost of
@@ -78,13 +72,6 @@ extension ClaudeIntegrationSettingsModel {
     static let unknownAliasPlaceholder = "your-ssh-host"
 
     public func dismissPluginUpdate() {
-        switch enrollmentResultsAction {
-        case .updateHost?:
-            enrollmentStepStatuses = []
-            enrollmentResultsAction = nil
-        default:
-            break
-        }
         switch enrollmentConfirmation?.action {
         case .updateHost?:
             enrollmentConfirmation = nil
@@ -108,10 +95,6 @@ extension ClaudeIntegrationSettingsModel {
             title: hostSetupConsentSentence(
                 sshHostAlias: presentation.sshHostAlias ?? Self.unknownAliasPlaceholder
             ),
-            preview: setupPreview(
-                sshConfigSnippet: presentation.sshConfigSnippet,
-                remoteCommands: presentation.commands
-            ),
             confirmButtonTitle: "Update Host"
         )
         Log.claudeContext.info("Claude remote host update confirmation requested")
@@ -123,18 +106,12 @@ extension ClaudeIntegrationSettingsModel {
               !isEnrollmentBusy,
               !presentation.isPreview
         else { return }
-        enrollmentStepStatuses = []
-        enrollmentResultsAction = nil
         verificationChecks = []
         setupRun = nil
         setupManualInstructions = nil
         enrollmentConfirmation = EnrollmentConfirmation(
             action: .setupHost,
             title: hostSetupConsentSentence(sshHostAlias: presentation.sshHostAlias),
-            preview: setupPreview(
-                sshConfigSnippet: presentation.plan.sshConfigSnippet,
-                remoteCommands: presentation.plan.remoteCommands
-            ),
             confirmButtonTitle: "Run Setup"
         )
         Log.claudeContext.info("Claude remote host setup confirmation requested")
@@ -159,26 +136,6 @@ extension ClaudeIntegrationSettingsModel {
         setupCancellationRequested = true
     }
 
-    private func setupPreview(
-        sshConfigSnippet: String?,
-        remoteCommands: [String]
-    ) -> String {
-        var sections: [String] = []
-        if let sshConfigSnippet {
-            sections.append("Mac ~/.ssh/config:\n\(sshConfigSnippet)")
-        }
-        if let shellSetupPreview {
-            sections.append("Mac shell startup file:\n\(shellSetupPreview)")
-        }
-        sections.append("Remote host:\n" + remoteCommands.joined(separator: "\n"))
-        sections.append(
-            "Remote herdr, when installed:\n"
-                + ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet
-                + "\nherdr server reload-config"
-        )
-        return sections.joined(separator: "\n\n")
-    }
-
     func shellRCPathForConsent() -> String {
         guard let shell = loginShell() else { return "your shell startup file" }
         let relative = ClaudeShellRCSetup.relativeRCPath(for: shell) { relative in
@@ -188,93 +145,6 @@ extension ClaudeIntegrationSettingsModel {
             )
         }
         return "~/\(relative)"
-    }
-
-    /// Turn one finished attempt into the statuses its section renders.
-    func publish(_ attempt: ClaudeEnrollmentActionAttempt, action: EnrollmentAction) {
-        if let failure = attempt.failure {
-            enrollmentStepStatuses = Self.failureStatuses(failure, action: action)
-            enrollmentResultsAction = action
-            alert = DetailAlert(
-                title: Self.failureAlertTitle(for: action),
-                detail: Self.enrollmentFailureDetail(failure, subject: Self.failureSubject(for: action))
-            )
-            Log.claudeContext.error(
-                "Claude remote enrollment action failed: \(failure.describedError, privacy: .public)"
-            )
-            return
-        }
-
-        switch action {
-        case .configureLocalHerdrPanel:
-            enrollmentStepStatuses = [
-                EnrollmentStepStatus(
-                    id: 0,
-                    text: "Configured the local herdr agents panel.",
-                    succeeded: true,
-                    detail: attempt.steps.first?.message ?? ""
-                )
-            ]
-        case .setupHost, .updateHost:
-            break
-        }
-        enrollmentResultsAction = action
-    }
-
-    static func failureAlertTitle(for action: EnrollmentAction) -> String {
-        switch action {
-        case .setupHost: return "Remote Claude Code setup"
-        case .updateHost: return "Remote host update"
-        case .configureLocalHerdrPanel: return "Local herdr panel"
-        }
-    }
-
-    static func failureSubject(for action: EnrollmentAction) -> String {
-        switch action {
-        case .setupHost, .updateHost: return "SSH setup"
-        case .configureLocalHerdrPanel: return "Local herdr panel setup"
-        }
-    }
-
-    private static func failureStatuses(
-        _ failure: ClaudeEnrollmentActionFailure,
-        action: EnrollmentAction
-    ) -> [EnrollmentStepStatus] {
-        let failedStep: Int
-        let detail: String
-        switch failure.serviceError {
-        case .commandFailed(let step, _, _, let message):
-            failedStep = step
-            detail = message
-        case .commandTimedOut(let step, _, _, let message):
-            failedStep = step
-            detail = message
-        case .runnerFailed(let step, _, let message):
-            failedStep = step
-            detail = message
-        default:
-            var text = "Remote setup failed."
-            if case .configureLocalHerdrPanel = action { text = "Local herdr panel setup failed." }
-            let detail: String
-            if failure.serviceError == .herdrPanelConfigAlreadyCustomized
-                || failure.serviceError == .localHerdrPanelConfigAlreadyCustomized {
-                detail = "Open Details for the manual herdr configuration."
-            } else {
-                detail = failure.describedError
-            }
-            return [EnrollmentStepStatus(id: 0, text: text, succeeded: false, detail: detail)]
-        }
-        let succeeded = (0..<failedStep).map {
-            EnrollmentStepStatus(id: $0, text: "Step \($0 + 1) succeeded.", succeeded: true, detail: "")
-        }
-        return succeeded + [
-            EnrollmentStepStatus(
-                id: failedStep,
-                text: "Step \(failedStep + 1) failed.",
-                succeeded: false,
-                detail: detail
-            )
-        ]
     }
 
     /// The alert body. `subject` names the work in the user's terms — an alert
@@ -308,9 +178,6 @@ extension ClaudeIntegrationSettingsModel {
             return "Running commands over SSH is not available in this build."
         case .invalidHostAlias:
             return "The SSH host alias is invalid."
-        case .herdrPanelConfigAlreadyCustomized:
-            return "The remote herdr config already has an agents table or rows key, so "
-                + "localvoxtral left it unchanged. Open Details for the manual remedy."
         case .localHerdrPanelConfigAlreadyCustomized:
             return "This Mac's herdr config already has an agents table or rows key, so "
                 + "localvoxtral left it unchanged. Open Details for the manual remedy."

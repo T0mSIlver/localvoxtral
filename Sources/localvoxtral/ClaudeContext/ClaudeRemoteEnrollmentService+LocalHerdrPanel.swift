@@ -73,7 +73,7 @@ extension ClaudeRemoteEnrollmentService {
     /// the machine the CLIENT runs on, which for a federated surface is this
     /// Mac, not the enrolled host).
     ///
-    /// Same conservative rule as `configureRemoteHerdrPanel`: append the
+    /// Same conservative rule as `setupRemoteHerdr`: append the
     /// three-row block only when the config carries no
     /// `[ui.sidebar.agents]` table and no `rows` key; refuse — leaving the
     /// file untouched — and point at the manual placement otherwise. The

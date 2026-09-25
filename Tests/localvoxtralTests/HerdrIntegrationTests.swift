@@ -13,7 +13,7 @@ import XCTest
 /// What is real here: `HerdrSocketClient` on a forwarded unix socket,
 /// `ClaudeRemoteHerdrForwardService` spawning a real supervised `ssh -N`,
 /// `SSHDestinationCanonicalizer.live()` running real `ssh -G`,
-/// `ClaudeRemoteEnrollmentService.configureRemoteHerdrPanel` patching a real
+/// `ClaudeRemoteEnrollmentService.setupRemoteHerdr` (the setup run's herdr step) patching a real
 /// herdr `config.toml` over a real ssh session (the fixture server's own, never
 /// the account's), and
 /// `HerdrPanelBindingProbe` / `HerdrPanelMicIndicator` driving all of it.
@@ -578,8 +578,7 @@ final class HerdrIntegrationTests: XCTestCase {
 
         // 1. A config with no agents table: the patch appends and reloads.
         try "[theme]\n".write(toFile: configPath, atomically: true, encoding: .utf8)
-        let steps = try service.configureRemoteHerdrPanel(sshHostAlias: alias, timeout: 60)
-        XCTAssertEqual(steps.count, 1)
+        XCTAssertEqual(try service.setupRemoteHerdr(sshHostAlias: alias, timeout: 60), .configured)
         let patched = try String(contentsOfFile: configPath, encoding: .utf8)
         XCTAssertTrue(
             patched.contains(ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet),
@@ -587,15 +586,8 @@ final class HerdrIntegrationTests: XCTestCase {
         )
         XCTAssertTrue(patched.hasPrefix("[theme]\n"), "the patch must only APPEND")
 
-        // 2. Idempotence: a second run refuses rather than appending again.
-        XCTAssertThrowsError(
-            try service.configureRemoteHerdrPanel(sshHostAlias: alias, timeout: 60)
-        ) { error in
-            XCTAssertEqual(
-                error as? ClaudeRemoteEnrollmentService.ServiceError,
-                .herdrPanelConfigAlreadyCustomized
-            )
-        }
+        // 2. Idempotence: a second run leaves the table alone rather than appending again.
+        XCTAssertEqual(try service.setupRemoteHerdr(sshHostAlias: alias, timeout: 60), .customized)
         XCTAssertEqual(
             try String(contentsOfFile: configPath, encoding: .utf8), patched,
             "the refused second run must leave the config byte-identical"
@@ -604,26 +596,12 @@ final class HerdrIntegrationTests: XCTestCase {
         // 3. The trailing-comment header variant its grep must recognise.
         try "[ui.sidebar.agents]   # mine, hands off\n"
             .write(toFile: configPath, atomically: true, encoding: .utf8)
-        XCTAssertThrowsError(
-            try service.configureRemoteHerdrPanel(sshHostAlias: alias, timeout: 60)
-        ) { error in
-            XCTAssertEqual(
-                error as? ClaudeRemoteEnrollmentService.ServiceError,
-                .herdrPanelConfigAlreadyCustomized
-            )
-        }
+        XCTAssertEqual(try service.setupRemoteHerdr(sshHostAlias: alias, timeout: 60), .customized)
 
         // 4. A bare `rows =` key anywhere is equally off limits.
         try "[ui.sidebar.spaces]\nrows = [[\"workspace\"]]\n"
             .write(toFile: configPath, atomically: true, encoding: .utf8)
-        XCTAssertThrowsError(
-            try service.configureRemoteHerdrPanel(sshHostAlias: alias, timeout: 60)
-        ) { error in
-            XCTAssertEqual(
-                error as? ClaudeRemoteEnrollmentService.ServiceError,
-                .herdrPanelConfigAlreadyCustomized
-            )
-        }
+        XCTAssertEqual(try service.setupRemoteHerdr(sshHostAlias: alias, timeout: 60), .customized)
     }
 
     // MARK: - The probe and the mic indicator, end to end

@@ -35,12 +35,6 @@ extension ClaudeIntegrationSettingsModel {
         )
     }
 
-    /// Generated shell text retained for the writer and its test seam.
-    public var shellSetupPreview: String? {
-        guard let shell = loginShell() else { return nil }
-        return ClaudeShellRCSetup.snippet(for: shell)
-    }
-
     public var canApplyShellSetup: Bool { loginShell() != nil }
 
     public var shellSetupConsentSentence: String {

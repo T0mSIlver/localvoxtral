@@ -584,9 +584,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 herdrPanelMetadata: herdrClient,
                 readFocusedGrid: { target in
                     TerminalScreenContextSource.readVisibleScreen(target: target)?.text
-                },
-                reportPanelStatus: { [weak viewModel] status in
-                    viewModel?.claudeIntegrationSettings?.herdrPanelStatus = status
                 }
             )
             viewModel.context.claudeSessionJoinResolver = resolver

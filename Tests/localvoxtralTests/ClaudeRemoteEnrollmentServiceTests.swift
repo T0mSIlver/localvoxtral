@@ -154,14 +154,10 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertTrue(snippet.contains("Host builder"))
         // RemoteForward <remote-port> <local-host>:<local-port> — the remote's
         // 127.0.0.1:8473 comes out of our ssh client and lands on our listener.
-        XCTAssertTrue(snippet.contains("RemoteForward 8473 127.0.0.1:8473"))
-    }
-
-    func testSSHSnippetUsesTheListenersActualPort() throws {
-        // A hardcoded 8473 here that drifted from the listener would produce a
-        // tunnel to nothing, and fail open — i.e. silently.
+        // Read from the listener, not hardcoded: a snippet port that drifted
+        // from it would be a tunnel to nothing, and fail open.
         let port = ClaudeRemoteListenerLimits.default.port
-        let snippet = try plan().sshConfigSnippet
+        XCTAssertEqual(port, 8473, "the documented port, already in users' ssh configs")
         XCTAssertTrue(snippet.contains("RemoteForward \(port) 127.0.0.1:\(port)"))
         XCTAssertNotEqual(port, 8471, "8471 is voxmlx")
         XCTAssertNotEqual(port, 8472, "8472 is polishd")
@@ -696,10 +692,12 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             calls.withLock { $0.append(invocation) }
             return .init(exitCode: 0, message: "")
         })
-        try service.executeRemoteSetup(try plan(), sshHostAlias: "builder", token: token)
-        try service.executeRemotePluginUpdate(sshHostAlias: "builder")
+        _ = try? service.setupRemotePlugin(sshHostAlias: "builder", token: token, remoteForwardPort: 28_511)
+        _ = try? service.setupRemoteHerdr(sshHostAlias: "builder")
 
-        for invocation in calls.withLock({ $0 }) {
+        let recorded = calls.withLock { $0 }
+        XCTAssertEqual(recorded.count, 2, "one listing, one herdr script")
+        for invocation in recorded {
             let terminator = try XCTUnwrap(invocation.argv.firstIndex(of: "--"))
             let alias = try XCTUnwrap(invocation.argv.firstIndex(of: "builder"))
             XCTAssertLessThan(terminator, alias, "the alias must sit after `--`")
@@ -1101,7 +1099,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
         let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
 
-        try service.insertSSHConfig(try plan(), hostID: host.id)
+        try service.insertSSHConfig(snippet: try plan().sshConfigSnippet, hostID: host.id)
 
         let snapshot = fileSystem.snapshot
         XCTAssertEqual(snapshot.createdDirectoryPermissions, [0o700])
@@ -1121,7 +1119,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
         let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
 
-        try service.insertSSHConfig(try plan(), hostID: host.id)
+        try service.insertSSHConfig(snippet: try plan().sshConfigSnippet, hostID: host.id)
 
         let snapshot = fileSystem.snapshot
         let written = String(decoding: snapshot.writes[0].data, as: UTF8.self)
@@ -1147,7 +1145,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
         let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
 
-        try service.insertSSHConfig(try plan(alias: "new-builder"), hostID: host.id)
+        try service.insertSSHConfig(snippet: try plan(alias: "new-builder").sshConfigSnippet, hostID: host.id)
 
         let written = String(decoding: fileSystem.snapshot.writes[0].data, as: UTF8.self)
         XCTAssertTrue(written.contains("Host new-builder"))
@@ -1169,7 +1167,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
         let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
 
-        XCTAssertThrowsError(try service.insertSSHConfig(try plan(alias: "builder"), hostID: host.id)) {
+        XCTAssertThrowsError(try service.insertSSHConfig(snippet: try plan(alias: "builder").sshConfigSnippet, hostID: host.id)) {
             XCTAssertEqual(
                 $0 as? ClaudeRemoteEnrollmentService.ServiceError, .sshConfigIsSymlink
             )
@@ -1189,7 +1187,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
         let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
 
-        XCTAssertThrowsError(try service.insertSSHConfig(try plan(alias: "builder"), hostID: host.id)) {
+        XCTAssertThrowsError(try service.insertSSHConfig(snippet: try plan(alias: "builder").sshConfigSnippet, hostID: host.id)) {
             XCTAssertEqual(
                 $0 as? ClaudeRemoteEnrollmentService.ServiceError, .sshConfigIsSymlink
             )
@@ -1218,7 +1216,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
 
             XCTAssertThrowsError(
-                try service.insertSSHConfig(try plan(alias: "builder"), hostID: host.id)
+                try service.insertSSHConfig(snippet: try plan(alias: "builder").sshConfigSnippet, hostID: host.id)
             ) {
                 XCTAssertEqual(
                     $0 as? ClaudeRemoteEnrollmentService.ServiceError, .sshDirectoryNotTrusted
@@ -1241,7 +1239,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
                 )
             )
             let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
-            try service.insertSSHConfig(try plan(alias: "builder"), hostID: host.id)
+            try service.insertSSHConfig(snippet: try plan(alias: "builder").sshConfigSnippet, hostID: host.id)
             XCTAssertEqual(fileSystem.snapshot.writes.count, 1)
         }
     }
@@ -1254,7 +1252,6 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     /// before SSH: the shared runner below fails any row that reaches it.
     func testServiceCallsAreRefusedBeforeAnyWork() throws {
         typealias Service = ClaudeRemoteEnrollmentService
-        let setupPlan = try plan()
         let token = token
         let runnerCalls = Mutex(0)
         let guarded = Service(runner: { _ in
@@ -1263,17 +1260,14 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             return .init(exitCode: 0, message: "")
         })
         let rows: [(name: String, expected: Service.ServiceError, call: () throws -> Void)] = [
-            ("ExecutionIsRefusedWithoutAnInjectedRunner", .executionNotConfigured, {
-                _ = try Service().executeRemoteSetup(setupPlan, sshHostAlias: "builder", token: token)
-            }),
-            ("PluginUpdateExecutionIsRefusedWithoutAnInjectedRunner", .executionNotConfigured, {
-                _ = try Service().executeRemotePluginUpdate(sshHostAlias: "builder")
+            ("PluginSetupIsRefusedWithoutAnInjectedRunner", .executionNotConfigured, {
+                _ = try Service().setupRemotePlugin(sshHostAlias: "builder", token: token, remoteForwardPort: 28_511)
             }),
             ("VerificationIsRefusedWithoutAnInjectedRunner", .executionNotConfigured, {
                 _ = try Service().executeVerification(sshHostAlias: "builder", listenerIsBound: true)
             }),
-            ("HerdrPanelConfigurationIsRefusedWithoutAnInjectedRunner", .executionNotConfigured, {
-                _ = try Service().configureRemoteHerdrPanel(sshHostAlias: "builder")
+            ("HerdrSetupIsRefusedWithoutAnInjectedRunner", .executionNotConfigured, {
+                _ = try Service().setupRemoteHerdr(sshHostAlias: "builder")
             }),
             ("LocalHerdrPanelConfigurationIsRefusedWithoutAnInjectedFileSystem",
              .localHerdrConfigEditingNotConfigured, {
@@ -1282,14 +1276,14 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             ("PlanRefusesAnInvalidAlias", .invalidHostAlias, {
                 _ = try self.plan(alias: "host\nRemoteForward 22 evil:22")
             }),
-            ("PluginUpdateRefusesAnInvalidAlias", .invalidHostAlias, {
-                _ = try guarded.executeRemotePluginUpdate(sshHostAlias: "a b")
+            ("PluginSetupRefusesAnInvalidAlias", .invalidHostAlias, {
+                _ = try guarded.setupRemotePlugin(sshHostAlias: "a b", token: token, remoteForwardPort: 28_511)
             }),
             ("VerificationRefusesAnInvalidAlias", .invalidHostAlias, {
                 _ = try guarded.executeVerification(sshHostAlias: "a b", listenerIsBound: true)
             }),
-            ("HerdrPanelConfigurationRefusesAnInvalidAliasBeforeSSH", .invalidHostAlias, {
-                _ = try guarded.configureRemoteHerdrPanel(sshHostAlias: "builder; touch /tmp/no")
+            ("HerdrSetupRefusesAnInvalidAliasBeforeSSH", .invalidHostAlias, {
+                _ = try guarded.setupRemoteHerdr(sshHostAlias: "builder; touch /tmp/no")
             }),
         ]
         for row in rows {
@@ -1298,36 +1292,6 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             }
         }
         XCTAssertEqual(runnerCalls.withLock { $0 }, 0)
-    }
-
-    func testExecutionRunsExactlyTheRemoteCommandsOverSSH() throws {
-        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
-        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
-            calls.withLock { $0.append(invocation) }
-            return .init(exitCode: 0, message: "")
-        })
-        try service.executeRemoteSetup(try plan(), sshHostAlias: "builder", token: token)
-
-        let recorded = calls.withLock { $0 }
-        XCTAssertEqual(recorded.count, 2)
-        for invocation in recorded {
-            // ClearAllForwardings: setup must not compete for the 8473 tunnel
-            // a real session already holds (field report 2026-07-26).
-            XCTAssertEqual(
-                invocation.argv,
-                [
-                    "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
-                    "builder", "/bin/sh", "-s",
-                ]
-            )
-            XCTAssertFalse(invocation.argv.joined(separator: " ").contains(token))
-        }
-        XCTAssertEqual(
-            recorded.map { String(decoding: $0.standardInput, as: UTF8.self) },
-            try plan().remoteCommands.map {
-                "set -eu\n\(ClaudeRemoteEnrollmentService.claudePathResolverPreamble)\($0)\n"
-            }
-        )
     }
 
     /// Field failure 2026-07-26: `ssh <host> /bin/sh -s` runs under sshd's
@@ -1367,27 +1331,26 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
 
     /// LOCAL argv freedom, and nothing more.
     ///
-    /// What this proves is that no process THIS Mac spawns carries the token in
-    /// its arguments — it rides the ssh child's stdin, so `ps` here never sees
-    /// it. It says nothing about the remote host, and the old name implied
-    /// otherwise (review finding, round 2): `claude plugin install` takes its
-    /// config as a flag and has no stdin path, so on the host the token IS in
-    /// that command's argv while it runs, and in `~/.claude` afterwards. That
-    /// is unavoidable and is documented rather than papered over.
+    /// No process THIS Mac spawns carries the token in its arguments: it rides
+    /// the ssh child's stdin, so `ps` here never sees it. On the host,
+    /// `claude plugin install` takes its config as a flag and has no stdin
+    /// path, so the token IS in that command's argv there and in `~/.claude`
+    /// afterwards. That is documented rather than papered over.
     func testRemoteSetupKeepsTokenOutOfEveryArgvOnTHISMac() throws {
-        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
-        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
-            calls.withLock { $0.append(invocation) }
-            return .init(exitCode: 0, message: "")
-        })
-
-        try service.executeRemoteSetup(try plan(), sshHostAlias: "builder", token: token)
-
-        let recorded = calls.withLock { $0 }
-        XCTAssertTrue(recorded.allSatisfy { !$0.argv.joined(separator: " ").contains(token) })
-        XCTAssertTrue(
-            recorded.contains { String(decoding: $0.standardInput, as: UTF8.self).contains(token) }
+        let calls = PluginSetupCalls()
+        let service = ClaudeRemoteEnrollmentService(
+            runner: pluginSetupRunner(
+                before: nil, after: ClaudeRemoteEnrollmentService.remotePluginVersion, calls: calls
+            )
         )
+
+        XCTAssertEqual(
+            try service.setupRemotePlugin(sshHostAlias: "builder", token: token, remoteForwardPort: 28_511),
+            .installed
+        )
+
+        XCTAssertTrue(calls.all.allSatisfy { !$0.argv.joined(separator: " ").contains(token) })
+        XCTAssertTrue(calls.scripts.contains { $0.contains(token) })
         // …and the remote-side exposure is stated where a user will meet it,
         // rather than being implied away.
         let documentation = try documentation()
@@ -1414,230 +1377,40 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertTrue(plan.remoteCommands.joined().contains(token))
     }
 
-    func testExecutionStopsAtTheFirstFailure() throws {
-        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
-        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
-            calls.withLock { $0.append(invocation) }
-            return .init(exitCode: 1, message: "marketplace not found")
-        })
-        XCTAssertThrowsError(
-            try service.executeRemoteSetup(try plan(), sshHostAlias: "builder", token: token)
-        ) { error in
-            guard case .commandFailed(let step, _, let exitCode, let message)? =
-                error as? ClaudeRemoteEnrollmentService.ServiceError
-            else {
-                return XCTFail("expected commandFailed, got \(error)")
-            }
-            XCTAssertEqual(step, 0)
-            XCTAssertEqual(exitCode, 1)
-            XCTAssertEqual(message, "marketplace not found")
-        }
-        XCTAssertEqual(calls.withLock { $0 }.count, 1, "an install after a failed marketplace add is noise")
-    }
-
-    func testSuccessfulCapturedOutputIsRedactedBeforeLeavingTheService() throws {
+    /// An error is the most-copied string in the app: alerts, the log, bug
+    /// reports. Host output that echoes the token, and a runner timeout whose
+    /// captured output does, must both leave the service without it.
+    func testAPluginSetupFailureNeverCarriesTheToken() throws {
         let token = token
-        let service = ClaudeRemoteEnrollmentService(runner: { _ in
-            .init(exitCode: 0, message: "remote echoed \(token)")
-        })
-
-        let steps = try service.executeRemoteSetup(
-            try plan(),
-            sshHostAlias: "builder",
-            token: token
+        let echoingInstall = ClaudeRemoteEnrollmentService(
+            runner: pluginSetupRunner(
+                before: nil,
+                after: nil,
+                install: .init(exitCode: 1, message: "failed running: claude plugin install --config 'token=\(token)'"),
+                calls: PluginSetupCalls()
+            )
         )
-
-        XCTAssertEqual(steps.count, 2)
-        for step in steps {
-            XCTAssertFalse(step.message.contains(token))
-            XCTAssertTrue(step.message.contains(ClaudeRemoteTokenRedaction.placeholder))
-        }
-    }
-
-    func testAFailureNeverCarriesTheTokenIntoTheError() throws {
-        let token = token
-        let calls = Mutex(0)
-        let service = ClaudeRemoteEnrollmentService(runner: { _ in
-            let call = calls.withLock { value -> Int in
-                defer { value += 1 }
-                return value
-            }
-            if call == 0 { return .init(exitCode: 0, message: "marketplace ready") }
-            return .init(
-                exitCode: 1,
-                message: "failed running: claude plugin install --config 'token=\(token)'"
-            )
-        })
-        XCTAssertThrowsError(
-            try service.executeRemoteSetup(
-                ClaudeRemoteEnrollmentService.SetupPlan(
-                    sshConfigSnippet: "",
-                    remoteCommands: ClaudeRemoteEnrollmentService.remoteCommands(token: token, remoteForwardPort: 28511),
-                    updateCommands: []
-                ),
-                sshHostAlias: "builder",
-                token: token
-            )
-        ) { error in
-            guard case .commandFailed(_, let command, _, let message)? =
-                error as? ClaudeRemoteEnrollmentService.ServiceError
-            else {
-                return XCTFail("expected commandFailed, got \(error)")
-            }
-            XCTAssertFalse(
-                command.contains(token),
-                "the displayed command in the error must not carry the plaintext token"
-            )
-            XCTAssertFalse(
-                message.contains(token),
-                "remote output that echoes the token must be redacted before it is thrown"
-            )
-            // Redacted, not merely truncated: the surrounding text has to
-            // survive or the error stops being diagnosable.
-            XCTAssertTrue(message.contains(ClaudeRemoteTokenRedaction.placeholder))
-            XCTAssertTrue(message.contains("failed running"))
-        }
-    }
-
-    func testAFailureDescriptionNeverCarriesTheToken() throws {
-        // The catch-all: whatever else an error grows, interpolating it must
-        // never print the secret.
-        let token = token
-        let service = ClaudeRemoteEnrollmentService(runner: { _ in
-            .init(exitCode: 1, message: "boom: token=\(token)")
-        })
-        do {
-            try service.executeRemoteSetup(
-                ClaudeRemoteEnrollmentService.SetupPlan(
-                    sshConfigSnippet: "",
-                    remoteCommands: ClaudeRemoteEnrollmentService.remoteCommands(token: token, remoteForwardPort: 28511),
-                    updateCommands: []
-                ),
-                sshHostAlias: "builder",
-                token: token
-            )
-            XCTFail("expected a failure")
-        } catch {
-            XCTAssertFalse(String(describing: error).contains(token))
-            XCTAssertFalse(error.localizedDescription.contains(token))
-        }
-    }
-
-    func testRemoteTimeoutMapsToClearRedactedServiceError() throws {
-        let token = token
-        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+        let timingOut = ClaudeRemoteEnrollmentService(runner: { _ in
             throw ClaudeRemoteEnrollmentService.RunnerFailure.timedOut(
-                seconds: 12,
-                message: "last output contained \(token)"
+                seconds: 12, message: "last output contained \(token)"
             )
         })
-
+        for (name, service) in [("install failure", echoingInstall), ("timeout", timingOut)] {
+            XCTAssertThrowsError(
+                try service.setupRemotePlugin(sshHostAlias: "builder", token: token, remoteForwardPort: 28_511),
+                name
+            ) { error in
+                XCTAssertFalse(String(describing: error).contains(token), name)
+                XCTAssertFalse(error.localizedDescription.contains(token), name)
+            }
+        }
         XCTAssertThrowsError(
-            try service.executeRemoteSetup(try plan(), sshHostAlias: "builder", token: token)
+            try timingOut.setupRemotePlugin(sshHostAlias: "builder", token: token, remoteForwardPort: 28_511)
         ) { error in
-            guard case .commandTimedOut(let step, _, let seconds, let message)? =
+            guard case .commandTimedOut(_, _, let seconds, _)? =
                 error as? ClaudeRemoteEnrollmentService.ServiceError
-            else {
-                return XCTFail("expected commandTimedOut, got \(error)")
-            }
-            XCTAssertEqual(step, 0)
-            XCTAssertEqual(seconds, 12)
-            XCTAssertFalse(message.contains(token))
-            XCTAssertTrue(message.contains(ClaudeRemoteTokenRedaction.placeholder))
-        }
-    }
-
-    func testExecutionRefusesAnInvalidAlias() {
-        let service = ClaudeRemoteEnrollmentService(runner: { _ in
-            XCTFail("the runner must never be reached with an invalid alias")
-            return .init(exitCode: 0, message: "")
-        })
-        XCTAssertThrowsError(
-            try service.executeRemoteSetup(
-                ClaudeRemoteEnrollmentService.SetupPlan(
-                    sshConfigSnippet: "", remoteCommands: ["echo hi"], updateCommands: []
-                ),
-                sshHostAlias: "a b",
-                token: token
-            )
-        )
-    }
-
-    // MARK: Update execution
-
-    func testPluginUpdateRunsExactlyTheTwoClaudeCommandsOverSSH() throws {
-        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
-        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
-            calls.withLock { $0.append(invocation) }
-            return .init(exitCode: 0, message: "")
-        })
-
-        let steps = try service.executeRemotePluginUpdate(
-            sshHostAlias: "builder", remoteForwardPort: 28500
-        )
-
-        let recorded = calls.withLock { $0 }
-        XCTAssertEqual(steps.count, 3)
-        for invocation in recorded {
-            XCTAssertEqual(
-                invocation.argv,
-                [
-                    "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
-                    "builder", "/bin/sh", "-s",
-                ]
-            )
-        }
-        XCTAssertEqual(
-            recorded.map { String(decoding: $0.standardInput, as: UTF8.self) },
-            ClaudeRemoteEnrollmentService.remotePluginUpdateCommands(remoteForwardPort: 28500).map {
-                "set -eu\n\(ClaudeRemoteEnrollmentService.claudePathResolverPreamble)\($0)\n"
-            }
-        )
-        // Nothing on this path has the credential, so nothing on it can spill
-        // one: no argv, no script, no captured step. The port migration DOES
-        // carry a `--config`, which is why this asserts the token specifically
-        // rather than banning the flag: `install --config port=` merges by key
-        // and leaves the stored token untouched (verified on Claude Code
-        // 2.1.220), so it is a config write with nothing secret in it.
-        for invocation in recorded {
-            XCTAssertFalse(invocation.argv.joined(separator: " ").contains("token"))
-            let script = String(decoding: invocation.standardInput, as: UTF8.self)
-            XCTAssertFalse(script.contains("\(ClaudeRemoteEnrollmentService.tokenConfigKey)="))
-            assertEveryConfigArgumentIsThePort(in: script)
-        }
-    }
-
-    func testPluginUpdateStopsAtTheFirstFailure() throws {
-        // A `plugin update` against a marketplace clone that failed to refresh
-        // would "succeed" onto the version the host already has.
-        let calls = Mutex(0)
-        let service = ClaudeRemoteEnrollmentService(runner: { _ in
-            calls.withLock { $0 += 1 }
-            return .init(exitCode: 1, message: "marketplace not found")
-        })
-        XCTAssertThrowsError(try service.executeRemotePluginUpdate(sshHostAlias: "builder")) { error in
-            guard case .commandFailed(let step, let command, let exitCode, let message)? =
-                error as? ClaudeRemoteEnrollmentService.ServiceError
-            else {
-                return XCTFail("expected commandFailed, got \(error)")
-            }
-            XCTAssertEqual(step, 0)
-            XCTAssertEqual(exitCode, 1)
-            XCTAssertEqual(message, "marketplace not found")
-            XCTAssertTrue(command.contains("marketplace update"))
-        }
-        XCTAssertEqual(calls.withLock { $0 }, 1)
-    }
-
-    func testExecutionNeverTouchesTheSSHConfig() throws {
-        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
-        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
-            calls.withLock { $0.append(invocation) }
-            return .init(exitCode: 0, message: "")
-        })
-        try service.executeRemoteSetup(try plan(), sshHostAlias: "builder", token: token)
-        for invocation in calls.withLock({ $0 }) {
-            XCTAssertFalse(invocation.argv.joined(separator: " ").contains(".ssh/config"))
+            else { return XCTFail("expected commandTimedOut, got \(error)") }
+            XCTAssertEqual(seconds, 12, "a timeout stays a timeout")
         }
     }
 
@@ -2204,58 +1977,13 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
 
     // MARK: herdr agents-panel configuration
 
-    func testHerdrPanelConfigurationUsesTheEnrollmentSSHChannelAndConservativePatch() throws {
-        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
-        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
-            calls.withLock { $0.append(invocation) }
-            return .init(exitCode: 0, message: "reloaded")
-        })
-
-        let steps = try service.configureRemoteHerdrPanel(sshHostAlias: "builder")
-
-        let recorded = calls.withLock { $0 }
-        XCTAssertEqual(recorded.count, 1)
-        let invocation = try XCTUnwrap(recorded.first)
-        XCTAssertEqual(invocation.argv, [
-            "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
-            "builder", "/bin/sh", "-s",
-        ])
-        let script = String(decoding: invocation.standardInput, as: UTF8.self)
-        XCTAssertTrue(script.contains("ui\\.sidebar\\.agents"))
-        XCTAssertTrue(script.contains("rows[[:space:]]*="))
-        XCTAssertTrue(script.contains("exit 42"), "existing user configuration must be refused")
-        XCTAssertTrue(script.contains(ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet))
-        XCTAssertTrue(script.contains("herdr server reload-config"))
-        XCTAssertEqual(steps, [
-            .init(index: 0, command: "configure herdr agents panel", message: "reloaded")
-        ])
-    }
-
-    func testExistingHerdrAgentsConfigurationIsNeverOverwritten() {
-        let service = ClaudeRemoteEnrollmentService(runner: { _ in
-            .init(
-                exitCode: 42,
-                message: ClaudeRemoteEnrollmentService.herdrPanelExistingConfigMarker
-            )
-        })
-
-        XCTAssertThrowsError(
-            try service.configureRemoteHerdrPanel(sshHostAlias: "builder")
-        ) { error in
-            XCTAssertEqual(
-                error as? ClaudeRemoteEnrollmentService.ServiceError,
-                .herdrPanelConfigAlreadyCustomized
-            )
-        }
-    }
-
     func testHerdrAgentsHeaderWithTrailingCommentIsRefusedWithoutEditingTheConfig() throws {
         let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
         let service = ClaudeRemoteEnrollmentService(runner: { invocation in
             calls.withLock { $0.append(invocation) }
             return .init(exitCode: 0, message: "captured")
         })
-        _ = try service.configureRemoteHerdrPanel(sshHostAlias: "builder")
+        _ = try? service.setupRemoteHerdr(sshHostAlias: "builder")
         let invocation = try XCTUnwrap(calls.withLock { $0.first })
 
         let directory = FileManager.default.temporaryDirectory
@@ -2265,52 +1993,46 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         let configURL = directory.appendingPathComponent("config.toml")
         let original = "[ui.sidebar.agents] # keep my custom panel\n"
         try Data(original.utf8).write(to: configURL)
+        // The script checks for herdr before it reads the config; a stub that
+        // fails if run proves the refusal comes first.
+        let herdr = directory.appendingPathComponent("herdr")
+        try Data("#!/bin/sh\nexit 99\n".utf8).write(to: herdr)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: herdr.path)
 
         let result = try runShellScript(
             invocation.standardInput,
             environment: [
                 "HERDR_CONFIG_PATH": configURL.path,
-                "PATH": "/usr/bin:/bin",
+                "PATH": "\(directory.path):/usr/bin:/bin",
             ]
         )
 
         XCTAssertEqual(result.status, 42, "the existing table must take the refusal path")
-        XCTAssertTrue(result.output.contains(ClaudeRemoteEnrollmentService.herdrPanelExistingConfigMarker))
+        XCTAssertTrue(result.output.contains("LVX_HERDR_CUSTOMIZED"))
         XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), original)
     }
 
-    func testHerdrReloadExit42WithoutTheRefusalMarkerIsACommandFailure() {
-        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+    /// 42 is the refusal exit only with the refusal frame beside it; a reload
+    /// that dies with the same code is a failure. A timeout keeps its category.
+    func testHerdrSetupTreatsAnUnmarkedExit42AndATimeoutAsFailures() {
+        let unmarked = ClaudeRemoteEnrollmentService(runner: { _ in
             .init(exitCode: 42, message: "reload failed")
         })
-
-        XCTAssertThrowsError(
-            try service.configureRemoteHerdrPanel(sshHostAlias: "builder")
-        ) { error in
-            guard case .commandFailed(_, _, let exitCode, let message)? =
+        XCTAssertThrowsError(try unmarked.setupRemoteHerdr(sshHostAlias: "builder")) { error in
+            guard case .commandFailed(_, _, let exitCode, _)? =
                 error as? ClaudeRemoteEnrollmentService.ServiceError
             else { return XCTFail("expected commandFailed, got \(error)") }
             XCTAssertEqual(exitCode, 42)
-            XCTAssertEqual(message, "reload failed")
         }
-    }
 
-    func testHerdrPanelConfigurationPreservesRunnerTimeoutCategory() {
-        let service = ClaudeRemoteEnrollmentService(runner: { _ in
-            throw ClaudeRemoteEnrollmentService.RunnerFailure.timedOut(
-                seconds: 12,
-                message: "ssh timed out"
-            )
+        let timingOut = ClaudeRemoteEnrollmentService(runner: { _ in
+            throw ClaudeRemoteEnrollmentService.RunnerFailure.timedOut(seconds: 12, message: "ssh timed out")
         })
-
-        XCTAssertThrowsError(
-            try service.configureRemoteHerdrPanel(sshHostAlias: "builder")
-        ) { error in
-            guard case .commandTimedOut(_, _, let seconds, let message)? =
+        XCTAssertThrowsError(try timingOut.setupRemoteHerdr(sshHostAlias: "builder")) { error in
+            guard case .commandTimedOut(_, _, let seconds, _)? =
                 error as? ClaudeRemoteEnrollmentService.ServiceError
             else { return XCTFail("expected commandTimedOut, got \(error)") }
             XCTAssertEqual(seconds, 12)
-            XCTAssertEqual(message, "ssh timed out")
         }
     }
 

@@ -73,14 +73,6 @@ extension ClaudeRemoteEnrollmentService {
     /// Atomically insert or replace one host's marked block in `~/.ssh/config`.
     /// The caller is responsible for obtaining the user's explicit confirmation
     /// immediately before calling this method.
-    public func insertSSHConfig(_ plan: SetupPlan, hostID: String) throws {
-        try insertSSHConfig(snippet: plan.sshConfigSnippet, hostID: hostID)
-    }
-
-    /// Same write, for a caller that has a block but no plan — the plugin
-    /// update path, which regenerates this host's block so the port it is
-    /// about to store on the remote and the port this Mac forwards can never
-    /// disagree.
     public func insertSSHConfig(snippet: String, hostID: String) throws {
         Log.claudeContext.info("Claude remote ssh config insertion requested")
         try writeSSHConfig(operation: "insertion") {
