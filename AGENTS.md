@@ -71,6 +71,10 @@ New issues get one area label (`asr`, `polish`, `ci`, `claude-join`,
 `mistral`, `session`) plus `bug` or `enhancement`. Group work with sub-issues
 and order it with blocked-by links, not prose.
 
+Found work outside your issue's scope (a gap, a weakened check, a stale doc)?
+Open the follow-up issue yourself, with scope, constraints and proof, link it
+from your issue and say so in your report. Don't ask whether to file it.
+
 ## Proof
 
 - Fill the PR template's Proof section with real command output, and name the
