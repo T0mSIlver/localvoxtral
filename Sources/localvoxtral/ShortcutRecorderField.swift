@@ -2,7 +2,47 @@ import AppKit
 import ShortcutRecorder
 import SwiftUI
 
-struct ShortcutRecorderField: NSViewRepresentable {
+struct ShortcutRecorderField: View {
+    @Binding var shortcut: DictationShortcut?
+    @Binding var validationError: String?
+    var fixedWidth: CGFloat? = nil
+
+    @Environment(\.shortcutRecorderStandIn) private var drawsStandIn
+
+    var body: some View {
+        if drawsStandIn {
+            ShortcutRecorderStandIn(fixedWidth: fixedWidth)
+        } else {
+            ShortcutRecorderControl(
+                shortcut: $shortcut, validationError: $validationError, fixedWidth: fixedWidth)
+        }
+    }
+}
+
+extension EnvironmentValues {
+    /// Draws a static box where each shortcut recorder would be. For the
+    /// snapshot tests: ShortcutRecorder's control loads data assets that only
+    /// `package_app.sh` compiles (`actool`), and without them it traps.
+    @Entry var shortcutRecorderStandIn = false
+}
+
+private struct ShortcutRecorderStandIn: View {
+    var fixedWidth: CGFloat?
+
+    var body: some View {
+        Text("Shortcut")
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .frame(width: fixedWidth, height: 22)
+            .frame(maxWidth: fixedWidth == nil ? .infinity : nil)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(.tertiary, style: StrokeStyle(lineWidth: 1, dash: [3]))
+            )
+    }
+}
+
+private struct ShortcutRecorderControl: NSViewRepresentable {
     @Binding var shortcut: DictationShortcut?
     @Binding var validationError: String?
     var fixedWidth: CGFloat? = nil
@@ -45,11 +85,11 @@ struct ShortcutRecorderField: NSViewRepresentable {
 
     @MainActor
     final class Coordinator: NSObject, @preconcurrency RecorderControlDelegate {
-        var parent: ShortcutRecorderField
+        var parent: ShortcutRecorderControl
         private let validator = ShortcutValidator(delegate: nil)
         private var isApplyingProgrammaticUpdate = false
 
-        init(parent: ShortcutRecorderField) {
+        init(parent: ShortcutRecorderControl) {
             self.parent = parent
         }
 

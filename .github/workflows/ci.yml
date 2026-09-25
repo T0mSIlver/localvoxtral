@@ -333,6 +333,12 @@ jobs:
             | tee format-lint.txt | tail -n 5
           echo "format-lint findings: $(wc -l < format-lint.txt | tr -d ' ')"
 
+      - name: Clear restored view snapshots
+        # The build cache holds main's `.build`, snapshots included; left in
+        # place, they would upload pictures of views this change removed.
+        if: steps.ci_scope.outputs.docs_only != 'true'
+        run: rm -rf .build/snapshots
+
       - name: Test (unit suite)
         # The integration suite needs a live inference backend and is exercised
         # manually; see CLAUDE.md. This is also the job's compile gate: the
@@ -380,6 +386,18 @@ jobs:
           path: ${{ runner.temp }}/localvoxtral-unit-tests.log
           if-no-files-found: error
           retention-days: 7
+
+      - name: Upload view snapshots
+        # ViewSnapshotTests renders the Settings panes, the status popover and
+        # the overlay panel to PNG (#572), so a PR shows its UI without anyone
+        # opening the app. Record-only: nothing compares them yet.
+        if: ${{ always() && steps.ci_scope.outputs.docs_only != 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: view-snapshots
+          path: .build/snapshots
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Save SwiftPM build cache
         # Main only: a PR restores main's newest entry through the restore
