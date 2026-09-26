@@ -84,6 +84,7 @@ final class SettingsStore {
         static let polishSpeakerProfile = "settings.polish_speaker_profile"
         static let polishSpeakerTerms = "settings.polish_speaker_terms"
         static let polishDismissedTermSuggestions = "settings.polish_dismissed_term_suggestions"
+        static let projectTermProposalsEnabled = "settings.project_term_proposals_enabled"
         static let termSuggestionInterval = "settings.term_suggestion_interval"
         static let termSuggestionDictationsSinceRun = "settings.term_suggestion_dictations_since_run"
         static let termSuggestionRetryAt = "settings.term_suggestion_retry_at"
@@ -511,6 +512,17 @@ final class SettingsStore {
     var polishClipboardContextEnabled: Bool {
         didSet {
             defaults.set(polishClipboardContextEnabled, forKey: Keys.polishClipboardContextEnabled)
+        }
+    }
+
+    /// When true, the first dictation that joins a local Claude Code or Vibe
+    /// session in a project the app has not asked about runs that agent
+    /// headless in the project for its terms (#609,
+    /// `ProjectTermProposer`). Off by default: each run spends the user's
+    /// Claude quota or Mistral credits.
+    var projectTermProposalsEnabled: Bool {
+        didSet {
+            defaults.set(projectTermProposalsEnabled, forKey: Keys.projectTermProposalsEnabled)
         }
     }
 
@@ -1053,6 +1065,8 @@ final class SettingsStore {
             defaults.stringArray(forKey: Keys.polishSpeakerTerms) ?? [])
         polishClipboardContextEnabled = Self.loadBool(
             defaults: defaults, key: Keys.polishClipboardContextEnabled, fallback: false)
+        projectTermProposalsEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.projectTermProposalsEnabled, fallback: false)
         clipboardPayloadMacroEnabled = Self.loadBool(
             defaults: defaults, key: Keys.clipboardPayloadMacroEnabled, fallback: true)
         terminalScreenContextEnabled = Self.loadBool(

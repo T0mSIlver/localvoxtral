@@ -260,6 +260,41 @@ History; the panes sit under the sidebar's Settings header:
 - **About** — version, link to the repository, and Export Diagnostics
   (writes a redacted local report to the Desktop)
 
+### Terms from your coding agent
+
+**Text Processing → Advanced → Ask the coding agent for each new project's
+terms** is off by default. On, the first dictation that joins a local Claude
+Code or Mistral Vibe session in a project the app has not asked about starts
+that agent once, headless, in the project's repository. The agent reads a few
+files and answers with up to 40 of the project's own names: modules, types,
+commands, environment variables. Your session never sees the request, so it
+cannot interrupt a turn. Every worktree of a repository counts as one project,
+and a project is asked once, whichever agent joins first. A run that fails is
+retried a day later.
+
+The names show in **Terms learned from polishing → Show** as "Proposed by
+Claude Code" or "Proposed by Mistral Vibe". They are suggestions: polishing
+applies one only where you allow repo vocabulary, only where the transcript
+spells it out, and it never reaches the polishing prompt's list of your terms.
+Three dictations that use it, or **Pin**, make it yours; **Forget** removes it.
+One nobody uses expires after 90 days.
+
+What a run costs and sends:
+
+- **Claude Code**: `claude -p` with Sonnet, read-only tools (Read, Glob, Grep),
+  hooks and MCP servers off, at most 12 turns and $0.50. Measured runs cost
+  $0.03–0.12 and took 5–15 s. On a Claude.ai plan it spends quota instead.
+- **Mistral Vibe**: `vibe -p` on Vibe's unified harness with read-only file
+  tools, at most 12 turns and $0.30, under a Vibe home the app owns
+  (`~/Library/Application Support/localvoxtral/vibe-home`, two links to your
+  `~/.vibe/config.toml` and `.env`), so none of your Vibe hooks fire and the
+  run stays out of your Vibe history. Its prompt lists up to 200 tracked file
+  names. Measured runs used about 115k input tokens, $0.05–0.10 at Vibe's
+  default model prices, in 10–25 s.
+
+Either way the agent sends the files it reads to its provider, as it does in
+your own sessions. Remote sessions are not asked yet.
+
 The config folder at `~/Library/Application Support/localvoxtral/config`
 holds `replacement_dictionary.toml` for both output modes and the standard
 and agent `llm_system_prompt*.toml` and `llm_user_prompt*.toml` files.

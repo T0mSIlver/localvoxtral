@@ -17,6 +17,11 @@ struct TextProcessingSettingsPane: View {
         string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/coding-agents.md#polishing"
     )!
 
+    /// What the agent's terms request costs and sends, per agent (#609).
+    private static let advancedDocsURL = URL(
+        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/dictation.md#terms-from-your-coding-agent"
+    )!
+
     private var isLLMPolishingReachable: Bool {
         settings.isOverlayBufferSessionReachable
     }
@@ -153,7 +158,7 @@ struct TextProcessingSettingsPane: View {
                 .opacity(isLLMPolishingReachable ? 1.0 : 0.5)
             }
 
-            SettingsGroup(title: "Advanced") {
+            SettingsGroup(title: "Advanced", learnMoreURL: Self.advancedDocsURL) {
                 SettingsFieldRow(
                     title: "Dismissed suggestions",
                     status: "\(settings.polishDismissedTermSuggestions.count)"
@@ -185,6 +190,12 @@ struct TextProcessingSettingsPane: View {
                     LearnedTermsSheet(viewModel: viewModel) {
                         isShowingLearnedTerms = false
                     }
+                }
+
+                SettingsFieldRow(title: "Ask the coding agent for each new project's terms") {
+                    Toggle("", isOn: $settings.projectTermProposalsEnabled)
+                        .labelsHidden()
+                        .accessibilityIdentifier("settings.projectTermProposals")
                 }
 
                 SettingsFieldRow(title: "Replacement dictionary (legacy)") {

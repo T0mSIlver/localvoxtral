@@ -634,6 +634,16 @@ final class DictationViewModel {
                 correctionLearnedPanel = CorrectionLearnedPanel()
                 correctionLearning.presenter = correctionLearnedPanel
                 session.correctionLearning = correctionLearning
+                let applicationSupport = LearnedTermStore.defaultFileURL().deletingLastPathComponent()
+                session.projectTermProposer = ProjectTermProposer(
+                    store: learnedTermStore,
+                    runner: ProjectTermProposalProcessRunner(
+                        vibeHome: applicationSupport.appendingPathComponent("vibe-home", isDirectory: true),
+                        userVibeDirectory: FileManager.default.homeDirectoryForCurrentUser
+                            .appendingPathComponent(".vibe", isDirectory: true)
+                    ),
+                    now: { Date() }
+                )
             }
             session.termSuggestionCadence = TermSuggestionCadence(
                 settings: settings,

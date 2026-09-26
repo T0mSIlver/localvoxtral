@@ -25,6 +25,10 @@ enum PolishRequestAssembler {
         let screenRenderBudget: Int
         let claudeRenderBudget: Int
         let clipboardRenderBudget: Int
+        /// Agent proposals among the learned entries (#609): pre-applied,
+        /// but not listed under the learned header, which tells the model
+        /// the speaker has used the spelling before.
+        var learnedProposals: Set<String> = []
     }
 
     struct Assembly {
@@ -60,6 +64,7 @@ enum PolishRequestAssembler {
         var replacementDictionarySection = input.replacementDictionaryPrompt
 
         let learnedVocabularyEntries = merged.entries(from: .learned)
+            .filter { !input.learnedProposals.contains($0.replaceWith) }
         let repoVocabularyEntries = merged.entries(from: .repository)
         let clipboardVocabularyEntries = merged.entries(from: .clipboard)
         let screenVocabularyEntries = merged.entries(from: .terminal)

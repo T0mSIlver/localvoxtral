@@ -229,6 +229,15 @@ final class DictationSessionController {
     /// dictation to the joined session. Nil without runtime services.
     @ObservationIgnored
     var correctionLearning: CorrectionLearning?
+    /// Asks a new project's coding agent for its terms after the first
+    /// joined dictation there (#609). Nil without runtime services; tests
+    /// inject one over a fake runner.
+    @ObservationIgnored
+    var projectTermProposer: ProjectTermProposer?
+    /// The last dictation's proposal task, nil when it asked nothing. Only
+    /// tests await it; the commit never does.
+    @ObservationIgnored
+    var projectTermProposalTask: Task<Void, Never>?
 
     @ObservationIgnored
     private var storedTermSuggestions: SpeakerTermSuggestionModel?

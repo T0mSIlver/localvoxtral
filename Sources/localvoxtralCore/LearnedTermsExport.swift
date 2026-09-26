@@ -89,6 +89,7 @@ extension LearnedTerms {
             guard !key.isEmpty else { continue }
             let index = importTarget(for: project, key: key, localNames: localNames)
             projects[index].lastSeen = max(projects[index].lastSeen, project.lastSeen)
+            projects[index].carryProposalStamp(from: project)
             for raw in project.terms {
                 let term = LearnedTerms.sanitized(raw.term)
                 guard !term.isEmpty else { continue }
@@ -152,6 +153,7 @@ extension LearnedTerms {
                 ))
                 index = projects.count - 1
             }
+            projects[index].carryProposalStamp(from: source)
             for term in source.terms {
                 let match = term.term.caseFoldedForMatching
                 if let existing = projects[index].terms.firstIndex(where: {
@@ -227,5 +229,17 @@ extension LearnedTerms {
             lastApplied: [local.lastApplied, imported.lastApplied].compactMap { $0 }.max(),
             pinned: local.isPinned || imported.isPinned ? true : nil
         )
+    }
+}
+
+extension LearnedTermProject {
+    /// An agent's answer on either side is an answer: a project asked on one
+    /// machine, or in one worktree, is not asked again after an import or a
+    /// fold. A failed attempt carries only when neither side has an answer.
+    mutating func carryProposalStamp(from other: LearnedTermProject) {
+        proposedAt = [proposedAt, other.proposedAt].compactMap { $0 }.max()
+        proposalAttemptedAt = proposedAt == nil
+            ? [proposalAttemptedAt, other.proposalAttemptedAt].compactMap { $0 }.max()
+            : nil
     }
 }

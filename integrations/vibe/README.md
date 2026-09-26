@@ -130,6 +130,12 @@ File contents, tool output and shell commands are never sent. A `post_tool`
 payload contains the tool's output, and the publisher discards it after
 parsing.
 
+With **Ask the coding agent for each new project's terms** on, the app also
+runs its own read-only `vibe -p` once per project, never in your session. It
+bills your Mistral key, capped at $0.30 a run (about $0.05–0.10 measured), and
+runs under an app-owned `VIBE_HOME` so none of your hooks fire; see
+[Terms from your coding agent](../../docs/dictation.md#terms-from-your-coding-agent).
+
 ## Limits that come from Vibe's hook set
 
 - Vibe has no session-start hook. localvoxtral learns about a session at its

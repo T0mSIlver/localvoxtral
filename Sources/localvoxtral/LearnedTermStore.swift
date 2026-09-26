@@ -13,7 +13,7 @@ import os
 /// pipeline already resolved — a file name, a product, a model — and the
 /// counters beside it, which is exactly what `SpeakerTerms` keeps for the
 /// hand-written list.
-final class LearnedTermStore: @unchecked Sendable {
+final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
     private struct State {
         var terms: LearnedTerms?
     }
@@ -141,6 +141,32 @@ final class LearnedTermStore: @unchecked Sendable {
         Log.polishing.info(
             "Learned terms: correction recorded in project \(project.key == LearnedTermProjectResolver.shared.key ? "shared" : "keyed", privacy: .public)"
         )
+    }
+
+    /// A project's coding agent answered its terms request
+    /// (`LearnedTerms.recordProposal`, #609). Ordered on the write queue like
+    /// `record`.
+    func recordProposal(
+        _ terms: [String],
+        agent: ProjectTermProposal.Agent,
+        project: LearnedTermProjectIdentity,
+        excluding: [String]
+    ) {
+        let moment = now()
+        mutate { memory in
+            let added = memory.recordProposal(terms, agent: agent, project: project, excluding: excluding, now: moment)
+            Log.polishing.info(
+                "Learned terms: \(added, privacy: .public) proposed by \(agent.rawValue, privacy: .public) kept for a new project"
+            )
+        }
+    }
+
+    /// A terms request failed; the project is asked again after a day.
+    func recordProposalFailure(project: LearnedTermProjectIdentity) {
+        let moment = now()
+        mutate { memory in
+            memory.recordProposalFailure(project: project, now: moment)
+        }
     }
 
     /// Drops one spelling from one project: Undo, or the user reverting it.
