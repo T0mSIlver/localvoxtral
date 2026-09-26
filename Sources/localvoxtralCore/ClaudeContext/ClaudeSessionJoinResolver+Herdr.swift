@@ -137,6 +137,38 @@ extension ClaudeSessionJoinResolver {
         )
     }
 
+    /// The route that writes this dictation into the joined herdr pane
+    /// (#726), or nil when the join is not a herdr pane join. Like
+    /// `herdrPaneVisibleText(for:)`, it is keyed by the binding the arm
+    /// captured, so it reaches only the pane the join resolved, over the
+    /// socket (or forward) the join already trusted. Before each Enter it
+    /// asks that pane again whether the joined agent is foreground, with the
+    /// same test the arm joined on: the pid for a local pane, the parent pid
+    /// or agent name for a remote one.
+    package func herdrPromptRoute(for join: ClaudeSessionJoin) -> HerdrPanePromptRoute? {
+        let mechanism = join.mechanism
+        guard mechanism == .herdrPane
+            || mechanism == .remoteHerdrPane
+            || mechanism == .federatedHerdrPane,
+            let binding = join.herdrPane,
+            let writer = herdrPaneWriter,
+            let panes = herdrPanes
+        else { return nil }
+        let snapshot = join.snapshot
+        return HerdrPanePromptRoute(binding: binding, writer: writer) { @MainActor in
+            guard let processes = await panes.paneForegroundInfo(
+                socketPath: binding.socketPath, paneID: binding.paneID
+            )?.foregroundProcesses else { return false }
+            if mechanism == .herdrPane {
+                guard let pid = snapshot.process?.claudePID else { return false }
+                return processes.contains { $0.pid == pid }
+            }
+            return Self.remoteAgentIsForeground(
+                snapshot: snapshot, foregroundProcesses: processes, noteAbstention: { _ in }
+            )
+        }
+    }
+
     /// Pure pid cross-check kept visible to tests because a snapshot with no
     /// process cannot be produced by a successful pane-id registry lookup, but
     /// the resolver must still fail closed if that invariant ever changes.

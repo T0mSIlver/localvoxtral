@@ -32,8 +32,43 @@ package final class FakeHerdrSocket: @unchecked Sendable {
         case error(String)
         /// Close the connection without a reply.
         case hangUp
+        /// A success whose `result` is this JSON object.
+        case result(String)
         /// A raw reply line, for answers no well-behaved herdr sends.
         case raw(String)
+    }
+
+    /// A herdr whose focused pane is `paneID`, running `foreground()` (pid,
+    /// name) in its foreground: it answers the join's `pane.current` and
+    /// `pane.process_info`, refuses `pane.read`, and leaves every other
+    /// method to `writes`.
+    package static func focusedPane(
+        _ paneID: String,
+        foreground: @escaping @Sendable () -> [(pid: Int32, name: String)],
+        writes: @escaping @Sendable (Request) -> Answer = { _ in .ok }
+    ) -> @Sendable (Request) -> Answer {
+        { request in
+            switch request.method {
+            case "pane.current":
+                return .result(#"{"type":"pane_current","pane":{"pane_id":"\#(paneID)","focused":true}}"#)
+            case "pane.process_info":
+                let processes = foreground()
+                    .map { #"{"pid":\#($0.pid),"name":"\#($0.name)"}"# }
+                    .joined(separator: ",")
+                return .result(
+                    #"{"type":"pane_process_info","process_info":{"pane_id":"\#(paneID)","shell_pid":1,"foreground_processes":[\#(processes)]}}"#
+                )
+            case "pane.read":
+                return .error("unsupported")
+            default:
+                return writes(request)
+            }
+        }
+    }
+
+    /// The requests that wrote into a pane, in order.
+    package var writes: [Request] {
+        requests.filter { $0.method == "pane.send_text" || $0.method == "pane.send_keys" }
     }
 
     package let socketPath: String
@@ -157,6 +192,7 @@ package final class FakeHerdrSocket: @unchecked Sendable {
         let reply: String? = switch answer(request) {
         case .ok: #"{"id":"\#(id)","result":{"type":"ok"}}"#
         case .error(let code): #"{"id":"\#(id)","error":{"code":"\#(code)","message":"fake"}}"#
+        case .result(let json): #"{"id":"\#(id)","result":\#(json)}"#
         case .hangUp: nil
         case .raw(let line): line
         }
