@@ -114,7 +114,11 @@ struct SettingsView: View {
                 terminalApps: terminalAppsModel.terminalApps,
                 statusDot: sidebarDot,
                 badgeCount: { tab in
-                    tab.kind == .textProcessing ? viewModel.termSuggestions.badgeCount : 0
+                    switch tab.kind {
+                    case .textProcessing: viewModel.termSuggestions.badgeCount
+                    case .inbox: viewModel.quickCapture?.waitingCount ?? 0
+                    default: 0
+                    }
                 },
                 addTerminalApp: chooseAndAddTerminalApp,
                 addAppMessage: $addAppMessage
@@ -209,7 +213,7 @@ struct SettingsView: View {
         // Context sits among them since PR #310, so its consents are shown
         // by the pane's toggles, not by the row.
         case .general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about,
-            .history, .insights:
+            .history, .insights, .inbox:
             return nil
         }
     }
@@ -319,6 +323,8 @@ struct SettingsView: View {
             case .insights:
                 InsightsSettingsPane(
                     viewModel: viewModel, model: insightsModel, navigator: navigator)
+            case .inbox:
+                InboxSettingsPane(inbox: viewModel.quickCapture)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

@@ -143,6 +143,11 @@ final class SettingsStore {
         static let answerAgentShortcutKeyCode = "settings.answer_agent_shortcut_key_code"
         static let answerAgentShortcutModifiers = "settings.answer_agent_shortcut_carbon_modifiers"
         static let answerAgentShortcutEnabled = "settings.answer_agent_shortcut_enabled"
+        static let quickCaptureShortcutKeyCode = "settings.quick_capture_shortcut_key_code"
+        static let quickCaptureShortcutModifiers = "settings.quick_capture_shortcut_carbon_modifiers"
+        static let quickCaptureShortcutEnabled = "settings.quick_capture_shortcut_enabled"
+        static let quickCaptureJevEnabled = "settings.quick_capture_jev_enabled"
+        static let jevAPIKeyNeverStored = "settings.jev_api_key"
     }
 
     let defaults: UserDefaults
@@ -254,6 +259,20 @@ final class SettingsStore {
     /// app holds — never in UserDefaults.
     var mistralAPIKey: String {
         didSet { persistSecret(mistralAPIKey, for: .mistralAPIKey) }
+    }
+
+    /// Jev's key for quick capture routing (#725), in the Keychain.
+    var jevAPIKey: String {
+        didSet { persistSecret(jevAPIKey, for: .jevAPIKey) }
+    }
+
+    /// "Send quick captures to Jev for routing": off until the user turns it
+    /// on, like every hosted feature.
+    var quickCaptureJevEnabled: Bool {
+        didSet {
+            defaults.set(quickCaptureJevEnabled, forKey: Keys.quickCaptureJevEnabled)
+            if quickCaptureJevEnabled { ensureSecretsLoaded([.jevAPIKey]) }
+        }
     }
 
     /// Hosted transcription model. Empty means
@@ -846,6 +865,20 @@ final class SettingsStore {
         }
     }
 
+    var quickCaptureShortcutEnabled: Bool {
+        didSet { defaults.set(quickCaptureShortcutEnabled, forKey: Keys.quickCaptureShortcutEnabled) }
+    }
+
+    var quickCaptureShortcutKeyCode: UInt32 {
+        didSet { defaults.set(quickCaptureShortcutKeyCode, forKey: Keys.quickCaptureShortcutKeyCode) }
+    }
+
+    var quickCaptureShortcutCarbonModifierFlags: UInt32 {
+        didSet {
+            defaults.set(quickCaptureShortcutCarbonModifierFlags, forKey: Keys.quickCaptureShortcutModifiers)
+        }
+    }
+
     var livePasteShortcutKeyCode: UInt32 {
         didSet { defaults.set(livePasteShortcutKeyCode, forKey: Keys.livePasteShortcutKeyCode) }
     }
@@ -967,6 +1000,10 @@ final class SettingsStore {
 
         mistralAPIKey = Self.resolveSecret(
             secrets, .mistralAPIKey, envKey: "MISTRAL_API_KEY", environment: environment)
+        jevAPIKey = Self.resolveSecret(
+            secrets, .jevAPIKey, envKey: "TYPESAFE_API_KEY", environment: environment)
+        quickCaptureJevEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.quickCaptureJevEnabled, fallback: false)
         // Empty is the stored form of "use the pinned default": the defaults
         // live in one place (the client / MistralPolishDefaults) and a user who
         // clears the field gets them back, rather than a blank model name.
@@ -1208,6 +1245,12 @@ final class SettingsStore {
             (defaults.object(forKey: Keys.answerAgentShortcutModifiers) as? NSNumber)?.uint32Value ?? 0
         answerAgentShortcutEnabled = Self.loadBool(
             defaults: defaults, key: Keys.answerAgentShortcutEnabled, fallback: false)
+        quickCaptureShortcutKeyCode =
+            (defaults.object(forKey: Keys.quickCaptureShortcutKeyCode) as? NSNumber)?.uint32Value ?? 0
+        quickCaptureShortcutCarbonModifierFlags =
+            (defaults.object(forKey: Keys.quickCaptureShortcutModifiers) as? NSNumber)?.uint32Value ?? 0
+        quickCaptureShortcutEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.quickCaptureShortcutEnabled, fallback: false)
 
         if needsOverlayMigrationPersist {
             defaults.set(overlayBufferShortcutKeyCode, forKey: Keys.overlayBufferShortcutKeyCode)
