@@ -1480,13 +1480,18 @@ there is not.
     looking at and matches only by exact equality. A local record still needs
     its pid alive, and a pidless local one keeps the 5-minute bound.
     (2) The cap. Once a second origin is present, each keeps
-    `maxSessionsPerOrigin` (8) records. Eviction takes records without a
-    desktop id first, least recently active within each group, and logs a
-    count. The record that triggered the eviction is never its victim, in the
-    global cap as in the per-origin one, so a new terminal session still
-    registers when the cap is full of Desktop records. Preference is all this
-    buys: a host with more than 8 Desktop sessions and nothing else still
-    loses the least recently active ones.
+    `maxSessionsPerOrigin` (8) records without a desktop id and, counted
+    apart, `maxDesktopSessionsPerOrigin` (24) records with one (#672), so a
+    host's Desktop sessions never compete with its terminal ones. Over the
+    global cap (`maxSessions`, 48) the origin holding the most records loses
+    one: a desktop id is whatever an enrolled host sends, so it buys room only
+    inside that host's own quota, and a flood of them evicts only the flooding
+    host's records. Within an origin, eviction takes records without a desktop
+    id first, least recently active within each group, and logs a count per
+    quota. The record that triggered the eviction is never its victim, so a
+    new terminal session still registers when the cap is full of Desktop
+    records. A host running more than 24 Desktop sessions still loses the
+    least recently active ones.
     (3) Children. Every process in a Desktop session inherits
     `CLAUDE_CODE_HOST_SESSION_ID`, so a `claude -p` started from it reported
     the id under its own session id: two reporters, ambiguous at start, dead
