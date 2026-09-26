@@ -105,6 +105,32 @@ that never reached the app because:
 It works with history off, until the app quits. You can record a global
 shortcut for it under **Settings → Dictation → Output**.
 
+## When a coding agent needs you
+
+Record a shortcut for **Answer the agent that needs you** under **Settings →
+Dictation → Output** to turn this on. localvoxtral then tells you when one of
+the coding agent sessions it joins waits for you: a permission prompt or a
+question, from Claude Code, Codex or opencode, on this Mac or an enrolled host.
+It also tells you when a session finishes its turn while you are looking at
+another window or pane. A Mistral Vibe session tells you only when it finishes,
+since Vibe reports no waits.
+
+Each time, the app plays a sound and shows a macOS banner, the menu bar icon
+gets an orange dot, and the popover names the session: "payments needs you"
+or "payments finished". Nothing fires for a turn that ends in the pane you are
+looking at.
+
+The shortcut brings forward the pane of the session that has waited longest,
+or else the one that finished first, and starts a dictation there, so you can
+answer by voice. Press it again to stop the dictation; the next press goes to
+the next session. Like "go to", it reaches sessions in Ghostty, iTerm2 and
+Terminal.app on this Mac. For any other session, the popover says it can't
+bring that session forward.
+
+A session leaves the list when you send it a prompt, when it starts working
+again, when it ends, or when you dictate into it. The app never receives what
+the agent wrote or asked, only that it waits.
+
 ## History
 
 The app saves every dictation on this Mac, in plain text, in

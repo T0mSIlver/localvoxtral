@@ -59,6 +59,13 @@ struct localvoxtralApp: App {
                             "secure-input-warning",
                             "localvoxtral, Secure Keyboard Entry is blocking dictation typing"
                         )
+                    case .agentNeedsYou:
+                        return (
+                            MenuBarIconAsset.attentionIcon ?? idleIcon,
+                            .original,
+                            "agent-needs-you",
+                            "localvoxtral, an agent needs you"
+                        )
                     case .failure:
                         if let failureIcon = MenuBarIconAsset.failureIcon {
                             return (
@@ -101,6 +108,8 @@ struct localvoxtralApp: App {
                 case .secureInputWarning:
                     Label("localvoxtral", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
+                case .agentNeedsYou:
+                    Label("localvoxtral", systemImage: "bell.badge")
                 }
             }
         }
@@ -511,6 +520,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     #endif
 
+    /// The needs-you cue (#717). Its own resolver asks only the local
+    /// questions (`sessionShown`): nothing here can open a forward, stamp a
+    /// herdr panel or dial cmux. A terminal it has no Automation consent for
+    /// is not asked at all, so a turn's end never raises the consent sheet;
+    /// that answer counts as not looking, and the cue fires.
+    private func installAgentAttention(
+        ttyReader: AppleScriptTerminalTTYReader,
+        desktopSessionReader: AXClaudeDesktopSessionURLReader,
+        herdrClient: HerdrSocketClient
+    ) {
+        let registry = claudeSessionRegistry
+        let paneResolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            focusedTerminalTTY: { bundleID in
+                guard await AutomationConsent.isGranted(bundleID: bundleID) else { return nil }
+                return await ttyReader.focusedTerminalTTY(bundleID: bundleID)
+            },
+            focusedDesktopSessionURL: { await desktopSessionReader.focusedSessionURL(applicationPID: $0) },
+            herdrClientProbe: { HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0) },
+            herdrFederation: { HerdrMachineFederationReader.live().federation() },
+            herdrClientSurfaceCount: { HerdrClientTTYProbe.clientSurfaceCount() },
+            herdrPanes: herdrClient
+        )
+        let settings = viewModel.settings
+        let tracker = AgentAttentionTracker(
+            isEnabled: { settings.answerAgentShortcut != nil },
+            isWatching: { session in
+                guard let target = TerminalScreenContextSource.frontmostTarget() else { return false }
+                return await paneResolver.sessionShown(target: target) == session.sessionID
+            },
+            liveSessionIDs: { Set(registry.liveSessions().map(\.sessionID)) },
+            now: { Date() }
+        )
+        let announcer = AgentAttentionAnnouncer()
+        viewModel.agentAttention = AgentAttentionModel(tracker: tracker, announcer: announcer)
+        // The registry calls this on whichever socket thread ingested; the
+        // sequence it stamps under its lock puts a session's events back in
+        // order.
+        registry.setTurnObserver { event, session, sequence in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { _ = tracker.receive(event, session: session, sequence: sequence) }
+            }
+        }
+    }
+
     /// Binds the hook socket and installs the pane authorizer that depends on it.
     ///
     /// Failure is non-fatal by design: the app's own dictation does not need the
@@ -621,6 +675,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 repositoryRoot: SessionNavigator.liveRepositoryRoot,
                 focuser: TerminalSessionPaneFocuser.live(ttyReader: ttyReader),
                 sleep: viewModel.session.dependencies.clock.sleep
+            )
+            installAgentAttention(
+                ttyReader: ttyReader,
+                desktopSessionReader: desktopSessionReader,
+                herdrClient: herdrClient
             )
             // Correction learning compares each submitted prompt with the
             // dictation the app inserted into that session. The registry
@@ -1272,6 +1331,8 @@ private enum MenuBarIconAsset {
         "MicIconTemplate_failure",
         "MicIconTemplate@2x_failure",
     ])
+
+    static let attentionIcon: NSImage? = idleIcon.map(MenuBarStatusIcon.withAttentionDot(template:))
 
     private static func adaptiveIcon(coloredCandidates: [String]) -> NSImage? {
         guard let template = idleIcon,
