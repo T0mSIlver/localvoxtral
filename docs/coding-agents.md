@@ -88,7 +88,10 @@ Each agent's pane in Settings (Claude Code, opencode, Mistral Vibe) has a
 **Tell … you dictate** row. **Add** puts a short note in that agent's
 user-level instructions file, saying your prompts come from speech-to-text:
 the agent should fix an obvious transcription error itself and ask before
-acting when a likely error changes the request. **Remove** takes it out.
+acting when a likely error changes the request, and should propose what it
+creates or renames with [the `localvoxtral` command](#the-localvoxtral-command).
+**Remove** takes it out. A note added by an older version reads as another
+version, with an **Update** button.
 
 | Agent | File |
 |---|---|
@@ -294,16 +297,9 @@ The command talks to the running app over the same private socket the hooks
 use. It opens no network port, and only processes running as you can reach
 it. It needs the app running, and exits 3 when it is not.
 
-To let your agents find it, paste this into your `AGENTS.md` or `CLAUDE.md`:
-
-```markdown
-## Dictation
-
-I dictate prompts with localvoxtral. `localvoxtral history search <text>
---json` finds what I said (`--since yesterday`, `--project .`), and
-`localvoxtral history last --json` returns my last dictation even when it
-never reached you. When you meet a project name, identifier or acronym that
-speech recognition would likely misspell, propose it with `localvoxtral terms
-propose <term>… --project .` (add `--agent vibe` in Mistral Vibe). Run
-`localvoxtral --help` for the rest.
-```
+To let your agents find it, add the note from the **Tell … you dictate** row
+(see [Telling the agent you dictate](#telling-the-agent-you-dictate)): it
+tells them to propose what they create or rename. Vibe is not detected, so
+its proposals read "Proposed by a coding agent". To have them name Vibe, ask
+it to add `--agent vibe` in a line of `~/.vibe/AGENTS.md` outside the note;
+an edit inside the note makes the row offer **Update**, which undoes it.
