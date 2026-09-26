@@ -184,7 +184,7 @@ from your issue and say so in your report. Don't ask whether to file it.
 ## Read first, when your work touches
 
 - The Claude Code context path (`Sources/ClaudeContext*`,
-  `Sources/localvoxtral/ClaudeContext/`, `integrations/claude-code/`), text
+  `Sources/localvoxtral*/ClaudeContext/`, `integrations/claude-code/`), text
   insertion, or polish-commit semantics: `docs/agent/invariants.md`. Its
   trust boundaries encode measured failures; don't infer intent from the code.
   Also `Sources/localvoxtral/ClaudeContext/AGENTS.md`.

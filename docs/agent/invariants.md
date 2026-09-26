@@ -2,7 +2,7 @@
 
 Read this in full before changing text insertion, LLM polishing, or anything
 in the Claude Code context path (`Sources/ClaudeContext*`,
-`Sources/localvoxtral/ClaudeContext/`, `integrations/claude-code/`, the
+`Sources/localvoxtral*/ClaudeContext/`, `integrations/claude-code/`, the
 remote listener/enrollment/forward code). The trust boundaries here are
 load-bearing and non-obvious; several of them are the residue of measured
 failures, with the evidence cited inline.

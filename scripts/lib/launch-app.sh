@@ -5,7 +5,7 @@
 # `open` hands the bundle to LaunchServices, which does NOT give it this shell's
 # environment. LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN has to be passed explicitly
 # or a lane that sets it still gets the modal keychain prompt it set the flag to
-# avoid (see Sources/localvoxtral/StartupPermissionSuppression.swift). The same
+# avoid (see Sources/localvoxtralCore/StartupPermissionSuppression.swift). The same
 # goes for LOCALVOXTRAL_DOGFOOD_AUDIO_FILE, the WAV a dogfood build dictates
 # from in place of the microphone (docs/dogfood-builds.md).
 #

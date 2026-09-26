@@ -550,7 +550,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 herdrFederation: { HerdrMachineFederationReader.live().federation() },
                 herdrClientSurfaceCount: { HerdrClientTTYProbe.clientSurfaceCount() },
                 herdrPanes: herdrClient,
-                cmuxSurfaces: CmuxSocketClient(password: { cmuxPasswords.password() }),
+                cmuxSurfaces: CmuxSocketClient(
+                    password: { cmuxPasswords.password() },
+                    bundleIDOfRunningPID: { CmuxSocketClient.runningBundleID(ofPID: $0) }
+                ),
                 cmuxJoinEnabled: { [weak viewModel] in
                     viewModel?.settings.cmuxSurfaceJoinEnabled ?? false
                 },

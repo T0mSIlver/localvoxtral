@@ -66,6 +66,11 @@ the app hands it the resource bundle, and on Linux it hashes with
 socket guard (`ClaudeSocketGuard`: `getpeereid` and `LOCAL_PEERPID` on Darwin,
 `SO_PEERCRED` on Linux), with the SHA-256 and HMAC helpers the Claude code
 hashes through, and the `RealtimeClient` protocol and its event types.
+`Sources/localvoxtralCore/ClaudeContext` holds the part of the Claude context
+path that needs no AppKit (#591): the repository collector and its selection,
+the context blocks, the plugin, statusline, opencode and Vibe installers, the
+shell rc setup and the cmux client. The rest stays in
+`Sources/localvoxtral/ClaudeContext`.
 It builds and tests on Linux (`scripts/core-tests-linux.sh`); the app
 re-exports it. Test doubles that need only the core live in
 `Tests/localvoxtralTestSupport`, a library both test targets depend on; a
@@ -114,7 +119,7 @@ Key subsystems:
   the login Keychain), `AppConfigStore` (TOML at
   `~/Library/Application Support/localvoxtral/config`)
 - Hotkey: `HotKeyManager` (Carbon, single global hotkey)
-- Claude Code session context (`Sources/ClaudeContext*`, `Sources/localvoxtral/ClaudeContext/`,
+- Claude Code session context (`Sources/ClaudeContext*`, `Sources/localvoxtral*/ClaudeContext/`,
   `integrations/claude-code/`): off-screen context for dictation into Claude
   Code. Two plugins in one marketplace, structurally separate — never modes of
   each other. Both declare hooks only (no skill/command/agent/statusLine —

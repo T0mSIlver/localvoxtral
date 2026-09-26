@@ -79,7 +79,7 @@ expect true "the screen text rules, split from the AX reader, run the lane" \
 expect true "the browser allowlist, split from the tab url reader, runs the lane" \
   Sources/localvoxtral/BrowserTabAllowlist.swift
 expect true "the git runner, split from repo vocabulary, runs the lane" \
-  Sources/localvoxtral/RepoGitRunner.swift
+  Sources/localvoxtralCore/RepoGitRunner.swift
 expect true "the socket guard, moved to the core target, runs the lane" \
   Sources/localvoxtralCore/ClaudeSocketGuard.swift
 expect true "the Claude Desktop allowlist, split from its reader, runs the lane" \
@@ -150,19 +150,21 @@ expect false "a settings-model plus forward-supervisor change does not run the l
   Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardSupervisor.swift
 expect false "the settings model's files by area do not run the lane" \
   "Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+SetupRun.swift" \
-  Sources/localvoxtral/ClaudeContext/ClaudeShellSetupStatus.swift \
+  Sources/localvoxtralCore/ClaudeContext/ClaudeShellSetupStatus.swift \
   Sources/localvoxtral/ClaudeContext/HerdrMachineImport.swift
 expect true "an exempt file beside a join change still runs the lane" \
   Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService.swift \
   Sources/localvoxtral/ClaudeContext/SSHDestinationTTYProbe.swift
 expect true "a NEW file in ClaudeContext runs the lane until it is exempted" \
   Sources/localvoxtral/ClaudeContext/SomethingNobodyClassifiedYet.swift
+expect true "a NEW file in the core's ClaudeContext runs the lane too" \
+  Sources/localvoxtralCore/ClaudeContext/SomethingNobodyClassifiedYet.swift
 expect true "what reads a screen or accepts a hook record is not exempt" \
   Sources/localvoxtral/ClaudeContext/ClaudeRemoteContextListener.swift
 expect true "what evicts sessions from the registry is not exempt" \
   Sources/localvoxtral/ClaudeContext/ClaudeRemoteListenerCoordinator.swift
 expect true "what decides whether the cmux join arm authenticates is not exempt" \
-  Sources/localvoxtral/ClaudeContext/CmuxSocketPasswordStore.swift
+  Sources/localvoxtralCore/ClaudeContext/CmuxSocketPasswordStore.swift
 
 # Every exempt path must exist (a rename must not leave a dead exemption that a
 # new file of the old name would inherit), and the catch-all must be the ONLY
@@ -182,6 +184,7 @@ while IFS= read -r exempt; do
   [[ -e "$ROOT_DIR/$exempt" ]] || fail "exempt path does not exist: $exempt"
   while IFS= read -r pattern; do
     [[ "$pattern" == 'Sources/localvoxtral/ClaudeContext/*' ]] && continue
+    [[ "$pattern" == 'Sources/localvoxtralCore/ClaudeContext/*' ]] && continue
     # shellcheck disable=SC2254
     case "$exempt" in
       $pattern) fail "exempt path $exempt is also asked for by pattern $pattern" ;;
