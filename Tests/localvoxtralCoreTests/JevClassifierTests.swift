@@ -92,6 +92,18 @@ final class QuickCaptureChatRoutingTests: XCTestCase {
         }
     }
 
+    func testAMistralReasoningReplyIsReadFromItsTextChunk() throws {
+        let object: [String: Any] = ["choices": [["message": ["role": "assistant", "content": [
+            ["type": "thinking", "thinking": [["type": "text", "text": "Maybe {\"project\": \"inbox\"}"]]],
+            ["type": "text", "text": #"{"project": "localvoxtral", "confidence": 0.85}"#],
+        ]]]]]
+        XCTAssertEqual(
+            try QuickCaptureChatRouting.probabilities(
+                status: 200, body: JSONSerialization.data(withJSONObject: object), options: options),
+            ["localvoxtral": 0.85]
+        )
+    }
+
     func testAnIdThatIsNoOptionIsAFailureNotAGuess() {
         XCTAssertThrowsError(
             try QuickCaptureChatRouting.probabilities(

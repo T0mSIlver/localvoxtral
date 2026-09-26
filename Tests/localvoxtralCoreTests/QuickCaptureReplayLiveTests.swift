@@ -30,6 +30,20 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
         let userLine: String?
     }
 
+    /// Prints a classifier's error: `Log` is silent on Linux.
+    private struct Printing: QuickCaptureClassifying {
+        let inner: any QuickCaptureClassifying
+        var kind: QuickCaptureRoute.Classifier { inner.kind }
+        func classify(capture: String, options: [QuickCaptureOption]) async throws -> [String: Double] {
+            do {
+                return try await inner.classify(capture: capture, options: options)
+            } catch {
+                print("QC error \(inner.kind.rawValue): \(error)")
+                throw error
+            }
+        }
+    }
+
     func testReplay() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["LV_QUICK_CAPTURE_REPLAY"] == "1" else {
@@ -82,7 +96,7 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
         for option in QuickCaptureRouting.options(for: projects) {
             print("QC   \(option.id): \(option.description)")
         }
-        let router = QuickCaptureRouter(classifiers: classifiers)
+        let router = QuickCaptureRouter(classifiers: classifiers.map { Printing(inner: $0) })
         let names = Dictionary(projects.map { ($0.key, $0.name) }, uniquingKeysWith: { first, _ in first })
         let projectNames = Set(projects.map(\.name))
         var right = 0, projectExpected = 0, projectRight = 0, catchAll = 0, wrongProject = 0, inboxRight = 0, failed = 0

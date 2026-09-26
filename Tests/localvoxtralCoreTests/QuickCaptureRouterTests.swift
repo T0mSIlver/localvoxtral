@@ -57,6 +57,14 @@ final class QuickCaptureRouterTests: XCTestCase {
         }
     }
 
+    func testAChatModelNeedsNinetyPercentBecauseItsConfidenceIsNotCalibrated() {
+        let options = QuickCaptureRouting.options(for: projects)
+        let unsure = QuickCaptureRouting.decide(probabilities: ["website": 0.85], options: options, classifier: .chatModel)
+        let sure = QuickCaptureRouting.decide(probabilities: ["website": 0.9], options: options, classifier: .chatModel)
+        XCTAssertEqual(unsure.reason, .lowConfidence)
+        XCTAssertEqual(sure.destination, .project("remote:website"))
+    }
+
     // MARK: Router
 
     func testAFailedClassifierFallsBackToTheNext() async {

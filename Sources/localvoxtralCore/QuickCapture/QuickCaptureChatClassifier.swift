@@ -63,13 +63,27 @@ package enum QuickCaptureChatRouting {
         guard let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
               let message = choices.first?["message"] as? [String: Any],
-              let content = message["content"] as? String,
+              let content = text(ofContent: message["content"]),
               let answer = jsonObject(in: content),
               let id = answer["project"] as? String
         else { throw Failure.malformedResponse }
         guard options.contains(where: { $0.id == id }) else { throw Failure.unknownOption }
         let confidence = (answer["confidence"] as? NSNumber)?.doubleValue ?? 1
         return [id: min(max(confidence, 0), 1)]
+    }
+
+    /// A plain string on OpenAI-compatible servers. A reasoning model on
+    /// Mistral answers a list of chunks instead, `{"type": "thinking"}` for
+    /// the trace and `{"type": "text"}` for the answer; only the text counts
+    /// (the same reading as `LLMPolishingService.assistantText`).
+    static func text(ofContent content: Any?) -> String? {
+        if let string = content as? String { return string }
+        guard let chunks = content as? [[String: Any]] else { return nil }
+        let text = chunks
+            .filter { $0["type"] as? String == "text" }
+            .compactMap { $0["text"] as? String }
+            .joined()
+        return text.isEmpty ? nil : text
     }
 
     /// The last `{…}` in the reply: bare, fenced, or after a reasoning
