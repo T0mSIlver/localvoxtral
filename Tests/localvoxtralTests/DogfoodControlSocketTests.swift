@@ -57,9 +57,10 @@ final class DogfoodControlSocketTests: XCTestCase {
         XCTAssertEqual(try request("registry list", terminator: "", halfClose: true), "echo:registry list")
     }
 
-    /// A client that sends a command and leaves before the answer. The reply
-    /// then goes to a closed peer, which raises SIGPIPE on a socket without
-    /// SO_NOSIGPIPE and kills the whole app, dictation included (#743).
+    /// A client that sends a command and leaves before the answer. A write to
+    /// the closed peer raises SIGPIPE, which kills the whole app, dictation
+    /// included, unless the socket has SO_NOSIGPIPE; and Darwin refuses that
+    /// option on a socket whose peer already closed (#743).
     func testAClientThatLeavesBeforeTheReplyDoesNotKillTheApp() throws {
         let (clientLeft, signalClientLeft) = AsyncStream.makeStream(of: Void.self)
         let calls = Mutex(0)
