@@ -289,17 +289,18 @@ enum StopCommitCoordinator {
         let configurationFailure: (message: String, technicalDetails: String?)?
     }
 
+    /// `polishingConfig` is the one the commit sampled at stop.
     /// `latchedReplacementDictionary` is the one the session latched at
     /// start; without one, the dictionary is loaded now.
     @MainActor
     static func prepare(
         originalText: String,
+        polishingConfig: LLMPolishingConfiguration?,
         latchedReplacementDictionary: ReplacementDictionary?,
         settings: SettingsStore,
         appConfigStore: any AppConfigServing,
         pasteboardReader: @MainActor () -> any PasteboardReading
     ) -> Preparation {
-        let polishingConfig = settings.llmPolishingConfiguration
         let replacementAppliedText =
             (latchedReplacementDictionary
                 ?? effectiveReplacementDictionary(settings: settings, appConfigStore: appConfigStore))?

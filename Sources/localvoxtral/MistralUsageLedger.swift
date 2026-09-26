@@ -10,6 +10,10 @@ struct MistralUsageEntry: Codable, Equatable, Sendable {
         case dictation
         /// One `/v1/chat/completions` polish request.
         case polish
+        /// One `/v1/audio/transcriptions` request: the second pass an Overlay
+        /// Buffer dictation gets on stop (#317). Its audio was already counted
+        /// as dictated by the realtime socket, so only its cost is summed.
+        case retranscription
     }
 
     let date: Date
@@ -58,6 +62,9 @@ enum MistralPricing {
             ],
             Price(perAudioMinute: 0.0053)
         )
+        // Voxtral Mini Transcribe 2, the batch model: 0.003 USD/min
+        // (docs: models/voxtral-mini-transcribe-26-02, checked 2026-09-26).
+        add(["voxtral-mini-latest", "voxtral-mini-2602"], Price(perAudioMinute: 0.0026))
         add(
             [
                 "mistral-medium-latest", "mistral-medium", "mistral-medium-3-5",
@@ -176,6 +183,7 @@ struct MistralUsageSummary: Equatable, Sendable {
     var dictationCount = 0
     var audioSeconds: Double = 0
     var polishCount = 0
+    var retranscriptionCount = 0
     /// Requests counted above whose cost is not in `costEUR`: a model with no
     /// price here, or a polish that timed out before Mistral said what it used.
     var unpricedCount = 0
@@ -190,6 +198,8 @@ struct MistralUsageSummary: Equatable, Sendable {
                 audioSeconds += entry.audioSeconds ?? 0
             case .polish:
                 polishCount += 1
+            case .retranscription:
+                retranscriptionCount += 1
             }
             if let cost = entry.costEUR {
                 costEUR += cost
@@ -199,7 +209,7 @@ struct MistralUsageSummary: Equatable, Sendable {
         }
     }
 
-    var isEmpty: Bool { dictationCount == 0 && polishCount == 0 }
+    var isEmpty: Bool { dictationCount == 0 && polishCount == 0 && retranscriptionCount == 0 }
 
     /// The Usage row's one line, e.g. "€0.42 · 38 min dictated · 112 polishes".
     /// Requests with no price say so beside the total: "€0.42 + 2 unpriced".

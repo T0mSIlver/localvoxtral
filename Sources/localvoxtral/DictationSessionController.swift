@@ -386,6 +386,17 @@ final class DictationSessionController {
     var sessionModelName: String?
     @ObservationIgnored
     var sessionReplacementDictionary: ReplacementDictionary?
+    /// Latched at start: the session's audio goes to the audio store.
+    @ObservationIgnored
+    var sessionStoresAudio = false
+    /// Latched at start: an Overlay Buffer dictation in Mistral API mode,
+    /// which is transcribed again on stop (#317).
+    @ObservationIgnored
+    var sessionHasStopSecondPass = false
+    /// Where the second pass reports what it cost; the realtime client and
+    /// the polishing service hold the same ledger.
+    @ObservationIgnored
+    var secondPassUsageRecorder: (any MistralUsageRecording)?
     /// Live Auto-Paste spoken send trigger state
     /// (`DictationSessionController+SpokenSend.swift`), reset per session.
     enum LiveSpokenSendSegmentMode {

@@ -46,6 +46,8 @@ extension DictationSessionController {
         sessionModelName = nil
         sessionReplacementDictionary = nil
         sessionRealtimeConfiguration = nil
+        sessionStoresAudio = false
+        sessionHasStopSecondPass = false
     }
 
     /// Live Auto-Paste preflight for Secure Keyboard Entry: a live session
@@ -439,15 +441,24 @@ extension DictationSessionController {
         clearLatchedSessionMetadata()
         sessionOutputMode = requestedOutputMode
         sessionStartedAt = Date()
-        // Latched here: a setting flipped mid-dictation applies to the next.
-        audio.sessionRecording.begin(
-            enabled: settings.dictationAudioEnabled
-                && settings.dictationHistoryRetention.savesDictations)
+        latchSessionAudio(outputMode: requestedOutputMode)
         sessionReplacementDictionary = StopCommitCoordinator.effectiveReplacementDictionary(
             settings: settings,
             appConfigStore: appConfigStore
         )
         setRealtimeIndicatorIdle()
+    }
+
+    /// Whether this session's audio goes to the audio store, and whether it
+    /// is kept in memory for a second pass on stop (#317). Latched here: a
+    /// setting flipped mid-dictation applies to the next. Only the first
+    /// latch lets the audio reach the disk.
+    func latchSessionAudio(outputMode: DictationOutputMode) {
+        sessionStoresAudio = settings.dictationAudioEnabled
+            && settings.dictationHistoryRetention.savesDictations
+        sessionHasStopSecondPass = settings.dictationBackendMode == .mistralAPI
+            && outputMode == .overlayBuffer
+        audio.sessionRecording.begin(enabled: sessionStoresAudio || sessionHasStopSecondPass)
     }
 
     /// Fail fast on Live Auto-Paste without Accessibility trust: transcribed

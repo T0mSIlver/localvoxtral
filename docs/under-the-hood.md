@@ -94,11 +94,25 @@ reasoning switched off, so polishing asks it for its lowest setting (`low`);
 models without reasoning are sent no reasoning setting at all. In this mode
 your audio and transcripts reach Mistral.
 
+With the Overlay Buffer, Mistral API dictation transcribes each dictation a
+second time when you stop. The realtime model takes no vocabulary, so the app
+keeps the dictation's audio in memory and sends it whole to Voxtral Mini
+Transcribe 2 (`voxtral-mini-latest`) with up to 100 terms: your Names and
+terms, your replacement dictionary's spellings and, only with the
+trusted-endpoint setting on, the terms learned from polishing. If the answer
+comes back within 2.5 seconds plus one second per minute of audio, its text
+replaces the realtime text and polishing runs on it; otherwise the realtime
+text stays. The audio is written to disk only if History keeps audio. The
+second pass costs 0.003 USD per minute, so hosted dictation in the Overlay
+Buffer costs 1.5 times the realtime price. Live Auto-Paste has typed its text
+already and gets no second pass.
+
 The **Usage** row in the pane's Mistral API group estimates what those
 requests cost, in EUR, over today, the last 7, 30 or 90 days, or all time.
 The app logs every request it sends to Mistral in
 `~/Library/Application Support/localvoxtral/mistral-usage.jsonl`, one line
-per request: time, model, the seconds of audio sent (dictation) or the tokens
+per request: time, model, the seconds of audio sent (dictation and its second
+pass) or the tokens
 Mistral reports (polishing), and the estimated cost. The log never holds what
 you said, and nothing in it leaves the Mac. Prices are Mistral's EUR list
 prices, built into the app, so the estimate can differ from your invoice:
