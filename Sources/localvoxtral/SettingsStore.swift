@@ -140,6 +140,9 @@ final class SettingsStore {
         static let copyLastDictationShortcutModifiers =
             "settings.copy_last_dictation_shortcut_carbon_modifiers"
         static let copyLastDictationShortcutEnabled = "settings.copy_last_dictation_shortcut_enabled"
+        static let answerAgentShortcutKeyCode = "settings.answer_agent_shortcut_key_code"
+        static let answerAgentShortcutModifiers = "settings.answer_agent_shortcut_carbon_modifiers"
+        static let answerAgentShortcutEnabled = "settings.answer_agent_shortcut_enabled"
     }
 
     let defaults: UserDefaults
@@ -809,6 +812,20 @@ final class SettingsStore {
         didSet { defaults.set(livePasteShortcutEnabled, forKey: Keys.livePasteShortcutEnabled) }
     }
 
+    var answerAgentShortcutEnabled: Bool {
+        didSet { defaults.set(answerAgentShortcutEnabled, forKey: Keys.answerAgentShortcutEnabled) }
+    }
+
+    var answerAgentShortcutKeyCode: UInt32 {
+        didSet { defaults.set(answerAgentShortcutKeyCode, forKey: Keys.answerAgentShortcutKeyCode) }
+    }
+
+    var answerAgentShortcutCarbonModifierFlags: UInt32 {
+        didSet {
+            defaults.set(answerAgentShortcutCarbonModifierFlags, forKey: Keys.answerAgentShortcutModifiers)
+        }
+    }
+
     var copyLastDictationShortcutEnabled: Bool {
         didSet {
             defaults.set(copyLastDictationShortcutEnabled, forKey: Keys.copyLastDictationShortcutEnabled)
@@ -1185,6 +1202,12 @@ final class SettingsStore {
             (defaults.object(forKey: Keys.copyLastDictationShortcutModifiers) as? NSNumber)?.uint32Value ?? 0
         copyLastDictationShortcutEnabled = Self.loadBool(
             defaults: defaults, key: Keys.copyLastDictationShortcutEnabled, fallback: false)
+        answerAgentShortcutKeyCode =
+            (defaults.object(forKey: Keys.answerAgentShortcutKeyCode) as? NSNumber)?.uint32Value ?? 0
+        answerAgentShortcutCarbonModifierFlags =
+            (defaults.object(forKey: Keys.answerAgentShortcutModifiers) as? NSNumber)?.uint32Value ?? 0
+        answerAgentShortcutEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.answerAgentShortcutEnabled, fallback: false)
 
         if needsOverlayMigrationPersist {
             defaults.set(overlayBufferShortcutKeyCode, forKey: Keys.overlayBufferShortcutKeyCode)

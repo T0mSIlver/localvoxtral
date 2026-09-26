@@ -18,6 +18,9 @@ enum MenuBarIndicatorState: Equatable {
     /// with the failure icon because the menu bar is the only surface still
     /// visible while the popover is closed during dictation (#89).
     case secureInputWarning
+    /// Idle, and an agent session waits on the user or finished while they
+    /// looked elsewhere (#717).
+    case agentNeedsYou
 }
 
 @MainActor
@@ -84,6 +87,7 @@ final class DictationViewModel {
                 || message == HotKeyManager.livePasteUnavailableErrorMessage
                 || message == HotKeyManager.modifierOnlyUnavailableErrorMessage
                 || message == HotKeyManager.copyLastDictationUnavailableErrorMessage
+                || message == HotKeyManager.answerAgentUnavailableErrorMessage
             {
                 return .hotKeyShortcutUnavailable
             }
@@ -160,7 +164,6 @@ final class DictationViewModel {
     var transcript: TranscriptAccumulator { get { session.transcript } set { session.transcript = newValue } }
     var statusText: String { get { session.statusText } set { session.statusText = newValue } }
     var lastError: String? { get { session.lastError } set { session.lastError = newValue } }
-    var lastFinalSegment: String { session.lastFinalSegment }
     var lastPolishChangedRawTranscript: String? {
         get { session.lastPolishChangedRawTranscript }
         set { session.lastPolishChangedRawTranscript = newValue }
@@ -219,11 +222,9 @@ final class DictationViewModel {
     func selectMicrophoneInputChannel(_ channel: Int) { session.selectMicrophoneInputChannel(channel) }
     func clearTranscript() { session.clearTranscript() }
     func copyTranscript() { session.copyTranscript() }
-    func copyLatestSegment(updateStatus: Bool = true) { session.copyLatestSegment(updateStatus: updateStatus) }
     func copyRawTranscript() { session.copyRawTranscript() }
     var canCopyLastDictation: Bool { session.canCopyLastDictation }
     func copyLastDictation() { session.copyLastDictation() }
-    func pasteLatestSegment() { session.pasteLatestSegment() }
     func applyDictationHistoryRetention(now: Date = Date()) { session.applyDictationHistoryRetention(now: now) }
     func prepareLLMPolishingPromptAccessIfNeeded() { session.prepareLLMPolishingPromptAccessIfNeeded() }
 
@@ -280,8 +281,22 @@ final class DictationViewModel {
         case .recentFailure:
             return .failure
         case .idle:
-            return requiredManagedBackendsReady ? .idle : .failure
+            guard requiredManagedBackendsReady else { return .failure }
+            return agentAttentionLine == nil ? .idle : .agentNeedsYou
         }
+    }
+
+    /// The needs-you queue (#717), installed by `AppDelegate`.
+    var agentAttention: AgentAttentionModel? {
+        get { session.agentAttention }
+        set { session.agentAttention = newValue }
+    }
+
+    /// The popover's needs-you sentence, nil when nobody waits or no answer
+    /// shortcut is set (clearing the shortcut turns the cue off at once).
+    var agentAttentionLine: String? {
+        guard settings.answerAgentShortcut != nil else { return nil }
+        return agentAttention?.popoverLine
     }
 
     let settings: SettingsStore

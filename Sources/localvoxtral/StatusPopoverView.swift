@@ -34,10 +34,6 @@ struct StatusPopoverView: View {
     var viewModel: DictationViewModel
     var navigator: SettingsNavigator
 
-    private var hasLatestSegment: Bool {
-        !viewModel.lastFinalSegment.trimmed.isEmpty
-    }
-
     private var dictationButtonTitle: String {
         if viewModel.isFinalizingStop {
             return "Finalizing..."
@@ -108,11 +104,6 @@ struct StatusPopoverView: View {
             }
             .disabled(!viewModel.canCopyLastDictation)
 
-            Button("Copy latest segment") {
-                viewModel.copyLatestSegment()
-            }
-            .disabled(!hasLatestSegment)
-
             // Polished commits can't be un-typed into the target app; offer the
             // pre-polish raw transcript for one-tap copy instead (F6). Appears
             // only after a polish-changed commit; a one-line action, never the
@@ -161,6 +152,14 @@ struct StatusPopoverView: View {
                     .frame(width: Self.contentWidth, alignment: .leading)
             }
 
+            // One sentence naming the session that needs you (#717).
+            if let agentAttentionLine = viewModel.agentAttentionLine {
+                Text(agentAttentionLine)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(width: Self.contentWidth, alignment: .leading)
+            }
+
             Text(viewModel.statusText)
                 .foregroundStyle(.secondary)
                 .lineLimit(nil)
@@ -182,6 +181,7 @@ struct StatusPopoverView: View {
             }
         }
         .onAppear {
+            viewModel.agentAttention?.tracker.prune()
             viewModel.refreshMicrophoneInputs()
             viewModel.permissions.refreshAccessibilityTrustState()
         }

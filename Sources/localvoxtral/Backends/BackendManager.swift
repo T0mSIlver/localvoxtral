@@ -7,19 +7,6 @@ struct ManagedBackendStatusUpdate: Equatable, Sendable {
     let status: ManagedBackendStatus
 }
 
-enum ManagedBackendStatus: Equatable, Sendable {
-    case preparingModel(progress: ModelDownloadProgress)
-    /// The user paused the model download. The bytes already transferred are
-    /// kept (see `HFModelDownloadTransport.retainedResumeData`), and `progress`
-    /// is the last reading before the pause so the row keeps its bar. Nothing
-    /// resumes on its own: the next `ensureReady` for this backend does.
-    case pausedModelDownload(progress: ModelDownloadProgress)
-    case starting
-    case ready
-    case stopped
-    case failed(summary: String, detail: String?)
-}
-
 enum ManagedBackendManagerError: LocalizedError {
     case backendFailed(name: String, summary: String, detail: String?)
 

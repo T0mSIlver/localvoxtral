@@ -379,6 +379,11 @@ final class DictationSessionController {
     /// then an Overlay Buffer dictation is never a command.
     @ObservationIgnored
     var sessionNavigator: SessionNavigator?
+    /// The needs-you queue (#717). Nil until the app installs it. Observed:
+    /// the menu bar icon and the popover read its queue.
+    var agentAttention: AgentAttentionModel?
+    @ObservationIgnored
+    var answerAgentTask: Task<Void, Never>?
     @ObservationIgnored
     var polishAndCommitTask: Task<Void, Never>?
     /// Saves the dictation `polishAndCommitTask` is polishing, as not
@@ -787,15 +792,14 @@ final class DictationSessionController {
         statusText = "Transcript copied."
     }
 
-    func copyLatestSegment(updateStatus: Bool = true) {
+    /// Live Auto-Paste with "Copy on stop" on: after each final, the
+    /// dictation so far goes to the clipboard, so it holds the whole
+    /// dictation once the session stops. Silent, since the status line
+    /// belongs to the running session.
+    func autoCopyDictationSoFar() {
         let segment = lastFinalSegment.trimmed
         guard !segment.isEmpty else { return }
-
         writeToPasteboard(segment)
-
-        if updateStatus {
-            statusText = "Latest segment copied."
-        }
     }
 
     /// Copies the RAW (pre-polish) transcript of the last polish-changed commit
@@ -916,30 +920,6 @@ final class DictationSessionController {
         }
     }
 
-    func pasteLatestSegment() {
-        let segment = lastFinalSegment.trimmed
-        guard !segment.isEmpty else { return }
-
-        textInsertion.refreshAccessibilityTrustState()
-
-        let directInsertResult = textInsertion.insertText(segment)
-        if directInsertResult.isSuccess {
-            statusText = "Pasted latest segment."
-            return
-        }
-
-        if textInsertion.pasteUsingCommandV(segment) {
-            statusText = "Pasted latest segment."
-            return
-        }
-
-        if !textInsertion.isAccessibilityTrusted {
-            statusText = StatusStrings.pasteBlockedByAccessibilityPermission
-        } else {
-            statusText = "Unable to paste latest segment."
-        }
-    }
-
     var acceptsRealtimeEvents: Bool {
         isDictating || isFinalizingStop
     }
@@ -1003,6 +983,7 @@ extension DictationSessionController {
         dogfoodEditSignalWatcher.supersede()
         #endif
         sessionClaudeJoinBadge = await context.captureAtStart()
+        noteDictationJoinedAgentSession(context.claudeSessionJoin?.snapshot.sessionID)
         await context.resolveAgentPromptRoute()
     }
 }

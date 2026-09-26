@@ -219,6 +219,32 @@ you make a helper depend on something outside its directory — a local `path:`
 dependency, a shared source directory — the premise breaks and the shared list
 in the filter has to grow in the same PR.
 
+## Why a PR waits: the waits labels
+
+An open PR that cannot merge yet carries one `waits:` label per reason, so the
+owner and the scheduler can read the queue from the PR list. Mac inference
+runs only in the night window the scheduler books, so the three Mac labels
+say what that night has to run.
+
+| Label | Waits for | Added by | Removed by |
+|---|---|---|---|
+| `waits:mac-voxtral` | Voxtral inference on the Mac: the speechd or live STT lane, an ASR eval, a speech helper replay | CI from the lane filters, or the worker | the scheduler, once the night run passed |
+| `waits:mac-llm` | LLM inference on the Mac: the LLM lane, the eval-e2e scoreboard, a polish helper replay or bench | CI from the lane filters, or the worker | the scheduler, once the night run passed |
+| `waits:mac-e2e` | a scored UI Smoke e2e dictation on the final diff, which the owner starts | the worker | the scheduler, once a run scored |
+| `waits:stack` | its base PR to merge | CI when the base is not `main` | the scheduler, after the retarget |
+| `waits:ci-red` | a known flake or a semantic conflict with main that someone is fixing | the worker or the scheduler | whoever gets it green |
+| `waits:external` | a key, account or decision from outside the repo | the worker | the worker |
+
+The owner's OK to merge and a hand check stay on `needs-human-review`, which
+also marks merged PRs and drives the board's Needs human review status.
+
+`pr-waits-labels.yml` adds the lane and stack labels on every push, body or
+base edit (`scripts/ci/waits-labels.sh`, the same filters `ci.yml` runs). It
+never removes one. A push after the night run adds the Mac label back, which
+is right: the lanes must pass on the final diff. CI cannot see an eval-e2e
+scoreboard, a replay, or a lane waived in an earlier commit's message, so the
+worker adds or removes those labels by hand.
+
 ## Dispatching a run without deepening the queue
 
 There is ONE self-hosted runner (the owner's MacBook), so CI concurrency is 1
