@@ -279,19 +279,52 @@ package struct ClaudeSessionJoinResolver {
     ///
     /// The writing counterpart of `resolution(target:)`, asked only when that
     /// resolution did not run (its gates are about reading context, and
-    /// writing needs none of them) or did not join. It asks the one local
-    /// question, the focused pane's TTY, and none of the herdr, ssh or cmux
-    /// arms: those open sockets and tunnels on the strength of a context
-    /// consent this path does not have. A pane that TTY resolves to a
-    /// session through anything but a fresh opencode focus declaration
-    /// carrying a relay gets nil, and the dictation types as before.
+    /// writing needs none of them) or did not join. It asks the local
+    /// questions only: the focused pane's TTY, then, when that TTY is a local
+    /// herdr client's, that herdr's focused pane (#733). Never the remote or
+    /// federated herdr, ssh or cmux arms: those open sockets and tunnels on
+    /// the strength of a context consent this path does not have. A pane
+    /// that resolves to a session through anything but a fresh opencode
+    /// focus declaration carrying a relay gets nil, and the dictation types
+    /// as before.
     package func opencodePromptRelay(target: TerminalScreenTarget) async -> OpencodePromptRelay? {
         guard TerminalScreenAllowlist.isSupported(target.bundleID),
-              let tty = await focusedTerminalTTY(target.bundleID),
-              case .resolved(let snapshot) = registry.resolve(tty: tty),
-              snapshot.agent == .opencode
+              let tty = await focusedTerminalTTY(target.bundleID)
         else { return nil }
+        let snapshot: ClaudeSessionSnapshot
+        if case .resolved(let resolved) = registry.resolve(tty: tty) {
+            snapshot = resolved
+        } else if let pane = await localHerdrPaneSessionForRelay(surfaceTTY: tty) {
+            snapshot = pane
+        } else {
+            return nil
+        }
+        guard snapshot.agent == .opencode else { return nil }
         return registry.opencodePromptRelay(sessionID: snapshot.sessionID)
+    }
+
+    /// The session in the focused pane of a LOCAL herdr (#733): inside herdr
+    /// the focused TTY is herdr's client, not the pane. Asks only what the
+    /// local herdr arm asks (`focusedLocalHerdrPaneSession`), and only when
+    /// the surface binds to a herdr client showing this machine. Never the
+    /// federated or remote arms: they read another machine's herdr, over a
+    /// forward opened on a context consent writing does not have.
+    private func localHerdrPaneSessionForRelay(surfaceTTY tty: String) async -> ClaudeSessionSnapshot? {
+        guard herdrClientProbe(tty) else { return nil }
+        switch herdrFederation() {
+        case .notFederated:
+            break
+        case .showingLocal:
+            // One selection per user: with a second client on screen it
+            // cannot say which machine this surface shows.
+            guard herdrClientSurfaceCount() == 1 else { return nil }
+        case .showingMachine, .unreadable:
+            return nil
+        }
+        let found = await focusedLocalHerdrPaneSession { outcome in
+            Log.claudeContext.info("opencode prompt relay: herdr pane not resolved (\(outcome, privacy: .public))")
+        }
+        return found?.snapshot
     }
 
     private func resolveSurface(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {

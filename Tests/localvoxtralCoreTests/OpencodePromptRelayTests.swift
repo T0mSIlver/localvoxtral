@@ -135,6 +135,96 @@ final class OpencodePromptRelayTests: XCTestCase {
         XCTAssertNil(otherPaneRelay, "another pane")
     }
 
+    /// Inside herdr the focused TTY is herdr's client, not the pane (#733):
+    /// the relay is found through the local herdr's focused pane instead,
+    /// and herdr is only asked, never written to.
+    @MainActor
+    func testInsideALocalHerdrTheFocusedPanesRelayIsFound() async throws {
+        let herdr = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2") { [(4242, "opencode")] })
+        defer { herdr.stop() }
+        let resolver = herdrResolver(herdr, federation: .notFederated)
+
+        let relay = await resolver.opencodePromptRelay(target: ghostty)
+
+        XCTAssertEqual(relay, OpencodePromptRelay(address: address, opencodeSessionID: "ses_a"))
+        XCTAssertEqual(herdr.requests.map(\.method), ["pane.current", "pane.process_info"])
+    }
+
+    /// Only what the local herdr arm accepts: the focused pane must be the
+    /// session's, and its opencode foreground.
+    @MainActor
+    func testAHerdrPaneTheSessionIsNotShowingHasNoRelay() async throws {
+        let otherPane = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p3") { [(4242, "opencode")] })
+        defer { otherPane.stop() }
+        let atTheShell = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2") { [(8123, "zsh")] })
+        defer { atTheShell.stop() }
+
+        let inOtherPane = await herdrResolver(otherPane, federation: .notFederated).opencodePromptRelay(target: ghostty)
+        let shellInFront = await herdrResolver(atTheShell, federation: .notFederated).opencodePromptRelay(target: ghostty)
+
+        XCTAssertNil(inOtherPane)
+        XCTAssertNil(shellInFront)
+    }
+
+    /// Local herdr only: while a saved machine is shown, or the machine state
+    /// is unreadable, or the surface is no herdr client, herdr is not asked.
+    @MainActor
+    func testNoRelayLookupReachesARemoteOrUnboundHerdr() async throws {
+        let herdr = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2") { [(4242, "opencode")] })
+        defer { herdr.stop() }
+        let machine = HerdrMachineProfile(
+            id: String(repeating: "a", count: 32), label: "box", target: "box", session: "default", enabled: true
+        )
+
+        let showingMachine = await herdrResolver(herdr, federation: .showingMachine(machine)).opencodePromptRelay(target: ghostty)
+        let unreadable = await herdrResolver(herdr, federation: .unreadable).opencodePromptRelay(target: ghostty)
+        let twoSurfaces = await herdrResolver(herdr, federation: .showingLocal, surfaces: 2).opencodePromptRelay(target: ghostty)
+        let notAClient = await herdrResolver(herdr, federation: .notFederated, herdrClient: false).opencodePromptRelay(target: ghostty)
+
+        XCTAssertNil(showingMachine)
+        XCTAssertNil(unreadable)
+        XCTAssertNil(twoSurfaces)
+        XCTAssertNil(notAClient)
+        XCTAssertEqual(herdr.requests, [])
+        let loneLocalSurface = await herdrResolver(herdr, federation: .showingLocal, surfaces: 1).opencodePromptRelay(target: ghostty)
+        XCTAssertNotNil(loneLocalSurface, "a lone surface showing this machine is local herdr")
+    }
+
+    private let ghostty = TerminalScreenTarget(pid: 77, bundleID: TerminalScreenAllowlist.ghosttyBundleID)
+
+    /// An opencode session in herdr pane `w1:p2` of `herdr`, declaring the
+    /// relay from the pane's inner TTY; the focused surface's TTY is herdr's
+    /// client's, which no session reported.
+    @MainActor
+    private func herdrResolver(
+        _ herdr: FakeHerdrSocket,
+        federation: HerdrMachineFederation,
+        surfaces: Int? = nil,
+        herdrClient: Bool = true
+    ) -> ClaudeSessionJoinResolver {
+        let registry = ClaudeSessionRegistry(now: { Self.epoch }, isProcessAlive: { _ in true })
+        registry.ingest(
+            ClaudeHookRecord(
+                event: .sessionStart, agent: .opencode, sessionID: "ses_a", timestamp: 0,
+                process: ClaudeHookProcessInfo(
+                    hookPID: opencodePID, claudePID: opencodePID,
+                    herdrPaneID: "w1:p2", herdrSocketPath: herdr.socketPath
+                )
+            ),
+            origin: local
+        )
+        XCTAssertNotNil(registry.ingest(record(.focusChanged, tty: tty, relay: address), origin: local))
+        let client = HerdrSocketClient(timeout: 2)
+        return ClaudeSessionJoinResolver(
+            registry: registry,
+            focusedTerminalTTY: { _ in "/dev/ttys-herdr-client" },
+            herdrClientProbe: { _ in herdrClient },
+            herdrFederation: { federation },
+            herdrClientSurfaceCount: { surfaces },
+            herdrPanes: client
+        )
+    }
+
     // MARK: - Sink over HTTP
 
     @MainActor

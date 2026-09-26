@@ -149,9 +149,9 @@ final class SessionContextResolver {
     /// Resolves where this dictation may write instead of typing: the prompt
     /// relay of the focused opencode pane (#719). Runs after the join. A
     /// join that resolved answers from its own session and asks no surface
-    /// again; without one, the resolver asks the focused TTY, and only while
-    /// some opencode pane has a relay, so a Mac with none sends no Apple
-    /// event for it. Needs none of the join's context gates: nothing is read
+    /// again; without one, the resolver asks the focused TTY (and, inside a
+    /// local herdr, herdr's focused pane, #733), and only while some opencode
+    /// pane has a relay, so a Mac with none sends no Apple event for it. Needs none of the join's context gates: nothing is read
     /// here, and what is written is what the user dictated into that pane.
     private func resolveOpencodePromptRoute() async -> OpencodePromptRoute? {
         guard let resolver = claudeSessionJoinResolver,
