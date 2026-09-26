@@ -81,10 +81,9 @@ package enum QuickCaptureProjects {
             let path = (root as NSString).appendingPathComponent(name)
             guard let handle = FileHandle(forReadingAtPath: path) else { continue }
             defer { try? handle.close() }
-            guard let data = try? handle.read(upToCount: 65_536),
-                  let text = String(data: data, encoding: .utf8)
-            else { continue }
-            return text
+            // Lenient decoding: the cut can split a multibyte character.
+            guard let data = try? handle.read(upToCount: 65_536) else { continue }
+            return String(decoding: data, as: UTF8.self)
         }
         return nil
     }

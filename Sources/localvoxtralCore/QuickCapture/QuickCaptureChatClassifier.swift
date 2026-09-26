@@ -10,8 +10,9 @@ import FoundationNetworking
 /// stands in for Jev's probability, and the same bars apply.
 package enum QuickCaptureChatRouting {
     package static let requestTimeout: TimeInterval = 20
-    /// Room for a reasoning model's thinking before the JSON.
-    package static let maxTokens = 1024
+    /// Room for a reasoning model's thinking before the JSON; a ceiling,
+    /// so a model that does not think spends nothing extra.
+    package static let maxTokens = 4096
 
     package static let systemPrompt = """
         You route a spoken note to one of the speaker's software projects. \
