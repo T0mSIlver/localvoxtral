@@ -138,7 +138,7 @@ final class DictationAudioStoreTests: XCTestCase {
         let (viewModel, audio) = try makeViewModel(audioEnabled: true)
         var saved: DictationSessionRecord?
         viewModel.dependencies.onSessionRecord = { saved = $0 }
-        viewModel.session.audio.sessionRecording.begin(enabled: true)
+        viewModel.session.latchSessionAudio(outputMode: .overlayBuffer)
         viewModel.session.audio.sessionRecording.append(pcm)
 
         stopOverlaySession(viewModel)
@@ -153,7 +153,7 @@ final class DictationAudioStoreTests: XCTestCase {
 
     func testTurningAudioOffMidSessionKeepsThatSessionsAudioOut() async throws {
         let (viewModel, audio) = try makeViewModel(audioEnabled: true)
-        viewModel.session.audio.sessionRecording.begin(enabled: true)
+        viewModel.session.latchSessionAudio(outputMode: .overlayBuffer)
         viewModel.session.audio.sessionRecording.append(pcm)
         viewModel.settings.dictationAudioEnabled = false
 
