@@ -22,8 +22,8 @@ arm is not a difference.
 
 Scores per run, as counts of distinct terms:
   proposed    distinct terms the model returned
-  spelled     the recognizer wrote it exactly right in some dictation and
-              polishing never fixed it: inference spent on a useless chip
+  spelled     the recognizer wrote its letters right in some dictation and
+              nothing shows it getting them wrong: a useless chip
   accepted    on the owner's Names and terms list
   refused     on the owner's refused list
 Only these aggregates are printed; the terms themselves go to the JSONL in
@@ -59,7 +59,6 @@ ENDPOINT = "https://api.mistral.ai/v1/chat/completions"
 # EUR per million tokens, from MistralUsageLedger's GLM 5.3 row.
 PRICE_IN, PRICE_OUT = 1.19, 3.74
 MAX_DICTATIONS = 120
-MAX_REQUEST_CHARACTERS = 60_000
 
 
 # --- export ---------------------------------------------------------------
@@ -90,9 +89,10 @@ def export(store: Path, terms: Path | None, refused: Path | None, out: Path) -> 
 
 # --- request --------------------------------------------------------------
 
-def instructions(ref: str | None) -> tuple[str, bool]:
-    """The arm's instructions, and whether its request shows what was heard
-    (#612) or only the final text (the layout before it)."""
+def instructions(ref: str | None) -> tuple[str, bool, int]:
+    """The arm's instructions, whether its request shows what was heard
+    (#612) or only the final text (the layout before it), and its request
+    budget in characters."""
     source = (
         (ROOT / SOURCE).read_text() if ref is None
         else subprocess.run(["git", "-C", str(ROOT), "show", f"{ref}:{SOURCE}"],
@@ -103,7 +103,10 @@ def instructions(ref: str | None) -> tuple[str, bool]:
         sys.exit(f"no instructions literal in {SOURCE} at {ref or 'working tree'}")
     indent = len(match.group(2))
     prompt = "\n".join(line[indent:] for line in match.group(1).split("\n"))
-    return prompt, '"heard: \\(' in source
+    budget = re.search(r"static let maxRequestCharacters = ([0-9_]+)", source)
+    if not budget:
+        sys.exit(f"no maxRequestCharacters in {SOURCE} at {ref or 'working tree'}")
+    return prompt, '"heard: \\(' in source, int(budget.group(1).replace("_", ""))
 
 
 def key(term: str) -> str:
@@ -119,8 +122,8 @@ def block(dictation: dict, heard: bool) -> str:
     return f"heard: {dictation['raw']}\nfinal: {dictation['final']}"
 
 
-def selected(dictations: list[dict], reserved: int, heard: bool) -> list[dict]:
-    budget, result = MAX_REQUEST_CHARACTERS - reserved, []
+def selected(dictations: list[dict], budget: int, heard: bool) -> list[dict]:
+    result = []
     for dictation in dictations[:MAX_DICTATIONS]:
         trimmed = {"raw": dictation["raw"].strip(), "final": dictation["final"].strip()}
         shown = trimmed["raw"] or trimmed["final"] if heard else trimmed["final"]
@@ -154,7 +157,7 @@ def self_check() -> None:
     if not match:
         sys.exit(f"self-check: the layout test is gone from {TEST}")
     indent = len(match.group(2))
-    prompt, heard = instructions(None)
+    prompt, heard, _ = instructions(None)
     want = prompt + "\n\n" + "\n".join(line[indent:] for line in match.group(1).split("\n"))
     dictations = [{"raw": "first", "final": "first"}, {"raw": "coin", "final": "Qwen"}]
     got = message(prompt, [block(d, heard) for d in dictations], ["Qwen"], ["SessionStart"])
@@ -193,13 +196,15 @@ def whole_word(term: str, flags: int = 0) -> re.Pattern:
 
 
 def spelled_right(term: str, heard: list[str], dictations: list[dict]) -> bool:
-    """The recognizer wrote it exactly right somewhere, and no dictation shows
-    it getting it wrong: no polish fix, no quoted wrong form found in a
-    transcript (`TermSuggestionScreen.screened`'s definition of a useless chip)."""
-    exact, loose = whole_word(term), whole_word(term, re.I)
-    wrong = [whole_word(h) for h in heard if h.strip() and h.strip() != term.strip()]
-    right = sum(bool(exact.search(d["raw"])) for d in dictations)
-    missed = sum(not exact.search(d["raw"]) and (bool(loose.search(d["final"]))
+    """The recognizer wrote its letters right somewhere, and no dictation
+    shows it getting them wrong: no polish fix, no quoted wrong form found in
+    a transcript. Capitalization is not a mistake
+    (`TermSuggestionScreen.screened`'s definition of a useless chip)."""
+    letters = whole_word(term, re.I)
+    wrong = [whole_word(h, re.I) for h in heard
+             if h.strip() and h.strip().casefold() != term.strip().casefold()]
+    right = sum(bool(letters.search(d["raw"])) for d in dictations)
+    missed = sum(not letters.search(d["raw"]) and (bool(letters.search(d["final"]))
                  or any(w.search(d["raw"]) for w in wrong)) for d in dictations)
     return right > 0 and missed == 0
 
@@ -256,8 +261,8 @@ def run(args: argparse.Namespace) -> None:
     spend = 0.0
     results: dict[str, list[dict]] = {arm: [] for arm in arms}
     for repeat in range(args.repeats):
-        for arm, (prompt, heard) in arms.items():  # interleaved, so drift hits both arms
-            chosen = selected(data["dictations"], len(prompt), heard)
+        for arm, (prompt, heard, budget) in arms.items():  # interleaved, so drift hits both arms
+            chosen = selected(data["dictations"], budget - len(prompt), heard)
             texts = [block(d, heard) for d in chosen]
             reply, usage, seconds = ask(args.model, message(prompt, texts, known, dismissed), secret)
             seen, terms = set(), []

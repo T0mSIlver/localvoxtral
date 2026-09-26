@@ -295,7 +295,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         service.reply = .success(#"["IBM", "Mac", "Qwen", "MCP"]"#)
         let model = makeModel(settings: settings, service: service, dictations: [
             .init(raw: "IBM made the Mac", final: "IBM made the Mac."),
-            .init(raw: "the mcp server on my Mac", final: "The MCP server on my Mac."),
+            .init(raw: "the m c p server on my Mac", final: "The MCP server on my Mac."),
             .init(raw: "coin runs on the IBM box", final: "Qwen runs on the IBM box."),
         ])
 

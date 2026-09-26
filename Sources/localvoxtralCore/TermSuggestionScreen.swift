@@ -18,14 +18,16 @@ package enum TermSuggestionScreen {
         }
     }
 
-    /// Drops a candidate the recognizer wrote spelled exactly right in some
-    /// dictation, when nothing shows it ever getting it wrong. Two things do:
-    /// polishing fixing it (casing included, `mcp` → `MCP`), or a wrong form
-    /// the model quotes in `heard` that really is in a transcript, which
-    /// catches a mistake polishing left in the final text too. A candidate in
-    /// no raw text at all stays: the model recovered it from misrecognitions,
-    /// the most valuable kind. Candidates are ranked by the dictations that
-    /// show a mistake; ties keep the model's order.
+    /// Drops a candidate the recognizer wrote with the right letters in some
+    /// dictation, when nothing shows it ever getting the letters wrong. Two
+    /// things do: polishing fixing it, or a wrong form the model quotes in
+    /// `heard` that really is in a transcript, which catches a mistake
+    /// polishing left in the final text too. Capitalization is not a mistake
+    /// here: polishing fixes "MAC" without a vocabulary entry, and the owner
+    /// ruled that Mac is not worth a chip (#612). A candidate in no raw text at
+    /// all stays: the model recovered it from misrecognitions, the most
+    /// valuable kind. Candidates are ranked by the dictations that show a
+    /// mistake; ties keep the model's order.
     ///
     /// `heard` maps a candidate to the wrong forms the model quoted; a form
     /// found in no transcript counts for nothing.
@@ -34,20 +36,17 @@ package enum TermSuggestionScreen {
     ) -> [String] {
         let heardByKey = Dictionary(heard.map { (key($0.key), $0.value) }, uniquingKeysWith: +)
         let scored = candidates.compactMap { candidate -> (term: String, misses: Int)? in
-            guard let exact = pattern(candidate, caseInsensitive: false),
-                  let loose = pattern(candidate, caseInsensitive: true)
-            else { return nil }
-            // Exact, as the model is told to copy them; "v l l m" and "vllm"
-            // are mistakes for vLLM, "vLLM" is not.
+            guard let term = pattern(candidate) else { return nil }
+            // "v l l m" and "vllm" are mistakes for vLLM; "VLLM" is not.
             let wrongForms = (heardByKey[key(candidate)] ?? [])
-                .filter { $0.trimmed != candidate.trimmed }
-                .compactMap { pattern($0, caseInsensitive: false) }
+                .filter { $0.trimmed.caseFoldedForMatching != candidate.trimmed.caseFoldedForMatching }
+                .compactMap(pattern)
             var spelledRight = 0
             var misses = 0
             for dictation in dictations {
-                if occurs(exact, in: dictation.raw) {
+                if occurs(term, in: dictation.raw) {
                     spelledRight += 1
-                } else if occurs(loose, in: dictation.final)
+                } else if occurs(term, in: dictation.final)
                     || wrongForms.contains(where: { occurs($0, in: dictation.raw) })
                 {
                     misses += 1
@@ -68,13 +67,14 @@ package enum TermSuggestionScreen {
         })
     }
 
-    /// The term as a whole word: "Mac" is not found in "MacBook" or "iMac".
-    private static func pattern(_ term: String, caseInsensitive: Bool) -> NSRegularExpression? {
+    /// The term as a whole word, any capitalization: "Mac" is found in "MAC",
+    /// not in "MacBook" or "iMac".
+    private static func pattern(_ term: String) -> NSRegularExpression? {
         let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return try? NSRegularExpression(
             pattern: "(?<![\\p{L}\\p{N}])\(NSRegularExpression.escapedPattern(for: trimmed))(?![\\p{L}\\p{N}])",
-            options: caseInsensitive ? [.caseInsensitive] : []
+            options: [.caseInsensitive]
         )
     }
 

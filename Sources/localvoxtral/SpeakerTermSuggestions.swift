@@ -11,7 +11,11 @@ import Observation
 /// never added without a click, and a dismissed one is never shown again.
 enum SpeakerTermSuggestions {
     static let maxDictations = 120
-    static let maxRequestCharacters = 60_000
+    /// Showing what was heard beside what was kept nearly doubles a
+    /// dictation's size; at 60 000 the pass read 75 of the owner's 120 and
+    /// missed names whose evidence sat in the rest (#612). Input is the cheap
+    /// part of this request: reasoning output was 60–85 % of its cost.
+    static let maxRequestCharacters = 100_000
     static let maxShown = 12
     static let maxDismissed = 400
     /// Mistral Medium at high effort took 170 s on 74 dictations.
@@ -26,7 +30,7 @@ enum SpeakerTermSuggestions {
     static let instructions = """
         You are given many short texts dictated by ONE person over several weeks. "heard:" is what the speech recognizer wrote. "final:", present only when it differs, is the corrected text that was kept; its corrections can be wrong too. Build the list of proper names and technical terms that the recognizer gets WRONG for this person, so a dictation app can learn to spell them: products, tools, models, companies, people, projects, acronyms. Any language.
         Rules:
-        - List a term only if the recognizer got it wrong in at least one "heard:" line: misspelled, split or joined, wrong capitals, or heard as other words. A term the recognizer writes right every time does NOT belong, however rare or technical: the list exists only to fix its mistakes.
+        - List a term only if the recognizer got its letters wrong in at least one "heard:" line: misspelled, split or joined, or heard as other words. Capital letters alone do not count ("MAC" for Mac is not a mistake). A term the recognizer writes right every time does NOT belong, however rare or technical: the list exists only to fix its mistakes.
         - Only terms that appear in at least 3 different texts, right and wrong spellings counted together.
         - Spell each term the correct, canonical way. If one name shows up under several spellings, output the ONE right spelling.
         - Do NOT list ordinary words or ordinary phrases of the language, even technical ones ("functional specifications", "tech lead", "knowledge graph"). Do NOT list a term found only in "final:" lines that does not fit what was heard or the sentence around it (a correction mistake, for example a code identifier dropped into ordinary prose).
