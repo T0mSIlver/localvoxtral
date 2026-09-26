@@ -76,8 +76,8 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
     /// beyond the in-memory store snapshot.
     @discardableResult
     package func request(for join: ClaudeSessionSnapshot, excluding: [String]) -> Bool {
-        let agent = ProjectTermProposal.Agent(join.agent)
-        guard case .remote = join.origin,
+        guard let agent = ProjectTermProposal.Agent(join.agent),
+              case .remote = join.origin,
               let hostID = ClaudeRemoteSessionScope.hostID(fromScopedSessionID: join.sessionID),
               let host = hosts.host(id: hostID), !host.isRevoked,
               Self.hostReadsTheHeader(host, agent: agent),

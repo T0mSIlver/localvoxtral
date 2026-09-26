@@ -263,6 +263,15 @@ a marked block in `~/.vibe/hooks.toml`, both removed by the same row. Vibe has
 no session-start hook, so localvoxtral learns about a Vibe session at its
 first file read or edit, or when its first turn ends.
 
+A [Codex plugin](../integrations/codex/README.md) installs from
+**Settings → Codex**, through Codex's own `codex plugin` commands. Codex runs
+a plugin's hooks only after you trust them: when Codex next starts, it shows
+**Hooks need review**, and **Trust all and continue** turns them on. The
+row's dot turns green once a Codex hook has reached localvoxtral. A Codex
+session then joins like a Claude Code one, on its terminal's tty or its herdr
+or cmux pane, with its last prompt, working directory and the files it
+patched.
+
 ## The `localvoxtral` command
 
 A coding agent can read your dictation history and your terms, and propose

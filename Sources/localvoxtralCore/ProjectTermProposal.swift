@@ -10,17 +10,18 @@ import Foundation
 /// prompt, and reading the answer. `ProjectTermProposalProcessRunner` runs
 /// the command and `ProjectTermProposer` decides when.
 package enum ProjectTermProposal {
-    /// The agents that can propose. Codex is not a join agent.
+    /// The agents that can propose. A Codex proposer is a follow-up to #716.
     package enum Agent: String, Sendable, Equatable, CaseIterable {
         case claude
         case vibe
         case opencode
 
-        package init(_ agent: ClaudeHookAgent) {
+        package init?(_ agent: ClaudeHookAgent) {
             switch agent {
             case .claude: self = .claude
             case .vibe: self = .vibe
             case .opencode: self = .opencode
+            case .codex: return nil
             }
         }
 
@@ -77,8 +78,11 @@ package enum ProjectTermProposal {
     /// run's working directory: `localWorkspacePath` is nil for any session
     /// that is not local (#641 covers remote hosts).
     package static func request(for snapshot: ClaudeSessionSnapshot?) -> Request? {
-        guard let snapshot, let workspace = snapshot.localWorkspacePath else { return nil }
-        return Request(agent: Agent(snapshot.agent), workspace: workspace)
+        guard let snapshot,
+              let agent = Agent(snapshot.agent),
+              let workspace = snapshot.localWorkspacePath
+        else { return nil }
+        return Request(agent: agent, workspace: workspace)
     }
 
     // MARK: Command line

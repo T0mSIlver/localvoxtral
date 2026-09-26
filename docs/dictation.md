@@ -264,7 +264,8 @@ History; the panes sit under the sidebar's Settings header.
 - **Integrations**: one pane per harness, each with a status dot. Green
   means detected and set up, yellow means a setup step is pending, grey
   means not installed. **Claude Code** and **opencode** install their
-  plugins, **Mistral Vibe** installs its hooks, **herdr** shows detection and
+  plugins, **Mistral Vibe** installs its hooks, **Codex** installs its plugin
+  and turns green once Codex has run the hooks, **herdr** shows detection and
   herdr's saved machines, and **Remote hosts** enrolls SSH hosts for remote
   sessions.
 - **Terminals**: one pane per terminal app (plus any you add), showing

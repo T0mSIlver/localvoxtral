@@ -328,6 +328,20 @@ mkdir -p "$APP_DIR/Contents/Resources/vibe-hooks/remote"
 cp "$VIBE_HOOKS_SOURCE/remote/post.sh" "$VIBE_HOOKS_SOURCE/remote/compact.py" \
   "$VIBE_HOOKS_SOURCE/remote/hooks.toml" "$APP_DIR/Contents/Resources/vibe-hooks/remote/"
 
+# The Codex marketplace, copied whole like the Claude Code one. Codex runs the
+# shim through `sh`, so it needs no +x. CodexPluginAssets resolves this
+# location, and the app mirrors it to a fixed path at launch.
+CODEX_MARKETPLACE_SOURCE="$ROOT_DIR/integrations/codex"
+for codex_file in .agents/plugins/marketplace.json plugins/localvoxtral/.codex-plugin/plugin.json \
+  plugins/localvoxtral/hooks/hooks.json plugins/localvoxtral/hooks/publish.sh; do
+  if [[ ! -f "$CODEX_MARKETPLACE_SOURCE/$codex_file" ]]; then
+    echo "Codex plugin file missing at $CODEX_MARKETPLACE_SOURCE/$codex_file"
+    exit 1
+  fi
+done
+rm -rf "$APP_DIR/Contents/Resources/codex-marketplace"
+cp -R "$CODEX_MARKETPLACE_SOURCE" "$APP_DIR/Contents/Resources/codex-marketplace"
+
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"

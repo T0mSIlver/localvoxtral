@@ -137,6 +137,7 @@ EXEMPT=(
   'Sources/localvoxtral/ClaudeContext/AGENTS.md'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel.swift'  # Settings pane model, and its files by area
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Cmux.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Codex.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+EnrollmentActions.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+EnrollmentTypes.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+HerdrMachines.swift'
@@ -157,6 +158,7 @@ EXEMPT=(
   'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationActionAttempts.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudePluginInstalling.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeShellSetupStatus.swift'
+  'Sources/localvoxtralCore/ClaudeContext/CodexPluginInstallService.swift'
   'Sources/localvoxtralCore/ClaudeContext/RemoteHostSetupRun.swift'
   'Sources/localvoxtralCore/ClaudeContext/HerdrMachineImport.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationLiveIO.swift'         # its process/file seams

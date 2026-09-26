@@ -743,6 +743,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }
         }
+        // Codex reads its local marketplace in place, from the path it was
+        // added with, so it gets the same fixed-path copy.
+        if let bundled = CodexPluginAssets.marketplaceURL() {
+            do {
+                let outcome = try ClaudeMarketplaceMirror.refresh(
+                    source: bundled, mirrorURL: CodexPluginAssets.mirrorURL()
+                )
+                if outcome != .unchanged {
+                    Log.claudeContext.info(
+                        "Codex marketplace mirror \(String(describing: outcome), privacy: .public) from \(bundled.path, privacy: .public)"
+                    )
+                }
+            } catch {
+                Log.claudeContext.error(
+                    "Codex marketplace mirror refresh failed: \(String(describing: error), privacy: .public)"
+                )
+            }
+        }
         guard let settings = viewModel.claudeIntegrationSettings else { return }
         Task {
             // Order matters: the registration is re-pointed at the mirror
@@ -951,6 +969,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DictationNoteInstallService(agent: agent, fileSystem: LiveDictationNoteFileSystem())
             },
             vibeRemoteFiles: { VibeRemoteHooksFiles.bundled() },
+            codexService: { CodexPluginInstallService.live() },
+            codexBundledVersion: CodexPluginAssets.bundledPluginVersion(),
+            codexHookMemory: CodexHookHeardMemory(
+                registry: claudeSessionRegistry,
+                load: { UserDefaults.standard.bool(forKey: CodexHookHeardMemory.defaultsKey) },
+                save: { UserDefaults.standard.set($0, forKey: CodexHookHeardMemory.defaultsKey) }
+            ),
             // A binary on this Mac: a synchronous PATH scan, decided at model
             // construction so the row paints on first paint.
             herdrBinaryAvailable: {

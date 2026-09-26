@@ -1680,6 +1680,40 @@ there is not.
     session handles are withheld from Vibe records — a Vibe started inside a
     Claude Code session inherits them and would otherwise join that Claude
     view.
+  - **Codex CLI joins through a plugin, and trust is Codex's to give.**
+    Codex runs a non-managed hook only after the user trusts it, silently
+    skips it otherwise, and keys that trust by source and position with a
+    hash of the handler AS DECLARED: event, matcher, command string before
+    `$PLUGIN_ROOT` expands, timeout (0.156.0, measured on this repo's
+    probe, #716). Two rules follow. The hooks ship as a Codex plugin
+    (`integrations/codex`, installed by `codex plugin add`), never as an
+    entry in `~/.codex/hooks.json`: a `hooks.json` entry's key includes its
+    index in that file, which herdr also writes, so an edit above ours would
+    untrust it without a word, while a plugin's key names the plugin. And
+    `hooks/hooks.json` stays byte-stable: every hook runs the same fixed
+    command, pinned by `testTheHookCommandIsTheOneUsersTrusted`, because a
+    changed handler asks every user to trust it again. The shim it runs may
+    change freely; Codex hashes the command, not the script (measured: a new
+    plugin version with a changed shim stayed trusted). For the same reason
+    the Integrations dot turns green only after a Codex record reached the
+    registry (`ClaudeSessionRegistry.hasHeard(localAgent:)`, carried across
+    launches by `CodexHookHeardMemory` and reset by every install or
+    removal): an installed, untrusted plugin looks exactly like a working
+    one from outside Codex. The app never writes Codex's trust records
+    itself, though they are plain TOML: trusting a hook is the user's
+    decision, made at Codex's own "Hooks need review" prompt.
+    The payload is a near clone of Claude Code's and is parsed as an
+    allowlist (`CodexHookInputParser`): `transcript_path`, `model`,
+    `tool_response`, `last_assistant_message` and the patch body are
+    dropped. Codex has no read tool (it reads through `Bash`), so files come
+    only from `apply_patch`'s patch headers. A subagent's events carry the
+    parent's `session_id` plus an `agent_id`; its edits count for the
+    session, but a prompt it submits is dropped, because the prompt block and
+    correction learning read that prompt as the user's. Codex spawns hooks
+    like Vibe does (`$SHELL -lc`, a new session, no terminal), so the pid and
+    tty come from the same ancestor walk, the start time rides along
+    (`SessionEnd` has a 3 s ceiling and can be missed), and the Claude
+    session handles are withheld. Ids are scoped under `codex:`.
   - Apart from that, transcripts are never scraped (the Claude Code parser
     drops `transcript_path`), and a
     LOCAL session never attaches hook-quoted tool excerpts: its files are

@@ -40,12 +40,15 @@ public enum ClaudeHookAgent: String, Sendable, Equatable, CaseIterable, Codable 
     /// Mistral Vibe CLI. Published by the same hook binary as Claude Code, from
     /// Vibe's `hooks.toml` command hooks (`VibeHookInputParser`).
     case vibe
+    /// OpenAI Codex CLI. Published by the same hook binary, from Codex's
+    /// `hooks.json` command hooks (`CodexHookInputParser`).
+    case codex
 }
 
 /// Namespacing for per-agent session ids, mirroring `ClaudeRemoteSessionScope`.
 ///
-/// Agents pick their own session ids and cannot coordinate — Claude Code and
-/// Vibe both use bare UUIDs, opencode uses `ses_…` — so a bare id is a claim,
+/// Agents pick their own session ids and cannot coordinate — Claude Code,
+/// Vibe and Codex all use bare UUIDs, opencode uses `ses_…` — so a bare id is a claim,
 /// not a key. Scoping every non-Claude id under a prefix no Claude-published
 /// UUID can carry makes cross-agent collision structurally impossible. Applied by the
 /// RECEIVER (`ClaudeSessionRegistry.ingest`), never trusted from the wire, so
@@ -58,6 +61,7 @@ public enum ClaudeAgentSessionScope {
     /// namespaces must never alias.
     public static let opencodePrefix = "opencode:"
     public static let vibePrefix = "vibe:"
+    public static let codexPrefix = "codex:"
 
     /// The prefix the receiver adds for `agent`, nil for Claude Code's bare ids.
     public static func prefix(for agent: ClaudeHookAgent) -> String? {
@@ -68,6 +72,8 @@ public enum ClaudeAgentSessionScope {
             return opencodePrefix
         case .vibe:
             return vibePrefix
+        case .codex:
+            return codexPrefix
         }
     }
 
