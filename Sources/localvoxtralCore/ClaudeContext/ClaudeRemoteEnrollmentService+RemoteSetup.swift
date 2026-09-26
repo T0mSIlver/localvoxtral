@@ -37,10 +37,12 @@ extension ClaudeRemoteEnrollmentService {
     /// Desktop's has no `claude` anywhere else, and skipping the plugin there
     /// left the Desktop sessions with no hooks (#656). The files are versioned
     /// binaries, not directories, so a PATH entry cannot name one: a shell
-    /// function called `claude` does, and `command -v` finds it. Only names made
-    /// of digits and dots count, so a partial download cannot win, and the
-    /// highest version is picked field by field (POSIX `sort -t. -k…n`; `sort
-    /// -V` is not POSIX).
+    /// function called `claude` does, and `command -v` finds it. Only runnable
+    /// files named with digits and dots count, so a partial download cannot
+    /// win, and the highest version is picked field by field (POSIX `sort -t.
+    /// -k…n`; `sort -V` is not POSIX). The names are matched with `case`, not
+    /// `grep`: no remote plugin script text-matches anything (see
+    /// `testPluginSetupDecodesTheListingAndReportsAnAlreadyCurrentPlugin`).
     package static let claudePathResolverPreamble = """
         if ! command -v claude >/dev/null 2>&1; then
           for lv_dir in "$HOME/.claude/local" "$HOME/.local/bin" "$HOME/bin" /opt/homebrew/bin /usr/local/bin "$HOME"/.nvm/versions/node/*/bin; do
@@ -48,8 +50,14 @@ extension ClaudeRemoteEnrollmentService {
           done
         fi
         if ! command -v claude >/dev/null 2>&1; then
-          lv_ccd=$(ls "$HOME/.claude/remote/ccd-cli" 2>/dev/null | grep -E '^[0-9]+(\\.[0-9]+)*$' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -n 1)
-          if [ -n "$lv_ccd" ] && [ -x "$HOME/.claude/remote/ccd-cli/$lv_ccd" ]; then
+          lv_ccd=
+          for lv_v in $(ls "$HOME/.claude/remote/ccd-cli" 2>/dev/null | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n); do
+            case $lv_v in
+              *[!0-9.]*|.*|*.|*..*) ;;
+              *) if [ -x "$HOME/.claude/remote/ccd-cli/$lv_v" ]; then lv_ccd=$lv_v; fi ;;
+            esac
+          done
+          if [ -n "$lv_ccd" ]; then
             lv_claude="$HOME/.claude/remote/ccd-cli/$lv_ccd"
             claude() { "$lv_claude" "$@"; }
           fi

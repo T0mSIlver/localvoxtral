@@ -164,17 +164,18 @@ final class ClaudeRemoteDesktopHostTests: XCTestCase {
         )
     }
 
-    /// A download in progress or any other stray file is not a version.
-    func testOnlyVersionNamedFilesCount() throws {
+    /// A download in progress, a file that cannot run, or any other stray
+    /// name is not a version: the newest RUNNABLE version wins.
+    func testOnlyRunnableVersionNamedFilesCount() throws {
         try installFakeCLI(".claude/remote/ccd-cli/2.1.9")
         try installFakeCLI(".claude/remote/ccd-cli/2.1.10.partial")
+        try installFakeCLI(".claude/remote/ccd-cli/2.1.11-tmp")
+        try installFakeCLI(".claude/remote/ccd-cli/.2.1.12")
         try installFakeCLI(".claude/remote/ccd-cli/9.9.9", executable: false)
 
         let result = try resolveClaude()
-        XCTAssertEqual(result.exitCode, 127, "9.9.9 is the newest name, and it cannot run: \(result.message)")
-
-        try FileManager.default.removeItem(at: home.appendingPathComponent(".claude/remote/ccd-cli/9.9.9"))
-        XCTAssertTrue(try resolveClaude().message.contains("cli=.claude/remote/ccd-cli/2.1.9 "))
+        XCTAssertEqual(result.exitCode, 0, result.message)
+        XCTAssertTrue(result.message.contains("cli=.claude/remote/ccd-cli/2.1.9 "), result.message)
     }
 
     /// A regular install still wins: the Desktop CLI is the last resort.
