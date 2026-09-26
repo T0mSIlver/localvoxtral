@@ -14,7 +14,7 @@ final class HerdrPaneWritingTests: XCTestCase {
 
         let sent = await client.sendText(socketPath: herdr.socketPath, paneID: "w1:p2", text: "fix the tests ")
 
-        XCTAssertTrue(sent)
+        XCTAssertEqual(sent, .ok)
         XCTAssertEqual(
             herdr.requests,
             [.init(method: "pane.send_text", paneID: "w1:p2", text: "fix the tests ", keys: nil)]
@@ -27,35 +27,38 @@ final class HerdrPaneWritingTests: XCTestCase {
 
         let pressed = await client.pressEnter(socketPath: herdr.socketPath, paneID: "w1:p2")
 
-        XCTAssertTrue(pressed)
+        XCTAssertEqual(pressed, .ok)
         XCTAssertEqual(
             herdr.requests,
             [.init(method: "pane.send_keys", paneID: "w1:p2", text: nil, keys: ["enter"])]
         )
     }
 
-    func testAnErrorEnvelopeIsAFailure() async throws {
+    /// herdr's own error answer says the write did not happen.
+    func testAnErrorEnvelopeIsARefusal() async throws {
         let herdr = try FakeHerdrSocket { _ in .error("pane_not_found") }
         defer { herdr.stop() }
 
         let sent = await client.sendText(socketPath: herdr.socketPath, paneID: "w1:p9", text: "x")
         let pressed = await client.pressEnter(socketPath: herdr.socketPath, paneID: "w1:p9")
 
-        XCTAssertFalse(sent)
-        XCTAssertFalse(pressed)
+        XCTAssertEqual(sent, .refused)
+        XCTAssertEqual(pressed, .refused)
     }
 
-    func testNoReplyIsAFailure() async throws {
+    /// The request went out and nothing came back: it may have landed.
+    func testNoReplyIsUnknown() async throws {
         let herdr = try FakeHerdrSocket { _ in .hangUp }
         defer { herdr.stop() }
 
         let sent = await client.sendText(socketPath: herdr.socketPath, paneID: "w1:p2", text: "x")
 
-        XCTAssertFalse(sent)
+        XCTAssertEqual(sent, .unknown)
     }
 
-    /// A reply for another request, or of another type, is not an `ok`.
-    func testAnAnswerThatIsNotThisRequestsOkIsAFailure() async throws {
+    /// A reply for another request, or of another type, is not an `ok`, and
+    /// does not say the write did not happen either.
+    func testAnAnswerThatIsNotThisRequestsOkIsUnknown() async throws {
         let foreign = try FakeHerdrSocket { _ in .raw(#"{"id":"someone-else","result":{"type":"ok"}}"#) }
         defer { foreign.stop() }
         let wrongType = try FakeHerdrSocket { _ in .raw(#"{"id":"x","result":{"type":"pane_current"}}"#) }
@@ -64,15 +67,16 @@ final class HerdrPaneWritingTests: XCTestCase {
         let toForeign = await client.sendText(socketPath: foreign.socketPath, paneID: "w1:p2", text: "x")
         let toWrongType = await client.pressEnter(socketPath: wrongType.socketPath, paneID: "w1:p2")
 
-        XCTAssertFalse(toForeign)
-        XCTAssertFalse(toWrongType)
+        XCTAssertEqual(toForeign, .unknown)
+        XCTAssertEqual(toWrongType, .unknown)
     }
 
-    func testARelativeOrMissingSocketPathSendsNothing() async {
+    /// Nothing reached a socket: a refusal.
+    func testARelativeOrMissingSocketPathIsRefused() async {
         let relative = await client.sendText(socketPath: "herdr.sock", paneID: "w1:p2", text: "x")
         let missing = await client.pressEnter(socketPath: "/tmp/lvx-no-such-herdr.sock", paneID: "w1:p2")
 
-        XCTAssertFalse(relative)
-        XCTAssertFalse(missing)
+        XCTAssertEqual(relative, .refused)
+        XCTAssertEqual(missing, .refused)
     }
 }

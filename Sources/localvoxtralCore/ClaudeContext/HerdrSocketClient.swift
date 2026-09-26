@@ -87,10 +87,21 @@ package protocol HerdrPaneQuerying: Sendable {
 package protocol HerdrPaneWriting: Sendable {
     /// `pane.send_text`: the bytes of `text` into the pane's input, as-is.
     /// herdr applies no bracketed paste to it, so the caller must never pass
-    /// a control character. True only when herdr answered `ok`.
-    func sendText(socketPath: String, paneID: String, text: String) async -> Bool
-    /// `pane.send_keys` with exactly `["enter"]`. True only on `ok`.
-    func pressEnter(socketPath: String, paneID: String) async -> Bool
+    /// a control character.
+    func sendText(socketPath: String, paneID: String, text: String) async -> HerdrWriteOutcome
+    /// `pane.send_keys` with exactly `["enter"]`.
+    func pressEnter(socketPath: String, paneID: String) async -> HerdrWriteOutcome
+}
+
+package enum HerdrWriteOutcome: Sendable, Equatable {
+    /// herdr answered this request with `ok`.
+    case ok
+    /// It did not happen: herdr answered with an error, or the request never
+    /// left (socket refused, connect failed).
+    case refused
+    /// The request went out and no valid answer came back: it may have
+    /// landed.
+    case unknown
 }
 
 /// Minimal capability-bounded client for herdr's one-request-per-connection
@@ -286,7 +297,7 @@ package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting
         }.value
     }
 
-    package func sendText(socketPath: String, paneID: String, text: String) async -> Bool {
+    package func sendText(socketPath: String, paneID: String, text: String) async -> HerdrWriteOutcome {
         await sendOK(
             socketPath: socketPath,
             method: "pane.send_text",
@@ -294,7 +305,7 @@ package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting
         )
     }
 
-    package func pressEnter(socketPath: String, paneID: String) async -> Bool {
+    package func pressEnter(socketPath: String, paneID: String) async -> HerdrWriteOutcome {
         await sendOK(
             socketPath: socketPath,
             method: "pane.send_keys",
@@ -304,24 +315,40 @@ package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting
 
     /// One write whose only success answer is `ok`. Logs the method and the
     /// outcome, never the pane id or the text.
-    private func sendOK(socketPath: String, method: String, params: some Encodable & Sendable) async -> Bool {
+    private func sendOK(
+        socketPath: String, method: String, params: some Encodable & Sendable
+    ) async -> HerdrWriteOutcome {
         await Task.detached(priority: .userInitiated) { [self] in
             let startNanos = uptimeNanos()
             let request = Request(id: Self.requestID(), method: method, params: params)
-            guard let line = query(socketPath: socketPath, request: request) else {
+            let line: Data
+            switch exchange(socketPath: socketPath, request: request) {
+            case .notSent:
+                noteLatency(method: method, startNanos: startNanos, success: false, detail: "not-sent")
+                return .refused
+            case .noAnswer:
                 noteLatency(method: method, startNanos: startNanos, success: false, detail: "no-response")
-                return false
+                return .unknown
+            case .answer(let answer):
+                line = answer
             }
-            guard let envelope = try? JSONDecoder().decode(Envelope<OKResult>.self, from: line),
-                  envelope.id == request.id,
-                  envelope.result?.type == "ok"
-            else {
-                let detail = Self.errorPayload(from: line) ?? "invalid-response"
-                noteLatency(method: method, startNanos: startNanos, success: false, detail: detail)
-                return false
+            if let envelope = try? JSONDecoder().decode(Envelope<OKResult>.self, from: line),
+               envelope.id == request.id,
+               envelope.result?.type == "ok" {
+                noteLatency(method: method, startNanos: startNanos, success: true, detail: "ok")
+                return .ok
             }
-            noteLatency(method: method, startNanos: startNanos, success: true, detail: "ok")
-            return true
+            // Only herdr's own error answer for this request says the write
+            // did not happen; anything else may sit on a write that did.
+            if let error = try? JSONDecoder().decode(ErrorEnvelope.self, from: line), error.id == request.id {
+                noteLatency(
+                    method: method, startNanos: startNanos, success: false,
+                    detail: "\(error.error.code): \(error.error.message)"
+                )
+                return .refused
+            }
+            noteLatency(method: method, startNanos: startNanos, success: false, detail: "invalid-response")
+            return .unknown
         }.value
     }
 
@@ -351,6 +378,20 @@ package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting
     }
 
     private func query(socketPath: String, request: some Encodable) -> Data? {
+        if case .answer(let line) = exchange(socketPath: socketPath, request: request) { return line }
+        return nil
+    }
+
+    /// What became of one request: whether any of it left, and the answer.
+    private enum Exchange {
+        /// Nothing reached the socket.
+        case notSent
+        /// Some or all of the request was written; no answer line came back.
+        case noAnswer
+        case answer(Data)
+    }
+
+    private func exchange(socketPath: String, request: some Encodable) -> Exchange {
         let deadline = makeDeadline()
         guard socketPath.hasPrefix("/"),
               let metadata = socketMetadata(socketPath),
@@ -360,20 +401,20 @@ package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting
             // Outcome only: a pane id or socket path is a live join handle and
             // must never escape into the unified log.
             Log.claudeContext.info("Herdr query abstained: socket path refused")
-            return nil
+            return .notSent
         }
 
         guard let requestLine = try? Self.encodedLine(request),
               let fd = openConnection(to: socketPath, deadline: deadline)
         else {
             Log.claudeContext.info("Herdr query abstained: connection unavailable")
-            return nil
+            return .notSent
         }
         defer { close(fd) }
 
         guard writeAll(fd: fd, data: requestLine, deadline: deadline) else {
             Log.claudeContext.info("Herdr query abstained: request deadline or write failure")
-            return nil
+            return .noAnswer
         }
         // The protocol is exactly one request. Half-closing makes that
         // invariant explicit without preventing the response half from being
@@ -381,9 +422,9 @@ package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting
         shutdown(fd, Int32(SHUT_WR))
         guard let response = readLine(fd: fd, deadline: deadline) else {
             Log.claudeContext.info("Herdr query abstained: response deadline, framing, or size failure")
-            return nil
+            return .noAnswer
         }
-        return response
+        return .answer(response)
     }
 
     private func openConnection(to socketPath: String, deadline: UInt64) -> Int32? {

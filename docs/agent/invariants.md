@@ -501,8 +501,13 @@ there is not.
     *No control characters:* herdr writes `send_text` to the pane's input
     byte for byte, with no bracketed paste, so a newline would press Enter
     and an escape would start a key sequence. Text holding any Unicode
-    control character (or over 32 KiB) is refused before it is sent and goes
-    by keystrokes, which type it as text.
+    control character (or over 32 KiB) is never sent.
+    *Typed only into the same pane:* a text herdr refused (its own error
+    answer for that request, or a request that never reached the socket) is
+    typed only while keys would land in the joined pane: its terminal is
+    frontmost and herdr's `pane.current` is that pane. Otherwise, and
+    whenever the request went out with no valid answer (it may have landed),
+    the text stays in History (`keepInHistory`).
     *Enter only over the joined agent:* before each Enter the route asks the
     pane's foreground processes again, with the test its arm joined on (the
     registered pid for a local pane, the parent pid or agent name for a

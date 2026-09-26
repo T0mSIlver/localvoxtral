@@ -174,7 +174,9 @@ final class SessionContextResolver {
     /// reaches only its pane.
     private func resolveHerdrPaneRoute() -> HerdrPanePromptRoute? {
         guard let join = claudeSessionJoin else { return nil }
-        return claudeSessionJoinResolver?.herdrPromptRoute(for: join)
+        return claudeSessionJoinResolver?.herdrPromptRoute(for: join) {
+            TerminalScreenContextSource.frontmostTarget()?.pid
+        }
     }
 
     /// This dictation's route into the joined agent, if any. Runs after the
