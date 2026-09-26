@@ -409,8 +409,8 @@ there is not.
   `doing.Usually`), or a span holding a sentence end, is never a term: two
   Overlay Buffer dictations sent in one prompt arrive glued while the learner
   joins them with a space (#801). Nor is a case-only fix of a word of two
-  letters or fewer (`i` → `I`, `ok` → `OK`), or lowercase dotted shorthand
-  (`e.g`), unless already a known term (#803). A
+  letters or fewer (`i` → `I`, `ok` → `OK`), or dots put between
+  a word's letters (`eg` → `e.g`), unless already a known term (#803). A
   hand fix is confirmed at once (`confirmedByCorrection`), bypassing the
   three-dictation bar, because that bar guards against polish repeating
   itself and a hand fix is not polish. Undo, or a later fix that changes a

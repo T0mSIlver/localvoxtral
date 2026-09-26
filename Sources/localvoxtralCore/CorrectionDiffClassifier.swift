@@ -162,7 +162,8 @@ package enum CorrectionDiffClassifier {
         let isShortCaseFix = term.count <= 2
             && term.caseFoldedForMatching == replaced.caseFoldedForMatching
         guard knownTerms.contains(term.caseFoldedForMatching)
-            || (!isShortCaseFix && isTermShaped(term, atSentenceStart: atSentenceStart))
+            || (!isShortCaseFix && !isDottedShorthand(term, of: replaced)
+                && isTermShaped(term, atSentenceStart: atSentenceStart))
         else { return .notTermShaped }
         return nil
     }
@@ -188,15 +189,20 @@ package enum CorrectionDiffClassifier {
         return editDistance(left, right) <= max(1, longest / 4)
     }
 
+    /// `eg` → `e.g`: dots put between the letters of the same word. A path
+    /// spoken as `a dot b` is not this and stays an identifier (#803).
+    static func isDottedShorthand(_ term: String, of replaced: String) -> Bool {
+        term.range(of: #"^(\p{Ll}\.)+\p{Ll}$"#, options: .regularExpression) != nil
+            && term.replacingOccurrences(of: ".", with: "") == replaced
+    }
+
     /// Looks like a name or identifier rather than an ordinary word: a digit,
     /// a joiner inside it, or a capital that is not just the capital every
     /// sentence starts with. `their` → `there` is a real fix, but a word
     /// every sentence may hold is not vocabulary, and neither is a span with
-    /// a sentence end inside it (`doing. Usually`) or lowercase shorthand
-    /// (`e.g`, `i.e`).
+    /// a sentence end inside it (`doing. Usually`).
     package static func isTermShaped(_ term: String, atSentenceStart: Bool) -> Bool {
         if term.range(of: #"[.!?]\s"#, options: .regularExpression) != nil { return false }
-        if term.range(of: #"^(\p{Ll}\.)+\p{Ll}$"#, options: .regularExpression) != nil { return false }
         if term.contains(where: \.isNumber) { return true }
         let inner = term.dropFirst().dropLast()
         if inner.contains(where: { "._-/:@#+".contains($0) }) { return true }

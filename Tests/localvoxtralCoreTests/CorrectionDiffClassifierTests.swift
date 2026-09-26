@@ -266,6 +266,11 @@ final class CorrectionDiffClassifierTests: XCTestCase {
             classify("the old one ie the first", "the old one i.e. the first"),
             .nothing(.notTermShaped)
         )
+        XCTAssertEqual(
+            classify("read x dot y from it", "read x.y from it"),
+            .learn(term: "x.y", replaced: "x dot y", forgetting: nil),
+            "a spoken dotted path is an identifier (Codex review of #805)"
+        )
     }
 
     func testRewordingIsNotLearned() {
@@ -366,8 +371,7 @@ final class CorrectionDiffClassifierTests: XCTestCase {
         XCTAssertFalse(CorrectionDiffClassifier.isTermShaped("there", atSentenceStart: false))
         XCTAssertFalse(CorrectionDiffClassifier.isTermShaped("doing. Usually", atSentenceStart: false))
         XCTAssertTrue(CorrectionDiffClassifier.isTermShaped("os.Exit", atSentenceStart: false))
-        XCTAssertFalse(CorrectionDiffClassifier.isTermShaped("e.g", atSentenceStart: false))
-        XCTAssertTrue(CorrectionDiffClassifier.isTermShaped("U.S", atSentenceStart: false))
+
     }
 
     func testEdgeTrimKeepsInnerAndLeadingDots() {
