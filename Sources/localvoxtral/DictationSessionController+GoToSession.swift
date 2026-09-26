@@ -5,13 +5,16 @@ import os
 /// "Go to <name>" (#723 step 1): an Overlay Buffer dictation that is only
 /// that phrase, naming a live joined session, brings the session's pane to
 /// the front instead of being inserted. Nothing is typed and no Return is
-/// pressed. A name no session has leaves the dictation as text. Logs say what
-/// was decided, never the name.
+/// pressed. A name no session has leaves the dictation as text. "Call this
+/// session <name>" (step 2) gives the session the dictation joined that
+/// nickname; with no joined session it is text too. Logs say what was
+/// decided, never the name.
 extension DictationSessionController {
     enum GoToSessionStatus {
         static let ambiguous = "More than one session has that name"
         static let unsupported = "Can't bring that session forward yet"
         static let paneNotFound = "Couldn't find that session's window"
+        static let named = "Session named"
     }
 
     /// Runs at stop, before the spoken send trigger, the dictionary and the
@@ -23,8 +26,20 @@ extension DictationSessionController {
         sample: OverlayStopSample
     ) -> Bool {
         guard let navigator = sessionNavigator,
-              let spokenName = GoToSessionCommandParser.spokenName(in: transcript.currentDictationEventText)
+              let command = SessionVoiceCommandParser.command(in: transcript.currentDictationEventText)
         else { return false }
+        let spokenName: String
+        switch command {
+        case .goTo(let name):
+            spokenName = name
+        case .nameThisSession(let nickname):
+            let join = sample.capture?.claudeJoin ?? context.claudeSessionJoin
+            guard nameSession(nickname, sessionID: join?.snapshot.sessionID, navigator: navigator) else {
+                return false
+            }
+            finishGoToSession(sessionMode: sessionMode, status: GoToSessionStatus.named)
+            return true
+        }
         let text = transcript.currentDictationEventText
         // Only what the history keeps: the closure outlives the stop, and a
         // join can hold an ssh forward open.
@@ -72,6 +87,25 @@ extension DictationSessionController {
                 self.finishGoToSession(sessionMode: sessionMode, status: Self.status(for: outcome))
             }
         }
+        return true
+    }
+
+    /// Nicknames the session the dictation is in, when it is still live.
+    /// False leaves the phrase to be inserted as text.
+    func nameSession(
+        _ nickname: String,
+        sessionID: String?,
+        navigator: SessionNavigator
+    ) -> Bool {
+        guard let sessionID else {
+            Log.dictation.notice("name this session: no joined session; keeping it as text")
+            return false
+        }
+        guard navigator.name(sessionID: sessionID, nickname: nickname) else {
+            Log.dictation.notice("name this session: the joined session is gone; keeping it as text")
+            return false
+        }
+        Log.dictation.notice("name this session: nickname set")
         return true
     }
 

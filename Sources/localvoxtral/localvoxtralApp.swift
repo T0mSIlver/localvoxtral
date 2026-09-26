@@ -620,7 +620,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 liveSessions: { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() },
                 repositoryRoot: SessionNavigator.liveRepositoryRoot,
                 focuser: TerminalSessionPaneFocuser.live(ttyReader: ttyReader),
-                sleep: viewModel.session.dependencies.clock.sleep
+                sleep: viewModel.session.dependencies.clock.sleep,
+                nicknames: .userDefaults(.standard, key: "session_navigation.nicknames")
             )
             // Correction learning compares each submitted prompt with the
             // dictation the app inserted into that session. The registry
