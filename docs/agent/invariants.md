@@ -163,6 +163,24 @@ there is not.
   repository context, so they go only with the trusted-endpoint opt-in.
   Live context terms are not sent yet (#647). A new dictation that cancels
   the pass saves the realtime text as not inserted, as it does for a polish.
+- **Claude Desktop is a text field whose Return sends, and gets its
+  newlines as Shift+Return** (#660). Three lists name it, each for one
+  capability: `TerminalTargetDetector`'s text-field list fixes its verdict
+  (the AX probe cannot: Electron builds its tree only once the join read has
+  set `AXManualAccessibility`, after the verdict, so the first dictation after
+  the app launched found nothing focused and read as a terminal);
+  `ReturnSubmitsAppList` lets the spoken send trigger press Return there; and
+  `TextInsertionService`'s Shift+Return list changes how a newline is typed.
+  MEASURED on Claude Desktop 2.9939.2 (2026-09-26), posting exactly what
+  `postUnicodeTextEvents` posts: a newline never submitted, but one opening
+  an event or making up a whole event was dropped (`alpha` + `\n` + `beta`
+  landed as `alphabeta`), and a fenced block sent as consecutive 20-unit
+  events came out with pieces reordered. So in Desktop each line is typed on
+  its own and each newline is pressed as Shift+Return, which the prompt
+  handles as a key. The list is judged from the app frontmost when the keys
+  are posted, after the insertion made its target frontmost. Listing Desktop
+  under Settings → Terminals overrides the verdict (the user list wins), and
+  a terminal session collapses its newlines before any reach the keyboard.
 - **The overlay panel's click-through is insertion machinery, not window
   chrome.** `NonActivatingPanel` refuses key and main and swallows every click
   on its body, because the panel is on screen exactly while the app it is
