@@ -2,9 +2,9 @@ import Foundation
 import XCTest
 @testable import localvoxtral
 
-// Live Auto-Paste with "Copy on stop" on puts each finalized segment on the
-// clipboard as it is typed. The popover's "Copy latest segment" read the same
-// text; it is gone (#793), and this path is its only reader left.
+// Live Auto-Paste with "Copy on stop" on puts the dictation so far on the
+// clipboard after each final. The popover's "Copy latest segment" read the
+// same text; it is gone (#793), and this path is its only reader left.
 #if DEBUG
 @MainActor
 final class LiveAutoCopyTests: XCTestCase {
@@ -40,15 +40,13 @@ final class LiveAutoCopyTests: XCTestCase {
         return (viewModel, written)
     }
 
-    func testEachFinalizedSegmentIsCopiedSilently() {
+    func testEachFinalCopiesTheDictationSoFar() {
         let (viewModel, written) = makeViewModel(autoCopy: true)
-        let statusBefore = viewModel.statusText
 
         viewModel.session.handle(event: .finalTranscript("first part."))
         viewModel.session.handle(event: .finalTranscript("second part."))
 
-        XCTAssertEqual(written.values, ["first part.", "second part."])
-        XCTAssertEqual(viewModel.statusText, statusBefore)
+        XCTAssertEqual(written.values, ["first part.", "first part. second part."])
     }
 
     func testWithAutoCopyOffNothingIsCopied() {

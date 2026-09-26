@@ -770,10 +770,11 @@ final class DictationSessionController {
         statusText = "Transcript copied."
     }
 
-    /// Live Auto-Paste with the auto-copy setting on: each finalized segment
-    /// goes to the clipboard as it is typed. Silent, since the status line
+    /// Live Auto-Paste with "Copy on stop" on: after each final, the
+    /// dictation so far goes to the clipboard, so it holds the whole
+    /// dictation once the session stops. Silent, since the status line
     /// belongs to the running session.
-    func autoCopyLatestSegment() {
+    func autoCopyDictationSoFar() {
         let segment = lastFinalSegment.trimmed
         guard !segment.isEmpty else { return }
         writeToPasteboard(segment)
