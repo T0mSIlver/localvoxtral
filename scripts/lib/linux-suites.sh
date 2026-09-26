@@ -66,15 +66,18 @@ lv_filter_is_linux_only() {
   rest="$filter"
   if [[ "$rest" == *.* ]]; then
     module="${rest%%.*}"
-    lv_linux_test_modules | grep -qxF "$module" || return 1
+    lv_linux_test_modules | grep -xF "$module" >/dev/null || return 1
     rest="${rest#*.}"
   fi
   class="${rest%%/*}"
   if [[ "$rest" == */* ]]; then
     [[ "${rest#*/}" =~ ^[A-Za-z0-9_]+$ ]] || return 1
   fi
-  lv_linux_test_classes | grep -qxF "$class" || return 1
-  if lv_mac_only_test_classes | grep -qF "$class"; then
+  # Not `grep -q`: it quits at the first match, the writer still going dies
+  # on SIGPIPE, and under the caller's pipefail the check reads as false
+  # (#770). Reading to the end costs nothing on lists this size.
+  lv_linux_test_classes | grep -xF "$class" >/dev/null || return 1
+  if lv_mac_only_test_classes | grep -F "$class" >/dev/null; then
     return 1
   fi
   return 0
