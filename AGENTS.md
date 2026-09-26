@@ -69,6 +69,17 @@ it only where nothing else can do the job:
    Stopping before the merge? Leave a handoff comment: state, what's left,
    decisions made.
 
+The board's Needs human review status holds PRs, not issues, that wait on
+the owner. The scheduler adds an open PR when it asks for the owner's OK to
+merge; whoever merges a `needs-human-review` PR adds it right after the
+merge. Add with `gh project item-add 1 --owner T0mSIlver --url <pr-url>`,
+then `gh project item-edit --project-id PVT_kwHOAhDp9c4BkXCa --id <item>
+--field-id PVTSSF_lAHOAhDp9c4BkXCazhjH4TM --single-select-option-id <id>`,
+the option's id from `gh project field-list 1 --owner T0mSIlver --format
+json`; `gh issue create --project` fails here. Only the owner moves a
+PR's card to Done: on an open PR that is the OK to merge (#763), on a merged
+one it means checked. A failed check becomes a `bug` issue that links the PR.
+
 New issues get one area label (`asr`, `polish`, `ci`, `claude-join`,
 `mistral`, `session`) plus `bug` or `enhancement`. Group work with sub-issues
 and order it with blocked-by links, not prose.
@@ -97,7 +108,9 @@ from your issue and say so in your report. Don't ask whether to file it.
   a `ManualSessionClock` (`Tests/localvoxtralTestSupport`) and advances it;
   on the wall clock the timers fire into the process-retained view model
   after the test ends. New timers go on the clock.
-- UI change: say exactly what you verified by hand and how.
+- Can't test something yourself (a UI change, behaviour only a person at
+  the Mac sees)? Add the `needs-human-review` label and numbered steps for
+  the owner under the template's Hand check item.
 - Session-path change (start and stop, realtime clients, merging, insertion,
   overlay commit): prove it in process, in `DictationPipelineTests` or next
   to it. The e2e dictation check, the only one where the packaged app
