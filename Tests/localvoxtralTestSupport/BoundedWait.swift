@@ -7,7 +7,7 @@ import Synchronization
 /// same order it would with a bare continuation. The wall-time bound only
 /// ends a wait that was going to hang: it is never what a passing test waits
 /// on.
-final class BoundedWait: Sendable {
+package final class BoundedWait: Sendable {
     private enum State {
         case idle
         case suspended(CheckedContinuation<Bool, Never>)
@@ -17,10 +17,12 @@ final class BoundedWait: Sendable {
     private let state = Mutex(State.idle)
 
     /// Ends the wait with `true`. Only the first resolution counts.
-    func resolve() { finish(true) }
+    package init() {}
+
+    package func resolve() { finish(true) }
 
     /// Returns `true` if `resolve()` came first, `false` if the bound did.
-    func value(
+    package func value(
         failAfter: TimeInterval,
         isolation: isolated (any Actor)? = #isolation
     ) async -> Bool {

@@ -65,9 +65,12 @@ the app hands it the resource bundle, and on Linux it hashes with
 (`LiveReplacementCorrector`, `LiveHoldBackReplacementStream`), and the Claude
 socket guard (`ClaudeSocketGuard`: `getpeereid` and `LOCAL_PEERPID` on Darwin,
 `SO_PEERCRED` on Linux), with the SHA-256 and HMAC helpers the Claude code
-hashes through.
+hashes through, and the `RealtimeClient` protocol and its event types.
 It builds and tests on Linux (`scripts/core-tests-linux.sh`); the app
-re-exports it.
+re-exports it. Test doubles that need only the core live in
+`Tests/localvoxtralTestSupport`, a library both test targets depend on; a
+Linux test process that links it ignores SIGPIPE, which Darwin suppresses per
+descriptor instead.
 
 Key subsystems:
 

@@ -53,7 +53,7 @@ MARKER='[run-stt-integration]'
 # comes to depend on has to be added here; until then main's run and the
 # nightly e2e dictation are what see it.
 PATTERNS=(
-  'Sources/localvoxtral/RealtimeClient.swift'
+  'Sources/localvoxtralCore/RealtimeClient.swift'
   'Sources/localvoxtral/*RealtimeWebSocketClient.swift'   # Base, and Mistral, which shares it
   'Sources/localvoxtral/RealtimeAPIWebSocketClient.swift' # the client under test
   'Sources/localvoxtralCore/StringExtensions.swift'       # API key and model trimming

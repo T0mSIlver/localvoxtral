@@ -1,12 +1,12 @@
 import Foundation
 import Synchronization
 
-struct RealtimeSessionConfiguration: Sendable {
-    let endpoint: URL
-    let apiKey: String
-    let model: String
+package struct RealtimeSessionConfiguration: Sendable {
+    package let endpoint: URL
+    package let apiKey: String
+    package let model: String
 
-    init(endpoint: URL, apiKey: String, model: String) {
+    package init(endpoint: URL, apiKey: String, model: String) {
         self.endpoint = endpoint
         self.apiKey = apiKey
         self.model = model
@@ -26,19 +26,19 @@ struct RealtimeSessionConfiguration: Sendable {
 /// Values come from one process-wide counter, so the two clients can never hand
 /// out the same one: after a backend-mode switch, the other client's retired
 /// socket cannot impersonate the live one.
-struct RealtimeConnectionGeneration: Hashable, Sendable, CustomStringConvertible {
+package struct RealtimeConnectionGeneration: Hashable, Sendable, CustomStringConvertible {
     /// No connection: what a client carries before its first `connect()`, and
     /// what the session is on between a socket's death and the next dial.
-    static let none = RealtimeConnectionGeneration(value: 0)
+    package static let none = RealtimeConnectionGeneration(value: 0)
 
-    let value: Int
+    package let value: Int
 
-    var description: String { value == 0 ? "none" : "#\(value)" }
+    package var description: String { value == 0 ? "none" : "#\(value)" }
 
     private static let counter = Mutex(0)
 
     /// The next unused generation. Never equal to `.none`.
-    static func next() -> RealtimeConnectionGeneration {
+    package static func next() -> RealtimeConnectionGeneration {
         counter.withLock { current in
             current += 1
             return RealtimeConnectionGeneration(value: current)
@@ -46,7 +46,7 @@ struct RealtimeConnectionGeneration: Hashable, Sendable, CustomStringConvertible
     }
 }
 
-enum RealtimeEvent: Sendable {
+package enum RealtimeEvent: Sendable {
     case connected
     case disconnected
     case status(String)
@@ -65,7 +65,7 @@ enum RealtimeEvent: Sendable {
 /// whose mutable state lives behind a `Mutex` (`@unchecked Sendable`); the
 /// view model reaches them through `any RealtimeClient`, which has to carry the
 /// same guarantee for those captures to compile under strict concurrency.
-protocol RealtimeClient: AnyObject, Sendable {
+package protocol RealtimeClient: AnyObject, Sendable {
     var supportsPeriodicCommit: Bool { get }
     var isConnected: Bool { get }
     /// The generation stamped on the socket the most recent `connect()` opened,

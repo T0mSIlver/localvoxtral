@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import localvoxtralCore
+import localvoxtralTestSupport
 
 #if canImport(Darwin) || canImport(Glibc)
 #if canImport(Darwin)
@@ -25,6 +26,50 @@ final class POSIXPortabilityTests: XCTestCase {
         }
         XCTAssertEqual(written, -1)
         XCTAssertEqual(errno, EPIPE)
+    }
+
+    /// A write to a pipe whose reader has gone must fail with EPIPE too. Linux
+    /// has no per-pipe opt-out, so there it holds only because the test
+    /// support makes the process ignore SIGPIPE; without that, this test ends
+    /// the run.
+    func testWriteToAPipeWithNoReaderFailsWithEPIPEInsteadOfSignalling() {
+        var descriptors: [Int32] = [-1, -1]
+        XCTAssertEqual(pipe(&descriptors), 0)
+        defer { close(descriptors[1]) }
+        POSIXSocket.suppressSIGPIPE(onPipe: descriptors[1])
+        close(descriptors[0])
+
+        let byte: [UInt8] = [0x2A]
+        let written = byte.withUnsafeBytes { raw in
+            LibC.write(descriptors[1], raw.baseAddress!, raw.count)
+        }
+        XCTAssertEqual(written, -1)
+        XCTAssertEqual(errno, EPIPE)
+    }
+
+    /// The shared test support reaches the core's suite: its loopback port
+    /// takes a TCP listener.
+    func testTheTestSupportLoopbackPortTakesAListener() throws {
+        let port = try unusedLoopbackPort()
+        let listener = socket(AF_INET, POSIXSocket.stream, 0)
+        XCTAssertGreaterThanOrEqual(listener, 0)
+        defer { close(listener) }
+
+        var address = sockaddr_in()
+        POSIXSocket.setLength(of: &address)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = port.bigEndian
+        address.sin_addr = in_addr(s_addr: INADDR_LOOPBACK.bigEndian)
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                #if canImport(Darwin)
+                Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                #else
+                Glibc.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                #endif
+            }
+        }
+        XCTAssertEqual(bound, 0)
     }
 
     func testConnectReachesAListenerBoundThroughTheHelpers() throws {

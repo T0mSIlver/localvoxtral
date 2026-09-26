@@ -1,20 +1,20 @@
 import Foundation
-@testable import localvoxtral
+import localvoxtralCore
 
 /// Serves fixed config from memory so a session never reads the user's real
 /// config directory. `agentPromptTemplates` defaults to `promptTemplates`.
-final class MockAppConfigStore: AppConfigServing {
+package final class MockAppConfigStore: AppConfigServing {
     private let replacementDictionary: ReplacementDictionary
     private let promptTemplates: LLMPromptTemplates
     private let agentPromptTemplates: LLMPromptTemplates
     private let terminalAppBundleIDs: [String]
     private let configDirectory: URL
 
-    private(set) var loadReplacementDictionaryCallCount = 0
-    private(set) var loadLLMPromptTemplatesCallCount = 0
-    private(set) var requestedProfiles: [PolishPromptProfile] = []
+    package private(set) var loadReplacementDictionaryCallCount = 0
+    package private(set) var loadLLMPromptTemplatesCallCount = 0
+    package private(set) var requestedProfiles: [PolishPromptProfile] = []
 
-    init(
+    package init(
         replacementDictionary: ReplacementDictionary = ReplacementDictionary(entries: []),
         promptTemplates: LLMPromptTemplates = LLMPromptTemplates(
             systemContent: "system",
@@ -31,21 +31,21 @@ final class MockAppConfigStore: AppConfigServing {
         self.configDirectory = configDirectory
     }
 
-    func configDirectoryURL() -> URL {
+    package func configDirectoryURL() -> URL {
         configDirectory
     }
 
-    func loadReplacementDictionary() -> ReplacementDictionary {
+    package func loadReplacementDictionary() -> ReplacementDictionary {
         loadReplacementDictionaryCallCount += 1
         return replacementDictionary
     }
 
-    func loadLLMPromptTemplates() -> LLMPromptTemplates {
+    package func loadLLMPromptTemplates() -> LLMPromptTemplates {
         loadLLMPromptTemplatesCallCount += 1
         return promptTemplates
     }
 
-    func loadLLMPromptTemplates(profile: PolishPromptProfile) -> LLMPromptTemplates {
+    package func loadLLMPromptTemplates(profile: PolishPromptProfile) -> LLMPromptTemplates {
         loadLLMPromptTemplatesCallCount += 1
         requestedProfiles.append(profile)
         switch profile {
@@ -56,7 +56,7 @@ final class MockAppConfigStore: AppConfigServing {
         }
     }
 
-    func loadTerminalAppBundleIDs() -> [String] {
+    package func loadTerminalAppBundleIDs() -> [String] {
         terminalAppBundleIDs
     }
 }

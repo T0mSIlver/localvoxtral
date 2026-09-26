@@ -64,7 +64,13 @@ var targets: [Target] = [
     // polish-outcome and connection-failure classifiers, the session clock
     // (#432 step 9), and the Claude session snapshot, which is why it depends
     // on the wire contract. The app re-exports it.
-    .target(name: "localvoxtralCore", dependencies: ["ClaudeContextWire"]),
+    // Built with the dogfood define too, for the Claude join code that moves
+    // here from the app and taps the dogfood capture (#591).
+    .target(
+        name: "localvoxtralCore",
+        dependencies: ["ClaudeContextWire"],
+        swiftSettings: dogfoodSwiftSettings
+    ),
     // The hook publisher and its Linux process-table reader; runs on both
     // platforms.
     .testTarget(
@@ -77,9 +83,30 @@ var targets: [Target] = [
         name: "ClaudeContextWireTests",
         dependencies: ["ClaudeContextWire"]
     ),
+    // Test doubles that need only the core, shared by the core's suite and
+    // the app's (#616). A library, because test targets can't depend on each
+    // other.
+    .target(
+        name: "localvoxtralTestSupport",
+        dependencies: ["localvoxtralCore", "ClaudeContextWire", "localvoxtralTestSupportSignals"],
+        path: "Tests/localvoxtralTestSupport"
+    ),
+    // Makes a Linux test process ignore SIGPIPE when it loads. C, for the
+    // constructor.
+    .target(
+        name: "localvoxtralTestSupportSignals",
+        path: "Tests/localvoxtralTestSupportSignals"
+    ),
     .testTarget(
         name: "localvoxtralCoreTests",
-        dependencies: ["localvoxtralCore", "ClaudeContextWire"]
+        dependencies: [
+            "localvoxtralCore",
+            "ClaudeContextWire",
+            // The broker and Vibe suites drive the real hook publisher.
+            "ClaudeHookPublisherCore",
+            "localvoxtralTestSupport",
+        ],
+        swiftSettings: dogfoodSwiftSettings
     ),
 ]
 
@@ -110,6 +137,7 @@ targets += [
             "localvoxtralCore",
             "ClaudeContextWire",
             "ClaudeHookPublisherCore",
+            "localvoxtralTestSupport",
         ],
         // Golden fixtures are read through `#filePath`, not the bundle.
         exclude: ["Fixtures"],

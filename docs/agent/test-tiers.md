@@ -151,7 +151,8 @@ what it needs, not about cost:
   packages/uploads/smokes an ad-hoc-signed bundle there.
 - **`linux`, GitHub-hosted Ubuntu, every event and every contributor** —
   a required check. Every `scripts/ci/test-*.sh` suite, by glob, and
-  the Linux-buildable Swift targets through `scripts/core-tests-linux.sh`.
+  the Linux-buildable Swift targets through `scripts/core-tests-linux.sh`,
+  `localvoxtralTestSupport` (the doubles both test targets share) included.
   `build-test` runs the shell suites too, for the Mac's bash 3.2.
 - **`dogfood`, GitHub-hosted `macos-latest`, every event** — not required.
   The dogfood capture suite, built with `LOCALVOXTRAL_DOGFOOD=1`.
