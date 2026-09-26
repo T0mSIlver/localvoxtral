@@ -1177,9 +1177,12 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     /// `$SSH_CONNECTION` is the one value the shim TRANSFORMS — its four
     /// space-separated fields are re-joined with commas, so an opaque
     /// `value-…` fixture would be correctly dropped. Each has a test of its
-    /// own below.
+    /// own below. `$LVX_PROJECT` is not read from the environment at all: the
+    /// shim computes it with git from its cwd (#652), and
+    /// `scripts/ci/test-remote-shim-project.sh` runs both shims in real
+    /// repositories for it.
     private static let shimTransformedOrIntrinsicFields: Set<ClaudeRemoteEnvironmentField> =
-        [.hookParentPID, .sshConnection]
+        [.hookParentPID, .sshConnection, .project]
 
     func testShimSendsEveryAllowlistedEnvValueUnderTheHeaderTheListenerReads() throws {
         // One distinct value per variable, so a copy-pasted header name shows
@@ -1217,7 +1220,13 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         // Everything unset (the stub environment inherits the runner's, which
         // has none of these) leaves only Authorization and the always-present
         // parent pid: a plain host must not pay for a feature it is not using.
-        let captured = try capturedRequestHeaders(environment: [:])
+        // Run outside any repository, or the checkout the suite runs in would
+        // name itself as the session's project.
+        let outsideGit = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shim-no-repo-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: outsideGit, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: outsideGit) }
+        let captured = try capturedRequestHeaders(environment: [:], workingDirectory: outsideGit)
         let request = try parseCapturedHeaders(captured)
         let parsed = ClaudeRemoteEnvironmentCodec.environment(in: request.headers)
         for field in ClaudeRemoteEnvironmentField.allCases where field != .hookParentPID {

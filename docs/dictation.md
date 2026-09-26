@@ -213,7 +213,9 @@ History; the panes sit under the sidebar's Settings header:
   spelling for that project, and after three dictations it starts correcting
   the name on its own — including in dictations where nothing on screen
   mentions it. Those terms are offered as tags in **Suggestions** too, with
-  no API credits. **Advanced → Terms learned from polishing → Show** lists them by
+  no API credits. A project is a repository: all its git worktrees share one
+  list, on this Mac and on a remote host whose plugin is 1.13.0 or later.
+  **Advanced → Terms learned from polishing → Show** lists them by
   project, with how often each was applied and when it last was. Pin a term
   to keep it: it is used at once and never expires. Forget one, or all of
   them with **Forget**. **Export…** and **Import…** at the bottom of that

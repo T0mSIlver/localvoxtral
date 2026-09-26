@@ -88,6 +88,15 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
         return workspace?.localPath
     }
 
+    /// The workspace learned terms are filed under: `workspace`, except that
+    /// a remote session's label is its host's name for the repository when
+    /// the host sent one (`preferringRemoteProject`). Only for that key: the
+    /// session keeps showing its own cwd label everywhere else.
+    package var learnedTermWorkspace: ClaudeWorkspaceReference? {
+        guard !origin.isLocalAuthenticated else { return workspace }
+        return workspace?.preferringRemoteProject(remoteEnvironment?.project)
+    }
+
     /// Recent files that name paths on THIS machine.
     ///
     /// Empty for a remote session, whose paths name files in another host's

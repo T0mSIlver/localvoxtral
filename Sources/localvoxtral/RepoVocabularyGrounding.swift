@@ -244,8 +244,15 @@ final class RepoVocabularyRootBox: @unchecked Sendable {
 
     /// Nil means the pipeline resolved no repository, which is not the same as
     /// never reporting — see `LearnedTermProjectResolver.RepositoryRoot`.
-    func report(_ root: String?) {
-        outcome.withLock { $0 = root.map { .root($0) } ?? .noRepository }
+    ///
+    /// Called from the pipeline's detached task, so reading a worktree's
+    /// `.git` file for its main checkout happens here, off the main actor and
+    /// under the pipeline's deadline, never on the commit path.
+    func report(_ root: String?, fileManager: FileManager = .default) {
+        let resolved: LearnedTermProjectResolver.RepositoryRoot = root.map {
+            .root($0, mainCheckout: RepoIndexing.mainCheckout(ofRoot: $0, fileManager: fileManager))
+        } ?? .noRepository
+        outcome.withLock { $0 = resolved }
     }
 }
 

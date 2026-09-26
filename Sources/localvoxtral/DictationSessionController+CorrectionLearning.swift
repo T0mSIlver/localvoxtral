@@ -18,7 +18,7 @@ extension DictationSessionController {
         guard let correctionLearning, let join else { return }
         guard let project = project ?? LearnedTermProjectResolver.resolve(
             repositoryRoot: .unknown,
-            workspace: join.snapshot.workspace
+            workspace: join.snapshot.learnedTermWorkspace
         ) else { return }
         correctionLearning.expect(
             inserted: inserted(),

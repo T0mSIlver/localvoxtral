@@ -320,7 +320,7 @@ enum PolishContextGatherer {
         // same matcher every other source runs.
         let learnedProject = LearnedTermProjectResolver.resolve(
             repositoryRoot: repositoryRootBox.value,
-            workspace: capturedClaudeJoin?.snapshot.workspace
+            workspace: capturedClaudeJoin?.snapshot.learnedTermWorkspace
         )
         let learnedVocabularyOutcome = await Self.learnedTermGrounding(store: learnedTermStore,
             project: learnedProject,

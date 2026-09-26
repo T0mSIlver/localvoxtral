@@ -182,6 +182,38 @@ package enum RepoIndexing {
         return nil
     }
 
+    /// The main checkout of the repository `root` belongs to: `root` itself,
+    /// unless `root` is a linked worktree (#652). What `git rev-parse
+    /// --git-common-dir` answers, read from the files git keeps rather than
+    /// by running git: a linked worktree's git directory holds a `commondir`
+    /// file naming the shared one, and a main checkout's or a submodule's does
+    /// not, so both keep their own root.
+    ///
+    /// When the shared git directory is a checkout's `.git`, the checkout is
+    /// its parent. Anything else (a bare repository, a submodule's
+    /// `.git/modules/<name>`) has no checkout to name, so the shared directory
+    /// itself stands for the repository: still one answer for every worktree.
+    package static func mainCheckout(ofRoot root: String, fileManager: FileManager = .default) -> String {
+        guard let gitDirectory = resolveGitDirectory(root: root, fileManager: fileManager) else {
+            return root
+        }
+        let gitDirectoryURL = URL(fileURLWithPath: gitDirectory).standardizedFileURL
+        guard let data = fileManager.contents(
+            atPath: gitDirectoryURL.appendingPathComponent("commondir").path
+        ),
+            let raw = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            !raw.isEmpty
+        else { return root }
+        let common = raw.hasPrefix("/")
+            ? URL(fileURLWithPath: raw).standardizedFileURL
+            : gitDirectoryURL.appendingPathComponent(raw).standardizedFileURL
+        guard common.path != gitDirectoryURL.path else { return root }
+        return common.lastPathComponent == ".git"
+            ? common.deletingLastPathComponent().path
+            : common.path
+    }
+
     /// The HEAD file inside the resolved git directory.
     package static func headFileURL(root: String, fileManager: FileManager = .default) -> URL? {
         guard let gitDir = resolveGitDirectory(root: root, fileManager: fileManager) else {

@@ -205,7 +205,7 @@ fi
 # the app validates the shape and trusts nothing else about it.
 cat 2>/dev/null >"$WORK/header" <<EOF || fail_open
 Authorization: Bearer $TOKEN
-X-Lvx-Plugin-Version: 1.12.0
+X-Lvx-Plugin-Version: 1.13.0
 EOF
 
 # --- Allowlisted environment enrichment --------------------------------------
@@ -258,6 +258,52 @@ lvx_env_header() {
 $_lvx_name: $_lvx_value
 EOF
 }
+
+# --- Project label (#652) ----------------------------------------------------
+# The Mac files what a remote session teaches it under a label. Without this
+# header the label is the last component of the session's cwd, so each
+# worktree of a repository, and each subdirectory a session starts in, learned
+# alone. The label is the basename of the repository's main checkout: the
+# parent of the shared git directory for a linked worktree, the toplevel
+# otherwise (a submodule keeps its own). One git call, from this hook's cwd,
+# which is the session's.
+#
+# A label like every value here, never a path: only the basename leaves, and
+# only when it is a plain name in the charset the Mac's labels use (enumerated,
+# as above), with no leading dot and at most 64 bytes. No git, no repository,
+# a git too old for --path-format (it echoes the option back, which makes four
+# lines) or anything else sends no header, and the Mac falls back to the cwd's
+# last component.
+LVX_PROJECT="$(
+  LC_ALL=C
+  export LC_ALL
+  command -v git >/dev/null 2>&1 || exit 0
+  _lvx_git="$(git rev-parse --path-format=absolute --show-toplevel --git-dir \
+    --git-common-dir 2>/dev/null)" || exit 0
+  set -f
+  IFS='
+'
+  # shellcheck disable=SC2086  # one field per line is the point
+  set -- $_lvx_git
+  [ "$#" -eq 3 ] || exit 0
+  for _lvx_path in "$1" "$2" "$3"; do
+    case "$_lvx_path" in /*) ;; *) exit 0 ;; esac
+  done
+  if [ "$2" = "$3" ]; then
+    _lvx_name="${1##*/}"
+  elif [ "${3##*/}" = ".git" ]; then
+    _lvx_main="${3%/*}"
+    _lvx_name="${_lvx_main##*/}"
+  else
+    # A bare repository's worktree: the shared directory is the repository.
+    _lvx_name="${3##*/}"
+  fi
+  case "$_lvx_name" in
+  "" | .* | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) exit 0 ;;
+  esac
+  [ "${#_lvx_name}" -le 64 ] || exit 0
+  echo "$_lvx_name"
+)" 2>/dev/null || LVX_PROJECT=""
 
 (
   LC_ALL=C
@@ -317,6 +363,7 @@ EOF
   # Best effort: the shim's parent is the Claude Code process on THIS host. It
   # is a pid in this machine's namespace and the Mac treats it as a label only.
   lvx_env_header 'X-Lvx-Env-Hook-Parent-Pid' "${PPID:-}"
+  lvx_env_header 'X-Lvx-Env-Project' "${LVX_PROJECT:-}"
 ) 2>/dev/null || :
 
 # --max-time 1 mirrors the old http hooks' one-second fail-open ceiling: a
