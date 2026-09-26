@@ -200,7 +200,7 @@ final class BackendProcessSupervisorTests: XCTestCase {
               count=$(cat "\(countFile.path)")
             fi
             count=$((count + 1))
-            \(ProcessInfo.processInfo.environment["LV_PROOF_753_NO_WRITE"] == nil ? "echo \"$count\" > \"\(countFile.path)\"" : ":")
+            echo "$count" > "\(countFile.path)"
             echo "fatal backend failure $count" >&2
             exit 7
             """
