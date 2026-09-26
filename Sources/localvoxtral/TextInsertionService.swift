@@ -98,6 +98,11 @@ final class TextInsertionService {
     var isScalarTracingEnabled = false
 
     private var pendingRealtimeInsertionText = ""
+    /// The user's clipboard while a paste's temporary text is on it, with
+    /// the change count of that text. A paste landing before the restore
+    /// keeps this snapshot, or it would restore the earlier paste's text.
+    @ObservationIgnored
+    private var pendingPasteboardRestore: (snapshot: PasteboardSnapshot, changeCount: Int)?
     private var insertionRetryTask: Task<Void, Never>?
     private var axInsertionSuccessCount = 0
     private var keyboardFallbackSuccessCount = 0
@@ -270,13 +275,19 @@ final class TextInsertionService {
         }
 
         let pasteboard = NSPasteboard.general
-        let snapshot = capturePasteboardSnapshot(from: pasteboard)
+        let snapshot: PasteboardSnapshot
+        if let pending = pendingPasteboardRestore, pending.changeCount == pasteboard.changeCount {
+            snapshot = pending.snapshot
+        } else {
+            snapshot = capturePasteboardSnapshot(from: pasteboard)
+        }
         pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string) else {
             Self.restorePasteboardSnapshot(snapshot, to: pasteboard, expectedChangeCount: pasteboard.changeCount)
             return false
         }
         let insertedChangeCount = pasteboard.changeCount
+        pendingPasteboardRestore = (snapshot, insertedChangeCount)
 
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
@@ -284,7 +295,12 @@ final class TextInsertionService {
         keyDown.post(tap: .cgAnnotatedSessionEventTap)
         keyUp.post(tap: .cgAnnotatedSessionEventTap)
         // Restore clipboard only if the user did not change it after our temporary write.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [snapshot] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, snapshot] in
+            MainActor.assumeIsolated {
+                if self?.pendingPasteboardRestore?.changeCount == insertedChangeCount {
+                    self?.pendingPasteboardRestore = nil
+                }
+            }
             let pasteboard = NSPasteboard.general
             Self.restorePasteboardSnapshot(snapshot, to: pasteboard, expectedChangeCount: insertedChangeCount)
         }
