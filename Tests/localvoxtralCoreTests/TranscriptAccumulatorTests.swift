@@ -5,56 +5,6 @@ import XCTest
 /// the buffered partials, what Live Auto-Paste still has to type for it, and
 /// what a promotion keeps. The view model suites prove the events reach it.
 final class TranscriptAccumulatorTests: XCTestCase {
-    // MARK: - resolvedFinalizedSegment boundary logic
-
-    func testResolvedFinalizedSegment_finalExtendsPartialWithPeriod() {
-        // Partial streamed "sparisce", final delivers the trailing period:
-        // the resolved segment is the full "sparisce." — punctuation stays at
-        // the end, never mid-word.
-        var transcript = TranscriptAccumulator()
-        transcript.pendingSegmentText = "sparisce"
-
-        XCTAssertEqual(transcript.resolvedFinalizedSegment(from: "sparisce."), "sparisce.")
-    }
-
-    func testResolvedFinalizedSegment_finalOnlyPunctuation_appendsWithSpace() {
-        // If the final carries only the punctuation, it appends after the
-        // buffered word (with a space, per the existing boundary rule) — it
-        // never splices into the word.
-        var transcript = TranscriptAccumulator()
-        transcript.pendingSegmentText = "sparisce"
-
-        XCTAssertEqual(transcript.resolvedFinalizedSegment(from: "."), "sparisce .")
-    }
-
-    func testResolvedFinalizedSegment_emptyFinalReturnsPending() {
-        var transcript = TranscriptAccumulator()
-        transcript.pendingSegmentText = "al fondo"
-
-        XCTAssertEqual(transcript.resolvedFinalizedSegment(from: ""), "al fondo")
-    }
-
-    func testResolvedFinalizedSegment_emptyPendingReturnsFinal() {
-        let transcript = TranscriptAccumulator()
-
-        XCTAssertEqual(transcript.resolvedFinalizedSegment(from: "al fondo,"), "al fondo,")
-    }
-
-    func testResolvedFinalizedSegment_disjointWordsJoinWithSpace() {
-        // "al" buffered, "fondo," final → "al fondo," (space-joined).
-        var transcript = TranscriptAccumulator()
-        transcript.pendingSegmentText = "al"
-
-        XCTAssertEqual(transcript.resolvedFinalizedSegment(from: "fondo,"), "al fondo,")
-    }
-
-    func testResolvedFinalizedSegment_partialPrefixOfFinal_returnsFinal() {
-        var transcript = TranscriptAccumulator()
-        transcript.pendingSegmentText = "al fon"
-
-        XCTAssertEqual(transcript.resolvedFinalizedSegment(from: "al fondo,"), "al fondo,")
-    }
-
     // MARK: - Partials
 
     func testPartialsAppendInArrivalOrderAndMirrorIntoTheLivePartial() {
@@ -69,6 +19,18 @@ final class TranscriptAccumulatorTests: XCTestCase {
     }
 
     // MARK: - Finals and the live insertion
+
+    func testDisjointFinalJoinsBufferedTextWithASpace() {
+        for (partial, final, expected) in [
+            ("sparisce", ".", "sparisce ."),
+            ("al", "fondo,", "al fondo,"),
+        ] {
+            var transcript = TranscriptAccumulator()
+            transcript.appendPartial(partial)
+
+            XCTAssertEqual(transcript.applyFinal(final)?.text, expected)
+        }
+    }
 
     func testFinalWithNoTypedPartialInsertsTheWholeSegment() {
         var transcript = TranscriptAccumulator()

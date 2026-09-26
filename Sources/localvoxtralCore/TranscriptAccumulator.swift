@@ -134,7 +134,7 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         }
     }
 
-    package func resolvedFinalizedSegment(from finalText: String) -> String {
+    private func resolvedFinalizedSegment(from finalText: String) -> String {
         let finalizedText = finalText.trimmed
         let bufferedText = pendingSegmentText.trimmed
         let fallbackBufferedText = livePartialText.trimmed
