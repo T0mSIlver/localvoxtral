@@ -103,10 +103,21 @@ and unconditional on dispatches and in the nightly release.
 
 The rule behind the list — the LLM lanes are REQUIRED for changes to:
 prompts, model pins/catalog, sampling/template kwargs, the polish request
-shape or anything that alters what reaches the model (context attachment,
-dictionary/vocabulary hints, macro placeholders, token guard repair
-semantics), the helper engine, or the eval corpus/scorer. NOT required for
-UI, insertion, audio, backend-supervision, or test-only changes elsewhere.
+shape or anything that alters what reaches the model (what context text is
+harvested, selected and framed, dictionary/vocabulary hints, macro
+placeholders, token guard repair semantics), the helper engine, or the eval
+corpus/scorer. NOT required for UI, insertion, audio, backend-supervision, or
+test-only changes elsewhere, nor for which session the Claude context comes
+from (the join, the hook publishers and parsers, the broker and registry, the
+agent integrations; owner call, #643). The lane replays a fixed corpus
+through `LLMPolishingService` and executes none of those. Their proof is
+`PolishRequestGoldenTests` (see "Proving a change to the polish path with the
+request goldens"): its local-join, remote-join and terminal-screen cases seed
+the real registry with hook records and pin the request a join produces, so a
+change there that alters the Claude blocks changes a fixture. The goldens do
+not run the resolver's surface matching, the publishers, the parsers of raw
+hook JSON or the plugins; their unit suites and the herdr lane cover those,
+and the live lane never ran them either.
 Either way, the PR's Proof section states one of the two: the lane's
 scoreboard, or a one-line justification for skipping. If the path filter
 misses a change that belongs above, add `[run-llm-eval]` AND extend the
@@ -130,11 +141,11 @@ empty reason waives nothing (the run page says why), and `[run-llm-eval]`
 beside it wins. The filter stays the default rather than an opt-in because it
 has caught files whose role in the prompt was not obvious from their names:
 `AppConfigStore` renders the polish prompt and joined the list late (#564). The other direction has a list too: `EXEMPT` in
-the same script names the `ClaudeContext/` files that install, configure or
-keep a tunnel open, so an enrollment or settings diff does not buy live 4B
-inference on the owner's Mac. A new file in that directory runs the lane until
-it is added there, and only a file that cannot change what reaches the model,
-or which session's context does, belongs. `./scripts/remote-build.sh integration-polishd`
+the same script names the `ClaudeContext/` files that install, configure,
+keep a tunnel open or resolve the join, so an enrollment, settings or join
+diff does not buy live 4B inference on the owner's Mac. A new file in either
+`ClaudeContext/` directory runs the lane until it is added there, and only a
+file that cannot change the bytes of a Claude block belongs. `./scripts/remote-build.sh integration-polishd`
 remains the local equivalent. The weekly `eval-e2e.yml` lane is the only
 scheduled eval; the per-PR polishd lane skipped by the filter runs again only
 when a matching change (or the marker) triggers it.
