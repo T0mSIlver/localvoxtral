@@ -1,49 +1,48 @@
 # Remote Claude Code context over SSH
 
-Dictate into a Claude Code session that is running on another machine, and have
-localvoxtral spell your code, file names, and identifiers correctly anyway.
+Dictate into a Claude Code session running on another machine, and localvoxtral
+still spells your code, file names and identifiers correctly.
 
-The app's enrollment sheet runs the whole setup as one self-verifying flow.
-It shows one consent sentence, a **Details** link to this command reference,
-and one status line for each step. No token, command, or file contents appear
-in Settings.
+The app's enrollment sheet runs the whole setup as one flow that checks each
+step as it goes. It shows one consent sentence, a **Details** link to this
+page, and one status line per step. Settings never shows a token, a command or
+file contents.
 
 ---
 
 ## What the feature is
 
 localvoxtral polishes dictation better when it knows what you are working on. On
-this Mac it can read your terminal's repository directly. On a remote host it
-cannot — and never does. Instead, the Claude Code session on that host reports a
-little about itself through a plugin, over an SSH tunnel you already have open,
-and localvoxtral uses that to ground technical terms.
+this Mac it reads your terminal's repository directly. On a remote host it never
+does. The Claude Code session on that host reports a little about itself
+through a plugin, over an SSH tunnel you already have open, and localvoxtral
+uses that to spell technical terms.
 
-What a remote host can contribute:
+A remote host can send:
 
 - the prompt you last sent that session, and its working directory (as a label);
 - short, sanitized excerpts the session's own hooks report;
 - enough identity to know which session your terminal is showing.
 
-What it can never do:
+A remote host can never:
 
 - make localvoxtral read a file on your Mac. A remote working directory is a
-  string, not a path — the app has no way to turn one into a local file read;
-- impersonate another enrolled host. Sessions are namespaced by the host whose
-  token authenticated them;
+  string, not a path, and the app has no way to turn one into a local file read;
+- impersonate another enrolled host. Each session belongs to the host whose
+  token authenticated it;
 - reach your dictation while the toggle is off.
 
-Two different switches, worth keeping apart:
+Two switches do different things:
 
 - **The toggle** (**Send diff, recent files and last prompt**, Settings › Context) gates what a dictation
   ATTACHES. With it off, nothing a host sent reaches the polisher. It does not close the port: while any enrolled host is
   unrevoked, the listener keeps accepting and caching valid hook records.
-- **Revocation** is what stops a host. Its requests are then rejected rather
-  than not received — if you have other enrolled hosts, one of them is still
-  holding the port open — and with no active hosts left the listener closes it
-  entirely.
+- **Revocation** stops a host. The listener then rejects its requests, since
+  another enrolled host may still hold the port open. With no active hosts
+  left, the listener closes the port.
 
-Polish context also stays on this Mac by default: everything above is sent only
-to a polisher running here, unless you turn on **Send context to non-local polishing servers**, which extends it to the polishing
+By default, polish context also stays on this Mac. The app sends it only to a
+polisher running here, unless you turn on **Send context to non-local polishing servers**, which extends it to the polishing
 endpoint you configured.
 
 ---
@@ -51,41 +50,41 @@ endpoint you configured.
 ## How enrollment works
 
 If you use herdr's saved machines (herdr 0.9's `herdr machine add`), you do not
-have to type a destination at all: Settings › herdr lists them under **Saved
+have to type a destination. Settings › herdr lists them under **Saved
 machines**, one row per machine with its saved ssh
 target, and **Import…** fills the enrollment form with the machine's name and
 target. A machine saved as `user@host` or an `ssh://` destination needs a
-`Host` alias in your `~/.ssh/config` first — add one, then import it.
-Everything after the form is the same flow for everyone.
+`Host` alias in your `~/.ssh/config` first. Add one, then import it.
+After the form, the flow is the same for everyone.
 
-Enrolling a host is one flow that does everything, each step self-verifying.
 Press **Set Up** in the enrollment sheet, or **Update host…** and **Set Up** in an
-enrolled host's row — and it runs, in order, showing one short sentence of
-status per step and stopping at the first failure with the exact remedy:
+enrolled host's row. The app runs these steps in order and checks each one. It
+shows one short status sentence per step and stops at the first failure with
+the exact fix:
 
-1. **Mac SSH config** — the marked `Host` block with `RemoteForward` and
+1. **Mac SSH config.** The marked `Host` block with `RemoteForward` and
    `SendEnv LC_LVX_TTY`. The exact block is below.
-2. **Mac shell startup** — the `LC_LVX_TTY` export block in your login shell's
-   rc. The exact blocks are below. Already applied, unsupported, or
-   symlinked is reported, not failed.
-3. **Remote plugin** — install, or update when already present, verified by
-   reading the installed version back in the same SSH session. Manual
-   equivalent: the commands below.
-4. **Remote environment** — proves `LC_LVX_TTY` actually crosses by sending a
-   fresh random value for that one call and comparing the echo exactly. The
-   value is never logged. A mismatch names the side: no `sendenv` covering the
-   host in this Mac's `ssh -G` means step 1's block is missing; otherwise the
-   remote sshd refused it — add `AcceptEnv LANG LC_*` to `sshd_config` on that
-   host and reload sshd there, which needs root on that host and is never
-   attempted for you. Manual equivalent: from a window where the rc line ran,
-   `ssh <alias> 'echo "[$LC_LVX_TTY]"'` — empty means the value is not
-   crossing.
-5. **Remote herdr** — when `herdr` resolves on the host, appends the
+2. **Mac shell startup.** The `LC_LVX_TTY` export block in your login shell's
+   rc. The exact blocks are below. A block that is already applied, an
+   unsupported shell and a symlinked rc file are reported, not failed.
+3. **Remote plugin.** Installs the plugin, or updates it when present, and
+   reads the installed version back in the same SSH session to verify it. The
+   commands to do it by hand are below.
+4. **Remote environment.** Proves `LC_LVX_TTY` crosses by sending a fresh
+   random value for that one call and comparing the echo exactly. The app never
+   logs the value. A mismatch names the side. If this Mac's `ssh -G` shows no
+   `sendenv` covering the host, step 1's block is missing. Otherwise the remote
+   sshd refused it: add `AcceptEnv LANG LC_*` to `sshd_config` on that host and
+   reload sshd there. That needs root on that host, and the app never attempts
+   it for you. To check by hand, run
+   `ssh <alias> 'echo "[$LC_LVX_TTY]"'` from a window where the rc line ran.
+   Empty output means the value is not crossing.
+5. **Remote herdr.** When `herdr` resolves on the host, appends the
    agents-panel row (only when no agents table or rows key exists) and runs
    `herdr server reload-config`. "Not installed" and an already-customized
    table are reported, not failed. The exact TOML and reload command are below.
-6. **Check Setup** — the two read-only verdicts, last, as the final status
-   line.
+6. **Check Setup.** Runs the two read-only checks last and shows their verdict
+   as the final status line.
 
 ### Commands run by Set Up
 
@@ -96,9 +95,9 @@ tunnel check, it starts this exact process and sends the script through stdin:
 ssh -o BatchMode=yes -o ClearAllForwardings=yes -- <alias> /bin/sh -s
 ```
 
-The token is only in that stdin script on this Mac. The remote plugin step runs
-`claude plugin list --json` before and after the mutation. Between those reads,
-it runs the applicable commands:
+On this Mac, the token exists only in that stdin script. The remote plugin step
+runs `claude plugin list --json` before and after the change. Between those
+reads, it runs whichever of these commands apply:
 
 ```sh
 claude plugin marketplace add T0mSIlver/localvoxtral
@@ -126,7 +125,7 @@ If the value does not cross, the app inspects the effective local config with:
 ssh -G -- <alias>
 ```
 
-The herdr step uses the following commands:
+The herdr step runs:
 
 ```sh
 set -eu
@@ -154,16 +153,17 @@ herdr server reload-config
 printf '%s\n' LVX_HERDR_CONFIGURED
 ```
 
-The `grep` match stops the step without changing the file. The final tunnel
-check runs in two steps. The first clears forwardings, so it can only reach a
-tunnel another connection already holds (the app's own, a terminal's, an
-editor's), which is the tunnel your hooks use between checks:
+When the `grep` matches, the step stops without changing the file.
+
+The final tunnel check runs in two steps. The first clears forwardings, so it
+can only reach a tunnel another connection already holds (the app's own, a
+terminal's, an editor's). That is the tunnel your hooks use between checks:
 
 ```sh
 ssh -o BatchMode=yes -o ClearAllForwardings=yes -- <alias> /bin/sh -s
 ```
 
-Only when nothing answered does the second run, without that option, so the
+The second step runs only when nothing answered. It drops that option, so the
 config block's own forward is open while it runs. A `401` there means the
 block works but nothing keeps the tunnel open:
 
@@ -186,8 +186,8 @@ The plugin check uses the first SSH argv above and runs `claude plugin list`
 after resolving `claude` from `PATH`, `~/.claude/local`, `~/.local/bin`,
 `~/bin`, `/opt/homebrew/bin`, `/usr/local/bin`,
 `~/.nvm/versions/node/*/bin`, or, last, the newest Claude Desktop CLI in
-`~/.claude/remote/ccd-cli/<version>`. Plugin installation uses that same
-resolver.
+`~/.claude/remote/ccd-cli/<version>`. Plugin installation finds `claude` the
+same way.
 
 While the host's **Keep the tunnel open** is off, the run's first step also
 checks for Claude Desktop, with the first SSH argv above and this script:
@@ -199,11 +199,11 @@ if [ -d "$HOME/.claude/remote/srv" ]; then printf 'LVX_DESKTOP:yes\n'; else prin
 When Desktop is there, the run turns **Keep the tunnel open** on, because
 Desktop's ssh never carries the tunnel. The toggle stays yours to turn off.
 
-Removing the host reverses the Mac side — the ssh block, and the shell block
-only when no other host remains — and never lets a reversal problem block the
-removal itself: the registry entry is the off switch, and anything that could
-not be rewritten is named in an alert with its manual fix. The remote half of
-uninstalling stays manual by design ("Uninstalling" below).
+Removing the host reverses the Mac side. It removes the ssh block, and the
+shell block only when no other host remains. A problem undoing either never
+blocks the removal, because the registry entry is the off switch. An alert
+names anything the app could not rewrite, with its manual fix. You uninstall
+the remote half by hand, by design ("Uninstalling" below).
 
 ### Shell startup blocks
 
@@ -248,32 +248,32 @@ Host <your-alias>
 # END localvoxtral claude context (<host-id>)
 ```
 
-`RemoteForward` means: while you have an SSH session open to that host, that
-port *on the host* is a private pipe back to localvoxtral on your Mac. Nothing
-listens on the network; nothing is exposed. The Mac-side end is always 8473 —
-the app's own listener — and only the remote end varies.
+While you have an SSH session open to that host, `RemoteForward` makes that
+port *on the host* a private pipe back to localvoxtral on your Mac. Nothing
+listens on the network and nothing is exposed. The Mac-side end is always 8473,
+the app's own listener. Only the remote end varies.
 
 `SendEnv LC_LVX_TTY` carries this terminal's tty into the remote session, so a
-plain `ssh` Claude Code session can be joined to the window you are actually
-dictating into. Set `LC_LVX_TTY` from your shell first — Settings ›
+plain `ssh` Claude Code session can be joined to the window you are dictating
+into. Set `LC_LVX_TTY` from your shell first: Settings ›
 Remote hosts › Plain SSH › "Terminal setup" writes the one line for you, or
-see the integration README — and with it unset this sends nothing and costs
-nothing. `LC_` is the point: `sshd`'s stock `AcceptEnv LANG LC_*` already lets
-it through, and the environment travels per session channel, so it survives
-`ProxyJump` and `ControlMaster` where a TCP-level match cannot. Most
-ssh_configs already send `LC_*`; this line is what makes it true on the ones
-that do not.
+see the integration README. With it unset, this line sends nothing and costs
+nothing. The `LC_` prefix matters because `sshd`'s stock `AcceptEnv LANG LC_*`
+already lets it through. The environment also travels per session channel, so
+it survives `ProxyJump` and `ControlMaster` where a TCP-level match cannot.
+Most ssh_configs already send `LC_*`, and this line covers the ones that do
+not.
 
-The two `#` lines are not commentary — they are delimiters. localvoxtral finds
-and replaces exactly the block between them, so applying the config twice is a
-no-op instead of a duplicate `Host` stanza (OpenSSH is first-match-wins, and a
-stale duplicate above a fresh one would silently win). Everything else in your
-config is preserved byte for byte.
+The two `#` lines are delimiters. localvoxtral finds and replaces exactly the
+block between them, so applying the config twice changes nothing instead of
+adding a duplicate `Host` stanza. That matters because OpenSSH uses the first
+match, so a stale duplicate above a fresh one would silently win. The rest of
+your config stays byte for byte the same.
 
 The app inserts the block after the one-sentence consent. It refuses to write when
-`~/.ssh/config` or `~/.ssh` is a symlink (a dotfiles setup — an atomic rename
-would replace your link) or when `~/.ssh` is not exclusively yours to write. In
-those cases, use this reference to edit the real file yourself.
+`~/.ssh/config` or `~/.ssh` is a symlink (a dotfiles setup, where an atomic
+rename would replace your link) or when `~/.ssh` is not exclusively yours to
+write. In those cases, edit the real file yourself using the block above.
 
 ### 2. The plugin on the host
 
@@ -282,75 +282,73 @@ claude plugin marketplace add T0mSIlver/localvoxtral
  claude plugin install localvoxtral-remote@localvoxtral --config 'token=<token>' --config 'port=<this-Mac's-port>'
 ```
 
-Both options travel together, always. The `port` is the same number the
-ssh-config block binds: change one without the other and every hook on that
-host posts into a port nothing forwards, which fails open — that is, looks
+Always pass both options together. The `port` is the same number the
+ssh-config block binds. Change one without the other and every hook on that
+host posts into a port nothing forwards. The hooks fail open, so this looks
 exactly like nothing happening.
 
-`localvoxtral-remote` is a different plugin from the local `localvoxtral` one,
-not a mode of it. It declares hooks only — no skill, no command, no agent, no
-status line, so it never spends your tokens. Its shim is POSIX `sh` plus `curl`
-and nothing else: no localvoxtral binary, no `jq`, no Node on the remote host.
+`localvoxtral-remote` is a separate plugin from the local `localvoxtral` one,
+not a mode of it. It declares only hooks: no skill, command, agent or status
+line, so it never spends your tokens. Its shim needs only POSIX `sh` and
+`curl`: no localvoxtral binary, no `jq`, no Node on the remote host.
 
 The app can run both commands for you over `ssh`, sending them through the
 remote shell's stdin. That guarantee is **local and only local**: the token
-never appears in the arguments of any process on your Mac, so it cannot be read
-out of `ps` here, and it is never written to a file here.
+never appears in the arguments of any process on your Mac, so `ps` here cannot
+show it, and the app never writes it to a file here.
 
-On the remote host it is a different story, and it cannot be otherwise.
-`claude plugin install` takes its config as a command-line flag — there is no
-stdin path into it — so for the lifetime of that one command the token sits in
-that process's arguments, where anyone able to read the host's process table
-(`/proc/<pid>/cmdline` on Linux) can see it. Afterwards it is stored in the
-plugin's userConfig under `~/.claude`, readable by anything running as you on
-that host.
+The remote host is different, and nothing can change that.
+`claude plugin install` takes its config as a command-line flag and has no
+stdin path, so while that one command runs, the token sits in its arguments.
+Anyone who can read the host's process table (`/proc/<pid>/cmdline` on Linux)
+can see it. Afterwards, the plugin stores it in its userConfig under
+`~/.claude`, readable by anything running as you on that host.
 
-That is the honest boundary of what a token can protect: it bounds what a
-remote host may ask localvoxtral for, not what someone with access to that
-host's processes and files can read. Practical consequences:
+So the token limits what a remote host may ask localvoxtral for. It does not
+limit what someone with access to that host's processes and files can read. In
+practice:
 
-- On a shared or multi-user host, prefer pasting the command yourself, when and
-  where you choose, rather than letting setup run it — the exposure window is
-  brief either way, but it is yours to time.
-- If you think the token was seen, **rotate it**. Rotation takes effect
+- On a shared or multi-user host, paste the command yourself, at a time and
+  place you choose, rather than letting setup run it. The exposure is brief
+  either way, but you pick the moment.
+- If you think someone saw the token, **rotate it**. Rotation takes effect
   immediately, with no grace period, and running **Set Up** with the new token
   is the whole recovery.
 
 ### 3. A token
 
-The token is generated on enrollment and passed straight into the consented
-setup run. It is never shown in Settings. localvoxtral stores only a hash, so
-rotation is the recovery path after an interrupted or dismissed setup. Rotation
-takes effect immediately with no grace period.
+The app generates the token on enrollment and passes it straight into the
+setup run you consented to. Settings never shows it. localvoxtral stores only a
+hash, so after an interrupted or dismissed setup, you recover by rotating.
+Rotation takes effect immediately with no grace period.
 
-What the token authorizes is narrow: a host that presents it may *contribute
-remote context*. The listener tags every session it accepts as remote no matter
-what the payload claims, so a host cannot talk its way into being treated as
-local.
+The token authorizes one thing: a host that presents it may *contribute
+remote context*. The listener tags every session it accepts as remote, whatever
+the payload claims, so a host cannot get itself treated as local.
 
 **Revoking the host in localvoxtral is the real off switch.** It takes effect
 immediately, without a relaunch, and with no enrolled hosts left the app stops
 listening on the port at all. Uninstalling the remote plugin only stops the host
 asking.
 
-One honest caveat: a malicious process running as you *on the remote host* can
-read `~/.claude/` and therefore that host's token. The token bounds what a
-remote host can do; it does not protect the host from itself.
+A malicious process running as you *on the remote host* can read `~/.claude/`
+and so that host's token. The token limits what a remote host can do. It does
+not protect the host from itself.
 
 ---
 
 ## Mistral Vibe on an enrolled host
 
 An enrolled host can report its Mistral Vibe sessions too, over the same tunnel.
-A host has one setup run, and Vibe is a step of it. The enrollment sheet's **Set Up** and the
+Vibe is one step of the host's setup run. The enrollment sheet's **Set Up** and the
 row's **Update Host…** install the Claude Code plugin and then, when `vibe` is on the
 host, the Vibe hooks. A host without Vibe skips that step, and a host without
 Claude Code skips the plugin step and the plugin half of the final check. The
 run fails only when the host has neither. The row offers
 **Update Host…** while the plugin or the Vibe hooks are outdated or not yet heard
 from, so after installing Vibe on a host, relaunch localvoxtral and press it.
-A run leaves Vibe hooks that already report this version alone: it sends no
-Vibe script and keeps their token.
+When the Vibe hooks already report this version, a run leaves them alone: it
+sends no Vibe script and keeps their token.
 
 The Vibe step runs four `ssh -o BatchMode=yes -o ClearAllForwardings=yes -- <alias>
 /bin/sh -s` commands, each with its script on stdin:
@@ -372,31 +370,31 @@ when `hooks.toml` has an unpaired marker, a marker inside a multi-line string, a
 hook named `localvoxtral-remote-files` or `localvoxtral-remote-turn` outside the
 block, or a key right after the block, and when the file changed during the run.
 
-The token is a second credential for the same host, minted for this run. The
+The token is a second credential for the same host, created for this run. The
 app keeps only a hash of the host's first token, which went into the Claude
-Code plugin's config, so Vibe cannot reuse it. The new one is trusted from just before
-step 4, next to the previous Vibe token until step 4 has succeeded, so an
+Code plugin's config, so Vibe cannot reuse it. The listener trusts the new token from just before
+step 4, alongside the previous Vibe token until step 4 succeeds, so an
 update that loses its connection cannot lock the host out. It authenticates as
-the same host and dies with **Rotate token**, **Revoke** and **Remove** like
+the same host, and **Rotate token**, **Revoke** and **Remove** end it like
 the first. Removing a host leaves the files on it, as it leaves the Claude Code
 plugin, and their token no longer authenticates. It sits in `~/.vibe/localvoxtral/remote/token`,
-readable by any process running as you on that host, which is the exposure the
-Claude Code plugin's token already has in `~/.claude`.
+readable by any process running as you on that host. The Claude Code plugin's
+token already has the same exposure in `~/.claude`.
 
 What runs on the host, what it sends and what it never sends is in the
 [Vibe hooks README](../integrations/vibe/README.md#on-an-ssh-host).
 
 ## Why `ExitOnForwardFailure` stays `no`
 
-`ExitOnForwardFailure yes` tells `ssh` to refuse the whole session if a
-requested forward cannot be created. That sounds safer, and here it would be
-worse: the port is already bound whenever a second window to the same host has
-the tunnel, so `yes` would refuse you a shell because a dictation nicety was
-unavailable. A convenience feature must never cost you your login.
+`ExitOnForwardFailure yes` tells `ssh` to refuse the whole session if it cannot
+create a requested forward. That sounds safer, but here it is worse. The port
+is already bound whenever a second window to the same host has the tunnel, so
+`yes` would refuse you a shell because dictation context was unavailable.
+Dictation context should never cost you your login.
 
 The price of `no` is that a failed forward is *silent*. The hooks get connection
-refused, fail open, and you simply get no context. That silence is exactly what
-step 6's **Check Setup** exists to break.
+refused, fail open, and you get no context. Step 6's **Check Setup** exists to
+catch that.
 
 ## The forward port is per-Mac
 
@@ -406,70 +404,69 @@ stored on that Mac, and every artifact that names a port takes it from that one
 value: the ssh-config block, the install command's `port` option, the in-app
 check, and the update commands.
 
-That is not tidiness — it closes a real failure. Two SSH connections asking for
-the same remote listen port do not both get it: the first wins and keeps
-winning, and the second stays connected with only a warning (our block sets
-`ExitOnForwardFailure no` on purpose — see below). Before per-Mac ports, that
-meant a second Mac's enrollment silently delivered *this* host's events — and
-its `Authorization: Bearer` token — to the first Mac, which rejected them with
-a 401, which the remote shim reads as a completed exchange. Nothing anywhere
-reported a problem. Distinct ports make that state unreachable.
+This prevents a real failure. When two SSH connections ask for the same remote
+listen port, only the first gets it and keeps it. The second stays connected
+with only a warning (our block sets `ExitOnForwardFailure no` on purpose, see
+above). Before per-Mac ports, a second Mac's enrollment silently delivered
+*this* host's events, and its `Authorization: Bearer` token, to the first Mac.
+That Mac rejected them with a 401, which the remote shim reads as a completed
+exchange. Nothing reported a problem. Distinct ports make that state
+impossible.
 
-What per-Mac ports do **not** fix, stated plainly: one remote host runs one
-Claude Code install with one plugin config, so its `port` names exactly one
-Mac. Enrol two Macs against the same host and only the most recently installed
-config receives events. The other's tunnel binds fine and simply sees no
-traffic — visible single-tenancy, not a silent cross-delivery of someone else's
-credentials.
+Per-Mac ports do **not** fix this: one remote host runs one Claude Code install
+with one plugin config, so its `port` names exactly one Mac. Enrol two Macs
+against the same host and only the most recently installed config receives
+events. The other Mac's tunnel binds fine and sees no traffic. That limit is
+visible, and no Mac receives another's credentials.
 
 ## A second session to the same host
 
-Within one Mac, the first SSH session wins the forward. A second concurrent
-session tries to bind the same port on the remote, fails, and — because
-`ExitOnForwardFailure` is `no` — connects anyway with no tunnel of its own.
-That is fine and expected: the first session's tunnel is still up and still
-carries the host's events. This is why a raw `ssh -v` forward check is
-misleading on a healthy setup, and why the in-app check probes the port instead
+Within one Mac, the first SSH session gets the forward. A second concurrent
+session tries to bind the same port on the remote and fails. Because
+`ExitOnForwardFailure` is `no`, it connects anyway with no tunnel of its own.
+That is expected and harmless: the first session's tunnel is still up and
+still carries the host's events. So a raw `ssh -v` forward check is
+misleading on a healthy setup, and the in-app check probes the port instead
 of grepping ssh's warnings.
 
-The catch is what happens when that first session ends. The port frees, but the
-sessions that lost the race never ask again, so a host whose every open session
-started while another one held the forward has no tunnel at all, with nothing
-in any terminal to say so. Long-lived sessions that are not shells are the usual
-survivors: an editor's remote server, a herdr federation link, a socket forward.
-**Keep the tunnel open** (below) is the fix, because the app re-binds the port
-on its own instead of leaving it to whichever session came first.
+The problem comes when that first session ends. The port frees, but the
+sessions that failed to bind never ask again. A host whose open sessions all
+started while another one held the forward has no tunnel at all, and no
+terminal says so. The sessions left open are usually long-lived ones that are
+not shells: an editor's remote server, a herdr federation link, a socket
+forward. **Keep the tunnel open** (below) fixes this, because the app re-binds
+the port itself instead of leaving it to whichever session came first.
 
 ## Sessions with no terminal
 
-Hook events only reach your Mac while something holds the tunnel — normally one
+Hook events reach your Mac only while something holds the tunnel, normally one
 of your own SSH sessions. A session a harness starts on the host (t3 code,
 `claude remote-control` services, any headless runner) has no such terminal, so
 its context goes nowhere. Claude Desktop's sessions on the host are in the same
 position: Desktop's ssh clears every forward. Turn on **Keep the tunnel open**
 in that host's row and the app holds the forward itself, reconnecting as
 needed, including after the Mac wakes or changes network. Host setup turns it
-on by itself when it finds Claude Desktop on the host.
+on when it finds Claude Desktop on the host.
 
-After a network change the host keeps the old connection's port bound until
-its sshd notices the connection is gone; the row reads "Port held on that
-host" until then, and the app checks again every five minutes.
+After a network change, the host keeps the old connection's port bound until
+its sshd notices the connection is gone. Until then the row reads "Port held on that
+host", and the app checks again every five minutes.
 `ClientAliveInterval 30` in the host's `sshd_config` (with the default
 `ClientAliveCountMax 3`) makes sshd drop a dead connection within about 90
 seconds.
 
 ## Hosts enrolled before per-Mac ports
 
-An enrollment made before this existed uses the legacy shared 8473 on both
-ends, and keeps working — migration is never forced. Use **Update host…** in
-the host's row when you want it: it updates the marketplace clone and the
-plugin, then stores this Mac's allocated port, and it rewrites this host's
-ssh-config block in the same action so the two halves can never disagree. Your
-token is preserved — `claude plugin update` keeps the stored config, and
+An enrollment made before per-Mac ports uses the legacy shared 8473 on both
+ends and keeps working. The app never forces a migration. When you want one,
+use **Update host…** in the host's row. It updates the marketplace clone and
+the plugin, stores this Mac's allocated port, and rewrites this host's
+ssh-config block in the same action, so the two halves always agree. Your
+token is preserved: `claude plugin update` keeps the stored config, and
 `--config` merges per key.
 
-The update path refreshes the marketplace and calls `plugin update`; a bare
-`plugin install` is not an update. On Claude Code 2.1.220 it exits 0 with
+The update refreshes the marketplace and calls `plugin update`, because a bare
+`plugin install` does not update. On Claude Code 2.1.220 it exits 0 with
 "already installed", and `marketplace add` does not refresh an existing clone.
 
 ## Shell history and rotation
@@ -478,56 +475,55 @@ The generated install command is prefixed with a space. With
 `HISTCONTROL=ignorespace` (bash) or `setopt HIST_IGNORE_SPACE` (zsh) that keeps
 the token out of the host's shell history. It is a habit, not a guarantee.
 
-If you paste the command into a shell that records it anyway — or you are simply
-not sure — **rotate the token**. That is what rotation is for. Running the setup
-from the app instead avoids the history question: the token goes through SSH
-stdin, never in a process argument on this Mac; on the host it is in that one
-`claude plugin install` command's argv while it runs (see above).
+If you paste the command into a shell that records it anyway, or you are not
+sure, **rotate the token**. Running the setup from the app avoids shell history
+altogether. The token goes through SSH stdin and never into a process argument
+on this Mac. On the host, it is in that one `claude plugin install` command's
+argv while it runs (see above).
 
 ### Federated herdr machines
 
-If your local herdr 0.9 client is showing a machine from another host, localvoxtral can join the Claude Code session on that machine without needing an ssh process in the terminal: it reads which machine herdr selected, reaches that machine's herdr over the app-managed tunnel, and checks a short-lived panel marker on your screen. If the marker does not appear, use Settings › herdr › Saved machines › **Mic indicator in herdr panel** to add the indicator row to this Mac's herdr config, then reload config in herdr; localvoxtral cannot reload herdr for you.
+If your local herdr 0.9 client is showing a machine from another host, localvoxtral can join the Claude Code session on that machine without an ssh process in the terminal. It reads which machine herdr selected, reaches that machine's herdr over the app-managed tunnel, and checks a short-lived panel marker on your screen. If the marker does not appear, use Settings › herdr › Saved machines › **Mic indicator in herdr panel** to add the indicator row to this Mac's herdr config, then reload config in herdr. localvoxtral cannot reload herdr for you.
 
 The join can only pick from sessions whose hooks have reached this Mac, and a
-federated view carries none of your own ssh sessions to hold the hook tunnel
-(herdr's link uses your ssh config, but it may have lost the forward to a
-session that has since ended — see "A second session to the same host"). Turn
-on **Keep the tunnel open** in that host's row; without it the join abstains
+federated view carries none of your own ssh sessions to hold the hook tunnel.
+herdr's link uses your ssh config, but it may have lost the forward to a
+session that has since ended (see "A second session to the same host"). Turn
+on **Keep the tunnel open** in that host's row. Without it, the join abstains
 with "no live session on the selected herdr session" in the log, and the
 status line on the host shows a grey dot.
 
 ## tmux, screen, and window titles
 
-There is no window-title marker anymore: it was removed in September 2026 (see
+September 2026 removed the window-title marker (see
 "What was removed (September 2026)" in `integrations/claude-code/README.md`),
-along with the setting and the tmux/screen title-passthrough advice that went
-with it. A remote session joins by the tty echo (`LC_LVX_TTY`, above) or by
-matching the SSH connection the focused terminal holds; the full mechanics and
-their limits — jump hosts, `ControlMaster`, tmux/screen/zellij — are in the "A
-plain `ssh host` session" section of that README.
+along with its setting and the tmux/screen title-passthrough advice. A remote
+session joins by the tty echo (`LC_LVX_TTY`, above) or by matching the SSH
+connection the focused terminal holds. The "A
+plain `ssh host` session" section of that README covers the full mechanics and
+their limits: jump hosts, `ControlMaster`, tmux/screen/zellij.
 
-Without either join you get **no context from that pane at all** — not a
-reduced amount. Context is only ever attached to a session localvoxtral
-positively joined: a lookup that cannot identify the session abstains rather
-than guessing, so an unjoined pane contributes nothing. herdr users need
-nothing here: a herdr pane is joined by its pane id, not by a title.
+Without either join you get **no context from that pane at all**, not a
+reduced amount. localvoxtral attaches context only to a session it positively
+joined. A lookup that cannot identify the session abstains rather than
+guessing, so an unjoined pane contributes nothing. herdr users need nothing
+here: localvoxtral joins a herdr pane by its pane id, not by a title.
 
 ## What happens when things are missing
 
-Everything fails open, silently. If `sh` or `curl` is absent on the host, if the
-tunnel is down, if localvoxtral is not running, or if the app simply does not
-answer — the hook exits successfully and you get no context. A Claude Code turn
-is never blocked by this feature, and the delay it can add is bounded: the
-shim's curl runs with `--max-time 1`, so the worst case is one second before it
-gives up and exits 0.
+Everything fails open, silently. If `sh` or `curl` is missing on the host, the
+tunnel is down, localvoxtral is not running, or the app does not answer, the
+hook exits successfully and you get no context. This feature never blocks a
+Claude Code turn, and the delay it can add is bounded: the shim's curl runs
+with `--max-time 1`, so at worst it waits one second, gives up and exits 0.
 
 Plain `ssh` to a host you have not enrolled keeps working exactly as before: no
 tunnel, no token, no hooks.
 
-One case is noisier than the rest, and not by our choice: while a session holds
-the tunnel and localvoxtral is *not running*, `ssh` on your Mac prints
+One case is noisier. While a session holds the tunnel and localvoxtral is *not
+running*, `ssh` on your Mac prints
 `connect_to 127.0.0.1 port 8473: failed.` into the remote terminal on every
-dial — that is another process's stderr, which the plugin cannot silence. So
+dial. That is another process's stderr, which the plugin cannot silence, so
 after a failed dial the shim backs off for five minutes. Prompt submits still
 try, so context returns with your first prompt once the app is back.
 
@@ -536,7 +532,7 @@ try, so context returns with your first prompt once the app is back.
 ## Checking the setup
 
 Use **Check Setup** in the enrollment sheet. It runs two read-only checks and
-interprets them for you. If you would rather run them by hand:
+explains the results. To run them by hand:
 
 ### Is the tunnel live, and is localvoxtral behind it?
 
@@ -549,30 +545,29 @@ Without it, the check carries your config block's `RemoteForward`, answers
 through a tunnel that closes when the check does, and looks healthy on a host
 where nothing else ever holds the tunnel.
 
-`28511` is an example — replace it with your allocated port, the one the
+`28511` is an example. Replace it with your allocated port, the one the
 `RemoteForward` line in your `~/.ssh/config` block names.
 
-**`401` is the success answer** — provided localvoxtral is listening on this
-Mac. The probe deliberately sends no credential, so being refused is the proof
-that the request crossed the tunnel and something on the Mac side answered. It
-does not by itself prove that the something was localvoxtral: if our own bind
-failed, whatever holds the listener port (8473) here receives the forwarded
-request instead,
-and its rejection looks identical from the host. Check the listener line in
-Settings › Remote hosts as well — the in-app check does exactly this,
-which is why it can tell you which of the two you are looking at.
+**`401` is the success answer**, provided localvoxtral is listening on this
+Mac. The probe sends no credential on purpose, so a refusal proves the request
+crossed the tunnel and something on the Mac side answered. It does not prove
+that the something was localvoxtral. If our own bind failed, whatever holds the
+listener port (8473) here receives the forwarded request instead, and its
+rejection looks identical from the host. Check the listener line in
+Settings › Remote hosts as well. The in-app check does exactly this, which is
+how it tells the two cases apart.
 
-`000` — or a curl connection error — means nothing holds the tunnel right now:
+`000`, or a curl connection error, means nothing holds the tunnel right now:
 no SSH session of yours to that host carries it, and the app is not holding it.
 Turn on **Keep the tunnel open**, or run the check again without
 `ClearAllForwardings` to see whether your config block opens it at all. Any
-other status code
-means something that is not localvoxtral answered on that port; find it and
-quit it.
+other status code means something other than localvoxtral answered on that
+port. Find it and quit it.
 
-If the host has no `curl` at all, the plugin can never deliver anything no
-matter how healthy the tunnel is — the shim is a curl one-liner. `command -v
-curl` on the host settles that; the in-app check reports it as its own verdict.
+If the host has no `curl`, the plugin can never deliver anything, however
+healthy the tunnel is, because the shim is a curl one-liner. Run `command -v
+curl` on the host to find out. The in-app check reports it as a separate
+verdict.
 
 ### Is the plugin installed on the host?
 
@@ -580,16 +575,14 @@ curl` on the host settles that; the in-app check reports it as its own verdict.
 ssh <alias> 'PATH="$HOME/.claude/local:$HOME/.local/bin:$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" claude plugin list'
 ```
 
-The PATH prefix is not decoration. A non-interactive SSH command skips your
-login shell's rc files, so `claude` is frequently off PATH here even on a host
-where it works perfectly when you log in. Look for `localvoxtral-remote` in the
-output.
+The PATH prefix is needed because a non-interactive SSH command skips your
+login shell's rc files. `claude` is often off PATH here, even on a host where
+it works when you log in. Look for `localvoxtral-remote` in the output.
 
-The in-app check looks in one more place than this one-liner can:
-`~/.nvm/versions/node/*/bin`, which npm-installed Claude Code lands in. A glob
-cannot be expanded inside the quoted `PATH=` above, so if `claude` lives under
-nvm on that host, run `command -v claude` in a normal shell there and prepend
-that directory instead.
+The in-app check also looks in `~/.nvm/versions/node/*/bin`, where
+npm-installed Claude Code lands. The quoted `PATH=` above cannot expand a
+glob, so if `claude` lives under nvm on that host, run `command -v claude` in
+a normal shell there and prepend that directory instead.
 
 ### Is the forward being requested at all?
 
@@ -598,8 +591,8 @@ ssh -v <alias> true 2>&1 | grep -i 'remote forward'
 ```
 
 A failure line here is *expected* whenever another live session to that host
-already holds the tunnel — see "A second session to the same host" above. The
-port check is the truth either way, which is why the app does not run this one.
+already holds the tunnel (see "A second session to the same host" above). The
+port check gives the real answer either way, so the app does not run this one.
 
 ---
 
@@ -619,5 +612,5 @@ On this Mac:
 2. In Settings › Remote hosts, **Revoke** (or **Remove**) the host.
 
 Step 2 is the one that matters. Revocation is what actually stops the host: the
-token dies on this Mac, not on the remote. With no active hosts left, the
+token is invalidated on this Mac, not on the remote. With no active hosts left, the
 listener closes its port.

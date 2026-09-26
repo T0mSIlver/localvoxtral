@@ -2,95 +2,103 @@
 
 ## Shortcuts
 
-Two ways to trigger dictation, configured in **Settings → Dictation**:
+You pick one of two triggers in **Settings → Dictation**.
 
-**Single modifier key** — Fn/Globe, Right Command, or Right Option. One key,
-two gestures:
+**Single modifier key.** Fn/Globe, Right Command, or Right Option. The one key
+has two gestures:
 
 | Gesture | Behavior |
 |---|---|
 | Tap | Toggle Overlay Buffer dictation on/off |
-| Hold (past the hold delay, default 350 ms) | Live Auto-Paste push-to-talk — dictates while held, stops on release |
+| Hold (past the hold delay, default 350 ms) | Live Auto-Paste push-to-talk: dictates while held, stops on release |
 
-The gesture selects the output mode, so both workflows are always one key
-away. A tap commits through optional LLM polishing, while a hold streams
-words in real time (the replacement dictionary applies in both). Pressing any
-other key while the modifier is down cancels the gesture, so regular keyboard
-combos involving the modifier are unaffected. Requires Accessibility
-permission.
+The gesture picks the output mode. A tap commits through optional LLM
+polishing, and a hold streams words as you speak. The replacement dictionary
+applies to both. Pressing any other key while the modifier is down cancels
+the gesture, so your usual shortcuts with that modifier still work. This
+trigger needs Accessibility permission.
 
-**Per-mode keyboard shortcuts** — separate shortcuts for Overlay Buffer and
-Live Auto-Paste; behavior follows the `Toggle` / `Push to Talk` setting. A
-shortcut needs at least one modifier, except for a function key: F1 to F20 can
-be recorded on their own, so a spare F13 to F20 on a full-size keyboard works
-as a dedicated dictation key. F1 to F12 are accepted too, but macOS claims
-those presses for brightness and media unless **Use F1, F2, etc. keys as
-standard function keys** is on in System Settings — until it is, the app never
-sees them.
+**Per-mode keyboard shortcuts.** Overlay Buffer and Live Auto-Paste each get
+their own shortcut, and the `Toggle` / `Push to Talk` setting decides how it
+behaves. A shortcut needs at least one modifier, except for a function key.
+F1 to F20 can be recorded on their own, so a spare F13 to F20 on a full-size
+keyboard makes a dedicated dictation key. F1 to F12 are accepted too, but
+macOS uses those presses for brightness and media unless **Use F1, F2, etc.
+keys as standard function keys** is on in System Settings. Until then, the app
+never sees them.
 
 **Escape** cancels an in-progress dictation.
 
 ## Output modes
 
-- **Overlay Buffer** — your words collect in a floating overlay while you
-  speak; on stop, the text runs through the replacement dictionary and
+- **Overlay Buffer.** Your words collect in a floating overlay while you
+  speak. When you stop, the text goes through the replacement dictionary and
   optional LLM polishing, then commits into the focused app. The overlay
-  shows a **Polished** badge whenever the LLM touched your text, and the raw
-  transcript stays one click away in the menu bar popover. Drag the
-  overlay anywhere on it to put it where the anchored position never gets
-  right; it stays there across restarts, and a double-click on it (or
-  **Re-anchor** in Settings → Dictation → Overlay Buffer) hands it back to the
-  focused window. A position on a display you later unplug is kept
-  but not used — the overlay returns to the anchor until that display is back.
-- **Live Auto-Paste** — words land in the focused app while you're still
-  talking. Dictionary replacements are applied before text is typed;
-  localvoxtral never backspaces over what an app has already drawn.
+  shows a **Polished** badge when the LLM changed your text, and the menu bar
+  popover keeps the raw transcript. You can drag the overlay by any part of
+  it to a spot of your choice, and it stays there across restarts. A
+  double-click on it, or **Re-anchor** in Settings → Dictation → Overlay
+  Buffer, anchors it to the focused window again. If you unplug the display
+  it sits on, the app keeps the position but shows the overlay at the anchor
+  until that display is back.
+- **Live Auto-Paste.** Words land in the focused app while you talk. The app
+  applies dictionary replacements before typing, and never backspaces over
+  text an app has already drawn.
 
-**Say "send it" to press Return.** In a terminal or Claude Desktop, ending a dictation with
-"send it" or "send now" inserts the text without those words, then presses
-Return in the same app, so a coding agent gets the prompt without you
-touching the keyboard. It is off by default and set per mode in Settings →
-Dictation. In Overlay Buffer the words are removed before polishing, so the
-polisher never sees them. In Live Auto-Paste the trigger can only be removed
-before it is typed, so with the option on each phrase appears when you finish
-it rather than word by word, and saying the same "… send it" phrase twice in a
-row sends it once. Neither mode presses Return in any other app, while
-Secure Keyboard Entry is on, or when the text could not be inserted into that
-app. A terminal is recognized only if it is a known one or listed in Settings
-→ Terminals. Claude Desktop is recognized on its own; listing it there would
-make localvoxtral treat its prompt box as a terminal. In Live Auto-Paste, once any text of a
-dictation lands in another app, "send it" does nothing until the dictation
-ends.
+**Say "send it" to press Return.** In a terminal or Claude Desktop, end a
+dictation with "send it" or "send now" and the app inserts the text without
+those words, then presses Return in the same app. A coding agent gets the
+prompt without you touching the keyboard. The option is off by default and
+set per mode in Settings → Dictation.
+
+- In Overlay Buffer, the app removes the words before polishing, so the
+  polisher never sees them.
+- In Live Auto-Paste, the app can only remove the trigger before typing it.
+  With the option on, each phrase therefore appears when you finish it rather
+  than word by word, and saying the same "… send it" phrase twice in a row
+  sends it once. Once any text of a dictation lands in another app, "send
+  it" does nothing until the dictation ends.
+
+Neither mode presses Return in any other app, while Secure Keyboard Entry is
+on, or when the text could not be inserted into that app. The app treats an
+app as a terminal only if it is a known terminal or listed in Settings →
+Terminals. Claude Desktop is recognized on its own; listing it there would
+make localvoxtral treat its prompt box as a terminal.
 
 ### Keeping words on their line
 
 Words reach the overlay a few letters at a time, so a word that starts near
-the end of a line can move down to the next one once it no longer fits. By
-default the overlay lets that happen and fills every line to the edge.
+the end of a line can jump to the next one once it no longer fits. By default
+the overlay allows this and fills every line to the edge.
+
 **Keep words from jumping to the next line** (Settings → Dictation → Overlay
-Buffer) stops it for words up to 6, 10 or 14 letters: a word that starts
-without that much room goes straight to the next line, and stays there for the
-rest of the dictation. The cost is empty space at the end of lines, up to the
-width of that many letters. The finished text commits the same either way.
+Buffer) prevents it for words up to 6, 10 or 14 letters. A word that starts
+with less room than that goes straight to the next line and stays there for
+the rest of the dictation. Lines can then end with empty space up to the
+width of that many letters. The committed text is the same either way.
 
 ## The menu bar popover
 
-localvoxtral lives in the menu bar: the popover shows dictation status at a
-glance, a **microphone picker**, an auto-copy toggle for the final text, and
-— after a polished commit — the raw transcript one click away. LLM polishing
-prompts are editable (see the config folder below).
+localvoxtral lives in the menu bar. Its popover shows the dictation status, a
+**microphone picker**, an auto-copy toggle for the final text, and, after a
+polished commit, the raw transcript. You can edit the LLM polishing prompts
+(see the config folder below).
 
 **Copy last dictation** puts the last dictation on the clipboard: its polished
-text, or the transcript when polishing failed. It covers the dictations that
-never reached the app: the insertion failed, the connection dropped and could
-not come back (the text transcribed up to then is kept), or a new dictation
-started while the last one was still polishing. It works with history off,
-until the app quits. A global shortcut for it can be recorded under
-**Settings → Dictation → Output**.
+text, or the transcript when polishing failed. Use it to recover a dictation
+that never reached the app because:
+
+- the insertion failed,
+- the connection dropped and could not come back (the app keeps the text
+  transcribed up to then), or
+- a new dictation started while the last one was still polishing.
+
+It works with history off, until the app quits. You can record a global
+shortcut for it under **Settings → Dictation → Output**.
 
 ## History
 
-Every dictation is saved on this Mac, in plain text, in
+The app saves every dictation on this Mac, in plain text, in
 `~/Library/Application Support/default.store`. Nothing in it leaves the
 machine, except that the term suggestion pass sends recent dictations to your
 hosted polishing model when you have one.
@@ -102,26 +110,28 @@ list, newest first:
   dictations that were **Not inserted** (the text never reached the app, so
   this list is the only copy) or whose polishing failed.
 - Click a row for the whole text. When polishing or a replacement changed it,
-  the transcript is shown under it with the removed words marked, and
+  the transcript appears under it with the removed words marked, and
   **Copy Transcript** copies the unchanged version.
 - **Delete** removes the dictation from the store. **Delete All…** removes
   every one.
 
 **Keep dictations** sets how long they stay: forever (the default), 90, 30 or
 7 days, or **Don't keep**, which deletes what is saved and saves nothing new.
-A shorter setting says how many dictations it deletes and asks before it does.
-Term suggestions read this history, so they stop under Don't keep.
+Before a shorter setting deletes anything, it says how many dictations will go
+and asks. Term suggestions read this history, so they stop under Don't keep.
 
-**Keep dictation audio on this Mac**, off by default, also saves what the microphone
-heard for each dictation, as a WAV file in
+**Keep dictation audio on this Mac**, off by default, also saves what the
+microphone heard for each dictation, as a WAV file in
 `~/Library/Application Support/localvoxtral/dictation-audio`. The app never
-sends the audio anywhere, the term suggestion pass included. It is there so
-you can replay your own dictations and measure whether localvoxtral got
-better at them; the replay tool copies the files only where you run it. Each file goes when its dictation goes: Delete, Delete
-All, and the Keep dictations period remove the audio with the text, and Don't
-keep turns the audio off with the history. Turning the option off asks, then
-deletes every recording and keeps the dictations. A minute of audio takes
-about 2 MB; a dictation longer than 20 minutes is saved without audio.
+sends the audio anywhere, the term suggestion pass included. The recordings
+let you replay your own dictations and measure whether localvoxtral got
+better at them; the replay tool copies the files only where you run it.
+
+Each file goes when its dictation goes. Delete, Delete All, and the Keep
+dictations period remove the audio with the text, and Don't keep turns the
+audio off with the history. Turning the option off asks first, then deletes
+every recording and keeps the dictations. A minute of audio takes about 2 MB,
+and a dictation longer than 20 minutes is saved without audio.
 
 ### Insights
 
@@ -135,149 +145,157 @@ the last 7 days, the last 30, or all of them:
   failed. **Show** opens History filtered to them.
 - **Polishing**: how often it changed the text, the typical wait (the
   median), and the wait one polish in ten exceeds.
-- **Learning, last 12 weeks**: one bar per week, whatever the period says,
-  so you can see whether localvoxtral is learning how you speak. **Your terms
+- **Learning, last 12 weeks**: one bar per week, whatever the period, so you
+  can see whether localvoxtral is learning how you speak. **Your terms
   recognized correctly** takes your Names and terms and the learned terms
   that ended up in a dictation, and counts how many the transcript already
   spelled exactly, before polishing or a replacement fixed them. **Polished
-  dictations needing no fix** is the share of polished dictations whose text went
-  in exactly as the recognizer wrote it. A week with fewer than five
-  dictations to count draws no bar. Both are a trend, not a measurement: the
-  history only holds the terms that reached the inserted text, so a term that
-  both the recognizer and polishing got wrong is counted nowhere.
+  dictations needing no fix** is the share of polished dictations whose text
+  went in exactly as the recognizer wrote it. A week with fewer than five
+  dictations to count draws no bar. Read both as a trend, not a measurement.
+  The history only holds the terms that reached the inserted text, so a term
+  that both the recognizer and polishing got wrong is counted nowhere.
 - **What polishing keeps fixing**: replacements of up to four words that
   polishing made in three dictations or more, such as `quen → Qwen`. These are
-  the words the recognizer gets wrong for you. A spelling added to Names and
-  terms is given to every polish, and its casing and spacing are fixed
-  without the model.
+  the words the recognizer gets wrong for you. Every polish receives the
+  spellings you add to Names and terms, and the app fixes their casing and
+  spacing without the model.
 - **Apps**: where Overlay Buffer dictations went. Live Auto-Paste records no
   target app.
 
-Everything is computed on this Mac from the history store. With history off,
-the pane is empty.
+The app computes all of this on this Mac from the history store. With history
+off, the pane is empty.
 
 ## Settings
 
-Open **Settings…** from the menu bar popover. It is the same window as
-History; the panes sit under the sidebar's Settings header:
+Open **Settings…** from the menu bar popover. Settings shares a window with
+History; the panes sit under the sidebar's Settings header.
 
-- **General** — permission status for Microphone and Accessibility (with
-  grant buttons), Re-run setup, and two startup switches: **Open localvoxtral
-  at login** starts the app when you log in, and **Open the window at launch**
-  brings the window up on History every time the app starts. Both are off, and
-  a first launch shows the setup wizard rather than the window.
-- **Engines** — Dictation and Polishing each switch independently between
+- **General**: permission status for Microphone and Accessibility (with grant
+  buttons), Re-run setup, and two startup switches. **Open localvoxtral at
+  login** starts the app when you log in, and **Open the window at launch**
+  opens the window on History every time the app starts. Both are off, and a
+  first launch shows the setup wizard instead of the window.
+- **Engines**: Dictation and Polishing each switch on their own between
   `Managed local` (a model picker and a status light for each),
   `External URL` (server URL, model name, API key), and `Mistral API`
   (Mistral's hosted models on one API key, entered in the pane's Mistral API
   group). Dictation accepts an OpenAI Realtime-compatible endpoint. For
   polishing, enter either a base URL such as `http://127.0.0.1:8080` or the
   full chat completions URL; the app appends `/v1/chat/completions` to a base
-  URL. Memory limit caps the dictation helper's buffer cache
-  (2 GB by default); Nemotron never fills it, so the row appears only for
-  Voxtral.
-- **Dictation** — the trigger (single modifier key with tap/hold gestures, or
+  URL. Memory limit caps the dictation helper's buffer cache (2 GB by
+  default). Nemotron never fills it, so the row appears only for Voxtral.
+- **Dictation**: the trigger (single modifier key with tap/hold gestures, or
   per-mode keyboard shortcuts), the menu-bar mode, copy on stop, the **Copy
-  last dictation** shortcut, ducking other
-  audio, the spoken "send it" trigger for each mode, and the overlay's font
-  size, how many lines it shows before scrolling, and whether it
-  [keeps words on their line](#keeping-words-on-their-line). **Lower other audio while dictating**, on unless you turn it off,
-  drops music and calls to a fifth of your volume for as long as a session
-  runs, in both output modes, and fades back when it ends; **Fade** sets how
-  long each fade takes. It moves the volume of
-  the device you were listening to when the session started, and puts that
-  same device back even if you switched outputs meanwhile. An output whose
-  volume the Mac does not own — HDMI monitors, most digital outputs — is left
-  alone, and so is one that offers only per-channel volume, since ducking
-  those together would flatten a stereo balance you set.
-- **Text Processing** — **About you**: a few lines on your work in your own
-  words, plus a list of the names and terms you say often, spelled the way
-  they should appear ("Qwen", "Claude Code", "vLLM"). Both are sent to the
-  polishing model with every dictation, whichever endpoint you chose. You
-  never list how a name gets misheard; the polisher works that out, and the
-  casing of a multi-word or mixed-case term is fixed even in Live Auto-Paste
-  with no polishing.
+  last dictation** shortcut, ducking other audio, the spoken "send it"
+  trigger for each mode, and the overlay's font size, how many lines it shows
+  before scrolling, and whether it
+  [keeps words on their line](#keeping-words-on-their-line).
+
+  **Lower other audio while dictating**, on unless you turn it off, drops
+  music and calls to a fifth of your volume while a session runs, in both
+  output modes, and fades back when it ends. **Fade** sets how long each fade
+  takes. The app changes the volume of the device you were listening to when
+  the session started, and restores that device even if you switched outputs
+  in the meantime. It leaves alone an output whose volume the Mac does not
+  own (HDMI monitors, most digital outputs), and one that offers only
+  per-channel volume, since ducking those channels together would flatten a
+  stereo balance you set.
+- **Text Processing**: **About you** holds a few lines on your work in your
+  own words, plus a list of the names and terms you say often, spelled the
+  way they should appear ("Qwen", "Claude Code", "vLLM"). The app sends both
+  to the polishing model with every dictation, whichever endpoint you chose.
+  You never list how a name gets misheard; the polisher works that out. The
+  app fixes the casing of a multi-word or mixed-case term even in Live
+  Auto-Paste with no polishing.
+
   **Suggest terms** sends your recent dictations to the polishing model you
-  chose and shows the names it finds as dashed tags: + adds one, × refuses it
-  for good (**Advanced → Dismissed suggestions → Forget** undoes that). One
-  run reads up to 120 dictations at high reasoning effort, so it uses API
-  credits and can take a few minutes; it keeps running in the background
-  while you dictate. It needs a hosted polishing model (Mistral API or your
-  own server); the bundled local model cannot do it.
-  With a hosted model the same run also starts by itself every 50 saved
-  dictations, so it spends API credits without a click: **Suggest by itself**
+  chose and shows the names it finds as dashed tags. + adds one, and ×
+  refuses it for good (**Advanced → Dismissed suggestions → Forget** undoes
+  that). One run reads up to 120 dictations at high reasoning effort, so it
+  uses API credits and can take a few minutes. It keeps running in the
+  background while you dictate. It needs a hosted polishing model (Mistral
+  API or your own server); the bundled local model cannot do it. With a
+  hosted model, the same run also starts by itself every 50 saved
+  dictations, spending API credits without a click. **Suggest by itself**
   sets the pace (25, 50, 100 or 200) or **Never**. A number on the Text
-  Processing sidebar row says tags are waiting; nothing is added until you
+  Processing sidebar row means tags are waiting; nothing is added until you
   press +.
-  The app also learns terms by itself: when polishing fixes a mangled name
-  against your repo, your screen or your agent's session, it remembers the
-  spelling for that project, and after three dictations it starts correcting
-  the name on its own — including in dictations where nothing on screen
-  mentions it. Those terms are offered as tags in **Suggestions** too, with
-  no API credits. A project is a repository: all its git worktrees share one
-  list, on this Mac and on a remote host whose plugin is 1.13.0 or later.
-  **Advanced → Terms learned from polishing → Show** lists them by
-  project, with how often each was applied and when it last was. Pin a term
-  to keep it: it is used at once and never expires. Forget one, or all of
+
+  The app also learns terms by itself. When polishing fixes a mangled name
+  using your repo, your screen or your agent's session, the app remembers
+  the spelling for that project. After three dictations it starts correcting
+  the name on its own, including in dictations where nothing on screen
+  mentions it. These terms also show as tags in **Suggestions**, with no API
+  credits. A project is a repository: all its git worktrees share one list,
+  on this Mac and on a remote host whose plugin is 1.13.0 or later.
+
+  **Advanced → Terms learned from polishing → Show** lists them by project,
+  with how often each was applied and when it last was. Pin a term to keep
+  it: the app uses it at once and it never expires. Forget one, or all of
   them with **Forget**. **Export…** and **Import…** at the bottom of that
   list move the terms to another Mac as a JSON file. An import adds to what
   is there, and a term still being learned stays that way until you have
-  said it in three dictations. A learned name that you say as ordinary words in a
-  sentence ("we should use auth tokens" with `useAuth` learned) is not
-  rewritten; polishing decides from the sentence. Next to a code word ("call
-  use auth", "the session start hook") it is.
-  It also learns from your own fixes. When a dictation joined a coding-agent
-  session and you fix a misheard name before sending the prompt (`kwen` to
-  `Qwen`), the app compares the prompt you sent with what it typed and
-  remembers the new spelling for that project at once. "Learned “Qwen”"
+  said it in three dictations. When you say a learned name as ordinary words
+  in a sentence ("we should use auth tokens" with `useAuth` learned), the app
+  does not rewrite it; polishing decides from the sentence. Next to a code
+  word ("call use auth", "the session start hook"), it does.
+
+  The app also learns from your own fixes. When a dictation joined a
+  coding-agent session and you fix a misheard name before sending the prompt
+  (`kwen` to `Qwen`), the app compares the prompt you sent with what it typed
+  and remembers the new spelling for that project at once. "Learned “Qwen”"
   shows at the top of the screen for a few seconds, with an **Undo** button.
-  Only a small fix, to a word that sounds like the one it replaced and looks
-  like a name or identifier, is learned; rewording teaches nothing. Changing
-  a learned spelling back forgets it. Your prompt is compared in memory and
-  never saved.
-  Then the LLM Polishing switch, the agent prompt profile and spoken
-  clipboard paste. **Advanced** holds the legacy replacement dictionary
-  (fixed `replace_with`/`matches` rewrites from `replacement_dictionary.toml`,
-  useful for Live Auto-Paste without polishing; the polisher no longer sees
-  it, and its spellings were imported into your terms once) and the prompt
-  files
-- **Context** — what the polisher may see (repo vocabulary, clipboard, the
-  agent's screen and session); each toggle's title names what leaves this
+  The app learns only a small fix, to a word that sounds like the one it
+  replaced and looks like a name or identifier; rewording teaches nothing.
+  Changing a learned spelling back forgets it. The app compares your prompt
+  in memory and never saves it.
+
+  The pane also has the LLM Polishing switch, the agent prompt profile and
+  spoken clipboard paste. **Advanced** holds the legacy replacement
+  dictionary and the prompt files. The dictionary applies fixed
+  `replace_with`/`matches` rewrites from `replacement_dictionary.toml`, which
+  helps in Live Auto-Paste without polishing. The polisher no longer sees
+  it, and its spellings were imported into your terms once.
+- **Context**: what the polisher may see (repo vocabulary, clipboard, the
+  agent's screen and session). Each toggle's title names what leaves this
   Mac, and the full terms are in
-  [Terminals & coding agents](coding-agents.md#polish-context-what-each-toggle-sends)
-- **Integrations** — one pane per harness, each with a status dot: green
+  [Terminals & coding agents](coding-agents.md#polish-context-what-each-toggle-sends).
+- **Integrations**: one pane per harness, each with a status dot. Green
   means detected and set up, yellow means a setup step is pending, grey
   means not installed. **Claude Code** and **opencode** install their
-  plugins, **Mistral Vibe** its hooks; **herdr** shows detection and herdr's saved machines;
-  **Remote hosts** enrolls SSH hosts for remote sessions
-- **Terminals** — one pane per terminal app (plus any you add), showing
-  whether it is installed and what it supports: dictation everywhere, session
-  join and screen context only on Ghostty (1.4+ or a tip build), iTerm2, Terminal.app, and
-  cmux. iTerm2 and Terminal.app ask for the Automation (AppleScript)
-  permission on the first session join. **Add app…** picks any application
-  to treat as a terminal for dictation; added apps are removed from their
-  own pane. cmux's pane also holds its session join and socket password
-- **About** — version, link to the repository, and Export Diagnostics
-  (writes a redacted local report to the Desktop)
+  plugins, **Mistral Vibe** installs its hooks, **herdr** shows detection and
+  herdr's saved machines, and **Remote hosts** enrolls SSH hosts for remote
+  sessions.
+- **Terminals**: one pane per terminal app (plus any you add), showing
+  whether it is installed and what it supports. Dictation works in all of
+  them. Session join and screen context work only on Ghostty (1.4+ or a tip
+  build), iTerm2, Terminal.app, and cmux. iTerm2 and Terminal.app ask for the
+  Automation (AppleScript) permission on the first session join. **Add app…**
+  picks any application to treat as a terminal for dictation; added apps are
+  removed from their own pane. cmux's pane also holds its session join and
+  socket password.
+- **About**: version, link to the repository, and Export Diagnostics (writes
+  a redacted local report to the Desktop).
 
 ### Terms from your coding agent
 
 **Text Processing → Advanced → Ask the coding agent for each new project's
-terms** is off by default. On, the first dictation that joins a local Claude
-Code or Mistral Vibe session in a project the app has not asked about starts
-that agent once, headless, in the project's repository. The agent reads a few
-files and answers with up to 40 of the project's own names: modules, types,
-commands, environment variables. Your session never sees the request, so it
-cannot interrupt a turn. Every worktree of a repository counts as one project,
-and a project is asked once, whichever agent joins first. A run that fails is
-retried a day later.
+terms** is off by default. When it is on, the first dictation that joins a
+local Claude Code or Mistral Vibe session in a project the app has not asked
+about starts that agent once, headless, in the project's repository. The
+agent reads a few files and answers with up to 40 of the project's own names:
+modules, types, commands, environment variables. Your session never sees the
+request, so it cannot interrupt a turn. Every worktree of a repository counts
+as one project, and the app asks each project once, whichever agent joins
+first. It retries a failed run a day later.
 
 The names show in **Terms learned from polishing → Show** as "Proposed by
-Claude Code" or "Proposed by Mistral Vibe". They are suggestions: polishing
-applies one only where you allow repo vocabulary, only where the transcript
-spells it out, and it never reaches the polishing prompt's list of your terms.
-Three dictations that use it, or **Pin**, make it yours; **Forget** removes it.
-One nobody uses expires after 90 days.
+Claude Code" or "Proposed by Mistral Vibe". They are suggestions. Polishing
+applies one only where you allow repo vocabulary and only where the
+transcript spells it out, and it never reaches the polishing prompt's list of
+your terms. Three dictations that use it, or **Pin**, make it yours;
+**Forget** removes it. An unused one expires after 90 days.
 
 What a run costs and sends:
 
@@ -285,28 +303,29 @@ What a run costs and sends:
   hooks and MCP servers off, at most 12 turns and $0.50. Measured runs cost
   $0.03–0.12 and took 5–15 s. On a Claude.ai plan it spends quota instead.
 - **Mistral Vibe**: `vibe -p` on Vibe's unified harness with read-only file
-  tools, at most 12 turns and $0.30, under a Vibe home the app owns
+  tools, at most 12 turns and $0.30. It runs under a Vibe home the app owns
   (`~/Library/Application Support/localvoxtral/vibe-home`, two links to your
   `~/.vibe/config.toml` and `.env`), so none of your Vibe hooks fire and the
   run stays out of your Vibe history. Its prompt lists up to 200 tracked file
   names. Measured runs used about 115k input tokens, $0.05–0.10 at Vibe's
   default model prices, in 10–25 s.
 
-Either way the agent sends the files it reads to its provider, as it does in
-your own sessions. Remote sessions are not asked yet.
+Either way, the agent sends the files it reads to its provider, as it does in
+your own sessions. The app does not ask remote sessions yet.
 
 The config folder at `~/Library/Application Support/localvoxtral/config`
 holds `replacement_dictionary.toml` for both output modes and the standard
 and agent `llm_system_prompt*.toml` and `llm_user_prompt*.toml` files.
 Remove `{{replacement_dictionary}}` from a user prompt template to stop
-sending the dictionary to the LLM. Extra terminal apps are managed in
-Settings → Terminals rather than a config file: the legacy
-`terminal_apps.toml`, if you had one, is read once at launch and its
-entries move into the Settings list; the file is left untouched. When an
-update ships improved defaults, files you haven't edited are refreshed
-automatically; files you have edited are never touched without asking —
-the app offers to update them and keeps your versions as `.backup` files
-alongside.
+sending the dictionary to the LLM.
+
+You manage extra terminal apps in Settings → Terminals, not in a config file.
+If you had a legacy `terminal_apps.toml`, the app reads it once at launch and
+moves its entries into the Settings list, leaving the file untouched.
+
+When an update ships better defaults, the app refreshes the files you haven't
+edited. It never changes a file you edited without asking: it offers to
+update it and keeps your version alongside as a `.backup` file.
 
 ## Screenshots
 
