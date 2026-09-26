@@ -8,12 +8,12 @@ struct HistorySettingsPane: View {
     let viewModel: DictationViewModel
     var navigator: SettingsNavigator?
 
-    @State private var model: DictationHistoryModel
+    /// The app's, which outlives the pane: coming back shows the rows at once.
+    let model: DictationHistoryModel
     /// A shorter retention waiting for the user's yes, with what it deletes.
     @State private var pendingRetention: PendingRetention?
     @State private var isConfirmingDeleteAll = false
-    /// Recordings on disk, and the yes that turning audio off waits for.
-    @State private var audioSummary: (recordings: Int, bytes: Int) = (0, 0)
+    /// The yes that turning audio off waits for.
     @State private var isConfirmingAudioOff = false
 
     /// Bumped by every pick in the retention menu. A count that comes back
@@ -26,19 +26,14 @@ struct HistorySettingsPane: View {
         let deletedCount: Int?
     }
 
-    /// `model` is for a caller that needs the pane in a given state (a
-    /// rendering check); the app lets the pane build its own.
     init(
-        settings: SettingsStore, viewModel: DictationViewModel,
-        navigator: SettingsNavigator? = nil, model: DictationHistoryModel? = nil
+        settings: SettingsStore, viewModel: DictationViewModel, model: DictationHistoryModel,
+        navigator: SettingsNavigator? = nil
     ) {
         self.settings = settings
         self.viewModel = viewModel
+        self.model = model
         self.navigator = navigator
-        _model = State(
-            initialValue: model
-                ?? DictationHistoryModel(store: { [weak viewModel] in viewModel?.sessionStore })
-        )
     }
 
     var body: some View {
@@ -71,7 +66,7 @@ struct HistorySettingsPane: View {
             await model.reload()
         }
         .task(id: viewModel.dictationHistoryRevision) {
-            audioSummary = await viewModel.sessionStore?.audioSummary() ?? (0, 0)
+            await model.reloadAudioSummary()
         }
     }
 
@@ -146,9 +141,9 @@ struct HistorySettingsPane: View {
             }
         }
         .confirmationDialog(
-            audioSummary.recordings == 1
+            model.audioSummary.recordings == 1
                 ? "Delete 1 recording?"
-                : "Delete \(audioSummary.recordings.formatted()) recordings?",
+                : "Delete \(model.audioSummary.recordings.formatted()) recordings?",
             isPresented: $isConfirmingAudioOff
         ) {
             Button("Delete Recordings", role: .destructive) { turnAudioOff() }
@@ -189,12 +184,12 @@ struct HistorySettingsPane: View {
     /// Nil when there is nothing kept; history off disables the switch and
     /// the retention picker already says why.
     private var audioStatus: String? {
-        guard audioSummary.recordings > 0 else { return nil }
+        guard model.audioSummary.recordings > 0 else { return nil }
         let size = ByteCountFormatter.string(
-            fromByteCount: Int64(audioSummary.bytes), countStyle: .file)
-        return audioSummary.recordings == 1
+            fromByteCount: Int64(model.audioSummary.bytes), countStyle: .file)
+        return model.audioSummary.recordings == 1
             ? "1 recording, \(size)."
-            : "\(audioSummary.recordings.formatted()) recordings, \(size)."
+            : "\(model.audioSummary.recordings.formatted()) recordings, \(size)."
     }
 
     private var audioBinding: Binding<Bool> {
@@ -203,7 +198,7 @@ struct HistorySettingsPane: View {
             set: { keep in
                 if keep {
                     settings.dictationAudioEnabled = true
-                } else if audioSummary.recordings > 0 {
+                } else if model.audioSummary.recordings > 0 {
                     isConfirmingAudioOff = true
                 } else {
                     turnAudioOff()
@@ -220,7 +215,7 @@ struct HistorySettingsPane: View {
         let deleting = viewModel.sessionStore?.deleteAllAudio()
         Task {
             await deleting?.value
-            audioSummary = await viewModel.sessionStore?.audioSummary() ?? (0, 0)
+            await model.reloadAudioSummary()
         }
     }
 
@@ -365,8 +360,12 @@ private struct HistoryEntryRow: View {
                     VStack(alignment: .leading, spacing: 4) {
                         header
                         if !isExpanded {
+                            // Two lines whatever the text's length: rows of
+                            // one height are what lets the lazy list know
+                            // its full height before it has drawn them, so
+                            // the scroll bar does not change size mid-scroll.
                             Text(entry.finalText)
-                                .lineLimit(2)
+                                .lineLimit(2, reservesSpace: true)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }

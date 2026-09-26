@@ -14,6 +14,8 @@ final class DictationHistoryModel {
     /// Whether the store holds more matches than `entries` shows.
     private(set) var hasMore = false
     private(set) var hasLoaded = false
+    /// Recordings on disk and their size, for the Storage group.
+    private(set) var audioSummary: (recordings: Int, bytes: Int) = (0, 0)
 
     var searchText = ""
     var filter = DictationHistoryQuery.Filter.all
@@ -80,6 +82,10 @@ final class DictationHistoryModel {
         if let expandedEntryID, !entries.contains(where: { $0.id == expandedEntryID }) {
             self.expandedEntryID = nil
         }
+    }
+
+    func reloadAudioSummary() async {
+        audioSummary = await store()?.audioSummary() ?? (0, 0)
     }
 
     func showMore() async {

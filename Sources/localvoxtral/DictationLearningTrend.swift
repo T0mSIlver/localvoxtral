@@ -92,12 +92,27 @@ struct DictationLearningTrend: Equatable, Sendable {
 
     // MARK: Term matching
 
-    struct TermMatcher: Sendable {
+    /// Built per count and used by that count alone: the regexes compile on
+    /// first use, and most terms never get that far.
+    final class TermMatcher {
         let folded: String
+        /// The folded term's words (`words(in:)`). A text lacking one cannot
+        /// hold the term, and a set lookup says so for a fraction of what a
+        /// substring search costs.
+        let foldedWords: [Substring]
+        private let pattern: String
+
+        init(folded: String, pattern: String) {
+            self.folded = folded
+            foldedWords = DictationLearningTrend.words(in: folded)
+            self.pattern = pattern
+        }
+
         /// Case-insensitive, whole words: the term somewhere in the text.
-        let anyCase: NSRegularExpression
+        private(set) lazy var anyCase = try? NSRegularExpression(
+            pattern: pattern, options: [.caseInsensitive])
         /// The exact spelling, whole words.
-        let exact: NSRegularExpression
+        private(set) lazy var exact = try? NSRegularExpression(pattern: pattern)
     }
 
     /// One matcher per term, a case-insensitive duplicate dropped.
@@ -111,11 +126,7 @@ struct DictationLearningTrend: Equatable, Sendable {
             // Marks count as part of a word: "Cafe" is not in a decomposed
             // "Café".
             let pattern = "(?<![\\p{L}\\p{M}\\p{N}])\(escaped)(?![\\p{L}\\p{M}\\p{N}])"
-            guard let anyCase = try? NSRegularExpression(
-                pattern: pattern, options: [.caseInsensitive]),
-                let exact = try? NSRegularExpression(pattern: pattern)
-            else { return nil }
-            return TermMatcher(folded: folded, anyCase: anyCase, exact: exact)
+            return TermMatcher(folded: folded, pattern: pattern)
         }
     }
 
@@ -126,19 +137,53 @@ struct DictationLearningTrend: Equatable, Sendable {
     ) -> (mentions: Int, spelledRight: Int) {
         let final = entry.finalText
         let foldedFinal = final.caseFoldedForMatching
+        let finalWords = Set(words(in: foldedFinal))
         var mentions = 0
         var spelledRight = 0
         for matcher in matchers {
-            // A plain substring test first: most terms are in most texts
-            // nowhere, and twelve weeks of history times a few hundred terms is too
-            // many regex runs for a pane that is opening.
-            guard foldedFinal.contains(matcher.folded),
-                matches(matcher.anyCase, final)
+            // Cheap tests first: most terms are in most texts nowhere, and
+            // twelve weeks of history times a few hundred terms is too many
+            // substring searches, let alone regex runs, for a pane that is
+            // opening.
+            guard matcher.foldedWords.allSatisfy(finalWords.contains),
+                foldedFinal.contains(matcher.folded),
+                let anyCase = matcher.anyCase, matches(anyCase, final)
             else { continue }
             mentions += 1
-            if matches(matcher.exact, entry.rawText) { spelledRight += 1 }
+            if let exact = matcher.exact, matches(exact, entry.rawText) { spelledRight += 1 }
         }
         return (mentions, spelledRight)
+    }
+
+    /// The runs of letters, marks and digits: what the matchers' word
+    /// boundaries are drawn between. Case folding keeps a scalar on its side
+    /// of that line, so a term found in a text has each of its folded words
+    /// among the folded text's.
+    static func words(in text: String) -> [Substring] {
+        let scalars = text.unicodeScalars
+        var words: [Substring] = []
+        var start: String.Index?
+        for index in scalars.indices {
+            if isWordScalar(scalars[index]) {
+                if start == nil { start = index }
+            } else if let wordStart = start {
+                words.append(Substring(scalars[wordStart..<index]))
+                start = nil
+            }
+        }
+        if let start { words.append(Substring(scalars[start...])) }
+        return words
+    }
+
+    private static func isWordScalar(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.properties.generalCategory {
+        case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .modifierLetter, .otherLetter,
+            .nonspacingMark, .spacingMark, .enclosingMark,
+            .decimalNumber, .letterNumber, .otherNumber:
+            return true
+        default:
+            return false
+        }
     }
 
     private static func matches(_ regex: NSRegularExpression, _ text: String) -> Bool {

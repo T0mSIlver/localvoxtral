@@ -135,6 +135,29 @@ final class DictationLearningTrendTests: XCTestCase {
         XCTAssertEqual(counts.spelledRight, 1)
     }
 
+    /// The word lookup that runs before the regexes must never turn a match
+    /// away: punctuation at a term's edges or inside it, several words, a
+    /// casing the transcript got wrong.
+    func testTermsWithPunctuationOrSeveralWordsAreStillFound() {
+        let counts = DictationLearningTrend.termCounts(
+            in: entry(
+                weeksAgo: 0, "use c++ and .NET with claude code in localvoxtral.js",
+                polished: "Use C++ and .NET with Claude Code in localvoxtral.js."),
+            matchers: DictationLearningTrend.matchers(
+                for: ["C++", ".NET", "Claude Code", "localvoxtral.js"]))
+
+        XCTAssertEqual(counts.mentions, 4)
+        XCTAssertEqual(counts.spelledRight, 2)
+    }
+
+    func testATermsWordsApartAreNotTheTerm() {
+        let counts = DictationLearningTrend.termCounts(
+            in: entry(weeksAgo: 0, "code review with claude"),
+            matchers: DictationLearningTrend.matchers(for: ["Claude Code"]))
+
+        XCTAssertEqual(counts.mentions, 0)
+    }
+
     func testAMissedTermNothingFixedIsNotCounted() {
         // Without polishing the final text is the transcript: "quen" never
         // became "Qwen", so there is no mention to score.
