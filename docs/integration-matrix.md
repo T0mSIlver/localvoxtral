@@ -1,20 +1,21 @@
 # Agent harness × feature matrix
 
-What localvoxtral can do for each coding-agent harness and terminal surface,
-and why the gaps are gaps. The columns are the four things a *joined* session
-contributes to a dictation, plus how the app learns about the session.
+The table lists what localvoxtral can do for each coding-agent harness and
+terminal, and the sections below it explain the gaps. The columns are the four
+things a *joined* session adds to a dictation, plus how the app learns about
+the session.
 
-- **Join** — the evidence that proves the terminal under your cursor is showing
-  *that* session. No join, no context: the dictation is polished with repo
-  vocabulary only. The trust rules behind every arm are in
-  [`docs/agent/invariants.md`](agent/invariants.md).
-- **Screen** — the text on screen, attached to polishing as an untrusted
-  reference. Always behind the Terminal screen context setting (off by
+- **Join**: the evidence that the terminal under your cursor shows *that*
+  session. Without a join there is no context, and the app polishes the
+  dictation with repo vocabulary only. The trust rules behind each way of
+  joining are in [`docs/agent/invariants.md`](agent/invariants.md).
+- **Screen**: the text on screen, sent to polishing as an untrusted
+  reference. It always requires the Terminal screen context setting (off by
   default), Accessibility, and a permitted polish endpoint.
-- **Repo** — git status, uncommitted diffs, and the files the agent just
-  touched, read from the local filesystem. Behind the Claude repo context
-  setting (off by default).
-- **Prompt** — the session's prior user prompt (and, for Claude Code, the
+- **Repo**: git status, uncommitted diffs, and the files the agent just
+  touched, read from the local filesystem. It requires the Claude repo
+  context setting (off by default).
+- **Prompt**: the session's prior user prompt (and, for Claude Code, the
   labels of recently touched files), reported by the agent's own hooks.
 
 | Harness / surface | Join keyed on | Screen | Repo | Prompt | Transport | Notes |
@@ -25,69 +26,74 @@ contributes to a dictation, plus how the app learns about the session.
 | Claude Code, local, **cmux** | cmux surface id (`system.tree`) matched to `CMUX_SURFACE_ID`, plus a mandatory tty cross-check | `surface.read_text` viewport only | yes | yes | local socket hook + cmux control socket | extra opt-in; cmux must be in `password` socket mode |
 | Claude Code, local **herdr** pane | herdr pane id, after the surface's tty binds to a herdr client; herdr's own `agent_session` claim must agree and the agent must be in the pane's foreground | herdr `pane.read` of exactly the joined pane, never the composite grid | yes | yes | local socket hook + herdr socket | two live herdr servers abstain |
 | Claude Code, **remote herdr over ssh** (enrolled host) | agents-panel nonce: the app stamps a fresh `lv-mic-…` token on the pane over its own `ssh -L` and requires it in the focused window's text; argv classification of the surface's `ssh` as fallback; then pane id + `agent_session` + foreground checks | herdr `pane.read` over the forward | **no** (see below) | yes, plus bounded sanitized tool excerpts | remote HTTP over `RemoteForward` + an app-managed outbound `ssh -L` | needs the `$lvmark` row in the remote herdr config; sidebar ≥ 21 columns and tall enough for the entry to show, else the argv fallback decides |
-| Claude Code, **plain ssh** (no multiplexer) | the LOCAL tty: the shell exports `LC_LVX_TTY`, ssh carries it into the session (`SendEnv`/`AcceptEnv LC_*`), and it must equal the focused window's tty — pinned to the enrolled host the surface's ssh goes to. Falls back to the TCP connection (socket ports vs `$SSH_CONNECTION`) when the variable is not set | none | no | yes, plus bounded sanitized tool excerpts | remote HTTP | the tty echo works through **ProxyJump and ControlMaster** (env travels per session channel); the connection fallback does not. Neither joins inside tmux/screen/zellij. One rc line of setup; needs remote plugin ≥ 1.7.0 |
-| Claude Code inside **tmux** (local or remote) | none | none | no | no | | `$TMUX` is transported and READ — to refuse the plain-ssh connection join, since a tmux server keeps the first attaching connection's `$SSH_CONNECTION`. `$STY`/`$ZELLIJ` are transported for the same refusal. A positive tmux join is still a roadmap item |
+| Claude Code, **plain ssh** (no multiplexer) | the LOCAL tty: the shell exports `LC_LVX_TTY`, ssh carries it into the session (`SendEnv`/`AcceptEnv LC_*`), and it must equal the focused window's tty, pinned to the enrolled host the surface's ssh goes to. Falls back to the TCP connection (socket ports vs `$SSH_CONNECTION`) when the variable is not set | none | no | yes, plus bounded sanitized tool excerpts | remote HTTP | the tty echo works through **ProxyJump and ControlMaster** (env travels per session channel); the connection fallback does not. Neither joins inside tmux/screen/zellij. One rc line of setup; needs remote plugin ≥ 1.7.0 |
+| Claude Code inside **tmux** (local or remote) | none | none | no | no | | `$TMUX` is transported and READ, to refuse the plain-ssh connection join, since a tmux server keeps the first attaching connection's `$SSH_CONNECTION`. `$STY`/`$ZELLIJ` are transported for the same refusal. A positive tmux join is still a roadmap item |
 | Claude Code **Remote Control** (claude.ai/code tab in Chrome, Brave, Safari) | focused tab's `session_…` URL matched to `CLAUDE_CODE_BRIDGE_SESSION_ID` | **none, by design** (see below) | local session only | yes | local hook or remote HTTP; tab URL over AppleScript | asked only under the repo setting; Firefox has no AppleScript tab URL |
 | Claude Code in **Claude Desktop**'s Code tab (sessions on this Mac or on an ssh host) | the focused session's web view address (`claude.ai/epitaxy/local_…`, read over Accessibility) matched to `CLAUDE_CODE_HOST_SESSION_ID` | **none, by design** (see below) | local session only | yes | local hook or remote HTTP | asked only under the repo setting; remote hosts need plugin ≥ 1.11.0, and ≥ 1.14.0 so a `claude -p` inside a session cannot make it ambiguous, plus **Keep the tunnel open**, since Desktop's ssh clears every forward (host setup turns it on when it finds Desktop); both ids are undocumented desktop internals |
 | **opencode**, local | tty via the plugin's focus declarations (45 s TTL, pid-checked); herdr pane join works unchanged | herdr `pane.read` in a herdr pane, else the terminal's route | yes | prompt, cwd, touched paths | opencode JS plugin over the local socket | no statusline; no remote path; inside cmux never joins |
 | **Mistral Vibe**, local | tty: the Vibe process's terminal, found from the hook by walking out of the detached session Vibe starts hooks in; herdr and cmux pane joins work unchanged | the terminal's route, as for Claude Code | yes | prompt (last user message of the session log; none on Vibe's Unified Harness), cwd, touched paths | `~/.vibe/hooks.toml` command hooks over the local socket | a session is known only from its first file-tool call or the end of its first turn; no session-end event; no statusline |
 | **Mistral Vibe** on an **enrolled ssh host** | the remote arms Claude Code uses: local-tty echo, ssh connection, remote herdr pane | herdr `pane.read` in a herdr pane, else none | no | prompt (none on Vibe's Unified Harness), cwd, touched paths, plus bounded sanitized tool excerpts | `~/.vibe/hooks.toml` command hooks, a Python compactor and curl on the host, over the enrollment tunnel | installed by the host's setup run when Vibe is there; the host needs Vibe, curl and the Python Vibe runs on; a background watcher on the host reports the session's end |
 
-Statusline / connection indicator: the local `--statusline` query for local
-Claude Code sessions; the remote plugin's hook-status stamp for enrolled
-hosts; nothing for opencode or Mistral Vibe (Vibe has no status line to
-extend). The status line is terminal-only: Claude Desktop's Code tab does not
-render Claude Code's status line, so a Desktop session shows no indicator.
-There, the overlay badge (Overlay Buffer mode) and the log's
-`Claude join outcome` line say whether a dictation joined.
+The status line shows the connection. Local Claude Code sessions get it from
+the local `--statusline` query, and enrolled hosts from the remote plugin's
+hook-status stamp. opencode and Mistral Vibe get nothing (Vibe has no status
+line to extend). Claude Desktop's Code tab does not render Claude Code's
+status line, so a Desktop session shows no indicator. There, the overlay
+badge (Overlay Buffer mode) and the log's `Claude join outcome` line say
+whether a dictation joined.
 
 **Settings → Terminals shows this matrix per machine**: one pane per terminal
 app, with the row's status dot and the capabilities spelled out as Dictation /
-Session join / Screen context rows. The semantics are unchanged — the panes
-report what this table and the terminal allowlists on this Mac allow, they do
-not widen them.
+Session join / Screen context rows. The panes report what this table and the
+terminal allowlists on this Mac allow; they do not widen them.
 
 ## Why the gaps
 
-**No repo context for a remote session.** Repo context is read from the
-filesystem, and a remote session's repository lives on the remote host. The
-app never opens a path a remote host named: the type that carries a workspace
-path cannot be built from a remote origin, so "remote cwd reaches the
-filesystem" is a compile error, not a setting. What a remote session
-contributes instead comes from its hooks: the prior prompt, the labels of
-recently touched files, and bounded excerpts of tool output. Collecting git
-state on the remote host over the app's own ssh is on the [roadmap](roadmap.md).
+**No repo context for a remote session.** The app reads repo context from the
+local filesystem, and a remote session's repository lives on the remote host.
+The app never opens a path a remote host named: the type that carries a
+workspace path cannot be built from a remote origin, so letting a remote cwd
+reach the filesystem would fail to compile. No setting can turn it on. A
+remote session instead contributes what its hooks send: the prior prompt, the
+labels of recently touched files, and bounded excerpts of tool output.
+Collecting git state on the remote host over the app's own ssh is on the
+[roadmap](roadmap.md).
 
-**No screen context for a Remote Control session, by design.** The surface is
-a browser tab, not a terminal grid. Reading it would mean scraping a web
-page's accessibility tree, a far wider privacy surface than a terminal, for
-text the session's hooks already deliver as the prompt block. The browser is
-consulted for exactly one thing, the focused tab's URL, and only when the
-repo setting is on, because the screen setting alone must never automate a
-browser.
+**No screen context for a Remote Control session, by design.** The session
+runs in a browser tab, not a terminal grid. Reading it would mean scraping a
+web page's accessibility tree, which exposes far more private data than a
+terminal, for text the session's hooks already deliver as the prompt block.
+The app asks the browser for one thing only, the focused tab's URL, and only
+when the repo setting is on, because the screen setting alone must never
+automate a browser.
 
 **No screen context for a Claude Desktop session either**, for the same
 reason: the window shows the whole conversation, not a terminal grid, and the
 session's hooks already deliver the prompt. The app reads one thing from
 Claude Desktop, the address of the web view holding keyboard focus.
 
-**Why the join needs the herdr panel to be visible.** The remote-herdr join
-must prove that the window you are looking at displays *that* server before
-grounding a dictation in its focused pane. The panel token is that proof: a
-whole-view herdr client renders the sidebar, an attach-mode client never
-does, and nothing that did not observe the server can know the token. If the
-sidebar is collapsed, narrower than 21 columns, too short for the entry to
-show, or missing the `$lvmark` row, the token is not on screen. Every one of
-those is a no-match, which falls back to the argv rule and otherwise joins
-nothing. It can never produce a wrong join.
+**Why the join needs the herdr panel to be visible.** Before the app uses a
+remote herdr server's focused pane for a dictation, it must prove that the
+window you are looking at displays *that* server. The panel token is the
+proof. A whole-view herdr client renders the sidebar, an attach-mode client
+never does, and nothing that did not observe the server can know the token.
+If the sidebar is collapsed, narrower than 21 columns, too short for the entry
+to show, or missing the `$lvmark` row, the token is not on screen. Each of
+those cases is a no-match: the app falls back to the argv rule, and otherwise
+joins nothing. A missing token can never produce a wrong join.
 
-**The argv fallback.** When the panel proof cannot render, the app inspects
-the one foreground `ssh` process on the focused surface's tty: the executable
-must be a known OpenSSH binary, its destination must resolve to exactly one
-enrolled host, and the remote command it was started with must be a plain
-whole-view `herdr` (`herdr` or `herdr --session <name>`, nothing else). A
-`herdr terminal attach` or a manual `ssh host` followed by typing `herdr` is
-refused, because the command line cannot prove what the window displays.
+**The argv fallback.** When the panel token is not on screen, the app inspects
+the one foreground `ssh` process on the focused surface's tty. It requires
+all of the following:
+
+- the executable is a known OpenSSH binary,
+- its destination resolves to exactly one enrolled host, and
+- the remote command it started with is a plain whole-view `herdr` (`herdr`
+  or `herdr --session <name>`, nothing else).
+
+The app refuses a `herdr terminal attach`, or a manual `ssh host` followed by
+typing `herdr`, because the command line cannot prove what the window
+displays.
 
 ## Not integrated
 

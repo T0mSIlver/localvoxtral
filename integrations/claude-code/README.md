@@ -1,34 +1,33 @@
 # localvoxtral — Claude Code plugin
 
-A Claude Code plugin that tells the localvoxtral dictation app what your Claude
-Code session is currently doing, so dictation can ground technical terms it
-would otherwise mishear (filenames, symbols, the thing you asked for last turn).
+This Claude Code plugin tells the localvoxtral dictation app what your Claude
+Code session is doing, so dictation can recognize technical terms it would
+otherwise mishear: filenames, symbols, the thing you asked for last turn.
 
-This directory is a **local Claude Code marketplace**. It is the source of truth
-in the repo, and `scripts/package_app.sh` copies it into the app bundle at
+This directory is a **local Claude Code marketplace** and the source of truth
+in the repo. `scripts/package_app.sh` copies it into the app bundle at
 `Contents/Resources/claude-code-marketplace`, so an installed app can register it
-without a checkout and without a separate marketplace repository.
+without a checkout or a separate marketplace repository.
 
 ## What it does
 
-The plugin declares **hooks only**. It ships no skill, no slash command, and no
-agent — nothing here consumes Claude tokens, adds latency to your turn, or
-appears in Claude's context. It is a data channel, not a Claude feature.
-One opt-in feature outside the plugin does spend tokens: with **Ask the coding
+The plugin declares **hooks only**. It ships no skill, slash command or agent,
+so it uses no Claude tokens, adds no latency to your turn, and puts nothing in
+Claude's context. It only passes data to the app.
+One opt-in feature outside the plugin does spend tokens. With **Ask the coding
 agent for each new project's terms** on, the app runs its own read-only
-`claude -p` once per project, never in your session (about $0.03–0.12, or the
-same share of a Claude.ai plan's quota; see
+`claude -p` once per project, never in your session. That costs about
+$0.03–0.12, or the same share of a Claude.ai plan's quota (see
 [Terms from your coding agent](../../docs/dictation.md#terms-from-your-coding-agent)).
 
-On each hook event, Claude Code runs `hooks/publish.sh`, which locates the
-`localvoxtral-claude-hook` publisher and runs it as a **child process** — not
-`exec`. That distinction is deliberate: `exec` would replace the shim, so a
-publisher that cannot start at all (wrong architecture, quarantined bundle,
-missing dyld dependency) would surface its exec failure as the hook's exit code
-— a visible error on your turn, which is precisely what fail-open exists to
-prevent. Staying alive to swallow that is the shim's whole job. The publisher
-writes one bounded NDJSON line to a private UNIX socket owned by the app and
-exits.
+On each hook event, Claude Code runs `hooks/publish.sh`. It finds the
+`localvoxtral-claude-hook` publisher and runs it as a **child process**, not
+with `exec`. With `exec`, the publisher would replace the shim, and a publisher
+that cannot start at all (wrong architecture, quarantined bundle, missing dyld
+dependency) would return its failure as the hook's exit code. You would see
+an error on your turn, which fail-open exists to prevent. The shim stays alive
+to swallow that failure. The publisher writes one bounded NDJSON line to a
+private UNIX socket owned by the app and exits.
 
 | Hook | What localvoxtral learns |
 |---|---|
@@ -39,45 +38,41 @@ exits.
 | `Stop` | the turn finished |
 | `SessionEnd` | the session is gone (the app evicts it immediately) |
 
-There is deliberately no `FileChanged` hook: Claude Code only fires it for a
-hook declaring `watchPaths`, and `PostToolUse` already reports every file the
-model touches without watching your whole tree.
+There is no `FileChanged` hook. Claude Code fires it only for a hook that
+declares `watchPaths`, and `PostToolUse` already reports every file the model
+touches without watching your whole tree.
 
 ## Which terminal am I dictating into?
 
 Every mechanism below matches ONE identifier your session's own hooks
-published against the SAME identifier read off the surface you are looking at.
-There is no fallback that guesses, and in particular **no join reads your
-window title** — that mechanism was removed in September 2026 (see "What was
-removed" below). (Repo vocabulary, a separate opt-in feature, still reads a
-terminal title to find a git root; it never picks a Claude session.)
+published against the SAME identifier read off the window you are looking at.
+No fallback guesses, and **no join reads your window title**. That mechanism
+was removed in September 2026 (see "What was removed" below). Repo vocabulary,
+a separate opt-in feature, still reads a terminal title to find a git root,
+but it never picks a Claude session.
 
-**TTY join (the default — Ghostty ≥ 1.4 [currently the tip channel], iTerm2,
-and Terminal.app).** The hooks report
-the session's controlling terminal device, and at dictation start the app asks
-the focused terminal itself for its focused pane's `tty` over AppleScript (a
-one-time Automation consent prompt per terminal). Device equality is exact,
-works mid-response, and tells two sessions in the same repo apart. Inside a
-[herdr](https://herdr.dev) multiplexer session the TTY can't match (herdr
-interposes its own PTY per pane), so the app instead binds the surface to
-herdr and asks herdr's own socket for the focused pane — an exact pane-id
-join: any ambiguity, including two live herdr
-sessions, attaches nothing. Other terminals abstain entirely rather than
-half-join.
+**TTY join (the default for Ghostty ≥ 1.4 [currently the tip channel], iTerm2,
+and Terminal.app).** The hooks report the session's controlling terminal
+device. At dictation start, the app asks the focused terminal for its focused
+pane's `tty` over AppleScript (each terminal asks for Automation consent once).
+Device equality is exact, works mid-response, and tells two sessions in the
+same repo apart. Inside a [herdr](https://herdr.dev) multiplexer session the
+TTY can't match, because herdr puts its own PTY in front of each pane. There the
+app asks herdr's own socket for the focused pane and joins on the exact pane
+id. Any ambiguity, including two live herdr sessions, attaches nothing. Other
+terminals don't join at all rather than join halfway.
 
 **cmux surface join (opt-in).** [cmux](https://github.com/manaflow-ai/cmux)
-draws its terminal with libghostty into a custom view: it exposes no
+draws its terminal with libghostty into a custom view. It exposes no
 accessible text and no scripting dictionary, so neither the TTY read nor any
-screen read above works there. Instead the app asks cmux's own automation
-socket which surface is focused, and matches that surface id against the one
-cmux injected into the session's environment — including into shells opened
-with `cmux ssh`, which is one of the ways a REMOTE session can
-join. That surface is also the only readable screen
-context, fetched per-surface (`surface.read_text`, the visible viewport, never
-the scrollback).
+screen read works there. Instead the app asks cmux's own automation socket
+which surface is focused. It matches that surface id against the one cmux
+injected into the session's environment, including into shells opened with
+`cmux ssh`, which is one of the ways a REMOTE session can join. That surface is
+also the only screen context the app can read, fetched per surface
+(`surface.read_text`: the visible viewport, never the scrollback).
 
-Two things must be set up, because cmux's socket refuses outside clients by
-default:
+cmux's socket refuses outside clients by default, so set up two things:
 
 1. In **cmux → Settings → Automation**, set the socket mode to **Password**
    and choose a socket password. (The default `cmuxOnly` mode admits only
@@ -88,29 +83,29 @@ default:
    local socket; saving an empty field removes the stored password.
 
 If the socket refuses the app, the settings row says
-`cmux socket requires password mode.` and the dictation joins nothing —
-nothing is attached on a failed join.
+`cmux socket requires password mode.` and the dictation joins nothing. A
+failed join attaches nothing.
 
-Two deliberate limits. The app cross-checks the surface's terminal device
-against the one your session reported, and **abstains when either side does not
-report one** — which is the case for opencode (its server half never claims a
-pane), so opencode inside cmux does not join over this arm. And a session on a
-remote host joins only while cmux itself reports that surface's workspace as a
-live `cmux ssh` workspace, so a stale surface id from an earlier remote session
-cannot attach itself to whatever you are looking at now.
+This join has two limits. First, the app cross-checks the surface's terminal
+device against the one your session reported, and **abstains when either side
+does not report one**. opencode's server half never claims a pane, so opencode
+inside cmux does not join this way. Second, a session on a remote host joins
+only while cmux reports that surface's workspace as a live `cmux ssh`
+workspace, so a stale surface id from an earlier remote session cannot attach
+to whatever you are looking at now.
 
 **Browser tab join (Claude Code "Remote Control").** A Remote Control session
-runs the `claude` process on one of your machines while
-[claude.ai/code](https://claude.ai/code) in a browser is its UI — there is no
-pane, no tty, and no title to join on. Since Claude Code 2.1.199 the hooks of
-such a session carry `CLAUDE_CODE_BRIDGE_SESSION_ID`, whose value is exactly
-the `session_…` component of that browser URL, so when the frontmost app is a
-browser the app reads its focused tab's URL over AppleScript and matches the
-id by exact equality against what the session's own hooks reported. Local and
-remote (SSH) sessions can both join this way — the id is allocated by
-Anthropic's bridge and is globally unique, unlike a tty or pane id. Claude Code
-REMOVES the variable when the Remote Control connection ends, so the join ages
-out on the session's next hook.
+runs the `claude` process on one of your machines, with
+[claude.ai/code](https://claude.ai/code) in a browser as its UI. There is no
+pane, tty or title to join on. Since Claude Code 2.1.199 the hooks of such a
+session carry `CLAUDE_CODE_BRIDGE_SESSION_ID`, whose value is exactly the
+`session_…` part of that browser URL. When the frontmost app is a browser, the
+app reads its focused tab's URL over AppleScript and requires the id to equal
+what the session's own hooks reported. Local and remote (SSH) sessions can
+both join this way, because Anthropic's bridge allocates the id and it is
+globally unique, unlike a tty or pane id. Claude Code REMOVES the variable
+when the Remote Control connection ends, so the join expires on the session's
+next hook.
 
 **Claude Desktop join.** Claude Desktop's Code tab shows each Claude Code
 session in a web view at `https://claude.ai/epitaxy/local_…`, and exports the
@@ -118,14 +113,14 @@ same `local_…` id to the session as `CLAUDE_CODE_HOST_SESSION_ID`. When Claude
 Desktop is frontmost, the app reads the address of the web view that holds
 keyboard focus over Accessibility and matches the id against what the
 session's hooks reported. Sessions the desktop app runs on this Mac join
-through this plugin; sessions it runs on an ssh host join through
-`localvoxtral-remote` (≥ 1.11.0) on that host, and need **Keep the tunnel
-open** (see [Sessions nobody is sitting in front of](#sessions-nobody-is-sitting-in-front-of)):
-Claude Desktop's own ssh never carries the tunnel. Host setup turns it on
-when it finds Claude Desktop on the host. Like the browser join, it reads no
-screen and runs only with Claude repo context on. The Code tab does not
-render Claude Code's status line, so the status-line indicator never appears
-there; the overlay badge and the log's `Claude join outcome` line are what say
+through this plugin. Sessions it runs on an ssh host join through
+`localvoxtral-remote` (≥ 1.11.0) on that host and need **Keep the tunnel
+open** (see [Sessions nobody is sitting in front of](#sessions-nobody-is-sitting-in-front-of)),
+because Claude Desktop's own ssh never carries the tunnel. Host setup turns it
+on when it finds Claude Desktop on the host. Like the browser join, it reads
+no screen and runs only with Claude repo context on. The Code tab does not
+show Claude Code's status line, so the status-line indicator never appears
+there. The overlay badge and the log's `Claude join outcome` line tell you
 whether a dictation joined.
 
 Every process inside a desktop session inherits that variable, so a
@@ -137,42 +132,41 @@ from every hook. A session that reports the id stays joinable for seven days
 without a hook, not four hours, because it sits idle while its window stays
 open.
 
-Supported browsers are **Google Chrome, Brave, and Safari**, and each one needs
-its OWN Automation grant the first time it is used (System Settings → Privacy &
-Security → Automation → localvoxtral). The grant is requested only while
-**Settings → Context → "Send diff, recent files and last prompt"** is on
-— that is the only feature a browser join can serve. Firefox is not supported:
-it exposes no AppleScript surface for the focused tab's URL. A browser join
-never reads anything on your screen (a web page is not a terminal grid, and
-there is no verified per-tab capture route) — it attaches the session's own
-off-screen context only, and for a local session its repository, exactly like a
-terminal join does.
+Supported browsers are **Google Chrome, Brave, and Safari**. Each needs its
+OWN Automation grant the first time it is used (System Settings → Privacy &
+Security → Automation → localvoxtral). The app asks for the grant only while
+**Settings → Context → "Send diff, recent files and last prompt"** is on,
+since that is the only feature a browser join serves. Firefox is not supported
+because it exposes no AppleScript access to the focused tab's URL. A browser
+join never reads anything on your screen: a web page is not a terminal grid,
+and there is no verified way to capture one tab. It attaches only the
+session's own off-screen context, plus the repository for a local session,
+the same as a terminal join.
 
 ### A plain `ssh host` session
 
-A Claude Code session running in an ordinary `ssh` shell on an **enrolled**
-host — no herdr, no cmux, no Remote Control — joins on the **TCP connection**
-your terminal is holding.
+A Claude Code session in an ordinary `ssh` shell on an **enrolled** host, with
+no herdr, cmux or Remote Control, joins on the **TCP connection** your
+terminal holds.
 
-There are two ways it can identify your window, tried in that order.
+The app tries two ways to identify your window, in this order.
 
 ### 1. The tty echo (works through jump hosts and `ControlMaster`)
 
-**The app can do this for you.** Settings → Remote hosts → Plain SSH →
-**Set Up…** next to "Terminal setup". It
-shows one consent sentence naming the shell file, links here for details, and
-has a **Remove**. Once this app's block is in the file, the row offers only
-**Remove**; a block an older app wrote brings back **Update…**, which replaces it
-rather than adding a second copy. The row
-also reports whether a remote session has actually arrived carrying the value,
-which is the half you cannot see from the file.
+**The app can set this up.** Go to Settings → Remote hosts → Plain SSH →
+**Set Up…** next to "Terminal setup". It shows one consent sentence naming the
+shell file, links here for details, and has a **Remove**. Once this app's
+block is in the file, the row offers only **Remove**. A block an older app
+wrote brings back **Update…**, which replaces that block rather than adding a
+second copy. The row also reports whether a remote session has arrived
+carrying the value, which you cannot tell from the file.
 
-It refuses to write through a symlink: if your `~/.zshrc` is a link into a
-dotfiles repo, an atomic write would replace the link and detach your setup, so
-the row says so and links here instead of offering a button, and you paste the
-block yourself.
+It refuses to write through a symlink. If your `~/.zshrc` is a link into a
+dotfiles repo, an atomic write would replace the link and detach your setup.
+The row says so and links here instead of offering a button, and you paste
+the block yourself.
 
-The manual alternative — add this to your shell's rc file **on your Mac**:
+To do it by hand, add this to your shell's rc file **on your Mac**:
 
 ```sh
 if [ -z "${LC_LVX_TTY:-}" ] && [ -z "${SSH_TTY:-}" ]; then
@@ -181,199 +175,195 @@ fi
 ```
 
 That publishes the terminal's own device name. `ssh` carries it into the
-session (`SendEnv`; the enrollment block adds the line, and most ssh_configs
-already send `LC_*` anyway), `sshd` accepts it because its stock config is
-`AcceptEnv LANG LC_*`, and localvoxtral joins by comparing it against the tty
-of the window it can see. `LC_` is not a trick played on you: it is the same
-mechanism iTerm2 uses for `LC_TERMINAL`, and locale libraries ignore names
-they do not know.
+session with `SendEnv` (the enrollment block adds that line, and most
+ssh_configs already send `LC_*`). `sshd` accepts it because its stock config
+is `AcceptEnv LANG LC_*`. localvoxtral then joins by comparing it against the
+tty of the window it can see. iTerm2 uses the same `LC_` mechanism for
+`LC_TERMINAL`, and locale libraries ignore names they do not know.
 
-Every part of that block earns its place, and a shorter version was measured
-to be wrong:
+Each part of that block is needed. Shorter versions were measured to fail:
 
 * `SSH_TTY` unset means "only on this Mac", and the `LC_LVX_TTY` check means
-  "do not overwrite what was sent to me". Put the same rc file on a remote host
-  without them and the remote shell replaces your Mac's tty with its own —
-  nothing matches, and because the variable is then *set*, no later shell fixes
-  it either.
-* The `case` is not decoration: in a shell with no terminal, `tty` prints
-  `not a tty`, and the first draft of this line exported that string. It is
-  harmless (the shim's charset drops it) but it poisons the "already set"
-  guard for every shell that inherits it.
+  "do not overwrite what was sent to me". Without them, the same rc file on a
+  remote host makes the remote shell replace your Mac's tty with its own.
+  Nothing matches, and because the variable is then *set*, no later shell
+  fixes it.
+* The `case` handles shells with no terminal, where `tty` prints `not a tty`.
+  The first draft of this line exported that string. The shim's charset drops
+  it, but it breaks the "already set" guard for every shell that inherits it.
 * It is an `if` block rather than a one-line `&&` chain because the chain's
   status becomes the rc file's status. Measured: `bash --norc -c 'set -e;
   source rc; echo SURVIVED'` printed nothing and exited 1 with the chain, and
-  `SURVIVED` with exit 0 using the block above. `bash` sources `~/.bashrc`
-  non-interactively for shells it believes sshd started, so the chain version
-  could break `ssh host script` for anyone syncing dotfiles.
+  printed `SURVIVED` with exit 0 using the block above. `bash` sources
+  `~/.bashrc` non-interactively for shells it believes sshd started, so the
+  chain version could break `ssh host script` for anyone syncing dotfiles.
 
 **Why this one and not the connection below:** ssh carries environment per
-SESSION, not per connection. So it survives `ProxyJump` (where your Mac holds
-no connection to the destination at all) and `ControlMaster` (where several
-windows share one), which are exactly the two setups the connection match
-cannot see through.
+SESSION, not per connection. So it works through `ProxyJump` (where your Mac
+holds no connection to the destination) and `ControlMaster` (where several
+windows share one connection), the two setups the connection match cannot
+handle.
 
-If your host's `sshd` refuses `LC_*` — rare, but it happens on hardened
-configs — add this there and reload sshd:
+If your host's `sshd` refuses `LC_*` (rare, but hardened configs do), add
+this there and reload sshd:
 
 ```
 AcceptEnv LC_LVX_TTY
 ```
 
-To check that the value is actually arriving — the one thing that can go wrong
-— ask the remote side, not `--probe-surface`. That verb runs as a separate
-one-shot process with its own empty session registry, so it can tell you which
-arm ran and why the SURFACE was or was not identified, but it never has the
-live sessions this check needs:
+The one thing that can go wrong is the value not arriving. To check it, ask
+the remote side, not `--probe-surface`. That verb runs as a separate one-shot
+process with its own empty session registry. It can tell you which join method
+ran and why the window was or was not identified, but it never has the live
+sessions this check needs:
 
 ```sh
 ssh sandbox-vpn 'echo "[$LC_LVX_TTY]"'   # from a window where the rc line ran
 ```
 
-An empty answer means the variable is not crossing (rc line, `SendEnv`, or a
-hardened `AcceptEnv`). If you run a dogfood build, `registry list` reports
-`remoteLocalTTY` per session, which is the same fact from the app's side.
+An empty answer means the variable is not crossing. Check the rc line,
+`SendEnv`, or a hardened `AcceptEnv`. On a dogfood build, `registry list`
+reports `remoteLocalTTY` per session, the same fact seen from the app.
 
 ### 2. The connection (zero setup, no jump host)
 
 `sshd` puts `$SSH_CONNECTION` into every session it starts: the client address
-and port, then the server address and port. The remote plugin publishes it, and
-on your Mac the app looks at the `ssh` process running in your focused
-terminal, reads that process's own established socket out of the kernel, and
-requires the two to be the same connection — same client port, same server
-address, same server port. The client port is an ephemeral number your Mac's
-kernel picked; the only machine that learns it is the one on the other end of
-that connection.
+and port, then the server address and port. The remote plugin publishes it. On
+your Mac, the app finds the `ssh` process running in your focused terminal,
+reads that process's established socket from the kernel, and requires the two
+to be the
+same connection — same client port, same server address, same server port.
+The client port is an ephemeral number your Mac's kernel picked, and only the
+machine on the other end of that connection learns it.
 
-Either way it attaches the session block and (for a local session) repository
-context. It never attaches your screen: a plain ssh shell's scrollback is your
-whole remote session, not one pane, so no raw capture is authorized for either
-join.
+Either way the app attaches the session block and, for a local session,
+repository context. It never attaches your screen: a plain ssh shell's
+scrollback is your whole remote session, not one pane, so neither join may
+capture it.
 
 Neither joins in these cases:
 
 * **through a jump host, without the rc line above** (`ssh -J`, `ProxyJump`,
-  or a `ProxyCommand`): your Mac's socket goes to the jump host, while the
+  or a `ProxyCommand`). Your Mac's socket goes to the jump host, while the
   machine you land on sees the jump host's port. They are two different
-  connections, and only the jump host knows which is which — a fact it cannot
-  tell you without root there. The app says so exactly ("this connection goes
-  through a jump host"). **The tty echo has no such problem**; if you jump,
-  set it up;
-* **inside tmux, screen or zellij**: a multiplexer server keeps the
+  connections, and only the jump host knows how they pair up, which it cannot
+  tell you without root there. The app says so ("this connection goes through
+  a jump host"). **The tty echo works here**, so set it up if you jump.
+* **inside tmux, screen or zellij**. A multiplexer server keeps the
   `$SSH_CONNECTION` of the connection that STARTED it, so a session in a pane
-  can report a connection that belongs to a different window of yours.
-  Measured, not assumed. herdr and cmux have their own joins, which bind the
-  pane rather than the connection; tmux, screen and zellij have none;
+  can report a connection that belongs to another of your windows. This was
+  measured. herdr and cmux have their own joins, which bind the pane rather
+  than the connection. tmux, screen and zellij have none.
 * **when your `~/.ssh/config` may be sharing one connection**
-  (`ControlMaster`), again only without the rc line: several terminals then
+  (`ControlMaster`), again only without the rc line. Several terminals then
   run over one TCP connection and all report the same `$SSH_CONNECTION`, so it
-  no longer identifies a window. Detected two ways, each with its own reason
-  in `--probe-surface`: the window you are dictating into holds no connection
-  of its own (it is a mux client), or another `ssh` session to the same host
-  does. The tty echo is unaffected — ssh gives each session its own
-  environment even over a shared connection;
+  no longer identifies a window. The app detects this two ways, each with its
+  own reason in `--probe-surface`: the window you are dictating into holds no
+  connection of its own (it is a mux client), or another `ssh` session to the
+  same host does. The tty echo still works, because ssh gives each session its
+  own environment even over a shared connection.
 * **when anything is ambiguous**: two sessions reporting the same connection,
   two enrolled hosts matching the destination, an unreadable process table.
 
-If nothing joins and you expect it to, check the remote plugin version: this
+If nothing joins and you expect it to, check the remote plugin version. This
 needs **1.7.0 or newer** on the remote host (`claude plugin update
 localvoxtral-remote`). `localvoxtral --probe-surface` names the exact reason.
-After adding the rc block — by hand or from Settings — you must open a NEW
-terminal window and a NEW ssh session: the environment is fixed when a session
-starts.
+After adding the rc block, by hand or from Settings, open a NEW terminal
+window and a NEW ssh session, because a session's environment is fixed when
+it starts.
 
 ### What was removed (September 2026)
 
-Until then there was one more mechanism: the app allocated an `lvx-<hex>`
-marker per session, handed it back in the hook reply, and Claude Code wrote it
+Until then there was one more mechanism. The app allocated an `lvx-<hex>`
+marker per session and returned it in the hook reply. Claude Code wrote it
 into the window title as an OSC 2 escape sequence, where a focused-window read
-could find it. There was a **Local Claude title fallback** setting to turn it
-on for local sessions (default off), it asked you to export
-`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, and it was the only join an ordinary
+could find it. A **Local Claude title fallback** setting turned it on for
+local sessions (default off) and asked you to export
+`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`. It was the only join an ordinary
 `ssh host` session had.
 
-It is gone, all of it — the marker, the setting, the escape sequence, the
+All of it is gone: the marker, the setting, the escape sequence, the
 `terminalSequence` field in the hook reply, and the tmux/screen title
-passthrough advice that went with it. **The hooks now print nothing at all,
-ever**, and neither the local socket nor the remote listener has any field that
-could put a byte on your terminal. The reason is that a window title is a
-channel everything rewrites — Claude Code writes its own conversation titles
-over it mid-turn, herdr and cmux rewrite their pane titles, and you may rename
-a window yourself — so a marker sitting in a title said where a session used to
-be, not what your screen is showing now.
+passthrough advice. **The hooks now print nothing at all, ever**, and neither
+the local socket nor the remote listener has any field that could put a byte
+on your terminal. Everything rewrites a window title. Claude Code writes its
+own conversation titles over it mid-turn, herdr and cmux rewrite their pane
+titles, and you may rename a window yourself. So a marker in a title showed
+where a session used to be, not what your screen shows now.
 
-That is measured, not assumed. On the owner's setup (2026-09-05) a herdr pane's
-captured title was polled at ~325 Hz for 69.4 s across a hook event: the marker
-was the title for 0.88 s in total, **1.26 %** of the window, and Claude Code's
-own conversation title held it the rest of the time. A remote-herdr join that
-had everything else right still failed on that check — unless the user had
+This was measured. On the owner's setup (2026-09-05), a herdr pane's title
+was polled at ~325 Hz for 69.4 s across a hook event. The marker was the title
+for 0.88 s in total, **1.26 %** of the time, and Claude Code's own
+conversation title held it the rest of the time. A remote-herdr join that had
+everything else right still failed on that check, unless the user had
 exported `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, which made it succeed
-immediately. The check was a one-in-a-hundred lottery, not a second binding.
+immediately. The check passed about one time in a hundred, so it could not
+serve as a second binding.
 
 **What this cost you, and what replaced it:** for one release a plain
-`ssh host` session with no herdr, no cmux and no Remote Control had no join at
-all. It joins again, on the connection itself — see "A plain `ssh host`
-session" above. Everything else was unaffected throughout: local sessions join
-by tty, herdr panes by pane id (local and remote), cmux by surface id (local
-and remote), Remote Control by bridge session id.
+`ssh host` session with no herdr, cmux or Remote Control had no join at all.
+It joins again, on the connection itself (see "A plain `ssh host` session"
+above). Nothing else changed: local sessions join by tty, herdr panes by pane
+id (local and remote), cmux by surface id (local and remote), Remote Control
+by bridge session id.
 
-**If you had the setting on**, the stored value is simply ignored — there is
+**If you had the setting on**, the app ignores the stored value. There is
 nothing to migrate, and you can drop
 `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` from your shell profile.
 
 ## Install / update / uninstall
 
-The app way: **Settings → Claude Code → Plugin → Install**. That button
-registers the bundled marketplace and installs the plugin, then reports one
-short line. Nothing is installed until you press it.
+In the app, press **Settings → Claude Code → Plugin → Install**. That button
+registers the bundled marketplace, installs the plugin, and reports one short
+line. Nothing is installed until you press it.
 
-Once installed, the plugin keeps itself current without a click. At launch the
-app runs `claude plugin update` on an installed plugin that is older than the
-one it ships. That command never uninstalls, so a failed update leaves the old
-plugin working. The app also repoints
+Once installed, the plugin stays current on its own. At launch the app runs
+`claude plugin update` on an installed plugin older than the one it ships.
+That command never uninstalls, so a failed update leaves the old plugin
+working. The app also repoints
 `~/Library/Application Support/localvoxtral/claude/publisher` at its own
 publisher binary. The shim tries that link before the install-time
 `publisher_path`, so moving the app needs no reinstall. The row shows
 **Update** only when that launch-time update failed, and no install button
 while the plugin is current.
 
-What gets registered is not the app bundle's own copy of this directory but a
-mirror of it at `~/Library/Application Support/localvoxtral/claude/marketplace`,
-refreshed at launch whenever its contents differ. Claude Code stores the
-marketplace as the path it was handed and re-reads it at every session start, so
-registering a path inside the bundle pins your Claude Code to wherever that app
-was: a `try-pr.sh` build under `/private/tmp`, a disk image, a folder you later
-renamed. When that path goes, the plugin stops loading — `Marketplace
-localvoxtral failed to load: cache-miss`, no hooks in any session — and the only
-sign is a half-filled `lvx ◐` status line. The row reads **Installed, but not
-loading** in that state and offers **Repair**; launch does the same repair on
-its own, with one `claude plugin marketplace add` (on a directory source that
-re-points the name, verified on Claude Code 2.1.x), which leaves the installed
-plugin, its `publisher_path` and its cache untouched.
+The app registers a mirror of this directory at
+`~/Library/Application Support/localvoxtral/claude/marketplace`, not the app
+bundle's own copy, and refreshes the mirror at launch whenever its contents
+differ. Claude Code stores the marketplace as the path it was given and
+re-reads it at every session start. Registering a path inside the bundle
+would tie your Claude Code to wherever that app was: a `try-pr.sh` build under
+`/private/tmp`, a disk image, a folder you later renamed. When that path goes
+away, the plugin stops loading (`Marketplace
+localvoxtral failed to load: cache-miss`, no hooks in any session), and the
+only sign is a half-filled `lvx ◐` status line. The row then reads
+**Installed, but not loading** and offers **Repair**. Launch does the same
+repair on its own with one `claude plugin marketplace add`, which on a
+directory source repoints the name (verified on Claude Code 2.1.x). It leaves
+the installed plugin, its `publisher_path` and its cache untouched.
 
 Launch only takes over a registration that cannot keep working: one that is
 already gone, one inside an app bundle, or one Claude Code reports as not
-loading. **A marketplace you registered from a checkout is left alone** — that
-is how you edit the shim and see the edit, and the app has no business undoing
-it on every launch.
+loading. **A marketplace you registered from a checkout is left alone**,
+because that is how you edit the shim and see the edit.
 
-Everything it does goes through Claude Code's own plugin CLI.
+Everything the app does goes through Claude Code's own plugin CLI.
 
 **Plugin install and uninstall never touch `~/.claude/settings.json`.**
-That file is yours and Claude Code owns its schema; the CLI is the
-supported interface, and a third-party app editing it is how setups get
-corrupted during an unrelated upgrade. The one exception lives one row down
-in Settings: the opt-in status-line installer writes exactly the
-`statusLine` key after a one-sentence consent. Over a status line you wrote
-yourself it writes only through **Combine…**, which keeps your command and
-puts it back on **Remove** (see above).
+That file is yours and Claude Code owns its schema. The CLI is the supported
+interface, and third-party apps editing the file corrupt setups during
+unrelated upgrades. The one exception is the next row in Settings: the opt-in
+status-line installer writes only the `statusLine` key, after a one-sentence
+consent. Over a status line you wrote yourself it writes only through
+**Combine…**, which keeps your command and puts it back on **Remove** (see
+below).
 
-If you prefer to run the commands yourself, these are the same ones the button
-runs. The only difference is `--config publisher_path=…`: the app knows where
-its own publisher binary is and passes that path, which is how the plugin works
-for an app in `~/Applications`, on a mounted volume, or in a dev build. Omit it
-and the shim falls back to guessing `/Applications` and `~/Applications` (see
-the environment table below).
+To run the commands yourself, use these, which are the same ones the button
+runs. The only difference is `--config publisher_path=…`. The app knows where
+its own publisher binary is and passes that path, so the plugin works for an
+app in `~/Applications`, on a mounted volume, or in a dev build. Without it,
+the shim falls back to guessing `/Applications` and `~/Applications` (see the
+environment table below).
 
 From an **installed app**:
 
@@ -390,9 +380,9 @@ claude plugin marketplace add ./integrations/claude-code
 claude plugin install localvoxtral@localvoxtral
 ```
 
-Update (re-reads the marketplace, then reinstalls). This is a reinstall rather
-than `claude plugin update` because `update` accepts no `--config`, and an
-update that cannot re-pin `publisher_path` strands the shim on a stale path
+Update (re-reads the marketplace, then reinstalls). This reinstalls rather
+than running `claude plugin update` because `update` accepts no `--config`.
+An update that cannot reset `publisher_path` leaves the shim on a stale path
 whenever the app has moved:
 
 ```sh
@@ -418,29 +408,30 @@ claude plugin list
 
 ## Connection indicator (opt-in status line)
 
-One glance at Claude Code's bottom bar answers the question this plugin
-otherwise leaves silent: *is localvoxtral connected to this session?*
+Claude Code's bottom bar can show whether localvoxtral is connected to this
+session.
 
-The app way: **Settings → Claude Code → Status line → Set Up…**. A one-sentence consent names `~/.claude/settings.json`; **Details**
-opens this section. The app writes one `statusLine` entry pointing at its bundled
+In the app, use **Settings → Claude Code → Status line → Set Up…**. A
+one-sentence consent names `~/.claude/settings.json`, and **Details** opens
+this section. The app writes one `statusLine` entry pointing at its bundled
 `localvoxtral-claude-hook --statusline`. Everything else in
-`~/.claude/settings.json` is preserved, although the JSON is rewritten with
+`~/.claude/settings.json` is kept, although the app rewrites the JSON with
 sorted keys and normalized formatting. **Remove** takes the entry back out
-(deleting the file when nothing else is in it). If you
-already have your own status line, the row offers **Combine…** instead: the
-app writes `~/.claude/localvoxtral-statusline.sh`, which runs your command
-and then the indicator on the same line, and points `statusLine` at it. Your
-command is kept in that script, so **Remove** puts it back exactly. If you
-delete the app, the script skips the indicator and your own line keeps
-working. The app never edits a script it did not write: if you change the
-combined script by hand, the row says so and offers no button. The recipe
-below does the same by hand.
+and deletes the file when nothing else is in it.
 
-If you prefer to wire it by hand, this is the same entry the button writes.
-Claude Code has no plugin-owned status line, so it lives in your own
-settings either way. The publisher binary has a `--statusline` mode that reads the
-status-line payload Claude Code pipes in, asks the app's socket whether THIS
-session (by `session_id`) is live in its registry, and prints one fixed line:
+If you already have your own status line, the row offers **Combine…**
+instead. The app writes `~/.claude/localvoxtral-statusline.sh`, which runs
+your command and then the indicator on the same line, and points
+`statusLine` at it. The script keeps your command, so **Remove** puts it back
+exactly. If you delete the app, the script skips the indicator and your own
+line keeps working. The app never edits a script it did not write: if you
+change the combined script by hand, the row says so and offers no button.
+
+To set it up by hand, add the same entry the button writes. Claude Code has
+no plugin-owned status line, so it lives in your own settings either way. The
+publisher binary's `--statusline` mode reads the status-line payload Claude
+Code pipes in, asks the app's socket whether THIS session (by `session_id`)
+is live in its registry, and prints one fixed line:
 
 | Line | Meaning |
 |---|---|
@@ -462,13 +453,15 @@ In `~/.claude/settings.json`:
 }
 ```
 
-(Adjust the path for `~/Applications` or a dev build — it is the same binary
-`publisher_path` points at.) Unlike the plugin, the status line does not follow
-the app when it moves: the path is saved in your settings. The Status line row
-compares that path with the running app's, so after a move it shows
+For `~/Applications` or a dev build, adjust the path. It is the same binary
+`publisher_path` points at. Unlike the plugin, the status line does not follow
+the app when it moves, because the path is saved in your settings. The Status
+line row compares that path with the running app's, so after a move it shows
 **Update…**, whether or not the old copy is still on disk. While the entry
-points at this app, the row offers only **Remove**. If you already have a status line, keep it and
-append ours: buffer stdin once and feed both, e.g.
+points at this app, the row offers only **Remove**.
+
+If you already have a status line, keep it and append ours. Buffer stdin once
+and feed it to both, for example:
 
 ```sh
 #!/bin/sh
@@ -477,42 +470,42 @@ printf '%s' "$input" | ~/.claude/my-statusline.sh
 printf '%s' "$input" | /Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook --statusline
 ```
 
-The query is read-only by construction: asking never creates a session and
-never refreshes one. The strings above are
-compile-time constants — nothing read off the socket is ever echoed into
-your terminal — and a payload without a usable `session_id` prints nothing
+The query is read-only: asking never creates or refreshes a session. The
+strings above are compile-time constants, so nothing read off the socket ever
+reaches your terminal. A payload without a usable `session_id` prints nothing
 rather than guessing.
 
 ## Fail-open, always
 
 If localvoxtral is not running, not installed, or its socket is absent, the hook
-drains stdin, prints nothing, and exits 0. Same for a missing publisher binary,
-a full socket, or a slow app: the publisher gives up after ~250 ms.
+drains stdin, prints nothing, and exits 0. The same goes for a missing
+publisher binary, a full socket, or a slow app: the publisher gives up after
+~250 ms.
 
-Your Claude session must never stall, warn, or fail because a dictation nicety
-was unavailable. Nothing in this plugin can block a turn.
+Your Claude session never stalls, warns or fails because dictation context was
+unavailable. Nothing in this plugin can block a turn.
 
 ## What crosses the socket
 
-An allowlist, not a filter:
+Only what this allowlist names:
 
 * the event name, session id, timestamp, and cwd
 * your prompt text (`UserPromptSubmit` only)
 * absolute file paths from the tools above
 * safe process metadata: pid, ppid, controlling TTY, `$TERM_PROGRAM`, and the
-  multiplexer/bridge handles that say which pane the session lives in —
+  multiplexer and bridge handles that say which pane the session lives in:
   `$HERDR_PANE_ID`, `$HERDR_SOCKET_PATH`, `$CMUX_SURFACE_ID`,
   `$CMUX_SOCKET_PATH`, `$CLAUDE_CODE_BRIDGE_SESSION_ID`,
   `$CLAUDE_CODE_HOST_SESSION_ID`. Never the rest of the environment.
 
-What never crosses, by construction:
+These never cross:
 
-* **transcript contents** — the publisher drops `transcript_path` entirely, so
-  there is nothing to scrape and no pointer to it
-* **file contents** — `Write.content`, `Edit.new_string`, `Read` output
-* **command strings** — `Bash` is not even subscribed to
-* **anything claiming to be trusted** — trust is decided by the app from UNIX
-  peer credentials, never from a field on the wire
+* **transcript contents**. The publisher drops `transcript_path` entirely, so
+  there is nothing to scrape and no pointer to it.
+* **file contents**: `Write.content`, `Edit.new_string`, `Read` output.
+* **command strings**. The plugin does not subscribe to `Bash`.
+* **anything claiming to be trusted**. The app decides trust from UNIX peer
+  credentials, never from a field on the wire.
 
 Every field is length-capped at both ends. Hook content is never logged.
 
@@ -530,20 +523,20 @@ Every field is length-capped at both ends. Hook content is never logged.
 # Remote / SSH sessions — the `localvoxtral-remote` plugin
 
 When you dictate into a Claude Code session running on another machine over SSH,
-the local plugin cannot help: there is no app on that host and no socket to write
-to. `localvoxtral-remote` is the second plugin in this marketplace, and it is for
-exactly that case.
+the local plugin cannot help, because that host has no app and no socket to
+write to. `localvoxtral-remote`, the second plugin in this marketplace, covers
+that case.
 
-**Install it on the REMOTE host, not on your Mac.** The two plugins are not modes
-of each other — they have different transports and different trust models, and a
-plugin installed on the wrong side fails open silently forever.
+**Install it on the REMOTE host, not on your Mac.** The two plugins have
+different transports and different trust models, and a plugin installed on
+the wrong side fails open silently forever.
 
 | | `localvoxtral` | `localvoxtral-remote` |
 |---|---|---|
 | Install on | the Mac running the app | the remote host |
 | Transport | AF_UNIX socket, `command` hook + shim | HTTP over an SSH `RemoteForward`, `command` hook + `curl` shim |
 | Authentication | kernel-verified peer UID | per-host bearer token you issue in the app |
-| Needs on that host | the app's publisher binary | POSIX `sh` and `curl` only — no Python, no `jq`, no `nc`, no Node, no localvoxtral binary |
+| Needs on that host | the app's publisher binary | POSIX `sh` and `curl` only, no Python, no `jq`, no `nc`, no Node, no localvoxtral binary |
 | Context it delivers | full: cwd authorizes local repository reads | opaque: labels and bounded excerpts only |
 
 ## How it works
@@ -560,107 +553,119 @@ remote host                            your Mac
 ```
 
 The remote plugin subscribes to `SessionStart`, `UserPromptSubmit`, `Stop`,
-`CwdChanged`, `PostToolUse` and `SessionEnd`, so a new remote session becomes
-visible to the app before its first prompt. Everything else about the events
-matches the local table above.
+`CwdChanged`, `PostToolUse` and `SessionEnd`, so the app sees a new remote
+session before its first prompt. Otherwise the events match the local table
+above.
 
 Each hook runs the plugin's bundled POSIX-sh shim (`hooks/post.sh`), which
 curls the hook's event JSON to `http://127.0.0.1:<your Mac's port>/v1/hook/<Event>`
-on the *remote* loopback; OpenSSH's `RemoteForward` carries that to your Mac's
-loopback port 8473, where the app is listening. That remote port is **allocated
-per Mac** (a stable number in 28473–30472, derived from a per-install identity)
-so two Macs enrolled against one host can never ask for the same bind — see
-"Two Macs, one host" below. The shim reads the token and the port from the
+on the *remote* loopback. OpenSSH's `RemoteForward` carries that to your Mac's
+loopback port 8473, where the app listens. The app **allocates that remote
+port per Mac** (a stable number in 28473–30472, derived from a per-install
+identity), so two Macs enrolled against one host never ask for the same bind
+(see "Two Macs, one host" below).
+
+The shim reads the token and the port from the
 `CLAUDE_PLUGIN_OPTION_TOKEN` / `CLAUDE_PLUGIN_OPTION_PORT` environment variables
-Claude Code injects into command-hook subprocesses, and passes it to curl through a private tempfile
+Claude Code injects into command-hook subprocesses, and passes the token to curl through a private tempfile
 (`--header @file`) so it never appears in any process's argument list. It
-needs only `sh` and `curl` on the host, and fails open — silently, printing
-nothing — when either is missing, the token is unset, the tunnel is down, or
-the app does not answer within a second. (Declarative `http` hooks cannot do
-this: Claude Code expands their header `${VAR}`s from the process environment
-only and never injects plugin userConfig options there, so an http hook would
-always authenticate as an empty `Bearer` and be refused.)
+needs only `sh` and `curl` on the host. It fails open, silently and printing
+nothing, when either is missing, the token is unset, the tunnel is down, or
+the app does not answer within a second. Declarative `http` hooks cannot do
+this job. Claude Code expands their header `${VAR}`s from the process
+environment only and never injects plugin userConfig options there, so an
+http hook would always authenticate as an empty `Bearer` and be refused.
+
 The app answers every hook with the same fixed body, `{"suppressOutput":true}`.
-An `X-Lvx-Session` response header says `joined` or `unknown`; `post.sh` stores
-that verdict for the session's status line. `joined` means the app recorded
-the hook for that session, not that a dictation will join it: that also takes
-an arm that recognizes the window you dictate into. The shim still prints only the
-fixed body. Each post also sends an `X-Lvx-Plugin-Version` header — the
-plugin's own version, as a constant baked into `post.sh`. The app validates it
-to a strict numeric shape, records it for that host only once the request is
-fully accepted (the same points the "last seen" time is noted — a request the
-revocation re-check refuses records nothing), and uses it for exactly one
-thing: showing the fixed "Update
-available" line (and a prominent **Update Host…** button) in Settings
-when the host's plugin is older than the app's. The record keeps the highest
-version any of the host's hooks reported this app session — Claude Code
-applies a plugin update only on session restart, so sessions that were already
-running keep using the old plugin's shim and send no header; their hooks must
-not un-flag an update that has already landed. Nothing else opens a port, and
-nothing is reachable from your LAN.
+An `X-Lvx-Session` response header says `joined` or `unknown`, and `post.sh`
+stores that verdict for the session's status line. `joined` means the app
+recorded the hook for that session, not that a dictation will join it. That
+also needs a join method that recognizes the window you dictate into. The
+shim still prints only the fixed body.
+
+Each post also sends an `X-Lvx-Plugin-Version` header with the plugin's own
+version, a constant baked into `post.sh`. The app checks that it has a strict
+numeric shape. It records the version for that host only once it fully
+accepts the request, at the same points it notes the "last seen" time, so a
+request the revocation re-check refuses records nothing. The app uses it for
+one thing: showing the fixed "Update available" line and a prominent
+**Update Host…** button in Settings when the host's plugin is older than the
+app's. The record keeps the highest version any of the host's hooks reported
+since the app launched. Claude Code applies a plugin update only when a
+session restarts, so sessions already running keep the old plugin's shim and
+send no header. Their hooks must not clear the flag for an update that has
+already landed. Nothing else opens a port, and nothing is reachable from your
+LAN.
 
 ## When the app is not running on your Mac
 
-The shim's own failures are always silent, but there is one message it cannot
-reach: while an SSH session holds the forward and localvoxtral is not running,
+The shim's own failures are always silent, but one message is out of its
+reach. While an SSH session holds the forward and localvoxtral is not running,
 each dial makes **ssh itself, on your Mac**, print
 `connect_to 127.0.0.1 port 8473: failed.`
-onto the terminal — over whatever is drawn there (a herdr pane, the Claude Code
+onto the terminal, over whatever is drawn there (a herdr pane, the Claude Code
 screen), once per hook. That stderr belongs to another process on another
-machine; no plugin-side redirect can touch it, and silencing it in ssh would
-take `LogLevel QUIET`, which also hides host-key warnings — not a trade this
-plugin will make for you.
+machine, so no redirect in the plugin can reach it. Silencing it in ssh would
+take `LogLevel QUIET`, which also hides host-key warnings, and the plugin
+won't make that trade for you.
 
-So the shim stops dialing instead: after a transport-level failure, every hook
+So the shim stops dialing instead. After a transport-level failure, every hook
 except `UserPromptSubmit`, `SessionStart` and `SessionEnd` skips the tunnel for
 the next 5 minutes.
-`UserPromptSubmit` still dials every time — one line per submitted prompt while
-the app is down is the honest signal that context is off, and it means your
-first prompt after the app comes back is grounded immediately; that completed
-exchange (any HTTP status, even a 401) clears the backoff for everything else.
-`SessionStart` and `SessionEnd` dial every time too: they fire once per
-session, and the backoff is shared by every session on the host, so skipping
-them hid sessions started in those 5 minutes and kept ended ones joinable.
+`UserPromptSubmit` still dials every time. One line per submitted prompt while
+the app is down tells you context is off, and your first prompt after the app
+comes back gets context immediately. That completed exchange (any HTTP status,
+even a 401) clears the backoff for everything else.
+`SessionStart` and `SessionEnd` also dial every time. They fire once per
+session and every session on the host shares the backoff, so skipping them
+hid sessions started in those 5 minutes and kept ended ones joinable.
 
 ## Set it up
 
 In **Settings → Remote hosts → Add host**, type a name and your SSH host alias
-and press **Enroll…**. The app issues a
-token, binds the listener immediately — there is no relaunch step — and opens a
-sheet whose **Set Up** does all of it in one consented flow, in order, each step
-self-verifying: the SSH config block on this Mac, the shell export block,
-the plugin install-or-update on the host when Claude Code is there, the
-`LC_LVX_TTY` crossing check, the herdr agents-panel row when herdr is installed,
-the Mistral Vibe hooks when Vibe is there, and the final Check Setup. It
-stops at the first failure with the exact remedy. **Update Host…** in an
+and press **Enroll…**. The app issues a token and binds the listener
+immediately, with no relaunch. It then opens a sheet whose **Set Up** runs
+every step in one consented flow, in order, and verifies each one:
+
+1. the SSH config block on this Mac
+2. the shell export block
+3. the plugin install or update on the host, when Claude Code is there
+4. the `LC_LVX_TTY` crossing check
+5. the herdr agents-panel row, when herdr is installed
+6. the Mistral Vibe hooks, when Vibe is there
+7. the final Check Setup
+
+It stops at the first failure and gives the exact fix. **Update Host…** in an
 enrolled host's row runs the same flow. The sheet shows no token, command, or
 file contents. Its **Details** link opens the complete command reference in
 [docs/remote-claude-context.md](../../docs/remote-claude-context.md#how-enrollment-works).
-The list in that row shows each enrolled host, when it was last seen,
-and gives you **Update Host…**, **Rotate Token**, **Revoke** and **Remove**.
-**Update Host…** hides once the host has reported the app's plugin version and,
-where it has them, the app's Vibe hooks version since launch, and this Mac's SSH
-config and shell startup blocks are in place, since the run would change nothing
-it can check from here. A finished update closes its panel. It also hides on a
-revoked host, which **Rotate Token** brings back.
+
+That row lists each enrolled host and when it was last seen, with
+**Update Host…**, **Rotate Token**, **Revoke** and **Remove**.
+**Update Host…** hides once, since launch, the host has reported the app's
+plugin version (and the app's Vibe hooks version, where the host has them),
+and this Mac's SSH config and shell startup blocks are in place. At that point
+the run would change nothing it can check from here. A finished update closes
+its panel. The button also hides on a revoked host, and **Rotate Token**
+brings it back.
 
 The consent sentence names every local file and the SSH alias the flow may
 touch. Nothing runs or is written before **Set Up**. The app runs remote work
-through `ssh -o BatchMode=yes` with the token fed over the remote shell's stdin,
-so it never appears in any process's argument list **on your Mac**. On the host
-it does, briefly:
-`claude plugin install` takes its config as a flag and has no stdin path, so
-the token is in that one command's argv while it runs and in the plugin's
-userConfig under `~/.claude` afterwards, readable by anything running as you
-there. That is true whether the app runs the command or you paste it; see
-[docs/remote-claude-context.md](../../docs/remote-claude-context.md#3-a-token).
-The sheet reports one line per step instead of showing output to interpret.
-The full reference — what the token authorizes, the
-per-Mac port, multiplexer limits, uninstalling — is
-[docs/remote-claude-context.md](../../docs/remote-claude-context.md).
+through `ssh -o BatchMode=yes` and feeds the token over the remote shell's
+stdin, so it never appears in any process's argument list **on your Mac**. On
+the host it does, briefly. `claude plugin install` takes its config as a flag
+and has no stdin path, so the token is in that one command's argv while it
+runs. Afterwards it sits in the plugin's userConfig under `~/.claude`,
+readable by anything running as you there. That holds whether the app runs
+the command or you paste it (see
+[docs/remote-claude-context.md](../../docs/remote-claude-context.md#3-a-token)).
+The sheet reports one line per step instead of raw output.
+[docs/remote-claude-context.md](../../docs/remote-claude-context.md) is the
+full reference: what the token authorizes, the per-Mac port, multiplexer
+limits, uninstalling.
 
-The token is never shown in Settings. Only its hash is stored on this Mac. If
-setup is interrupted, rotate the token and run **Set Up** again. The steps are:
+Settings never shows the token, and this Mac stores only its hash. If setup
+is interrupted, rotate the token and run **Set Up** again. The steps are:
 
 **1. Add the tunnel to `~/.ssh/config`:**
 
@@ -673,17 +678,17 @@ Host builder
 # END localvoxtral claude context (h1a2b3c4)
 ```
 
-`28511` is an example — the app generates *your* Mac's number and puts it in
-both the block and the install command below. The two must always name the same
-port: change one alone and the hooks post into a port nothing forwards, which
-fails open, which looks exactly like nothing happening.
+`28511` is an example. The app generates *your* Mac's number and puts it in
+both the block and the install command below. The two must always name the
+same port. Change one alone and the hooks post into a port nothing forwards,
+which fails open and looks exactly like nothing happening.
 
-`ExitOnForwardFailure no` is deliberate and is the default. With `yes`, SSH
-refuses to open the session at all when that port is already bound on the remote
-— now only by your own second window to the same host. **A dictation nicety must
-never cost you the shell.** The price of `no` is that a failed forward is
-silent: the hooks get connection refused, fail open, and you simply get no
-context. Breaking that silence is exactly what step 4 is for.
+`ExitOnForwardFailure no` is the default. With `yes`, SSH refuses to open the
+session at all when that port is already bound on the remote, which now
+happens only when your own second window connects to the same host.
+**Dictation context must never cost you the shell.** The price of `no` is that
+a failed forward is silent: the hooks get connection refused, fail open, and
+you get no context. Step 4 exists to catch that.
 
 **2. Install the plugin on the remote host:**
 
@@ -695,60 +700,60 @@ claude plugin marketplace add T0mSIlver/localvoxtral
 
 Note the leading space on the second line: with `HISTCONTROL=ignorespace` (bash)
 or `setopt HIST_IGNORE_SPACE` (zsh) it keeps the token out of your shell history.
-If it landed there anyway, rotate the token in the app — that is what rotation is
-for.
+If it landed there anyway, rotate the token in the app.
 
 Nothing else is installed. The marketplace add resolves the repository root's
-`.claude-plugin/marketplace.json`; the plugin is two JSON files and two
-POSIX-sh scripts — the hook shim, which needs only `sh` and `curl` on the
+`.claude-plugin/marketplace.json`. The plugin is two JSON files and two
+POSIX-sh scripts: the hook shim, which needs only `sh` and `curl` on the
 host, and the opt-in status-line renderer below, which needs only `sh`.
 
 **3. Show the dictation indicator in herdr (optional):**
 
-After confirmation, the app appends the agents-panel row below to the remote
-host's herdr config — only when it has no agents table and no rows key,
-otherwise it leaves the file unchanged:
+After you confirm, the app appends the agents-panel row below to the remote
+host's herdr config. It does so only when the config has no agents table and
+no rows key, and otherwise leaves the file unchanged:
 
 ```toml
 [ui.sidebar.agents]
 rows = [["state_icon", "workspace", "tab"], ["agent"], [{ token = "$lvmark", dim = true }]]
 ```
 
-**4. Check it — press "Check Setup" in the sheet.**
+**4. Check it: press "Check Setup" in the sheet.**
 
-The app runs two read-only checks over SSH and tells you what they mean:
+The app runs two read-only checks over SSH and reports what they mean:
 
-* **Connection & tunnel.** An unauthenticated `POST /v1/hook/SessionStart`
-  through the forward. HTTP 401 is the pass — being refused is what proves the
-  request crossed the tunnel and localvoxtral answered — but only when this Mac's
-  listener is actually bound, which the app also knows; a 401 arriving while our
-  bind failed came from whatever else holds the port, and is reported as that.
-  Nothing answering means no live tunnel right now, and a host with no `curl`
-  gets its own verdict, because the plugin's shim is a curl one-liner.
-* **Claude plugin on the host.** `claude plugin list` behind a PATH prefix, since
-  a non-interactive SSH command skips your login rc. "Not installed" and "Claude
-  Code was not found here" are separate answers with separate fixes.
+* **Connection & tunnel.** The app sends an unauthenticated
+  `POST /v1/hook/SessionStart` through the forward. HTTP 401 is the pass,
+  because the refusal proves the request crossed the tunnel and localvoxtral
+  answered. That holds only when this Mac's listener is bound, which the app
+  also knows. A 401 that arrives while the app's bind failed came from
+  whatever else holds the port, and the app reports it as such. No answer
+  means no live tunnel right now. A host with no `curl` gets its own verdict,
+  because the plugin's shim is a curl one-liner.
+* **Claude plugin on the host.** The app runs `claude plugin list` behind a
+  PATH prefix, since a non-interactive SSH command skips your login rc. "Not
+  installed" and "Claude Code was not found here" are separate answers with
+  separate fixes.
 
-No probe output is shown, logged, or copied — only verdicts the app composed.
+The app shows, logs and copies no probe output, only verdicts it composed.
 `claude plugin list` prints the plugin's stored config, and after a rotation
-that is a token this app no longer knows and therefore could not redact.
+that holds a token this app no longer knows and so could not redact.
 
-The equivalent commands, if you would rather run them by hand, are in
+To run the equivalent commands by hand, see
 [docs/remote-claude-context.md](../../docs/remote-claude-context.md#checking-the-setup).
 
 ## Connection indicator (opt-in status line)
 
-The same bottom-bar indicator the local plugin offers, adapted to a host
-where everything fails open by design: it tells you whether hooks from this
-host are actually reaching localvoxtral on your Mac, instead of you finding
-out by dictating into nothing.
+This is the local plugin's bottom-bar indicator, adapted to a host where
+everything fails open. It tells you whether hooks from this host reach
+localvoxtral on your Mac, so you don't find out by dictating into nothing.
 
-It never dials the tunnel — a status line re-runs constantly, and every dial
+It never dials the tunnel. A status line re-runs constantly, and every dial
 against a live forward with no app behind it prints ssh's
-`connect_to …: failed.` onto your terminal (the exact storm the shim's
-backoff exists to end). Instead, `post.sh` records private host and per-session
-stamps. The renderer checks for both a recent connection and this session's
-join:
+`connect_to …: failed.` onto your terminal, the flood of messages the shim's
+backoff exists to stop. Instead, `post.sh` records private host and
+per-session stamps. The renderer checks for both a recent connection and this
+session's join:
 
 | Line | Meaning |
 |---|---|
@@ -759,9 +764,9 @@ join:
 
 With `NO_COLOR` set or `TERM=dumb`, the same glyphs render without color.
 
-Set it up on the **remote host** (the plugin ships the renderer; Claude Code's
-versioned plugin cache is no place for a settings path, so copy it somewhere
-stable):
+Set it up on the **remote host**. The plugin ships the renderer, but Claude
+Code's plugin cache path changes with each version, so copy the script
+somewhere stable:
 
 ```sh
 cp ~/.claude/plugins/marketplaces/localvoxtral/integrations/claude-code/plugins/localvoxtral-remote/hooks/statusline.sh \
@@ -779,15 +784,15 @@ and in the host's `~/.claude/settings.json`:
 }
 ```
 
-The renderer prints only one of the fixed strings above. No byte from the
-payload or either stamp is echoed. If you already run a status line on that
-host, call the script from it and append its one line.
+The renderer prints only one of the fixed strings above and never echoes a
+byte from the payload or either stamp. If you already run a status line on
+that host, call the script from it and append its one line.
 
 ## Sessions nobody is sitting in front of
 
-The tunnel exists only while *something* holds it, and normally that something
-is your own `ssh builder` session. Anything the host starts on its own has no
-such session:
+The tunnel exists only while *something* holds it, normally your own
+`ssh builder` session. Anything the host starts on its own has no such
+session:
 
 * Claude Desktop sessions on the host: Desktop's ssh runs with
   `ClearAllForwardings=yes` and never carries the forward, so a host you
@@ -796,14 +801,13 @@ such session:
 * `claude remote-control` servers (systemd user services, lingering enabled)
 * t3 code and other harnesses that spawn Claude Code into a worktree
 * cron jobs, CI runners, anything headless
-* sessions you only ever look at through a herdr 0.9 federated view — the
+* sessions you only ever look at through a herdr 0.9 federated view. The
   link herdr holds is not a shell of yours, and it may have lost the forward
   to an earlier session that has since ended (first session wins, see
   [Sessions](../../docs/remote-claude-context.md#a-second-session-to-the-same-host))
 
-Those sessions publish hooks exactly like an interactive one — into a tunnel
-that is not there. The result is silent, as always: dictation just is not
-grounded.
+Those sessions publish hooks like an interactive one, into a tunnel that is
+not there. As always, the failure is silent: dictation gets no context.
 
 So each enrolled host's row in Settings has **Keep the tunnel open**. With it
 on, localvoxtral holds that host's forward itself:
@@ -815,11 +819,11 @@ ssh -N -o BatchMode=yes -o ExitOnForwardFailure=no \
     -R 28511:127.0.0.1:8473 -- builder
 ```
 
-It is off by default, per host — an app that opened SSH connections you did not
-ask for would be a worse bug than the one it fixes. No token is involved
-anywhere on this path; the credential lives in the remote plugin's config and
-this process only carries bytes for it. Notes on the flags, since they differ
-from the ones in your `~/.ssh/config` block deliberately:
+It is off by default, per host, because an app that opened SSH connections
+you did not ask for would be a worse bug than the one it fixes. This path
+involves no token. The credential lives in the remote plugin's config, and
+this process only carries bytes for it. The flags differ from the ones in your
+`~/.ssh/config` block on purpose:
 
 * **`ExitOnForwardFailure=no`**, like your config block. The process reads
   your config, so it also requests every other `RemoteForward` your `Host`
@@ -831,14 +835,14 @@ from the ones in your `~/.ssh/config` block deliberately:
 * **`ForkAfterAuthentication=no`, `ControlPath=none`, `PermitLocalCommand=no`**
   keep your config from backgrounding, multiplexing or running a local command
   under a process the app has to be able to stop.
-* **`ServerAliveInterval=30` / `ServerAliveCountMax=3`** — a NAT or a sleeping
-  laptop otherwise leaves a half-dead connection holding the remote bind, which
-  is precisely the state that makes the next connection fail.
+* **`ServerAliveInterval=30` / `ServerAliveCountMax=3`**. Without them, a NAT
+  or a sleeping laptop leaves a half-dead connection holding the remote bind,
+  which makes the next connection fail.
 * Restarts back off exponentially (0.5s, 1s, 2s… capped at 30s) and stop
   after five consecutive failures rather than hammering your SSH server. A
-  **refused bind** never enters that loop: when the port turns out to be held
-  by your own session, the row reads **Tunnel up through an existing ssh
-  session.**; otherwise **Port held on that host. Checking again every 5
+  **refused bind** never enters that loop. When your own session holds the
+  port, the row reads **Tunnel up through an existing ssh
+  session.** Otherwise it reads **Port held on that host. Checking again every 5
   min.** Either way the app dials again every five minutes.
 * When the Mac wakes or its network changes, a stopped or waiting tunnel
   starts over at once.
@@ -848,18 +852,17 @@ from the ones in your `~/.ssh/config` block deliberately:
   default `ClientAliveCountMax 3`) makes sshd drop it within about 90
   seconds.
 
-The listener binds first and the forwards start second, always: a forward
-opened into an unbound port would give every hook connection-refused (silent,
-fail-open) while making ssh print `connect_to … failed.` into your remote
-terminal on every dial. Turning the toggle on or off takes effect immediately —
-there is no relaunch step — and revoking a host, or quitting the app, stops its
-forward.
+The listener always binds before the forwards start. A forward opened into an
+unbound port would give every hook connection-refused (silent, fail-open)
+while making ssh print `connect_to … failed.` into your remote terminal on
+every dial. Turning the toggle on or off takes effect immediately, with no
+relaunch. Revoking a host, or quitting the app, stops its forward.
 
 ## Updating an enrolled host
 
 When localvoxtral ships a newer version of this plugin, an already-enrolled host
-does **not** pick it up by re-running the setup commands. Verified on Claude Code
-2.1.220:
+does **not** pick it up when you re-run the setup commands. Verified on Claude
+Code 2.1.220:
 
 - `claude plugin marketplace add …` on a marketplace it already has exits 0,
   says it is already on disk, and does **not** refresh the clone.
@@ -867,8 +870,8 @@ does **not** pick it up by re-running the setup commands. Verified on Claude Cod
   installed, and does **not** change the version. (It *does* apply a new
   `--config token=…`, which is why rotating a token reuses that same command.)
 
-So the update is its own pair, and it keeps your token — `plugin update`
-preserves the stored config:
+So the update takes its own pair of commands. It keeps your token, because
+`plugin update` preserves the stored config:
 
 ```sh
 ssh builder 'claude plugin marketplace update localvoxtral'
@@ -880,16 +883,17 @@ ssh builder "claude plugin install localvoxtral-remote@localvoxtral --config 'po
 ```
 
 Order matters: `plugin update` installs whatever the local marketplace clone
-currently offers, so refreshing the clone first is what makes it an update at
-all. In the app, a host in **Settings → Remote hosts** has an **Update
-Host…** button unless it is revoked or already current (see above). Its consent sentence names the local files and enrolled SSH
-alias, and **Set Up** runs the same seven-step flow as enrollment. The display name
-is never used as a substitute for the alias. A host enrolled before aliases
-were recorded must be re-enrolled before the app can update it.
-Non-interactive SSH skips your login shell's
-rc, so the app's version of these commands sets `PATH` to the usual `claude`
-install locations first; add that yourself if `claude` is off the PATH a plain
-`ssh host 'claude …'` sees.
+currently offers, so without refreshing the clone first nothing updates.
+
+In the app, a host in **Settings → Remote hosts** has an **Update Host…**
+button unless it is revoked or already current (see above). Its consent
+sentence names the local files and enrolled SSH alias, and **Set Up** runs the
+same seven-step flow as enrollment. The app never uses the display name in
+place of the alias. A host enrolled before aliases were recorded must be
+re-enrolled before the app can update it.
+Non-interactive SSH skips your login shell's rc, so the app's version of these
+commands first sets `PATH` to the usual `claude` install locations. Add that
+yourself if `claude` is off the PATH a plain `ssh host 'claude …'` sees.
 
 ## Uninstall and revoke
 
@@ -899,20 +903,21 @@ ssh builder 'claude plugin marketplace remove localvoxtral'
 # then delete the BEGIN/END block from ~/.ssh/config
 ```
 
-Then **revoke the host in localvoxtral**. That is the part that matters: the
+Then **revoke the host in localvoxtral**. This step matters most, because the
 token dies on your Mac, not on the remote. Uninstalling the plugin only stops
-the host asking; revoking stops it being answered, immediately and without a
-restart. Rotating instead of revoking issues a new token and kills the old one
-with no grace period.
+the host asking. Revoking stops the app answering it, immediately and without
+a restart. Rotating instead of revoking issues a new token and kills the old
+one with no grace period.
 
 ## What the token can and cannot do
 
-A host presenting a valid token can give localvoxtral **remote context**. That is
-all it can ever do. It cannot make the app read a local file, and this is not a
-policy — the listener tags every session it accepts as `remote` regardless of
-what the payload says, and a remote working directory is reduced to a bare label
-that has no path accessor to hand a collector. A *local* process that connects to
-the listener gets the same treatment: connecting there can only downgrade you.
+A host presenting a valid token can give localvoxtral **remote context**, and
+nothing more. It cannot make the app read a local file, and code enforces
+this, not a policy. The listener tags every session it accepts as `remote`
+whatever the payload says, and reduces a remote working directory to a bare
+label with no path that a collector could read. A *local* process that
+connects to the listener gets the same treatment, so connecting there can
+only downgrade you.
 
 Each host's sessions are namespaced under the host id its token authenticated,
 so two hosts can never collide on a session id or forge each other's
@@ -920,54 +925,51 @@ sessions.
 
 ## What this does not protect against
 
-Stated plainly, because a security note that only lists wins is not a threat
-model.
-
-**A malicious process running as YOU on the remote host.** This is not solvable
-here and we do not claim otherwise. That process can already read
-`~/.claude/`, which is where Claude Code keeps the plugin's configured token —
-so it can read the token regardless of anything the app does, and it could
-equally well read your source, your keys, and your shell history without
-involving localvoxtral at all. Enrolling a host means trusting that host's user
-account to the extent it is already trusted. What the token bounds is what a
-host can do to *localvoxtral* (remote context only, never a local file read),
-not what a compromised account can do to itself.
+**A malicious process running as YOU on the remote host.** This cannot be
+solved here. That process can already read `~/.claude/`, where Claude Code
+keeps the plugin's configured token, so it can read the token whatever the
+app does. It could just as well read your source, your keys, and your shell
+history without involving localvoxtral at all. Enrolling a host means
+trusting that host's user account as far as it is already trusted. The token
+limits what a host can do to *localvoxtral* (remote context only, never a
+local file read), not what a compromised account can do to itself.
 
 **Two Macs enrolled against one host.** Each Mac forwards its *own* port, so
-they cannot contend for one remote bind — which used to be a silent
-cross-delivery: the first connection kept the forward, the second connected
-anyway (`ExitOnForwardFailure no`) and every event on that host, bearer token
-included, went to the *first* Mac, which 401'd it, which the shim reads as a
-completed exchange. Nothing reported it (issue #215). What per-Mac ports do
-**not** change: one host runs one Claude Code install storing one `port`, so the
-most recently installed config is the Mac that receives events. The other one
-simply sees no traffic — visible single tenancy, not someone else's credential
-in someone else's listener.
+they cannot compete for one remote bind. That used to cause silent
+cross-delivery. The first connection kept the forward, and the second
+connected anyway (`ExitOnForwardFailure no`). Every event on that host,
+bearer token included, went to the *first* Mac, which answered 401, which the
+shim reads as a completed exchange. Nothing reported it (issue #215). What
+per-Mac ports do **not** change: one host runs one Claude Code install storing
+one `port`, so the Mac whose config was installed last receives the events.
+The other Mac sees no traffic. You can see that only one Mac is served, and
+no credential reaches the wrong Mac's listener.
 
 **A process on your Mac that squats 127.0.0.1:8473 before the app binds it.**
-Loopback ports are first-come, first-served on macOS; there is no ownership. A
-squatter cannot authenticate your hosts — it does not have the token hashes,
-which never leave the 0600 host file — but it does receive whatever the remote
-sends, including the bearer token itself, before anything rejects it. The app
-therefore treats a bind conflict as a condition to *report*, not to route
-around: Settings says the port is in use and offers Retry, rather than quietly
-sliding to another port where you would never learn a squatter was there. If you
-see that status, find the process (`lsof -nP -iTCP:8473 -sTCP:LISTEN`) before
-assuming it is a stale copy of the app, and rotate the tokens of any host that
-connected meanwhile.
+Loopback ports on macOS go to whoever binds first, with no ownership. A
+squatter cannot authenticate your hosts, because it does not have the token
+hashes, which never leave the 0600 host file. But it does receive whatever
+the remote sends, including the bearer token itself, before anything rejects
+it. So the app reports a bind conflict instead of routing around it. Settings
+says the port is in use and offers Retry, rather than quietly moving to
+another port where you would never learn a squatter was there. If you see
+that status, find the process (`lsof -nP -iTCP:8473 -sTCP:LISTEN`) before
+assuming it is a stale copy of the app, and rotate the tokens of any host
+that connected meanwhile.
 
 **Anyone who can write your `~/.ssh/config`.** They can point the forward
-somewhere else. That is true of every use of that file and is why the app only
-ever writes it after showing you the exact block and getting your confirmation
-— and only its own marker-delimited block, never the rest of the file.
+somewhere else. That is true of every use of that file. For that reason the
+app writes it only after showing you the exact block and getting your
+confirmation, and writes only its own marker-delimited block, never the rest
+of the file.
 
 ## SSH to a host you have NOT enrolled
 
-No enrollment, no tunnel, no token, no hooks. Your session is unchanged and the
-pane stays screen-only and unjoined. Nothing about this feature is on by default:
-with no enrolled host, the app binds no port at all. (An ENROLLED host's plain
-`ssh` session does now join — on the connection itself; see "A plain `ssh host`
-session" near the top.)
+No enrollment means no tunnel, no token, and no hooks. Your session is
+unchanged and the pane stays screen-only and unjoined. Nothing about this
+feature is on by default: with no enrolled host, the app binds no port at all.
+An ENROLLED host's plain `ssh` session does now join, on the connection
+itself (see "A plain `ssh host` session" near the top).
 
 ## What crosses the tunnel
 
@@ -987,21 +989,21 @@ The same allowlist as the local plugin, plus two additions:
   keeps one set of learned terms). Each is sent only
   if it is non-empty, at most 200 characters, and made purely of ASCII
   alphanumerics plus `._:/@+,=%-`; anything else is dropped rather than
-  escaped. `SSH_CONNECTION` is the one value the shim reshapes: `sshd` writes
+  escaped. `SSH_CONNECTION` is the one value the shim reshapes. `sshd` writes
   its four fields separated by spaces, and a space could end a header line, so
-  the shim re-joins them with commas — and drops the value entirely if it is
-  not exactly four fields. They tell the
-  app WHERE the session runs so it can tell whether the pane you are dictating
-  into is this one — never what it contains. The rest of the environment is not
-  read, and these values are labels on the Mac: they can never become a local
-  path, a socket the app dials, or a process it probes.
+  the shim re-joins them with commas, and drops the value entirely if it is
+  not exactly four fields. These values tell the app WHERE the session runs,
+  so it can tell whether the pane you are dictating into is this one, never
+  what the pane contains. No other environment value goes into these headers.
+  On the Mac these values are only labels: they can never become a local path, a
+  socket the app dials, or a process it probes.
 
-These exist only for remote sessions. A local session's files are on your Mac
-and the app reads them properly; a remote session's are on a machine the app has
-no business reaching into, so what the hook quotes is all it will ever know.
-Every excerpt is stripped of control characters, C1 escapes, bidi overrides, and
-zero-width characters before it is stored — foreign text is treated as text, never
-as something that can act.
+These additions exist only for remote sessions. A local session's files are on
+your Mac and the app reads them directly. A remote session's files are on a
+machine the app does not reach into, so what the hook quotes is all it will
+ever know. Every excerpt is stripped of control characters, C1 escapes, bidi
+overrides, and zero-width characters before it is stored, so foreign text
+stays text and cannot act on anything.
 
 Transcript contents, `Bash` command strings, and anything claiming to be trusted
 still never cross, exactly as locally.
