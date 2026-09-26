@@ -2,9 +2,8 @@ import ClaudeContextWire
 import Foundation
 import Synchronization
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
-#if canImport(Darwin)
 
 private final class CoordinatorMemoryStore: ClaudeRemoteHostStoreIO {
     private let contents = Mutex<Data?>(nil)
@@ -68,7 +67,7 @@ final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
         )
     }
 
-    func testFirstEnrollmentBindsAndLastRevocationStopsARealListener() throws {
+    func testFirstEnrollmentBindsAndLastRevocationStopsARealListener() async throws {
         let hosts = try makeHosts()
         let sessions = ClaudeSessionRegistry()
         // Port zero asks the kernel for an unused ephemeral port, so this proves
@@ -94,7 +93,7 @@ final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
     /// that lived in the listener would forget a night of rejected connections
     /// the moment the user revoked and re-enrolled a host — losing exactly the
     /// evidence the Settings hint exists to show.
-    func testRejectionCountersSurviveARebind() throws {
+    func testRejectionCountersSurviveARebind() async throws {
         let hosts = try makeHosts()
         let sessions = ClaudeSessionRegistry()
         let handed = TalliesHandedToListeners()
@@ -128,7 +127,7 @@ final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
         )
     }
 
-    func testRevokingAHostEvictsItsCachedSessions() throws {
+    func testRevokingAHostEvictsItsCachedSessions() async throws {
         let hosts = try makeHosts()
         let sessions = makeSessions()
         let coordinator = makeCoordinator(hosts: hosts, sessions: sessions)
@@ -164,7 +163,7 @@ final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.isListening, "and it still has a host to listen for")
     }
 
-    func testRemovingAHostEvictsItsCachedSessions() throws {
+    func testRemovingAHostEvictsItsCachedSessions() async throws {
         let hosts = try makeHosts()
         let sessions = makeSessions()
         let coordinator = makeCoordinator(hosts: hosts, sessions: sessions)
@@ -201,7 +200,7 @@ final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
         )
     }
 
-    func testReconcileNeverEvictsLocalSessions() throws {
+    func testReconcileNeverEvictsLocalSessions() async throws {
         // A local session's trust comes from peer credentials on our own socket.
         // It must survive every enrollment state, including "no hosts at all",
         // which is the state of every user who never set the remote half up.
@@ -225,7 +224,7 @@ final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
         XCTAssertNotNil(sessions.snapshot(sessionID: "local-1"))
     }
 
-    func testEnrollingASecondHostEvictsNothing() throws {
+    func testEnrollingASecondHostEvictsNothing() async throws {
         // The listener authenticates live, so adding a host rebinds nothing —
         // and it must not disturb the first host's cached context either.
         let hosts = try makeHosts()
@@ -253,5 +252,3 @@ final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
         )
     }
 }
-
-#endif

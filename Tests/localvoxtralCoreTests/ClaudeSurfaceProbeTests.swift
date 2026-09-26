@@ -2,7 +2,7 @@ import ClaudeContextWire
 import Foundation
 import Synchronization
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// Test clock — the registry never reads the wall clock itself (AGENTS: no
 /// wall-clock in tests), and the probe under test never reads one at all.
@@ -112,7 +112,7 @@ final class ClaudeSurfaceProbeTests: XCTestCase {
 
     // MARK: - Argument parsing
 
-    func testVerbIsOnlyRecognizedWhenAskedFor() {
+    func testVerbIsOnlyRecognizedWhenAskedFor() async {
         XCTAssertEqual(
             ClaudeSurfaceProbe.invocation(arguments: ["/usr/bin/localvoxtral"]),
             .notRequested,
@@ -137,7 +137,7 @@ final class ClaudeSurfaceProbeTests: XCTestCase {
         )
     }
 
-    func testUnrecognizedOptionIsAUsageErrorRatherThanASilentDefault() {
+    func testUnrecognizedOptionIsAUsageErrorRatherThanASilentDefault() async {
         // A typo that fell through to a default would print a normal-looking
         // summary for something the caller did not ask for.
         guard case .usageError(let message) = ClaudeSurfaceProbe.invocation(
@@ -148,7 +148,7 @@ final class ClaudeSurfaceProbeTests: XCTestCase {
         XCTAssertTrue(message.contains("--jsonn"), "the message must name what it rejected")
     }
 
-    func testArgumentZeroIsNeverParsedAsAnOption() {
+    func testArgumentZeroIsNeverParsedAsAnOption() async {
         // An executable installed at a path that happens to contain the verb
         // must not turn every launch into a probe.
         XCTAssertEqual(
@@ -341,7 +341,7 @@ final class ClaudeSurfaceProbeTests: XCTestCase {
         XCTAssertEqual(summary.terminal, "Ghostty")
     }
 
-    func testExitStatusSplitsJoinedFromNotJoined() {
+    func testExitStatusSplitsJoinedFromNotJoined() async {
         XCTAssertEqual(
             ClaudeSurfaceProbe.exitCode(
                 for: ClaudeSessionJoinSummary(arm: "none", abstentionReason: nil)
@@ -379,7 +379,7 @@ final class ClaudeSurfaceProbeTests: XCTestCase {
 /// that would forgive a dropped key.
 @MainActor
 final class ClaudeSessionJoinSummaryJSONTests: XCTestCase {
-    func testAbstainedSummaryEmitsEveryKeyWithExplicitNulls() {
+    func testAbstainedSummaryEmitsEveryKeyWithExplicitNulls() async {
         let summary = ClaudeSessionJoinSummary.summarize(
             join: nil, abstentions: ["tty: stale"]
         )
@@ -390,7 +390,7 @@ final class ClaudeSessionJoinSummaryJSONTests: XCTestCase {
         )
     }
 
-    func testFullSummaryEmitsBoolsUnquotedAndKeysInTheDocumentedOrder() {
+    func testFullSummaryEmitsBoolsUnquotedAndKeysInTheDocumentedOrder() async {
         let summary = ClaudeSessionJoinSummary(
             arm: "remoteHerdrPane",
             abstentionReason: nil,
@@ -405,7 +405,7 @@ final class ClaudeSessionJoinSummaryJSONTests: XCTestCase {
         XCTAssertEqual(summary.jsonLine, expected)
     }
 
-    func testACauseCarryingQuotesCannotEmitBrokenJSON() throws {
+    func testACauseCarryingQuotesCannotEmitBrokenJSON() async throws {
         let summary = ClaudeSessionJoinSummary.summarize(
             join: nil, abstentions: [#"tty: "odd" \ cause"#]
         )
@@ -418,7 +418,7 @@ final class ClaudeSessionJoinSummaryJSONTests: XCTestCase {
         XCTAssertEqual(object.keys.count, 6)
     }
 
-    func testEveryMechanismHasItsOwnArmName() {
+    func testEveryMechanismHasItsOwnArmName() async {
         // Two arms sharing a name would make a probe run and a dogfood record
         // agree on a lie.
         let mechanisms: [ClaudeSessionJoinMechanism] = [
@@ -432,7 +432,7 @@ final class ClaudeSessionJoinSummaryJSONTests: XCTestCase {
         XCTAssertEqual(Set(names).count, names.count)
     }
 
-    func testTerminalNamesCoverExactlyTheJoinableTerminals() {
+    func testTerminalNamesCoverExactlyTheJoinableTerminals() async {
         XCTAssertEqual(
             TerminalScreenAllowlist.displayName(forBundleID: TerminalScreenAllowlist.ghosttyBundleID),
             "Ghostty"

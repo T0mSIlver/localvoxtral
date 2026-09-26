@@ -1,11 +1,11 @@
 import ClaudeContextWire
+#if canImport(CoreGraphics)
 import CoreGraphics
+#endif
 import Foundation
 import Synchronization
 import XCTest
-@testable import localvoxtral
-
-#if canImport(Darwin)
+@testable import localvoxtralCore
 
 /// The plain-ssh arm: a Claude Code session in `ssh host` with no herdr, no
 /// cmux and no Remote Control, joined by the TCP CONNECTION the surface's ssh
@@ -700,7 +700,7 @@ final class PlainSSHConnectionJoinTests: XCTestCase {
         }
     }
 
-    func testTheMultiplexerLabelListCoversEveryMultiplexerFieldOnTheWire() {
+    func testTheMultiplexerLabelListCoversEveryMultiplexerFieldOnTheWire() async {
         // A wire field naming a multiplexer that is NOT in the list is a
         // silent mis-join waiting to happen — that is exactly how screen got
         // missed. Anything matching these names must be in the list or
@@ -767,7 +767,6 @@ final class SSHConnectionReportTests: XCTestCase {
         }
     }
 
-    #if canImport(Darwin)
     func testAddressComparisonIsBytesNotText() {
         // Literal expectations, not a round trip through the parser under test.
         XCTAssertEqual(SSHConnectionAddressMatch.addressBytes("127.0.0.1"), [127, 0, 0, 1])
@@ -789,6 +788,4 @@ final class SSHConnectionReportTests: XCTestCase {
         XCTAssertFalse(SSHConnectionAddressMatch.sameAddress("not-an-address", "not-an-address"))
         XCTAssertNil(SSHConnectionAddressMatch.addressBytes(""))
     }
-    #endif
 }
-#endif
