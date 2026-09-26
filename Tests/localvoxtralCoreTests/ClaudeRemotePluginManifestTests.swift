@@ -2252,8 +2252,12 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             "name the control the user is looking for"
         )
         try assertReadmeHasLine(
-            containing: "ExitOnForwardFailure=yes",
-            "the flag is the opposite of the config block above it, and that needs saying"
+            containing: "ExitOnForwardFailure=no",
+            "a refusal of another forward the alias declares must not cost this one (#659)"
+        )
+        try assertReadmeHasLine(
+            containing: "Claude Desktop sessions on the host",
+            "Desktop's ssh never carries the forward, so its hosts need the toggle (#656)"
         )
         try assertReadmeHasLine(
             containing: "off by default",

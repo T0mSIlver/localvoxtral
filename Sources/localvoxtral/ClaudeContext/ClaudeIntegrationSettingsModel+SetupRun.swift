@@ -69,12 +69,17 @@ extension ClaudeIntegrationSettingsModel {
             )
             return
         }
+        let keptOpenForDesktop = await keepTunnelOpenIfClaudeDesktopRuns(
+            hostID: hostID, alias: alias, service: service
+        )
         markSetup(
             .sshConfig,
             .done(
-                snippetToApply == nil
-                    ? "The SSH config block is already current."
-                    : "The SSH config block is current."
+                keptOpenForDesktop
+                    ? "Claude Desktop's ssh never opens the tunnel, so Keep the tunnel open is now on."
+                    : snippetToApply == nil
+                        ? "The SSH config block is already current."
+                        : "The SSH config block is current."
             )
         )
         guard continueSetup(hostID: hostID) else { return }
@@ -315,6 +320,49 @@ extension ClaudeIntegrationSettingsModel {
         if case .updateHost = confirmation.action { presentedPluginUpdate = nil }
         refreshHosts()
         Log.claudeContext.info("Claude remote host setup completed")
+    }
+
+    /// Turn on the app-held forward when Claude Desktop runs sessions on the
+    /// host, and say whether this run did (#656).
+    ///
+    /// Desktop's ssh clears every forward, so on a host only Desktop reaches,
+    /// the config block just written opens nothing and every hook fails open,
+    /// silently. The run itself is the user's click, and the toggle is theirs
+    /// to turn back off. Runs early so the tunnel is up by the final check.
+    /// A probe that fails decides nothing: the later steps reach the same host
+    /// and report ssh trouble with a remedy.
+    private func keepTunnelOpenIfClaudeDesktopRuns(
+        hostID: String,
+        alias: String,
+        service: ClaudeRemoteEnrollmentService
+    ) async -> Bool {
+        guard let registry, registry.host(id: hostID)?.persistentForwardEnabled == false else {
+            return false
+        }
+        let detection = await performEnrollmentAsync {
+            let found = try service.detectClaudeDesktop(sshHostAlias: alias)
+            return [.init(index: 0, command: "detect Claude Desktop", message: found ? "found" : "absent")]
+        }
+        if let failure = detection.failure {
+            Log.claudeContext.error(
+                "Claude remote setup could not check for Claude Desktop: \(failure.describedError, privacy: .public)"
+            )
+            return false
+        }
+        guard detection.steps.first?.message == "found" else { return false }
+        do {
+            try registry.setPersistentForwardEnabled(true, hostID: hostID)
+        } catch {
+            Log.claudeContext.error(
+                "Claude remote setup found Claude Desktop but could not keep the tunnel open: \(String(describing: error), privacy: .public)"
+            )
+            return false
+        }
+        forwards?.reconcile()
+        Log.claudeContext.info(
+            "Claude remote setup found Claude Desktop on host \(hostID, privacy: .public); keeping its tunnel open"
+        )
+        return true
     }
 
     /// Neither agent is on the host, so the run has installed nothing that

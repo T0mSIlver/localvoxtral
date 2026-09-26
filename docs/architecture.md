@@ -179,17 +179,20 @@ Key subsystems:
     A per-host opt-in (`ClaudeRemoteForwardSupervisor` +
     `ClaudeRemoteForwardCoordinator`, default off) lets the app hold that
     forward itself with a supervised `ssh -N -R`, for sessions a harness
-    spawns on the host (t3 code, `claude remote-control`) that have no
+    spawns on the host (t3 code, `claude remote-control`) and for Claude
+    Desktop, whose ssh clears every forward, none of which has an
     interactive terminal to hold it. That process uses
-    `ExitOnForwardFailure=yes` — the opposite of the user's config block, on
-    purpose: it IS the nicety, so a bind it cannot get is the detection
-    signal. It never sets `ClearAllForwardings` (that clears the command-line
+    `ExitOnForwardFailure=no`, like the user's config block, and acts only on
+    a refusal that names its own port: it inherits every `RemoteForward` the
+    alias declares, and a refusal of another one must not cost its own
+    tunnel. It never sets `ClearAllForwardings` (that clears the command-line
     `-R` too, so the tunnel is never created — measured with `ssh -G`), and it
     forces `ForkAfterAuthentication=no`, `ControlPath=none` and
     `PermitLocalCommand=no` so the user's own ssh config cannot detach,
-    multiplex, or run a local command underneath it. A refused bind is
-    TERMINAL (no retry storm against a port somebody else holds) — unless the
-    port turns out to be OURS. A refused bind means only "somebody holds it",
+    multiplex, or run a local command underneath it. A refused bind never
+    enters the restart backoff (no retry storm against a port somebody else
+    holds); it parks and re-dials every 5 minutes, and first asks whether the
+    port is OURS. A refused bind means only "somebody holds it",
     and on a host the user actually ssh's to, that somebody is normally their
     own session carrying the same `RemoteForward` out of `~/.ssh/config` — the
     working tunnel. `ClaudeRemoteForwardOwnershipCheck` tells the two apart by
@@ -198,10 +201,12 @@ Key subsystems:
     (`ClaudeRemoteForwardProbeWitness`); a status code would prove nothing,
     since a stranger can reproduce ours and a SECOND Mac answers an honest 401
     of its own. Proof gives `externallyForwarded` — not a failure, re-proved on
-    a long park so a session that ends is noticed; anything unproved stays
-    `portUnavailable`. An ordinary
+    a long park so a session that ends is noticed; anything unproved is
+    `portUnavailable`, on the same park. An ordinary
     drop backs off exponentially, and a run that stays up long enough to
-    settle clears the failure count. Listener binds first, forwards start
+    settle clears the failure count. On wake and on a network-path change
+    (`ClaudeRemoteForwardRecoveryTriggers`) every failed or parked forward
+    starts over. Listener binds first, forwards start
     second — always; stopping is the mirror. After a
     transport-level failure the shim backs off for 5 minutes (epoch stamp
     under `$XDG_RUNTIME_DIR`/`~/.cache`) for every event except

@@ -100,6 +100,7 @@ private final class StubForwarding: ClaudeRemoteForwarding {
         transition(to: .stopped)
     }
     func retry() { retried += 1 }
+    func recover() {}
 
     func transition(to newState: ClaudeRemoteForwardSupervisor.State) {
         state = newState
@@ -138,6 +139,8 @@ private struct SetupFlowScript: Sendable {
     )
     var tunnelMessage = "LVX_HTTP:401"
     var pluginListMessage = "localvoxtral-remote 1.10.0\n"
+    /// Whether the host has Claude Desktop's session daemon directory.
+    var claudeDesktop = false
 }
 
 /// A `claude plugin list --json` capture as a login shell delivers it: a
@@ -2679,6 +2682,13 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             if invocation.argv.contains("-G") {
                 return .init(exitCode: 0, message: script.sendEnvOutput)
             }
+            if stdin.contains(ClaudeRemoteEnrollmentService.claudeDesktopFramePrefix) {
+                return .init(
+                    exitCode: 0,
+                    message: ClaudeRemoteEnrollmentService.claudeDesktopFramePrefix
+                        + (script.claudeDesktop ? "yes" : "no")
+                )
+            }
             if stdin.contains("LC_LVX_TTY") {
                 return script.envEchoesBack
                     ? .init(
@@ -2817,6 +2827,107 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertEqual(currentFS.writes, 0)
     }
 
+    /// #656: Claude Desktop's ssh clears every forward, so on a host it runs
+    /// sessions on, the config block alone delivers nothing. The run turns on
+    /// the app-held tunnel and says why, in the step that wrote the block.
+    @MainActor
+    func testSetupRunKeepsTheTunnelOpenOnAClaudeDesktopHost() async throws {
+        let (model, hostID, _, _) = try await enrollAndRunSetup(
+            script: SetupFlowScript(claudeDesktop: true)
+        )
+        let run = try XCTUnwrap(model.setupRun)
+        XCTAssertEqual(
+            run.items[0].state,
+            .done("Claude Desktop's ssh never opens the tunnel, so Keep the tunnel open is now on.")
+        )
+        XCTAssertTrue(try XCTUnwrap(model.hosts.first { $0.id == hostID }).persistentForwardEnabled)
+    }
+
+    @MainActor
+    func testSetupRunLeavesTheTunnelSettingAloneWithoutClaudeDesktop() async throws {
+        let (model, hostID, _, _) = try await enrollAndRunSetup()
+        XCTAssertEqual(
+            try XCTUnwrap(model.setupRun).items[0].state,
+            .done("The SSH config block is current.")
+        )
+        XCTAssertFalse(try XCTUnwrap(model.hosts.first { $0.id == hostID }).persistentForwardEnabled)
+    }
+
+    /// The probe runs only while the setting is off: a host that already has
+    /// the tunnel on costs no extra ssh connection. The probe itself clears
+    /// forwardings, like every connection with no use for the tunnel.
+    @MainActor
+    func testTheDesktopProbeRunsOnlyWhileTheTunnelIsOff() async throws {
+        let (_, _, _, offRecorder) = try await enrollAndRunSetup(script: SetupFlowScript(claudeDesktop: true))
+        let probes = offRecorder.all.filter {
+            String(decoding: $0.standardInput, as: UTF8.self)
+                .contains(ClaudeRemoteEnrollmentService.claudeDesktopFramePrefix)
+        }
+        XCTAssertEqual(probes.count, 1)
+        XCTAssertEqual(
+            probes[0].argv,
+            ["ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--", "builder", "/bin/sh", "-s"]
+        )
+
+        let registry = try makeRegistry()
+        let recorder = SetupFlowRecorder()
+        let service = ClaudeRemoteEnrollmentService(
+            runner: setupFlowRunner(script: SetupFlowScript(claudeDesktop: true), recorder: recorder),
+            sshConfigFileSystem: StubSSHConfigFileSystem()
+        )
+        let listener = StubClaudeRemoteListener(hosts: registry)
+        listener.isListening = true
+        let model = setupFlowModel(registry: registry, listener: listener, service: service, rcFileSystem: StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true, data: Data("export EDITOR=vim\n".utf8), permissions: 0o644
+        )))
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let hostID = try XCTUnwrap(model.hosts.first?.id)
+        try registry.setPersistentForwardEnabled(true, hostID: hostID)
+        model.requestHostSetup()
+        await model.confirmEnrollmentAction()
+        XCTAssertFalse(
+            recorder.all.contains {
+                String(decoding: $0.standardInput, as: UTF8.self)
+                    .contains(ClaudeRemoteEnrollmentService.claudeDesktopFramePrefix)
+            }
+        )
+        XCTAssertEqual(try XCTUnwrap(model.setupRun).items[0].state, .done("The SSH config block is current."))
+    }
+
+    /// The probe failing decides nothing and stops nothing.
+    @MainActor
+    func testAFailedDesktopProbeDoesNotStopTheRun() async throws {
+        let registry = try makeRegistry()
+        let recorder = SetupFlowRecorder()
+        let inner = setupFlowRunner(script: SetupFlowScript(), recorder: recorder)
+        let service = ClaudeRemoteEnrollmentService(
+            runner: { invocation in
+                if String(decoding: invocation.standardInput, as: UTF8.self)
+                    .contains(ClaudeRemoteEnrollmentService.claudeDesktopFramePrefix) {
+                    return .init(exitCode: 255, message: "ssh: connect to host builder: timed out")
+                }
+                return try inner(invocation)
+            },
+            sshConfigFileSystem: StubSSHConfigFileSystem()
+        )
+        let listener = StubClaudeRemoteListener(hosts: registry)
+        listener.isListening = true
+        let model = setupFlowModel(registry: registry, listener: listener, service: service, rcFileSystem: StubRCFileSystem(state: ClaudeShellRCState(
+            fileExists: true, data: Data("export EDITOR=vim\n".utf8), permissions: 0o644
+        )))
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        model.requestHostSetup()
+        await model.confirmEnrollmentAction()
+        let run = try XCTUnwrap(model.setupRun)
+        XCTAssertEqual(run.items[0].state, .done("The SSH config block is current."))
+        XCTAssertEqual(run.items.last?.state, .done("The tunnel and remote plugin checks passed."))
+        XCTAssertFalse(try XCTUnwrap(model.hosts.first).persistentForwardEnabled)
+    }
+
     @MainActor
     func testSetupRunCompletesAllSevenStepsInOrder() async throws {
         let rcFS = StubRCFileSystem(state: ClaudeShellRCState(
@@ -2845,6 +2956,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertTrue(sshFS.configText?.contains("SendEnv LC_LVX_TTY") == true)
         let invocationOrder = recorder.all.map { invocation in
             let script = String(decoding: invocation.standardInput, as: UTF8.self)
+            if script.contains(ClaudeRemoteEnrollmentService.claudeDesktopFramePrefix) { return "claude desktop" }
             if script.contains(ClaudeRemoteEnrollmentService.pluginListFrameBegin) { return "plugin listing" }
             if script.contains("claude plugin install") { return "remote plugin" }
             if script.contains("LC_LVX_TTY") { return "environment crossing" }
@@ -2856,7 +2968,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertEqual(
             invocationOrder,
             [
-                "plugin listing", "remote plugin", "plugin listing",
+                "claude desktop", "plugin listing", "remote plugin", "plugin listing",
                 "environment crossing", "remote herdr", "tunnel check", "plugin check",
             ],
             "each step must finish before the next one starts"

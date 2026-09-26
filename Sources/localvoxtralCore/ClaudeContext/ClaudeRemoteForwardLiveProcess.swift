@@ -103,9 +103,9 @@ package final class ClaudeRemoteForwardLiveProcess: ClaudeRemoteForwardProcess, 
     }
 
     /// Called once, from the termination handler. Flushes a trailing partial
-    /// line — OpenSSH's forwarding warning is the LAST thing it prints before
-    /// exiting under `ExitOnForwardFailure=yes`, so dropping an unterminated
-    /// tail would lose exactly the line that matters.
+    /// line — the last thing OpenSSH prints before exiting is usually the one
+    /// that explains the exit, so dropping an unterminated tail would lose
+    /// exactly the line that matters.
     private func finish(status: Int32) {
         // Drain what the pipe still holds BEFORE closing the stream. The
         // termination handler can fire before the readability handler has been

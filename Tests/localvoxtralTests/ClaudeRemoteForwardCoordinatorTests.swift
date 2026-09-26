@@ -40,6 +40,8 @@ private final class FakeForwarding: ClaudeRemoteForwarding {
 
     func retry() { spy.noteRetry(hostID) }
 
+    func recover() { spy.noteRecover(hostID) }
+
     /// Lets a test drive the pane's view of a forward without a supervisor.
     func transition(to newState: ClaudeRemoteForwardSupervisor.State) {
         state = newState
@@ -52,6 +54,7 @@ private final class ForwardSpy {
     private(set) var started: [String] = []
     private(set) var stopped: [String] = []
     private(set) var retried: [String] = []
+    private(set) var recovered: [String] = []
     private(set) var configurations: [ClaudeRemoteForwardSupervisor.Configuration] = []
     private(set) var forwards: [String: FakeForwarding] = [:]
 
@@ -67,6 +70,7 @@ private final class ForwardSpy {
     func noteStart(_ hostID: String) { started.append(hostID) }
     func noteStop(_ hostID: String) { stopped.append(hostID) }
     func noteRetry(_ hostID: String) { retried.append(hostID) }
+    func noteRecover(_ hostID: String) { recovered.append(hostID) }
 }
 
 @MainActor
@@ -242,6 +246,28 @@ final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
         coordinator.retry(hostID: second.id)
 
         XCTAssertEqual(spy.retried, [second.id])
+    }
+
+    /// #659: a wake or a network change reaches every running forward; each
+    /// supervisor decides for itself whether it has anything to redo.
+    func testAWakeOrNetworkChangeReachesEveryRunningForward() throws {
+        let registry = try makeRegistry()
+        let first = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
+        let second = try registry.enroll(label: "other", sshHostAlias: "other").host
+        _ = try registry.enroll(label: "off", sshHostAlias: "off")
+        try registry.setPersistentForwardEnabled(true, hostID: first.id)
+        try registry.setPersistentForwardEnabled(true, hostID: second.id)
+        let spy = ForwardSpy()
+        let coordinator = makeCoordinator(registry: registry, spy: spy)
+        coordinator.reconcile()
+
+        coordinator.recover(after: .wake)
+        XCTAssertEqual(Set(spy.recovered), [first.id, second.id])
+        XCTAssertEqual(spy.recovered.count, 2)
+
+        coordinator.recover(after: .networkChange)
+        XCTAssertEqual(spy.recovered.count, 4, "a host with the tunnel off has no supervisor to recover")
+        XCTAssertTrue(spy.retried.isEmpty, "recovery is not the user's Retry")
     }
 
     func testAReplacementForwardWaitsForTheOldOneToFinishDying() async throws {

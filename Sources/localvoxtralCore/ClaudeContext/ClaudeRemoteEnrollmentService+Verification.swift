@@ -14,8 +14,9 @@ extension ClaudeRemoteEnrollmentService {
     /// Check an enrolled host's setup and return interpreted verdicts.
     ///
     /// Read-only by construction: it writes nothing locally (no filesystem seam
-    /// is touched) and runs nothing on the host that changes state — one curl
-    /// against the forwarded port and one `claude plugin list`.
+    /// is touched) and runs nothing on the host that changes state — one or two
+    /// curls against the forwarded port (`tunnelVerdict`) and one `claude
+    /// plugin list`.
     ///
     /// **No probe output ever leaves this method.** Not in `summary`, not in
     /// `hint`, not in `detail` — every string returned is composed here from
@@ -65,26 +66,14 @@ extension ClaudeRemoteEnrollmentService {
             throw ServiceError.invalidHostAlias
         }
 
-        let tunnel = runCheck(
-            kind: .tunnel,
+        let tunnel = tunnelVerdict(
+            sshHostAlias: sshHostAlias,
+            remoteForwardPort: remoteForwardPort,
+            listenerIsBound: listenerIsBound,
+            staleAllocatedPort: staleAllocatedPort,
             runner: runner,
-            timeout: timeout,
-            // NO ClearAllForwardings, unlike every other connection this type
-            // opens: this probe's whole point is that the alias's own `Host`
-            // block asks for the RemoteForward. Clearing it would test a tunnel
-            // the probe itself just disabled — and pass or fail for the wrong
-            // reason.
-            argv: ["ssh", "-o", "BatchMode=yes", "--", sshHostAlias, "/bin/sh", "-s"],
-            standardInput: Self.tunnelProbeScript(remoteForwardPort: remoteForwardPort)
-        ) {
-            Self.tunnelCheck(
-                result: $0,
-                sshHostAlias: sshHostAlias,
-                remoteForwardPort: remoteForwardPort,
-                listenerIsBound: listenerIsBound,
-                staleAllocatedPort: staleAllocatedPort
-            )
-        }
+            timeout: timeout
+        )
 
         // A host set up for another agent only has no plugin to look for.
         guard includesPluginCheck else {
@@ -114,6 +103,152 @@ extension ClaudeRemoteEnrollmentService {
         )
         return [tunnel, plugin]
     }
+
+    /// The tunnel verdict, from up to two probes (#656).
+    ///
+    /// The FIRST probe clears forwardings, so it can only reach a forward
+    /// something else already holds: the app's own supervised ssh, the user's
+    /// terminal session, an editor's. That is the tunnel the hooks use between
+    /// checks. The old single probe carried the alias's `RemoteForward` itself,
+    /// bound the port, curled through its own forward and reported "Tunnel is
+    /// up" about a tunnel that closed when the probe exited — which is exactly
+    /// what a host reached only by Claude Desktop (whose ssh clears
+    /// forwardings) looked like.
+    ///
+    /// Only when nothing answered does the SECOND probe run without
+    /// `ClearAllForwardings`, to tell "the config block works but nothing
+    /// holds it open" from "the config block does not open a tunnel at all".
+    /// Every other first answer (401, a stranger's code, no curl, ssh failing)
+    /// is already the verdict.
+    private func tunnelVerdict(
+        sshHostAlias: String,
+        remoteForwardPort: UInt16,
+        listenerIsBound: Bool,
+        staleAllocatedPort: UInt16?,
+        runner: Runner,
+        timeout: TimeInterval
+    ) -> VerificationCheck {
+        let script = Self.tunnelProbeScript(remoteForwardPort: remoteForwardPort)
+        var standingResult: RunResult?
+        let standing = runCheck(
+            kind: .tunnel,
+            runner: runner,
+            timeout: timeout,
+            argv: Self.standingTunnelProbeArgv(sshHostAlias: sshHostAlias),
+            standardInput: script
+        ) { result in
+            standingResult = result
+            return Self.tunnelCheck(
+                result: result,
+                sshHostAlias: sshHostAlias,
+                remoteForwardPort: remoteForwardPort,
+                listenerIsBound: listenerIsBound,
+                staleAllocatedPort: staleAllocatedPort
+            )
+        }
+        guard let standingResult, Self.nothingAnswered(standingResult) else { return standing }
+
+        return runCheck(
+            kind: .tunnel,
+            runner: runner,
+            timeout: timeout,
+            argv: Self.configTunnelProbeArgv(sshHostAlias: sshHostAlias),
+            standardInput: script
+        ) { result in
+            Self.configTunnelCheck(
+                result: result,
+                sshHostAlias: sshHostAlias,
+                remoteForwardPort: remoteForwardPort,
+                listenerIsBound: listenerIsBound,
+                staleAllocatedPort: staleAllocatedPort
+            )
+        }
+    }
+
+    /// Reaches only a forward another connection holds.
+    package static func standingTunnelProbeArgv(sshHostAlias: String) -> [String] {
+        ["ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--", sshHostAlias, "/bin/sh", "-s"]
+    }
+
+    /// Carries the alias's own `RemoteForward`, like an interactive `ssh` would.
+    package static func configTunnelProbeArgv(sshHostAlias: String) -> [String] {
+        ["ssh", "-o", "BatchMode=yes", "--", sshHostAlias, "/bin/sh", "-s"]
+    }
+
+    /// ssh worked, curl ran, and no HTTP status came back.
+    package static func nothingAnswered(_ result: RunResult) -> Bool {
+        guard result.succeeded else { return false }
+        return switch httpCode(in: result) {
+        case "000", nil: framedProbeAnswer(in: result.message) != missingCurlSentinel
+        default: false
+        }
+    }
+
+    /// Three digits from our own frame, or nil.
+    package static func httpCode(in result: RunResult) -> String? {
+        framedProbeAnswer(in: result.message)
+            .flatMap { $0.hasPrefix(httpFramePrefix) ? String($0.dropFirst(httpFramePrefix.count)) : nil }
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .flatMap { $0.count == 3 && $0.allSatisfy(\.isNumber) ? $0 : nil }
+    }
+
+    /// The verdict once the standing probe found nothing: this probe opened
+    /// the alias's own forward for as long as it ran.
+    package static func configTunnelCheck(
+        result: RunResult,
+        sshHostAlias: String,
+        remoteForwardPort: UInt16,
+        listenerIsBound: Bool,
+        staleAllocatedPort: UInt16? = nil
+    ) -> VerificationCheck {
+        var check = tunnelCheck(
+            result: result,
+            sshHostAlias: sshHostAlias,
+            remoteForwardPort: remoteForwardPort,
+            listenerIsBound: listenerIsBound,
+            staleAllocatedPort: staleAllocatedPort
+        )
+        // Our listener answered through our own forward: the block is right,
+        // and the only thing missing is a connection that stays.
+        if check.passed { return noStandingTunnelCheck(remoteForwardPort: remoteForwardPort) }
+        if check.summary == noLiveTunnelSummary {
+            return nothingAnsweredThroughConfig(remoteForwardPort: remoteForwardPort)
+        }
+        // A squatter verdict from this probe must not be reconciled into a
+        // pass later: whatever answered did so through a forward that closed
+        // with the probe, so no listener read can make the tunnel standing.
+        check.decidedBy = .remote
+        return check
+    }
+
+    /// The config block opens the tunnel; nothing keeps it open.
+    package static func noStandingTunnelCheck(remoteForwardPort: UInt16) -> VerificationCheck {
+        VerificationCheck(
+            kind: .tunnel,
+            passed: false,
+            summary: "Your SSH config opens the tunnel, but nothing keeps it open.",
+            hint: "Turn on Keep the tunnel open for this host. Claude Desktop and other "
+                + "headless sessions never open it themselves.",
+            detail: "Nothing answered on the host's 127.0.0.1:\(remoteForwardPort) until this "
+                + "check opened its own forward, which closed when the check did."
+        )
+    }
+
+    /// Even the config block's own forward brought nothing back, so the old
+    /// advice, "open an SSH session", is what this probe just did.
+    private static func nothingAnsweredThroughConfig(remoteForwardPort: UInt16) -> VerificationCheck {
+        VerificationCheck(
+            kind: .tunnel,
+            passed: false,
+            summary: "The SSH config did not open a tunnel.",
+            hint: "Re-run setup so ~/.ssh/config forwards port \(remoteForwardPort), and check "
+                + "that the host's sshd allows remote forwarding.",
+            detail: "Nothing answered on the host's 127.0.0.1:\(remoteForwardPort), with or "
+                + "without the config block's RemoteForward."
+        )
+    }
+
+    package static let noLiveTunnelSummary = "No tunnel is live right now."
 
     private func runCheck(
         kind: VerificationCheck.Kind,
@@ -332,10 +467,7 @@ extension ClaudeRemoteEnrollmentService {
         // A code is three digits or it is not a code. Anything else — including
         // no framed line at all, which means the script never got to print one
         // — is "nothing answered", not a status.
-        let code = answer
-            .flatMap { $0.hasPrefix(httpFramePrefix) ? String($0.dropFirst(httpFramePrefix.count)) : nil }
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .flatMap { $0.count == 3 && $0.allSatisfy(\.isNumber) ? $0 : nil }
+        let code = httpCode(in: result)
 
         // A tunnel on a port this Mac no longer allocates is its own answer,
         // whichever way the probe came back: reporting only "up" or "nothing"
@@ -376,7 +508,7 @@ extension ClaudeRemoteEnrollmentService {
                 ? VerificationCheck(
                     kind: .tunnel,
                     passed: false,
-                    summary: "No tunnel is live right now.",
+                    summary: noLiveTunnelSummary,
                     hint: "The forward exists only while an SSH session to \(sshHostAlias) is open.",
                     detail: "Nothing answered on the host's 127.0.0.1:\(remoteForwardPort)."
                 )

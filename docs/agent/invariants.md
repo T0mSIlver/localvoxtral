@@ -1775,9 +1775,23 @@ there is not.
     supervisor re-attempts its own `-R` on a long injected-clock park
     (5 minutes): the session ending means the bind now succeeds and the app
     takes the tunnel over, and a holder that stops proving ownership drops back
-    to `portUnavailable`. This is the ONE relaxation of "a refused bind is
-    terminal" and it is bounded by that interval; a state that claims a channel
-    must be able to stop claiming it.
+    to `portUnavailable`. A state that claims a channel must be able to stop
+    claiming it.
+  - **An unproved refusal is a state, not an end (#659).** `portUnavailable`
+    parks on the same 5-minute interval and dials again. It used to be
+    terminal, and after a network change the holder it blamed was usually this
+    Mac's own dead connection, still bound on the host until its sshd dropped
+    it. The fail-closed part is unchanged: the pane says the port is held, and
+    nothing is treated as ours without the nonce. The park is what keeps this
+    from being a retry storm; a refusal never enters the restart backoff. Wake
+    and network-path changes (`recover()`) restart failed and parked
+    supervisors at once, and leave live ones to ssh's keepalive.
+  - **Only a refusal of OUR port counts.** The supervised ssh inherits every
+    `RemoteForward` the alias declares, so it runs `ExitOnForwardFailure=no`
+    and ends itself (SIGTERM to its own child, then the usual escalation) only
+    when the refusal names this Mac's port. A refusal of another port is
+    logged and ignored. The residual: when such a foreign forward is free, this
+    connection binds it too, as any ssh with that config would.
 
 - **Remote enrollment execution is opt-in, consent-first, and keeps the token
   out of process arguments.** `ClaudeRemoteEnrollmentService` generates the
@@ -1798,10 +1812,19 @@ there is not.
   so the token is in that one command's argv there, and in `~/.claude` after —
   documented in `docs/remote-claude-context.md`, not defended). The read-only
   verification probes (`executeVerification`) are the OTHER ssh-bearing path and
-  obey the same rules: `BatchMode=yes` plus `--` before the alias on both,
-  `ClearAllForwardings=yes` on the plugin probe, and deliberately NOT on the
-  tunnel probe — whose entire purpose is to observe the `RemoteForward` the
-  alias's own block requests. They carry no token at all, and no byte of their
+  obey the same rules: `BatchMode=yes` plus `--` before the alias on all,
+  `ClearAllForwardings=yes` on the plugin probe and on the FIRST tunnel probe.
+  That first tunnel probe must not be able to open the tunnel it checks: the
+  earlier single probe carried the alias's `RemoteForward`, curled through the
+  forward it had just bound, and passed on hosts where nothing else ever holds
+  the tunnel, which is every host reached only by Claude Desktop, whose ssh
+  clears forwardings (#656). Only when nothing answered does a SECOND tunnel
+  probe run without the option, and its 401 is reported as "the config opens
+  the tunnel, but nothing keeps it open", never as a pass; a squatter verdict
+  from it is `decidedBy: .remote`, so `reconciled` cannot upgrade a tunnel
+  that closed with the probe. The Claude Desktop probe (`~/.claude/remote/srv`)
+  runs only while Keep the tunnel open is off and only turns it ON, inside the
+  host setup run the user clicked. They carry no token at all, and no byte of their
   output reaches a verdict, an alert, or the log. The whole action has a
   finite timeout, and every captured result, thrown error, alert, and log string
   is token-redacted before it leaves the service. Keep the filesystem and
