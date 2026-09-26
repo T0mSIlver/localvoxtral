@@ -65,14 +65,15 @@ app as a terminal only if it is a known terminal or listed in Settings →
 Terminals. Claude Desktop is recognized on its own; listing it there would
 make localvoxtral treat its prompt box as a terminal.
 
-**Say "go to" and a session's name to switch to it.** In Overlay Buffer, a
-dictation that is only "go to payments" brings the pane of the joined coding
+**Say "go to" and a session's name to switch to it.** A dictation that is
+only "go to payments" (in Live Auto-Paste, a phrase between pauses) brings the pane of the joined coding
 agent session named payments to the front instead of typing anything. A
 session answers to its repository's name and, in a linked worktree, to the
 worktree's name. It works for sessions in Ghostty, iTerm2 and Terminal.app on
 this Mac. When no session has that name, the dictation is typed as usual;
 when more than one does, or its pane can't be reached, nothing is typed and
-the menu bar popover says so.
+the menu bar popover says so. In Live Auto-Paste, what you say next is
+typed into the session you went to.
 
 ### Keeping words on their line
 

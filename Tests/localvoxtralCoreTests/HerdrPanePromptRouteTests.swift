@@ -245,6 +245,72 @@ final class HerdrPanePromptRouteTests: XCTestCase {
         XCTAssertNil(resolver.herdrPromptRoute(for: join) { 4343 })
     }
 
+    // MARK: - Without a context join (#759)
+
+    private func joinlessResolver(
+        _ registry: ClaudeSessionRegistry,
+        federation: HerdrMachineFederation = .notFederated,
+        ttyQuestions: Box<Int> = Box(0)
+    ) -> ClaudeSessionJoinResolver {
+        ClaudeSessionJoinResolver(
+            registry: registry,
+            focusedTerminalTTY: { _ in
+                ttyQuestions.set(ttyQuestions.get() + 1)
+                return "/dev/ttys-outer"
+            },
+            herdrClientProbe: { _ in true },
+            herdrFederation: { federation },
+            herdrPanes: client,
+            herdrPaneWriter: client
+        )
+    }
+
+    /// Polishing off resolves no join: the route finds the local herdr's
+    /// focused pane itself, and writes only there.
+    func testWithoutAJoinALocalHerdrPaneStillGetsTheRoute() async throws {
+        let claude = claude
+        let herdr = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2") { claude })
+        defer { herdr.stop() }
+        let resolver = joinlessResolver(registry(herdrSocket: herdr.socketPath))
+
+        let found = await resolver.localHerdrPromptRoute(target: ghostty) { 4343 }
+        let route = try XCTUnwrap(found)
+        let appended = await route.deliver(.append("run the tests"))
+
+        XCTAssertEqual(route.binding, ClaudeHerdrPaneBinding(paneID: "w1:p2", socketPath: herdr.socketPath))
+        XCTAssertEqual(appended, .delivered)
+        XCTAssertEqual(herdr.writes, [.init(method: "pane.send_text", paneID: "w1:p2", text: "run the tests", keys: nil)])
+    }
+
+    /// Local herdr only: a herdr showing a saved machine is not asked.
+    func testWithoutAJoinAFederatedHerdrGetsNoRoute() async throws {
+        let claude = claude
+        let herdr = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2") { claude })
+        defer { herdr.stop() }
+        let machine = HerdrMachineProfile(
+            id: String(repeating: "a", count: 32), label: "box", target: "box", session: "default", enabled: true
+        )
+        let resolver = joinlessResolver(registry(herdrSocket: herdr.socketPath), federation: .showingMachine(machine))
+
+        let found = await resolver.localHerdrPromptRoute(target: ghostty) { 4343 }
+
+        XCTAssertNil(found)
+        XCTAssertEqual(herdr.requests, [])
+    }
+
+    /// No live local session in a herdr pane: no Apple event is sent for
+    /// the focused TTY, and no socket is dialed.
+    func testWithoutAJoinOrAHerdrSessionNothingIsAsked() async throws {
+        let ttyQuestions = Box(0)
+        let registry = ClaudeSessionRegistry(now: { Self.epoch }, isProcessAlive: { _ in true })
+        let resolver = joinlessResolver(registry, ttyQuestions: ttyQuestions)
+
+        let found = await resolver.localHerdrPromptRoute(target: ghostty) { 4343 }
+
+        XCTAssertNil(found)
+        XCTAssertEqual(ttyQuestions.get(), 0)
+    }
+
     /// A remote pane's pids belong to another machine, so its Enter waits on
     /// the test the remote arm joins on: a foreground process named for the
     /// agent.

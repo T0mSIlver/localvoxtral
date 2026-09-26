@@ -1,7 +1,8 @@
 import Foundation
 import XCTest
 
-@testable import localvoxtral
+@testable import localvoxtralCore
+import localvoxtralTestSupport
 
 /// Installer tests for the opencode plugin (`OpencodePluginInstallService`):
 /// create, idempotent re-apply, removal, symlink refusal, unreadable refusal,
