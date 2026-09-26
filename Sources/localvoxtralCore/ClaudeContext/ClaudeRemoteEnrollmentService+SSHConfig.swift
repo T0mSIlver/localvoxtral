@@ -17,7 +17,9 @@ extension ClaudeRemoteEnrollmentService {
     /// resolve as first-match-wins, so a stale duplicate above a fresh one would
     /// silently win).
     ///
-    /// Everything outside the delimited block is preserved byte for byte. This
+    /// Everything outside the delimited block is preserved byte for byte,
+    /// except in a config that mixes CRLF and LF lines, which comes back all
+    /// CRLF, as the rc and hooks writers leave it. This
     /// function is the whole reason a UI could ever offer to make the edit —
     /// but it is still the caller's decision to write the result anywhere.
     public static func applySSHConfigSnippet(
@@ -25,49 +27,76 @@ extension ClaudeRemoteEnrollmentService {
         snippet: String,
         hostID: String
     ) -> String {
-        let begin = blockBegin(hostID: hostID)
-        let end = blockEnd(hostID: hostID)
-        let lines = existing.components(separatedBy: "\n")
+        let lineReader = sshConfigLineReader(hostID: hostID)
+        // The file's own terminator: a CRLF config spliced with LF comes back
+        // mixed, and a CRLF block appended to it is one the next read can find.
+        let terminator = lineReader.lineTerminator(of: existing)
+        let lines = lineReader.splitLines(existing)
+        let snippetLines = lineReader.splitLines(snippet)
 
-        guard let beginIndex = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == begin }),
-              let endIndex = lines[beginIndex...].firstIndex(where: {
-                  $0.trimmingCharacters(in: .whitespaces) == end
-              })
-        else {
+        guard let block = markedBlockRange(in: lines, hostID: hostID) else {
             // No block yet: append after a blank line, so our `Host` stanza can
             // never fuse onto the end of someone else's (an indented keyword
             // under the wrong `Host` is a config change they did not ask for).
             //
             // The exact spacing matters for idempotency, not for looks: the
-            // replace branch above reproduces this layout byte for byte, so a
+            // replace branch below reproduces this layout byte for byte, so a
             // second apply is a no-op.
             var prefix = existing
-            if !prefix.isEmpty, !prefix.hasSuffix("\n") { prefix += "\n" }
-            if !prefix.isEmpty, !prefix.hasSuffix("\n\n") { prefix += "\n" }
-            return prefix + snippet + "\n"
+            if !prefix.isEmpty, !prefix.hasSuffix(terminator) { prefix += terminator }
+            if !prefix.isEmpty, !prefix.hasSuffix(terminator + terminator) { prefix += terminator }
+            return prefix + snippetLines.joined(separator: terminator) + terminator
         }
 
-        var result = Array(lines[..<beginIndex])
-        result.append(contentsOf: snippet.components(separatedBy: "\n"))
-        result.append(contentsOf: lines[(endIndex + 1)...])
-        return result.joined(separator: "\n")
+        var result = Array(lines[..<block.lowerBound])
+        result.append(contentsOf: snippetLines)
+        result.append(contentsOf: lines[(block.upperBound + 1)...])
+        return result.joined(separator: terminator)
     }
 
     /// Remove this host's block, leaving everything else untouched.
     public static func removeSSHConfigSnippet(from existing: String, hostID: String) -> String {
+        let lineReader = sshConfigLineReader(hostID: hostID)
+        let lines = lineReader.splitLines(existing)
+        guard let block = markedBlockRange(in: lines, hostID: hostID) else { return existing }
+        var result = Array(lines[..<block.lowerBound])
+        result.append(contentsOf: lines[(block.upperBound + 1)...])
+        return result.joined(separator: lineReader.lineTerminator(of: existing))
+    }
+
+    /// Splits a config into lines the way the rc and hooks writers do: on LF
+    /// by scalar, with a CRLF line's CR stripped. Splitting on `"\n"` as a
+    /// string missed every marker in a CRLF config (#678): the CR stayed on
+    /// the line, and on Linux the split found no LF at all, because `"\r\n"`
+    /// is one `Character`. Either way apply appended a second block.
+    ///
+    /// Only the line handling is shared. This writer keeps its own finding
+    /// rule (first begin, first end after it) and its own remove, which
+    /// leaves the separator blank line in place.
+    private static func sshConfigLineReader(hostID: String) -> MarkedTextBlock {
+        MarkedTextBlock(markerBegin: blockBegin(hostID: hostID), markerEnd: blockEnd(hostID: hostID))
+    }
+
+    /// Lines of the config at `data`, or nil when there is none or it is not
+    /// UTF-8.
+    private static func configLines(_ data: Data?, hostID: String) -> [String]? {
+        guard let data, let text = String(data: data, encoding: .utf8) else { return nil }
+        return sshConfigLineReader(hostID: hostID).splitLines(text)
+    }
+
+    /// This host's block, markers included: the first begin marker and the
+    /// first end marker after it. Every reader and writer here finds it this
+    /// way, so "current" and "the block a rewrite would replace" are always
+    /// the same block.
+    private static func markedBlockRange(in lines: [String], hostID: String) -> ClosedRange<Int>? {
         let begin = blockBegin(hostID: hostID)
         let end = blockEnd(hostID: hostID)
-        let lines = existing.components(separatedBy: "\n")
         guard let beginIndex = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == begin }),
               let endIndex = lines[beginIndex...].firstIndex(where: {
                   $0.trimmingCharacters(in: .whitespaces) == end
               })
-        else {
-            return existing
-        }
-        var result = Array(lines[..<beginIndex])
-        result.append(contentsOf: lines[(endIndex + 1)...])
-        return result.joined(separator: "\n")
+        else { return nil }
+        return beginIndex...endIndex
     }
 
     /// Atomically insert or replace one host's marked block in `~/.ssh/config`.
@@ -163,21 +192,13 @@ extension ClaudeRemoteEnrollmentService {
     public func sshConfigBlockIsCurrent(snippet: String, hostID: String) -> Bool? {
         guard let sshConfigFileSystem else { return nil }
         guard let state = try? sshConfigFileSystem.readState(),
-              let data = state.configData,
-              let text = String(data: data, encoding: .utf8)
+              let lines = Self.configLines(state.configData, hostID: hostID)
         else { return nil }
+        guard let block = Self.markedBlockRange(in: lines, hostID: hostID) else { return false }
         let begin = Self.blockBegin(hostID: hostID)
         let end = Self.blockEnd(hostID: hostID)
-        let lines = text.components(separatedBy: "\n")
-        // Found the way `applySSHConfigSnippet` finds it, so "current" and
-        // "the block a rewrite would replace" are always the same block.
-        guard let beginIndex = lines.firstIndex(where: {
-            $0.trimmingCharacters(in: .whitespaces) == begin
-        }), let endIndex = lines[beginIndex...].firstIndex(where: {
-            $0.trimmingCharacters(in: .whitespaces) == end
-        }) else { return false }
-        return Self.directives(lines[(beginIndex + 1)..<endIndex])
-            == Self.directives(snippet.components(separatedBy: "\n").filter {
+        return Self.directives(lines[(block.lowerBound + 1)..<block.upperBound])
+            == Self.directives(Self.sshConfigLineReader(hostID: hostID).splitLines(snippet).filter {
                 let trimmed = $0.trimmingCharacters(in: .whitespaces)
                 return trimmed != begin && trimmed != end
             })
@@ -249,18 +270,10 @@ extension ClaudeRemoteEnrollmentService {
     private func markedBlockLines(hostID: String) -> ArraySlice<String>? {
         guard let sshConfigFileSystem,
               let state = try? sshConfigFileSystem.readState(),
-              let data = state.configData,
-              let text = String(data: data, encoding: .utf8)
+              let lines = Self.configLines(state.configData, hostID: hostID),
+              let block = Self.markedBlockRange(in: lines, hostID: hostID)
         else { return nil }
-        let begin = Self.blockBegin(hostID: hostID)
-        let end = Self.blockEnd(hostID: hostID)
-        let lines = text.components(separatedBy: "\n")
-        guard let beginIndex = lines.firstIndex(where: {
-            $0.trimmingCharacters(in: .whitespaces) == begin
-        }), let endIndex = lines[beginIndex...].firstIndex(where: {
-            $0.trimmingCharacters(in: .whitespaces) == end
-        }) else { return nil }
-        return lines[beginIndex...endIndex]
+        return lines[block]
     }
 
     private func forwardedPort(inLine line: String) -> UInt16? {

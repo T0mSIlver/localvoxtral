@@ -3,41 +3,6 @@ import Synchronization
 import XCTest
 @testable import localvoxtral
 
-private final class MemorySSHConfigFileSystem: ClaudeRemoteSSHConfigFileSystem {
-    struct Storage: Sendable {
-        var state: ClaudeRemoteSSHConfigState
-        var createdDirectoryPermissions: [UInt16] = []
-        var writes: [(data: Data, permissions: UInt16)] = []
-    }
-
-    private let storage: Mutex<Storage>
-
-    init(state: ClaudeRemoteSSHConfigState) {
-        storage = Mutex(Storage(state: state))
-    }
-
-    var snapshot: Storage { storage.withLock { $0 } }
-
-    func readState() throws -> ClaudeRemoteSSHConfigState {
-        storage.withLock { $0.state }
-    }
-
-    func createSSHDirectory(permissions: UInt16) throws {
-        storage.withLock {
-            $0.createdDirectoryPermissions.append(permissions)
-            $0.state.directoryExists = true
-        }
-    }
-
-    func atomicWriteConfig(_ data: Data, permissions: UInt16) throws {
-        storage.withLock {
-            $0.writes.append((data, permissions))
-            $0.state.configData = data
-            $0.state.configPermissions = permissions
-        }
-    }
-}
-
 private final class MemoryLocalHerdrConfigFileSystem: ClaudeLocalHerdrConfigFileSystem {
     struct Storage: Sendable {
         var state: ClaudeLocalHerdrConfigState
