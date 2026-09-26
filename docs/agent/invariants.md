@@ -1780,6 +1780,17 @@ there is not.
     at decode. The reply text (`last_assistant_message`) stays out of the
     app too (owner ruling on #717, 2026-09-26): nothing reads it aloud, and
     the answer hotkey brings the pane forward to read it there.
+  - **"Were you looking at it" asks only local questions** (#717). A turn's
+    end queues a finished entry only when the user was not looking at the
+    session's pane (`AgentAttentionTracker`), and that is answered by
+    `ClaudeSessionJoinResolver.sessionShown(target:)`: the focused TTY, a
+    local herdr's focused pane, Claude Desktop's focused session view. It
+    runs on every turn's end with no dictation behind it, so it never opens
+    a forward, stamps a herdr panel, dials cmux or reads a screen; an answer
+    it cannot give (an ssh session, cmux) counts as not looking, which costs
+    an extra cue and never a missed one. A turn's end that finds the
+    session's next event already applied (a new prompt, a wait, the user
+    reaching it) while the pane was being checked changes nothing.
   - Apart from that, transcripts are never scraped (the Claude Code parser
     drops `transcript_path`), and a
     LOCAL session never attaches hook-quoted tool excerpts: its files are

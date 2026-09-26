@@ -294,7 +294,7 @@ package struct ClaudeSessionJoinResolver {
         let snapshot: ClaudeSessionSnapshot
         if case .resolved(let resolved) = registry.resolve(tty: tty) {
             snapshot = resolved
-        } else if let pane = await localHerdrPaneSessionForRelay(surfaceTTY: tty) {
+        } else if let pane = await localHerdrPaneSession(surfaceTTY: tty) {
             snapshot = pane
         } else {
             return nil
@@ -303,13 +303,37 @@ package struct ClaudeSessionJoinResolver {
         return registry.opencodePromptRelay(sessionID: snapshot.sessionID)
     }
 
+    /// The id of the live session `target`'s focused pane shows, or nil (#717:
+    /// a finished turn cues only when the user was not looking at it). The
+    /// relay's local questions (the focused TTY, then a local herdr's focused
+    /// pane) plus Claude Desktop's focused session view. Never the remote,
+    /// federated, ssh or cmux arms: this runs on every turn's end, with no
+    /// dictation to justify a forward or a socket. A nil makes the cue fire,
+    /// so an answer this cannot give costs a cue, never a missed one.
+    package func sessionShown(target: TerminalScreenTarget) async -> String? {
+        if ClaudeDesktopAllowlist.isSupported(target.bundleID) {
+            guard let address = await focusedDesktopSessionURL(target.pid),
+                  let desktopSessionID = ClaudeDesktopSessionURL.sessionID(inWebAreaURL: address),
+                  case .resolved(let snapshot) = registry.resolve(desktopSessionID: desktopSessionID)
+            else { return nil }
+            return snapshot.sessionID
+        }
+        guard TerminalScreenAllowlist.isSupported(target.bundleID),
+              let tty = await focusedTerminalTTY(target.bundleID)
+        else { return nil }
+        if case .resolved(let snapshot) = registry.resolve(tty: tty) {
+            return snapshot.sessionID
+        }
+        return await localHerdrPaneSession(surfaceTTY: tty)?.sessionID
+    }
+
     /// The session in the focused pane of a LOCAL herdr (#733): inside herdr
     /// the focused TTY is herdr's client, not the pane. Asks only what the
     /// local herdr arm asks (`focusedLocalHerdrPaneSession`), and only when
     /// the surface binds to a herdr client showing this machine. Never the
     /// federated or remote arms: they read another machine's herdr, over a
     /// forward opened on a context consent writing does not have.
-    private func localHerdrPaneSessionForRelay(surfaceTTY tty: String) async -> ClaudeSessionSnapshot? {
+    private func localHerdrPaneSession(surfaceTTY tty: String) async -> ClaudeSessionSnapshot? {
         guard herdrClientProbe(tty) else { return nil }
         switch herdrFederation() {
         case .notFederated:
@@ -322,7 +346,7 @@ package struct ClaudeSessionJoinResolver {
             return nil
         }
         let found = await focusedLocalHerdrPaneSession { outcome in
-            Log.claudeContext.info("opencode prompt relay: herdr pane not resolved (\(outcome, privacy: .public))")
+            Log.claudeContext.info("local herdr pane not resolved (\(outcome, privacy: .public))")
         }
         return found?.snapshot
     }

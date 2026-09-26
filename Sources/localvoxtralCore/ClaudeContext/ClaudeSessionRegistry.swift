@@ -149,6 +149,8 @@ public final class ClaudeSessionRegistry: Sendable {
     private let persistenceWriter: ClaudeSessionStoreWriter?
     private let submittedPromptObserver =
         Mutex<(@Sendable (_ sessionID: String, _ prompt: String) -> Void)?>(nil)
+    private let turnObserver =
+        Mutex<(@Sendable (_ event: ClaudeHookEvent, _ session: ClaudeSessionSnapshot) -> Void)?>(nil)
     /// Agents whose hooks this Mac has accepted a record from since launch
     /// (or since `forgetHeard`). In memory only: it answers the Integrations
     /// pane's "has this agent's hook ever run", which for Codex is the only
@@ -344,6 +346,9 @@ public final class ClaudeSessionRegistry: Sendable {
            let observer = submittedPromptObserver.withLock({ $0 }) {
             observer(ingested.sessionID, prompt)
         }
+        if let ingested, let observer = turnObserver.withLock({ $0 }) {
+            observer(record.event, ingested)
+        }
         return ingested
     }
 
@@ -368,6 +373,16 @@ public final class ClaudeSessionRegistry: Sendable {
         _ observer: (@Sendable (_ sessionID: String, _ prompt: String) -> Void)?
     ) {
         submittedPromptObserver.withLock { $0 = observer }
+    }
+
+    /// Hands every accepted record's event and the session it left, to the
+    /// needs-you queue (#717): a wait, a turn's end, a new prompt, the end of
+    /// the session. Called on the ingesting thread, outside the registry
+    /// lock, with the scoped session id.
+    public func setTurnObserver(
+        _ observer: (@Sendable (_ event: ClaudeHookEvent, _ session: ClaudeSessionSnapshot) -> Void)?
+    ) {
+        turnObserver.withLock { $0 = observer }
     }
 
     /// Look up a local workspace path.
