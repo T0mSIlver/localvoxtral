@@ -18,15 +18,21 @@ In localvoxtral, open **Settings → Mistral Vibe → Hooks → Set up…**. One
 consent sentence names both files. The app copies its bundled `publish.sh` to
 `~/.vibe/localvoxtral/` and adds the marked block to `~/.vibe/hooks.toml`,
 creating that file when it is absent and writing only between its two markers.
-**Remove** deletes the block, the blank line before it and the script. The app
-refuses to write when `~/.vibe` or either file is a symlink, when `hooks.toml`
-has an unpaired marker, a marker inside a multi-line string or a string left
-open, when it defines `hooks` as a plain array or table, when a hook
-named `localvoxtral-files` or `localvoxtral-turn` exists outside the block,
-when a key follows the block before the next table header, or when the file
-changed while the app was editing it. The row then reads "hooks.toml needs a
-manual fix." or reports the failure. After an app update, the next
-launch refreshes an existing install.
+**Remove** deletes the block, the blank line before it and the script. After
+an app update, the next launch refreshes an existing install.
+
+The app refuses to write when:
+
+- `~/.vibe` or either file is a symlink;
+- `hooks.toml` has an unpaired marker, a marker inside a multi-line string, or
+  a string left open;
+- `hooks.toml` defines `hooks` as a plain array or table;
+- a hook named `localvoxtral-files` or `localvoxtral-turn` exists outside the
+  block;
+- a key follows the block before the next table header;
+- the file changed while the app was editing it.
+
+The row then reads "hooks.toml needs a manual fix." or reports the failure.
 
 The same install by hand:
 
@@ -118,8 +124,8 @@ rollout. localvoxtral supports both. They differ in what a hook receives:
 
 `vibe --legacy-harness` and `vibe --experimental-harness` choose a runner by hand.
 
-No Vibe hook payload carries your prompt. On the legacy runner the publisher reads it from the
-session's `messages.jsonl`, whose path Vibe passes to every hook. It reads the
+No Vibe hook payload carries your prompt. On the legacy runner the publisher
+reads it from the session's `messages.jsonl`, whose path Vibe passes to every hook. It reads the
 last 512 KiB of that file and keeps one thing: the newest message with role
 `user` and `injected: false`, cut to 8 KiB. It does not parse lines that lack
 the user-role marker, which covers assistant messages, reasoning, tool calls
