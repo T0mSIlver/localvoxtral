@@ -854,14 +854,30 @@ final class TextInsertionService {
     ]
 
     /// Types `text` into the frontmost app. In an app on
-    /// `shiftReturnNewlineBundleIDs` each line is typed on its own and every
-    /// newline is pressed as Shift+Return. Like `postUnicodeTextEvents`, true
-    /// when anything was posted.
+    /// `shiftReturnNewlineBundleIDs` a text holding a code fence line is
+    /// pasted whole (#695): typed key by key, the fence triggers Claude
+    /// Desktop's markdown shortcut and opens a code block that takes the
+    /// text after the closing fence. Otherwise each line is typed on its own
+    /// and every newline is pressed as Shift+Return. Like
+    /// `postUnicodeTextEvents`, true when anything was posted.
     private func postKeyboardText(_ text: String) -> Bool {
-        guard text.contains(where: \.isNewline),
-              let bundleID = TerminalTargetDetector.currentFrontmostBundleID(),
+        guard let bundleID = TerminalTargetDetector.currentFrontmostBundleID(),
               Self.shiftReturnNewlineBundleIDs.contains(bundleID)
         else {
+            return postUnicodeTextEvents(text)
+        }
+        if MarkdownCodeFence.containsFenceLine(text) {
+            if postCommandVPaste(text) {
+                Log.insertion.notice(
+                    "pasted text with a code fence instead of typing it bundle=\(bundleID, privacy: .public)"
+                )
+                return true
+            }
+            Log.insertion.error(
+                "paste of text with a code fence failed; typing it bundle=\(bundleID, privacy: .public)"
+            )
+        }
+        guard text.contains(where: \.isNewline) else {
             return postUnicodeTextEvents(text)
         }
         let lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)

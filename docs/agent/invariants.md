@@ -178,10 +178,12 @@ there is not.
   events came out with pieces reordered. So in Desktop each line is typed on
   its own and each newline is pressed as Shift+Return, which the prompt
   handles as a key; the same probe then posted exactly that sequence back to
-  back and the text arrived in order. One cost is known (#695): a line that
-  opens with a code fence, typed key by key, triggers Desktop's markdown
-  shortcut and opens a code block that also takes the text after the closing
-  fence. The list is judged from the app frontmost when the keys
+  back and the text arrived in order. A text holding a code fence line is
+  the exception (#695): typed key by key, a line that opens with a fence
+  triggers Desktop's markdown shortcut and opens a code block that also takes
+  the text after the closing fence, so that text is pasted whole with Cmd+V
+  (`MarkdownCodeFence`), and typed as above only if the paste fails. The
+  list is judged from the app frontmost when the keys
   are posted, after the insertion made its target frontmost. Listing Desktop
   under Settings → Terminals overrides the verdict (the user list wins), and
   a terminal session collapses its newlines before any reach the keyboard.
