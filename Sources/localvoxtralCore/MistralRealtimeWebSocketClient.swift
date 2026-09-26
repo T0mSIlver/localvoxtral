@@ -543,7 +543,7 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
             #if DEBUG
             state.withLock { s in
                 // A bounded ring, not a transcript: audio frames arrive every
-                // 100 ms at ~4 KB each, and a DEBUG build (Xcode, the dogfood
+                // 100 ms at ~4 KB each, and a DEBUG build (Xcode, the harness
                 // tree) would otherwise grow by ~150 MB per hour of dictation
                 // for a buffer only the unit suite reads (GLM review, 2026-09-16).
                 s.recordedFrames.append(text)

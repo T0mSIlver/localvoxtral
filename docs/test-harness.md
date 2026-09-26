@@ -11,10 +11,12 @@ workflow packages its app with `LOCALVOXTRAL_E2E_HARNESS=1`
 (`docs/agent/invariants.md`, "The dogfood control socket is an accepted
 tradeoff").
 
-A dogfood package (`LOCALVOXTRAL_DOGFOOD=1`, `./scripts/try-pr.sh <pr>
---dogfood`) carries the harness too, so the owner's UI gate can drive it. It
-goes away in #792 step 3; the diagnostic records it used to add ship in every
-build now (`docs/agent/diagnostic-records.md`).
+For the owner's UI gate to drive a harness build, dispatch UI Smoke on the
+branch (`gh workflow run "UI Smoke" --ref <branch>`): its e2e-dictation job
+packages the harness build, installs it into the gate's artifact root, and
+prints the `launch --harness` command in the run summary. The run takes over
+the owner's screen for its e2e check, so it needs the owner's go. Diagnostic records
+ship in every build (`docs/agent/diagnostic-records.md`).
 
 ## The control socket
 

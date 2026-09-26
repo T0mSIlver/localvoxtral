@@ -246,7 +246,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingConfigDefaultsPromptFileNames: [String]?
 
     #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
-    /// The dogfood-only local control socket and the service behind it.
+    /// The harness-only local control socket and the service behind it.
     ///
     /// Owned here for the same reason the broker is: the socket answers
     /// questions about the registry and the resolver, both of which live at
@@ -424,7 +424,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
-    /// Binds the dogfood-only control socket, if the owner armed it.
+    /// Binds the harness-only control socket, if the owner armed it.
     ///
     /// Two gates, both required, exactly like the capture: this code is only
     /// compiled under `DEBUG || LOCALVOXTRAL_E2E_HARNESS`, and even then the socket binds

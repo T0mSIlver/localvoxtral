@@ -147,7 +147,7 @@ package struct SSHSiblingSurvey: Sendable, Equatable {
 
 /// WHY the probe could not pin an ssh session down. Deliberately content-free
 /// — a category, never a path, host, or option letter — so it is safe to put
-/// in the log and the dogfood record. Three field dictations were diagnosed
+/// in the log and the diagnostic record. Three field dictations were diagnosed
 /// blind (2026-08-06) because every branch collapsed into one word; the cause
 /// had to be reconstructed from the REMOTE host's process table.
 package enum SSHProbeIndeterminacy: String, Sendable, Equatable {

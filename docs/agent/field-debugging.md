@@ -6,29 +6,25 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   downloads the exact CI-built artifact and launches it. No checkout, no
   build. Push → CI (~1.5 min) → try-pr.sh is the whole owner iteration loop.
   Pushes to main build no bundle, so `main` takes the newest dispatched
-  build and, when it is behind main, offers to dispatch one and wait.
-  `--dogfood` fetches the instrumented `localvoxtral-app-dogfood` artifact
-  instead, verifies its `LVXDogfoodCapture` stamp, arms the runtime capture
-  default, and launches — the one-command dogfood install. That artifact is
-  opt-in in CI (`[dogfood-package]` in the PR body / head commit message, or
-  a `workflow_dispatch` with `dogfood=true`); when the target run lacks it,
-  the script offers to trigger a dispatch build and shows the latest run
-  that has one.
-  `--ui-gate` (composable with `--dogfood`) installs the bundle into the SSH
+  build and, when it is behind main, offers to dispatch one and wait. It
+  refuses a bundle stamped `LVXE2EHarness` — that build is UI Smoke's, not
+  a release bundle.
+  `--ui-gate` installs the bundle into the SSH
   UI gate's artifact root instead of leaving it in `/tmp`, and stops short of
   launching it — `ssh lv-ui 'launch ...'` is what starts it, and what records
   the pid every other gate verb addresses. The gate's roots are owner-writable
   only on purpose, so the install destination moves rather than the roots
   (`scripts/mac/install-ui-artifact.sh`, runbook `scripts/mac/README.md`).
-  An agent driving the gate has no shell on that account: for it, the install
-  is `gh workflow run CI --ref <branch> -f dogfood=true -f herdr=false`
-  (`herdr=false` because a dispatch otherwise forces the live herdr lane on,
-  and its fixture refuses to start beside the herdr the owner runs all day).
-  The self-hosted
-  runner is a launchd agent in the owner's GUI session, so its `$HOME` is the
-  artifact root's home, and that dispatch (and ONLY a dispatch — the
-  `[dogfood-package]` marker must never write into the owner's home) installs
-  the bundle and prints the `launch` command in the run summary.
+  A build with the test harness (the gate's `app` verbs) comes from
+  dispatching UI Smoke on the branch instead
+  (`gh workflow run "UI Smoke" --ref <branch>`): its e2e-dictation job
+  packages a harness build and installs it into the gate's artifact root
+  itself, then prints the `launch --harness` command in the run summary
+  (`docs/test-harness.md`). That run takes over the owner's screen, so ask
+  the owner before dispatching it. An agent driving the gate has no shell on that
+  account, so this dispatch is how it gets a harness build installed; the
+  self-hosted runner is a launchd agent in the owner's GUI session, so its
+  `$HOME` is the artifact root's home.
 - **Driving the UI gate from the dev box**: `./scripts/mac-ui.sh <verb…>`
   passes one gate verb through a multiplexed ssh connection that stays open
   between calls (ControlMaster/ControlPersist, 600 s idle), so a
@@ -113,7 +109,7 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
 
   `--json` prints one line: `arm`, `abstentionReason`, `origin`, `terminal`,
   `herdrBound`, `workspaceIsLocal` — the same six fields, from the same
-  mapper, as a dogfood record's `join` block
+  mapper, as a diagnostic record's `join` block
   (`ClaudeSessionJoinSummary`). Exit status is 0 when an arm joined, 1 when
   none did, 2 on a usage error.
 
@@ -168,8 +164,8 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   the app's full-capability resolver. `registry list` beside it answers the
   question the one-shot probe cannot — whether the chain reads that way
   because the registry is empty or because the surface was not identified. Use
-  the verb here when you have the shipping binary and the socket when you are
-  dogfooding; they print the same six fields from the same mapper.
+  the verb here when you have the shipping binary and the socket when you
+  have a harness build; they print the same six fields from the same mapper.
 - **README demo video**: `./scripts/record-demo.sh` on the Mac (GUI session)
   stages the scene, drives the real Right-Command tap/hold gesture with
   synthetic CGEvents, records, and encodes `dist/demo/demo.mp4`; the operator

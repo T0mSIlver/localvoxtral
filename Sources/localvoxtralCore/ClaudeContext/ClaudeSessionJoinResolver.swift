@@ -467,7 +467,7 @@ package struct ClaudeSessionJoinResolver {
     /// Where an abstention cause leaves this resolver as a value rather than as
     /// a log line (`HerdrPanelBindingProbe` has the one other such point).
     ///
-    /// Both consumers are diagnostics — the dogfood capture record and
+    /// Both consumers are diagnostics — the diagnostic record and
     /// `--probe-surface` — and both need the SAME string, so they read it from
     /// here rather than each deriving one. `cause` is already the content-free
     /// category the log line above carries; nothing else may be passed in.

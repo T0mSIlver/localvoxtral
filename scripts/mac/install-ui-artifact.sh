@@ -95,22 +95,22 @@ PLIST="$SOURCE/Contents/Info.plist"
 [[ -x "$SOURCE/Contents/MacOS/localvoxtral" ]] \
   || die "bundle has no executable at Contents/MacOS/localvoxtral: $SOURCE"
 
-STAMP="$(plist_value "$PLIST" LVXDogfoodCapture)"
-# Two slots, not one per build: the dogfood and clean bundles differ in kind
-# (the gate's `launch --dogfood` demands the stamp), but N historical copies of
+STAMP="$(plist_value "$PLIST" LVXE2EHarness)"
+# Two slots, not one per build: the harness and clean bundles differ in kind
+# (the gate's `launch --harness` demands the stamp), but N historical copies of
 # the same app would be indistinguishable at runtime — same bundle id, same
 # defaults domain, same TCC grant — and launching a stale one is precisely the
 # wrong-binary confusion docs/agent/field-debugging.md was written about. So a
 # reinstall REPLACES its slot, and the .source file next to it records what it
 # actually is.
 if [[ "$STAMP" == "true" ]]; then
-  NAME="localvoxtral-dogfood.app"
-  VARIANT_KEY="dogfood"
-  VARIANT="dogfood (LVXDogfoodCapture stamped)"
+  NAME="localvoxtral-harness.app"
+  VARIANT_KEY="harness"
+  VARIANT="harness (LVXE2EHarness stamped)"
 else
   NAME="localvoxtral.app"
   VARIANT_KEY="clean"
-  VARIANT="clean (no LVXDogfoodCapture stamp)"
+  VARIANT="clean (no LVXE2EHarness stamp)"
 fi
 
 # --- the destination root must stay owner-writable only --------------------
@@ -208,7 +208,7 @@ case "$DEST" in
   "$HOME"/*) GATE_ARG="${DEST#"$HOME"/}" ;;
 esac
 GATE_FLAG=""
-[[ "$VARIANT_KEY" == dogfood ]] && GATE_FLAG="--dogfood "
+[[ "$VARIANT_KEY" == harness ]] && GATE_FLAG="--harness "
 
 # --- the term-open wrapper -------------------------------------------------
 #

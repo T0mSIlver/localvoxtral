@@ -5,7 +5,7 @@ import Foundation
 /// dictionary, payload macro), the profile and templates, the sample it takes
 /// of the world before the async task starts, the two clipboard gates, the
 /// gather-assemble-send step, the overlay commit, the record's provenance,
-/// and — in a dogfood build — the capture record. The session's stop-commit
+/// and — in a harness build — the capture record. The session's stop-commit
 /// (`DictationSessionController+StopCommit.swift`) supplies its inputs — the
 /// transcript, the replacement dictionary latched at start, the commit target
 /// whose bundle ID picks the profile — and applies the outcome;
@@ -360,7 +360,7 @@ enum StopCommitCoordinator {
     // MARK: - Polish
 
     /// What one polish produced: the gathered material and the assembled
-    /// request (the dogfood capture reads both), and the reply.
+    /// request (the diagnostic record reads both), and the reply.
     struct PolishOutcome {
         struct Polished {
             /// The model's reply as it came back.

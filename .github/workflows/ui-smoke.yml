@@ -176,16 +176,14 @@ jobs:
         if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         run: ./scripts/ci/clean-stale-outputs.sh
 
-      - name: Package dogfood app bundle (dictates from a file)
-        # The e2e dictation check needs the instrumented build: only it can
-        # dictate from a WAV in place of the microphone (docs/test-harness.md).
-        # Enablement is the step env, never the .dogfood-capture-enable marker
-        # file, for the reason ci.yml gives: this workspace is persistent.
+      - name: Package the e2e harness app bundle (dictates from a file)
+        # The e2e dictation check needs the test harness: the control socket
+        # and the WAV that stands in for the microphone (docs/test-harness.md).
+        # No release build has either; this is the one package that asks.
+        id: package
         if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         env:
           LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
-          LOCALVOXTRAL_DOGFOOD: "1"
-          # The control socket and the WAV source (docs/agent/invariants.md).
           LOCALVOXTRAL_E2E_HARNESS: "1"
         run: ./scripts/package_app.sh release
 
@@ -238,3 +236,44 @@ jobs:
           path: logs/e2e-dictation.log
           if-no-files-found: ignore
           retention-days: 14
+
+      - name: Install the harness build into the UI gate's artifact root
+        # An agent driving the SSH UI gate can build but cannot install: no
+        # gate verb runs try-pr.sh and that account has no shell. This runner
+        # is a launchd agent in the owner's GUI session, so $HOME here is the
+        # gate's home, and a dispatch of this workflow is the install: the
+        # gate's `app` verbs need the control socket, which only this package
+        # has (`launch --harness`). Dispatch only, and after the e2e check:
+        # no PR label or schedule writes into the owner's home, and the check
+        # has already quit its app. `runner.environment` is redundant on this
+        # self-hosted job and stays, because this step writes into the
+        # owner's home; scripts/ci/test-ui-gate.sh asserts it by name.
+        if: >-
+          ${{ !cancelled()
+          && runner.environment == 'self-hosted'
+          && github.event_name == 'workflow_dispatch'
+          && steps.package.outcome == 'success' }}
+        run: |
+          set -uo pipefail
+          STATUS=0
+          INSTALLED="$(./scripts/mac/install-ui-artifact.sh dist/localvoxtral.app --no-hint \
+            --label "${GITHUB_REF_NAME} @ ${GITHUB_SHA:0:7} (UI Smoke run ${GITHUB_RUN_ID})")" || STATUS=$?
+          if (( STATUS == 3 )); then
+            # The one refusal that is not a build problem: that slot is
+            # running, which only the operator can resolve.
+            echo "::warning::UI-gate install skipped — the target bundle is running. Quit it (ssh lv-ui 'quit') and re-dispatch."
+            echo "UI-gate install skipped: the target bundle is running." >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if (( STATUS != 0 )); then
+            echo "::error::UI-gate install failed (exit $STATUS)."
+            exit "$STATUS"
+          fi
+          GATE_ARG="${INSTALLED#"$HOME"/}"
+          {
+            echo "### Installed for the UI gate"
+            echo
+            echo '```'
+            echo "ssh lv-ui 'launch --harness $GATE_ARG'"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"

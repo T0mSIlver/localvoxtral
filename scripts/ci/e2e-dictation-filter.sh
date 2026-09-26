@@ -19,7 +19,7 @@ set -euo pipefail
 
 # Only what no other check reaches: text insertion into another app's
 # window, focus handling and the commit that inserts (stop-commit and the
-# overlay commit). Plus the check itself, and the dogfood capture it dictates
+# overlay commit). Plus the check itself, and the test harness it dictates
 # through (owner decision 2026-09-25, to take load off the Mac).
 #
 # Deliberately NOT here: session start and stop, audio capture, the realtime

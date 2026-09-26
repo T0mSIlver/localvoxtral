@@ -6,7 +6,7 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|test-cost-budgets|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-e2e|eval-term-recall|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
+#   ./scripts/remote-build.sh [build|test|test-cost-budgets|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-e2e|eval-term-recall|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
 #     build        swift build
 #     test         swift build + unit tests (default; needs --filter, or
 #                  LV_ALLOW_HEAVY_MAC_RUN=1 for the full suite; skips live-backend suites
@@ -113,13 +113,6 @@ set -euo pipefail
 #                  score {"id","text"} rows with no speech engine;
 #                  `compare <before> <after>` pairs two runs by label, e.g.
 #                  eval-term-recall --asr nemotron
-#     dogfood     build the instrumented (LOCALVOXTRAL_DOGFOOD) tree and run
-#                  the context-capture suite; the capture is a compile gate, so
-#                  no other lane ever builds it
-#     dogfood-package
-#                  package an instrumented .app for hand-dogfooding (same
-#                  bundle id, so the Accessibility grant survives; the artifact
-#                  is identifiable by LVXDogfoodCapture in its Info.plist)
 #     package      ./scripts/package_app.sh release
 #     exec         run the extra args verbatim in the remote work dir
 #     diag         build-host diagnostic summary (gate v2 required)
@@ -1194,28 +1187,6 @@ case "$CMD" in
     fi
     REMOTE_CMD=(swift test --build-system native --filter LLMPolishPromptEvalTests)
     ;;
-  dogfood|dogfood-package)
-    # The dogfooding capture is a COMPILE gate (Package.swift), and the build
-    # gate allowlists exact payloads, so enablement travels as the same kind of
-    # gitignored marker the eval lanes use rather than an env prefix.
-    #
-    # `dogfood`         — build + run the capture suite in an instrumented tree.
-    # `dogfood-package` — package an instrumented .app for hand-dogfooding.
-    #                     The bundle identifier is unchanged (the TCC grant is
-    #                     part of what is being exercised); the artifact
-    #                     identifies itself through Info.plist's
-    #                     LVXDogfoodCapture, which Settings > About reports.
-    DOGFOOD_MARKER="$ROOT_DIR/.dogfood-capture-enable"
-    # Registered before the marker exists, so no kill window can leave an
-    # instrumented tree behind — locally or in the remote work dir.
-    trap 'cleanup_transient_marker "$DOGFOOD_MARKER"' EXIT
-    printf 'dogfood capture build marker; removed automatically\n' >"$DOGFOOD_MARKER"
-    if [[ "$CMD" == "dogfood-package" ]]; then
-      REMOTE_CMD=(./scripts/package_app.sh release "$@")
-    else
-      REMOTE_CMD=(swift test --build-system native --filter Dogfood "$@")
-    fi
-    ;;
   package) REMOTE_CMD=(./scripts/package_app.sh release "$@") ;;
   exec)
     if [[ $# -eq 0 ]]; then
@@ -1225,7 +1196,7 @@ case "$CMD" in
     REMOTE_CMD=("$@")
     ;;
   *)
-    echo "Usage: $0 [build|test|test-cost-budgets|integration|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-e2e|eval-term-recall|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
+    echo "Usage: $0 [build|test|test-cost-budgets|integration|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-e2e|eval-term-recall|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
     exit 1
     ;;
 esac

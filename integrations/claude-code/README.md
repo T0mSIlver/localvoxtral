@@ -226,8 +226,8 @@ ssh sandbox-vpn 'echo "[$LC_LVX_TTY]"'   # from a window where the rc line ran
 ```
 
 An empty answer means the variable is not crossing. Check the rc line,
-`SendEnv`, or a hardened `AcceptEnv`. On a dogfood build, `registry list`
-reports `remoteLocalTTY` per session, the same fact seen from the app.
+`SendEnv`, or a hardened `AcceptEnv`. On a debug or UI Smoke build, `registry
+list` reports `remoteLocalTTY` per session, the same fact seen from the app.
 
 ### 2. The connection (zero setup, no jump host)
 

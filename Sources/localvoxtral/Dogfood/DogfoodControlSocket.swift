@@ -7,7 +7,7 @@ import Synchronization
 import Darwin
 #endif
 
-/// An AF_UNIX control socket that exists ONLY in a dogfood build.
+/// An AF_UNIX control socket that exists ONLY in a harness build.
 ///
 /// ## Why it exists
 ///

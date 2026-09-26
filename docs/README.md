@@ -35,7 +35,7 @@ them too:
 - [Test tiers & eval lanes](agent/test-tiers.md): the full tier matrix,
   when the LLM lanes must run, eval recordings and ablations
 - [Field debugging](agent/field-debugging.md): try-pr, crashlog dispatch,
-  signing/TCC, dogfood capture
+  signing/TCC, diagnostic records
 
 Machine-local scratch (setup runbooks, handoff notes, drafts) goes in the
 gitignored `local-notes/` directory, never in `docs/`.
