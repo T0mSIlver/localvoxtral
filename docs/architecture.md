@@ -61,6 +61,8 @@ AppKit:
 - the clipboard reader's rules (`PolishContextClipboardReader`; its
   pasteboard half stays in the app)
 - the model catalogs (`BackendCatalog`, `SpeechModelCatalog`, `PolishModelCatalog`)
+- the Settings sidebar's status dots (`SettingsStatusDot`,
+  `IntegrationsSidebarStatus`); their rendering stays in the app
 - the Claude session snapshot and its reducer (`ClaudeSessionState`)
 - the config store (`AppConfigStore`, `BundledConfigDefaultHistory`,
   `SpeakerTerms`). The app hands it the resource bundle, and on Linux it
