@@ -112,6 +112,25 @@ package enum LearnedTermProjectResolver {
         }
     }
 
+    /// The project a local directory belongs to, read from disk: its git
+    /// root keyed by the repository's main checkout (#652), or the directory
+    /// itself outside a repository. Also returns the git root, which is where
+    /// a run in that project works. Walks the filesystem, so never on the
+    /// commit path.
+    package static func resolveLocal(
+        directory: String,
+        fileManager: FileManager = .default
+    ) -> (identity: Identity, gitRoot: String?) {
+        // The same answer `resolve` gives a local session in `directory`
+        // once the root is known: a git root found from a directory always
+        // contains it.
+        guard let gitRoot = RepoIndexing.findGitRoot(startingAt: directory, fileManager: fileManager) else {
+            return (identity(forDirectory: normalize(directory)), nil)
+        }
+        let mainCheckout = RepoIndexing.mainCheckout(ofRoot: gitRoot, fileManager: fileManager)
+        return (identity(forDirectory: normalize(mainCheckout)), gitRoot)
+    }
+
     private static func identity(forDirectory directory: String) -> Identity {
         let name = (directory as NSString).lastPathComponent
         return Identity(key: directory, name: name.isEmpty ? directory : name)

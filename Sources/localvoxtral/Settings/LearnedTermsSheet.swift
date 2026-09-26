@@ -202,8 +202,8 @@ struct LearnedTermsSheet: View {
     nonisolated static func detailParts(for term: LearnedTerm) -> (text: String, lastApplied: Date?) {
         guard term.isConfirmed(minimumDictations: LearnedTerms.confirmedDictations) else {
             let progress = "heard in \(term.dictations) of \(LearnedTerms.confirmedDictations) dictations"
-            if let agent = term.proposingAgent {
-                return ("Proposed by \(agent.displayName): \(progress)", nil)
+            if let proposer = term.proposerDisplayName {
+                return ("Proposed by \(proposer): \(progress)", nil)
             }
             return ("Learning: \(progress)", nil)
         }

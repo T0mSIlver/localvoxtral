@@ -89,9 +89,28 @@ package struct LearnedTerm: Codable, Equatable, Sendable {
         }.first
     }
 
+    /// The name after `agent:` in the first agent source: a headless run's
+    /// agent, or the caller of `localvoxtral terms propose` (#721), which may
+    /// be an agent that has no headless run (`AgentCLICaller`).
+    package var proposerName: String? {
+        sources.first { $0.hasPrefix(LearnedTerm.agentSourcePrefix) }
+            .map { String($0.dropFirst(LearnedTerm.agentSourcePrefix.count)) }
+    }
+
+    /// Who proposed it, as Settings names them.
+    package var proposerDisplayName: String? {
+        if let proposingAgent { return proposingAgent.displayName }
+        switch proposerName {
+        case nil: return nil
+        case "codex": return "Codex"
+        case "opencode": return "opencode"
+        default: return "a coding agent"
+        }
+    }
+
     /// An agent proposed it and neither use nor a pin has confirmed it yet.
     package var isUnconfirmedProposal: Bool {
-        proposingAgent != nil && !isConfirmed(minimumDictations: LearnedTerms.confirmedDictations)
+        proposerName != nil && !isConfirmed(minimumDictations: LearnedTerms.confirmedDictations)
     }
 }
 
@@ -411,6 +430,47 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         projects[index].proposalAttemptedAt = nil
         prune(now: now)
         return added
+    }
+
+    /// Terms a coding agent proposed through `localvoxtral terms propose`
+    /// (#721). They join unconfirmed, exactly as `recordProposal`'s do, with
+    /// `agent:<proposer>` as their source. Unlike that answer, a proposal from
+    /// the command does not stamp the project: it is a few names an agent
+    /// just met, not the project's list, so the headless run still asks once.
+    /// `terms` must already be term-shaped (`ProjectTermProposal.acceptedTerms`);
+    /// a term the project holds or `excluding` names is dropped. Returns the
+    /// terms added.
+    @discardableResult
+    package mutating func recordCommandProposal(
+        _ terms: [String],
+        proposer: String,
+        project: LearnedTermProjectIdentity,
+        excluding: [String] = [],
+        now: Date
+    ) -> [String] {
+        let index = projectIndex(for: project, now: now)
+        var known = Set(projects[index].terms.map(\.term.caseFoldedForMatching))
+        known.formUnion(excluding.map(\.caseFoldedForMatching))
+        var added: [String] = []
+        for term in terms where known.insert(term.caseFoldedForMatching).inserted {
+            projects[index].terms.append(
+                LearnedTerm(
+                    term: term,
+                    sources: [LearnedTerm.agentSourcePrefix + proposer],
+                    dictations: 0,
+                    firstSeen: now,
+                    lastSeen: now
+                )
+            )
+            added.append(term)
+        }
+        prune(now: now)
+        // A full project evicts proposals first, so the cap can take back
+        // what was just added.
+        let kept = Set(
+            projects.first { $0.key == project.key }?.terms.map(\.term.caseFoldedForMatching) ?? []
+        )
+        return added.filter { kept.contains($0.caseFoldedForMatching) }
     }
 
     /// A terms request for this project failed; the next joined dictation
