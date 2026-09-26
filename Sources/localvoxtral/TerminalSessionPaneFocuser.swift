@@ -88,6 +88,7 @@ final class TerminalSessionPaneFocuser: SessionPaneFocusing {
         }
         let running = runningTerminalBundleIDs()
         for bundleID in Self.askingOrder(termProgram: termProgram) where running.contains(bundleID) {
+            guard !Task.isCancelled else { return .paneNotFound }
             guard let source = Self.focusScriptSource(bundleID: bundleID, tty: tty) else { continue }
             switch await runScript(source) {
             case .failure(let code):
@@ -97,6 +98,9 @@ final class TerminalSessionPaneFocuser: SessionPaneFocusing {
                 )
                 continue
             case .success(let reply) where reply == Self.focusedReply:
+                // A new dictation that cancelled the go-to must not have its
+                // frontmost app changed under it.
+                guard !Task.isCancelled else { return .paneNotFound }
                 let activated = activate(bundleID)
                 let readBack = await focusedTTY(bundleID)
                 let verified = readBack == tty
@@ -134,6 +138,13 @@ final class TerminalSessionPaneFocuser: SessionPaneFocusing {
         let rest = tty.dropFirst(prefix.count)
         return !rest.isEmpty && rest.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }
     }
+
+    /// Long enough for a human to answer the Automation consent sheet, which
+    /// macOS dismisses when the event times out: the consent pre-warm runs
+    /// only for users with a context feature on, and a go-to may be the first
+    /// Apple event a terminal gets. Once consent is settled the script
+    /// answers in milliseconds; a new dictation cancels the wait.
+    static let scriptTimeoutSeconds = 120
 
     /// Selects the pane holding `tty` and answers "focused", or answers
     /// nothing when no pane holds it. Nil for an unsupported terminal or an
@@ -186,7 +197,7 @@ final class TerminalSessionPaneFocuser: SessionPaneFocusing {
             return nil
         }
         return """
-        with timeout of 2 seconds
+        with timeout of \(scriptTimeoutSeconds) seconds
             tell application id "\(bundleID)"
         \(body)
             end tell

@@ -71,6 +71,15 @@ final class TerminalSessionPaneFocuserTests: XCTestCase {
         XCTAssertEqual(fake.activated, [])
     }
 
+    func testAGoToCancelledWhileTheTerminalAnswersActivatesNothing() async {
+        let fake = FakeTerminals(running: [Self.ghostty], holding: Self.ghostty, cancelsWhileAnswering: true)
+        let outcome = await Task { await fake.focuser.focusPane(of: session(termProgram: "ghostty")) }.value
+
+        XCTAssertEqual(outcome, .paneNotFound)
+        XCTAssertEqual(fake.asked, [Self.ghostty])
+        XCTAssertEqual(fake.activated, [], "a new dictation keeps its frontmost app")
+    }
+
     func testAHerdrPaneAsksNoTerminal() async {
         let fake = FakeTerminals(running: [Self.ghostty], holding: Self.ghostty)
         var herdr = session(termProgram: "ghostty")
@@ -98,12 +107,19 @@ final class TerminalSessionPaneFocuserTests: XCTestCase {
         private(set) var activated: [String] = []
         private(set) var focuser: TerminalSessionPaneFocuser!
 
-        init(running: Set<String>, holding: String?, failing: Set<String> = [], readBack: String = "/dev/ttys004") {
+        init(
+            running: Set<String>,
+            holding: String?,
+            failing: Set<String> = [],
+            readBack: String = "/dev/ttys004",
+            cancelsWhileAnswering: Bool = false
+        ) {
             focuser = TerminalSessionPaneFocuser(
                 runningTerminalBundleIDs: { running },
                 runScript: { [unowned self] source in
                     let bundleID = [TerminalSessionPaneFocuserTests.ghostty, TerminalSessionPaneFocuserTests.iterm, TerminalSessionPaneFocuserTests.terminal].first { source.contains("\"\($0)\"") } ?? ""
                     self.asked.append(bundleID)
+                    if cancelsWhileAnswering { withUnsafeCurrentTask { $0?.cancel() } }
                     if failing.contains(bundleID) { return .failure(code: -1743) }
                     return .success(bundleID == holding ? TerminalSessionPaneFocuser.focusedReply : "")
                 },
