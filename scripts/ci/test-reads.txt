@@ -1,0 +1,41 @@
+# Repo files the Swift tests read without naming their repo path, for
+# scripts/ci/docs-only-filter.sh. A test that names a path as a literal
+# ("docs/remote-claude-context.md") needs no line here: the filter finds it by
+# scanning Tests/ on every run. This table covers the rest: a bare file name
+# joined onto a directory the test got elsewhere, and directory walks.
+#
+# scripts/ci/test-docs-only-filter.sh fails when a test file that reaches the
+# repo root names a bare file name that a fast-path file also has, or walks a
+# directory, and has no line here for it.
+#
+# Columns: <test file> <token> <kind> <repo glob>...
+#   token  the bare file name, or the call that walks a directory
+#          (enumerator( contentsOfDirectory( subpathsOfDirectory( subpaths( )
+#   kind   read      a changed path matching a glob forces full CI
+#          png-refs  same, only when the file references assets/*.png or is gone
+#          deleted   same, only when the file is gone
+#          none      the token reads no fast-path file (a fixture or temp dir)
+#   glob   bash pattern; * also matches /
+
+Tests/localvoxtralTests/AgentsGuideSizeTests.swift AGENTS.md read AGENTS.md
+Tests/localvoxtralTests/OpencodePluginManifestTests.swift README.md read integrations/opencode/README.md
+Tests/localvoxtralCoreTests/ClaudeRemotePluginManifestTests.swift README.md read integrations/claude-code/README.md
+Tests/localvoxtralCoreTests/ClaudeRemotePluginManifestTests.swift subpathsOfDirectory( read integrations/claude-code/plugins/*
+Tests/localvoxtralCoreTests/ClaudeRemotePluginManifestTests.swift contentsOfDirectory( none
+Tests/localvoxtralTests/ClaudePluginVersionHistoryTests.swift enumerator( read integrations/claude-code/plugins/*
+Tests/localvoxtralTests/DocsReferencedAssetsTests.swift README.md png-refs README.md
+Tests/localvoxtralTests/DocsReferencedAssetsTests.swift enumerator( png-refs docs/*.md
+Tests/localvoxtralTests/DocsReferencedAssetsTests.swift enumerator( deleted assets/*.png
+Tests/localvoxtralTests/AgentDictationE2EEvalSupportTests.swift record-agent-eval.swift read scripts/record-agent-eval.swift
+Tests/localvoxtralTests/AgentDictationE2EEvalSupportTests.swift render-agent-eval-report.swift read scripts/render-agent-eval-report.swift
+Tests/localvoxtralTests/RepoVocabularyTests.swift dictation.md none
+Tests/localvoxtralCoreTests/ClaudePluginManifestTests.swift contentsOfDirectory( none
+Tests/localvoxtralCoreTests/VibeRemoteShimTests.swift contentsOfDirectory( none
+Tests/localvoxtralTestSupport/AgentDictationEvalCorpus.swift contentsOfDirectory( none
+Tests/localvoxtralTests/DogfoodControlBuildBoundaryTests.swift enumerator( none
+Tests/localvoxtralTests/HerdrIntegrationSupport.swift contentsOfDirectory( none
+Tests/localvoxtralTests/SettingsSourceText.swift contentsOfDirectory( none
+Tests/localvoxtralTests/SettingsTabTests.swift enumerator( none
+Tests/localvoxtralTests/SpeechHelperIntegrationTests.swift contentsOfDirectory( none
+Tests/localvoxtralTests/VibeHooksInstallServiceTests.swift contentsOfDirectory( none
+Tests/localvoxtralTests/WorkflowActionPinningTests.swift contentsOfDirectory( none
