@@ -218,7 +218,7 @@ extension DictationSessionController {
         if overlayCommit.succeeded {
             // Read before the cleanup below discards the join.
             expectCorrection(of: displayWorkingText, join: context.claudeSessionJoin, project: nil)
-            proposeProjectTermsIfNew(join: context.claudeSessionJoin)
+            proposeProjectTermsIfNew(join: context.claudeSessionJoin, inserted: displayWorkingText)
         }
         pressOverlaySpokenSendReturnIfNeeded(pid: spokenSendPID, commit: overlayCommit)
 
@@ -351,7 +351,7 @@ extension DictationSessionController {
                 join: capture.claudeJoin,
                 project: outcome.material.learnedProject
             )
-            self.proposeProjectTermsIfNew(join: capture.claudeJoin)
+            self.proposeProjectTermsIfNew(join: capture.claudeJoin, inserted: insertedText)
         }
         self.pressOverlaySpokenSendReturnIfNeeded(pid: spokenSendPID, commit: overlayCommit)
 
@@ -478,12 +478,8 @@ extension DictationSessionController {
         if liveDictationCanTeachACorrection {
             expectCorrection(of: liveTypedText(), join: context.claudeSessionJoin, project: nil)
         }
-        // Only a stop that typed something: an accidental tap must not
-        // spend a run.
-        if !textInsertion.hasPendingInsertionText,
-           !liveTypedText().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        {
-            proposeProjectTermsIfNew(join: context.claudeSessionJoin)
+        if !textInsertion.hasPendingInsertionText {
+            proposeProjectTermsIfNew(join: context.claudeSessionJoin, inserted: liveTypedText())
         }
         completeStoppedSessionCleanup(
             sessionMode: sessionMode,

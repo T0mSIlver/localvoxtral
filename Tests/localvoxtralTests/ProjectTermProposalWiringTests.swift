@@ -99,13 +99,17 @@ final class ProjectTermProposalWiringTests: XCTestCase {
 
     /// One stopped Overlay Buffer dictation with `join`, awaited through its
     /// commit and the proposal it started.
-    private func dictate(_ harness: Harness, join: ClaudeSessionJoin?) async {
+    private func dictate(
+        _ harness: Harness,
+        join: ClaudeSessionJoin?,
+        text: String = "rename the page composer struct"
+    ) async {
         let viewModel = harness.viewModel
         viewModel.session.projectTermProposalTask = nil
         viewModel.session.context.claudeSessionJoin = join
         viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
-        viewModel.transcript.currentDictationEventText = "rename the page composer struct"
+        viewModel.transcript.currentDictationEventText = text
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
         await viewModel.session.projectTermProposalTask?.value
@@ -176,6 +180,18 @@ final class ProjectTermProposalWiringTests: XCTestCase {
             viewModel.session.finishStoppedSession(promotePendingSegment: false)
             await viewModel.session.projectTermProposalTask?.value
             XCTAssertEqual(harness.runner.all.count, expected, "after typing \"\(text)\"")
+        }
+    }
+
+    /// An empty Overlay Buffer commit reports success; it still asks
+    /// nothing, polished or not, and leaves the project's one ask unspent.
+    func testAnEmptyOverlayStopAsksNothing() async {
+        for polish in [true, false] {
+            let harness = makeHarness(polish: polish)
+            await dictate(harness, join: join(), text: "  ")
+            XCTAssertEqual(harness.runner.all, [], "polish \(polish)")
+            await dictate(harness, join: join())
+            XCTAssertEqual(harness.runner.all.count, 1, "polish \(polish): a real dictation still asks")
         }
     }
 
