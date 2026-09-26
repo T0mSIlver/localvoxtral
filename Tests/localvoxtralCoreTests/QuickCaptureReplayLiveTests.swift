@@ -71,7 +71,7 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
                 key: entry.key,
                 name: entry.name,
                 summary: entry.key.hasPrefix("/")
-                    ? QuickCaptureProjects.readme(atRoot: entry.key).flatMap(QuickCaptureProjects.firstParagraph(ofReadme:))
+                    ? QuickCaptureProjects.readme(atRoot: entry.key).flatMap(QuickCaptureProjects.summary(ofReadme:))
                     : nil,
                 terms: entry.terms,
                 userLine: entry.userLine

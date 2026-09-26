@@ -40,8 +40,12 @@ package enum Jev {
     }
 
     package static let questionID = "project"
+    /// Measured on the replay (2026-09-26): naming the speaker a developer
+    /// and asking for the catch-all "unless the note clearly concerns one
+    /// project" took wrong-project routes on the owner's joined list from 2
+    /// to 0 at the 0.9 bar, with no right one lost.
     package static let instructions =
-        "Someone spoke this idea, task or note aloud while working. Which of their projects is it about?"
+        "A developer dictated this note. Which of their software projects is it about? Choose inbox unless the note clearly concerns one project."
     package static let maxOptions = 255
     /// Jev answers in well under a second (liteLLM measured a 127 ms
     /// median). A capture waits on this, so a slow answer falls back.
