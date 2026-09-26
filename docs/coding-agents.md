@@ -82,6 +82,32 @@ file's text reaches the polisher except a term the transcript matched.
 A coding agent can add a term by editing this file, and the next dictation in
 that repo uses it.
 
+## Telling the agent you dictate
+
+Each agent's pane in Settings (Claude Code, opencode, Mistral Vibe) has a
+**Tell … you dictate** row. **Add** puts a short note in that agent's
+user-level instructions file, saying your prompts come from speech-to-text:
+the agent should fix an obvious transcription error itself and ask before
+acting when a likely error changes the request. **Remove** takes it out.
+
+| Agent | File |
+|---|---|
+| Claude Code | `~/.claude/CLAUDE.md` |
+| opencode | `~/.config/opencode/AGENTS.md`, or `~/.claude/CLAUDE.md` when that file does not exist |
+| Mistral Vibe | `~/.vibe/AGENTS.md` |
+
+opencode reads only the first of its two files that exists, so creating
+`~/.config/opencode/AGENTS.md` would stop it from reading your CLAUDE.md. For
+that reason the note goes into whichever file opencode reads today, and
+Claude Code and opencode then share it.
+
+The note sits between `<!-- begin localvoxtral dictation note -->` and
+`<!-- end localvoxtral dictation note -->`. The app writes only between those
+lines, and only when you press the button. A file that is a symlink, or that
+holds only one of the two lines, is left alone; the row then says so. The
+app does not see `VIBE_HOME` or `CLAUDE_CONFIG_DIR`; if you moved either
+directory, copy the note by hand.
+
 ## Polish context: what each toggle sends
 
 Each **Settings → Context** toggle is named for what it sends. Here is what

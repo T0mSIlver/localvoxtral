@@ -58,6 +58,13 @@ rm ~/.config/opencode/plugins/localvoxtral.js
 
 and remove the line from `~/.config/opencode/tui.json`.
 
+## Telling opencode you dictate
+
+**Settings → opencode → Tell opencode you dictate → Add** puts a short note in
+the instructions file opencode reads: `~/.config/opencode/AGENTS.md`, or
+`~/.claude/CLAUDE.md` when that file does not exist. See
+[Telling the agent you dictate](../../docs/coding-agents.md#telling-the-agent-you-dictate).
+
 ## Design invariants (why it is built this way)
 
 - **The TTY is published only by the half that owns a pane.** One opencode

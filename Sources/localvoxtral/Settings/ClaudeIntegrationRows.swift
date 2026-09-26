@@ -199,6 +199,42 @@ struct VibeHooksRow: View {
     }
 }
 
+/// Add or remove the dictation note in one agent's instructions file.
+///
+/// Writes only on a press. The buttons follow the file: Add when the note is
+/// absent, Update when the file holds another version, Remove when it is
+/// there, nothing while the file needs a hand fix.
+struct DictationNoteRow: View {
+    @Bindable var model: ClaudeIntegrationSettingsModel
+    let agent: DictationNoteAgent
+
+    var body: some View {
+        SettingsFieldRow(
+            title: "Tell \(agent.displayName) you dictate",
+            status: model.dictationNoteSentence(for: agent),
+            statusAccessibilityIdentifier: "integrations.\(agent.rawValue).dictationNote.status"
+        ) {
+            HStack(spacing: 8) {
+                let status = model.dictationNoteStatus(for: agent)
+                if let title = DictationNoteInstallService.addButtonTitle(for: status) {
+                    Button(title) { Task { await model.addDictationNote(for: agent) } }
+                        .disabled(model.isPerformingDictationNoteAction)
+                        .accessibilityIdentifier("integrations.\(agent.rawValue).dictationNote.add")
+                }
+                if DictationNoteInstallService.offersRemove(for: status) {
+                    Button("Remove") { Task { await model.removeDictationNote(for: agent) } }
+                        .disabled(model.isPerformingDictationNoteAction)
+                        .accessibilityIdentifier("integrations.\(agent.rawValue).dictationNote.remove")
+                }
+                if model.isPerformingDictationNoteAction {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            .controlSize(.small)
+        }
+    }
+}
+
 /// The cmux automation-socket password, stored in the Keychain.
 ///
 /// A write-only field on purpose: the stored secret is never read back into the
