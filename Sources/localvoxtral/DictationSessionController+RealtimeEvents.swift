@@ -217,7 +217,7 @@ extension DictationSessionController {
         }
 
         if isLiveAutoPasteModeEnabled, settings.autoCopyEnabled {
-            copyLatestSegment(updateStatus: false)
+            autoCopyDictationSoFar()
         }
         refreshOverlayBufferSession()
     }
@@ -288,7 +288,7 @@ extension DictationSessionController {
         }
 
         if isLiveAutoPasteModeEnabled, settings.autoCopyEnabled {
-            copyLatestSegment(updateStatus: false)
+            autoCopyDictationSoFar()
         }
 
         return pendingSegment
