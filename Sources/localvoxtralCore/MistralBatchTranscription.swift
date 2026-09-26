@@ -61,6 +61,32 @@ package enum MistralBatchTranscription {
         return terms
     }
 
+    /// The answer with every phrase `contextBias` joined put back as it was
+    /// listed: the model writes about half of them as sent ("Claude_Code"),
+    /// the rest with spaces (measured 2026-09-26 on the term-recall set: 22
+    /// joined, 21 spaced). A term that held `_` itself is left alone.
+    package static func restoringPhrases(in text: String, candidates: [String]) -> String {
+        let sent = Set(contextBias(from: candidates))
+        var result = text
+        for candidate in candidates {
+            let words = candidate.split(whereSeparator: { $0.isWhitespace || $0.isNewline })
+            guard words.count > 1 else { continue }
+            let joined = words.joined(separator: "_")
+            guard sent.contains(joined) else { continue }
+            let pattern = "(?<![\\p{L}\\p{N}_])"
+                + NSRegularExpression.escapedPattern(for: joined)
+                + "(?![\\p{L}\\p{N}_])"
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+            else { continue }
+            result = regex.stringByReplacingMatches(
+                in: result,
+                range: NSRange(result.startIndex..., in: result),
+                withTemplate: NSRegularExpression.escapedTemplate(for: words.joined(separator: " "))
+            )
+        }
+        return result
+    }
+
     // MARK: - Request
 
     /// The multipart body: the WAV as `file`, then `model`, `language` when

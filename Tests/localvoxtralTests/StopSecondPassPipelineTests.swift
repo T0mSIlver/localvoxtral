@@ -1,3 +1,4 @@
+import ClaudeContextWire
 import Foundation
 import XCTest
 @testable import localvoxtral
@@ -95,6 +96,58 @@ final class StopSecondPassPipelineTests: XCTestCase {
         XCTAssertTrue(transcriber.calls.isEmpty)
         XCTAssertNil(harness.viewModel.session.polishAndCommitTask)
         XCTAssertEqual(harness.overlay.committedTexts, [Self.realtimeText])
+    }
+
+    // MARK: - Context terms (#647)
+
+    private static let projectDirectory = "/nonexistent-647/quillmark"
+
+    /// The terms one dictation joined to a Claude Code session in a project
+    /// whose agent proposed `inkwell` sends, polished or not.
+    private func contextBias(trusted: Bool, polish: Bool) async -> [String]? {
+        let transcriber = FakeBatchTranscriber(.text("Ask Claude_Code about inkwell."))
+        let harness = makeHarness(
+            transcriber: transcriber, polisher: polish ? FakePolishingService() : nil)
+        let settings = harness.viewModel.settings
+        settings.polishContextTrustedEndpointEnabled = trusted
+        settings.repoVocabularyEnabled = true
+        let store = LearnedTermStore(fileURL: nil, now: harness.clock.clock.now)
+        let project = LearnedTermProjectIdentity(key: Self.projectDirectory, name: "quillmark")
+        store.recordProposal(["inkwell"], agent: .claude, project: project, excluding: [])
+        store.waitForPendingWrites()
+        harness.viewModel.learnedTermStore = store
+        harness.viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding(outcome: nil)
+        let origin = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
+        var snapshot = ClaudeSessionSnapshot(
+            sessionID: "s1", origin: origin, agent: .claude, firstSeen: Date(timeIntervalSince1970: 0))
+        snapshot.workspace = ClaudeWorkspaceReference.make(rawCwd: Self.projectDirectory, origin: origin)
+        harness.viewModel.session.context.claudeSessionJoin = ClaudeSessionJoin(
+            target: TerminalScreenTarget(pid: 4242, bundleID: "com.apple.Terminal"),
+            snapshot: snapshot,
+            windowID: 101,
+            mechanism: .ttyDevice
+        )
+
+        harness.stop()
+        await awaitStoppedSessionCommit(harness.viewModel)
+        XCTAssertEqual(
+            harness.records.first?.rawText, "Ask Claude Code about inkwell.",
+            "a phrase the model wrote as sent gets its space back")
+        return transcriber.calls.first?.contextBias
+    }
+
+    func testARepositoryTermLeavesOnlyWithTheTrustedEndpointOptIn() async {
+        let untrusted = await contextBias(trusted: false, polish: false)
+        XCTAssertEqual(untrusted, ["localvoxtral", "Claude_Code"])
+        let trusted = await contextBias(trusted: true, polish: false)
+        XCTAssertEqual(trusted, ["localvoxtral", "Claude_Code", "inkwell"])
+    }
+
+    func testThePolishCaptureCarriesTheJoinToTheSecondPass() async {
+        let untrusted = await contextBias(trusted: false, polish: true)
+        XCTAssertEqual(untrusted, ["localvoxtral", "Claude_Code"])
+        let trusted = await contextBias(trusted: true, polish: true)
+        XCTAssertEqual(trusted, ["localvoxtral", "Claude_Code", "inkwell"])
     }
 
     // MARK: - Latch
