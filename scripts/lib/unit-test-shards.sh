@@ -19,7 +19,7 @@
 # associative arrays, no mapfile.
 #
 # Stale weights only unbalance the shards. To refresh them after a full
-# `./scripts/remote-build.sh test` on a quiet Mac:
+# `LV_ALLOW_HEAVY_MAC_RUN=1 ./scripts/remote-build.sh test` on a quiet Mac:
 #   bash -c '. scripts/lib/unit-test-shards.sh
 #     lv_unit_suite_seconds .build/last-remote.log' >scripts/ci/unit-suite-seconds.txt
 

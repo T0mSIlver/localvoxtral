@@ -8,7 +8,8 @@ set -euo pipefail
 # Usage:
 #   ./scripts/remote-build.sh [build|test|test-cost-budgets|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-e2e|eval-term-recall|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
 #     build        swift build
-#     test         swift build + unit tests (default; skips live-backend suites
+#     test         swift build + unit tests (default; needs --filter, or
+#                  LV_ALLOW_HEAVY_MAC_RUN=1 for the full suite; skips live-backend suites
 #                  and the cost-budget suite below). With no extra arguments
 #                  it runs LV_TEST_SHARDS (default 6) xctest processes at once
 #                  and merges their output into one log; any argument (e.g.
@@ -133,10 +134,16 @@ set -euo pipefail
 #                  also fired automatically, best-effort, after every run —
 #                  EvalRecordings inside a stale dir are always preserved)
 #
+# The Mac is the owner's machine (#617), so two kinds of run refuse unless
+# LV_ALLOW_HEAVY_MAC_RUN=1 is set, before any sync: a `test` with neither
+# --filter nor --package-path (the full suite, which the PR's hosted
+# build-test runs anyway), and the live verbs integration*, eval-*,
+# speechd-bench and polishd-bench (AGENTS.md, Build and test, says when one
+# is due).
+#
 # Examples:
-#   ./scripts/remote-build.sh
 #   ./scripts/remote-build.sh test --filter TextMergingAlgorithmsTests
-#   ./scripts/remote-build.sh eval-e2e EvalRecordings/agent-dictation/owner
+#   LV_ALLOW_HEAVY_MAC_RUN=1 ./scripts/remote-build.sh eval-e2e EvalRecordings/agent-dictation/owner
 #   ./scripts/remote-build.sh exec swift test --list-tests
 #
 # The build host is machine-local configuration, never committed. Resolution
@@ -318,6 +325,30 @@ cleanup_transient_marker() {
       "$ROOT_DIR/" "$HOST:$DIR/" 2>/dev/null || true
   fi
 }
+
+# The owner's MacBook is the only build host (#617). The full unit suite and
+# the live lanes and evals are the runs agents started most without need, so
+# they take an explicit opt-in; everything else runs as before.
+if [[ "${LV_ALLOW_HEAVY_MAC_RUN:-0}" != 1 ]]; then
+  case "${1:-test}" in
+    test)
+      scoped=0
+      for arg in "${@:2}"; do
+        case "$arg" in --filter|--filter=*|--package-path|--package-path=*) scoped=1 ;; esac
+      done
+      if (( ! scoped )); then
+        echo "remote-build.sh: a plain test runs the full suite on the Mac, and the PR's hosted build-test already runs it (AGENTS.md, Build and test)." >&2
+        echo "Run the suites you touched: $0 test --filter <Suite>; LV_ALLOW_HEAVY_MAC_RUN=1 runs the full suite anyway." >&2
+        exit 2
+      fi
+      ;;
+    integration*|eval-*|speechd-bench|polishd-bench)
+      echo "remote-build.sh: $1 runs live inference on the Mac; AGENTS.md (Build and test) allows it only when a rule requires it, once, on the final diff, and never beside the PR's CI lane." >&2
+      echo "LV_ALLOW_HEAVY_MAC_RUN=1 $0 $1 ... runs it." >&2
+      exit 2
+      ;;
+  esac
+fi
 
 # The Linux suites (#545). On a box that is not a Mac and has a Swift
 # toolchain (SWIFT, else `swift` on PATH), `test` runs the suites that build

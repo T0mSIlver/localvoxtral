@@ -67,6 +67,7 @@ common_env=(
   "LV_BUILD_HOST=fake-host"
   # The Mac path; test-remote-build-linux-routing.sh covers the Linux one.
   "LV_TEST_ON_MAC=1"
+  "LV_ALLOW_HEAVY_MAC_RUN=1"
   "LV_BUILD_DIR=work/localvoxtral-shards-regression"
   "LV_TEST_SHARDS=2"
   "LV_TEST_SSH_LOG=$ssh_log"

@@ -67,7 +67,7 @@ while [[ $# -gt 0 ]]; do
 done
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "run-agent-eval-local.sh must run from a macOS checkout" >&2
-  echo "From Linux, use: ./scripts/remote-build.sh eval-e2e [recording-set]" >&2
+  echo "From Linux, use: LV_ALLOW_HEAVY_MAC_RUN=1 ./scripts/remote-build.sh eval-e2e [recording-set]" >&2
   exit 1
 fi
 if [[ -n "$RECORDING_DIR" ]]; then

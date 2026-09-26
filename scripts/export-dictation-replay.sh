@@ -58,4 +58,4 @@ recordings=$(ls "$OUT/dictation-audio" | grep -c '\.wav$' || true)
 echo "Exported $recordings recordings to $OUT"
 echo "Next, on the dev box: copy it to EvalRecordings/replay/<set>/ in a checkout, then"
 echo "  ./scripts/remote-build.sh package"
-echo "  ./scripts/remote-build.sh eval-e2e --replay EvalRecordings/replay/<set>"
+echo "  LV_ALLOW_HEAVY_MAC_RUN=1 ./scripts/remote-build.sh eval-e2e --replay EvalRecordings/replay/<set>"
