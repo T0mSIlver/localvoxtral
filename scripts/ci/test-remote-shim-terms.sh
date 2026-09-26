@@ -71,8 +71,11 @@ while [ "$#" -gt 0 ]; do
 done
 case "$url" in
 */v1/terms)
-  cp "$data" "$LVX_T/posted-body"
-  cp "$header" "$LVX_T/posted-header"
+  # posted-body is what the suite waits for, so it lands last, and each file
+  # appears whole by rename (#767).
+  cp "$header" "$LVX_T/posted-header.tmp" && mv "$LVX_T/posted-header.tmp" "$LVX_T/posted-header"
+  cp "$data" "$LVX_T/posted-body.tmp" && mv "$LVX_T/posted-body.tmp" "$LVX_T/posted-body"
+  echo >>"$LVX_T/runs-posted"
   printf '%s' "$(cat "$LVX_T/terms-status" 2>/dev/null || echo 200)"
   ;;
 *)
@@ -99,6 +102,7 @@ env >"$TMP_DIR/$agent-env"
 pwd -P >"$TMP_DIR/$agent-cwd"
 for arg in "\$@"; do printf '%s\n' "\$arg"; done >"$TMP_DIR/$agent-argv"
 : >"$TMP_DIR/$agent-started"
+echo >>"$TMP_DIR/runs-started"
 i=0
 while [ ! -e "$TMP_DIR/release" ] && [ "\$i" -lt 100 ]; do sleep 0.1; i=\$((i + 1)); done
 printf '{"terms":["Quillmark"]}'
@@ -116,10 +120,21 @@ TRANSCRIPT="$TMP_DIR/messages.jsonl"
 echo '{"role": "user", "content": "rename the enum", "injected": false}' >"$TRANSCRIPT"
 VIBE_PAYLOAD="{\"session_id\":\"7f4aefdf\",\"transcript_path\":\"$TRANSCRIPT\",\"cwd\":\"/srv/app\",\"parent_session_id\":null,\"hook_event_name\":\"post_agent\"}"
 
+# Every run the stub agents start ends by posting (their answer is never
+# empty), so equal counts mean no detached run from the previous case can
+# still write into the next one (#767).
+runs_drained() {
+  [ "$(($(cat "$TMP_DIR/runs-started" 2>/dev/null | wc -l)))" \
+    = "$(($(cat "$TMP_DIR/runs-posted" 2>/dev/null | wc -l)))" ]
+}
+
 reset_state() {
+  local i=0
+  while ! runs_drained && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  runs_drained || fail "a run from the previous case never posted"
   rm -rf "$TMP_DIR/run" "$TMP_DIR"/claude-* "$TMP_DIR"/vibe-env "$TMP_DIR"/vibe-cwd \
     "$TMP_DIR"/vibe-argv "$TMP_DIR"/vibe-started "$TMP_DIR/release" \
-    "$TMP_DIR/posted-body" "$TMP_DIR/posted-header" "$TMP_DIR/ask" "$TMP_DIR/terms-status"
+    "$TMP_DIR"/posted-body* "$TMP_DIR"/posted-header* "$TMP_DIR/ask" "$TMP_DIR/terms-status"
   mkdir -p "$TMP_DIR/run"
 }
 
