@@ -1625,9 +1625,12 @@ def technical_attribution(
         categories[category].append(case_id)
 
     term_categories: dict[str, list[str]] = defaultdict(list)
-    oracle_primary_stage = f"25 {primary_model} current-production-oracle"
+    # With prompt arms, the oracle arm to read is the one on the same arm.
+    arm = variant.partition("@")[2]
+    oracle_variant = "current-production-oracle" + (f"@{arm}" if arm else "")
+    oracle_primary_stage = f"25 {primary_model} {oracle_variant}"
     oracle_ceiling_stage = (
-        f"25 {ceiling_model} current-production-oracle" if ceiling_model else None
+        f"25 {ceiling_model} {oracle_variant}" if ceiling_model else None
     )
     has_oracle = any(row["stage"] == oracle_primary_stage for row in rows)
     if has_oracle:
