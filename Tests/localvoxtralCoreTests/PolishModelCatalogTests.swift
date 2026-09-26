@@ -10,10 +10,10 @@ final class PolishModelCatalogTests: XCTestCase {
         XCTAssertEqual(defaultOption.repoID, "mlx-community/Qwen3.5-4B-OptiQ-4bit")
         XCTAssertEqual(PolishModelCatalog.option(forRepoID: defaultOption.repoID), defaultOption)
         XCTAssertNil(PolishModelCatalog.option(forRepoID: "unknown/model"))
-        // The 4B and 9B decode greedily (#563); the 0.8B lost cases at 0 and
-        // keeps the 0.3 request default. Only the temperature is set: Qwen's
+        // The 9B decodes greedily (#563); the 4B and 0.8B lost cases at 0 and
+        // keep the 0.3 request default. Only the temperature is set: Qwen's
         // recommended sampling lost to 0.3 on the eval (#97).
-        XCTAssertEqual(defaultOption.samplingDefaults, PolishSamplingDefaults(temperature: 0))
+        XCTAssertNil(defaultOption.samplingDefaults)
         XCTAssertEqual(
             PolishModelCatalog.option(forRepoID: "mlx-community/Qwen3.5-9B-OptiQ-4bit")?
                 .samplingDefaults,

@@ -482,13 +482,13 @@ final class SettingsStoreTests: XCTestCase {
         )
         XCTAssertEqual(configuration?.apiKey, "")
         XCTAssertEqual(configuration?.model, SettingsStore.defaultLLMPolishingModel)
-        XCTAssertEqual(configuration?.samplingDefaults, PolishSamplingDefaults(temperature: 0))
+        XCTAssertNil(configuration?.samplingDefaults)
         // The default 4B rides the catalog's enable_thinking=false kwargs
         // (default flipped from the kwarg-less 0.8B on 2026-07-11).
         XCTAssertEqual(configuration?.chatTemplateArguments, ["enable_thinking": false])
     }
 
-    /// The bundled helper's 4B and 9B decode greedily (#563). The 0.8B lost
+    /// The bundled helper's 9B decodes greedily (#563). The 4B and 0.8B lost
     /// eval cases at 0, and nothing measured Mistral or External URL at 0, so
     /// they keep the 0.3 default.
     func testPolishRequestTemperature_helperGreedy_mistralAndExternalKeepDefault() throws {
@@ -506,7 +506,7 @@ final class SettingsStoreTests: XCTestCase {
         store.llmPolishingEnabled = true
         let expected: [String: Double] = [
             "mlx-community/Qwen3.5-0.8B-8bit": 0.3,
-            "mlx-community/Qwen3.5-4B-OptiQ-4bit": 0,
+            "mlx-community/Qwen3.5-4B-OptiQ-4bit": 0.3,
             "mlx-community/Qwen3.5-9B-OptiQ-4bit": 0,
         ]
         XCTAssertEqual(Set(expected.keys), Set(PolishModelCatalog.options.map(\.repoID)))

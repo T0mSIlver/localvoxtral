@@ -478,8 +478,8 @@ struct LLMPolishingService: LLMPolishingServicing {
         var body: [String: Any] = [
             "model": configuration.model,
             "messages": messages,
-            // Mistral, External URL, custom models and the 0.8B. The bundled
-            // helper's 4B and 9B override it with 0 (PolishModelCatalog).
+            // Mistral, External URL, custom models, the 0.8B and the 4B. The
+            // bundled helper's 9B overrides it with 0 (PolishModelCatalog).
             "temperature": 0.3,
         ]
         if let defaults = configuration.samplingDefaults {

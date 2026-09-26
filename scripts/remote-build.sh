@@ -65,12 +65,13 @@ set -euo pipefail
 #                  requires a prior `package`
 #     polishd-bench
 #                  time the packaged polishing helper on the polish eval
-#                  corpora, one arm after another per round: greedy (the
-#                  production request), greedy with MTP speculative decoding,
-#                  and temperature 0.3. Optional args = rounds (default 3) and
-#                  an absolute path on the build host to a baseline helper
-#                  binary (e.g. another LV_BUILD_DIR's packaged one), added as
-#                  a fourth arm, greedy; requires a prior `package`
+#                  corpora with the 4B, one arm after another per round:
+#                  greedy, greedy with MTP speculative decoding, and the
+#                  production temperature 0.3. Optional args = rounds (default
+#                  3) and an absolute path on the build host to a baseline
+#                  helper binary (e.g. another LV_BUILD_DIR's packaged one),
+#                  added as a fourth arm at temperature 0.3; requires a prior
+#                  `package`
 #     eval-llm     default-polish-prompt eval against a live chat/completions
 #                  server (the bundled polishd test service by default);
 #                  optional args = chat/completions endpoint and external
@@ -763,7 +764,7 @@ case "$CMD" in
     POLISHD_BENCH_ARMS+=",{\"name\":\"greedy+MTP\",\"helperPath\":\"$POLISHD_BENCH_HELPER\",\"arguments\":[\"--speculative-decoding\",\"mtp\"],\"temperature\":0}"
     POLISHD_BENCH_ARMS+=",{\"name\":\"temp 0.3\",\"helperPath\":\"$POLISHD_BENCH_HELPER\",\"temperature\":0.3}"
     if [[ -n "$POLISHD_BENCH_BASELINE" ]]; then
-      POLISHD_BENCH_ARMS+=",{\"name\":\"baseline greedy\",\"helperPath\":\"$POLISHD_BENCH_BASELINE\",\"temperature\":0}"
+      POLISHD_BENCH_ARMS+=",{\"name\":\"baseline temp 0.3\",\"helperPath\":\"$POLISHD_BENCH_BASELINE\",\"temperature\":0.3}"
     fi
     printf '{"rounds":%s,"arms":[%s]}\n' "$POLISHD_BENCH_ROUNDS" "$POLISHD_BENCH_ARMS" \
       >"$POLISHD_BENCH_MARKER"
