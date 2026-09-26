@@ -190,9 +190,6 @@ final class BackendProcessSupervisorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let countFile = directory.appendingPathComponent("count")
-        // PROOF ONLY (#753), removed before review.
-        let countWrite = ProcessInfo.processInfo.environment["LV_PROOF_753_NO_WRITE"] == nil
-            ? "echo \"$count\" > \"\(countFile.path)\"" : ":"
         let script = try writeScript(
             in: directory,
             name: "backend.sh",
@@ -203,7 +200,7 @@ final class BackendProcessSupervisorTests: XCTestCase {
               count=$(cat "\(countFile.path)")
             fi
             count=$((count + 1))
-            \(countWrite)
+            echo "$count" > "\(countFile.path)"
             echo "fatal backend failure $count" >&2
             exit 7
             """
@@ -231,14 +228,6 @@ final class BackendProcessSupervisorTests: XCTestCase {
         XCTAssertEqual(summary, "test-backend exited 3 consecutive times.")
         let detail = try XCTUnwrap(optionalDetail)
         XCTAssertTrue(detail.contains("fatal backend failure"), detail)
-        // The backend writes count before it exits and .failed follows the
-        // third exit, so a missing file means something removed it or the
-        // write failed; the failure says which (#753).
-        guard FileManager.default.fileExists(atPath: countFile.path) else {
-            let left = (try? FileManager.default.contentsOfDirectory(atPath: directory.path))
-                .map { "left in the directory: \($0)" } ?? "the directory is gone"
-            return XCTFail("count is missing after 3 exits; \(left); backend output: \(supervisor.recentOutput)")
-        }
         XCTAssertEqual(try readCount(from: countFile), 3)
         XCTAssertEqual(
             sleeps.recordedDurations.filter { $0 >= .milliseconds(500) },
@@ -497,6 +486,11 @@ private final class StateWatcher: @unchecked Sendable {
             }
             group.addTask {
                 try await Task.sleep(for: timeout)
+                // Said here rather than left to the thrown error: XCTest can
+                // report a thrown error as the last one a try? swallowed, and
+                // #753's timeout read as "the file count couldn't be opened".
+                let seen = self.storage.withLock { $0.states }
+                XCTFail("no matching state within \(timeout); the supervisor went through \(seen)")
                 throw WaitTimeout()
             }
 
