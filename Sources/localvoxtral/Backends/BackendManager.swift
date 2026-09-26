@@ -55,6 +55,12 @@ protocol ManagedBackendSupervising: AnyObject {
 
     func start() async
     func stop() async
+    /// The child's pid while one is running.
+    var processID: pid_t? { get }
+}
+
+extension ManagedBackendSupervising {
+    var processID: pid_t? { nil }
 }
 
 extension BackendProcessSupervisor: ManagedBackendSupervising {}
@@ -85,6 +91,13 @@ protocol ManagedBackendManaging: AnyObject {
     /// supervisor has not been created yet (backend never started). For local
     /// diagnostics export only.
     func recentOutput(for spec: ManagedBackendSpec) -> [String]
+    /// The running helper's pid, for the widgets' memory reading; nil while
+    /// it is not running.
+    func processID(for spec: ManagedBackendSpec) -> pid_t?
+}
+
+extension ManagedBackendManaging {
+    func processID(for spec: ManagedBackendSpec) -> pid_t? { nil }
 }
 
 @MainActor
@@ -406,6 +419,17 @@ final class BackendManager: ManagedBackendManaging {
             return polishdSupervisor?.recentOutput ?? []
         default:
             return []
+        }
+    }
+
+    func processID(for spec: ManagedBackendSpec) -> pid_t? {
+        switch spec.id {
+        case BackendCatalog.speechd.id:
+            return speechdSupervisor?.processID
+        case BackendCatalog.polishd.id:
+            return polishdSupervisor?.processID
+        default:
+            return nil
         }
     }
 

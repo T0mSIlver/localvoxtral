@@ -370,7 +370,9 @@ if (( IS_ADHOC )); then
   # _dyld_start (Gatekeeper first-exec scan); a LOCAL ad-hoc re-sign is the
   # field-proven fix. Only ad-hoc artifacts are re-signed, so an identity-signed
   # build keeps its stable signature — and its TCC grant — untouched.
-  codesign --force --deep --sign - "$APP"
+  # Keep the entitlements: the widget extension does not load without its
+  # sandbox, and a plain --deep re-sign strips it.
+  codesign --force --deep --preserve-metadata=entitlements --sign - "$APP"
 fi
 
 if pgrep -x localvoxtral >/dev/null 2>&1; then

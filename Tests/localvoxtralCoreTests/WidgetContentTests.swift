@@ -332,3 +332,19 @@ final class WidgetContentTests: XCTestCase {
         XCTAssertEqual(try decoder.decode(WidgetSnapshot.self, from: JSONEncoder().encode(original)), original)
     }
 }
+
+/// Model names on the Engines rows.
+final class WidgetModelNameTests: XCTestCase {
+    func testNames() {
+        let cases: [(String, String, String)] = [
+            ("Voxtral Mini 4B Realtime (4-bit, quantized head)", "Voxtral Mini 4B Realtime", "Voxtral 4B"),
+            ("Nemotron 3.5 ASR Streaming 0.6B (8-bit)", "Nemotron 3.5 ASR Streaming 0.6B", "Nemotron 0.6B"),
+            ("Qwen3.5 4B (better quality, default)", "Qwen3.5 4B", "Qwen3.5 4B"),
+            ("someone/Custom-Whisper", "Custom-Whisper", "Custom-Whisper"),
+        ]
+        for (display, full, short) in cases {
+            XCTAssertEqual(WidgetModelName.full(display), full)
+            XCTAssertEqual(WidgetModelName.short(display), short)
+        }
+    }
+}

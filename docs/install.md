@@ -40,7 +40,7 @@ fix that variant, but a local re-sign does — the installer script already
 does this for you:
 
 ```bash
-codesign --force --deep --sign - /Applications/localvoxtral.app
+codesign --force --deep --preserve-metadata=entitlements --sign - /Applications/localvoxtral.app
 ```
 
 ## Updating

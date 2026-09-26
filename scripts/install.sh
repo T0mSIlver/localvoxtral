@@ -255,7 +255,9 @@ main() {
   # --deep is deprecated but field-verified working on macOS 26.5 (2026-07-04);
   # if Apple removes it, sign nested executables explicitly instead.
   step "Re-signing app locally before it enters /Applications"
-  codesign --force --deep --sign - "$app_path" || die "Local ad-hoc signing failed"
+  # Keep the entitlements: the widget extension does not load without its
+  # sandbox, and a plain --deep re-sign strips it.
+  codesign --force --deep --preserve-metadata=entitlements --sign - "$app_path" || die "Local ad-hoc signing failed"
 
   install_app_bundle "$app_path"
 

@@ -41,18 +41,7 @@ struct TextProcessingSettingsPane: View {
     private var llmPolishingEnabledBinding: Binding<Bool> {
         Binding(
             get: { settings.llmPolishingEnabled },
-            set: { newValue in
-                let wasEnabled = settings.llmPolishingEnabled
-                settings.llmPolishingEnabled = newValue
-
-                if newValue, !wasEnabled {
-                    viewModel.prepareLLMPolishingPromptAccessIfNeeded()
-                }
-                // Turning polishing off stops the managed polishd process
-                // (Managed local mode only). External URL mode owns no local
-                // process, and re-enabling starts managed polishd eagerly.
-                viewModel.engines.llmPolishingEnabledDidChange(newValue)
-            }
+            set: { viewModel.setLLMPolishingEnabled($0) }
         )
     }
 

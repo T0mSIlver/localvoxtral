@@ -34,6 +34,22 @@ let dogfoodCaptureEnabled =
 let dogfoodSwiftSettings: [SwiftSetting] =
     dogfoodCaptureEnabled ? [.define("LOCALVOXTRAL_DOGFOOD")] : []
 
+/// The widget extension's App Intents need metadata that only Xcode's build
+/// asks the compiler for: the const values `appintentsmetadataprocessor`
+/// reads. `scripts/packaging/package-widgets.sh` sets this variable to the
+/// output path for its one release build; every other build leaves it unset.
+let widgetConstValuesPath = ProcessInfo.processInfo.environment["LOCALVOXTRAL_WIDGET_CONST_VALUES"]
+let widgetConstProtocolsPath = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()
+    .appendingPathComponent("scripts/packaging/app-intents-const-protocols.json").path
+let widgetSwiftSettings: [SwiftSetting] = widgetConstValuesPath.map {
+    [.unsafeFlags([
+        "-emit-const-values-path", $0,
+        "-Xfrontend", "-const-gather-protocols-file",
+        "-Xfrontend", widgetConstProtocolsPath,
+    ])]
+} ?? []
+
 /// Everything but the app and its suite, which need AppKit and are declared on
 /// macOS only below. On Linux, `scripts/core-tests-linux.sh` builds the test
 /// product and runs the core's tests.
@@ -112,8 +128,19 @@ var targets: [Target] = [
 
 #if os(macOS)
 products.insert(.executable(name: "localvoxtral", targets: ["localvoxtral"]), at: 0)
+// The WidgetKit extension (#630); `scripts/packaging/package-widgets.sh`
+// wraps it into Contents/PlugIns.
+products.append(.executable(name: "localvoxtral-widgets", targets: ["localvoxtralWidgets"]))
 dependencies.append(.package(url: "https://github.com/Kentzo/ShortcutRecorder.git", from: "3.4.0"))
 targets += [
+    // The desktop widgets' SwiftUI views, apart from the extension so the
+    // view snapshot tests can render them.
+    .target(name: "localvoxtralWidgetUI", dependencies: ["localvoxtralCore"]),
+    .executableTarget(
+        name: "localvoxtralWidgets",
+        dependencies: ["localvoxtralWidgetUI", "localvoxtralCore"],
+        swiftSettings: widgetSwiftSettings
+    ),
     .executableTarget(
         name: "localvoxtral",
         dependencies: [
@@ -138,6 +165,7 @@ targets += [
             "ClaudeContextWire",
             "ClaudeHookPublisherCore",
             "localvoxtralTestSupport",
+            "localvoxtralWidgetUI",
         ],
         // Golden fixtures are read through `#filePath`, not the bundle.
         exclude: ["Fixtures"],

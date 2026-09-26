@@ -37,6 +37,9 @@ final class BackendProcessSupervisor {
     @ObservationIgnored private let sleepFor: SleepClosure
     @ObservationIgnored private var stateContinuations: [UUID: AsyncStream<State>.Continuation] = [:]
 
+    /// The running child's pid, for the widgets' memory reading.
+    var processID: pid_t? { currentProcessID }
+
     @ObservationIgnored private var supervisionTask: Task<Void, Never>?
     @ObservationIgnored private var currentProcess: Process?
     @ObservationIgnored private var currentProcessID: pid_t?

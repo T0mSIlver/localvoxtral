@@ -75,7 +75,7 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   (`scripts/mac/runner-node-resign.sh`, owner runbook `scripts/mac/README.md`).
 - **macOS 26 launch stall**: first launch of a *downloaded* ad-hoc-signed
   bundle stalls forever at `_dyld_start` (Gatekeeper first-exec scan);
-  `xattr -cr` does NOT fix it, a LOCAL `codesign --force --deep --sign -`
+  `xattr -cr` does NOT fix it, a LOCAL `codesign --force --deep --preserve-metadata=entitlements --sign -`
   does. `install.sh` re-signs unconditionally for end users; `try-pr.sh`
   re-signs only ad-hoc artifacts (never downgrades identity-signed ones).
   Durable fix is Developer ID + notarization (roadmap #1).
