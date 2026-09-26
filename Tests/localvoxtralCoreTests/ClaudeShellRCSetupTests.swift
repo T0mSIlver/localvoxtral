@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// The rc-file editor for the plain-ssh join's one setup step.
 ///

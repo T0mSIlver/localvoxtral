@@ -3,11 +3,9 @@ import Foundation
 import Synchronization
 
 #if canImport(Darwin)
-#if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
-#endif
 #endif
 
 /// Non-secret metadata for one enrolled remote host.
@@ -237,7 +235,7 @@ public struct ClaudeRemoteHostFileStoreIO: ClaudeRemoteHostStoreIO {
     public init() {}
 
     public func read(from url: URL) throws -> Data? {
-        #if canImport(Darwin)
+        #if canImport(Darwin) || canImport(Glibc)
         // lstat, not `fileExists`: the question is what is AT this path, not what
         // it points to. A symlink here is not a store we are willing to read.
         guard let metadata = ClaudeSocketGuard.metadata(ofPath: url.path) else {
@@ -288,7 +286,7 @@ public struct ClaudeRemoteHostFileStoreIO: ClaudeRemoteHostStoreIO {
     }
 
     public func write(_ data: Data, to url: URL) throws {
-        #if canImport(Darwin)
+        #if canImport(Darwin) || canImport(Glibc)
         let directory = url.deletingLastPathComponent()
         // Reuses the broker's hardened path prep: creates 0700 if absent, and
         // otherwise REFUSES a directory that is a symlink, not ours, or loose.
@@ -357,7 +355,7 @@ public struct ClaudeRemoteHostFileStoreIO: ClaudeRemoteHostStoreIO {
         #endif
     }
 
-    #if canImport(Darwin)
+    #if canImport(Darwin) || canImport(Glibc)
     @inline(__always)
     package static func retryingOnEINTR(_ body: () -> Int) -> Int {
         while true {

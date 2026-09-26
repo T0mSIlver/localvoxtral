@@ -3,10 +3,14 @@ import ClaudeHookPublisherCore
 import Foundation
 import Synchronization
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
+#if canImport(Darwin) || canImport(Glibc)
 #if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 
 /// End-to-end over a real AF_UNIX socket: the production publisher writing to
 /// the production broker.
@@ -688,17 +692,20 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         }
         try broker.start()
 
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        let fd = socket(AF_UNIX, POSIXSocket.stream, 0)
         XCTAssertGreaterThanOrEqual(fd, 0)
         defer { close(fd) }
+        // Linux has no SO_NOSIGPIPE; its sends pass `POSIXSocket.sendFlags`.
+        #if canImport(Darwin)
         var noSigPipe: Int32 = 1
         XCTAssertEqual(
             setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size)),
             0
         )
+        #endif
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
-        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        POSIXSocket.setLength(of: &address)
         let pathBytes = Array(socketPath.utf8)
         withUnsafeMutableBytes(of: &address.sun_path) { raw in
             raw.copyBytes(from: pathBytes)
@@ -706,21 +713,21 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         }
         let connected = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                LibC.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
         XCTAssertEqual(connected, 0)
 
         var first: UInt8 = 0x7B
-        XCTAssertEqual(Darwin.send(fd, &first, 1, 0), 1)
+        XCTAssertEqual(LibC.send(fd, &first, 1, POSIXSocket.sendFlags), 1)
         wait(for: [firstRead], timeout: 5)
 
         // The first byte advanced the injected monotonic clock beyond the
         // connection deadline. A per-read timeout incorrectly accepts this
         // second trickle byte; an absolute deadline closes before reading it.
         var second: UInt8 = 0x22
-        _ = Darwin.send(fd, &second, 1, 0)
-        shutdown(fd, SHUT_WR)
+        _ = LibC.send(fd, &second, 1, POSIXSocket.sendFlags)
+        shutdown(fd, Int32(SHUT_WR))
         var reply = [UInt8](repeating: 0, count: 16)
         while read(fd, &reply, reply.count) > 0 {}
 
@@ -860,7 +867,7 @@ final class ClaudeContextBrokerLifecycleTests: XCTestCase {
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
         )
-        let stale = socket(AF_UNIX, SOCK_STREAM, 0)
+        let stale = socket(AF_UNIX, POSIXSocket.stream, 0)
         XCTAssertGreaterThanOrEqual(stale, 0)
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
@@ -869,10 +876,10 @@ final class ClaudeContextBrokerLifecycleTests: XCTestCase {
             raw.copyBytes(from: pathBytes)
             raw[pathBytes.count] = 0
         }
-        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        POSIXSocket.setLength(of: &address)
         let bound = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
-                Darwin.bind(stale, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+                LibC.bind(stale, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
         XCTAssertEqual(bound, 0)
