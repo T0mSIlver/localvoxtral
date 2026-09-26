@@ -118,7 +118,7 @@ final class CodexHookInputParserTests: XCTestCase {
         let hooks = try XCTUnwrap(
             (JSONSerialization.jsonObject(with: data) as? [String: Any])?["hooks"] as? [String: [[String: Any]]]
         )
-        XCTAssertEqual(Set(hooks.keys), ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd"])
+        XCTAssertEqual(Set(hooks.keys), ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "PermissionRequest", "SessionEnd"])
         XCTAssertEqual(hooks["PostToolUse"]?.first?["matcher"] as? String, "apply_patch")
     }
 }

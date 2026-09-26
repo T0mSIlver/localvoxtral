@@ -1,6 +1,6 @@
 {
   "name": "localvoxtral",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Tells localvoxtral which Codex session you dictate into: its last prompt, working directory and the files it edited.",
   "author": {
     "name": "localvoxtral"

@@ -1768,6 +1768,18 @@ there is not.
     tty come from the same ancestor walk, the start time rides along
     (`SessionEnd` has a 3 s ceiling and can be missed), and the Claude
     session handles are withheld. Ids are scoped under `codex:`.
+  - **A wait crosses as its type, never its text** (#717). Claude Code's
+    `Notification`, Codex's `PermissionRequest` and opencode's
+    `permission.asked` and `question.asked` all publish one wire event,
+    `Notification`, whose only payload is `notification_type` from a closed
+    set (`ClaudeNotificationType`): the waits a user answers in the pane.
+    Claude Code's `message` and `title` quote tool names and command text, so
+    the local parser drops them and the remote shim rebuilds the body from
+    the checked session id and type rather than posting it as-is; a type
+    outside the set publishes nothing, and a record without one is dropped
+    at decode. The reply text (`last_assistant_message`) stays out of the
+    app too (owner ruling on #717, 2026-09-26): nothing reads it aloud, and
+    the answer hotkey brings the pane forward to read it there.
   - Apart from that, transcripts are never scraped (the Claude Code parser
     drops `transcript_path`), and a
     LOCAL session never attaches hook-quoted tool excerpts: its files are

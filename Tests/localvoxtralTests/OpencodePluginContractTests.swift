@@ -520,6 +520,44 @@ final class OpencodePluginContractTests: XCTestCase {
         XCTAssertEqual(try records(event: "SessionEnd", session: "parent").count, 1)
     }
 
+    /// Shapes from @opencode-ai/sdk 1.17 (`EventPermissionAsked`,
+    /// `EventQuestionAsked`) and the pre-v2 `permission.updated`.
+    func testAWaitIsPublishedAsANotificationCarryingOnlyItsType() throws {
+        try startServer()
+        createSession(id: "parent", directory: "/repo/p")
+        createSession(id: "child", parentID: "parent")
+        run(#"""
+        __hooks.event({ event: { type: "permission.asked", properties: {
+          id: "per_1", sessionID: "parent", permission: "bash", patterns: ["rm -rf build"],
+          metadata: { command: "rm -rf build" }, always: [] } } });
+        __hooks.event({ event: { type: "permission.updated", properties: {
+          id: "per_2", sessionID: "parent", type: "bash", title: "rm -rf build" } } });
+        __hooks.event({ event: { type: "question.asked", properties: {
+          id: "que_1", sessionID: "parent", questions: [{ question: "Which color?" }] } } });
+        __hooks.event({ event: { type: "permission.asked", properties: {
+          id: "per_3", sessionID: "child", permission: "bash", patterns: [], metadata: {}, always: [] } } });
+        """#)
+
+        let waits = try records(event: "Notification")
+        XCTAssertEqual(
+            waits.map { $0["notification_type"] as? String },
+            ["permission_prompt", "permission_prompt", "elicitation_dialog"],
+            "the child session's wait is not published"
+        )
+        for wait in waits {
+            XCTAssertEqual(wait["session_id"] as? String, "parent")
+            XCTAssertEqual(wait["cwd"] as? String, "/repo/p")
+            let line = try JSONSerialization.data(withJSONObject: wait)
+            let decoded = try ClaudeHookWireCodec.decodeLine(line)
+            XCTAssertEqual(decoded.event, .notification)
+            XCTAssertNotNil(decoded.notificationType)
+        }
+        let written = try writtenRecords().map { String(describing: $0) }.joined()
+        for quoted in ["rm -rf build", "Which color?"] {
+            XCTAssertFalse(written.contains(quoted), "\(quoted) crossed the socket")
+        }
+    }
+
     func testChildSessionLifecycleIsNeverPublished() throws {
         try startServer()
         createSession(id: "parent", directory: "/repo/p")

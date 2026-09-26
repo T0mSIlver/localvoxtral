@@ -236,7 +236,17 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     func testDeclaresEveryRequiredEvent() throws {
         XCTAssertEqual(
             Set(try hooksByEvent().keys),
-            ["SessionStart", "UserPromptSubmit", "CwdChanged", "PostToolUse", "Stop", "SessionEnd"]
+            ["SessionStart", "UserPromptSubmit", "CwdChanged", "PostToolUse", "Stop", "Notification", "SessionEnd"]
+        )
+    }
+
+    /// Only the waits the app shows (#717); `idle_prompt` and the rest never
+    /// start the shim.
+    func testTheNotificationHookMatchesOnlyTheWaitsTheWireCarries() throws {
+        let matcher = try XCTUnwrap(try hooksByEvent()["Notification"]?.first?["matcher"] as? String)
+        XCTAssertEqual(
+            Set(matcher.split(separator: "|").map(String.init)),
+            Set(ClaudeNotificationType.allCases.map(\.rawValue))
         )
     }
 
