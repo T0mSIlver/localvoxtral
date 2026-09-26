@@ -16,10 +16,10 @@ extension ClaudeSessionJoinResolver {
     /// `https://claude.ai/epitaxy/local_<uuid>` and exports the same id into
     /// the session's environment, whether the session runs on this Mac or on
     /// an ssh host — so, like a bridge session id, it spans both origins.
-    /// Focus decides which session: the walk goes UP from the focused element
-    /// to the nearest web view, so with two sessions side by side the one the
-    /// user is typing into wins, and focus outside any session (the sidebar,
-    /// the chat tab) is no join.
+    /// The address names the session in the window's primary pane, so the
+    /// reader returns it only when focus is in that pane's chat panel: focus
+    /// in the second pane of a split view, a terminal panel or the sidebar is
+    /// no join.
     ///
     /// Everything abstains rather than guesses, as in the browser arm. An
     /// abstention AFTER focus was found inside a session's web view says so
