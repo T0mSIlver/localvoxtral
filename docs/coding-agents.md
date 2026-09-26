@@ -205,8 +205,10 @@ fields and the threat model.
 > Brave, and Safari; a browser join never reads anything on screen). A
 > session in **Claude Desktop**'s Code tab joins the same way from the session
 > you have focused there, whether the desktop app runs it on your Mac or on an
-> ssh host (that host needs the remote plugin 1.11.0 or newer); it needs no
-> extra permission and reads nothing on screen. First use asks for one
+> ssh host (that host needs the remote plugin 1.11.0 or newer and **Keep the
+> tunnel open**, since Claude Desktop's ssh carries no tunnel; host setup turns
+> it on when it finds Desktop there); it needs no extra permission and reads
+> nothing on screen. First use asks for one
 > Automation permission per terminal or browser.
 
 An [opencode plugin](../integrations/opencode/README.md) exists too, installed

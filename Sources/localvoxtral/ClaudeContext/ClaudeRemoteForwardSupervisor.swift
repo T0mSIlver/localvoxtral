@@ -19,21 +19,26 @@ import Glibc
 ///
 /// Deliberate differences from `BackendProcessSupervisor`:
 ///
-/// * `ExitOnForwardFailure=yes`. The enrollment ssh block sets `no` on purpose
-///   — a dictation nicety must never cost you a shell. This process IS the
-///   nicety and nothing else: a forward it cannot bind is a process with no
-///   remaining purpose, so the exit is the detection signal we want rather
-///   than a session we would be protecting.
-/// * A bind failure is TERMINAL, not a restart. Something else holds that port
-///   (see issue #215) and will keep holding it; retrying on a timer would be a
-///   connection storm, an auth-log full of sessions, and possibly a fail2ban
-///   ban — all while the user is told nothing. One clear failed state, with the
-///   fix in it, beats an infinite retry that hides the cause. The ONE exception
-///   is `externallyForwarded`, where the holder is our own forward and the
-///   thing being waited for — that session ending, and our bind then
-///   succeeding — is expected rather than hoped for; that one re-checks on a
-///   deliberately long interval, because a state claiming a channel exists must
-///   be able to stop claiming it.
+/// * `ExitOnForwardFailure=no`, like the enrollment block, and the supervisor
+///   acts only on a refusal of ITS OWN port. This connection reads the alias's
+///   config and so requests every `RemoteForward` declared there (see the next
+///   point). With `yes`, a refusal of any one of them killed the process: a
+///   second forward held elsewhere (an old 8473 block, a forward the user added
+///   for something else) cost the tunnel and was reported as a config problem
+///   for good (#659). A refusal naming our port is detected on stderr instead,
+///   and the supervisor ends the ssh it spawned itself.
+/// * A refused bind never enters the restart backoff. Something holds that
+///   port; retrying on a short timer would be a connection storm, an auth-log
+///   full of sessions, and possibly a fail2ban ban. It re-dials on a long park
+///   instead (`heldPortRecheckInterval`, 5 minutes), in both of its states:
+///   `externallyForwarded`, where the holder proved to be our own forward and
+///   its session ending is expected, and `portUnavailable`, where ownership was
+///   not proved. The second used to be terminal, and after a network change
+///   the holder it reported as "another program" was this Mac's own dead
+///   connection, which the host's sshd drops by itself sooner or later (#659).
+/// * `recover()` restarts a stopped-by-failure or parked supervisor at once.
+///   The app calls it on wake and on a network change, the two moments every
+///   conclusion about the old connection goes stale.
 /// * NO `ClearAllForwardings`. It was here to stop this process inheriting the
 ///   alias's own `RemoteForward` and requesting the port twice — and it does
 ///   that, but it ALSO clears the `-R` given on the command line, which is the
@@ -43,8 +48,10 @@ import Glibc
 ///   survives its settle window, reports "Tunnel up." and forwards nothing.
 ///   The doubling it was guarding against does not happen anyway: an
 ///   IDENTICAL forward on the command line and in the config collapses to one
-///   `remoteforward` entry (measured). What does survive is a forward for a
-///   DIFFERENT port left in an old config block — see `staleConfiguredForward`.
+///   `remoteforward` entry (measured). What does survive is every forward for
+///   a DIFFERENT port the alias declares: an old 8473 block, or one the user
+///   added for something else. A refusal of one is ignored (first point); the
+///   residual is that when one binds, this connection holds it too.
 /// * Containment, because this connection is made with the user's ssh config
 ///   and any of it can be set per-Host: `ForkAfterAuthentication=no` (a
 ///   backgrounded ssh leaves the tracked `Process`, keeps the remote bind and
@@ -67,6 +74,8 @@ public protocol ClaudeRemoteForwarding: AnyObject {
     func start()
     func stop()
     func retry()
+    /// The Mac woke or its network changed: restart if failed or parked.
+    func recover()
 }
 
 @MainActor
@@ -79,6 +88,7 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
         case retrying(attempt: Int)
         /// The remote refused the bind, and the port did NOT prove to be ours:
         /// someone else holds it.
+        /// Rechecked on `heldPortRecheckInterval`, like `externallyForwarded`.
         case portUnavailable
         /// The remote refused the bind because our OWN `RemoteForward` is
         /// already established — an ordinary ssh session of the user's, carrying
@@ -88,13 +98,6 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
         /// session ends. Proved, never assumed — see
         /// `ClaudeRemoteForwardProbeWitness`.
         case externallyForwarded
-        /// The remote refused a bind for a port this supervisor never asked
-        /// for — so the alias's ssh config block still declares an old
-        /// `RemoteForward`, which we inherit and `ExitOnForwardFailure=yes`
-        /// then kills us over. Distinct from `portUnavailable` because the fix
-        /// is the opposite: nothing on the host needs freeing, the user's own
-        /// config needs updating.
-        case staleConfiguredForward(port: UInt16)
         case failed(summary: String)
 
         /// One short sentence for the pane (owner rule: no long text in the
@@ -113,14 +116,14 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
             // reaches here is a holder that was measurably not this Mac's
             // listener, which closing a session may not fix at all — so this
             // states the fact and leaves the Retry button to be the action.
-            // Still one sentence, by the popover rule.
-            case .portUnavailable: return "Port held by another program on that host."
+            // Still one sentence, by the popover rule. It says the app keeps
+            // trying, because it does (#659).
+            case .portUnavailable: return "Port held on that host. Checking again every 5 min."
             // Nothing for the user to do, so nothing is asked of them — and
             // "up" comes first because that is the fact that matters. The
             // clause is there so a later plain "Tunnel up." does not read as a
             // change of state.
             case .externallyForwarded: return "Tunnel up through an existing ssh session."
-            case .staleConfiguredForward: return "Old RemoteForward in ~/.ssh/config blocks this."
             case .failed: return "Tunnel stopped."
             }
         }
@@ -129,7 +132,7 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
             switch self {
             case .stopped, .connecting, .forwarding, .retrying, .externallyForwarded:
                 return false
-            case .portUnavailable, .staleConfiguredForward, .failed: return true
+            case .portUnavailable, .failed: return true
             }
         }
     }
@@ -178,22 +181,22 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
         /// so in the log. A process in an uninterruptible wait can outlive even
         /// this; pretending otherwise is how a teardown blocks forever.
         public var killGrace: Duration
-        /// How long `externallyForwarded` may go unverified.
+        /// How long a refused bind parks before the supervisor dials again.
         ///
-        /// That state says a channel EXISTS but is held by a session this
-        /// process does not own, so it can vanish with no event reaching here —
-        /// the user closes the terminal, and the app would otherwise keep
-        /// claiming a tunnel it does not have. On this interval the supervisor
-        /// simply tries its own `-R` again: if the session ended, the bind now
-        /// succeeds and the app takes the tunnel over; if it did not, ownership
-        /// is proved again from scratch.
+        /// `externallyForwarded` says a channel EXISTS but is held by a session
+        /// this process does not own, so it can vanish with no event reaching
+        /// here — the user closes the terminal, and the app would otherwise keep
+        /// claiming a tunnel it does not have. `portUnavailable` says the port
+        /// is held by something not proved to be ours, which after a network
+        /// change is usually this Mac's own dead connection, still bound on the
+        /// host until its sshd notices. On this interval the supervisor simply
+        /// tries its own `-R` again: if the holder is gone, the bind succeeds
+        /// and the app takes the tunnel over; if not, ownership is proved
+        /// again from scratch.
         ///
-        /// Long on purpose. This is the one place the type's "a refused bind is
-        /// terminal, never a retry loop" rule is relaxed, and it is defensible
-        /// only because the outcome being waited for — our own bind succeeding —
-        /// is expected rather than hoped for. Five minutes is a bounded
-        /// staleness window, not a reconnect storm.
-        public var externalForwardRecheckInterval: Duration
+        /// Long on purpose: five minutes is a bounded staleness window, not a
+        /// reconnect storm against someone's SSH server.
+        public var heldPortRecheckInterval: Duration
         /// Present for a supervised herdr `-L`; nil for the original hook
         /// delivery `-R`. The lifecycle is shared, while argv and bind-failure
         /// interpretation remain direction-specific.
@@ -209,7 +212,7 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
             healthyUptime: Duration = .seconds(60),
             terminationGrace: Duration = .seconds(2),
             killGrace: Duration = .seconds(1),
-            externalForwardRecheckInterval: Duration = .seconds(300)
+            heldPortRecheckInterval: Duration = .seconds(300)
         ) {
             self.hostID = hostID
             self.sshHostAlias = sshHostAlias
@@ -220,7 +223,7 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
             self.healthyUptime = healthyUptime
             self.terminationGrace = terminationGrace
             self.killGrace = killGrace
-            self.externalForwardRecheckInterval = externalForwardRecheckInterval
+            self.heldPortRecheckInterval = heldPortRecheckInterval
             self.localSocketForward = nil
         }
 
@@ -246,7 +249,7 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
             self.killGrace = killGrace
             // Unreachable for a `-L`: ownership is a question about the `-R`'s
             // remote listen port, and this initializer never has one.
-            self.externalForwardRecheckInterval = .seconds(300)
+            self.heldPortRecheckInterval = .seconds(300)
             self.localSocketForward = LocalSocketForward(
                 localSocketPath: localSocketPath,
                 remoteSocketPath: remoteSocketPath
@@ -272,7 +275,10 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
             return [
                 "ssh", "-N",
                 "-o", "BatchMode=yes",
-                "-o", "ExitOnForwardFailure=yes",
+                // `no`: a refusal of a forward the alias's config ALSO
+                // declares must not cost this one. Our own refusal is read
+                // from stderr (`watchStandardError`).
+                "-o", "ExitOnForwardFailure=no",
                 // Containment — see the type comment. These are forced rather
                 // than assumed because every one of them is settable per-Host
                 // in the config this connection reads.
@@ -311,6 +317,10 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
     @ObservationIgnored private let sleepFor: SleepClosure
     @ObservationIgnored private let now: NowClosure
     @ObservationIgnored private var superviseTask: Task<Void, Never>?
+    /// Which `start()` the current `superviseTask` belongs to. A loop that was
+    /// cancelled while parked can wake after a restart; it may only clear the
+    /// task reference it was started with, never its successor's.
+    @ObservationIgnored private var superviseRun = 0
     @ObservationIgnored private var currentProcess: (any ClaudeRemoteForwardProcess)?
     @ObservationIgnored private var stoppingIntentionally = false
     /// Bumped per launch AND the moment a process is known dead. The settle
@@ -358,8 +368,10 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
             )
         }
         transition(to: .connecting)
+        superviseRun += 1
+        let run = superviseRun
         superviseTask = Task { @MainActor [weak self] in
-            await self?.supervise()
+            await self?.supervise(run: run)
         }
     }
 
@@ -452,12 +464,47 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
     /// `portUnavailable` at ITSELF.
     public func retry() {
         guard state.isFailure else { return }
+        restart()
+    }
+
+    /// The Mac woke, or its network path changed. Every conclusion this
+    /// supervisor holds about the old connection is stale then: "keeps
+    /// dropping" was counted on a network that is gone, and a held port may
+    /// have been held by this Mac's own dead connection. So a failed or parked
+    /// supervisor starts over, with a fresh failure count (#659).
+    ///
+    /// A live or connecting one is left alone. ssh's own keepalive
+    /// (`ServerAliveInterval`) notices a dead connection, and the ordinary
+    /// restart path takes it from there; tearing down a healthy tunnel on every
+    /// Wi-Fi hop would cost more than it saves.
+    public func recover() {
+        switch state {
+        case .failed, .portUnavailable, .externallyForwarded:
+            Log.claudeContext.info(
+                "Claude remote forward for host \(self.configuration.hostID, privacy: .public) restarting after a wake or network change (was \(String(describing: self.state), privacy: .public))"
+            )
+            restart()
+        case .stopped, .connecting, .forwarding, .retrying:
+            return
+        }
+    }
+
+    /// Stop, wait for the teardown, start. Restarting while the old ssh still
+    /// holds the remote bind is how a healthy host reports `portUnavailable`
+    /// at ITSELF.
+    private func restart() {
         stop()
         let pending = teardown
         Task { @MainActor [weak self] in
             await pending?.value
             self?.start()
         }
+    }
+
+    /// Clears the task reference only if it is still this run's.
+    private func endSupervise(_ run: Int) {
+        guard superviseRun == run else { return }
+        superviseTask = nil
     }
 
     /// Make any in-flight settle window inert: cancel it AND move the
@@ -469,7 +516,7 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
         runGeneration += 1
     }
 
-    private func supervise() async {
+    private func supervise(run: Int) async {
         while !stoppingIntentionally, !Task.isCancelled {
             let process: any ClaudeRemoteForwardProcess
             do {
@@ -486,7 +533,7 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
                     "Claude remote forward launch failed for host \(self.configuration.hostID, privacy: .public): \(String(describing: error), privacy: .public)"
                 )
                 transition(to: .failed(summary: "Could not start ssh."))
-                superviseTask = nil
+                endSupervise(run)
                 return
             }
             currentProcess = process
@@ -500,17 +547,19 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
                 await self?.watchStandardError(of: process)
             }
 
-            // A five-minute liveness re-check of an EXTERNALLY held tunnel
-            // must not blink the pane through "Connecting…" and back: nothing
-            // about the channel changed, and a status line that flickers is one
-            // the user learns to distrust. Every other entry to this loop is a
-            // real connection attempt and says so.
-            if state != .externallyForwarded { transitionIfNeeded(to: .connecting) }
+            // A five-minute re-check of a held port must not blink the pane
+            // through "Connecting…" and back: nothing about the channel
+            // changed, and a status line that flickers is one the user learns
+            // to distrust. Every other entry to this loop is a real connection
+            // attempt and says so.
+            if state != .externallyForwarded, state != .portUnavailable {
+                transitionIfNeeded(to: .connecting)
+            }
             // …so "up" is defined as "still alive after the settle window",
-            // measured on the INJECTED clock. A bind failure under
-            // `ExitOnForwardFailure=yes` kills the process in well under a
-            // second, so this window is what keeps the pane from flashing
-            // "Tunnel up." at a tunnel that was already refused.
+            // measured on the INJECTED clock. A refusal of our port arrives in
+            // well under a second and retires this window
+            // (`watchStandardError`), so the pane never flashes "Tunnel up." at
+            // a tunnel that was already refused.
             runGeneration += 1
             let generation = runGeneration
             let settle = Task { @MainActor [weak self] in
@@ -534,7 +583,7 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
             // the watcher would drop the one line that explains everything.
             // The contract a `ClaudeRemoteForwardProcess` owes is therefore
             // that its stream finishes when the process does.
-            let bindFailure = await watcher.value ?? nil
+            let refusedOurPort = await watcher.value ?? false
             let status = await process.waitUntilExit()
             // A posix_spawn-backed local forward deliberately leaves its dead
             // leader unreaped until teardown can issue the unconditional group
@@ -556,25 +605,11 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
             invalidateSettleWindow()
 
             guard !stoppingIntentionally, !Task.isCancelled else {
-                superviseTask = nil
+                endSupervise(run)
                 return
             }
 
-            // A refusal for a port we never requested is the user's own stale
-            // config block being inherited, not a contended port (issue #215's
-            // migration leaves exactly this behind). Different cause, different
-            // fix, so it must not be reported as a held port.
-            if configuration.localSocketForward == nil,
-               let refusedPort = bindFailure, refusedPort != configuration.remoteForwardPort {
-                Log.claudeContext.error(
-                    "Claude remote forward for host \(self.configuration.hostID, privacy: .public) inherited a stale RemoteForward for port \(refusedPort, privacy: .public); this Mac asked for \(self.configuration.remoteForwardPort, privacy: .public)"
-                )
-                transition(to: .staleConfiguredForward(port: refusedPort))
-                superviseTask = nil
-                return
-            }
-
-            if configuration.localSocketForward == nil, bindFailure != nil {
+            if configuration.localSocketForward == nil, refusedOurPort {
                 // A refused bind is TWO opposite situations wearing one stderr
                 // line, and the app used to publish the harmful reading of both
                 // (field report, 2026-08-29). Ask which one this is before
@@ -583,36 +618,39 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
                 // default and the no-probe path.
                 let ownership = await resolveOwnership()
                 guard !stoppingIntentionally, !Task.isCancelled else {
-                    superviseTask = nil
+                    endSupervise(run)
                     return
                 }
+                // Neither answer is a failure in a run of them: the port is
+                // held, and holding it is not flaky.
+                consecutiveFailures = 0
                 if ownership == .ourListener {
-                    // Not a failure and not a run of them: the channel this
-                    // process exists to provide is up, provided by someone else.
-                    consecutiveFailures = 0
+                    // The channel this process exists to provide is up,
+                    // provided by someone else.
                     Log.claudeContext.info(
                         "Claude remote forward for host \(self.configuration.hostID, privacy: .public): port \(self.configuration.remoteForwardPort, privacy: .public) on \(self.configuration.sshHostAlias, privacy: .public) already forwards to this Mac's listener; leaving it to the session that holds it"
                     )
-                    transition(to: .externallyForwarded)
-                    // Park, then try our own bind again. The holder is a session
-                    // we do not own and cannot be notified about, so a bounded
-                    // staleness window is the only honest claim available.
-                    do {
-                        try await sleepFor(configuration.externalForwardRecheckInterval)
-                    } catch {
-                        superviseTask = nil
-                        return
-                    }
-                    continue
+                    transitionIfNeeded(to: .externallyForwarded)
+                } else {
+                    // Not proved ours, so the pane says the port is held and
+                    // the token must not be assumed safe. Not terminal either:
+                    // the holder is often this Mac's own connection from before
+                    // a network change, which the host drops by itself (#659).
+                    Log.claudeContext.error(
+                        "Claude remote forward refused for host \(self.configuration.hostID, privacy: .public): port \(self.configuration.remoteForwardPort, privacy: .public) already bound on \(self.configuration.sshHostAlias, privacy: .public) by something not proved to be this Mac's listener; checking again in \(String(describing: self.configuration.heldPortRecheckInterval), privacy: .public)"
+                    )
+                    transitionIfNeeded(to: .portUnavailable)
                 }
-                // Terminal by design. Restarting would dial a port another
-                // machine is holding, forever, silently.
-                Log.claudeContext.error(
-                    "Claude remote forward refused for host \(self.configuration.hostID, privacy: .public): port \(self.configuration.remoteForwardPort, privacy: .public) already bound on \(self.configuration.sshHostAlias, privacy: .public) by something that is not this Mac's listener"
-                )
-                transition(to: .portUnavailable)
-                superviseTask = nil
-                return
+                // Park, then try our own bind again. The holder is something
+                // we cannot be notified about, so a bounded staleness window
+                // is the only honest claim available.
+                do {
+                    try await sleepFor(configuration.heldPortRecheckInterval)
+                } catch {
+                    endSupervise(run)
+                    return
+                }
+                continue
             }
 
             // A connection that was UP for a good while and then dropped is an
@@ -646,7 +684,7 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
                 transition(
                     to: .failed(summary: "Tunnel to \(configuration.sshHostAlias) keeps dropping.")
                 )
-                superviseTask = nil
+                endSupervise(run)
                 return
             }
 
@@ -654,11 +692,11 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
             do {
                 try await sleepFor(Self.backoff(attempt: consecutiveFailures))
             } catch {
-                superviseTask = nil
+                endSupervise(run)
                 return
             }
         }
-        superviseTask = nil
+        endSupervise(run)
     }
 
     /// Whether the refused port is already forwarding to this Mac's listener.
@@ -673,23 +711,41 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
         )
     }
 
-    /// The port whose bind the remote refused, if it refused one.
+    /// Whether the remote refused OUR port, ending the process if it did.
     ///
-    /// The PORT, not just a flag: `Warning: remote port forwarding failed for
-    /// listen port 8473` on a supervisor that asked for 28511 is a completely
-    /// different diagnosis from the same warning naming 28511.
+    /// Under `ExitOnForwardFailure=no` ssh stays connected after a refusal, so
+    /// the refusal of our port is the end of this process's purpose and the
+    /// supervisor ends it: SIGTERM, then the usual bounded escalation. It is
+    /// our own child, which is the only kind this type ever signals. A refusal
+    /// naming ANOTHER port is a forward the alias's config also declares,
+    /// held elsewhere; it is logged and otherwise ignored, because our own
+    /// forward may be fine (#659). The PORT decides, not the line: "failed for
+    /// listen port 8473" on a supervisor that asked for 28511 is not ours.
     private func watchStandardError(
         of process: any ClaudeRemoteForwardProcess
-    ) async -> UInt16? {
-        var refusedPort: UInt16?
+    ) async -> Bool {
+        var refusedOurPort = false
         for await line in process.standardErrorLines {
             let lowered = line.lowercased()
             if configuration.localSocketForward == nil,
                lowered.contains(ClaudeRemoteForwardPort.forwardFailureSignature) {
-                // Fall back to our own port when the number is missing or
-                // unparseable: the refusal is still real, and the
+                // A refusal with no readable port is treated as ours: the
                 // conservative reading is the port we asked for.
-                refusedPort = Self.refusedPort(in: lowered) ?? configuration.remoteForwardPort
+                let refused = Self.refusedPort(in: lowered) ?? configuration.remoteForwardPort
+                if refused == configuration.remoteForwardPort {
+                    if !refusedOurPort {
+                        refusedOurPort = true
+                        // Retire the settle window first, so the pane never
+                        // calls a refused tunnel up while ssh is dying.
+                        invalidateSettleWindow()
+                        process.terminate()
+                        Task { @MainActor [weak self] in await self?.tearDown(process) }
+                    }
+                } else {
+                    Log.claudeContext.info(
+                        "Claude remote forward for host \(self.configuration.hostID, privacy: .public): the alias's config also forwards port \(refused, privacy: .public), which the host refused; ignoring it, this Mac's port is \(self.configuration.remoteForwardPort, privacy: .public)"
+                    )
+                }
             }
             // The tail goes to the log, never to the pane: ssh stderr is
             // long, and it is exactly the kind of text the popover rule
@@ -698,7 +754,7 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
                 "Claude remote forward ssh stderr [\(self.configuration.hostID, privacy: .public)]: \(line, privacy: .private)"
             )
         }
-        return refusedPort
+        return refusedOurPort
     }
 
     /// The listen port named in OpenSSH's refusal line, if it names one.

@@ -212,6 +212,26 @@ public final class ClaudeRemoteForwardCoordinator {
         setState(supervisors[hostID]?.state, hostID: hostID)
     }
 
+    /// Why `recover` was called. Logged, and nothing else.
+    public enum RecoveryTrigger: String, Sendable {
+        case wake
+        case networkChange = "network change"
+    }
+
+    /// The Mac woke or its network path changed: every failed or parked
+    /// forward starts over (#659). Nothing else ever restarted a forward that
+    /// had given up, so one wake with no network yet stopped it for good.
+    public func recover(after trigger: RecoveryTrigger) {
+        guard !supervisors.isEmpty else { return }
+        Log.claudeContext.info(
+            "Claude remote forwards recovering after \(trigger.rawValue, privacy: .public)"
+        )
+        for (hostID, supervisor) in supervisors {
+            supervisor.recover()
+            setState(supervisor.state, hostID: hostID)
+        }
+    }
+
     public func stopAll() {
         // On the revoke-last-host path the Settings model calls stopAll before
         // the listener closes. Reconcile the independent `-L` entries here too;

@@ -1444,22 +1444,18 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
     }
 
-    /// The tunnel probe must NOT clear forwardings, unlike every other
-    /// connection this type opens. Its whole point is that the alias's own Host
-    /// block asks for the RemoteForward; clearing it would test a tunnel the
-    /// probe just disabled.
-    func testTheTunnelProbeDoesNotClearForwardingsAndSendsNoCredential() throws {
+    /// The first tunnel probe clears forwardings (#656). A probe that carried
+    /// the alias's RemoteForward bound the port itself and curled through its
+    /// own forward, so it passed on a host where nothing else ever holds the
+    /// tunnel: every host Claude Desktop alone reaches.
+    func testTheFirstTunnelProbeCannotOpenTheTunnelItChecksAndSendsNoCredential() throws {
         let recorded = try verify(
             results: [.init(exitCode: 0, message: "LVX_HTTP:401"), .init(exitCode: 0, message: "")]
         ).invocations
         XCTAssertEqual(recorded.count, 2)
         XCTAssertEqual(
             recorded[0].argv,
-            ["ssh", "-o", "BatchMode=yes", "--", "builder", "/bin/sh", "-s"]
-        )
-        XCTAssertFalse(
-            recorded[0].argv.contains("ClearAllForwardings=yes"),
-            "the probe exists to observe the forward, not to suppress it"
+            ["ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--", "builder", "/bin/sh", "-s"]
         )
         // BatchMode everywhere: a check must never sit on a password prompt.
         // `--` everywhere: an alias can never be read as an option.
@@ -1573,13 +1569,33 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             ),
             // The script always exits 0 and prints one token, so 000 can only mean
             // "nothing answered on the forwarded port".
+            // The first probe found nothing standing, and the second opened the
+            // config block's own forward: still nothing.
             VerdictCase(
-                name: "CurlConnectFailureIsReportedAsNoLiveTunnelNotAsAnSSHFailure",
-                results: [.init(exitCode: 0, message: "LVX_HTTP:000"), .init(exitCode: 0, message: "")],
+                name: "CurlConnectFailureThroughBothProbesBlamesTheConfigNotSSH",
+                results: [
+                    .init(exitCode: 0, message: "LVX_HTTP:000"),
+                    .init(exitCode: 0, message: "LVX_HTTP:000"),
+                    .init(exitCode: 0, message: ""),
+                ],
                 passed: false,
-                summary: "No tunnel is live right now.",
-                hintContains: ["SSH session"],
-                why: "the forward exists only while a session is open — say it, once"
+                summary: "The SSH config did not open a tunnel.",
+                hintContains: ["remote forwarding"],
+                why: "the second probe was the SSH session; advising one would repeat it"
+            ),
+            // #656: the config block works, and nothing keeps it open between
+            // checks. The old single probe passed here.
+            VerdictCase(
+                name: "ATunnelOnlyTheCheckOpenedIsNotAPass",
+                results: [
+                    .init(exitCode: 0, message: "LVX_HTTP:000"),
+                    .init(exitCode: 0, message: "LVX_HTTP:401"),
+                    .init(exitCode: 0, message: ""),
+                ],
+                passed: false,
+                summary: "Your SSH config opens the tunnel, but nothing keeps it open.",
+                hintContains: ["Keep the tunnel open"],
+                why: "hooks arrive only while something holds the forward"
             ),
             VerdictCase(
                 name: "AnSSHFailureIsDistinctFromAnAbsentTunnel",
@@ -1633,10 +1649,11 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
                 name: "AFramedAnswerThatIsNotAStatusCodeIsTreatedAsSilence",
                 results: [
                     .init(exitCode: 0, message: "LVX_HTTP:not-a-code"),
+                    .init(exitCode: 0, message: "LVX_HTTP:not-a-code"),
                     .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral"),
                 ],
                 passed: false,
-                summary: "No tunnel is live right now.",
+                summary: "The SSH config did not open a tunnel.",
                 detailLacks: ["not-a-code"],
                 why: "unparsed host text must not travel"
             ),
@@ -1845,12 +1862,13 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         let unframed = try verify(
             results: [
                 .init(exitCode: 0, message: "Welcome to builder\n401"),
+                .init(exitCode: 0, message: "Welcome to builder\n401"),
                 .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral"),
             ]
         ).checks
         let tunnel = try XCTUnwrap(unframed.first { $0.kind == .tunnel })
         XCTAssertFalse(tunnel.passed, "an unframed line is not our probe speaking")
-        XCTAssertEqual(tunnel.summary, "No tunnel is live right now.")
+        XCTAssertEqual(tunnel.summary, "The SSH config did not open a tunnel.")
     }
 
     /// MAJOR 1 (review round 2), service half: the local fact is re-applied to

@@ -114,8 +114,11 @@ Desktop is frontmost, the app reads the address of the web view that holds
 keyboard focus over Accessibility and matches the id against what the
 session's hooks reported. Sessions the desktop app runs on this Mac join
 through this plugin; sessions it runs on an ssh host join through
-`localvoxtral-remote` (≥ 1.11.0) on that host. Like the browser join, it reads
-no screen and runs only with Claude repo context on. The Code tab does not
+`localvoxtral-remote` (≥ 1.11.0) on that host, and need **Keep the tunnel
+open** (see [Sessions nobody is sitting in front of](#sessions-nobody-is-sitting-in-front-of)):
+Claude Desktop's own ssh never carries the tunnel. Host setup turns it on
+when it finds Claude Desktop on the host. Like the browser join, it reads no
+screen and runs only with Claude repo context on. The Code tab does not
 render Claude Code's status line, so the status-line indicator never appears
 there; the overlay badge and the log's `Claude join outcome` line are what say
 whether a dictation joined.
@@ -781,6 +784,10 @@ The tunnel exists only while *something* holds it, and normally that something
 is your own `ssh builder` session. Anything the host starts on its own has no
 such session:
 
+* Claude Desktop sessions on the host: Desktop's ssh runs with
+  `ClearAllForwardings=yes` and never carries the forward, so a host you
+  reach only from Desktop has no tunnel at all. Host setup detects Desktop
+  (`~/.claude/remote/srv` exists on the host) and turns the toggle below on.
 * `claude remote-control` servers (systemd user services, lingering enabled)
 * t3 code and other harnesses that spawn Claude Code into a worktree
 * cron jobs, CI runners, anything headless
@@ -797,7 +804,8 @@ So each enrolled host's row in Settings has **Keep the tunnel open**. With it
 on, localvoxtral holds that host's forward itself:
 
 ```
-ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ClearAllForwardings=yes \
+ssh -N -o BatchMode=yes -o ExitOnForwardFailure=no \
+    -o ForkAfterAuthentication=no -o ControlPath=none -o PermitLocalCommand=no \
     -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
     -R 28511:127.0.0.1:8473 -- builder
 ```
@@ -808,22 +816,32 @@ anywhere on this path; the credential lives in the remote plugin's config and
 this process only carries bytes for it. Notes on the flags, since they differ
 from the ones in your `~/.ssh/config` block deliberately:
 
-* **`ExitOnForwardFailure=yes`** — the opposite of your config block, on
-  purpose. Your block says `no` because a dictation nicety must never cost you
-  a shell; this process *is* the nicety and nothing else, so a forward it
-  cannot bind is a process with no reason to live. The exit is the signal: the
-  row then reads **Port already held on the host.** with a **Retry** button,
-  instead of pretending to work.
-* **`ClearAllForwardings=yes`** — your config block already declares this
-  forward for this alias. Without this flag the process would request the port
-  twice, and the second request failing would kill it under the line above.
+* **`ExitOnForwardFailure=no`**, like your config block. The process reads
+  your config, so it also requests every other `RemoteForward` your `Host`
+  block declares, and a refusal of one of those must not cost this tunnel. It
+  watches ssh's stderr for a refusal that names its own port instead.
+* **No `ClearAllForwardings`.** That option also clears the `-R` on the
+  command line, so the tunnel would never be created. The duplicate of your
+  block's own forward collapses into one request.
+* **`ForkAfterAuthentication=no`, `ControlPath=none`, `PermitLocalCommand=no`**
+  keep your config from backgrounding, multiplexing or running a local command
+  under a process the app has to be able to stop.
 * **`ServerAliveInterval=30` / `ServerAliveCountMax=3`** — a NAT or a sleeping
   laptop otherwise leaves a half-dead connection holding the remote bind, which
   is precisely the state that makes the next connection fail.
-* Restarts back off exponentially (0.5s, 1s, 2s… capped at 30s) and give up
-  after five consecutive failures rather than hammering your SSH server
-  forever. A **refused bind never retries at all** — something else holds that
-  port and will keep holding it.
+* Restarts back off exponentially (0.5s, 1s, 2s… capped at 30s) and stop
+  after five consecutive failures rather than hammering your SSH server. A
+  **refused bind** never enters that loop: when the port turns out to be held
+  by your own session, the row reads **Tunnel up through an existing ssh
+  session.**; otherwise **Port held on that host. Checking again every 5
+  min.** Either way the app dials again every five minutes.
+* When the Mac wakes or its network changes, a stopped or waiting tunnel
+  starts over at once.
+* After a network change the host keeps the old connection's port bound until
+  its sshd notices the connection is gone, and the row shows the port as held
+  until then. `ClientAliveInterval 30` in the host's `sshd_config` (with the
+  default `ClientAliveCountMax 3`) makes sshd drop it within about 90
+  seconds.
 
 The listener binds first and the forwards start second, always: a forward
 opened into an unbound port would give every hook connection-refused (silent,

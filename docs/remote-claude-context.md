@@ -155,13 +155,24 @@ printf '%s\n' LVX_HERDR_CONFIGURED
 ```
 
 The `grep` match stops the step without changing the file. The final tunnel
-check omits `ClearAllForwardings` so it can test the configured forward:
+check runs in two steps. The first clears forwardings, so it can only reach a
+tunnel another connection already holds (the app's own, a terminal's, an
+editor's), which is the tunnel your hooks use between checks:
+
+```sh
+ssh -o BatchMode=yes -o ClearAllForwardings=yes -- <alias> /bin/sh -s
+```
+
+Only when nothing answered does the second run, without that option, so the
+config block's own forward is open while it runs. A `401` there means the
+block works but nothing keeps the tunnel open:
 
 ```sh
 ssh -o BatchMode=yes -- <alias> /bin/sh -s
 ```
 
-Its exact stdin script checks for `curl` and posts an unauthenticated `{}` body:
+Both send the same stdin script, which checks for `curl` and posts an
+unauthenticated `{}` body:
 
 ```sh
 set -u
@@ -173,8 +184,20 @@ printf 'LVX_HTTP:%s\n' "$code"
 
 The plugin check uses the first SSH argv above and runs `claude plugin list`
 after resolving `claude` from `PATH`, `~/.claude/local`, `~/.local/bin`,
-`~/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, or
-`~/.nvm/versions/node/*/bin`. Plugin installation uses that same resolver.
+`~/bin`, `/opt/homebrew/bin`, `/usr/local/bin`,
+`~/.nvm/versions/node/*/bin`, or, last, the newest Claude Desktop CLI in
+`~/.claude/remote/ccd-cli/<version>`. Plugin installation uses that same
+resolver.
+
+While the host's **Keep the tunnel open** is off, the run's first step also
+checks for Claude Desktop, with the first SSH argv above and this script:
+
+```sh
+if [ -d "$HOME/.claude/remote/srv" ]; then printf 'LVX_DESKTOP:yes\n'; else printf 'LVX_DESKTOP:no\n'; fi
+```
+
+When Desktop is there, the run turns **Keep the tunnel open** on, because
+Desktop's ssh never carries the tunnel. The toggle stays yours to turn off.
 
 Removing the host reverses the Mac side — the ssh block, and the shell block
 only when no other host remains — and never lets a reversal problem block the
@@ -422,8 +445,18 @@ on its own instead of leaving it to whichever session came first.
 Hook events only reach your Mac while something holds the tunnel — normally one
 of your own SSH sessions. A session a harness starts on the host (t3 code,
 `claude remote-control` services, any headless runner) has no such terminal, so
-its context goes nowhere. Turn on **Keep the tunnel open** in that host's row
-and the app holds the forward itself, reconnecting as needed.
+its context goes nowhere. Claude Desktop's sessions on the host are in the same
+position: Desktop's ssh clears every forward. Turn on **Keep the tunnel open**
+in that host's row and the app holds the forward itself, reconnecting as
+needed, including after the Mac wakes or changes network. Host setup turns it
+on by itself when it finds Claude Desktop on the host.
+
+After a network change the host keeps the old connection's port bound until
+its sshd notices the connection is gone; the row reads "Port held on that
+host" until then, and the app checks again every five minutes.
+`ClientAliveInterval 30` in the host's `sshd_config` (with the default
+`ClientAliveCountMax 3`) makes sshd drop a dead connection within about 90
+seconds.
 
 ## Hosts enrolled before per-Mac ports
 
@@ -508,8 +541,13 @@ interprets them for you. If you would rather run them by hand:
 ### Is the tunnel live, and is localvoxtral behind it?
 
 ```
-ssh builder 'curl -s -o /dev/null -w "%{http_code}\n" -X POST -H "Content-Type: application/json" -d "{}" http://127.0.0.1:28511/v1/hook/SessionStart'
+ssh -o ClearAllForwardings=yes builder 'curl -s -o /dev/null -w "%{http_code}\n" -X POST -H "Content-Type: application/json" -d "{}" http://127.0.0.1:28511/v1/hook/SessionStart'
 ```
+
+`ClearAllForwardings=yes` keeps this ssh from opening the tunnel itself.
+Without it, the check carries your config block's `RemoteForward`, answers
+through a tunnel that closes when the check does, and looks healthy on a host
+where nothing else ever holds the tunnel.
 
 `28511` is an example — replace it with your allocated port, the one the
 `RemoteForward` line in your `~/.ssh/config` block names.
@@ -524,8 +562,11 @@ and its rejection looks identical from the host. Check the listener line in
 Settings › Remote hosts as well — the in-app check does exactly this,
 which is why it can tell you which of the two you are looking at.
 
-`000` — or a curl connection error — means nothing answered: usually just that
-you have no SSH session open to that host at this moment. Any other status code
+`000` — or a curl connection error — means nothing holds the tunnel right now:
+no SSH session of yours to that host carries it, and the app is not holding it.
+Turn on **Keep the tunnel open**, or run the check again without
+`ClearAllForwardings` to see whether your config block opens it at all. Any
+other status code
 means something that is not localvoxtral answered on that port; find it and
 quit it.
 

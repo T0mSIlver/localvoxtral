@@ -220,6 +220,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// listener binds, and torn down before the app exits so no orphan ssh
     /// outlives the process that spawned it.
     private var claudeRemoteForwards: ClaudeRemoteForwardCoordinator?
+    /// Wake and network-change signals that restart failed or parked forwards.
+    private var claudeRemoteForwardRecovery: ClaudeRemoteForwardRecoveryTriggers?
     /// Shared lifecycle for both remote-hook `-R` and remote-herdr `-L`
     /// children: one ledger/reaper sees every app-held SSH process.
     private let claudeRemoteForwardPidLedger = ClaudeRemoteForwardPidLedger()
@@ -363,6 +365,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // connection refused through the tunnel and fails open. Quitting says
         // nothing about enrollment — the hosts stay enrolled for next launch.
         // Forwards first, listener second — the mirror of startup order.
+        claudeRemoteForwardRecovery?.stop()
+        claudeRemoteForwardRecovery = nil
         claudeRemoteForwards?.stopAll()
         claudeRemoteHerdrForwards.stopAllForQuit()
         // `stopAll` only STARTS each SIGTERM→SIGKILL escalation. Returning
@@ -832,6 +836,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
         }
         claudeRemoteForwards = forwards
+        if forwards != nil {
+            claudeRemoteForwardRecovery = ClaudeRemoteForwardRecoveryTriggers { [weak self] trigger in
+                self?.claudeRemoteForwards?.recover(after: trigger)
+            }
+        }
 
         viewModel.claudeIntegrationSettings = ClaudeIntegrationSettingsModel(
             registry: registry,
