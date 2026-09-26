@@ -1,9 +1,14 @@
 import ClaudeContextWire
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Foundation
 import Synchronization
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
+import localvoxtralTestSupport
 
 /// The listener, driven over a real loopback socket with real HTTP bytes.
 ///
@@ -77,12 +82,18 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
 
     /// Connect, write `raw` verbatim, read to EOF. No framing help, no retries.
     private func send(_ raw: Data, timeout: TimeInterval = 5) throws -> Response? {
+        #if canImport(Darwin)
         let fd = socket(AF_INET, SOCK_STREAM, 0)
+        #else
+        let fd = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+        #endif
         XCTAssertGreaterThanOrEqual(fd, 0)
         defer { close(fd) }
 
         var address = sockaddr_in()
+        #if canImport(Darwin)
         address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        #endif
         address.sin_family = sa_family_t(AF_INET)
         address.sin_port = port.bigEndian
         address.sin_addr = in_addr(s_addr: INADDR_LOOPBACK.bigEndian)
@@ -98,14 +109,22 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         setsockopt(
             fd, SOL_SOCKET, SO_RCVTIMEO, &receiveTimeout, socklen_t(MemoryLayout<timeval>.size)
         )
+        // Linux has no SO_NOSIGPIPE; its test process ignores SIGPIPE instead
+        // (localvoxtralTestSupportSignals).
+        #if canImport(Darwin)
         var noSigPipe: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+        #endif
 
         _ = raw.withUnsafeBytes { buffer -> Int in
             guard let base = buffer.baseAddress else { return 0 }
             var offset = 0
             while offset < buffer.count {
+                #if canImport(Darwin)
                 let written = Darwin.send(fd, base.advanced(by: offset), buffer.count - offset, 0)
+                #else
+                let written = Glibc.send(fd, base.advanced(by: offset), buffer.count - offset, 0)
+                #endif
                 if written <= 0 { return offset }
                 offset += written
             }
@@ -115,7 +134,7 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         // for more bytes gets EOF at once rather than blocking on a deadline.
         // This is what makes `testTheBodyIsNeverReadWhenAuthFails` a behavioural
         // assertion instead of a stopwatch.
-        shutdown(fd, SHUT_WR)
+        shutdown(fd, Int32(SHUT_WR))
 
         var received = Data()
         var chunk = [UInt8](repeating: 0, count: 4096)
