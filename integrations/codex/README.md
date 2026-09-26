@@ -55,6 +55,13 @@ commands, so a read names no file.
 A subagent's edits count for the session it runs in. A prompt a subagent
 submits is dropped, because it is not what you typed.
 
+## Telling Codex you dictate
+
+**Settings → Codex → Tell Codex you dictate → Add** puts a short note in the
+instructions file Codex reads: `~/.codex/AGENTS.override.md` when it holds
+anything, else `~/.codex/AGENTS.md`. See
+[Telling the agent you dictate](../../docs/coding-agents.md#telling-the-agent-you-dictate).
+
 ## Joining
 
 A Codex session joins like a Claude Code one: on the focused terminal's tty
