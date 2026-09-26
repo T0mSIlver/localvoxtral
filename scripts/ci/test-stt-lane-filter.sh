@@ -75,7 +75,7 @@ expect true "a ci.yml edit inside the mac-lanes job runs the lane" \
   --env LANE_MAC_LANES_JOB_CHANGED=true .github/workflows/ci.yml
 expect true "a narrowed path does not hide a real match beside it" \
   --env LANE_MAC_LANES_JOB_CHANGED=false --env LANE_PACKAGE_DEPS_CHANGED=false \
-  .github/workflows/ci.yml Package.swift Sources/localvoxtral/RealtimeClient.swift
+  .github/workflows/ci.yml Package.swift Sources/localvoxtralCore/RealtimeClient.swift
 expect true "this filter's own edit runs the lane" \
   --env LANE_MAC_LANES_JOB_CHANGED=false .github/workflows/ci.yml scripts/ci/stt-lane-filter.sh
 
