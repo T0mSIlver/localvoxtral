@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Runs the real `claude -p` and `vibe -p` project-terms requests (#609) through
-# the production proposer, against a fixture repository whose hooks write a
-# marker file (ProjectTermProposalLiveTests). Linux only: it spends about $0.25
-# of Claude and Mistral tokens, and nothing here may run on the Mac.
+# Runs the real `claude -p`, `vibe -p` (#609) and `opencode run` (#642)
+# project-terms requests through the production proposer, against a fixture
+# repository whose hooks and plugins write a marker file
+# (ProjectTermProposalLiveTests). Linux only: it spends about $0.25 of Claude
+# and Mistral tokens, and nothing here may run on the Mac.
 #
-#   SWIFT=/path/to/swift scripts/linux/project-terms-live.sh
+#   SWIFT=/path/to/swift scripts/linux/project-terms-live.sh [test filter]
 #
 # The run sees only HOME, PATH and LANG, as the app's run sees only the app's
-# own environment: no CLAUDE_CODE_* or VIBE_HOME from the calling shell.
+# own environment: no CLAUDE_CODE_* or VIBE_HOME from the calling shell. The
+# opencode case bills the Mistral key in ~/.config/localvoxtral/mistral_api_key
+# unless LV_OPENCODE_LIVE_MODEL names another provider.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -23,5 +26,9 @@ SWIFT="$SWIFT" LV_LINUX_SCRATCH="$SCRATCH" ./scripts/core-tests-linux.sh --filte
 resolved_backup="$(mktemp)"
 cp Package.resolved "$resolved_backup"
 trap 'cat "$resolved_backup" >Package.resolved; rm -f "$resolved_backup"' EXIT
-env -i HOME="$HOME" PATH="$PATH" LANG="${LANG:-C.UTF-8}" LV_PROJECT_TERMS_LIVE=1 \
-  "$SWIFT" test --skip-build --scratch-path "$SCRATCH" --filter ProjectTermProposalLiveTests
+opencode_env=()
+[[ -n "${LV_OPENCODE_LIVE_MODEL:-}" ]] && opencode_env+=(LV_OPENCODE_LIVE_MODEL="$LV_OPENCODE_LIVE_MODEL")
+key_file="$HOME/.config/localvoxtral/mistral_api_key"
+[[ -r "$key_file" ]] && opencode_env+=(LV_OPENCODE_LIVE_MISTRAL_KEY="$(<"$key_file")")
+env -i HOME="$HOME" PATH="$PATH" LANG="${LANG:-C.UTF-8}" LV_PROJECT_TERMS_LIVE=1 "${opencode_env[@]}" \
+  "$SWIFT" test --skip-build --scratch-path "$SCRATCH" --filter "${1:-ProjectTermProposalLiveTests}"

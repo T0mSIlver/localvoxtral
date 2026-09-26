@@ -68,6 +68,7 @@ package struct ClaudeSessionJoinResolver {
     package let herdrFederation: @Sendable () -> HerdrMachineFederation
     package let herdrClientSurfaceCount: @Sendable () -> Int?
     package let herdrPanes: HerdrPaneQuerying?
+    package let herdrPaneWriter: (any HerdrPaneWriting)?
     package let cmuxSurfaces: CmuxSurfaceQuerying?
     package let cmuxJoinEnabled: @MainActor () -> Bool
     package let reportCmuxStatus: @MainActor (CmuxSocketStatus) -> Void
@@ -130,6 +131,9 @@ package struct ClaudeSessionJoinResolver {
     ///     binding succeeds. It likewise DEFAULTS TO ABSTAIN so a test that
     ///     forgets to inject cannot connect to a real user socket. The app is
     ///     the only place that installs the live client.
+    ///   - herdrPaneWriter: writes dictation into the joined herdr pane
+    ///     (#726). DEFAULTS TO ABSTAIN (nil) for the same reason: no test may
+    ///     type into a real user's pane.
     ///   - cmuxSurfaces: queries cmux's control socket for the focused surface
     ///     and its text. DEFAULTS TO ABSTAIN (nil) for the same reason as
     ///     `herdrPanes`: no test may dial a real user's socket.
@@ -164,6 +168,7 @@ package struct ClaudeSessionJoinResolver {
         herdrFederation: @escaping @Sendable () -> HerdrMachineFederation = { .notFederated },
         herdrClientSurfaceCount: @escaping @Sendable () -> Int? = { nil },
         herdrPanes: HerdrPaneQuerying? = nil,
+        herdrPaneWriter: (any HerdrPaneWriting)? = nil,
         cmuxSurfaces: CmuxSurfaceQuerying? = nil,
         cmuxJoinEnabled: @escaping @MainActor () -> Bool = { false },
         reportCmuxStatus: @escaping @MainActor (CmuxSocketStatus) -> Void = { _ in },
@@ -200,6 +205,7 @@ package struct ClaudeSessionJoinResolver {
         self.herdrFederation = herdrFederation
         self.herdrClientSurfaceCount = herdrClientSurfaceCount
         self.herdrPanes = herdrPanes
+        self.herdrPaneWriter = herdrPaneWriter
         self.cmuxSurfaces = cmuxSurfaces
         self.cmuxJoinEnabled = cmuxJoinEnabled
         self.reportCmuxStatus = reportCmuxStatus
@@ -267,6 +273,25 @@ package struct ClaudeSessionJoinResolver {
             return await resolveViaDesktopSession(target: target)
         }
         return ClaudeJoinResolution(join: await resolveSurface(target: target))
+    }
+
+    /// The prompt relay of the opencode pane focused now (#719), or nil.
+    ///
+    /// The writing counterpart of `resolution(target:)`, asked only when that
+    /// resolution did not run (its gates are about reading context, and
+    /// writing needs none of them) or did not join. It asks the one local
+    /// question, the focused pane's TTY, and none of the herdr, ssh or cmux
+    /// arms: those open sockets and tunnels on the strength of a context
+    /// consent this path does not have. A pane that TTY resolves to a
+    /// session through anything but a fresh opencode focus declaration
+    /// carrying a relay gets nil, and the dictation types as before.
+    package func opencodePromptRelay(target: TerminalScreenTarget) async -> OpencodePromptRelay? {
+        guard TerminalScreenAllowlist.isSupported(target.bundleID),
+              let tty = await focusedTerminalTTY(target.bundleID),
+              case .resolved(let snapshot) = registry.resolve(tty: tty),
+              snapshot.agent == .opencode
+        else { return nil }
+        return registry.opencodePromptRelay(sessionID: snapshot.sessionID)
     }
 
     private func resolveSurface(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {

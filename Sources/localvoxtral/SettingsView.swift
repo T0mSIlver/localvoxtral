@@ -191,6 +191,12 @@ struct SettingsView: View {
             return IntegrationsSidebarStatus.vibeDot(
                 status: viewModel.claudeIntegrationSettings?.vibeStatus ?? .unknown
             )
+        case .integrationsCodex:
+            let codex = viewModel.claudeIntegrationSettings
+            return IntegrationsSidebarStatus.codexDot(
+                status: codex?.codexStatus ?? .unknown,
+                hookHeard: codex?.codexHookHeard ?? false
+            )
         case .integrationsHerdr:
             return IntegrationsSidebarStatus.herdrDot(
                 isDetected: viewModel.claudeIntegrationSettings?.isHerdrDetected ?? false
@@ -288,6 +294,8 @@ struct SettingsView: View {
                 OpencodeSettingsPane(viewModel: viewModel)
             case .integrationsVibe:
                 VibeSettingsPane(viewModel: viewModel)
+            case .integrationsCodex:
+                CodexSettingsPane(viewModel: viewModel)
             case .integrationsHerdr:
                 HerdrSettingsPane(viewModel: viewModel)
             case .integrationsRemote:

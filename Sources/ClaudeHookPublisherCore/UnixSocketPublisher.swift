@@ -41,9 +41,14 @@ public struct UnixSocketPublisher: Sendable {
     /// this runs inline in a Claude Code hook, and being late is worse than
     /// being absent.
     public var timeout: TimeInterval
+    /// A hook's receipt is one small JSON object, and anything larger is not
+    /// ours. The `localvoxtral` command's answers carry history, so it raises
+    /// this.
+    public var maxReplyBytes: Int
 
-    public init(timeout: TimeInterval = 0.25) {
+    public init(timeout: TimeInterval = 0.25, maxReplyBytes: Int = 4 * 1024) {
         self.timeout = timeout
+        self.maxReplyBytes = maxReplyBytes
     }
 
     /// Publish a line and read the broker's reply.
@@ -201,7 +206,7 @@ public struct UnixSocketPublisher: Sendable {
     private func readReply(fd: Int32) -> Data? {
         let deadline = monotonicNow() + timeout
         var buffer = Data()
-        var chunk = [UInt8](repeating: 0, count: 4 * 1024)
+        var chunk = [UInt8](repeating: 0, count: 64 * 1024)
 
         while buffer.count <= maxReplyBytes {
             let remaining = deadline - monotonicNow()
@@ -221,16 +226,14 @@ public struct UnixSocketPublisher: Sendable {
                 return nil
             }
             if count == 0 { break } // EOF.
-            buffer.append(contentsOf: chunk[0..<count])
-            if let newline = buffer.firstIndex(of: 0x0A) {
-                return Data(buffer[buffer.startIndex..<newline])
+            if let newline = chunk[0..<count].firstIndex(of: 0x0A) {
+                buffer.append(contentsOf: chunk[0..<newline])
+                return buffer.count <= maxReplyBytes ? buffer : nil
             }
+            buffer.append(contentsOf: chunk[0..<count])
         }
         return nil
     }
-
-    /// A reply is one small JSON object; anything larger is not ours.
-    private var maxReplyBytes: Int { 4 * 1024 }
 
     private func makeNonBlocking(_ fd: Int32) {
         let flags = fcntl(fd, F_GETFL, 0)

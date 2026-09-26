@@ -6,14 +6,24 @@ import os
 /// app the text went to. Opt-in per output mode, only in an app on
 /// `ReturnSubmitsAppList` (by bundle ID), never under Secure Keyboard Entry. Logs say what was decided and
 /// never what was said.
+/// How an Overlay Buffer commit is sent once it landed.
+enum OverlaySpokenSend: Equatable {
+    /// Return, pressed in this app while it is frontmost.
+    case returnKey(pid_t)
+    /// The opencode prompt relay's submit, after its append (#719).
+    case promptRelaySubmit
+}
+
 extension DictationSessionController {
     // MARK: - Overlay Buffer
 
     /// Runs at stop, before the dictionary and the polisher see the text.
     /// When the dictation ends in the trigger and every gate passes, the
-    /// trigger is cut from the dictation event and the PID to press Return in
-    /// is returned. Otherwise the text is left as dictated and nil returned.
-    func stripOverlaySpokenSendTrigger() -> pid_t? {
+    /// trigger is cut from the dictation event and how to send is returned.
+    /// Otherwise the text is left as dictated and nil returned. With a
+    /// healthy prompt relay the commit goes to the pane's prompt, so no
+    /// frontmost-app or Secure Keyboard Entry gate applies.
+    func stripOverlaySpokenSendTrigger() -> OverlaySpokenSend? {
         guard settings.overlaySpokenSendEnabled else { return nil }
         let action = SendNowCommandParser.parse(transcript.currentDictationEventText)
         let remainder: String
@@ -24,6 +34,14 @@ extension DictationSessionController {
             remainder = text
         case .insertText, .none:
             return nil
+        }
+        if textInsertion.promptRelayTakesText {
+            transcript.currentDictationEventText = remainder
+            refreshOverlayBufferSession()
+            Log.dictation.notice(
+                "spoken send: trigger removed before commit; the prompt relay submits text_empty=\(remainder.isEmpty, privacy: .public)"
+            )
+            return .promptRelaySubmit
         }
         guard let pid = overlayBufferCoordinator.commitTargetAppPID else {
             Log.dictation.notice("spoken send: no target app; trigger kept as text")
@@ -42,22 +60,29 @@ extension DictationSessionController {
         Log.dictation.notice(
             "spoken send: trigger removed before commit; Return follows in pid=\(pid, privacy: .public) text_empty=\(remainder.isEmpty, privacy: .public)"
         )
-        return pid
+        return .returnKey(pid)
     }
 
-    /// After the overlay commit: Return only when the text landed. A
+    /// After the overlay commit: send only when the text landed. A
     /// clipboard fallback or a failed insert means the prompt is not in the
-    /// target app, and a Return would submit whatever is.
-    func pressOverlaySpokenSendReturnIfNeeded(
-        pid: pid_t?,
+    /// target app, and a Return would submit whatever is. The relay's submit
+    /// queues behind its append, and is dropped if that append fails.
+    func sendOverlaySpokenSendIfNeeded(
+        _ spokenSend: OverlaySpokenSend?,
         commit: StopCommitCoordinator.CommitResult
     ) {
-        guard let pid else { return }
+        guard let spokenSend else { return }
         guard commit.outcome == .succeeded else {
             Log.dictation.notice("spoken send: commit did not insert the text; no Return")
             return
         }
-        _ = pressSpokenSendReturn(pid: pid)
+        switch spokenSend {
+        case .returnKey(let pid):
+            _ = pressSpokenSendReturn(pid: pid)
+        case .promptRelaySubmit:
+            textInsertion.promptRelaySink?.submit()
+            Log.dictation.notice("spoken send: submit handed to the prompt relay")
+        }
     }
 
     // MARK: - Live Auto-Paste
@@ -86,7 +111,8 @@ extension DictationSessionController {
     /// must be typed whole at its final.
     func liveSpokenSendWithholdsSegment() -> Bool {
         if liveSpokenSendSegmentMode == .undecided {
-            let withholds = settings.liveSpokenSendEnabled && frontmostReturnSubmitsPID() != nil
+            let withholds = settings.liveSpokenSendEnabled
+                && (textInsertion.promptRelayTakesText || frontmostReturnSubmitsPID() != nil)
             liveSpokenSendSegmentMode = withholds ? .withheld : .typedLive
         }
         return liveSpokenSendSegmentMode == .withheld
@@ -117,6 +143,15 @@ extension DictationSessionController {
             // must not do either a second time.
             guard spokenSendLatch.claimSubmission(of: final) else {
                 Log.dictation.notice("spoken send: repeated final ignored")
+                return
+            }
+            // The relay puts the text in the pane's prompt whatever is
+            // frontmost, and its submit follows the appends in order.
+            if textInsertion.promptRelayTakesText {
+                if case .insertTextAndPressReturn(let text) = action {
+                    typeLiveSpokenSendText(text, startsMidWord: startsMidWord)
+                }
+                submitLiveSpokenSendThroughPromptRelay()
                 return
             }
             // The Return is decided before anything is typed: the trigger is
@@ -219,6 +254,25 @@ extension DictationSessionController {
         // Checked again: the text just typed is in the record now.
         guard liveSpokenSendReturnTarget() == pid else { return }
         guard pressSpokenSendReturn(pid: pid) else { return }
+        textInsertion.clearLiveInsertionTargetPIDs()
+        liveSpokenSendTypedSinceReturn = false
+        liveSpokenSendReturnPressed = true
+        liveSpokenSendTypedWord = ""
+    }
+
+    /// The relay's counterpart of `pressLiveSpokenSendReturn`: every word
+    /// released first, then the submit, queued behind the appends. Refused
+    /// when the relay failed on the way, since that text went to the keys.
+    private func submitLiveSpokenSendThroughPromptRelay() {
+        textInsertion.flushFinalLiveReplacementCorrections()
+        guard !textInsertion.hasPendingInsertionText, textInsertion.promptRelayTakesText,
+              let sink = textInsertion.promptRelaySink
+        else {
+            Log.dictation.notice("spoken send: text not handed to the prompt relay; no submit")
+            return
+        }
+        sink.submit()
+        Log.dictation.notice("spoken send: submit handed to the prompt relay")
         textInsertion.clearLiveInsertionTargetPIDs()
         liveSpokenSendTypedSinceReturn = false
         liveSpokenSendReturnPressed = true

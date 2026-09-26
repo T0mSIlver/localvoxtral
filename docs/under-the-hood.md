@@ -131,7 +131,8 @@ the usage page in Mistral's admin console.
 The opt-in project-terms run
 ([Terms from your coding agent](dictation.md#terms-from-your-coding-agent))
 pins Claude Code's `--model sonnet` alias, with Read, Glob and Grep and a $0.50
-cap, and uses Vibe's own configured model under a $0.30 cap. Haiku 4.5 was
+cap, and uses Vibe's and opencode's own configured models, Vibe's under a
+$0.30 cap and opencode's under 12 steps of at most 4,096 output tokens. Haiku 4.5 was
 measured and rejected: the same cost, ten times the time, and a list padded
 with generic names.
 

@@ -190,7 +190,7 @@ final class VibeRemoteShimTests: XCTestCase {
             let request = try request(index)
             XCTAssertEqual(ClaudeRemoteAgentCodec.agent(in: request.headers), .vibe)
             XCTAssertEqual(request.headers["authorization"], "Bearer \(Self.token)")
-            XCTAssertEqual(request.headers["x-lvx-vibe-hooks-version"], "1.1.0")
+            XCTAssertEqual(request.headers["x-lvx-vibe-hooks-version"], "1.2.0")
         }
     }
 

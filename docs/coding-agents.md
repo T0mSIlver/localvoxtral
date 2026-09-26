@@ -82,6 +82,35 @@ file's text reaches the polisher except a term the transcript matched.
 A coding agent can add a term by editing this file, and the next dictation in
 that repo uses it.
 
+## Telling the agent you dictate
+
+Each agent's pane in Settings (Claude Code, opencode, Mistral Vibe) has a
+**Tell … you dictate** row. **Add** puts a short note in that agent's
+user-level instructions file, saying your prompts come from speech-to-text:
+the agent should fix an obvious transcription error itself and ask before
+acting when a likely error changes the request, and should propose what it
+creates or renames with [the `localvoxtral` command](#the-localvoxtral-command).
+**Remove** takes it out. A note added by an older version reads as another
+version, with an **Update** button.
+
+| Agent | File |
+|---|---|
+| Claude Code | `~/.claude/CLAUDE.md` |
+| opencode | `~/.config/opencode/AGENTS.md`, or `~/.claude/CLAUDE.md` when that file does not exist |
+| Mistral Vibe | `~/.vibe/AGENTS.md` |
+
+opencode reads only the first of its two files that exists, so creating
+`~/.config/opencode/AGENTS.md` would stop it from reading your CLAUDE.md. For
+that reason the note goes into whichever file opencode reads today, and
+Claude Code and opencode then share it.
+
+The note sits between `<!-- begin localvoxtral dictation note -->` and
+`<!-- end localvoxtral dictation note -->`. The app writes only between those
+lines, and only when you press the button. A file that is a symlink, or that
+holds only one of the two lines, is left alone; the row then says so. The
+app does not see `VIBE_HOME` or `CLAUDE_CONFIG_DIR`; if you moved either
+directory, copy the note by hand.
+
 ## Polish context: what each toggle sends
 
 Each **Settings → Context** toggle is named for what it sends. Here is what
@@ -233,3 +262,53 @@ entry, and the same row reverses both.
 a marked block in `~/.vibe/hooks.toml`, both removed by the same row. Vibe has
 no session-start hook, so localvoxtral learns about a Vibe session at its
 first file read or edit, or when its first turn ends.
+
+A [Codex plugin](../integrations/codex/README.md) installs from
+**Settings → Codex**, through Codex's own `codex plugin` commands. Codex runs
+a plugin's hooks only after you trust them: when Codex next starts, it shows
+**Hooks need review**, and **Trust all and continue** turns them on. The
+row's dot turns green once a Codex hook has reached localvoxtral. A Codex
+session then joins like a Claude Code one, on its terminal's tty or its herdr
+or cmux pane, with its last prompt, working directory and the files it
+patched.
+
+## The `localvoxtral` command
+
+A coding agent can read your dictation history and your terms, and propose
+terms of its own, with the `localvoxtral` command. Install it from
+**Settings → General → Command-line tool**: it links
+`/usr/local/bin/localvoxtral` to the copy inside the app, so app updates
+update it too. macOS asks for your password when `/usr/local/bin` is not
+yours to write.
+
+```text
+localvoxtral history search "mac queue" --since yesterday --project .
+localvoxtral history last
+localvoxtral terms list --project .
+localvoxtral terms propose Featherline QuillDoc --project .
+localvoxtral status
+```
+
+Every command takes `--json`. `--project` takes a directory, which counts
+every worktree of its repository, or a project name. `--since` takes `today`,
+`yesterday`, `3d`, `12h`, `30m`, `2w` or a date. Under **History → Don't
+keep**, `history` answers with nothing.
+
+A proposed term joins the project's terms the way the agent's own proposals
+do (see [Dictation](dictation.md)): it applies only where repo vocabulary
+may, and three dictations or a **Pin** make it yours. **Settings → Text
+Processing → Terms learned from polishing → Show** lists it as "Proposed by"
+the agent that ran the command. Claude Code, Codex and opencode are detected;
+Vibe passes `--agent vibe`. Unlike the headless run, a proposal from the
+command does not count as the project's one ask.
+
+The command talks to the running app over the same private socket the hooks
+use. It opens no network port, and only processes running as you can reach
+it. It needs the app running, and exits 3 when it is not.
+
+To let your agents find it, add the note from the **Tell … you dictate** row
+(see [Telling the agent you dictate](#telling-the-agent-you-dictate)): it
+tells them to propose what they create or rename. Vibe is not detected, so
+its proposals read "Proposed by a coding agent". To have them name Vibe, ask
+it to add `--agent vibe` in a line of `~/.vibe/AGENTS.md` outside the note;
+an edit inside the note makes the row offer **Update**, which undoes it.

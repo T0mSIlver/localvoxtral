@@ -725,12 +725,20 @@ terminate_payload_group() {
 }
 
 run_payload_with_cleanup() {
-  local payload="$1" status=0 monitor_was_enabled=0
+  local payload="$1" status=0 monitor_was_enabled=0 pending_status=""
 
   [[ "${LOCALVOXTRAL_GATE_TERM_POLLS:-50}" =~ ^[0-9]+$ ]] || deny
   case "$-" in
     *m*) monitor_was_enabled=1 ;;
   esac
+
+  # Until the EXIT cleanup below knows the payload's PID, a signal only
+  # records its status. Untrapped, it killed this shell outright and orphaned
+  # a payload that had already started (#713).
+  trap 'pending_status=129' HUP
+  trap 'pending_status=130' INT
+  trap 'pending_status=143' TERM
+  trap 'pending_status=141' PIPE
 
   # Monitor mode gives each background job a distinct process group even in
   # this non-interactive Bash 3.2 shell. The PGID is the first child's PID.
@@ -747,6 +755,7 @@ run_payload_with_cleanup() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
   trap 'exit 141' PIPE
+  [[ -z "$pending_status" ]] || exit "$pending_status"
 
   if wait "$LV_GATE_PAYLOAD_PID"; then
     status=0

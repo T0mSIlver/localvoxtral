@@ -34,6 +34,10 @@ final class SessionContextResolver {
     /// re-derived: they must all describe the same session. Nil whenever the
     /// pane did not positively join. Cleared on every session exit.
     var claudeSessionJoin: ClaudeSessionJoin?
+    /// The route into the joined agent's prompt, resolved once at start
+    /// next to the join: opencode's prompt relay (#719). Nil unless one
+    /// resolved. Cleared with the join.
+    var agentPromptRoute: (any AgentPromptRoute)?
     /// Panel indicators own their associated remote forward until an explicit
     /// token clear has completed, so teardown cannot close the tunnel before
     /// the clear request reaches herdr.
@@ -142,6 +146,52 @@ final class SessionContextResolver {
         return badge
     }
 
+    /// Resolves where this dictation may write instead of typing: the prompt
+    /// relay of the focused opencode pane (#719). Runs after the join. A
+    /// join that resolved answers from its own session and asks no surface
+    /// again; without one, the resolver asks the focused TTY, and only while
+    /// some opencode pane has a relay, so a Mac with none sends no Apple
+    /// event for it. Needs none of the join's context gates: nothing is read
+    /// here, and what is written is what the user dictated into that pane.
+    private func resolveOpencodePromptRoute() async -> OpencodePromptRoute? {
+        guard let resolver = claudeSessionJoinResolver,
+              resolver.registry.hasFreshOpencodePromptRelay()
+        else { return nil }
+        let relay: OpencodePromptRelay?
+        if let join = claudeSessionJoin {
+            guard join.snapshot.agent == .opencode else { return nil }
+            relay = resolver.registry.opencodePromptRelay(sessionID: join.snapshot.sessionID)
+        } else if let target = TerminalScreenContextSource.frontmostTarget() {
+            relay = await resolver.opencodePromptRelay(target: target)
+        } else {
+            relay = nil
+        }
+        return relay.map { OpencodePromptRoute(relay: $0) }
+    }
+
+    /// The joined herdr pane, written through herdr's socket (#726). Only a
+    /// herdr pane join yields one, so it carries that join's consent and
+    /// reaches only its pane.
+    private func resolveHerdrPaneRoute() -> HerdrPanePromptRoute? {
+        guard let join = claudeSessionJoin else { return nil }
+        return claudeSessionJoinResolver?.herdrPromptRoute(for: join) {
+            TerminalScreenContextSource.frontmostTarget()?.pid
+        }
+    }
+
+    /// This dictation's route into the joined agent, if any. Runs after the
+    /// join.
+    func resolveAgentPromptRoute() async {
+        if let opencode = await resolveOpencodePromptRoute() {
+            agentPromptRoute = opencode
+        } else {
+            agentPromptRoute = resolveHerdrPaneRoute()
+        }
+        if let route = agentPromptRoute {
+            Log.claudeContext.notice("\(route.name, privacy: .public): resolved; dictation writes through it")
+        }
+    }
+
     /// Resolves this dictation's Claude session join, ONCE, here at start.
     ///
     /// Start, not commit, for the same reason the screen is sampled here: this
@@ -247,6 +297,7 @@ final class SessionContextResolver {
         // attached to an unrelated sentence.
         //
         claudeSessionJoin = nil
+        agentPromptRoute = nil
         // And the pane text with the join: it is that session's screen.
         socketPaneStartCapture = nil
         // Every `ssh -L` lease, not just this join's — abandoning a dictation

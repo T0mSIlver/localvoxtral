@@ -81,8 +81,8 @@ AppKit:
 path that needs no AppKit (#591): the join resolver and its arms, the session
 registry and store, the broker and the remote listener, the herdr and cmux
 clients, the ssh forward and enrollment, the repository collector and its
-selection, the context blocks, and the plugin, statusline, opencode and Vibe
-installers. The settings model, the forward coordinator and supervisor
+selection, the context blocks, and the plugin, statusline, opencode, Vibe and
+Codex installers. The settings model, the forward coordinator and supervisor
 (`@Observable`) and the `--probe-surface` command stay in
 `Sources/localvoxtral/ClaudeContext`.
 
@@ -154,6 +154,9 @@ Key subsystems:
     the app is absent. In the app, `ClaudeContextBroker` verifies the peer UID
     *before reading*. It only ever unlinks a socket it has PROVED stale by
     connect-probe, because a second live instance owns its socket legitimately.
+    The `localvoxtral` command (`Sources/localvoxtral-cli`, #721) asks on the
+    same socket; `AgentCLIService` answers from the history store, the
+    learned terms and Settings (`AgentCLIAppDataSource`).
   - **Remote** (`localvoxtral-remote`, installed on the REMOTE host): command
     hooks run the bundled POSIX-sh shim `hooks/post.sh`, which curls the
     event JSON to `127.0.0.1:<port>/v1/hook/<Event>` through an OpenSSH
@@ -191,6 +194,12 @@ Key subsystems:
     `ClaudeRemoteSessionEnvironment`, NEVER in `ClaudeSessionSnapshot.process`.
     [agent/invariants.md](agent/invariants.md) explains the remote-opacity
     tradeoff.
+
+    A remote project's terms (#641) are the one thing the Mac asks a host
+    to run. `RemoteProjectTermRequests` marks a joined session, the next
+    hook's reply carries `X-Lvx-Terms: wanted`, and the shim starts
+    `hooks/terms.sh` detached. Its answer comes back on `POST /v1/terms` and
+    is filed under the project the Mac recorded.
 
     A per-host opt-in (`ClaudeRemoteForwardSupervisor` +
     `ClaudeRemoteForwardCoordinator`, default off) lets the app hold that

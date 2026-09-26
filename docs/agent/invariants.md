@@ -307,7 +307,8 @@ there is not.
 
 - **An agent's proposals are vocabulary with a source, confirmed only by use
   or a pin** (#609). With the opt-in setting on, the first dictation that
-  joins a LOCAL Claude Code or Vibe session in an unstamped project runs that
+  joins a LOCAL Claude Code, Vibe or opencode (#642) session in an unstamped
+  project runs that
   agent headless in the project (`ProjectTermProposer`), after the commit
   inserted its text and off the commit path. The run is the app's own
   process, never the user's session, so it cannot interrupt a turn, and the
@@ -319,9 +320,19 @@ there is not.
   even so), 12 turns, $0.30, `--experimental-harness` (legacy looped to the
   turn limit), and an app-owned `VIBE_HOME` holding only links to the user's
   `config.toml` and `.env` (Vibe has no flag to skip hooks, and under the
-  user's home our `post_agent` hook would publish a phantom session). The
+  user's home our `post_agent` hook would publish a phantom session);
+  `opencode run` gets `--pure` (without it our plugin in the global plugin
+  directory loads into the run), its own agent through
+  `OPENCODE_CONFIG_CONTENT` that denies every tool but read/glob/grep/list
+  (denied tools are not offered, even when the user's config allows them),
+  12 steps, 4096 output tokens a step, `OPENCODE_DISABLE_PROJECT_CONFIG` (a
+  repo's `opencode.json` could start MCP servers) and `OPENCODE_DB=:memory:`
+  (the run stays out of the user's session list); opencode has no price cap,
+  so the 120 s timeout is its budget. There is no remote opencode shim, so a
+  remote opencode join is never asked. The
   working directory comes only from `localWorkspacePath` via the git root,
-  so a remote label can never become one (#641 covers remote hosts). The
+  so a remote label can never become one (a remote project is run on its
+  host: "The Mac asks a host to spend", below). The
   answer is untrusted text repo contents can steer: only term-shaped strings
   are kept (`DictationTermsFile.accepted`, no control characters, 40 at most),
   terms already known or refused are dropped, and a proposal starts at zero
@@ -426,6 +437,85 @@ there is not.
   checkpoints every message but the last, and its two prompt-cache slots
   belong to the dictation profiles.
 
+- **The app writes into an agent only through its routes.** Everywhere
+  else the app reads from agents and types into whatever has focus; a route
+  writes into an agent's own prompt, so every route is held to three rules,
+  and each adds its own below:
+  (1) *One route, resolved at start.* `SessionContextResolver.resolveAgentPromptRoute()`
+  picks at most one route per dictation, next to the join, for the session
+  the join resolved and nothing else. It is dropped with the join.
+  (2) *Append and submit only* (`AgentPromptCall`). Widening a route (clear,
+  commands, another session or pane) is a new capability and needs the
+  owner's decision.
+  (3) *Keystrokes are the fallback, not a race.* `AgentPromptSink` sends one
+  call at a time, in order, and counts a call delivered only when the target
+  confirmed it; the first failure (refused, timed out, unconfirmed) hands
+  that call's text and every append queued behind it to the keyboard path,
+  in order, for the rest of the dictation, and drops any queued submit: that
+  text may have landed elsewhere. A route failure records a nil landing,
+  which blocks a keyboard Return for the rest of the dictation, like text
+  typed under Secure Keyboard Entry. A route that cannot tell whether a call
+  landed, or whose target is not where keys would go, answers
+  `keepInHistory` instead: the text is typed nowhere for the rest of the
+  dictation, and the popover says it is in History. Typing it would put it
+  in the wrong app, or in twice.
+  - *opencode's prompt relay* (#719, `OpencodePromptRoute`).
+    *Loopback only:* the wire carries a port and a token
+    (`OpencodePromptRelayAddress`), never a host; `OpencodePromptRelayClient`
+    dials `127.0.0.1` with no proxy, and a malformed port or token is dropped
+    at decode.
+    *Published by a verified peer:* the address rides only on an opencode
+    `FocusChanged`, which the broker accepts only when the record's pid is
+    the socket peer's, and the registry only when that pid owns the session.
+    `ClaudeSessionRegistry.opencodePromptRelay(sessionID:)` answers only from
+    a fresh declaration by the session's own pid, and two declarations naming
+    different relays abstain. Declarations stay in memory, so the token never
+    reaches the persisted registry file.
+    *The relay's own limits:* the plugin implements `/tui/append-prompt` and
+    `/tui/submit-prompt` and refuses everything else, any caller without the
+    token, a `Host` other than its own address, and any call for a session
+    the pane no longer displays. It forwards through the TUI's in-process
+    client, so the app never needs or sees opencode's server password.
+    *Resolution:* it reuses the join's session when the join resolved, and
+    otherwise asks only the focused TTY
+    (`ClaudeSessionJoinResolver.opencodePromptRelay(target:)`), never the
+    herdr, ssh or cmux arms: those open sockets and tunnels on a context
+    consent that writing does not have. The TTY question is asked only while
+    some fresh declaration carries a relay, so a Mac without the updated
+    plugin sends no Apple event for it. A pane in herdr joins through the
+    relay only when the context join resolved it.
+  - *herdr panes* (#726, `HerdrPanePromptRoute`; owner ruling on #723,
+    2026-09-26). herdr's socket is unauthenticated full control of every
+    pane, so what the app sends is bounded here, not by herdr.
+    *Two calls, nothing else:* an append is `pane.send_text {pane_id, text}`
+    and a submit is `pane.send_keys {pane_id, keys: ["enter"]}`
+    (`HerdrPaneWriting`; wire shapes from herdr 0.9.0, the version installed
+    when this was written). Never `pane.run`, never another key, never
+    `agent.prompt`, `agent.send_keys`, `pane.send_input` or a focus call.
+    *Only the joined pane:* the route exists only for a herdr pane join
+    (local, remote or federated) and is keyed by the binding the arm captured
+    (`ClaudeSessionJoinResolver.herdrPromptRoute(for:)`), so it writes to
+    that pane id over the socket or `ssh -L` forward the join already
+    trusted, and only while that dictation runs. It never asks herdr which
+    pane to write to.
+    *No control characters:* herdr writes `send_text` to the pane's input
+    byte for byte, with no bracketed paste, so a newline would press Enter
+    and an escape would start a key sequence. Text holding any Unicode
+    control character (or over 32 KiB) is never sent.
+    *Typed only into the same pane:* a text herdr refused (its own error
+    answer for that request, or a request that never reached the socket) is
+    typed only while keys would land in the joined pane: its terminal is
+    frontmost and herdr's `pane.current` is that pane. Otherwise, and
+    whenever the request went out with no valid answer (it may have landed),
+    the text stays in History (`keepInHistory`).
+    *Enter only over the joined agent:* before each Enter the route asks the
+    pane's foreground processes again, with the test its arm joined on (the
+    registered pid for a local pane, the parent pid or agent name for a
+    remote one). A pane back at its shell gets no Enter: it would run the
+    prompt as a command.
+    *Resolution:* only after the context join resolved a herdr pane, and
+    only when opencode's relay did not resolve, so an opencode pane with a
+    relay keeps it.
 - **Claude Code context reaches the prompt only through a positive join.**
   The joined session's repository (status, uncommitted diffs, contents
   of files the agent just touched) and its prior user prompt are attached as
@@ -522,9 +612,10 @@ there is not.
     exists (`scripts/mac/localvoxtral-ui-gate.sh`).
     The hook publishes `HERDR_PANE_ID`/`HERDR_SOCKET_PATH` from the pane env;
     `HerdrSocketClient` (hand-written and capability-bounded — reads are only
-    `pane.current`, `pane.process_info`, and `pane.read`; its sole mutation is
+    `pane.current`, `pane.process_info`, and `pane.read`; its mutations are
     the remote panel probe's short-lived `lvmark` through
-    `pane.report_metadata`. herdr was AGPL when this
+    `pane.report_metadata` and the herdr pane route's two writes, bounded in
+    "The app writes into an agent only through its routes". herdr was AGPL when this
     was written and is Apache-2.0 since v0.8.0, repo `herdrdev/herdr`, so its
     docs and source are freely readable; the client stays hand-written anyway,
     because a vendored dependency would be a second implementation of the trust
@@ -1622,6 +1713,40 @@ there is not.
     session handles are withheld from Vibe records — a Vibe started inside a
     Claude Code session inherits them and would otherwise join that Claude
     view.
+  - **Codex CLI joins through a plugin, and trust is Codex's to give.**
+    Codex runs a non-managed hook only after the user trusts it, silently
+    skips it otherwise, and keys that trust by source and position with a
+    hash of the handler AS DECLARED: event, matcher, command string before
+    `$PLUGIN_ROOT` expands, timeout (0.156.0, measured on this repo's
+    probe, #716). Two rules follow. The hooks ship as a Codex plugin
+    (`integrations/codex`, installed by `codex plugin add`), never as an
+    entry in `~/.codex/hooks.json`: a `hooks.json` entry's key includes its
+    index in that file, which herdr also writes, so an edit above ours would
+    untrust it without a word, while a plugin's key names the plugin. And
+    `hooks/hooks.json` stays byte-stable: every hook runs the same fixed
+    command, pinned by `testTheHookCommandIsTheOneUsersTrusted`, because a
+    changed handler asks every user to trust it again. The shim it runs may
+    change freely; Codex hashes the command, not the script (measured: a new
+    plugin version with a changed shim stayed trusted). For the same reason
+    the Integrations dot turns green only after a Codex record reached the
+    registry (`ClaudeSessionRegistry.hasHeard(localAgent:)`, carried across
+    launches by `CodexHookHeardMemory` and reset by every install or
+    removal): an installed, untrusted plugin looks exactly like a working
+    one from outside Codex. The app never writes Codex's trust records
+    itself, though they are plain TOML: trusting a hook is the user's
+    decision, made at Codex's own "Hooks need review" prompt.
+    The payload is a near clone of Claude Code's and is parsed as an
+    allowlist (`CodexHookInputParser`): `transcript_path`, `model`,
+    `tool_response`, `last_assistant_message` and the patch body are
+    dropped. Codex has no read tool (it reads through `Bash`), so files come
+    only from `apply_patch`'s patch headers. A subagent's events carry the
+    parent's `session_id` plus an `agent_id`; its edits count for the
+    session, but a prompt it submits is dropped, because the prompt block and
+    correction learning read that prompt as the user's. Codex spawns hooks
+    like Vibe does (`$SHELL -lc`, a new session, no terminal), so the pid and
+    tty come from the same ancestor walk, the start time rides along
+    (`SessionEnd` has a 3 s ceiling and can be missed), and the Claude
+    session handles are withheld. Ids are scoped under `codex:`.
   - Apart from that, transcripts are never scraped (the Claude Code parser
     drops `transcript_path`), and a
     LOCAL session never attaches hook-quoted tool excerpts: its files are
@@ -1947,6 +2072,31 @@ there is not.
   malicious process running as the user on the REMOTE host can still read
   `~/.claude/` and therefore the plugin's token no matter what we do. Say so
   rather than implying the token bounds it.
+- **The Mac asks a host to spend, and the host's answer is a label source**
+  (#641). A remote project's terms come from a run on the host, because the
+  Mac holds only a label for the repository and a label never becomes a path,
+  a cwd or an ssh argument. The ask is one fixed reply header,
+  `X-Lvx-Terms: wanted`, of the same kind as `X-Lvx-Session`: it never
+  reaches the shim's stdout, and the body stays the constant. It goes only to
+  a session a dictation joined, once per mark (`RemoteProjectTermRequests`,
+  10 minutes), only when THIS request's shim version reads it, and a mark is
+  made only for a host that reported such a version and a project with no
+  stamp. A squatter on the port can send it too; the host's per-project stamp
+  (atomic `mkdir`, attempt time, `done` after a 200) bounds that to one run per
+  project per 24 hours, under the #609 caps. The shim starts `terms.sh`
+  detached under `env -i HOME PATH LANG USER LOGNAME` (macOS finds a Claude
+  Code keychain login only with `USER`) with every descriptor on `/dev/null`:
+  a run started from a hook inherits the session's `CLAUDE_CODE_*` ids and the
+  plugin's `CLAUDE_PLUGIN_OPTION_TOKEN`, and the token reaches the runner only
+  on stdin, then a header file for curl, never an argv or an environment.
+  `POST /v1/terms` authenticates like a hook, scopes the session id under
+  the host that authenticated it, and accepts one answer per ask, for a live
+  session of the asked agent; the project key is the one the Mac recorded at
+  the ask, never anything the host sends. The body is untrusted text that repo
+  contents can steer: 8 KiB at most, `{"terms": [...]}` only, through the #609
+  term filter, stored only as unconfirmed proposals. A refusal logs its reason,
+  never a byte of the body. What stays as it was: the stdout gate, the hook's
+  fail-open exit, the forward, and what is sent to herdr.
 - **The SendEnv probe uses a random value that is never logged and never
   interpreted beyond equality.** `probeRemoteEnvironment` mints a fresh nonce
   per call (a UUID by default, injected in tests), exports it into that one
@@ -2006,3 +2156,26 @@ there is not.
     a supervised `ssh -L` and a nonce lease, and the app is the good one. A
     probe that withheld them would answer a different question from the one a
     dictation asks.
+- **The `localvoxtral` command shares the hook socket, and its replies are the
+  one place that socket returns data** (#721). A line with a `cli` key is a
+  command request (`AgentCLIWire`); it is answered and the connection closes,
+  and it never reaches the registry. The trust is the hook path's, unchanged:
+  the 0700 directory, the 0600 socket and `getpeereid` before the first byte,
+  so only processes running as the user can ask, and each of them could read
+  `default.store` and `learned-terms.json` from disk already. That equivalence
+  is the whole argument, so it bounds what the command may do: no TCP
+  listener, ever (a loopback port is reachable by every local user and every
+  page a browser loads); no command that writes history or starts a
+  dictation; and replies carry what the stores hold and nothing more. History
+  keeps the clipboard placeholder, never the clipboard, and so does the
+  command. Under History's **Don't keep**, `history` answers an empty list
+  with `historyKept: false`, not an error: nothing is kept, so nothing is
+  found, and the flag says why. `terms propose` writes only unconfirmed proposals
+  (`LearnedTerms.recordCommandProposal`), under the same rules as #609's:
+  term-shaped only, never a term the user listed or refused, confirmed only
+  by three dictations or a pin. The caller's name (`agent:<name>`) is read
+  from the agent's own environment and is a label, not a credential: every
+  caller shares the uid. Unlike the headless run's answer, a command proposal
+  does not stamp the project, because it is a few names, not the project's
+  list. The hook receipt (`ClaudeBrokerResponse`) is untouched and still
+  carries nothing a hook could print.

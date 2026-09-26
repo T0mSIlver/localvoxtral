@@ -20,6 +20,9 @@ struct DictationHistoryEntry: Identifiable, Equatable, Sendable {
     let commitSucceeded: Bool
     let polishProfile: String?
     let polishContextSummary: String?
+    var projectKey: String? = nil
+    var projectName: String? = nil
+    var joinedAgent: String? = nil
 
     /// What the dictation ended up as, the transcript when nothing changed it.
     var finalText: String { polishedText ?? rawText }
@@ -47,7 +50,8 @@ struct DictationHistoryEntry: Identifiable, Equatable, Sendable {
             provider: provider, model: model, outputMode: outputMode,
             targetAppBundleID: targetAppBundleID, status: status,
             commitSucceeded: commitSucceeded, polishProfile: polishProfile,
-            polishContextSummary: polishContextSummary)
+            polishContextSummary: polishContextSummary, projectKey: projectKey,
+            projectName: projectName, joinedAgent: joinedAgent)
     }
 
     /// What "Copy last dictation" copies, nil when there is no text.
@@ -73,7 +77,10 @@ extension DictationHistoryEntry {
             status: DictationSessionStatus(rawValue: record.status) ?? .completed,
             commitSucceeded: record.commitSucceeded,
             polishProfile: record.polishProfile,
-            polishContextSummary: record.polishContextSummary
+            polishContextSummary: record.polishContextSummary,
+            projectKey: record.projectKey,
+            projectName: record.projectName,
+            joinedAgent: record.joinedAgent
         )
     }
 
@@ -92,7 +99,10 @@ extension DictationHistoryEntry {
             status: status,
             commitSucceeded: commitSucceeded,
             polishProfile: polishProfile,
-            polishContextSummary: polishContextSummary
+            polishContextSummary: polishContextSummary,
+            projectKey: projectKey,
+            projectName: projectName,
+            joinedAgent: joinedAgent
         )
     }
 }

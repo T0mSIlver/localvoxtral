@@ -58,15 +58,50 @@ open_pid_fifo() {
   exec 3<>"$pid_fifo"
 }
 
-open_pid_fifo "$TMP_DIR/pids"
-printf -v payload '%q %q' "$FIXTURE" "$pid_fifo"
-(
-  LOCALVOXTRAL_GATE_TERM_POLLS=0 run_payload_with_cleanup "$payload"
-) &
-wrapper_pid=$!
-read -r fixture_pid stubborn_pid <&3
-exec 3<&-
+# Every process of the payload tree inherits fd 5, the write end of a FIFO
+# the test reads on fd 6, and closes it when it exits. End-of-file on fd 6
+# therefore means the whole tree is gone, however long a loaded runner takes
+# to finish the KILL; the wrapper waits only for the leader, so one `ps` right
+# after it returned could race the descendant (#713). A tree that outlives the
+# deadline is a leak.
+TREE_EXIT_DEADLINE_SECONDS="${LV_TEST_TREE_EXIT_DEADLINE_SECONDS:-20}"
+[[ "$TREE_EXIT_DEADLINE_SECONDS" =~ ^[1-9][0-9]*$ ]] \
+  || fail "LV_TEST_TREE_EXIT_DEADLINE_SECONDS must be a positive integer"
 
+# start_wrapper <fifo name> <fixture arg>...: runs the fixture under the gate
+# in the background and returns once it has reported its pids.
+start_wrapper() {
+  local name="$1"
+  shift
+  open_pid_fifo "$TMP_DIR/$name-pids"
+  mkfifo "$TMP_DIR/$name-tree"
+  # fd 4 holds the tree FIFO open for both ends, so neither open below blocks.
+  exec 4<>"$TMP_DIR/$name-tree"
+  printf -v payload ' %q' "$FIXTURE" "$pid_fifo" "$@"
+  (
+    LOCALVOXTRAL_GATE_TERM_POLLS=0 run_payload_with_cleanup "$payload"
+  ) 4<&- 5>"$TMP_DIR/$name-tree" &
+  wrapper_pid=$!
+  exec 6<"$TMP_DIR/$name-tree"
+  read -r fixture_pid stubborn_pid <&3
+  exec 3<&- 4<&-
+}
+
+# expect_tree_exit <what>: fails unless every holder of fd 5 exits in time.
+# Not `read -t`: bash 3.2 returns 1 on a timeout, the status of end-of-file,
+# so a leak would pass.
+expect_tree_exit() {
+  local status=0
+  perl -e '$SIG{ALRM} = sub { exit 2 }; alarm shift;
+    1 while sysread STDIN, my $buf, 512; exit 0' \
+    "$TREE_EXIT_DEADLINE_SECONDS" <&6 || status=$?
+  exec 6<&-
+  [[ "$status" == "0" ]] && return 0
+  fail "$1: payload process $fixture_pid or descendant $stubborn_pid" \
+    "survived gate teardown for ${TREE_EXIT_DEADLINE_SECONDS}s (reader status $status)"
+}
+
+start_wrapper signalled
 kill -TERM "$wrapper_pid"
 if wait "$wrapper_pid"; then
   fail "signal-interrupted payload unexpectedly succeeded"
@@ -75,34 +110,16 @@ else
 fi
 [[ "$status" == "143" ]] || fail "TERM exit status changed from 143 to $status"
 wrapper_pid=""
-
-is_live_non_zombie() {
-  local pid="$1" state
-  state="$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
-  [[ -n "$state" && "$state" != Z* ]]
-}
-
-is_live_non_zombie "$fixture_pid" \
-  && fail "payload process $fixture_pid survived gate teardown"
-is_live_non_zombie "$stubborn_pid" \
-  && fail "payload descendant $stubborn_pid survived gate teardown"
+expect_tree_exit "signalled wrapper"
 fixture_pid=""
 stubborn_pid=""
 
-open_pid_fifo "$TMP_DIR/normal-exit-pids"
-printf -v payload '%q %q %q' "$FIXTURE" "$pid_fifo" exit-leader
-(
-  LOCALVOXTRAL_GATE_TERM_POLLS=0 run_payload_with_cleanup "$payload"
-) &
-wrapper_pid=$!
-read -r fixture_pid stubborn_pid <&3
-exec 3<&-
+start_wrapper normal-exit exit-leader
 if ! wait "$wrapper_pid"; then
   fail "leader-exit payload should preserve its zero exit status"
 fi
 wrapper_pid=""
-is_live_non_zombie "$stubborn_pid" \
-  && fail "descendant $stubborn_pid survived after its leader exited"
+expect_tree_exit "leader-exit wrapper"
 fixture_pid=""
 stubborn_pid=""
 

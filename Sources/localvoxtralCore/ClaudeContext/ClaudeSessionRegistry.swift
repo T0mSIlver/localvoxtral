@@ -128,6 +128,10 @@ public final class ClaudeSessionRegistry: Sendable {
         /// its process must not steer a recycled TTY.
         var declaredPID: Int32
         var declaredAt: Date
+        /// The declaring TUI's prompt relay, when it runs one (#719). In
+        /// memory only, like every focus declaration: the token never reaches
+        /// the persisted registry file.
+        var promptRelay: OpencodePromptRelayAddress?
     }
 
     private struct State {
@@ -145,6 +149,11 @@ public final class ClaudeSessionRegistry: Sendable {
     private let persistenceWriter: ClaudeSessionStoreWriter?
     private let submittedPromptObserver =
         Mutex<(@Sendable (_ sessionID: String, _ prompt: String) -> Void)?>(nil)
+    /// Agents whose hooks this Mac has accepted a record from since launch
+    /// (or since `forgetHeard`). In memory only: it answers the Integrations
+    /// pane's "has this agent's hook ever run", which for Codex is the only
+    /// proof its trust gate let the hook through.
+    private let heardLocalAgents = Mutex<Set<ClaudeHookAgent>>([])
 
     /// - Parameters:
     ///   - now: injected clock. Nothing here reads the wall clock directly, so
@@ -322,6 +331,9 @@ public final class ClaudeSessionRegistry: Sendable {
                 "Claude session registry evicted \(capEvictions.count, privacy: .public) session(s) over the session cap (\(capEvictions.desktopCount, privacy: .public) reporting a Claude Desktop session id; per-origin \(capEvictions.originQuotaCount, privacy: .public), Desktop per-origin \(capEvictions.desktopQuotaCount, privacy: .public), global \(capEvictions.globalCount, privacy: .public))"
             )
         }
+        if ingested != nil, origin.isLocalAuthenticated {
+            _ = heardLocalAgents.withLock { $0.insert(record.agent) }
+        }
         // The record's own prompt, never the snapshot's: a submit without
         // one leaves the PREVIOUS prompt in the snapshot, and announcing that
         // would compare a new dictation with an old prompt.
@@ -333,6 +345,18 @@ public final class ClaudeSessionRegistry: Sendable {
             observer(ingested.sessionID, prompt)
         }
         return ingested
+    }
+
+    /// Whether a record from `agent`'s local hooks was accepted since launch
+    /// or since the last `forgetHeard(localAgent:)`.
+    public func hasHeard(localAgent agent: ClaudeHookAgent) -> Bool {
+        heardLocalAgents.withLock { $0.contains(agent) }
+    }
+
+    /// Called when the agent's hooks are installed again: a record from the
+    /// previous install proves nothing about the new one.
+    public func forgetHeard(localAgent agent: ClaudeHookAgent) {
+        _ = heardLocalAgents.withLock { $0.remove(agent) }
     }
 
     /// Hands every prompt a session submits, once the registry holds it, to
@@ -440,6 +464,51 @@ public final class ClaudeSessionRegistry: Sendable {
             default:
                 return .ambiguous
             }
+        }
+    }
+
+    /// Whether any fresh focus declaration carries a prompt relay. Reads no
+    /// surface: it lets a dictation skip asking the terminal for its focused
+    /// TTY (an Apple event, with its consent prompt) when no opencode pane
+    /// could answer.
+    public func hasFreshOpencodePromptRelay() -> Bool {
+        let timestamp = now()
+        return state.withLock { state in
+            state.focusByTTY.values.contains {
+                $0.promptRelay != nil
+                    && timestamp.timeIntervalSince($0.declaredAt) <= limits.focusDeclarationTTL
+            }
+        }
+    }
+
+    /// The prompt relay of the opencode pane that displays `sessionID` now,
+    /// or nil (#719). Answers only from a fresh focus declaration naming that
+    /// session, declared by the pid the session is registered under, for a
+    /// live LOCAL session; the relay rides on exactly that declaration. Two
+    /// such declarations with different relays abstain. `sessionID` is the
+    /// scoped id a join carries.
+    public func opencodePromptRelay(sessionID: String) -> OpencodePromptRelay? {
+        let timestamp = now()
+        return state.withLock { state in
+            guard let session = state.sessions[sessionID],
+                  session.agent == .opencode,
+                  session.origin.isLocalAuthenticated,
+                  isFresh(session, now: timestamp),
+                  let pid = session.process?.claudePID,
+                  sessionID.hasPrefix(ClaudeAgentSessionScope.opencodePrefix)
+            else { return nil }
+            let relays = Set(state.focusByTTY.values.compactMap { focus -> OpencodePromptRelayAddress? in
+                guard focus.sessionID == sessionID,
+                      focus.declaredPID == pid,
+                      timestamp.timeIntervalSince(focus.declaredAt) <= limits.focusDeclarationTTL
+                else { return nil }
+                return focus.promptRelay
+            })
+            guard relays.count == 1, let address = relays.first else { return nil }
+            return OpencodePromptRelay(
+                address: address,
+                opencodeSessionID: String(sessionID.dropFirst(ClaudeAgentSessionScope.opencodePrefix.count))
+            )
         }
     }
 
@@ -916,7 +985,8 @@ public final class ClaudeSessionRegistry: Sendable {
         state.focusByTTY[tty] = FocusDeclaration(
             sessionID: record.sessionID,
             declaredPID: process.claudePID,
-            declaredAt: now
+            declaredAt: now,
+            promptRelay: record.promptRelay
         )
         // Bounded like everything else a peer can grow: beyond the cap the
         // oldest declaration goes — it is the one closest to expiring anyway.

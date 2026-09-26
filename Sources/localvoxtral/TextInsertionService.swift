@@ -160,6 +160,12 @@ final class TextInsertionService {
     /// it went to the terminal the Return is for.
     @ObservationIgnored
     private(set) var liveInsertionTargetPIDs: [pid_t?] = []
+    /// This dictation's route into the joined agent's prompt, when one
+    /// resolved at start. While it is healthy, live text goes to it and not
+    /// to the keyboard, and records no landing PID: it lands in that
+    /// agent's prompt wherever focus is.
+    @ObservationIgnored
+    private(set) var promptRelaySink: AgentPromptSink?
 
 #if DEBUG
     @ObservationIgnored
@@ -358,6 +364,68 @@ final class TextInsertionService {
         return NSWorkspace.shared.frontmostApplication?.processIdentifier
     }
 
+    // MARK: - Agent prompt route (#719)
+
+    /// Arms the route for the dictation starting now, or disarms it with nil.
+    /// `fallback` receives, in order, text the route did not take; Live
+    /// Auto-Paste passes nil to type it here. `kept` hears of text typed
+    /// nowhere.
+    func beginPromptRelay(
+        _ route: (any AgentPromptRoute)?,
+        kept: @escaping @MainActor (String) -> Void = { _ in },
+        fallback: (@MainActor (String) -> Void)? = nil
+    ) {
+        guard let route else {
+            promptRelaySink = nil
+            return
+        }
+        promptRelaySink = AgentPromptSink(route: route, kept: { [weak self] text in
+            // Kept text landed nowhere: no keyboard Return may follow it.
+            self?.liveInsertionTargetPIDs.append(nil)
+            kept(text)
+        }) { [weak self] text in
+            if let fallback {
+                fallback(text)
+            } else {
+                self?.typeLiveTextThePromptRelayRefused(text)
+            }
+        }
+        Log.insertion.notice("\(route.name, privacy: .public) armed for this dictation")
+    }
+
+    func endPromptRelay() {
+        promptRelaySink = nil
+    }
+
+    /// Whether text goes to the route now, to be delivered or kept in
+    /// History. False once it failed over to the keyboard.
+    var promptRelayTakesText: Bool {
+        promptRelaySink?.takesText ?? false
+    }
+
+    private func handToPromptRelay(_ text: String) -> Bool {
+        guard let sink = promptRelaySink, sink.takesText else { return false }
+        sink.append(text)
+        return true
+    }
+
+    /// Live text the relay did not take is typed, as it would have been
+    /// without one. Where it lands cannot be tied to where the relay's text
+    /// went, so a nil landing blocks a keyboard Return for the rest of the
+    /// dictation. It joins the pending text the keyboard path drains in
+    /// order, so a refused text that cannot be typed yet is never overtaken
+    /// by a later one.
+    private func typeLiveTextThePromptRelayRefused(_ text: String) {
+        liveInsertionTargetPIDs.append(nil)
+        if liveHoldBackStream != nil {
+            // Released text: retried as-is, never re-ingested.
+            pendingHoldBackReleasedText += text
+        } else {
+            pendingRealtimeInsertionText += text
+        }
+        flushPendingRealtimeInsertion()
+    }
+
     func enqueueRealtimeInsertion(_ text: String) {
         guard !text.isEmpty else { return }
         pendingRealtimeInsertionText.append(text)
@@ -376,6 +444,11 @@ final class TextInsertionService {
         guard !pendingRealtimeInsertionText.isEmpty else { return }
 
         let prepared = preparedForLateTerminal(pendingRealtimeInsertionText)
+        if handToPromptRelay(prepared.text) {
+            commitLateTerminalGuard(prepared)
+            pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
+            return
+        }
         switch insertTextPrioritizingKeyboard(prepared.text) {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             commitLateTerminalGuard(prepared)
@@ -558,6 +631,11 @@ final class TextInsertionService {
         guard !releasedText.isEmpty else { return }
 
         let prepared = preparedForLateTerminal(releasedText)
+        if handToPromptRelay(prepared.text) {
+            commitLateTerminalGuard(prepared)
+            liveTypedTextForSession += prepared.text
+            return
+        }
         switch insertTextPrioritizingKeyboard(prepared.text) {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             commitLateTerminalGuard(prepared)

@@ -21,7 +21,10 @@ final class SettingsSidebarIconTests: XCTestCase {
     }
 
     private var markedPanes: [SettingsTab] {
-        [.integrationsClaude, .integrationsOpencode, .integrationsVibe, .integrationsHerdr, .integrationsRemote]
+        [
+            .integrationsClaude, .integrationsOpencode, .integrationsVibe, .integrationsCodex,
+            .integrationsHerdr, .integrationsRemote,
+        ]
             + TerminalAppCatalog.builtIn.map(SettingsTab.terminal)
     }
 

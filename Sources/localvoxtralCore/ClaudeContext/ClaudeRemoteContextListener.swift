@@ -117,6 +117,10 @@ public final class ClaudeRemoteContextListener: Sendable {
     /// Authenticated host activity can pre-start a slow herdr `-L` away from
     /// dictation latency. The path remains an opaque remote label.
     private let onRemoteHerdrActivity: @Sendable (String, String) -> Void
+    /// The Mac's asks for a remote project's terms (#641): which sessions'
+    /// next reply carries `X-Lvx-Terms`, and which may answer on
+    /// `/v1/terms`. Nil without a learned-term store; the route then 404s.
+    private let projectTerms: RemoteProjectTermRequests?
 
     #if DEBUG
     private let debugPostAuthenticationHook = Mutex<(@Sendable () -> Void)?>(nil)
@@ -157,8 +161,10 @@ public final class ClaudeRemoteContextListener: Sendable {
         forwardProbes: ClaudeRemoteForwardProbeWitness = ClaudeRemoteForwardProbeWitness(),
         now: @escaping @Sendable () -> Date = { Date() },
         uptimeNanos: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
-        onRemoteHerdrActivity: @escaping @Sendable (String, String) -> Void = { _, _ in }
+        onRemoteHerdrActivity: @escaping @Sendable (String, String) -> Void = { _, _ in },
+        projectTerms: RemoteProjectTermRequests? = nil
     ) {
+        self.projectTerms = projectTerms
         self.registry = registry
         self.hosts = hosts
         self.limits = limits
@@ -515,6 +521,14 @@ public final class ClaudeRemoteContextListener: Sendable {
         let requestAgent = ClaudeRemoteAgentCodec.agent(in: request.headers)
         let vibeHooksVersion = VibeRemoteHooksVersionCodec.version(in: request.headers)
 
+        if request.path == RemoteProjectTermRequests.answerPath {
+            serveTermsAnswer(
+                fd: fd, request: request, buffer: &buffer, bodyOffset: bodyOffset,
+                deadline: deadline, token: token, host: host
+            )
+            return
+        }
+
         guard ClaudeRemoteHTTPCodec.eventName(inPath: request.path) != nil else {
             respond(fd: fd, status: 404)
             return
@@ -582,8 +596,119 @@ public final class ClaudeRemoteContextListener: Sendable {
             fd: fd,
             status: 200,
             body: ClaudeRemoteHTTPCodec.hookResponseBody,
-            sessionStatus: commitIngestStatus
+            sessionStatus: commitIngestStatus,
+            termsWanted: commitIngestStatus == .joined
+                && shimReadsTermsHeader(agent: prepared.record.agent, plugin: pluginVersionReport, vibe: vibeHooksVersion)
+                && projectTerms?.takeMark(
+                    sessionID: ClaudeAgentSessionScope.scopedSessionID(
+                        agent: prepared.record.agent, sessionID: prepared.record.sessionID
+                    )
+                ) == true
         )
+    }
+
+    /// Whether THIS request's shim reads `X-Lvx-Terms`. The Mac marks only
+    /// sessions on hosts that reported a new enough shim, but a host's
+    /// record is its highest report, and a session started before an update
+    /// keeps the old shim. The mark then stays for a later hook, or expires.
+    private func shimReadsTermsHeader(
+        agent: ClaudeHookAgent, plugin: ClaudeRemotePluginVersionReport, vibe: String?
+    ) -> Bool {
+        switch agent {
+        case .claude:
+            return plugin >= .version(RemoteProjectTermRequests.minimumPluginVersion)
+        case .vibe:
+            guard let vibe else { return false }
+            return !ClaudeRemotePluginVersionCodec.isVersion(
+                vibe, olderThan: RemoteProjectTermRequests.minimumVibeHooksVersion
+            )
+        case .opencode, .codex:
+            return false
+        }
+    }
+
+    /// `POST /v1/terms`: a host's runner answering the Mac's ask for its
+    /// project's terms (#641). Authenticated like a hook, before this is
+    /// reached. The answer is accepted only for a live session of this host
+    /// that the Mac asked, from the agent it asked, and is stored under the
+    /// project the Mac recorded when it asked: the body names nothing but
+    /// terms. Refusals log a category, never a byte of the body.
+    private func serveTermsAnswer(
+        fd: Int32,
+        request: ClaudeRemoteHTTPRequest,
+        buffer: inout Data,
+        bodyOffset: Int,
+        deadline: UInt64,
+        token: String,
+        host: ClaudeRemoteHost
+    ) {
+        guard let projectTerms else {
+            respond(fd: fd, status: 404)
+            return
+        }
+        guard request.contentLength <= RemoteProjectTermRequests.maxAnswerBytes else {
+            Log.backends.error("Project terms: refused a remote answer: body over the cap")
+            respond(fd: fd, status: 413)
+            return
+        }
+        guard let hookAgent = ClaudeRemoteAgentCodec.agent(in: request.headers),
+              let agent = ProjectTermProposal.Agent(hookAgent),
+              let rawSessionID = RemoteProjectTermRequests.answerSessionID(in: request.headers)
+        else {
+            Log.backends.error("Project terms: refused a remote answer: no valid agent or session")
+            respond(fd: fd, status: 400)
+            return
+        }
+        while buffer.count - bodyOffset < request.contentLength {
+            guard readMore(fd: fd, into: &buffer, deadline: deadline) else {
+                respond(fd: fd, status: 400)
+                return
+            }
+        }
+        let bodyStart = buffer.index(buffer.startIndex, offsetBy: bodyOffset)
+        let body = Data(buffer[bodyStart..<buffer.index(bodyStart, offsetBy: request.contentLength)])
+
+        // The same key the hook's record got: scoped under the host whose
+        // token authenticated THIS request, then under the agent.
+        let sessionID = ClaudeAgentSessionScope.scopedSessionID(
+            agent: hookAgent,
+            sessionID: ClaudeRemoteSessionScope.scopedSessionID(hostID: host.id, sessionID: rawSessionID)
+        )
+        // Under the host lock, check to store: a revocation or rotation cannot
+        // land between the check and the answer entering the store.
+        enum Verdict { case notAsked, notTerms, accepted(Int) }
+        guard let verdict = hosts.withAuthenticatedHost(token: token, expectedHostID: host.id, { _ -> Verdict in
+            guard let session = registry.snapshot(sessionID: sessionID), session.agent == hookAgent,
+                  let slot = projectTerms.takeAnswerSlot(sessionID: sessionID, agent: agent)
+            else { return .notAsked }
+            return projectTerms.accept(answer: body, slot: slot).map(Verdict.accepted) ?? .notTerms
+        }) else {
+            Log.claudeContext.error("Rejected remote connection: host was revoked before ingest")
+            respond(fd: fd, status: 401)
+            return
+        }
+        hosts.noteActivity(hostID: host.id)
+        let count: Int
+        switch verdict {
+        case .notAsked:
+            Log.backends.error(
+                "Project terms: refused a remote \(agent.rawValue, privacy: .public) answer: no live session was asked"
+            )
+            respond(fd: fd, status: 409)
+            return
+        case .notTerms:
+            Log.backends.error(
+                "Project terms: refused a remote \(agent.rawValue, privacy: .public) answer: not a terms object"
+            )
+            respond(fd: fd, status: 400)
+            return
+        case .accepted(let accepted):
+            count = accepted
+        }
+        Log.backends.info(
+            "Project terms: remote \(agent.rawValue, privacy: .public) answered \(body.count, privacy: .public) bytes, \(count, privacy: .public) term-shaped"
+        )
+        respond(fd: fd, status: 200)
     }
 
     /// A Vibe request says nothing about the Claude Code plugin: recording its
@@ -596,7 +721,7 @@ public final class ClaudeRemoteContextListener: Sendable {
         switch agent {
         case .claude: hosts.notePluginVersion(hostID: hostID, plugin)
         case .vibe: if let vibe { hosts.noteVibeHooksVersion(hostID: hostID, vibe) }
-        case .opencode, nil: break
+        case .opencode, .codex, nil: break
         }
     }
 
@@ -724,12 +849,14 @@ public final class ClaudeRemoteContextListener: Sendable {
         fd: Int32,
         status: Int,
         body: Data? = nil,
-        sessionStatus: ClaudeRemoteSessionStatus? = nil
+        sessionStatus: ClaudeRemoteSessionStatus? = nil,
+        termsWanted: Bool = false
     ) {
         let data = ClaudeRemoteHTTPCodec.response(
             status: status,
             body: body,
-            sessionStatus: sessionStatus
+            sessionStatus: sessionStatus,
+            termsWanted: termsWanted
         )
         _ = data.withUnsafeBytes { raw -> Int in
             guard let base = raw.baseAddress else { return 0 }

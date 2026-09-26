@@ -5,10 +5,21 @@ this plugin lets localvoxtral ground the transcription on the session's prior
 prompt, working directory and recently touched files, without reading your
 screen. The Claude Code plugin does the same for Claude Code.
 
+The plugin also lets localvoxtral write your dictation straight into the
+pane's prompt, and submit it when you say "send it", without typing keys. A
+window switch mid-dictation, Secure Keyboard Entry or the clipboard cannot
+send the text elsewhere.
+
 Everything stays on this machine. The plugin publishes bounded records over
 localvoxtral's private UNIX socket, which authenticates the connecting peer.
-There is no network access and no telemetry. When the app is not running,
-every write silently does nothing.
+Its one listener is the prompt relay on 127.0.0.1 (see below). There is no
+telemetry. When the app is not running, every write silently does nothing.
+
+The plugin spends no tokens. One opt-in feature outside it does: with **Ask
+the coding agent for each new project's terms** on, the app runs its own
+read-only `opencode run --pure` once per project, never in your session, with
+your default model; see
+[Terms from your coding agent](../../docs/dictation.md#terms-from-your-coding-agent).
 
 ## Install
 
@@ -58,6 +69,13 @@ rm ~/.config/opencode/plugins/localvoxtral.js
 
 and remove the line from `~/.config/opencode/tui.json`.
 
+## Telling opencode you dictate
+
+**Settings → opencode → Tell opencode you dictate → Add** puts a short note in
+the instructions file opencode reads: `~/.config/opencode/AGENTS.md`, or
+`~/.claude/CLAUDE.md` when that file does not exist. See
+[Telling the agent you dictate](../../docs/coding-agents.md#telling-the-agent-you-dictate).
+
 ## Design invariants (why it is built this way)
 
 - **The TTY is published only by the half that owns a pane.** One opencode
@@ -78,10 +96,18 @@ and remove the line from `~/.config/opencode/tui.json`.
   writes without waiting for a reply, wraps every handler in try/catch, and
   bounds every field before it crosses the wire.
 - **Nothing is ever written to your terminal.** The plugin publishes to a
-  socket and prints nothing. localvoxtral has no channel back into a terminal
-  at all. It used to hand Claude Code a window-title marker over OSC 2, and
-  that mechanism was removed on 2026-09-05. opencode, which rewrites its own
-  window title mid-turn, never received one even before that.
+  socket and prints nothing. localvoxtral has no channel into a terminal. It
+  used to hand Claude Code a window-title marker over OSC 2, and that
+  mechanism was removed on 2026-09-05.
+- **The prompt relay appends and submits, nothing else.** A plain `opencode`
+  runs no HTTP server (its TUI talks to its worker in process), so the TUI
+  half listens itself: 127.0.0.1, a random port, a random 32-byte token. It
+  publishes port and token only in its focus declarations, over the socket
+  above. It takes `POST /tui/append-prompt` and `POST /tui/submit-prompt`
+  with that token, for the session the pane displays when the call arrives,
+  and forwards them through opencode's own in-process client, so a server
+  password (`OPENCODE_SERVER_PASSWORD`) is never needed. Any other request is
+  refused, and any refusal makes localvoxtral type the text instead.
 - **Subagent sessions are filtered, fail-closed.** The plugin publishes a
   session's activity only while that session is in a bounded allowlist of
   known top-level sessions. A child (task-tool) session, or any session whose

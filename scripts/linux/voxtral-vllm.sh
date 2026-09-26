@@ -34,6 +34,9 @@ NEED_FREE_MIB="${VOXTRAL_VLLM_NEED_FREE_MIB:-12500}"
 # 1 = torch.compile + piecewise CUDA graphs: about 7% faster decode, 2.5 s
 # slower start. Eager is the default because eval runs are short.
 COMPILE="${VOXTRAL_VLLM_COMPILE:-0}"
+# Fully qualified class of a vLLM logits processor, importable through
+# PYTHONPATH (module:Class, e.g. vllm_term_bias:TermBias, #316). Empty: none.
+LOGITS_PROCESSOR="${VOXTRAL_VLLM_LOGITS_PROCESSOR:-}"
 # Unset: the checkpoint's 480 ms. vLLM reads the delay once, from tekken.json,
 # for the prompt padding and the model's time conditioning, so another delay
 # is served from a copy of the snapshot with that one value patched.
@@ -131,6 +134,7 @@ serve_args() {
   else
     args+=(--enforce-eager)
   fi
+  [[ -n "$LOGITS_PROCESSOR" ]] && args+=(--logits-processors "$LOGITS_PROCESSOR")
   printf '%s\n' "${args[@]}"
 }
 

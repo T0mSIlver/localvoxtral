@@ -47,6 +47,15 @@ enum IntegrationsSidebarStatus {
         }
     }
 
+    /// The Codex row. Green only once a Codex hook has reached the app: Codex
+    /// skips an untrusted hook without a word, so an installed plugin alone
+    /// proves nothing. Installed but unheard is a pending step (trusting the
+    /// hooks), and so is a plugin turned off in Codex.
+    static func codexDot(status: CodexPluginInstallService.Status, hookHeard: Bool) -> SettingsStatusDot {
+        if status.joins(hookHeard: hookHeard) { return .green }
+        return status == .unknown ? .grey : .yellow
+    }
+
     /// The herdr row: green when found — herdr needs no setup, and the owner
     /// decision pins that "found but no host reported a pane yet" is NOT
     /// yellow. Grey when absent.

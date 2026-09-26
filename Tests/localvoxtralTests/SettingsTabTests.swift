@@ -409,7 +409,7 @@ final class SettingsTabTests: XCTestCase {
             SettingsTab.integrationsSidebarItems,
             [
                 .integrationsClaude, .integrationsOpencode, .integrationsVibe,
-                .integrationsHerdr, .integrationsRemote,
+                .integrationsCodex, .integrationsHerdr, .integrationsRemote,
             ]
         )
         // Join-capable terminals first, then the dictation-only list — the
@@ -433,7 +433,7 @@ final class SettingsTabTests: XCTestCase {
                 "general", "endpoints", "dictation", "textProcessing", "about", "history",
                 "insights",
                 "integrations.context", "integrations.claude", "integrations.opencode",
-                "integrations.vibe", "integrations.herdr", "integrations.remote",
+                "integrations.vibe", "integrations.codex", "integrations.herdr", "integrations.remote",
                 "terminals.ghostty", "terminals.iterm2", "terminals.apple-terminal",
                 "terminals.cmux", "terminals.warp", "terminals.wezterm", "terminals.kitty",
                 "terminals.alacritty", "terminals.hyper", "terminals.tabby", "terminals.rio",

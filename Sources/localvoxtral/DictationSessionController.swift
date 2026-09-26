@@ -1,4 +1,5 @@
 import AppKit
+import ClaudeContextWire
 import Foundation
 import Observation
 import os
@@ -74,6 +75,9 @@ final class DictationSessionController {
     private(set) var lastDictation: DictationHistoryEntry? {
         didSet { lastDictationGeneration &+= 1 }
     }
+    /// The session the last saved dictation joined, for `localvoxtral
+    /// status` (#721). Nil when it joined none.
+    @ObservationIgnored var lastDictationJoin: AgentCLIJoin?
     /// Whether `lastDictation` is also in History. Only then does an empty
     /// History mean it was deleted.
     @ObservationIgnored private var lastDictationIsInHistory = false
@@ -978,5 +982,6 @@ extension DictationSessionController {
         dogfoodEditSignalWatcher.supersede()
         #endif
         sessionClaudeJoinBadge = await context.captureAtStart()
+        await context.resolveAgentPromptRoute()
     }
 }

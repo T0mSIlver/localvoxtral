@@ -87,6 +87,13 @@ On the host, each hook runs `remote/post.sh`:
    session ended. Vibe has no hook for that, and the Mac cannot check a process
    on another machine. Set `LOCALVOXTRAL_VIBE_WATCHER=off` in Vibe's environment
    to turn it off. Sessions then expire after four idle hours.
+5. When the Mac's reply carries `X-Lvx-Terms: wanted`, it starts `terms.sh`
+   detached, once per project per 24 hours, and returns. `terms.sh` runs a
+   read-only `vibe -p` in the project and posts its answer, the project's own
+   names, to the Mac
+   ([Terms from the coding agent on a host](../../docs/remote-claude-context.md#terms-from-the-coding-agent-on-a-host)).
+   It runs under a Vibe home of its own, under `~/.vibe/localvoxtral/remote/vibe-home/`, so
+   none of your hooks fire and the run stays out of your Vibe history.
 
 It prints nothing and always exits 0.
 
@@ -97,6 +104,12 @@ markers and hook names differ.
 
 Delete the marked block from `~/.vibe/hooks.toml` and remove
 `~/.vibe/localvoxtral/`.
+
+## Telling Vibe you dictate
+
+**Settings → Mistral Vibe → Tell Mistral Vibe you dictate → Add** puts a short
+note in `~/.vibe/AGENTS.md` saying your prompts come from speech-to-text. See
+[Telling the agent you dictate](../../docs/coding-agents.md#telling-the-agent-you-dictate).
 
 ## What is published
 

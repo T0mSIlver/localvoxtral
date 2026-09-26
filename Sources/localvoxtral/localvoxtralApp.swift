@@ -525,9 +525,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.claudeContext.error("Claude context broker not started: no socket path (HOME unset)")
             return
         }
+        // The `localvoxtral` command's requests arrive on the same socket
+        // (#721) and are answered from the app's own stores.
+        let agentCLI = AgentCLIService(source: AgentCLIAppDataSource(viewModel: viewModel))
         let broker = ClaudeContextBroker(
             socketPath: socketPath,
-            registry: claudeSessionRegistry
+            registry: claudeSessionRegistry,
+            agentCLI: { await agentCLI.respond(to: $0) }
         )
         do {
             try broker.start()
@@ -565,6 +569,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 herdrFederation: { HerdrMachineFederationReader.live().federation() },
                 herdrClientSurfaceCount: { HerdrClientTTYProbe.clientSurfaceCount() },
                 herdrPanes: herdrClient,
+                // Writes wait longer than reads: a write that times out after
+                // landing would be typed a second time by the fallback.
+                herdrPaneWriter: HerdrSocketClient(timeout: 2),
                 cmuxSurfaces: CmuxSocketClient(
                     password: { cmuxPasswords.password() },
                     bundleIDOfRunningPID: { CmuxSocketClient.runningBundleID(ofPID: $0) }
@@ -739,6 +746,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }
         }
+        // Codex reads its local marketplace in place, from the path it was
+        // added with, so it gets the same fixed-path copy.
+        if let bundled = CodexPluginAssets.marketplaceURL() {
+            do {
+                let outcome = try ClaudeMarketplaceMirror.refresh(
+                    source: bundled, mirrorURL: CodexPluginAssets.mirrorURL()
+                )
+                if outcome != .unchanged {
+                    Log.claudeContext.info(
+                        "Codex marketplace mirror \(String(describing: outcome), privacy: .public) from \(bundled.path, privacy: .public)"
+                    )
+                }
+            } catch {
+                Log.claudeContext.error(
+                    "Codex marketplace mirror refresh failed: \(String(describing: error), privacy: .public)"
+                )
+            }
+        }
         guard let settings = viewModel.claudeIntegrationSettings else { return }
         Task {
             // Order matters: the registration is re-pointed at the mirror
@@ -764,6 +789,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// revoking the last one closes it. There is no relaunch step.
     private func startClaudeRemoteListener() {
         let registry = claudeRemoteHosts
+        // A remote project's terms come from a run on its host (#641); the
+        // proposer marks the session, the listener asks and takes the answer.
+        let projectTerms: RemoteProjectTermRequests? = registry.flatMap { hosts in
+            viewModel.learnedTermStore.map { RemoteProjectTermRequests(store: $0, hosts: hosts) }
+        }
+        viewModel.session.projectTermProposer?.attachRemote(projectTerms)
 
         let coordinator = registry.map { hosts in
             ClaudeRemoteListenerCoordinator(
@@ -783,7 +814,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             remoteSocketPath: remoteSocketPath
                         )
                     }
-                }
+                },
+                projectTerms: projectTerms
             )
         }
         claudeRemoteListenerCoordinator = coordinator
@@ -936,7 +968,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     fileSystem: LiveVibeHooksFileSystem()
                 )
             },
+            dictationNoteService: { agent in
+                DictationNoteInstallService(agent: agent, fileSystem: LiveDictationNoteFileSystem())
+            },
             vibeRemoteFiles: { VibeRemoteHooksFiles.bundled() },
+            codexService: { CodexPluginInstallService.live() },
+            codexBundledVersion: CodexPluginAssets.bundledPluginVersion(),
+            codexHookMemory: CodexHookHeardMemory(
+                registry: claudeSessionRegistry,
+                load: { UserDefaults.standard.bool(forKey: CodexHookHeardMemory.defaultsKey) },
+                save: { UserDefaults.standard.set($0, forKey: CodexHookHeardMemory.defaultsKey) }
+            ),
             // A binary on this Mac: a synchronous PATH scan, decided at model
             // construction so the row paints on first paint.
             herdrBinaryAvailable: {
