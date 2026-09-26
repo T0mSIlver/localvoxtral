@@ -21,11 +21,11 @@ enum AutomationConsent {
         let created = bytes.withUnsafeBytes { buffer in
             AECreateDesc(DescType(typeApplicationBundleID), buffer.baseAddress, buffer.count, &target)
         }
-        guard created == noErr else { return false }
+        guard created == 0 else { return false }
         defer { AEDisposeDesc(&target) }
         let status = AEDeterminePermissionToAutomateTarget(
             &target, AEEventClass(typeWildCard), AEEventID(typeWildCard), false
         )
-        return status == noErr
+        return status == 0
     }
 }
