@@ -54,13 +54,6 @@ struct ConnectionSettingsPane: View {
         )
     }
 
-    private var speechdStepCadenceBinding: Binding<SpeechdStepCadence> {
-        Binding(
-            get: { settings.speechdStepCadence },
-            set: { viewModel.engines.applySpeechdStepCadenceChange($0) }
-        )
-    }
-
     private var mistralDictationModelEntries: [MistralModelPickerEntry] {
         MistralModelCatalog.pickerEntries(
             for: .dictation,
@@ -201,18 +194,6 @@ struct ConnectionSettingsPane: View {
                             .labelsHidden()
                             .accessibilityIdentifier("engines.dictation.memoryLimit")
                         }
-                    }
-
-                    SettingsFieldRow(
-                        title: "Step interval"
-                    ) {
-                        Picker("", selection: speechdStepCadenceBinding) {
-                            ForEach(SpeechdStepCadence.allCases) { cadence in
-                                Text(cadence.displayName).tag(cadence)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .labelsHidden()
                     }
 
                     ManagedBackendStatusRow(

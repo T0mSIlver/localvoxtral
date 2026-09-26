@@ -812,25 +812,9 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         await viewModel.engines.dictationShutdownTask?.value
         await viewModel.engines.dictationWarmupTask?.value
 
-        // Owner rule (2026-07-17): changing the memory limit or step interval
+        // Owner rule (2026-07-17): changing the memory limit
         // must not require a Managed -> External -> Managed round trip.
         XCTAssertEqual(viewModel.settings.speechdCacheLimit, .gb4)
-        XCTAssertEqual(backendManager.stopDictationCallCount, 1)
-        XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: false)])
-    }
-
-    func testSpeechdStepCadenceChangeRestartsDictationEngineEagerly() async {
-        let backendManager = FakeManagedBackendManager()
-        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
-        viewModel.settings.dictationBackendMode = .managedLocal
-        viewModel.settings.onboardingCompleted = true
-        retainForTestProcessLifetime(viewModel)
-
-        viewModel.engines.applySpeechdStepCadenceChange(.ms240)
-        await viewModel.engines.dictationShutdownTask?.value
-        await viewModel.engines.dictationWarmupTask?.value
-
-        XCTAssertEqual(viewModel.settings.speechdStepCadence, .ms240)
         XCTAssertEqual(backendManager.stopDictationCallCount, 1)
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: false)])
     }
@@ -843,11 +827,9 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.engines.applySpeechdCacheLimitChange(.gb4)
-        viewModel.engines.applySpeechdStepCadenceChange(.ms240)
 
         XCTAssertNil(viewModel.engines.dictationShutdownTask)
         XCTAssertEqual(viewModel.settings.speechdCacheLimit, .gb4)
-        XCTAssertEqual(viewModel.settings.speechdStepCadence, .ms240)
         XCTAssertEqual(backendManager.stopDictationCallCount, 0)
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
     }
@@ -860,7 +842,6 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.engines.applySpeechdCacheLimitChange(viewModel.settings.speechdCacheLimit)
-        viewModel.engines.applySpeechdStepCadenceChange(viewModel.settings.speechdStepCadence)
 
         XCTAssertNil(viewModel.engines.dictationShutdownTask)
         XCTAssertEqual(backendManager.stopDictationCallCount, 0)

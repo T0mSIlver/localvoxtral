@@ -8,7 +8,9 @@ enum TimingConstants {
     // MARK: - Audio Send Loop
 
     /// Interval at which buffered PCM chunks are drained and sent to the WebSocket.
-    static let audioSendInterval: TimeInterval = 0.1
+    /// 80 ms is the managed helper's smallest step: one Voxtral token, one
+    /// Nemotron encoder frame. Sending less often would make its steps larger.
+    static let audioSendInterval: TimeInterval = 0.08
 
     /// Fixed cadence for periodic realtime commits (was a user setting, removed).
     static let commitInterval: TimeInterval = 0.9

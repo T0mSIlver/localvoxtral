@@ -46,7 +46,6 @@ final class SettingsStore {
         static let mistralModelCatalog = "settings.mistral_model_catalog"
         static let dictationBackendMode = "settings.dictation_backend_mode"
         static let speechdCacheLimit = "settings.speechd_cache_limit"
-        static let speechdStepCadence = "settings.speechd_step_cadence"
         static let managedSpeechModel = "settings.managed_speech_model"
         static let polishingBackendMode = "settings.polishing_backend_mode"
         // Legacy global backend mode. Read only for one-time migration.
@@ -206,12 +205,6 @@ final class SettingsStore {
     /// on the next (re)start.
     var speechdCacheLimit: SpeechdCacheLimit {
         didSet { defaults.set(speechdCacheLimit.rawValue, forKey: Keys.speechdCacheLimit) }
-    }
-
-    /// Streaming step cadence for the managed dictation helper. Same restart
-    /// contract as `speechdCacheLimit`.
-    var speechdStepCadence: SpeechdStepCadence {
-        didSet { defaults.set(speechdStepCadence.rawValue, forKey: Keys.speechdStepCadence) }
     }
 
     /// Hugging Face repo the managed dictation helper loads, chosen from
@@ -880,14 +873,6 @@ final class SettingsStore {
             speechdCacheLimit = .defaultLimit
         }
 
-        if let storedStepCadence = defaults.string(forKey: Keys.speechdStepCadence),
-            let parsedStepCadence = SpeechdStepCadence(rawValue: storedStepCadence)
-        {
-            speechdStepCadence = parsedStepCadence
-        } else {
-            speechdStepCadence = .defaultCadence
-        }
-
         // A repo that left the catalog (or was hand-written into the plist)
         // must never reach a helper launch: fall back to the default and
         // rewrite the stored value so the picker and the launch agree.
@@ -912,6 +897,8 @@ final class SettingsStore {
         // The commit interval setting was removed. Clean up stale persisted
         // values so future defaults migrations do not preserve dead state.
         defaults.removeObject(forKey: "settings.commit_interval_seconds")
+        // So was the step interval: the helper sizes its steps itself (#639).
+        defaults.removeObject(forKey: "settings.speechd_step_cadence")
 
         realtimeAPIEndpointURL = Self.loadString(
             defaults: defaults, key: Keys.realtimeAPIEndpointURL,

@@ -52,7 +52,7 @@ set -euo pipefail
 #                  installed on the build host.
 #     speechd-bench run the packaged speech helper's streaming benchmark;
 #                  optional args = seconds (default 60), cadence ms
-#                  (default 100 = the production step cadence),
+#                  (default 80 = the helper's minimum step),
 #                  cache-limit-mb (default = the helper's built-in limit),
 #                  max-utterance-seconds (default = seconds, so a long
 #                  run keeps decoding past the helper's own utterance limit),
@@ -777,7 +777,7 @@ case "$CMD" in
       exit 1
     fi
     SPEECHD_BENCH_SECONDS="${1:-60}"
-    SPEECHD_BENCH_CADENCE="${2:-100}"
+    SPEECHD_BENCH_CADENCE="${2:-80}"
     SPEECHD_BENCH_CACHE_MB="${3:-}"
     # The helper stops decoding at its utterance limit (#314). By default the benchmark
     # lifts it to the run length, so a long run measures decoding rather than dead air.
