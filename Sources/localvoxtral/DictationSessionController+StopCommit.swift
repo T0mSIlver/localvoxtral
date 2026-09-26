@@ -478,7 +478,11 @@ extension DictationSessionController {
         if liveDictationCanTeachACorrection {
             expectCorrection(of: liveTypedText(), join: context.claudeSessionJoin, project: nil)
         }
-        if !textInsertion.hasPendingInsertionText {
+        // Only a stop that typed something: an accidental tap must not
+        // spend a run.
+        if !textInsertion.hasPendingInsertionText,
+           !liveTypedText().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
             proposeProjectTermsIfNew(join: context.claudeSessionJoin)
         }
         completeStoppedSessionCleanup(

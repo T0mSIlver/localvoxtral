@@ -162,6 +162,27 @@ final class ProjectTermProposalWiringTests: XCTestCase {
         XCTAssertEqual(off.runner.all, [])
     }
 
+    /// Live Auto-Paste typed as it went; its stop asks only when it typed
+    /// something, so an accidental tap spends no run.
+    func testALiveStopAsksOnlyWhenItTypedSomething() async {
+        let harness = makeHarness()
+        let viewModel = harness.viewModel
+        for (text, expected) in [("", 0), ("rename the page composer struct", 1)] {
+            viewModel.session.projectTermProposalTask = nil
+            viewModel.session.context.claudeSessionJoin = join()
+            viewModel.session.sessionOutputMode = .liveAutoPaste
+            viewModel.isFinalizingStop = true
+            viewModel.transcript.currentDictationEventText = text
+            viewModel.session.finishStoppedSession(promotePendingSegment: false)
+            await viewModel.session.projectTermProposalTask?.value
+            XCTAssertEqual(harness.runner.all.count, expected, "after typing \"\(text)\"")
+        }
+    }
+
+    func testTheSettingIsOffByDefault() {
+        XCTAssertFalse(makeSettings().projectTermProposalsEnabled)
+    }
+
     func testAFailedInsertAsksNothing() async {
         let harness = makeHarness()
         harness.overlay.commitOutcome = .failed(message: "Insert failed.")

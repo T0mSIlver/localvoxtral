@@ -266,14 +266,19 @@ final class ProjectTermProposerTests: XCTestCase {
 
     func testADirectoryOutsideARepositoryIsItsOwnProject() async throws {
         let plain = root.appendingPathComponent("notes").path
-        try FileManager.default.createDirectory(atPath: plain, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: plain + "/drafts", withIntermediateDirectories: true)
+        for name in ["plan.md", "inkwell.txt", ".hidden"] {
+            try "x".write(toFile: plain + "/" + name, atomically: true, encoding: .utf8)
+        }
         let runner = FakeRunner(.terms([]))
         let (proposer, store) = proposer(runner)
 
         await commit(proposer, join(plain, agent: .vibe))
 
+        // No git: the directory's visible files stand in for the tracked list.
         XCTAssertEqual(runner.invocations.withLock { $0.first }, ProjectTermProposal.Invocation(
-            agent: .vibe, workingDirectory: plain, arguments: ProjectTermProposal.vibeArguments(trackedFiles: [])
+            agent: .vibe, workingDirectory: plain,
+            arguments: ProjectTermProposal.vibeArguments(trackedFiles: ["inkwell.txt", "plan.md"])
         ))
         XCTAssertEqual(store.snapshot().projects.map(\.key), [plain])
     }

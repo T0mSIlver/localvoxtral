@@ -89,7 +89,14 @@ package final class ProjectTermProposer: @unchecked Sendable {
         else { return }
 
         let workingDirectory = gitRoot ?? directory
-        let files = request.agent == .vibe && gitRoot != nil ? await trackedFiles(workingDirectory) : []
+        let files: [String]
+        if request.agent == .vibe {
+            files = gitRoot != nil
+                ? await trackedFiles(workingDirectory)
+                : Self.topLevelFiles(in: workingDirectory, fileManager: fileManager)
+        } else {
+            files = []
+        }
         let invocation = ProjectTermProposal.invocation(
             agent: request.agent,
             workingDirectory: workingDirectory,
@@ -124,6 +131,24 @@ package final class ProjectTermProposer: @unchecked Sendable {
             asked[key] = moment
             return true
         }
+    }
+
+    /// Outside a repository, Vibe's prompt lists the directory's own visible
+    /// files instead: without a list its unified harness guesses names until
+    /// the turn limit, and the run would fail again every day.
+    static func topLevelFiles(in directory: String, fileManager: FileManager) -> [String] {
+        let names = (try? fileManager.contentsOfDirectory(atPath: directory)) ?? []
+        return Array(
+            names
+                .filter { name in
+                    var isDirectory: ObjCBool = false
+                    return !name.hasPrefix(".")
+                        && fileManager.fileExists(atPath: directory + "/" + name, isDirectory: &isDirectory)
+                        && !isDirectory.boolValue
+                }
+                .sorted()
+                .prefix(ProjectTermProposal.maxListedFiles)
+        )
     }
 
     /// The first `ProjectTermProposal.maxListedFiles` tracked files, for
