@@ -128,18 +128,21 @@ final class DiagnosticRecordWiringTests: XCTestCase {
         XCTAssertEqual(try recordsOnDisk(in: harness.captureDirectory).count, 2)
 
         // Deleting one entry deletes its record only.
-        let first = try XCTUnwrap(await history.entries().first)
+        let before = await history.entries()
+        let first = try XCTUnwrap(before.first)
         await history.delete(id: first.id).value
+        let after = await history.entries()
         XCTAssertEqual(
             try recordsOnDisk(in: harness.captureDirectory).map(\.id),
-            [try XCTUnwrap(await history.entries().first).id.uuidString]
+            [try XCTUnwrap(after.first).id.uuidString]
         )
 
         // The switch turned off: records go, the dictation stays.
         harness.viewModel.settings.diagnosticRecordsEnabled = false
         await history.deleteAllDiagnosticRecords().value
         XCTAssertEqual(try recordsOnDisk(in: harness.captureDirectory).count, 0)
-        XCTAssertEqual(await history.entries().count, 1)
+        let kept = await history.entries()
+        XCTAssertEqual(kept.count, 1)
 
         // History turned off deletes the entries and whatever records remain.
         harness.viewModel.settings.diagnosticRecordsEnabled = true
