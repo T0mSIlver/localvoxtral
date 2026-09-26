@@ -29,9 +29,8 @@ enum DictationInsightsPeriod: String, CaseIterable, Identifiable, Sendable {
 /// What a set of saved dictations adds up to. A value computed from the
 /// entries and nothing else, so every number here has a test.
 struct DictationInsights: Equatable, Sendable {
-    /// The speed the saving is measured against. 40 words per minute is the
-    /// usual figure for an average typist.
-    static let typingWordsPerMinute = 40.0
+    /// The speed the saving is measured against.
+    static let typingWordsPerMinute = TypingPace.wordsPerMinute
     /// A recurring fix is one polishing made in at least this many dictations:
     /// the bar `LearnedTerms` uses for a habit rather than a repeat.
     static let recurringFixMinimumDictations = 3
@@ -43,7 +42,7 @@ struct DictationInsights: Equatable, Sendable {
     /// One dictation cannot count for more than this. The start and end times
     /// are wall-clock, so a Mac that slept mid-dictation would otherwise own
     /// the total.
-    static let maxDictationSeconds: TimeInterval = 3_600
+    static let maxDictationSeconds: TimeInterval = WidgetSnapshot.DictationSample.maxDictatingSeconds
 
     struct RecurringFix: Equatable, Sendable, Identifiable {
         /// What the recognizer wrote, lowercased.
@@ -86,14 +85,13 @@ struct DictationInsights: Equatable, Sendable {
 
     /// Nil under ten seconds of dictating, where the ratio is noise.
     var wordsPerMinute: Double? {
-        guard dictatingSeconds >= 10 else { return nil }
-        return Double(words) / (dictatingSeconds / 60)
+        TypingPace.wordsPerMinute(words: words, dictatingSeconds: dictatingSeconds)
     }
 
     /// What typing the same words would have taken, less what dictating them
     /// took. Never negative: a slow day is not a debt.
     var secondsSavedOverTyping: TimeInterval {
-        max(0, Double(words) / Self.typingWordsPerMinute * 60 - dictatingSeconds)
+        TypingPace.secondsSaved(words: words, dictatingSeconds: dictatingSeconds)
     }
 
     init() {}

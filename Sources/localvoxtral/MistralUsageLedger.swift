@@ -220,19 +220,11 @@ struct MistralUsageSummary: Equatable, Sendable {
     }
 
     static func formattedCost(_ eur: Double) -> String {
-        // Two decimals hide a month of light use; a cent's fraction is still
-        // money on the bill when all you do is dictate.
-        if eur > 0, eur < 0.01 { return "< €0.01" }
-        return String(format: "€%.2f", eur)
+        WidgetFormat.cost(eur)
     }
 
     static func formattedDuration(_ seconds: Double) -> String {
-        let minutes = seconds / 60
-        if minutes < 1 { return "\(Int(seconds.rounded())) s" }
-        if minutes < 60 { return "\(Int(minutes.rounded())) min" }
-        let hours = Int(minutes) / 60
-        let rest = Int(minutes.rounded()) - hours * 60
-        return rest == 0 ? "\(hours) h" : "\(hours) h \(rest) min"
+        WidgetFormat.duration(seconds)
     }
 }
 
