@@ -31,6 +31,9 @@ NEED_FREE_MIB="${VOXTRAL_VLLM_NEED_FREE_MIB:-12500}"
 # 1 = torch.compile + piecewise CUDA graphs: about 7% faster decode, 2.5 s
 # slower start. Eager is the default because eval runs are short.
 COMPILE="${VOXTRAL_VLLM_COMPILE:-0}"
+# Fully qualified class of a vLLM logits processor, importable through
+# PYTHONPATH (module:Class, e.g. vllm_term_bias:TermBias, #316). Empty: none.
+LOGITS_PROCESSOR="${VOXTRAL_VLLM_LOGITS_PROCESSOR:-}"
 
 MODEL="mistralai/Voxtral-Mini-4B-Realtime-2602"
 MODEL_REVISION="2769294da9567371363522aac9bbcfdd19447add"
@@ -85,6 +88,7 @@ serve_args() {
   else
     args+=(--enforce-eager)
   fi
+  [[ -n "$LOGITS_PROCESSOR" ]] && args+=(--logits-processors "$LOGITS_PROCESSOR")
   printf '%s\n' "${args[@]}"
 }
 
