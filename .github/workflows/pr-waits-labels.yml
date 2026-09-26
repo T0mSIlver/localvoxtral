@@ -51,20 +51,34 @@ jobs:
           set -euo pipefail
           FILES="$RUNNER_TEMP/changed-files.txt"
           MARKER_TEXT="$RUNNER_TEMP/marker-text.txt"
-          BASE="$(git merge-base "origin/$BASE_REF" HEAD)"
-          git diff --name-only "$BASE" HEAD > "$FILES"
-          printf '%s\n' "$PR_BODY" > "$MARKER_TEXT"
-          git log -1 --format=%B HEAD >> "$MARKER_TEXT"
+          # Diff the merge ref like ci.yml does, so a stack whose base was
+          # rebased doesn't count the base PR's files. A conflicting PR has
+          # no merge ref and falls back to its head.
+          TIP=HEAD
+          if git fetch -q origin "refs/pull/$PR_NUMBER/merge" 2>/dev/null; then
+            TIP=FETCH_HEAD
+          fi
+          BASE="$(git merge-base "origin/$BASE_REF" "$TIP" || true)"
 
-          # Same narrowing facts ci.yml hands the STT filter.
-          while IFS='=' read -r key value; do
-            case "$key" in
-              mac_lanes_job_changed) export LANE_MAC_LANES_JOB_CHANGED="$value" ;;
-              package_deps_changed) export LANE_PACKAGE_DEPS_CHANGED="$value" ;;
-            esac
-          done < <(./scripts/ci/lane-diff-facts.sh "$BASE" HEAD)
+          if [[ -z "$BASE" ]]; then
+            # Fail open like ci.yml: an uncomputable diff runs every lane.
+            echo "::warning title=waits labels::diff unavailable, adding both Mac labels"
+            LABELS="$(printf 'waits:mac-llm\nwaits:mac-voxtral')"
+            [[ "$BASE_REF" == "main" ]] || LABELS+=$'\nwaits:stack'
+          else
+            git diff --name-only "$BASE" "$TIP" > "$FILES"
+            printf '%s\n' "$PR_BODY" > "$MARKER_TEXT"
+            git log -1 --format=%B HEAD >> "$MARKER_TEXT"
+            # Same narrowing facts ci.yml hands the STT filter.
+            while IFS='=' read -r key value; do
+              case "$key" in
+                mac_lanes_job_changed) export LANE_MAC_LANES_JOB_CHANGED="$value" ;;
+                package_deps_changed) export LANE_PACKAGE_DEPS_CHANGED="$value" ;;
+              esac
+            done < <(./scripts/ci/lane-diff-facts.sh "$BASE" "$TIP")
+            LABELS="$(./scripts/ci/waits-labels.sh "$FILES" "$MARKER_TEXT" "$BASE_REF")"
+          fi
 
-          LABELS="$(./scripts/ci/waits-labels.sh "$FILES" "$MARKER_TEXT" "$BASE_REF")"
           if [[ -z "$LABELS" ]]; then
             echo "No waits label from the diff" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
