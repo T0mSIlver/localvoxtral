@@ -2031,7 +2031,7 @@ INSTALL_ENV=(LV_UI_ARTIFACT_DEST_ROOT="$ARTIFACT_ROOT" STUB_PGREP_PID=4242)
 assert_install_refused 'overwriting a bundle that is currently running' "$SRC_CLEAN"
 [[ "$INSTALL_STDERR" == *"quit it first"* ]] \
   || fail "the running-bundle refusal did not say what to do: $INSTALL_STDERR"
-# That refusal, and ONLY that one, is exit 3: ci.yml turns it into a warning
+# That refusal, and ONLY that one, is exit 3: ui-smoke.yml turns it into a warning
 # instead of a red build, because the build was fine and the owner merely had
 # the app open. Every other refusal must stay fatal.
 (( INSTALL_STATUS == 3 )) \
@@ -2040,7 +2040,7 @@ INSTALL_ENV=(LV_UI_ARTIFACT_DEST_ROOT="$INSTALL_ROOT/world")
 chmod 0777 "$INSTALL_ROOT/world"
 assert_install_refused 'a world-writable root (again, to pin its exit code)' "$SRC_CLEAN"
 (( INSTALL_STATUS == 1 )) \
-  || fail "a security refusal used exit $INSTALL_STATUS — ci.yml would treat 3 as a warning"
+  || fail "a security refusal used exit $INSTALL_STATUS — ui-smoke.yml would treat 3 as a warning"
 chmod 0755 "$INSTALL_ROOT/world"
 pass "only the slot-is-running refusal is exit 3; security refusals stay exit 1"
 
