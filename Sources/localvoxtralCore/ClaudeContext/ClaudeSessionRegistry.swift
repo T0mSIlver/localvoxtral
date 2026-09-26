@@ -36,9 +36,14 @@ public struct ClaudeRegistryLimits: Sendable, Equatable {
     /// dead session's joinable exposure far below the normal four-hour TTL.
     public static let defaultPIDLessLocalSessionTTL: TimeInterval = 5 * 60
     /// When origins compete for the global cap, no one origin may retain more
-    /// than this many sessions. Eight covers a generous set of terminal tabs
-    /// while leaving most of the global registry available to other origins.
+    /// than this many sessions without a Claude Desktop id. Eight covers a
+    /// generous set of terminal tabs while leaving most of the global registry
+    /// available to other origins.
     public static let defaultMaxSessionsPerOrigin = 8
+    /// The same quota for sessions that report a Claude Desktop id, counted
+    /// apart so a host's Desktop sessions do not compete with its terminal
+    /// ones. An ssh host was measured running 18 at once.
+    public static let defaultMaxDesktopSessionsPerOrigin = 24
     /// How long a session that reports a Claude Desktop session id stays
     /// fresh without a hook. Only hooks refresh activity, and the next hook of
     /// a Desktop session left idle overnight is the UserPromptSubmit of the
@@ -58,17 +63,21 @@ public struct ClaudeRegistryLimits: Sendable, Equatable {
     /// "probably still the same one".
     public static let defaultFocusDeclarationTTL: TimeInterval = 45
     /// Focus declarations are keyed by TTY device, one live entry per pane.
-    /// Matches the session cap: there is no reason to remember more panes than
-    /// we would remember sessions.
+    /// The session cap before #672 raised it for Claude Desktop sessions,
+    /// which have no pane and declare no focus.
     public static let defaultMaxFocusDeclarations = 32
 
-    /// Hard cap on retained sessions. Beyond this, the least-recently-active is
-    /// evicted — a user with hundreds of stale sessions must not grow the app.
+    /// Hard cap on retained sessions — a user with hundreds of stale sessions
+    /// must not grow the app. Beyond it, the origin holding the most sessions
+    /// loses its least recently active one.
     public var maxSessions: Int
-    /// Sub-quota applied per transport origin when more than one origin is
-    /// present. A lone origin may use the global cap; once another arrives,
-    /// churn is evicted from the bursting origin first.
+    /// Sub-quota applied per transport origin to sessions without a Claude
+    /// Desktop id when more than one origin is present. A lone origin may use
+    /// the global cap; once another arrives, churn is evicted from the
+    /// bursting origin first.
     public var maxSessionsPerOrigin: Int
+    /// `maxSessionsPerOrigin` for sessions that report a Claude Desktop id.
+    public var maxDesktopSessionsPerOrigin: Int
     /// A session with no hook activity for this long is stale. Claude Code can
     /// die without firing SessionEnd (SIGKILL, a closed terminal), so TTL plus
     /// PID liveness — not SessionEnd alone — is what keeps the registry honest.
@@ -81,8 +90,9 @@ public struct ClaudeRegistryLimits: Sendable, Equatable {
     public var maxFocusDeclarations: Int
 
     public init(
-        maxSessions: Int = 32,
+        maxSessions: Int = 48,
         maxSessionsPerOrigin: Int = Self.defaultMaxSessionsPerOrigin,
+        maxDesktopSessionsPerOrigin: Int = Self.defaultMaxDesktopSessionsPerOrigin,
         sessionTTL: TimeInterval = 4 * 60 * 60,
         desktopSessionTTL: TimeInterval = Self.defaultDesktopSessionTTL,
         pidlessLocalSessionTTL: TimeInterval = Self.defaultPIDLessLocalSessionTTL,
@@ -91,6 +101,7 @@ public struct ClaudeRegistryLimits: Sendable, Equatable {
     ) {
         self.maxSessions = maxSessions
         self.maxSessionsPerOrigin = maxSessionsPerOrigin
+        self.maxDesktopSessionsPerOrigin = maxDesktopSessionsPerOrigin
         self.sessionTTL = sessionTTL
         self.desktopSessionTTL = desktopSessionTTL
         self.pidlessLocalSessionTTL = pidlessLocalSessionTTL
@@ -308,7 +319,7 @@ public final class ClaudeSessionRegistry: Sendable {
         }
         if capEvictions.count > 0 {
             Log.claudeContext.notice(
-                "Claude session registry evicted \(capEvictions.count, privacy: .public) session(s) over the session cap (\(capEvictions.desktopCount, privacy: .public) reporting a Claude Desktop session id)"
+                "Claude session registry evicted \(capEvictions.count, privacy: .public) session(s) over the session cap (\(capEvictions.desktopCount, privacy: .public) reporting a Claude Desktop session id; per-origin \(capEvictions.originQuotaCount, privacy: .public), Desktop per-origin \(capEvictions.desktopQuotaCount, privacy: .public), global \(capEvictions.globalCount, privacy: .public))"
             )
         }
         // The record's own prompt, never the snapshot's: a submit without
@@ -942,29 +953,55 @@ public final class ClaudeSessionRegistry: Sendable {
         if grouped.count > 1 {
             // Always reserve at least one global slot for a competing origin,
             // even when a caller configures a sub-quota above a small test cap.
-            let quota = min(
-                max(0, limits.maxSessionsPerOrigin),
-                max(0, limits.maxSessions - 1)
-            )
-            for sessions in grouped.values where sessions.count > quota {
-                // The pin never relaxes the quota: with the pinned session
+            func reserved(_ quota: Int) -> Int {
+                min(max(0, quota), max(0, limits.maxSessions - 1))
+            }
+            let quota = reserved(limits.maxSessionsPerOrigin)
+            let desktopQuota = reserved(limits.maxDesktopSessionsPerOrigin)
+            for sessions in grouped.values {
+                // A desktop id is whatever the host sent, so it buys room only
+                // in its own origin's Desktop quota, never in another origin's.
+                let desktop = sessions.filter { $0.desktopSessionID != nil }
+                let others = sessions.filter { $0.desktopSessionID == nil }
+                // The pin never relaxes a quota: with the pinned session
                 // excluded there are still at least `count - quota` evictable
                 // siblings whenever quota >= 1.
-                let evictable = sessions.sorted(by: Self.evictionPrecedes)
-                    .filter { $0.sessionID != upserted }
-                    .prefix(sessions.count - quota)
-                for snapshot in evictable { evict(snapshot) }
+                for (group, groupQuota) in [(others, quota), (desktop, desktopQuota)]
+                where group.count > groupQuota {
+                    let evictable = group.sorted(by: Self.evictionPrecedes)
+                        .filter { $0.sessionID != upserted }
+                        .prefix(group.count - groupQuota)
+                    for snapshot in evictable {
+                        evict(snapshot)
+                        if snapshot.desktopSessionID == nil {
+                            evictions.originQuotaCount += 1
+                        } else {
+                            evictions.desktopQuotaCount += 1
+                        }
+                    }
+                }
             }
         }
 
-        guard state.sessions.count > limits.maxSessions else { return evictions }
-        // Pinned here too: with Desktop records sorted last, a new record
-        // without one would otherwise be the first to go once the cap is full
-        // of them.
-        let ordered = state.sessions.values.sorted(by: Self.evictionPrecedes)
-            .filter { limits.maxSessions < 1 || $0.sessionID != upserted }
-        for snapshot in ordered.prefix(state.sessions.count - limits.maxSessions) {
-            evict(snapshot)
+        // Over the global cap, the origin holding the most sessions pays, so
+        // one host's sessions, Desktop or not, can never push out a smaller
+        // origin's. Pinned here too: with Desktop records sorted last, a new
+        // record without one would otherwise be the first to go once the cap
+        // is full of them.
+        while state.sessions.count > limits.maxSessions {
+            let byOrigin = Dictionary(grouping: state.sessions.values, by: \.origin)
+            let victim = byOrigin
+                .sorted { Self.originEvictionPrecedes($0.key, $0.value.count, $1.key, $1.value.count) }
+                .lazy
+                .compactMap { _, sessions in
+                    sessions.sorted(by: Self.evictionPrecedes).first {
+                        self.limits.maxSessions < 1 || $0.sessionID != upserted
+                    }
+                }
+                .first
+            guard let victim else { break }
+            evict(victim)
+            evictions.globalCount += 1
         }
         return evictions
     }
@@ -972,6 +1009,9 @@ public final class ClaudeSessionRegistry: Sendable {
     private struct CapEvictions {
         var count = 0
         var desktopCount = 0
+        var originQuotaCount = 0
+        var desktopQuotaCount = 0
+        var globalCount = 0
     }
 
     private func schedulePersistenceLocked(_ state: State) {
@@ -1212,6 +1252,25 @@ public final class ClaudeSessionRegistry: Sendable {
             return !hostID.isEmpty
                 && transportID.hasPrefix(sessionPrefix)
                 && transportID.count > sessionPrefix.count
+        }
+    }
+
+    /// Which origin loses a session to the global cap: the one holding the
+    /// most, then a remote one before the local one, then by channel name.
+    private static func originEvictionPrecedes(
+        _ lhs: ClaudeTransportOrigin, _ lhsCount: Int,
+        _ rhs: ClaudeTransportOrigin, _ rhsCount: Int
+    ) -> Bool {
+        if lhsCount != rhsCount { return lhsCount > rhsCount }
+        switch (lhs, rhs) {
+        case (.remote(let lhsChannel), .remote(let rhsChannel)):
+            return lhsChannel < rhsChannel
+        case (.remote, .localAuthenticated):
+            return true
+        case (.localAuthenticated, .remote):
+            return false
+        case (.localAuthenticated(let lhsUID), .localAuthenticated(let rhsUID)):
+            return lhsUID < rhsUID
         }
     }
 

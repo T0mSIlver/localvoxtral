@@ -665,13 +665,13 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         XCTAssertEqual(registry.resolve(desktopSessionID: "local_a"), .stale)
     }
 
-    /// The owner's host ran 18 Desktop sessions at once. Once another origin
-    /// is present, each keeps `maxSessionsPerOrigin` records, and the
-    /// least recently active used to go first whatever it was.
+    /// The owner's host ran 18 Desktop sessions at once. When a host must
+    /// lose a record, the least recently active used to go first whatever it
+    /// was.
     func testTheCapEvictsSessionsWithoutADesktopIDFirst() {
         let clock = TestClock(epoch)
         let registry = makeRegistry(
-            limits: ClaudeRegistryLimits(maxSessions: 32, maxSessionsPerOrigin: 2),
+            limits: ClaudeRegistryLimits(maxSessions: 3),
             clock: clock
         )
         registry.ingest(record(.sessionStart, session: "mac-local"), origin: local)
@@ -684,6 +684,7 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         guard case .resolved = registry.resolve(desktopSessionID: "local_a") else {
             return XCTFail("the idle Desktop session must outlast a newer terminal session")
         }
+        XCTAssertNotNil(registry.snapshot(sessionID: "mac-local"))
         XCTAssertNil(registry.snapshot(sessionID: "terminal-1"))
         XCTAssertNotNil(registry.snapshot(sessionID: "terminal-2"))
     }
@@ -706,6 +707,80 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         )
         XCTAssertNil(registry.snapshot(sessionID: "desktop-1"))
         XCTAssertNotNil(registry.snapshot(sessionID: "desktop-2"))
+    }
+
+    // MARK: More Desktop sessions than the per-origin quota (#672)
+
+    /// The owner's ssh host ran 18 Desktop sessions at once, next to local
+    /// sessions, and the per-origin quota of 8 evicted ten of them.
+    func testEighteenDesktopSessionsOnOneHostStayResolvableBesideALocalSession() {
+        let clock = TestClock(epoch)
+        let registry = makeRegistry(clock: clock)
+        registry.ingest(record(.sessionStart, session: "mac-local"), origin: local)
+        for index in 1...18 {
+            clock.advance(1)
+            ingestDesktopSession(registry, session: "desktop-\(index)", desktopID: "local_\(index)")
+        }
+
+        XCTAssertNotNil(registry.snapshot(sessionID: "mac-local"))
+        for index in 1...18 {
+            guard case .resolved = registry.resolve(desktopSessionID: "local_\(index)") else {
+                return XCTFail("Desktop session \(index) of 18 must still join")
+            }
+        }
+    }
+
+    /// An enrolled host can send any desktop id it likes, so a desktop id
+    /// buys room only inside its own origin's Desktop quota.
+    func testAFloodOfDesktopIDsEvictsOnlyTheFloodingHostsRecords() {
+        let clock = TestClock(epoch)
+        let floodingHost = ClaudeTransportOrigin.remote(channel: "ssh:flood")
+        let otherHost = ClaudeTransportOrigin.remote(channel: "ssh:other")
+        let registry = makeRegistry(clock: clock)
+        registry.ingest(record(.sessionStart, session: "mac-local"), origin: local)
+        registry.ingest(record(.sessionStart, session: "other-host"), origin: otherHost)
+        for index in 1...100 {
+            clock.advance(1)
+            registry.ingest(
+                record(.sessionStart, session: "flood-\(index)"),
+                origin: floodingHost,
+                environment: ClaudeRemoteSessionEnvironment(desktopSessionID: "local_\(index)")
+            )
+        }
+
+        XCTAssertNotNil(registry.snapshot(sessionID: "mac-local"))
+        XCTAssertNotNil(registry.snapshot(sessionID: "other-host"))
+        XCTAssertEqual(
+            registry.liveSessions().filter { $0.origin == floodingHost }.count,
+            ClaudeRegistryLimits.defaultMaxDesktopSessionsPerOrigin
+        )
+        XCTAssertNotNil(registry.snapshot(sessionID: "flood-100"))
+    }
+
+    /// Over the global cap, the victim comes from the origin holding the most
+    /// records, however old another origin's records are.
+    func testTheGlobalCapEvictsFromTheLargestOrigin() {
+        let clock = TestClock(epoch)
+        let busyHost = ClaudeTransportOrigin.remote(channel: "ssh:busy")
+        let newHost = ClaudeTransportOrigin.remote(channel: "ssh:new")
+        let registry = makeRegistry(
+            limits: ClaudeRegistryLimits(maxSessions: 6, sessionTTL: 10_000),
+            clock: clock
+        )
+        registry.ingest(record(.sessionStart, session: "local-1"), origin: local)
+        registry.ingest(record(.sessionStart, session: "local-2"), origin: local)
+        for index in 1...4 {
+            clock.advance(1)
+            registry.ingest(record(.sessionStart, session: "busy-\(index)"), origin: busyHost)
+        }
+        clock.advance(1)
+        registry.ingest(record(.sessionStart, session: "new"), origin: newHost)
+
+        XCTAssertNotNil(registry.snapshot(sessionID: "local-1"))
+        XCTAssertNotNil(registry.snapshot(sessionID: "local-2"))
+        XCTAssertNotNil(registry.snapshot(sessionID: "new"))
+        XCTAssertNil(registry.snapshot(sessionID: "busy-1"))
+        XCTAssertEqual(registry.liveSessions().count, 6)
     }
 
     func testStaleSessionsArePrunedOnIngest() {
