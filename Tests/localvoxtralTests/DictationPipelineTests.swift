@@ -343,6 +343,155 @@ final class DictationPipelineTests: XCTestCase {
         }
     }
 
+    // MARK: - herdr pane route (#726)
+
+    /// Live Auto-Paste into a Claude Code pane in herdr: the join resolves
+    /// the pane over herdr's socket, and the words go into it through that
+    /// same socket while the dictation runs. Not one key is typed.
+    func testLiveAutoPasteIntoAJoinedHerdrPaneSendsThroughItsSocket() async throws {
+        let herdr = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2") { [(9001, "claude")] })
+        addTeardownBlock { herdr.stop() }
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        joinHerdrPane(pipeline, herdr: herdr)
+        let typed = recordTypedText(pipeline)
+
+        await startAndSpeak(pipeline)
+        XCTAssertEqual(pipeline.viewModel.context.claudeSessionJoin?.mechanism, .herdrPane, "precondition")
+        sendPartials(pipeline)
+        let sentWhileDictating = await herdr.waitUntil { $0.contains { $0.method == "pane.send_text" } }
+        XCTAssertTrue(sentWhileDictating)
+        XCTAssertTrue(pipeline.viewModel.isDictating, "sent before the stop, not by it")
+
+        await stopAndFinalize(pipeline)
+        let phrase = Self.phrase
+        let sentAll = await herdr.waitUntil { requests in
+            requests.filter { $0.method == "pane.send_text" }.compactMap(\.text).joined() == phrase
+        }
+        XCTAssertTrue(sentAll, "sent: \(herdr.sentText.debugDescription)")
+        XCTAssertEqual(Set(herdr.writes.map(\.method)), ["pane.send_text"])
+        XCTAssertEqual(Set(herdr.writes.map(\.paneID)), ["w1:p2"])
+        XCTAssertFalse(herdr.requests.contains { $0.method == "pane.run" })
+        XCTAssertEqual(typed.text, "", "nothing is typed")
+    }
+
+    /// The spoken send trigger into a herdr pane: focus moves to another app
+    /// after the dictation starts; the text still lands in the pane, and the
+    /// Enter goes to that pane through the socket, with no Return key.
+    func testLiveAutoPasteSendTriggerPressesEnterInTheHerdrPaneWhereverFocusWent() async throws {
+        let herdr = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2") { [(9001, "claude")] })
+        addTeardownBlock { herdr.stop() }
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        pipeline.viewModel.settings.liveSpokenSendEnabled = true
+        joinHerdrPane(pipeline, herdr: herdr)
+        var returns: [pid_t] = []
+        let typed = recordTypedText(pipeline, returnKeyPoster: { pid in
+            returns.append(pid)
+            return true
+        })
+
+        await startAndSpeak(pipeline)
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Safari" }
+        pipeline.server.send(["type": "transcription.delta", "delta": "run the tests, send"])
+        pipeline.server.send(["type": "transcription.done", "text": "run the tests, send it."])
+        let submitted = await herdr.waitUntil { $0.last?.method == "pane.send_keys" }
+        XCTAssertTrue(submitted, "requests: \(herdr.requests)")
+        XCTAssertEqual(herdr.sentText, "run the tests")
+
+        await stopAndFinalize(pipeline, finalText: "run the tests, send it.")
+        XCTAssertEqual(herdr.writes.filter { $0.method == "pane.send_keys" }.map(\.keys), [["enter"]])
+        XCTAssertEqual(returns, [], "no Return key")
+        XCTAssertEqual(typed.text, "")
+    }
+
+    /// Overlay Buffer into a herdr pane: the committed text is sent once and
+    /// the spoken trigger presses Enter in the pane after it.
+    func testOverlayBufferCommitsOnceIntoTheHerdrPaneAndSubmits() async throws {
+        let herdr = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2") { [(9001, "claude")] })
+        addTeardownBlock { herdr.stop() }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        pipeline.overlay.insertsThroughCommitter = true
+        joinHerdrPane(pipeline, herdr: herdr)
+        let typed = recordTypedText(pipeline)
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.delta", "delta": "run the tests, send it."])
+        await stopAndFinalize(pipeline, finalText: "run the tests, send it.")
+
+        let submitted = await herdr.waitUntil { $0.last?.method == "pane.send_keys" }
+        XCTAssertTrue(submitted, "requests: \(herdr.requests)")
+        XCTAssertEqual(herdr.writes, [
+            .init(method: "pane.send_text", paneID: "w1:p2", text: "run the tests", keys: nil),
+            .init(method: "pane.send_keys", paneID: "w1:p2", text: nil, keys: ["enter"]),
+        ])
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 1)
+        XCTAssertEqual(typed.text, "")
+    }
+
+    /// herdr refuses the write while its pane is in front: the dictation
+    /// types, as it would with no route, and nothing is lost or doubled.
+    func testLiveAutoPasteFallsBackToKeystrokesWhenHerdrRefusesTheWrite() async throws {
+        let herdr = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2", foreground: { [(9001, "claude")] }) { _ in
+            .error("pane_send_failed")
+        })
+        addTeardownBlock { herdr.stop() }
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        joinHerdrPane(pipeline, herdr: herdr)
+        let typed = recordTypedText(pipeline)
+
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline)
+
+        let typedAll = await typed.waitFor(Self.phrase)
+        XCTAssertTrue(typedAll, "typed: \(typed.text.debugDescription)")
+        XCTAssertFalse(pipeline.viewModel.textInsertion.promptRelayTakesText)
+        XCTAssertEqual(herdr.writes.count, 1, "the first refusal ends the route")
+    }
+
+    /// Joins the dictation to a Claude Code session in herdr pane `w1:p2`
+    /// the way the app does: polishing on (a fake polisher, so nothing leaves
+    /// the process) with screen context, a Ghostty surface bound to a herdr
+    /// client, and a real `HerdrSocketClient` reading and writing `herdr`.
+    private func joinHerdrPane(_ pipeline: Pipeline, herdr: FakeHerdrSocket) {
+        let settings = pipeline.viewModel.settings
+        settings.llmPolishingEnabled = true
+        settings.llmPolishingEndpointURL = "http://127.0.0.1:8080/v1/chat/completions"
+        settings.terminalScreenContextEnabled = true
+        pipeline.viewModel.llmPolishingService = FakePolishingService()
+        let epoch = Date(timeIntervalSince1970: 3_000_000)
+        let registry = ClaudeSessionRegistry(now: { epoch }, isProcessAlive: { _ in true })
+        XCTAssertNotNil(registry.ingest(
+            ClaudeHookRecord(
+                event: .sessionStart, sessionID: "s1", timestamp: 0, rawCwd: "/repo", prompt: nil, files: [],
+                process: ClaudeHookProcessInfo(
+                    hookPID: 777, claudePID: 9001, tty: "/dev/ttys-inner",
+                    herdrPaneID: "w1:p2", herdrSocketPath: herdr.socketPath
+                )
+            ),
+            origin: .localAuthenticated(peerUID: 501)
+        ))
+        let client = HerdrSocketClient(timeout: 2)
+        pipeline.viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            focusedTerminalTTY: { _ in "/dev/ttys-outer" },
+            herdrClientProbe: { _ in true },
+            herdrPanes: client,
+            herdrPaneWriter: client
+        )
+        let ghostty = TerminalScreenAllowlist.ghosttyBundleID
+        TerminalScreenContextSource.debugFrontmostTargetOverride = {
+            TerminalScreenTarget(pid: 4343, bundleID: ghostty)
+        }
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { ghostty }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { @MainActor in
+            TerminalScreenContextSource.debugFrontmostTargetOverride = nil
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+            TerminalTargetDetector.debugSecureEventInputOverride = nil
+        }
+    }
+
     /// Records every key the dictation would type.
     private func recordTypedText(
         _ pipeline: Pipeline, returnKeyPoster: ((pid_t) -> Bool)? = nil

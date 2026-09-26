@@ -137,6 +137,53 @@ extension ClaudeSessionJoinResolver {
         )
     }
 
+    /// The route that writes this dictation into the joined herdr pane
+    /// (#726), or nil when the join is not a herdr pane join. Like
+    /// `herdrPaneVisibleText(for:)`, it is keyed by the binding the arm
+    /// captured, so it reaches only the pane the join resolved, over the
+    /// socket (or forward) the join already trusted. Before each Enter it
+    /// asks that pane again whether the joined agent is foreground, with the
+    /// same test the arm joined on: the pid for a local pane, the parent pid
+    /// or agent name for a remote one. `frontmostPID` names the app keys
+    /// would go to, for the fallback's choice between typing and History.
+    package func herdrPromptRoute(
+        for join: ClaudeSessionJoin,
+        frontmostPID: @escaping @MainActor () -> pid_t?
+    ) -> HerdrPanePromptRoute? {
+        let mechanism = join.mechanism
+        guard mechanism == .herdrPane
+            || mechanism == .remoteHerdrPane
+            || mechanism == .federatedHerdrPane,
+            let binding = join.herdrPane,
+            let writer = herdrPaneWriter,
+            let panes = herdrPanes
+        else { return nil }
+        let snapshot = join.snapshot
+        let terminalPID = join.target.pid
+        return HerdrPanePromptRoute(
+            binding: binding,
+            writer: writer,
+            agentIsForeground: { @MainActor in
+                guard let processes = await panes.paneForegroundInfo(
+                    socketPath: binding.socketPath, paneID: binding.paneID
+                )?.foregroundProcesses else { return false }
+                if mechanism == .herdrPane {
+                    guard let pid = snapshot.process?.claudePID else { return false }
+                    return processes.contains { $0.pid == pid }
+                }
+                return Self.remoteAgentIsForeground(
+                    snapshot: snapshot, foregroundProcesses: processes, noteAbstention: { _ in }
+                )
+            },
+            keysReachThePane: { @MainActor in
+                // The frontmost app is read after the socket answers, so a
+                // focus change during the query is seen.
+                let paneFocused = await panes.focusedPane(socketPath: binding.socketPath)?.paneID == binding.paneID
+                return paneFocused && frontmostPID() == terminalPID
+            }
+        )
+    }
+
     /// Pure pid cross-check kept visible to tests because a snapshot with no
     /// process cannot be produced by a successful pane-id registry lookup, but
     /// the resolver must still fail closed if that invariant ever changes.

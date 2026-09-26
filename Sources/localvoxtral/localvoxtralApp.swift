@@ -569,6 +569,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 herdrFederation: { HerdrMachineFederationReader.live().federation() },
                 herdrClientSurfaceCount: { HerdrClientTTYProbe.clientSurfaceCount() },
                 herdrPanes: herdrClient,
+                // Writes wait longer than reads: a write that times out after
+                // landing would be typed a second time by the fallback.
+                herdrPaneWriter: HerdrSocketClient(timeout: 2),
                 cmuxSurfaces: CmuxSocketClient(
                     password: { cmuxPasswords.password() },
                     bundleIDOfRunningPID: { CmuxSocketClient.runningBundleID(ofPID: $0) }
