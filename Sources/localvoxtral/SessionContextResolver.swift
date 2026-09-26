@@ -38,6 +38,10 @@ final class SessionContextResolver {
     /// next to the join: opencode's prompt relay (#719). Nil unless one
     /// resolved. Cleared with the join.
     var agentPromptRoute: (any AgentPromptRoute)?
+    /// Whether this dictation's context join asked the terminal arms, even
+    /// if it found no session. A route resolved without a join asks the
+    /// arms itself only when the join did not: the answer would be the same.
+    private var contextJoinAskedTheArms = false
     /// Panel indicators own their associated remote forward until an explicit
     /// token clear has completed, so teardown cannot close the tunnel before
     /// the clear request reaches herdr.
@@ -88,6 +92,7 @@ final class SessionContextResolver {
         // owner supersedes its post-commit edit watch before calling here.)
         DogfoodCaptureTap.shared.beginSession()
         #endif
+        contextJoinAskedTheArms = false
         guard let endpointURL = settings.llmPolishingConfiguration?.endpointURL else {
             terminalScreenStartCapture = nil
             claudeSessionJoin = nil
@@ -112,6 +117,7 @@ final class SessionContextResolver {
             await resolveClaudeSessionJoin(endpointURL: endpointURL)
         }
         claudeSessionJoin = attempt.join
+        if case .resolved = attempt { contextJoinAskedTheArms = true }
         noteJoinOutcome(attempt, causes: causes)
         // Ownership of the join's `ssh -L` is taken HERE, at the one place a
         // join is ever assigned, and never given back to whoever happens to
@@ -169,14 +175,19 @@ final class SessionContextResolver {
         return relay.map { OpencodePromptRoute(relay: $0) }
     }
 
-    /// The joined herdr pane, written through herdr's socket (#726). Only a
-    /// herdr pane join yields one, so it carries that join's consent and
-    /// reaches only its pane.
-    private func resolveHerdrPaneRoute() -> HerdrPanePromptRoute? {
-        guard let join = claudeSessionJoin else { return nil }
-        return claudeSessionJoinResolver?.herdrPromptRoute(for: join) {
-            TerminalScreenContextSource.frontmostTarget()?.pid
+    /// The joined herdr pane, written through herdr's socket (#726). With
+    /// no context join (polishing off), a pane of a LOCAL herdr, found by
+    /// the route's own lookup and never kept as a join (#759).
+    private func resolveHerdrPaneRoute() async -> HerdrPanePromptRoute? {
+        guard let resolver = claudeSessionJoinResolver else { return nil }
+        let frontmostPID: @MainActor () -> pid_t? = { TerminalScreenContextSource.frontmostTarget()?.pid }
+        if let join = claudeSessionJoin {
+            return resolver.herdrPromptRoute(for: join, frontmostPID: frontmostPID)
         }
+        guard !contextJoinAskedTheArms,
+              let target = TerminalScreenContextSource.frontmostTarget()
+        else { return nil }
+        return await resolver.localHerdrPromptRoute(target: target, frontmostPID: frontmostPID)
     }
 
     /// This dictation's route into the joined agent, if any. Runs after the
@@ -185,7 +196,7 @@ final class SessionContextResolver {
         if let opencode = await resolveOpencodePromptRoute() {
             agentPromptRoute = opencode
         } else {
-            agentPromptRoute = resolveHerdrPaneRoute()
+            agentPromptRoute = await resolveHerdrPaneRoute()
         }
         if let route = agentPromptRoute {
             Log.claudeContext.notice("\(route.name, privacy: .public): resolved; dictation writes through it")
