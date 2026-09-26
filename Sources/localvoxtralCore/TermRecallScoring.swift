@@ -492,7 +492,8 @@ package struct TermRecallRunHeader: Codable, Equatable, Sendable {
     package var model: String?
     /// `none`, `session` or `noise`: the list the engine was biased with.
     package var bias: String
-    /// `say`, `human/<set>`, or `none` for a hypotheses file.
+    /// `say`, `<source>/<set>` for a recorded set (`human/<set>` unless its
+    /// manifest names a TTS engine), or `none` for a hypotheses file.
     package var audio: String
     /// Cases left unscored because the speech stage failed (no audio, no
     /// transcript): infrastructure, never counted as misses.

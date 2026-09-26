@@ -172,7 +172,7 @@ final class TermRecallEvalTests: XCTestCase {
             do {
                 let pcm: Data
                 if let recordings {
-                    guard let recorded = recordings[evalCase.id] else {
+                    guard let recorded = recordings.pcmByID[evalCase.id] else {
                         progress("term-recall: [\(index + 1)/\(cases.count)] \(evalCase.id) no recording, skipped")
                         continue
                     }
@@ -204,7 +204,7 @@ final class TermRecallEvalTests: XCTestCase {
             scores.append(TermRecallScorer.score(evalCase, hypothesis: hypothesis, noiseTerms: noiseTerms))
             progress("term-recall: [\(index + 1)/\(cases.count)] \(evalCase.id) done")
         }
-        let audio = config.recordingDirectory.map { "human/\(URL(fileURLWithPath: $0).lastPathComponent)" } ?? "say"
+        let audio = recordings?.audio ?? "say"
         return TermRecallRun(
             header: .init(
                 label: config.label ?? "\(asr)-\(bias)", source: asr, model: model, bias: bias, audio: audio,
@@ -289,7 +289,11 @@ final class TermRecallEvalTests: XCTestCase {
     /// PCM by case id from a recording set in the agent-dictation manifest
     /// format. A partial set is allowed; its missing cases are skipped, never
     /// filled with `say`.
-    private func loadRecordings(_ directory: String, cases: [TermRecallCase]) throws -> [String: Data] {
+    /// The set's PCM by case id, and its audio label for the run header.
+    private func loadRecordings(
+        _ directory: String,
+        cases: [TermRecallCase]
+    ) throws -> (pcmByID: [String: Data], audio: String) {
         let directoryURL = repoRoot.appendingPathComponent(directory, isDirectory: true)
         let manifest = try RecordedAudioSet.parseManifest(
             Data(contentsOf: directoryURL.appendingPathComponent(RecordedAudioSet.manifestFileName))
@@ -320,7 +324,7 @@ final class TermRecallEvalTests: XCTestCase {
             }
             pcmByID[id] = try RecordedAudioSet.pcm16(fromWAVData: wav)
         }
-        return pcmByID
+        return (pcmByID, manifest.audioLabel(setName: directoryURL.lastPathComponent))
     }
 
     private func interleavedByLanguage(_ cases: [TermRecallCase]) -> [TermRecallCase] {

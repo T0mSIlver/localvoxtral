@@ -32,6 +32,8 @@ struct Manifest: Codable {
     let schemaVersion: Int
     let dataFormat: String
     var recordings: [Recording]
+    /// Set only on TTS sets (`say`); this recorder writes human sets.
+    var source: String? = nil
 }
 
 struct Options {
@@ -601,6 +603,10 @@ do {
     let manifestURL = outputDirectory.appendingPathComponent("manifest.json")
     let journalURL = outputDirectory.appendingPathComponent(recoveryJournalFileName)
     let loadedManifest = loadManifest(at: manifestURL)
+    if let source = loadedManifest.source {
+        // Human takes in a TTS set would score as `source` audio.
+        throw HarnessError.message("\(outputDirectory.path) is a \(source) set; record into another --set")
+    }
     var casesByID: [String: CorpusCase] = [:]
     for item in allCases {
         guard casesByID.updateValue(item, forKey: item.id) == nil else {
