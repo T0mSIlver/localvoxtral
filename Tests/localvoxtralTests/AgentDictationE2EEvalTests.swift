@@ -252,7 +252,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
         for loaded in strata {
             let stratum = loaded.stratum
-            let plan = Support.stagePlan(for: stratum.resolvedPipeline)
+            let plan = AgentDictationEvalCorpus.stagePlan(for: stratum.resolvedPipeline)
             for evalCase in stratum.cases {
                 if let selectedCaseIDs, !selectedCaseIDs.contains(evalCase.id) { continue }
                 caseIndex += 1
@@ -342,7 +342,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         _ evalCase: AgentDictationEvalCorpus.Case,
         stratumName: String,
         pipeline: AgentDictationEvalCorpus.Pipeline,
-        plan: Support.StagePlan,
+        plan: AgentDictationEvalCorpus.StagePlan,
         enablement: Support.Enablement,
         polishConfiguration: LLMPolishingConfiguration,
         configStore: AppConfigStore,
@@ -420,7 +420,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                         )
                     }
                     capture.guardOffOutput = guardOffOutput
-                    result.guardOffTokensFailures = Support.tokensFailures(
+                    result.guardOffTokensFailures = AgentDictationEvalCorpus.tokensFailures(
                         output: guardOffOutput.trimmingCharacters(in: .whitespacesAndNewlines),
                         evalCase: evalCase
                     )
@@ -429,7 +429,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
             let trimmed = finalOutput.trimmingCharacters(in: .whitespacesAndNewlines)
             result.output = trimmed
-            result.tokensFailures = Support.tokensFailures(output: trimmed, evalCase: evalCase)
+            result.tokensFailures = AgentDictationEvalCorpus.tokensFailures(output: trimmed, evalCase: evalCase)
             if plan.runsPolish,
                 let rewrite = Support.antiRewriteFailure(
                     polishInput: polishInput, output: trimmed, evalCase: evalCase
@@ -612,7 +612,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         }
 
         let allExpected = strata.flatMap { loaded -> [RecordedAudioSet.Expectation] in
-            guard Support.stagePlan(for: loaded.stratum.resolvedPipeline).runsSpeechRecognition
+            guard AgentDictationEvalCorpus.stagePlan(for: loaded.stratum.resolvedPipeline).runsSpeechRecognition
             else { return [] }
             return loaded.stratum.cases.map {
                 RecordedAudioSet.Expectation(id: $0.id, lang: $0.lang, spokenForm: $0.spokenForm)

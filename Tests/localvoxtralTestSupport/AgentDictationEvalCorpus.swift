@@ -10,7 +10,7 @@ import Foundation
 /// Scoring contract carried per case (enforced structurally by
 /// `AgentDictationEvalCorpusTests`, enforced behaviorally by Phase 2):
 /// - `requiredTokens` must appear in the final output, byte-exact after
-///   spacing normalization (`LLMPolishEvalSupport.normalizedSpacing`);
+///   spacing normalization (`normalizedSpacing`);
 ///   case-sensitive unless the case sets `caseInsensitive`.
 /// - `forbiddenSubstrings` must NOT appear in the final output, matched
 ///   case-insensitively (they are contamination detectors: filler words,
@@ -24,13 +24,13 @@ import Foundation
 /// stability, so every NEW case starts `known-hard`; only direct
 /// migrations of currently-required `LLMPolishEvalSupport` cases carry
 /// `required` from day one.
-enum AgentDictationEvalCorpus {
+package enum AgentDictationEvalCorpus {
     /// Metric identifiers a case's `status` map may key on.
-    static let validMetrics: Set<String> = ["tokens", "exactText"]
+    package static let validMetrics: Set<String> = ["tokens", "exactText"]
 
     /// The exact stratum names the corpus must contain — a new stratum is a
     /// deliberate act (update this list and the README together).
-    static let expectedStrata: Set<String> = [
+    package static let expectedStrata: Set<String> = [
         "plain-asr-baseline",
         "symbol-forms",
         "filenames-backticks",
@@ -44,15 +44,15 @@ enum AgentDictationEvalCorpus {
     ]
 
     /// Shared with the recorded audio sets, whose manifests carry it.
-    typealias Language = RecordedAudioSet.Language
+    package typealias Language = RecordedAudioSet.Language
 
-    enum Status: String, Codable {
+    package enum Status: String, Codable {
         case required
         case knownHard = "known-hard"
     }
 
     /// Which production pipeline the Phase 2 harness drives for a stratum.
-    enum Pipeline: String, Codable {
+    package enum Pipeline: String, Codable {
         /// TTS(spokenForm) → websocket ASR → polish → scoring.
         case full
         /// TTS(spokenForm) → websocket ASR → scoring (no polish; the
@@ -101,17 +101,17 @@ enum AgentDictationEvalCorpus {
         }
     }
 
-    struct RepoFeature: Codable, Equatable {
+    package struct RepoFeature: Codable, Equatable {
         /// Name of a fixture spec in `fixtures/repo-<fixture>.json`.
-        let fixture: String
+        package let fixture: String
         /// The fixture files this case depends on (validated ⊆ fixture spec).
-        let files: [String]
+        package let files: [String]
 
         private enum CodingKeys: String, CodingKey, CaseIterable {
             case fixture, files
         }
 
-        init(from decoder: Decoder) throws {
+        package init(from decoder: Decoder) throws {
             try AgentDictationEvalCorpus.rejectUnknownKeys(
                 in: decoder,
                 allowed: Set(CodingKeys.allCases.map(\.rawValue)),
@@ -123,18 +123,18 @@ enum AgentDictationEvalCorpus {
         }
     }
 
-    struct Features: Codable, Equatable {
+    package struct Features: Codable, Equatable {
         /// Clipboard payload the harness must place on the pasteboard
         /// (clipboard-as-context and macro strata).
-        let clipboard: String?
+        package let clipboard: String?
         /// Repo-vocabulary fixture the harness must git-init and front.
-        let repo: RepoFeature?
+        package let repo: RepoFeature?
         /// true → the spoken macro MUST fire (payload embedded in output);
         /// false → explicit negative, the macro must NOT fire; nil → no
         /// macro semantics.
-        let macro: Bool?
+        package let macro: Bool?
 
-        init(clipboard: String? = nil, repo: RepoFeature? = nil, macro: Bool? = nil) {
+        package init(clipboard: String? = nil, repo: RepoFeature? = nil, macro: Bool? = nil) {
             self.clipboard = clipboard
             self.repo = repo
             self.macro = macro
@@ -144,7 +144,7 @@ enum AgentDictationEvalCorpus {
             case clipboard, repo, macro
         }
 
-        init(from decoder: Decoder) throws {
+        package init(from decoder: Decoder) throws {
             try AgentDictationEvalCorpus.rejectUnknownKeys(
                 in: decoder,
                 allowed: Set(CodingKeys.allCases.map(\.rawValue)),
@@ -157,17 +157,17 @@ enum AgentDictationEvalCorpus {
         }
     }
 
-    struct Source: Codable, Equatable {
+    package struct Source: Codable, Equatable {
         /// e.g. "LLMPolishEvalSupport.requiredCases" — set on direct
         /// migrations, which the validation suite byte-matches against the
         /// Swift originals.
-        let migratedFrom: String?
+        package let migratedFrom: String?
         /// The original case id in the migrated-from corpus.
-        let originalId: String?
+        package let originalId: String?
         /// Free-form seed attribution ("idiolect", "field-2026-07", …).
-        let seed: String?
+        package let seed: String?
 
-        init(migratedFrom: String? = nil, originalId: String? = nil, seed: String? = nil) {
+        package init(migratedFrom: String? = nil, originalId: String? = nil, seed: String? = nil) {
             self.migratedFrom = migratedFrom
             self.originalId = originalId
             self.seed = seed
@@ -177,7 +177,7 @@ enum AgentDictationEvalCorpus {
             case migratedFrom, originalId, seed
         }
 
-        init(from decoder: Decoder) throws {
+        package init(from decoder: Decoder) throws {
             try AgentDictationEvalCorpus.rejectUnknownKeys(
                 in: decoder,
                 allowed: Set(CodingKeys.allCases.map(\.rawValue)),
@@ -190,40 +190,40 @@ enum AgentDictationEvalCorpus {
         }
     }
 
-    struct Case: Codable {
-        let id: String
-        let lang: Language
+    package struct Case: Codable {
+        package let id: String
+        package let lang: Language
         /// Exactly what TTS will speak — symbols written phonetically the
         /// way a human dictates ("dash dash force", "dot env").
-        let spokenForm: String
+        package let spokenForm: String
         /// Ground-truth final output.
-        let intendedText: String
+        package let intendedText: String
         /// Byte-exact (after spacing normalization) substrings that MUST
         /// appear in the final text — the primary metric.
-        let requiredTokens: [String]
+        package let requiredTokens: [String]
         /// Substrings that must NOT appear (matched case-insensitively).
-        let forbiddenSubstrings: [String]?
+        package let forbiddenSubstrings: [String]?
         /// true → requiredTokens matched case-insensitively (migrated
         /// punctuation cases keep the old scorer's semantics; the ASR
         /// baseline stratum tolerates ASR casing).
-        let caseInsensitive: Bool?
-        let features: Features?
+        package let caseInsensitive: Bool?
+        package let features: Features?
         /// Per-metric status: "tokens" and/or "exactText" → required |
         /// known-hard. Every case carries at least "tokens".
-        let status: [String: Status]
+        package let status: [String: Status]
         /// One line: why this case exists.
-        let notes: String
-        let source: Source?
+        package let notes: String
+        package let source: Source?
 
-        var forbidden: [String] { forbiddenSubstrings ?? [] }
-        var isCaseInsensitive: Bool { caseInsensitive ?? false }
+        package var forbidden: [String] { forbiddenSubstrings ?? [] }
+        package var isCaseInsensitive: Bool { caseInsensitive ?? false }
 
         private enum CodingKeys: String, CodingKey, CaseIterable {
             case id, lang, spokenForm, intendedText, requiredTokens
             case forbiddenSubstrings, caseInsensitive, features, status, notes, source
         }
 
-        init(from decoder: Decoder) throws {
+        package init(from decoder: Decoder) throws {
             try AgentDictationEvalCorpus.rejectUnknownKeys(
                 in: decoder,
                 allowed: Set(CodingKeys.allCases.map(\.rawValue)),
@@ -244,20 +244,20 @@ enum AgentDictationEvalCorpus {
         }
     }
 
-    struct Stratum: Codable {
-        let schemaVersion: Int
-        let stratum: String
-        let description: String
-        let pipeline: Pipeline?
-        let cases: [Case]
+    package struct Stratum: Codable {
+        package let schemaVersion: Int
+        package let stratum: String
+        package let description: String
+        package let pipeline: Pipeline?
+        package let cases: [Case]
 
-        var resolvedPipeline: Pipeline { pipeline ?? .full }
+        package var resolvedPipeline: Pipeline { pipeline ?? .full }
 
         private enum CodingKeys: String, CodingKey, CaseIterable {
             case schemaVersion, stratum, description, pipeline, cases
         }
 
-        init(from decoder: Decoder) throws {
+        package init(from decoder: Decoder) throws {
             try AgentDictationEvalCorpus.rejectUnknownKeys(
                 in: decoder,
                 allowed: Set(CodingKeys.allCases.map(\.rawValue)),
@@ -272,14 +272,14 @@ enum AgentDictationEvalCorpus {
         }
     }
 
-    struct RepoFixture: Codable {
-        let name: String
-        let branch: String
+    package struct RepoFixture: Codable {
+        package let name: String
+        package let branch: String
         /// Paths the Phase 2 harness will `git init` + commit (content is
         /// irrelevant to the vocabulary index; paths are the vocabulary).
-        let files: [String]
+        package let files: [String]
 
-        init(name: String, branch: String, files: [String]) {
+        package init(name: String, branch: String, files: [String]) {
             self.name = name
             self.branch = branch
             self.files = files
@@ -289,7 +289,7 @@ enum AgentDictationEvalCorpus {
             case name, branch, files
         }
 
-        init(from decoder: Decoder) throws {
+        package init(from decoder: Decoder) throws {
             try AgentDictationEvalCorpus.rejectUnknownKeys(
                 in: decoder,
                 allowed: Set(CodingKeys.allCases.map(\.rawValue)),
@@ -302,17 +302,17 @@ enum AgentDictationEvalCorpus {
         }
     }
 
-    struct LoadedStratum {
-        let fileName: String
-        let stratum: Stratum
+    package struct LoadedStratum {
+        package let fileName: String
+        package let stratum: Stratum
     }
 
-    enum LoadError: Error, CustomStringConvertible {
+    package enum LoadError: Error, CustomStringConvertible {
         case corpusDirectoryMissing(String)
         case decodeFailed(file: String, underlying: Error)
         case duplicateRepoFixtureName(String)
 
-        var description: String {
+        package var description: String {
             switch self {
             case .corpusDirectoryMissing(let path):
                 return "corpus directory not found at \(path)"
@@ -330,7 +330,7 @@ enum AgentDictationEvalCorpus {
     /// packaged app resource, so the Bundle.localvoxtralResources rules do
     /// not apply; remote-build.sh rsyncs the whole working tree, so the
     /// path resolves on the build host too.
-    static func corpusDirectory() -> URL {
+    package static func corpusDirectory() -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()  // localvoxtralTests
             .deletingLastPathComponent()  // Tests
@@ -339,7 +339,7 @@ enum AgentDictationEvalCorpus {
             .appendingPathComponent("agent-dictation", isDirectory: true)
     }
 
-    static func loadStrata() throws -> [LoadedStratum] {
+    package static func loadStrata() throws -> [LoadedStratum] {
         let strataDirectory = corpusDirectory().appendingPathComponent("strata", isDirectory: true)
         return try decodeJSONFiles(in: strataDirectory) { fileName, data in
             LoadedStratum(
@@ -350,7 +350,7 @@ enum AgentDictationEvalCorpus {
     }
 
     /// Fixture specs keyed by their `name` field.
-    static func loadRepoFixtures() throws -> [String: RepoFixture] {
+    package static func loadRepoFixtures() throws -> [String: RepoFixture] {
         let fixturesDirectory = corpusDirectory().appendingPathComponent("fixtures", isDirectory: true)
         let fixtures = try decodeJSONFiles(in: fixturesDirectory) { fileName, data in
             try decode(RepoFixture.self, from: data, file: fileName)
@@ -361,7 +361,7 @@ enum AgentDictationEvalCorpus {
     /// Keys fixtures by name, throwing a readable error on duplicates
     /// (Dictionary(uniqueKeysWithValues:) would trap and crash the suite
     /// instead of producing an XCTest failure).
-    static func indexRepoFixtures(_ fixtures: [RepoFixture]) throws -> [String: RepoFixture] {
+    package static func indexRepoFixtures(_ fixtures: [RepoFixture]) throws -> [String: RepoFixture] {
         var indexed: [String: RepoFixture] = [:]
         for fixture in fixtures {
             guard indexed.updateValue(fixture, forKey: fixture.name) == nil else {
@@ -371,7 +371,7 @@ enum AgentDictationEvalCorpus {
         return indexed
     }
 
-    static func allCases() throws -> [Case] {
+    package static func allCases() throws -> [Case] {
         try loadStrata().flatMap(\.stratum.cases)
     }
 

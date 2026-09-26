@@ -133,5 +133,7 @@ VLLM_REALTIME_TEST_ENABLE=1 scripts/core-tests-linux.sh --filter RealtimeAPIVLLM
 written by hand (there is no `say` here); see `EvalCorpus/term-recall/README.md`.
 Its scoreboard names the engine through the marker's `asr` and `asrModel`.
 
-The ASR half of the agent-dictation eval still runs only on the Mac.
+The speech stage of the agent-dictation eval runs here too, over a recording
+set (`AgentDictationASREvalTests`; `EvalCorpus/agent-dictation/README.md`,
+"ASR-only runs on Linux"). Its polish stage stays on the Mac.
 `SpeechdStreamingBenchTests` drives the MLX helper itself and stays there.

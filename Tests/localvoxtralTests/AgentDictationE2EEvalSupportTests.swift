@@ -516,7 +516,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         let run = try Self.scripts.get().recorderThroughWrapper.result()
         XCTAssertEqual(run.status, 0, run.output)
         let expectedSpeechCases = try AgentDictationEvalCorpus.loadStrata().reduce(0) {
-            $0 + (Support.stagePlan(for: $1.stratum.resolvedPipeline).runsSpeechRecognition
+            $0 + (AgentDictationEvalCorpus.stagePlan(for: $1.stratum.resolvedPipeline).runsSpeechRecognition
                 ? $1.stratum.cases.count : 0)
         }
         XCTAssertTrue(
@@ -668,7 +668,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         let strata = try AgentDictationEvalCorpus.loadStrata()
         let speechCase = try XCTUnwrap(
             strata.first {
-                Support.stagePlan(for: $0.stratum.resolvedPipeline).runsSpeechRecognition
+                AgentDictationEvalCorpus.stagePlan(for: $0.stratum.resolvedPipeline).runsSpeechRecognition
             }?.stratum.cases.first
         )
         let selected = try XCTUnwrap(
@@ -678,7 +678,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         )
         XCTAssertTrue(selected.contains(speechCase.id))
         for loaded in strata
-        where !Support.stagePlan(for: loaded.stratum.resolvedPipeline).runsSpeechRecognition
+        where !AgentDictationEvalCorpus.stagePlan(for: loaded.stratum.resolvedPipeline).runsSpeechRecognition
         {
             XCTAssertTrue(Set(loaded.stratum.cases.map(\.id)).isSubset(of: selected))
         }
@@ -1376,16 +1376,16 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
 
     func testStagePlanPerPipeline() {
         XCTAssertEqual(
-            Support.stagePlan(for: .full),
-            Support.StagePlan(runsSpeechRecognition: true, runsPolish: true)
+            AgentDictationEvalCorpus.stagePlan(for: .full),
+            AgentDictationEvalCorpus.StagePlan(runsSpeechRecognition: true, runsPolish: true)
         )
         XCTAssertEqual(
-            Support.stagePlan(for: .asrOnly),
-            Support.StagePlan(runsSpeechRecognition: true, runsPolish: false)
+            AgentDictationEvalCorpus.stagePlan(for: .asrOnly),
+            AgentDictationEvalCorpus.StagePlan(runsSpeechRecognition: true, runsPolish: false)
         )
         XCTAssertEqual(
-            Support.stagePlan(for: .polishOnly),
-            Support.StagePlan(runsSpeechRecognition: false, runsPolish: true)
+            AgentDictationEvalCorpus.stagePlan(for: .polishOnly),
+            AgentDictationEvalCorpus.StagePlan(runsSpeechRecognition: false, runsPolish: true)
         )
     }
 
@@ -1533,13 +1533,13 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
     func testTokensRequiredAreCaseSensitiveByDefault() throws {
         let evalCase = try makeCase(requiredTokens: ["UserSessionManager.swift"])
         XCTAssertEqual(
-            Support.tokensFailures(
+            AgentDictationEvalCorpus.tokensFailures(
                 output: "Open UserSessionManager.swift now.", evalCase: evalCase
             ),
             []
         )
         XCTAssertEqual(
-            Support.tokensFailures(
+            AgentDictationEvalCorpus.tokensFailures(
                 output: "open usersessionmanager.swift now.", evalCase: evalCase
             ),
             ["missing \"UserSessionManager.swift\""]
@@ -1549,7 +1549,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
     func testTokensRequiredHonorCaseInsensitiveFlag() throws {
         let evalCase = try makeCase(requiredTokens: ["tomorrow?"], caseInsensitive: true)
         XCTAssertEqual(
-            Support.tokensFailures(output: "TOMORROW?", evalCase: evalCase),
+            AgentDictationEvalCorpus.tokensFailures(output: "TOMORROW?", evalCase: evalCase),
             []
         )
     }
@@ -1560,7 +1560,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
             forbiddenSubstrings: ["dash dash"]
         )
         XCTAssertEqual(
-            Support.tokensFailures(output: "retry with DASH DASH force", evalCase: evalCase),
+            AgentDictationEvalCorpus.tokensFailures(output: "retry with DASH DASH force", evalCase: evalCase),
             ["contains forbidden \"dash dash\""]
         )
     }
@@ -1570,7 +1570,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
     func testTokensMatchAfterSpacingNormalization() throws {
         let evalCase = try makeCase(requiredTokens: ["plan :"])
         XCTAssertEqual(
-            Support.tokensFailures(output: "Voici le plan\u{202F}: demain.", evalCase: evalCase),
+            AgentDictationEvalCorpus.tokensFailures(output: "Voici le plan\u{202F}: demain.", evalCase: evalCase),
             []
         )
     }

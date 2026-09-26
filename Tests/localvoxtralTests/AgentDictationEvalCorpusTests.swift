@@ -19,7 +19,7 @@ final class AgentDictationEvalCorpusTests: XCTestCase {
 
     /// Spacing-normalized, casing per the case's scoring contract.
     private func matchText(_ text: String, for evalCase: AgentDictationEvalCorpus.Case) -> String {
-        let normalized = LLMPolishEvalSupport.normalizedSpacing(text)
+        let normalized = AgentDictationEvalCorpus.normalizedSpacing(text)
         return evalCase.isCaseInsensitive ? normalized.lowercased() : normalized
     }
 
@@ -130,16 +130,16 @@ final class AgentDictationEvalCorpusTests: XCTestCase {
         for evalCase in try allCases() {
             // Forbidden needles are contamination detectors and always match
             // case-insensitively.
-            let haystack = LLMPolishEvalSupport.normalizedSpacing(evalCase.intendedText).lowercased()
+            let haystack = AgentDictationEvalCorpus.normalizedSpacing(evalCase.intendedText).lowercased()
             for needle in evalCase.forbidden {
                 XCTAssertFalse(needle.isEmpty, "\(evalCase.id): empty forbidden substring")
-                let normalizedNeedle = LLMPolishEvalSupport.normalizedSpacing(needle).lowercased()
+                let normalizedNeedle = AgentDictationEvalCorpus.normalizedSpacing(needle).lowercased()
                 XCTAssertFalse(
                     haystack.contains(normalizedNeedle),
                     "\(evalCase.id): forbidden \"\(needle)\" appears in intendedText — the case can never pass"
                 )
                 for token in evalCase.requiredTokens {
-                    let normalizedToken = LLMPolishEvalSupport.normalizedSpacing(token).lowercased()
+                    let normalizedToken = AgentDictationEvalCorpus.normalizedSpacing(token).lowercased()
                     XCTAssertFalse(
                         normalizedToken.contains(normalizedNeedle) || normalizedNeedle.contains(normalizedToken),
                         "\(evalCase.id): forbidden \"\(needle)\" overlaps required \"\(token)\" — contradictory metric"
