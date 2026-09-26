@@ -445,7 +445,7 @@ final class DictationPipelineTests: XCTestCase {
 
         let typedAll = await typed.waitFor(Self.phrase)
         XCTAssertTrue(typedAll, "typed: \(typed.text.debugDescription)")
-        XCTAssertFalse(pipeline.viewModel.textInsertion.promptRelayIsHealthy)
+        XCTAssertFalse(pipeline.viewModel.textInsertion.promptRelayTakesText)
         XCTAssertEqual(herdr.writes.count, 1, "the first refusal ends the route")
     }
 

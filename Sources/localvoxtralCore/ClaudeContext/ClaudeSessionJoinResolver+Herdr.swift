@@ -176,8 +176,10 @@ extension ClaudeSessionJoinResolver {
                 )
             },
             keysReachThePane: { @MainActor in
-                guard frontmostPID() == terminalPID else { return false }
-                return await panes.focusedPane(socketPath: binding.socketPath)?.paneID == binding.paneID
+                // The frontmost app is read after the socket answers, so a
+                // focus change during the query is seen.
+                let paneFocused = await panes.focusedPane(socketPath: binding.socketPath)?.paneID == binding.paneID
+                return paneFocused && frontmostPID() == terminalPID
             }
         )
     }

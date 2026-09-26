@@ -135,6 +135,26 @@ final class HerdrPanePromptRouteTests: XCTestCase {
         XCTAssertEqual(otherPaneFocused, .keepInHistory)
     }
 
+    /// Focus moves to another app while herdr answers the focus question:
+    /// the frontmost app is read after the answer, so the text is kept.
+    func testFocusMovingDuringTheFocusQueryKeepsTheText() async throws {
+        let claude = claude
+        let frontmost = Box<pid_t?>(4343)
+        let armed = Box(false)
+        let herdr = try FakeHerdrSocket { request in
+            if request.method == "pane.send_text" { return .error("pane_send_failed") }
+            if request.method == "pane.current", armed.get() { frontmost.set(5151) }
+            return FakeHerdrSocket.focusedPane("w1:p2") { claude }(request)
+        }
+        defer { herdr.stop() }
+        let route = try await joinedRoute(herdr, frontmost: frontmost).route
+        armed.set(true)
+
+        let appended = await route.deliver(.append("one"))
+
+        XCTAssertEqual(appended, .keepInHistory)
+    }
+
     /// No answer after the request went out: it may have landed, so typing
     /// it would put it in twice.
     func testAWriteThatMayHaveLandedStaysInHistory() async throws {
