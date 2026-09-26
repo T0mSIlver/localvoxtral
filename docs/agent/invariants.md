@@ -2209,8 +2209,9 @@ there is not.
   the overlay closes as a cancelled one does, and the words go to
   `QuickCaptureInboxModel`, which writes them to its 0600 file before
   routing. The router sends a low or tied answer to the catch-all, never a
-  guessed project; a chat model needs 0.9 because its self-reported
-  confidence is not calibrated (replay on #741). The drafting agent has
+  guessed project. Jev and the chat model both need 0.9: on the replay
+  (#741, #744) every right project came at 0.95 or more, and nearly every
+  wrong one under 0.9. The drafting agent has
   read-only tools and no shell, so it cannot run `gh`; the open issues reach
   it through the prompt, from the app's own `gh issue list`. Its answer is
   untrusted text: a one-line capped title, a body without control
