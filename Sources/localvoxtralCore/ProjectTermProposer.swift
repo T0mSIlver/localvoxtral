@@ -39,6 +39,9 @@ package final class ProjectTermProposer: @unchecked Sendable {
     /// queue, so without this a dictation right behind the first one could
     /// start a second run.
     private let asked = Mutex<[String: Date]>([:])
+    /// Where a remote session's ask goes (#641). Attached once the remote
+    /// listener exists; nil on a Mac with no enrolled host.
+    private let remoteRequests = Mutex<RemoteProjectTermRequests?>(nil)
 
     package init(
         store: any ProjectTermProposalStoring,
@@ -54,9 +57,16 @@ package final class ProjectTermProposer: @unchecked Sendable {
         self.fileManager = fileManager
     }
 
-    /// Returns the task that asks, or nil when this dictation asks nothing:
-    /// the setting is off, there was no join, or the join is not a local
-    /// Claude Code or Vibe session. Tests await the task; the app drops it.
+    /// The remote half, handed over by whoever builds the remote listener.
+    package func attachRemote(_ requests: RemoteProjectTermRequests?) {
+        remoteRequests.withLock { $0 = requests }
+    }
+
+    /// Returns the task that asks, or nil when this dictation starts no local
+    /// run: the setting is off, there was no join, or the join is not a local
+    /// Claude Code or Vibe session. A remote Claude Code or Vibe join is
+    /// handed to `RemoteProjectTermRequests`, which only marks the session
+    /// for its host to run on. Tests await the task; the app drops it.
     ///
     /// - Parameter excluding: the user's own terms and the suggestions they
     ///   refused, which a proposal never repeats.
@@ -66,7 +76,13 @@ package final class ProjectTermProposer: @unchecked Sendable {
         enabled: Bool,
         excluding: [String]
     ) -> Task<Void, Never>? {
-        guard enabled, let request = ProjectTermProposal.request(for: join) else { return nil }
+        guard enabled, let join else { return nil }
+        guard let request = ProjectTermProposal.request(for: join) else {
+            if case .remote = join.origin {
+                remoteRequests.withLock { $0 }?.request(for: join, excluding: excluding)
+            }
+            return nil
+        }
         return Task.detached(priority: .utility) { [self] in
             await propose(request, excluding: excluding)
         }

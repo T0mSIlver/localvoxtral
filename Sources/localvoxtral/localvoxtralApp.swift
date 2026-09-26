@@ -764,6 +764,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// revoking the last one closes it. There is no relaunch step.
     private func startClaudeRemoteListener() {
         let registry = claudeRemoteHosts
+        // A remote project's terms come from a run on its host (#641); the
+        // proposer marks the session, the listener asks and takes the answer.
+        let projectTerms: RemoteProjectTermRequests? = registry.flatMap { hosts in
+            viewModel.learnedTermStore.map { RemoteProjectTermRequests(store: $0, hosts: hosts) }
+        }
+        viewModel.session.projectTermProposer?.attachRemote(projectTerms)
 
         let coordinator = registry.map { hosts in
             ClaudeRemoteListenerCoordinator(
@@ -783,7 +789,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             remoteSocketPath: remoteSocketPath
                         )
                     }
-                }
+                },
+                projectTerms: projectTerms
             )
         }
         claudeRemoteListenerCoordinator = coordinator

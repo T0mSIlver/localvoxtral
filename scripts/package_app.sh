@@ -307,7 +307,7 @@ done
 mkdir -p "$APP_DIR/Contents/Resources/vibe-hooks"
 cp "$VIBE_HOOKS_SOURCE/publish.sh" "$VIBE_HOOKS_SOURCE/hooks.toml" "$APP_DIR/Contents/Resources/vibe-hooks/"
 # The files Settings → Remote hosts writes onto an enrolled ssh host.
-for vibe_file in post.sh compact.py hooks.toml; do
+for vibe_file in post.sh compact.py hooks.toml terms.sh; do
   if [[ ! -f "$VIBE_HOOKS_SOURCE/remote/$vibe_file" ]]; then
     echo "Vibe remote hook file missing at $VIBE_HOOKS_SOURCE/remote/$vibe_file"
     exit 1
@@ -315,7 +315,7 @@ for vibe_file in post.sh compact.py hooks.toml; do
 done
 mkdir -p "$APP_DIR/Contents/Resources/vibe-hooks/remote"
 cp "$VIBE_HOOKS_SOURCE/remote/post.sh" "$VIBE_HOOKS_SOURCE/remote/compact.py" \
-  "$VIBE_HOOKS_SOURCE/remote/hooks.toml" "$APP_DIR/Contents/Resources/vibe-hooks/remote/"
+  "$VIBE_HOOKS_SOURCE/remote/hooks.toml" "$VIBE_HOOKS_SOURCE/remote/terms.sh" "$APP_DIR/Contents/Resources/vibe-hooks/remote/"
 
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

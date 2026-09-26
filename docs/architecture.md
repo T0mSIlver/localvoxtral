@@ -192,6 +192,12 @@ Key subsystems:
     [agent/invariants.md](agent/invariants.md) explains the remote-opacity
     tradeoff.
 
+    A remote project's terms (#641) are the one thing the Mac asks a host
+    to run. `RemoteProjectTermRequests` marks a joined session, the next
+    hook's reply carries `X-Lvx-Terms: wanted`, and the shim starts
+    `hooks/terms.sh` detached. Its answer comes back on `POST /v1/terms` and
+    is filed under the project the Mac recorded.
+
     A per-host opt-in (`ClaudeRemoteForwardSupervisor` +
     `ClaudeRemoteForwardCoordinator`, default off) lets the app hold that
     forward itself with a supervised `ssh -N -R`. It serves sessions a harness

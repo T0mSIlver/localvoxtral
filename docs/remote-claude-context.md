@@ -357,7 +357,7 @@ The Vibe step runs four `ssh -o BatchMode=yes -o ClearAllForwardings=yes -- <ali
    `~/.local/bin` added), the installed hooks version, and `~/.vibe/hooks.toml`
    (base64, at most 256 KiB) with its `cksum`.
 2. Write `~/.vibe/localvoxtral/remote/` at mode 0700 with `post.sh`,
-   `compact.py` and `port` (0600), and put a marked block of two
+   `terms.sh`, `compact.py` and `port` (0600), and put a marked block of two
    `[[hooks]]` tables into `~/.vibe/hooks.toml`. The new `hooks.toml` text is
    computed on this Mac by the same rules as the local install, and the script
    writes it only if the file's `cksum` is still the one step 1 saw.
@@ -383,6 +383,49 @@ token already has the same exposure in `~/.claude`.
 
 What runs on the host, what it sends and what it never sends is in the
 [Vibe hooks README](../integrations/vibe/README.md#on-an-ssh-host).
+
+## Terms from the coding agent on a host
+
+With **Ask the coding agent for each new project's terms** on
+([Terms from your coding agent](dictation.md#terms-from-your-coding-agent)), a
+remote Claude Code or Vibe session's project gets its terms from a run on the
+host. The Mac cannot run it: the repository is on the host, and the Mac holds
+only a label for it, never a path it could hand to ssh.
+
+1. **Mac, at commit.** A dictation joins a remote Claude Code or Vibe session
+   whose project (`remote:<label>`) has no answer and no attempt in the last
+   24 hours, on a host that has reported `localvoxtral-remote` 1.15.0 or Vibe
+   hooks 1.2.0. The Mac marks that session in memory for 10 minutes and records
+   an attempt on the project.
+2. **Mac, next hook.** The reply to that session's next hook carries
+   `X-Lvx-Terms: wanted`, once. The body stays the constant one.
+3. **Host shim.** `post.sh` matches the header exactly and takes a per-project
+   stamp in its state directory (`$XDG_RUNTIME_DIR/localvoxtral/terms/`, else
+   `~/.cache/localvoxtral/terms/`) by an atomic `mkdir`. The project is the git
+   toplevel of the hook's working directory, or that directory outside git. A
+   project marked done, or attempted in the last 24 hours, is skipped.
+   Otherwise the shim starts `terms.sh` detached (`setsid`, or an ignored
+   `HUP` where there is none) under `env -i HOME PATH LANG`, with every
+   descriptor on `/dev/null` and the token on stdin, and returns.
+4. **Host runner.** `terms.sh` runs the same read-only `claude -p` or `vibe -p`
+   as the Mac's local run, in the project directory, with a 180 s watchdog.
+   Vibe runs under `~/.vibe/localvoxtral/remote/vibe-home`, which holds only
+   links to your `config.toml` and `.env`, so no Vibe hook fires. It posts the
+   first 8 KiB of the answer to `POST /v1/terms`, with the token in a header
+   file and the session id in `X-Lvx-Terms-Session`. A 200 marks the project
+   done.
+5. **Mac, `/v1/terms`.** The listener authenticates the token, scopes the
+   session id under that host, and accepts only an answer for a live session
+   it asked, from the agent it asked, once. It files the terms under the
+   project it recorded in step 1, never one the host names, through the same
+   filter as a local answer. Anything else is refused with a status and a log
+   line that names the reason, never the body.
+
+What crosses the tunnel is the answer, `{"terms": [...]}`: about 120 bytes in
+the measured runs. The run bills the host's Claude Code login or Mistral key,
+under the same caps as the local run. A process that squats the forward port
+could send the header too; the host's stamp bounds that to one run per project
+per 24 hours.
 
 ## Why `ExitOnForwardFailure` stays `no`
 

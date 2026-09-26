@@ -87,6 +87,13 @@ On the host, each hook runs `remote/post.sh`:
    session ended. Vibe has no hook for that, and the Mac cannot check a process
    on another machine. Set `LOCALVOXTRAL_VIBE_WATCHER=off` in Vibe's environment
    to turn it off. Sessions then expire after four idle hours.
+5. When the Mac's reply carries `X-Lvx-Terms: wanted`, it starts `terms.sh`
+   detached, once per project per 24 hours, and returns. `terms.sh` runs a
+   read-only `vibe -p` in the project and posts its answer, the project's own
+   names, to the Mac
+   ([Terms from the coding agent on a host](../../docs/remote-claude-context.md#terms-from-the-coding-agent-on-a-host)).
+   It runs under its own Vibe home, `~/.vibe/localvoxtral/remote/vibe-home`, so
+   none of your hooks fire and the run stays out of your Vibe history.
 
 It prints nothing and always exits 0.
 

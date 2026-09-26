@@ -7,11 +7,14 @@ public struct VibeRemoteHooksFiles: Sendable, Equatable {
     public var postScript: String
     public var compactScript: String
     public var hooksBlock: String
+    /// The project-terms runner `post.sh` starts when the Mac asks (#641).
+    public var termsScript: String
 
-    public init(postScript: String, compactScript: String, hooksBlock: String) {
+    public init(postScript: String, compactScript: String, hooksBlock: String, termsScript: String) {
         self.postScript = postScript
         self.compactScript = compactScript
         self.hooksBlock = hooksBlock
+        self.termsScript = termsScript
     }
 
     /// The version constant `post.sh` sends as `X-Lvx-Vibe-Hooks-Version`. Read
@@ -26,15 +29,16 @@ public struct VibeRemoteHooksFiles: Sendable, Equatable {
         return nil
     }
 
-    /// The three shipped files, from wherever `ClaudePluginAssets` finds them.
+    /// The four shipped files, from wherever `ClaudePluginAssets` finds them.
     public static func bundled() -> VibeRemoteHooksFiles? {
         func text(_ name: String) -> String? {
             ClaudePluginAssets.vibeFileURL(named: "remote/\(name)")
                 .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
         }
-        guard let post = text("post.sh"), let compact = text("compact.py"), let block = text("hooks.toml")
+        guard let post = text("post.sh"), let compact = text("compact.py"), let block = text("hooks.toml"),
+              let terms = text("terms.sh")
         else { return nil }
-        return VibeRemoteHooksFiles(postScript: post, compactScript: compact, hooksBlock: block)
+        return VibeRemoteHooksFiles(postScript: post, compactScript: compact, hooksBlock: block, termsScript: terms)
     }
 }
 
@@ -87,7 +91,7 @@ extension ClaudeRemoteEnrollmentService {
         }
     }
 
-    /// These runs move FILES: the scripts go out on stdin (about 25 KiB, plus a
+    /// These runs move FILES: the scripts go out on stdin (about 40 KiB, plus a
     /// `hooks.toml` of up to 256 KiB), and the probe brings that file back as
     /// base64, all of which the parser needs. The standard budget (8 KiB in,
     /// 2,000 characters back) would refuse the first and truncate the second.
@@ -111,7 +115,7 @@ extension ClaudeRemoteEnrollmentService {
         D="\(vibeRemoteDirectory)"
         printf '%s\\n' \(vibeProbeFrameBegin)
         command -v vibe >/dev/null 2>&1 && echo vibe=found
-        for p in "$HOME/.vibe" "$HOME/.vibe/localvoxtral" "$D" "$H" "$D/post.sh" "$D/compact.py" "$D/token" "$D/port"; do
+        for p in "$HOME/.vibe" "$HOME/.vibe/localvoxtral" "$D" "$H" "$D/post.sh" "$D/compact.py" "$D/terms.sh" "$D/token" "$D/port"; do
           [ ! -L "$p" ] || echo refusal=symlink
         done
         if [ -r "$D/post.sh" ]; then
@@ -220,7 +224,7 @@ extension ClaudeRemoteEnrollmentService {
         umask 077
         H="$HOME/.vibe/hooks.toml"
         D="\(vibeRemoteDirectory)"
-        for p in "$HOME/.vibe" "$HOME/.vibe/localvoxtral" "$D" "$H" "$D/post.sh" "$D/compact.py" "$D/token" "$D/port"; do
+        for p in "$HOME/.vibe" "$HOME/.vibe/localvoxtral" "$D" "$H" "$D/post.sh" "$D/compact.py" "$D/terms.sh" "$D/token" "$D/port"; do
           [ ! -L "$p" ] || exit 46
         done
         \(unchanged)
@@ -268,6 +272,7 @@ extension ClaudeRemoteEnrollmentService {
         script += "mkdir -p \"$D\"\nchmod 700 \"$HOME/.vibe/localvoxtral\" \"$D\"\n"
         script += Self.writeFileScript(path: "$D/post.sh", content: files.postScript, mode: "700", seed: "POST")
         script += Self.writeFileScript(path: "$D/compact.py", content: files.compactScript, mode: "600", seed: "COMPACT")
+        script += Self.writeFileScript(path: "$D/terms.sh", content: files.termsScript, mode: "700", seed: "TERMS")
         script += Self.writeFileScript(path: "$D/port", content: String(remoteForwardPort), mode: "600", seed: "PORT")
         if updated != probe.hooksText {
             // A new file is ours to create at 0600; an existing one keeps its mode.

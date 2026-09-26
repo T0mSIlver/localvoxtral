@@ -215,7 +215,7 @@ fi
 # the app validates the shape and trusts nothing else about it.
 cat 2>/dev/null >"$WORK/header" <<EOF || fail_open
 Authorization: Bearer $TOKEN
-X-Lvx-Plugin-Version: 1.14.0
+X-Lvx-Plugin-Version: 1.15.0
 EOF
 
 # --- Allowlisted environment enrichment --------------------------------------
@@ -438,6 +438,69 @@ lvx_claude_is_desktop_session() {
   lvx_env_header 'X-Lvx-Env-Project' "${LVX_PROJECT:-}"
 ) 2>/dev/null || :
 
+# --- Project terms (#641) ----------------------------------------------------
+# `X-Lvx-Terms: wanted` on a 200 reply is the Mac asking for this session's
+# project terms, once, after a dictation joined the session. The Mac cannot
+# run the agent itself: the repository is here, and it never holds a path on
+# this host. So this starts terms.sh, next to this file, DETACHED: its own
+# session (setsid, or an ignored HUP where there is none), every descriptor on
+# /dev/null, `env -i HOME PATH LANG` so no CLAUDE_* or plugin option reaches
+# the agent, and the token on stdin, never in an argv or the environment. The
+# hook's own exit, output and timing do not change.
+#
+# One run per project per 24 hours whatever asks, a squatter on the port
+# included: a per-project stamp directory, taken by an atomic mkdir, holds the
+# attempt time, and terms.sh writes `done` there after the Mac accepts the
+# answer. The project is the git toplevel of this hook's cwd, or the cwd
+# outside git; its stamp is named by the cksum of that path.
+lvx_terms_start() {
+  _lvx_agent="$1"
+  _lvx_session="$2"
+  _lvx_runner="$3"
+  _lvx_vibe="${4:-}"
+  [ -n "$STAMP_DIR" ] && [ -n "$NOW" ] && [ -n "$_lvx_session" ] && [ -n "${HOME:-}" ] || return 0
+  [ -r "$_lvx_runner" ] || return 0
+  _lvx_dir="$(git rev-parse --show-toplevel 2>/dev/null)" || _lvx_dir=""
+  case "$_lvx_dir" in /*) ;; *) _lvx_dir="$(pwd -P 2>/dev/null)" || return 0 ;; esac
+  case "$_lvx_dir" in /*) ;; *) return 0 ;; esac
+  _lvx_sum="$(echo "$_lvx_dir" | cksum 2>/dev/null)" || return 0
+  _lvx_crc="${_lvx_sum%% *}"
+  _lvx_len="${_lvx_sum##* }"
+  case "$_lvx_crc$_lvx_len" in "" | *[!0-9]*) return 0 ;; esac
+  _lvx_terms="$STAMP_DIR/terms"
+  { mkdir -p "$_lvx_terms" && chmod 700 "$STAMP_DIR" "$_lvx_terms"; } 2>/dev/null || return 0
+  _lvx_stamp="$_lvx_terms/$_lvx_crc-$_lvx_len"
+  if ! mkdir "$_lvx_stamp" 2>/dev/null; then
+    [ ! -e "$_lvx_stamp/done" ] || return 0
+    _lvx_last="$(cat "$_lvx_stamp/attempt" 2>/dev/null)" || _lvx_last=""
+    case "$_lvx_last" in "" | *[!0-9]* | ?????????????*) _lvx_last=0 ;; esac
+    if [ "$_lvx_last" -gt "$NOW" ] || [ $((NOW - _lvx_last)) -lt 86400 ]; then
+      return 0
+    fi
+    # A stale attempt: rename(2) lets exactly one hook take it over.
+    mv "$_lvx_stamp" "$_lvx_stamp.$$" 2>/dev/null || return 0
+    rm -rf "$_lvx_stamp.$$" 2>/dev/null
+    mkdir "$_lvx_stamp" 2>/dev/null || return 0
+  fi
+  echo "$NOW" >"$_lvx_stamp/attempt" 2>/dev/null || return 0
+  if command -v setsid >/dev/null 2>&1; then
+    setsid env -i HOME="$HOME" PATH="${PATH:-}" LANG="${LANG:-}" sh "$_lvx_runner" \
+      "$_lvx_agent" "$PORT" "$_lvx_session" "$_lvx_dir" "$_lvx_stamp" "$_lvx_vibe" \
+      >/dev/null 2>&1 <<TERMS &
+$TOKEN
+TERMS
+  else
+    (
+      trap '' HUP
+      exec env -i HOME="$HOME" PATH="${PATH:-}" LANG="${LANG:-}" sh "$_lvx_runner" \
+        "$_lvx_agent" "$PORT" "$_lvx_session" "$_lvx_dir" "$_lvx_stamp" "$_lvx_vibe"
+    ) >/dev/null 2>&1 <<TERMS &
+$TOKEN
+TERMS
+  fi
+  return 0
+}
+
 # --max-time 1 mirrors the old http hooks' one-second fail-open ceiling: a
 # host whose forward silently failed must not stall every turn. --max-filesize
 # (recognized since curl 7.10.8) belts the body the stdout gate below already
@@ -480,6 +543,12 @@ if [ -n "$STAMP_DIR" ] && [ -n "$NOW" ]; then
       case "$SESSION_VERDICT" in
       joined | unknown) write_session_status "$SESSION_VERDICT" ;;
       esac
+      TERMS_WANTED="$(LC_ALL=C sed -n \
+        's/\r$//; /^[Xx]-[Ll][Vv][Xx]-[Tt][Ee][Rr][Mm][Ss]: wanted$/p' \
+        "$WORK/response-headers" 2>/dev/null)" || TERMS_WANTED=""
+      if [ -n "$TERMS_WANTED" ]; then
+        lvx_terms_start claude "$SESSION_ID" "${0%/*}/terms.sh"
+      fi
       ;;
     [0-9][0-9][0-9]) write_status "http-$STATUS" ;;
     esac
