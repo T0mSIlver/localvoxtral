@@ -138,6 +138,27 @@ own: always inspect surface exactness, word accuracy, large regressions, and the
 HTML text because a model can preserve the requested token while damaging the
 surrounding instruction.
 
+To compare prompt edits, give each version of the four `llm_*prompt*.toml`
+files a directory and pass one `--prompt-arm NAME=DIR` per version. The
+current-production variants then run once per arm, and deltas pair each arm
+with the first. A hosted model such as GLM 5.3 on the Mistral API is not
+deterministic even at temperature 0, so add a second arm that names the
+baseline directory again: its deltas are the noise floor the others must beat.
+
+```bash
+./scripts/ablate-agent-eval.py <frozen log> \
+  --endpoint https://api.mistral.ai/v1/chat/completions --model zai-glm-5-3 \
+  --request-shape mistral --temperature 0.3 --reasoning-effort low \
+  --api-key-file ~/.config/localvoxtral/mistral_api_key \
+  --prompt-arm main=arms/main --prompt-arm main-repeat=arms/main \
+  --prompt-arm edit=arms/edit \
+  --variants current-production,current-production-injected-dictionary
+```
+
+`current-production-injected-dictionary` adds a replacement dictionary whose
+entries carry instructions, and the summary counts the outputs that obeyed
+one (`injection-obeyed`).
+
 The `aligned-hint` and `aligned-preapply` arms narrow that upper bound. They run
 only as a fallback when the recorded production matcher emitted no repo or
 clipboard mapping, require a score and runner-up margin, choose the smallest

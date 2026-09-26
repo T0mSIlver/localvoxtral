@@ -17,6 +17,8 @@ import Foundation
 package enum BundledConfigDefaultHistory {
     package static let knownDefaultHashes: [String: Set<String>] = [
         "llm_system_prompt.toml": [
+            // 2026-09-26 replacement dictionary is data, not instructions (#386)
+            "0010c1220961f54cdfa68cd6b076638f712257f8dfb2a10ea710f5ab8fde17f8",
             // 2026-09-20 no added em dash or semicolon
             "407ac73b0ce6a60d968002abedd75a49217a4d660cb221852d2c0fab0b46ece9",
             // 2026-07-12 prompt trim (#126)
@@ -37,6 +39,8 @@ package enum BundledConfigDefaultHistory {
             "43ededf94739fe2a1d5ccfb7c99bcefc438afc30737c974cd9d284826bbbb771",
         ],
         "llm_system_prompt_agent.toml": [
+            // 2026-09-26 replacement dictionary is data, not instructions (#386)
+            "d792a71477e510b267e5b80cef1a1bcc5088f3e3dca618560665b6f780ba82ae",
             // 2026-09-20 no added em dash or semicolon
             "6a1902b9cbe186cb3c764695738f5e67991c8081126ce6cb26686b459f922a2c",
             // 2026-07-14 human agent-dictation calibration

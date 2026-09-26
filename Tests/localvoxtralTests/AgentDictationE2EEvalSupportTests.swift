@@ -793,7 +793,23 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         assert payload["temperature"] == 0.0
         assert payload["top_k"] == 0
         assert payload["chat_template_kwargs"] == {"enable_thinking": False}
-        experiment = module.Experiment("case", "model", "variant", messages, left)
+        mistral = module.RequestOptions(shape="mistral", temperature=0.3, reasoning_effort="low")
+        payload = module.request_payload("model", messages, mistral)
+        assert payload["reasoning_effort"] == "low" and payload["temperature"] == 0.3
+        assert not {"top_k", "min_p", "chat_template_kwargs"} & set(payload)
+        assert module.experiment_hash("case", "http://one/v1", "model", "variant", messages, mistral) != left
+        assert module.response_text([
+            {"type": "thinking", "thinking": [{"type": "text", "text": "trace"}]},
+            {"type": "text", "text": "answer"},
+        ]) == "answer"
+        score = {"tokensPass": True, "matchedTokens": [], "accuracy": 1.0, "surfaceExact": True}
+        rows = [
+            dict(score, stage=f"25 model current-production@{arm}", caseID="case", output="x")
+            for arm in ("main", "main-repeat")
+        ]
+        deltas = module.paired_variant_deltas(rows, "main")
+        assert [item["variant"] for item in deltas] == ["current-production@main-repeat"]
+        experiment =module.Experiment("case", "model", "variant", messages, left)
         filtered = module.current_results(
             {left: {"output": "current"}, right: {"output": "stale"}}, [experiment]
         )
