@@ -99,7 +99,7 @@ package struct DictationWidgetView: View {
             }
             if !content.apps.isEmpty {
                 section("Where you dictate") {
-                    ForEach(content.apps, id: \.name) { app in
+                    ForEach(Array(content.apps.enumerated()), id: \.offset) { _, app in
                         HStack(spacing: 8) {
                             Text(app.name).frame(width: 70, alignment: .leading).lineLimit(1)
                             GeometryReader { proxy in
@@ -123,7 +123,7 @@ package struct DictationWidgetView: View {
             }
             if !content.fixes.isEmpty {
                 section("Recurring fixes") {
-                    ForEach(content.fixes, id: \.heard) { fix in
+                    ForEach(Array(content.fixes.enumerated()), id: \.offset) { _, fix in
                         HStack(spacing: 5) {
                             Text(fix.heard).foregroundStyle(.secondary)
                             Text("→").foregroundStyle(.secondary)

@@ -16,6 +16,9 @@ final class WidgetSnapshotWriter {
     private var pending: Task<Void, Never>?
     private var memoryRefresh: Task<Void, Never>?
     private var lastWritten: WidgetSnapshot?
+    /// Set once the quit snapshot is written: a write still in flight must
+    /// not replace it with running engines.
+    private var hasQuit = false
     private var turnOffPolishToken: Int32 = NOTIFY_TOKEN_INVALID
 
     /// Between two writes; a model download's progress waits longer.
@@ -53,6 +56,7 @@ final class WidgetSnapshotWriter {
     /// The app is quitting and its helpers with it: the widgets say so and
     /// drop the button. Synchronous, because termination cannot wait.
     func writeAppQuit() {
+        hasQuit = true
         pending?.cancel()
         memoryRefresh?.cancel()
         if turnOffPolishToken != NOTIFY_TOKEN_INVALID {
@@ -180,6 +184,7 @@ final class WidgetSnapshotWriter {
             historyKept: historyKept,
             lastDictation: history.lastDictation
         )
+        guard !hasQuit else { return }
         persist(snapshot)
     }
 
