@@ -639,7 +639,15 @@ jobs:
         if: steps.dogfood_scope.outputs.run != 'false'
         env:
           LOCALVOXTRAL_DOGFOOD: "1"
-        run: swift test --build-system native --filter 'Dogfood'
+        run: |
+          # PROOF ONLY (#743), removed before review: one process per test so a
+          # SIGPIPE in one cannot hide the other.
+          for t in testAClientThatLeavesBeforeTheReplyDoesNotKillTheApp testProofClientWritesAfterRejection; do
+            status=0
+            swift test --build-system native --filter "DogfoodControlSocketTests/$t" || status=$?
+            echo "PROOF $t: exit $status"
+          done
+          swift test --build-system native --filter 'Dogfood'
 
   # EVERYTHING THAT NEEDS THIS PARTICULAR MAC, and nothing else.
   #

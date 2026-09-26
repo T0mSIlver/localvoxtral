@@ -57,6 +57,36 @@ final class DogfoodControlSocketTests: XCTestCase {
         XCTAssertEqual(try request("registry list", terminator: "", halfClose: true), "echo:registry list")
     }
 
+    /// A client that sends a command and leaves before the answer. The reply
+    /// then goes to a closed peer, which raises SIGPIPE on a socket without
+    /// SO_NOSIGPIPE and kills the whole app, dictation included (#743).
+    func testAClientThatLeavesBeforeTheReplyDoesNotKillTheApp() throws {
+        let (clientLeft, signalClientLeft) = AsyncStream.makeStream(of: Void.self)
+        let calls = Mutex(0)
+        let socket = makeSocket { line in
+            let call = calls.withLock { count in
+                count += 1
+                return count
+            }
+            if call == 1 {
+                for await _ in clientLeft { break }
+            }
+            return "echo:\(line)"
+        }
+        try socket.start()
+        defer { socket.stop() }
+
+        let fd = try connectedClient()
+        let payload = Array("join report\n".utf8)
+        _ = payload.withUnsafeBytes { write(fd, $0.baseAddress, payload.count) }
+        close(fd)
+        signalClientLeft.yield()
+
+        // One connection at a time: this answer comes only after the reply to
+        // the departed client was written.
+        XCTAssertEqual(try request("registry list"), "echo:registry list")
+    }
+
     func testATrailingCarriageReturnIsNotPartOfTheCommand() throws {
         let socket = makeSocket { line in "echo:\(line)" }
         try socket.start()
@@ -148,6 +178,22 @@ final class DogfoodControlSocketTests: XCTestCase {
 
         XCTAssertNil(try? request("join report"))
         XCTAssertFalse(reached.withLock { $0 })
+    }
+
+    // PROOF ONLY (#743), removed before review: the client writes after the
+    // rejected connection is closed, the ordering that killed the dogfood job.
+    func testProofClientWritesAfterRejection() throws {
+        let socket = makeSocket(handler: { _ in "handled" }, peerUID: { _ in nil })
+        try socket.start()
+        defer { socket.stop() }
+        let fd = try connectedClient()
+        defer { close(fd) }
+        var byte: UInt8 = 0
+        XCTAssertEqual(read(fd, &byte, 1), 0, "the server closes a rejected peer unread")
+        let payload = Array("join report\n".utf8)
+        let written = payload.withUnsafeBytes { write(fd, $0.baseAddress, payload.count) }
+        XCTAssertEqual(written, -1)
+        XCTAssertEqual(errno, EPIPE)
     }
 
     func testTheOwnUIDIsAccepted() throws {
@@ -254,26 +300,10 @@ final class DogfoodControlSocketTests: XCTestCase {
         terminator: String = "\n",
         halfClose: Bool = false
     ) throws -> String {
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        let pathBytes = Array(socketPath.utf8)
-        withUnsafeMutableBytes(of: &address.sun_path) { raw in
-            raw.copyBytes(from: pathBytes)
-            raw[pathBytes.count] = 0
-        }
-        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
-
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        XCTAssertGreaterThanOrEqual(fd, 0)
+        let fd = try connectedClient()
         defer { close(fd) }
-        let connected = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
-                connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        guard connected == 0 else { throw ClientError.connectFailed(errno) }
 
-        var payload = Array((line + terminator).utf8)
+        let payload = Array((line + terminator).utf8)
         _ = payload.withUnsafeBytes { write(fd, $0.baseAddress, payload.count) }
         if halfClose { shutdown(fd, SHUT_WR) }
 
@@ -293,6 +323,32 @@ final class DogfoodControlSocketTests: XCTestCase {
         guard !received.isEmpty else { throw ClientError.noReply }
         return String(decoding: received, as: UTF8.self)
             .trimmingCharacters(in: .newlines)
+    }
+
+    /// A connected client descriptor; the caller closes it.
+    private func connectedClient() throws -> Int32 {
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = Array(socketPath.utf8)
+        withUnsafeMutableBytes(of: &address.sun_path) { raw in
+            raw.copyBytes(from: pathBytes)
+            raw[pathBytes.count] = 0
+        }
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        let connected = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard connected == 0 else {
+            let code = errno
+            close(fd)
+            throw ClientError.connectFailed(code)
+        }
+        return fd
     }
 
     private enum ClientError: Error {
