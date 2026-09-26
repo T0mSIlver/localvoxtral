@@ -505,15 +505,20 @@ enum RepoVocabularyService {
     }
 
     /// The full focused-title/terminal-PID -> git root -> vocabulary -> matched
-    /// entries pipeline for one commit. The focused title remains tier 1: it
-    /// can soundly distinguish a focused tab even when other tabs use other
-    /// repos. When it contains no usable repo path, tier 2 walks terminal
-    /// descendants and proceeds only if every process CWD maps to one root.
-    /// Everything here may block, so the view model runs it inside a
-    /// detached task; only the AX title read stays on the main actor.
+    /// entries pipeline for one commit. A joined local session's workspace,
+    /// when there is one, decides alone: the join named the session the user
+    /// is talking to, which a title or a process walk can only approximate,
+    /// and it is the only signal a Claude Desktop dictation has. Without one,
+    /// the focused title is tier 1: it can soundly distinguish a focused tab
+    /// even when other tabs use other repos. When it contains no usable repo
+    /// path, tier 2 walks terminal descendants and proceeds only if every
+    /// process CWD maps to one root. Everything here may block, so the view
+    /// model runs it inside a detached task; only the AX title read stays on
+    /// the main actor.
     static func entries(
         forWindowTitle title: String?,
         terminalApplicationPID: pid_t? = nil,
+        joinedWorkspaceDirectory: String? = nil,
         transcript: String,
         cache: RepoVocabularyCache,
         fileManager: FileManager = .default,
@@ -526,7 +531,14 @@ enum RepoVocabularyService {
         rootSink: (@Sendable (String?) -> Void)? = nil
     ) async -> RepoVocabularyMatcher.GroundingOutcome? {
         var gitRoot: String?
-        if let title,
+        if let joinedWorkspaceDirectory {
+            gitRoot = RepoIndexing.findGitRoot(
+                startingAt: joinedWorkspaceDirectory, fileManager: fileManager
+            )
+            if gitRoot != nil {
+                Log.polishing.info("Repo vocabulary: resolved git root from the joined session's workspace")
+            }
+        } else if let title,
            let titleDirectory = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
                fromWindowTitle: title,
                isDirectory: { path in
@@ -539,7 +551,7 @@ enum RepoVocabularyService {
             gitRoot = RepoIndexing.findGitRoot(startingAt: titleDirectory, fileManager: fileManager)
         }
 
-        if gitRoot == nil, let terminalApplicationPID {
+        if gitRoot == nil, joinedWorkspaceDirectory == nil, let terminalApplicationPID {
             switch TerminalDescendantProcessResolver.resolveGitRoot(
                 terminalApplicationPID: terminalApplicationPID,
                 fileManager: fileManager,
@@ -579,7 +591,9 @@ enum RepoVocabularyService {
             // Shape is class-mapped (letters->a, digits->9), never content —
             // safe as .public, and makes the NEXT field failure of this kind
             // self-diagnosing (T6 was invisible without it).
-            if let title {
+            if joinedWorkspaceDirectory != nil {
+                Log.polishing.info("Repo vocabulary: the joined session's workspace is not in a git repo")
+            } else if let title {
                 Log.polishing.info(
                     "Repo vocabulary: no git root resolved from title or terminal descendants (title shape: \(TerminalWorkingDirectoryResolver.titleShape(title), privacy: .public))"
                 )

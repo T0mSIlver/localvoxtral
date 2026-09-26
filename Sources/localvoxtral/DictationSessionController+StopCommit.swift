@@ -1,3 +1,4 @@
+import ClaudeContextWire
 import Foundation
 import os
 
@@ -98,8 +99,18 @@ extension DictationSessionController {
         let capturedTargetBundleID = resolveTargetAppBundleID()
         let capturedAudio = audio.sessionRecording.finish()
         if let polishingConfig = preparation.polishingConfig {
+            // The world as it was at stop: clipboard, screen, join and
+            // pane, sampled together before the task's awaits. Ahead of the
+            // profile, which reads the join this consumes.
+            let capture = StopCommitCoordinator.capture(
+                endpointURL: polishingConfig.endpointURL,
+                settings: settings,
+                context: context,
+                pasteboardReader: dependencies.pasteboardReader
+            )
             let polishProfile = StopCommitCoordinator.polishProfile(
                 forTargetBundleID: capturedTargetBundleID,
+                claudeJoin: capture.claudeJoin,
                 settings: settings
             )
             Log.polishing.info(
@@ -114,15 +125,6 @@ extension DictationSessionController {
 
             statusText = StatusStrings.polishing
             debugLog("LLM polishing started for \(workingText.count) chars")
-
-            // The world as it was at stop: clipboard, screen, join and
-            // pane, sampled together before the task's awaits.
-            let capture = StopCommitCoordinator.capture(
-                endpointURL: polishingConfig.endpointURL,
-                settings: settings,
-                context: context,
-                pasteboardReader: dependencies.pasteboardReader
-            )
 
             saveInterruptedPolishCommit = { [weak self] in
                 self?.saveSessionRecord(
@@ -582,6 +584,7 @@ extension DictationSessionController {
     func repoVocabularyGroundingIfEnabled(
         endpointURL: URL,
         transcript: String,
+        joinedWorkspace: LocalWorkspacePath? = nil,
         repositoryRoot: RepoVocabularyRootBox? = nil
     ) async -> RepoVocabularyMatcher.GroundingOutcome? {
         await PolishContextGatherer.repoVocabularyGroundingIfEnabled(
@@ -589,6 +592,7 @@ extension DictationSessionController {
             grounding: repoVocabularyGrounding,
             endpointURL: endpointURL,
             transcript: transcript,
+            joinedWorkspace: joinedWorkspace,
             repositoryRoot: repositoryRoot
         )
     }

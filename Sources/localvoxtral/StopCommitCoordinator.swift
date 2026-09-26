@@ -224,18 +224,27 @@ enum StopCommitCoordinator {
     }
 
     /// Polishing prompt profile for a stop-commit: `.agent` iff the user has the
-    /// agent profile enabled AND the captured target bundle ID is terminal-like
-    /// (built-in terminal allowlist, or the user's Settings → Terminals list —
-    /// the successor of `terminal_apps.toml`). Mirrors the live-mode target
-    /// combination (allowlist + user bundle IDs); the AX-probe verdict is
-    /// deliberately not consulted here — the polish switch keys off the app
-    /// identity, not the focused field's writability.
+    /// agent profile enabled AND the dictation goes to a coding agent: the
+    /// captured target bundle ID is terminal-like (built-in terminal
+    /// allowlist, or the user's Settings → Terminals list — the successor of
+    /// `terminal_apps.toml`), or the dictation joined a Claude Desktop Code-tab
+    /// session. Mirrors the live-mode target combination (allowlist + user
+    /// bundle IDs); the AX-probe verdict is deliberately not consulted here —
+    /// the polish switch keys off the app identity, not the focused field's
+    /// writability.
+    ///
+    /// Claude Desktop goes by the join, not its bundle ID: the same app hosts
+    /// a plain chat, where the agent profile's backticks and joined paths
+    /// would be wrong, and only the join proves focus was in a Code-tab
+    /// session.
     @MainActor
     static func polishProfile(
         forTargetBundleID bundleID: String?,
+        claudeJoin: ClaudeSessionJoin?,
         settings: SettingsStore
     ) -> PolishPromptProfile {
         guard settings.agentPolishProfileEnabled else { return .standard }
+        if claudeJoin?.mechanism == .desktopSession { return .agent }
         guard let bundleID, !bundleID.isEmpty else { return .standard }
         if TerminalTargetDetector.isTerminalLikeBundleID(bundleID) { return .agent }
         if settings.userTerminalAppBundleIDs.contains(bundleID) { return .agent }

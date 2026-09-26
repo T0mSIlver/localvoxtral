@@ -23,23 +23,28 @@ more), and apps that embed a terminal can be added in
 When an Overlay Buffer dictation commits, optional LLM polishing understands
 how developers talk:
 
-- **Agent prompt profile** (on by default) — when the target is a terminal,
-  polishing switches to an agent-tuned prompt. Spoken symbol forms become
-  written ones ("dash dash force" → `--force`, "src slash auth" →
-  `src/auth`, "the dot env file" → `.env`), code-like tokens (and only
-  those) get backticks, filler words are stripped, self-corrections resolve
-  to the final intent, and explicit enumerations become lists
+- **Agent prompt profile** (on by default) — when the target is a terminal
+  or a Claude Code session in Claude Desktop's Code tab, polishing switches
+  to an agent-tuned prompt. Spoken symbol forms become written ones ("dash
+  dash force" → `--force`, "src slash auth" → `src/auth`, "the dot env
+  file" → `.env`), code-like tokens (and only those) get backticks, filler
+  words are stripped, self-corrections resolve to the final intent, and
+  explicit enumerations become lists. Claude Desktop also hosts plain chat,
+  so it gets this prompt only when the dictation joined a Code-tab session,
+  which needs **Send diff, recent files and last prompt**
 - **Model-first polishing** — polishing trusts the model's final wording and
   technical formatting, so useful Markdown and reconstructed identifiers
   survive
-- **Repo vocabulary** (opt-in) — the focused repo (found from the tab title,
-  or from a joined Claude Code session's own working directory) is indexed
+- **Repo vocabulary** (opt-in) — the focused repo is indexed
   with a single sandboxed `git ls-files`, and up to 12 relevant terms reach
   the polisher, so "use auth dot t s" comes out as `useAuth.ts`. The terms in
   the repo's `.github/dictation.md` join the index (see below). An ambiguous
   repo safely sends no hints, and only high-confidence, boundary-checked
   matches are corrected in the working text — everything else stays a hint,
-  never a rewrite of the model's output
+  never a rewrite of the model's output. The repo is the working directory
+  of the Claude Code session the dictation joined, when that session runs on
+  this Mac; otherwise it is found from the terminal tab's title or the
+  programs running in it
 - **Clipboard as context** (opt-in) — the polisher sees a sanitized excerpt
   of your clipboard to ground technical spellings
 - **"Paste clipboard" macro** (on by default) — say it mid-dictation and the
@@ -79,9 +84,11 @@ The first four sources share one default: they run only while the polisher
 runs on this Mac (the bundled helper). **Send context to non-local polishing
 servers** is the single toggle that relaxes that.
 
-- **Send repo file names** — reads file names from the git repo in your terminal
-  (one sandboxed `git ls-files`) and the terms in its `.github/dictation.md`,
-  so near-miss spellings resolve to real names.
+- **Send repo file names** — reads file names from the git repo you are
+  working in (one sandboxed `git ls-files`) and the terms in its
+  `.github/dictation.md`, so near-miss spellings resolve to real names. That
+  is the repo of a joined Claude Code session on this Mac, Claude Desktop
+  included, or else your terminal's.
 - **Send clipboard excerpt** — sends an excerpt of your clipboard text to the polisher,
   sanitized and length-capped, used only as a spelling reference.
 - **Send agent's terminal screen** — reads file and identifier names from your coding

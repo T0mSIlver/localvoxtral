@@ -1,3 +1,4 @@
+import ClaudeContextWire
 import Foundation
 @testable import localvoxtral
 
@@ -14,6 +15,8 @@ final class FakeRepoVocabularyGrounding: RepoVocabularyGrounding {
     /// the same as the live path — never "did not run".
     var root: String?
     private(set) var transcripts: [String] = []
+    /// The joined workspace each call was handed, nil where there was none.
+    private(set) var joinedWorkspaces: [String?] = []
     var callCount: Int { transcripts.count }
 
     init(root: String? = nil, _ answer: @escaping Answer) {
@@ -28,9 +31,11 @@ final class FakeRepoVocabularyGrounding: RepoVocabularyGrounding {
     func grounding(
         endpointURL _: URL,
         transcript: String,
+        joinedWorkspace: LocalWorkspacePath?,
         repositoryRoot: RepoVocabularyRootBox?
     ) async -> RepoVocabularyMatcher.GroundingOutcome? {
         transcripts.append(transcript)
+        joinedWorkspaces.append(joinedWorkspace?.path)
         repositoryRoot?.report(root)
         return answer(transcript)
     }
