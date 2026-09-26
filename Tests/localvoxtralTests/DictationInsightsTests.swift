@@ -12,14 +12,33 @@ final class DictationInsightsTests: XCTestCase {
         polishSeconds: Double? = nil,
         bundleID: String? = nil,
         status: DictationSessionStatus = .completed,
-        commitSucceeded: Bool = true
+        commitSucceeded: Bool = true,
+        editOutcome: EditSignalOutcome? = nil
     ) -> DictationHistoryEntry {
         DictationHistoryEntry(
             id: UUID(), startedAt: origin, finishedAt: origin.addingTimeInterval(seconds),
             rawText: rawText, polishedText: polished, polishingDurationSeconds: polishSeconds,
             provider: "p", model: "m", outputMode: "overlay_buffer", targetAppBundleID: bundleID,
             status: status, commitSucceeded: commitSucceeded, polishProfile: nil,
-            polishContextSummary: nil)
+            polishContextSummary: nil, editOutcome: editOutcome?.rawValue)
+    }
+
+    /// The "edited soon after insertion" share: erased over watched. A window
+    /// a new dictation cut short, and a dictation nothing watched, are in
+    /// neither count.
+    func testEditedSoonCountsErasedInsertionsOverWatchedOnes() {
+        let insights = DictationInsights(entries: [
+            entry("one", editOutcome: .edited),
+            entry("two", editOutcome: .clean),
+            entry("three", editOutcome: .clean),
+            entry("four", editOutcome: .clean),
+            entry("five", editOutcome: .superseded),
+            entry("six"),
+        ])
+
+        XCTAssertEqual(insights.dictations, 6)
+        XCTAssertEqual(insights.editWatched, 4)
+        XCTAssertEqual(insights.editedSoon, 1)
     }
 
     func testNoDictationsIsAllZeroesAndNoRatios() {

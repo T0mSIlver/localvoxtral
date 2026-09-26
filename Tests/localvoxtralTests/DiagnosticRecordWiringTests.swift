@@ -126,6 +126,26 @@ final class DiagnosticRecordWiringTests: XCTestCase {
         XCTAssertFalse(wrote.isSet, "the write must not run for a dictation not saved")
     }
 
+    /// The watch's verdict reaches the History entry too, so Insights can
+    /// count it without reading record files (#519).
+    func testTheEditVerdictIsCopiedOntoTheHistoryEntry() async throws {
+        let signals = EditSignalHarness()
+        let harness = try makeHarness(recordsEnabled: true, withHistory: true, editSignal: signals)
+        let history = try XCTUnwrap(harness.history)
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+        await signals.sleeper.waitForSleepRequest()
+        signals.clock.advance(0.5)
+        signals.monitor.send(.backspace)
+        await signals.watcher.flushTask?.value
+        // Queued behind the patch's History write.
+        await history.removeOrphanedAudio().value
+
+        let entries = await history.entries()
+        XCTAssertEqual(entries.map(\.editOutcome), [EditSignalOutcome.edited.rawValue])
+    }
+
     /// A record goes wherever its dictation goes: turning the switch off
     /// deletes every record and keeps the dictations; deleting an entry, or
     /// turning History off, deletes its record.

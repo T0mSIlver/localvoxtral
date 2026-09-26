@@ -41,6 +41,12 @@ final class DictationSessionRecord {
     var projectName: String?
     /// `claude`, `vibe`, `opencode`: the agent whose session it joined.
     var joinedAgent: String?
+    /// Whether the user erased the insertion within seconds of it
+    /// (`EditSignalOutcome`: `edited`, `clean`, `superseded`), copied from the
+    /// diagnostic record when its watch window closes. Nil when nothing was
+    /// watched: records off, Live Auto-Paste, a failed insertion, or an older
+    /// build. Additive optional field, like the ones above.
+    var editOutcome: String?
 
     init(
         id: UUID = UUID(),
@@ -59,7 +65,8 @@ final class DictationSessionRecord {
         polishContextSummary: String? = nil,
         projectKey: String? = nil,
         projectName: String? = nil,
-        joinedAgent: String? = nil
+        joinedAgent: String? = nil,
+        editOutcome: String? = nil
     ) {
         self.id = id
         self.startedAt = startedAt
@@ -78,5 +85,6 @@ final class DictationSessionRecord {
         self.projectKey = projectKey
         self.projectName = projectName
         self.joinedAgent = joinedAgent
+        self.editOutcome = editOutcome
     }
 }

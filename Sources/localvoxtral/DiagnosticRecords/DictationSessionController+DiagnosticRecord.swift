@@ -58,6 +58,10 @@ extension DictationSessionController {
         // can arm in the meantime — an untokened attach would hand this
         // record's URL to that session's window.
         let watchToken: EditSignalWatcher.WatchToken?
+        // Set here rather than once: tests replace the watcher.
+        editSignalWatcher.onOutcome = { [weak self] id, outcome in
+            self?.sessionStore?.setEditOutcome(outcome, forDictation: id)
+        }
         if case .succeeded = commitOutcome {
             watchToken = editSignalWatcher.arm(
                 committedText: committedTextForWatch,

@@ -279,6 +279,9 @@ final class EditSignalWatcher {
     /// production reads either.
     private(set) var windowTask: Task<Void, Never>?
     private(set) var flushTask: Task<Void, Never>?
+    /// Told each verdict with the History id its record is named by, so the
+    /// History entry carries it too (`DictationSessionRecord.editOutcome`).
+    var onOutcome: ((UUID, EditSignalOutcome) -> Void)?
 
     init(
         monitor: any EditKeyMonitoring = EditKeyNSEventMonitor(),
@@ -484,6 +487,9 @@ final class EditSignalWatcher {
             watchWindowSeconds: watch.windowSeconds,
             outputMode: watch.outputMode
         )
+        if let id = DiagnosticRecordFileName.parse(url.lastPathComponent)?.id {
+            onOutcome?(id, result.outcome)
+        }
 
         guard !inline else {
             DiagnosticRecordWriter.attachSynchronously(behavior, toRecordAt: url, store: store)

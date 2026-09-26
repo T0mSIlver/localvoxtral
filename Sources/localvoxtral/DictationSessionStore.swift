@@ -23,6 +23,8 @@ struct DictationHistoryEntry: Identifiable, Equatable, Sendable {
     var projectKey: String? = nil
     var projectName: String? = nil
     var joinedAgent: String? = nil
+    /// `EditSignalOutcome`'s raw value, nil when nothing was watched.
+    var editOutcome: String? = nil
 
     /// What the dictation ended up as, the transcript when nothing changed it.
     var finalText: String { polishedText ?? rawText }
@@ -51,7 +53,7 @@ struct DictationHistoryEntry: Identifiable, Equatable, Sendable {
             targetAppBundleID: targetAppBundleID, status: status,
             commitSucceeded: commitSucceeded, polishProfile: polishProfile,
             polishContextSummary: polishContextSummary, projectKey: projectKey,
-            projectName: projectName, joinedAgent: joinedAgent)
+            projectName: projectName, joinedAgent: joinedAgent, editOutcome: editOutcome)
     }
 
     /// What "Copy last dictation" copies, nil when there is no text.
@@ -80,7 +82,8 @@ extension DictationHistoryEntry {
             polishContextSummary: record.polishContextSummary,
             projectKey: record.projectKey,
             projectName: record.projectName,
-            joinedAgent: record.joinedAgent
+            joinedAgent: record.joinedAgent,
+            editOutcome: record.editOutcome
         )
     }
 
@@ -102,7 +105,8 @@ extension DictationHistoryEntry {
             polishContextSummary: polishContextSummary,
             projectKey: projectKey,
             projectName: projectName,
-            joinedAgent: joinedAgent
+            joinedAgent: joinedAgent,
+            editOutcome: editOutcome
         )
     }
 }
@@ -350,6 +354,18 @@ final class DictationSessionStore {
         }
         lastWrite = Task { _ = await task.value }
         return await task.value
+    }
+
+    /// Copies the edit watch's verdict onto the dictation, for Insights.
+    @discardableResult
+    func setEditOutcome(_ outcome: EditSignalOutcome, forDictation id: UUID) -> Task<Void, Never> {
+        let value = outcome.rawValue
+        return enqueueWrite("record the edit outcome of dictation \(id)") { context in
+            let records = try context.fetch(FetchDescriptor<DictationSessionRecord>(
+                predicate: #Predicate { $0.id == id }))
+            for record in records { record.editOutcome = value }
+            return records.count
+        }
     }
 
     /// Deletes every diagnostic record and keeps the dictations: the
