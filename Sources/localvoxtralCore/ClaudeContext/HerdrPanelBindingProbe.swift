@@ -34,6 +34,10 @@ package protocol HerdrPanelMetadataReporting: Sendable {
 package struct HerdrPanelBindingProbe {
     package struct Match: Sendable, Equatable {
         package let token: String
+
+        package init(token: String) {
+            self.token = token
+        }
     }
 
     package enum Outcome: Sendable, Equatable {

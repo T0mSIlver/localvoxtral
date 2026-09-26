@@ -82,6 +82,10 @@ package struct ClaudeHerdrPaneBinding: Sendable, Equatable {
 /// binding still holds, rather than re-reading a tab the user may have changed.
 package struct ClaudeBrowserTabBinding: Sendable, Equatable {
     package let bridgeSessionID: String
+
+    package init(bridgeSessionID: String) {
+        self.bridgeSessionID = bridgeSessionID
+    }
 }
 
 /// The Claude Desktop session id a `.desktopSession` join resolved on. Same
@@ -89,6 +93,10 @@ package struct ClaudeBrowserTabBinding: Sendable, Equatable {
 /// instead of reading the desktop window a second time.
 package struct ClaudeDesktopSessionBinding: Sendable, Equatable {
     package let desktopSessionID: String
+
+    package init(desktopSessionID: String) {
+        self.desktopSessionID = desktopSessionID
+    }
 }
 
 /// The cmux surface a `.cmuxSurface` join resolved to. Same role as

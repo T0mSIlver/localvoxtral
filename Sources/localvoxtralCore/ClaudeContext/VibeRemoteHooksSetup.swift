@@ -71,6 +71,20 @@ extension ClaudeRemoteEnrollmentService {
         package var hooksText: String?
         package var hooksChecksum: String?
         package var refusal: String?
+
+        package init(
+            vibeFound: Bool = false,
+            installedVersion: String? = nil,
+            hooksText: String? = nil,
+            hooksChecksum: String? = nil,
+            refusal: String? = nil
+        ) {
+            self.vibeFound = vibeFound
+            self.installedVersion = installedVersion
+            self.hooksText = hooksText
+            self.hooksChecksum = hooksChecksum
+            self.refusal = refusal
+        }
     }
 
     /// These runs move FILES: the scripts go out on stdin (about 25 KiB, plus a
@@ -287,6 +301,10 @@ extension ClaudeRemoteEnrollmentService {
     /// describes itself as a Swift enum dump.
     package struct VibeHostActionError: Error, CustomStringConvertible, Equatable {
         package var description: String
+
+        package init(description: String) {
+            self.description = description
+        }
     }
 
     package static func describingVibeFailures(_ body: () throws -> Void) throws {

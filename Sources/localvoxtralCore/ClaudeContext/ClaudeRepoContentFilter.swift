@@ -236,6 +236,11 @@ package enum ClaudeRepoContentFilter {
     package struct FilteredDiff: Equatable {
         package var text: String
         package var withheldFileCount: Int
+
+        package init(text: String, withheldFileCount: Int) {
+            self.text = text
+            self.withheldFileCount = withheldFileCount
+        }
     }
 
     /// Removes from a `git diff` every per-file section whose path is one the
@@ -449,6 +454,12 @@ package enum ClaudeRepoContentFilter {
             let path: String
             let length: Int
             let index: Int
+
+            package init(path: String, length: Int, index: Int) {
+                self.path = path
+                self.length = length
+                self.index = index
+            }
         }
         var matches: [Match] = []
         for (index, path) in trackedPaths.enumerated() {

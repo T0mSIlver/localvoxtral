@@ -147,6 +147,28 @@ package struct StoredClaudeSessions: Codable {
             case firstSeen = "first_seen"
             case lastActivity = "last_activity"
         }
+
+        package init(
+            sessionID: String,
+            origin: Origin,
+            agent: ClaudeHookAgent,
+            workspace: String? = nil,
+            activity: String,
+            process: ClaudeHookProcessInfo? = nil,
+            remoteEnvironment: RemoteEnvironment? = nil,
+            firstSeen: Date,
+            lastActivity: Date
+        ) {
+            self.sessionID = sessionID
+            self.origin = origin
+            self.agent = agent
+            self.workspace = workspace
+            self.activity = activity
+            self.process = process
+            self.remoteEnvironment = remoteEnvironment
+            self.firstSeen = firstSeen
+            self.lastActivity = lastActivity
+        }
     }
 
     package struct Origin: Codable {
@@ -158,6 +180,12 @@ package struct StoredClaudeSessions: Codable {
             case kind
             case peerUID = "peer_uid"
             case channel
+        }
+
+        package init(kind: String, peerUID: UInt32? = nil, channel: String? = nil) {
+            self.kind = kind
+            self.peerUID = peerUID
+            self.channel = channel
         }
     }
 

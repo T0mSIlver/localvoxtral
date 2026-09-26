@@ -19,6 +19,10 @@ extension ClaudeRemoteEnrollmentService {
         /// belongs to the Claude plugin's userConfig on the remote host, not to
         /// a file that gets copied between machines and pasted into issues.
         public var sshConfigSnippet: String
+
+        package init(sshConfigSnippet: String) {
+            self.sshConfigSnippet = sshConfigSnippet
+        }
     }
 
     /// One interpreted verdict from `executeVerification`.

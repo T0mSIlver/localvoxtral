@@ -634,6 +634,12 @@ package enum SSHDestinationTTYProbe {
         /// needs no flag of its own: every `-o` but `SetEnv`/`SendEnv` already
         /// refuses the whole parse.
         package var usesProxyJump: Bool = false
+
+        package init(destination: String, herdr: HerdrInvocation, usesProxyJump: Bool = false) {
+            self.destination = destination
+            self.herdr = herdr
+            self.usesProxyJump = usesProxyJump
+        }
     }
 
     /// Options that take no argument, per ssh(1)'s synopsis

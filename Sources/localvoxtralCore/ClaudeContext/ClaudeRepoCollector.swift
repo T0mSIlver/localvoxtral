@@ -152,6 +152,38 @@ package struct ClaudeRepoProvenance: Sendable, Equatable {
         if deadlineExpired { parts.append("deadline-expired") }
         return parts.joined(separator: " ")
     }
+
+    package init(
+        trackedFileCount: Int = 0,
+        activeFileCount: Int = 0,
+        snippetFileCount: Int = 0,
+        statusLineCount: Int = 0,
+        stagedDiffCharacters: Int = 0,
+        unstagedDiffCharacters: Int = 0,
+        skippedBinary: Int = 0,
+        skippedGenerated: Int = 0,
+        skippedLogs: Int = 0,
+        skippedSecrets: Int = 0,
+        skippedUncontained: Int = 0,
+        withheldDiffFiles: Int = 0,
+        truncatedFiles: Int = 0,
+        deadlineExpired: Bool = false
+    ) {
+        self.trackedFileCount = trackedFileCount
+        self.activeFileCount = activeFileCount
+        self.snippetFileCount = snippetFileCount
+        self.statusLineCount = statusLineCount
+        self.stagedDiffCharacters = stagedDiffCharacters
+        self.unstagedDiffCharacters = unstagedDiffCharacters
+        self.skippedBinary = skippedBinary
+        self.skippedGenerated = skippedGenerated
+        self.skippedLogs = skippedLogs
+        self.skippedSecrets = skippedSecrets
+        self.skippedUncontained = skippedUncontained
+        self.withheldDiffFiles = withheldDiffFiles
+        self.truncatedFiles = truncatedFiles
+        self.deadlineExpired = deadlineExpired
+    }
 }
 
 /// Hard bounds on one collection pass.
@@ -185,6 +217,30 @@ package struct ClaudeRepoCollectorLimits: Sendable, Equatable {
     package var maxStatusLines = 200
 
     package static let `default` = ClaudeRepoCollectorLimits()
+
+    package init(
+        deadline: TimeInterval = 2.5,
+        gitTimeout: TimeInterval = 1.5,
+        maxDiffBytes: Int = 200_000,
+        maxStatusBytes: Int = 64_000,
+        maxTrackedBytes: Int = 2_000_000,
+        maxFileBytes: Int = 128_000,
+        truncatedFileBytes: Int = 8_000,
+        maxActiveFiles: Int = 12,
+        maxSnippetFiles: Int = 24,
+        maxStatusLines: Int = 200
+    ) {
+        self.deadline = deadline
+        self.gitTimeout = gitTimeout
+        self.maxDiffBytes = maxDiffBytes
+        self.maxStatusBytes = maxStatusBytes
+        self.maxTrackedBytes = maxTrackedBytes
+        self.maxFileBytes = maxFileBytes
+        self.truncatedFileBytes = truncatedFileBytes
+        self.maxActiveFiles = maxActiveFiles
+        self.maxSnippetFiles = maxSnippetFiles
+        self.maxStatusLines = maxStatusLines
+    }
 }
 
 /// Read-only local repository collection, gated on `LocalWorkspacePath`.
@@ -733,4 +789,6 @@ package struct ClaudeLocalFileSystem: ClaudeLocalFileReading {
         guard path.path.withCString({ lstat($0, &result) }) == 0 else { return nil }
         return result
     }
+
+    package init() {}
 }

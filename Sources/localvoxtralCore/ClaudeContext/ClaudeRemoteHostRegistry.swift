@@ -112,6 +112,11 @@ public struct ClaudeRemoteEnrollment: Sendable, Equatable {
     public var host: ClaudeRemoteHost
     /// Show once, then forget. Nothing persists this.
     public var token: String
+
+    package init(host: ClaudeRemoteHost, token: String) {
+        self.host = host
+        self.token = token
+    }
 }
 
 /// Hashing and comparison for host tokens.
@@ -392,6 +397,18 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         package var tokenSalt: String
         package var tokenHash: String
         package var createdAt: Date
+
+        package init(
+            purpose: ClaudeRemoteCredentialPurpose,
+            tokenSalt: String,
+            tokenHash: String,
+            createdAt: Date
+        ) {
+            self.purpose = purpose
+            self.tokenSalt = tokenSalt
+            self.tokenHash = tokenHash
+            self.createdAt = createdAt
+        }
     }
 
     package struct StoredHost: Codable, Equatable {
@@ -807,6 +824,18 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         /// must not be committed after it: the rotation answered a suspected
         /// leak, and this token was already on its way to the host by then.
         package let hostGeneration: String
+
+        package init(
+            token: String,
+            purpose: ClaudeRemoteCredentialPurpose,
+            salt: String,
+            hostGeneration: String
+        ) {
+            self.token = token
+            self.purpose = purpose
+            self.salt = salt
+            self.hostGeneration = hostGeneration
+        }
     }
 
     public func prepareCredential(
