@@ -96,7 +96,7 @@ final class ViewSnapshotTests: XCTestCase {
             filed.title = "Dark mode for the settings window"
             filed.filedURL = "https://github.com/example/demo/issues/12"
             try QuickCaptureInboxFile.save(QuickCaptureInbox(items: [drafted, unplaced, filed]), to: fileURL)
-            addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+            self.addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
             let learned = LearnedTerms(projects: [
                 LearnedTermProject(key: "/work/demo", name: "demo", terms: [], lastSeen: now),
             ])
