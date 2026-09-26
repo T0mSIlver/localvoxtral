@@ -236,6 +236,8 @@ final class ProjectTermProposerTests: XCTestCase {
             ),
         ])
         XCTAssertEqual(store.snapshot().projects.first?.terms.first?.sources, ["agent:opencode"])
+        XCTAssertEqual(store.snapshot().projects.first?.terms.first?.isUnconfirmedProposal, true)
+        XCTAssertEqual(store.snapshot().unconfirmedProposals(projectKey: repo), ["inkwell"])
 
         await commit(proposer, join(repo, agent: .opencode))
         await commit(proposer, join(repo, agent: .claude))
