@@ -39,7 +39,11 @@ package struct QuickCaptureProject: Equatable, Sendable {
 
 package enum QuickCaptureProjects {
     package static let maxTerms = 30
-    package static let maxSummaryCharacters = 500
+    /// Two paragraphs, 400 characters: on the Jev replay (2026-09-26) that
+    /// routed a little better than one paragraph or three, and a first
+    /// paragraph alone is often a tagline ("Knowledge is announced on video").
+    package static let maxSummaryCharacters = 400
+    package static let summaryParagraphs = 2
     package static let maxUserLineCharacters = 200
 
     /// Every project in `learned`, most recently dictated first.
@@ -59,7 +63,7 @@ package enum QuickCaptureProjects {
                 let terms = learned.confirmedTerms(projectKey: project.key)
                     + learned.unconfirmedProposals(projectKey: project.key)
                 let summary = project.key.hasPrefix("/")
-                    ? readme(project.key).flatMap(firstParagraph(ofReadme:))
+                    ? readme(project.key).flatMap(summary(ofReadme:))
                     : nil
                 return QuickCaptureProject(
                     key: project.key,
@@ -88,10 +92,11 @@ package enum QuickCaptureProjects {
         return nil
     }
 
-    /// The first paragraph of prose: front matter, headings, HTML, badge and
-    /// image lines, block quotes, lists, tables and code blocks are skipped,
-    /// and Markdown links keep their text. Nil when the README has no prose.
-    package static func firstParagraph(ofReadme markdown: String) -> String? {
+    /// The first `summaryParagraphs` paragraphs of prose, joined: front
+    /// matter, headings, HTML, badge and image lines, block quotes, lists,
+    /// tables and code blocks are skipped, and Markdown links keep their
+    /// text. Nil when the README has no prose.
+    package static func summary(ofReadme markdown: String) -> String? {
         var lines = markdown.replacingOccurrences(of: "\r\n", with: "\n")
             .components(separatedBy: "\n")[...]
         if lines.first?.trimmingCharacters(in: .whitespaces) == "---",
@@ -99,14 +104,21 @@ package enum QuickCaptureProjects {
         {
             lines = lines[(end + 1)...]
         }
+        var paragraphs: [String] = []
         var paragraph: [String] = []
         var inFence = false
         var inHTMLComment = false
+        func endParagraph() {
+            let text = inlineText(paragraph.joined(separator: " "))
+            if !text.isEmpty { paragraphs.append(text) }
+            paragraph = []
+        }
         for raw in lines {
+            guard paragraphs.count < summaryParagraphs else { break }
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.hasPrefix("```") || line.hasPrefix("~~~") {
                 inFence.toggle()
-                if !paragraph.isEmpty { break }
+                endParagraph()
                 continue
             }
             if inFence { continue }
@@ -119,12 +131,13 @@ package enum QuickCaptureProjects {
                 continue
             }
             if line.isEmpty || isNotProse(line) {
-                if !paragraph.isEmpty { break }
+                endParagraph()
                 continue
             }
             paragraph.append(line)
         }
-        let text = inlineText(paragraph.joined(separator: " "))
+        if paragraphs.count < summaryParagraphs { endParagraph() }
+        let text = paragraphs.prefix(summaryParagraphs).joined(separator: " ")
         return text.isEmpty ? nil : text
     }
 

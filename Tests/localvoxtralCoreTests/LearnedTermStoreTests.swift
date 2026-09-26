@@ -1,5 +1,5 @@
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// The file around `LearnedTerms`: what survives a relaunch, what a damaged
 /// file costs, and what Forget forgets.

@@ -61,12 +61,17 @@ AppKit:
 - the clipboard reader's rules (`PolishContextClipboardReader`; its
   pasteboard half stays in the app)
 - the model catalogs (`BackendCatalog`, `SpeechModelCatalog`, `PolishModelCatalog`)
+- the Settings sidebar's status dots (`SettingsStatusDot`,
+  `IntegrationsSidebarStatus`); their rendering stays in the app
 - the Claude session snapshot and its reducer (`ClaudeSessionState`)
 - the config store (`AppConfigStore`, `BundledConfigDefaultHistory`,
   `SpeakerTerms`). The app hands it the resource bundle, and on Linux it
   hashes with `PortableSHA256` instead of CryptoKit
 - the live replacement rewriters (`LiveReplacementCorrector`,
   `LiveHoldBackReplacementStream`)
+- the learned terms: `LearnedTermStore` and the learner that fills it from
+  the user's fixes (`CorrectionLearning`); the one-line notice it shows
+  stays in the app
 - quick capture routing (`QuickCapture/`, #725): the project descriptions a
   classifier reads, the Jev client, the polishing model's routing mode as
   its fallback, and the rule that sends a low or tied answer to the

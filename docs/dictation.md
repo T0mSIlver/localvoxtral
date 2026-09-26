@@ -75,6 +75,12 @@ when more than one does, or its pane can't be reached, nothing is typed and
 the menu bar popover says so. In Live Auto-Paste, what you say next is
 typed into the session you went to.
 
+**Give a session a name of your own.** Say "call this session payments" (or
+"name this session payments") while dictating into a joined session, and
+"go to payments" reaches it from then on, ahead of any repository or
+worktree name. Nothing is typed. Naming another session payments moves the
+name to it.
+
 ### Keeping words on their line
 
 Words reach the overlay a few letters at a time, so a word that starts near

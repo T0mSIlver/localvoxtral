@@ -674,7 +674,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 liveSessions: { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() },
                 repositoryRoot: SessionNavigator.liveRepositoryRoot,
                 focuser: TerminalSessionPaneFocuser.live(ttyReader: ttyReader),
-                sleep: viewModel.session.dependencies.clock.sleep
+                sleep: viewModel.session.dependencies.clock.sleep,
+                nicknames: .userDefaults(.standard, key: "session_navigation.nicknames")
             )
             installAgentAttention(
                 ttyReader: ttyReader,

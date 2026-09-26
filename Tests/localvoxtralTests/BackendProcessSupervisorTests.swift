@@ -486,6 +486,11 @@ private final class StateWatcher: @unchecked Sendable {
             }
             group.addTask {
                 try await Task.sleep(for: timeout)
+                // Said here rather than left to the thrown error: XCTest can
+                // report a thrown error as the last one a try? swallowed, and
+                // #753's timeout read as "the file count couldn't be opened".
+                let seen = self.storage.withLock { $0.states }
+                XCTFail("no matching state within \(timeout); the supervisor went through \(seen)")
                 throw WaitTimeout()
             }
 

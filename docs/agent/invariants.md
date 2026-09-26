@@ -155,7 +155,8 @@ there is not.
   `.unverified`.
 - **Live Auto-Paste holds back only what may still read "go to"** (#747).
   Typed words cannot be taken back, so while a session is live a segment is
-  held while its words so far may still become "go to" ("G", "Go", "go t"),
+  held while its words so far may still become "go to" ("G", "Go", "go t")
+  or "call this session",
   and one that opens with "go to" and at most four more words is held until
   its final. Any other segment is released the moment a letter rules the
   phrase out, then typed live; with no session live nothing is held. Only
@@ -167,6 +168,16 @@ there is not.
   pane is the old one. Segments that end while the go-to resolves and
   focuses wait and land after it, in order; a stop waits for them too.
   History keeps the live dictation whole, the phrase included.
+- **"Call this session <name>" names only a session the dictation is
+  in** (#723 step 2). The phrase ("call this session" or "name this
+  session", then at most four words; never "call this one", a coding
+  prompt) is parsed and held back like go-to. Its target is the session the
+  dictation joined or, in Live Auto-Paste after a go-to, the session whose
+  pane read back as `.focused`; after an `.unverified` go-to there is none.
+  No target, or one no longer live: the phrase is text. A nickname is
+  matched ahead of every default name, one session holds it at a time (the
+  last one named), and it is kept per registry session id in
+  `UserDefaults`, at most 100.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
   endpoint on stop (`DictationSessionController+StopCommit.swift`,
@@ -555,6 +566,43 @@ there is not.
     never kept as a join, reads nothing from the pane, never reaches a
     remote or federated herdr, and asks the focused TTY only while a live
     local session sits in a herdr pane.
+  - *cmux surfaces* (#727, `CmuxSurfaceRoute`). *Exactly two calls:*
+    `surface.send_text` with `surface_id` and `text`, and `surface.send_key`
+    with `surface_id` and `key: "enter"`. Never a call without `surface_id`:
+    cmux then writes to whatever surface is focused. Never `surface.focus`,
+    another key, or another surface.
+    *Only the resolved surface:* the route exists only for a `.cmuxSurface`
+    join (`ClaudeSessionJoinResolver.cmuxSurfaceRoute(for:frontmostPID:)`).
+    Writing needs none of the context join's gates, so when no context
+    join ran (context settings off, no permitted polishing endpoint), the
+    route asks the cmux arm alone, behind the cmux opt-in; that join reads
+    the surface's id and tty, never its text, and no context ships from it.
+    The route
+    names its binding's surface id, and dials only a socket whose peer is
+    the cmux process the join was about, with the join's password, one
+    connection per call. Before every call it re-reads the opt-in
+    (`cmuxSurfaceJoinEnabled`) and whether the joined session still holds
+    the surface in the registry: once the agent exits, the surface is a
+    shell, and an Enter there runs the dictation as a command.
+    *Only the dictation in progress:* armed at start, dropped at stop.
+    *No control characters:* cmux turns `\n` and `\r` into Return and Tab,
+    Escape and Backspace into keys, so text with any C0 or C1 control is
+    never sent.
+    *Delivery:* cmux answers `queued: false` (sent) or `queued: true` (the
+    terminal is starting and gets it then); either is delivered, wherever
+    focus is. A success without `queued` comes from a build that can drop
+    text sent to a surface whose tab is not focused (manaflow-ai/cmux#3129),
+    so it counts only while the surface is cmux's focused one, and is
+    otherwise `keepInHistory`. An error answer or a request never written
+    types instead while cmux is frontmost, unless cmux says another of its
+    surfaces is focused; with another app frontmost it is `keepInHistory`.
+    A request written with no clean answer, or a success naming another
+    surface, is `keepInHistory`.
+    *Never asks for password mode* (owner ruling, 2026-09-26): the route
+    exists only because the user already put cmux in `password` mode for
+    the join. In cmux's default `cmuxOnly` mode there is no join and so no
+    route, and dictation types as before, with no alert and no setting. A
+    connection refused mid-dictation falls back to keystrokes the same way.
 - **Claude Code context reaches the prompt only through a positive join.**
   The joined session's repository (status, uncommitted diffs, contents
   of files the agent just touched) and its prior user prompt are attached as
@@ -738,8 +786,8 @@ there is not.
     mode with a password (cmux's default `cmuxOnly` mode does a peer-ancestry
     check we cannot pass — we are not a cmux child). The password lives in the
     Keychain (`CmuxSocketPasswordStore`); the socket is dialed by
-    `CmuxSocketClient` (hand-written, read-only — cmux is GPL-3, never vendor
-    its code), which asks `system.tree` for the focused surface (and its tty)
+    `CmuxSocketClient` (hand-written — cmux is GPL-3, never vendor its code;
+    its two writes are the cmux route's, above), which asks `system.tree` for the focused surface (and its tty)
     and `surface.read_text` for that one surface's VIEWPORT (never
     `scrollback`, and never `lines` — in cmux that parameter implies
     scrollback). Auth is per CONNECTION, not per message: `auth.login` is the
