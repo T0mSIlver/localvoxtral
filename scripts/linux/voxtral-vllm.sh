@@ -11,6 +11,9 @@
 #   voxtral-vllm.sh status    state, port, idle time, GPU memory
 #   voxtral-vllm.sh logs [-f] server log
 #
+# VOXTRAL_VLLM_DELAY_MS serves another transcription delay (#728); it needs its
+# own VOXTRAL_VLLM_PORT so the default server's callers never reach it.
+#
 # `up` also starts an idle reaper that stops the server after IDLE_SECONDS
 # without a token generated or an `up`, then exits. Nothing runs when idle.
 set -euo pipefail
@@ -34,6 +37,10 @@ COMPILE="${VOXTRAL_VLLM_COMPILE:-0}"
 # Fully qualified class of a vLLM logits processor, importable through
 # PYTHONPATH (module:Class, e.g. vllm_term_bias:TermBias, #316). Empty: none.
 LOGITS_PROCESSOR="${VOXTRAL_VLLM_LOGITS_PROCESSOR:-}"
+# Unset: the checkpoint's 480 ms. vLLM reads the delay once, from tekken.json,
+# for the prompt padding and the model's time conditioning, so another delay
+# is served from a copy of the snapshot with that one value patched.
+DELAY_MS="${VOXTRAL_VLLM_DELAY_MS:-}"
 
 MODEL="mistralai/Voxtral-Mini-4B-Realtime-2602"
 MODEL_REVISION="2769294da9567371363522aac9bbcfdd19447add"
@@ -45,6 +52,16 @@ TORCH_BACKEND="cu129"
 
 VENV="$VLLM_HOME/.venv"
 RUN_DIR="$VLLM_HOME/run"
+SERVED_MODEL="$MODEL"
+if [[ -n "$DELAY_MS" ]]; then
+  [[ "$DELAY_MS" =~ ^[0-9]+$ ]] && ((DELAY_MS > 0 && DELAY_MS % 80 == 0)) \
+    || { echo "voxtral-vllm: VOXTRAL_VLLM_DELAY_MS must be a positive multiple of 80" >&2; exit 1; }
+  [[ -n "${VOXTRAL_VLLM_PORT:-}" && "$PORT" != 8000 ]] \
+    || { echo "voxtral-vllm: VOXTRAL_VLLM_DELAY_MS needs a VOXTRAL_VLLM_PORT other than 8000" >&2; exit 1; }
+  RUN_DIR="$VLLM_HOME/run-delay-$DELAY_MS"
+  # The name a session must send, so a scoreboard labels the delay it measured.
+  SERVED_MODEL="$MODEL-delay-${DELAY_MS}ms"
+fi
 PID_FILE="$RUN_DIR/server.pid"
 REAPER_PID_FILE="$RUN_DIR/reaper.pid"
 STAMP="$RUN_DIR/last-up"
@@ -76,8 +93,37 @@ cmd_install() {
   echo "installed: $VENV, weights in $(snapshot_dir)"
 }
 
+# A directory beside the run files: the snapshot's files linked, tekken.json
+# and config.json (its HF-format twin, in 80 ms tokens) rewritten with the delay.
+delay_model_dir() {
+  local dir="$RUN_DIR/model" snapshot
+  snapshot="$(snapshot_dir)"
+  mkdir -p "$dir"
+  for f in "${MODEL_FILES[@]}"; do
+    [[ "$f" == tekken.json || "$f" == config.json ]] || ln -sfn "$snapshot/$f" "$dir/$f"
+  done
+  "$VENV/bin/python" - "$snapshot" "$dir" "$DELAY_MS" <<'PY'
+import json, sys
+src, dst, delay = sys.argv[1], sys.argv[2], int(sys.argv[3])
+tekken = json.load(open(f"{src}/tekken.json"))
+tekken["audio"]["transcription_delay_ms"] = delay
+json.dump(tekken, open(f"{dst}/tekken.json", "w"))
+config = json.load(open(f"{src}/config.json"))
+assert "default_num_delay_tokens" in config, "config.json lost default_num_delay_tokens"
+config["default_num_delay_tokens"] = delay // 80
+json.dump(config, open(f"{dst}/config.json", "w"))
+PY
+  echo "$dir"
+}
+
 serve_args() {
-  local args=(serve "$MODEL" --revision "$MODEL_REVISION"
+  local args
+  if [[ -n "$DELAY_MS" ]]; then
+    args=(serve "$(delay_model_dir)" --served-model-name "$SERVED_MODEL")
+  else
+    args=(serve "$MODEL" --revision "$MODEL_REVISION")
+  fi
+  args+=(
     --host 127.0.0.1 --port "$PORT"
     --max-model-len "$MAX_MODEL_LEN" --max-num-seqs 8
     # vLLM checks free memory against the utilization share before it reads
@@ -147,7 +193,7 @@ cmd_up() {
     sleep 0.5
   done
   ((SECONDS > started)) && echo "healthy after $((SECONDS - started))s"
-  echo "ready: ws://127.0.0.1:$PORT/v1/realtime model=$MODEL (idle stop after ${IDLE_SECONDS}s)"
+  echo "ready: ws://127.0.0.1:$PORT/v1/realtime model=$SERVED_MODEL (idle stop after ${IDLE_SECONDS}s)"
 }
 
 cmd_down() {
@@ -219,7 +265,7 @@ cmd_status() {
     pid="$(cat "$PID_FILE")"
     healthy && state=healthy
     echo "server: $state, pid $pid, up $(ps -o etime= -p "$pid" | tr -d ' ')"
-    echo "endpoint: ws://127.0.0.1:$PORT/v1/realtime model=$MODEL"
+    echo "endpoint: ws://127.0.0.1:$PORT/v1/realtime model=$SERVED_MODEL"
     echo "last up: $(($(date +%s) - $(stat -c %Y "$STAMP"))) s ago; idle stop after ${IDLE_SECONDS}s of no decoding"
     alive "$REAPER_PID_FILE" || echo "reaper: NOT running (run up again)"
   else
@@ -241,5 +287,5 @@ case "${1:-}" in
   status) cmd_status ;;
   logs) shift; cmd_logs "$@" ;;
   _reap) cmd_reap ;;
-  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

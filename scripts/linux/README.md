@@ -31,7 +31,8 @@ Sessions send `{"type": "session.update", "model":
 only, so a scoreboard can't mistake it for the 4-bit model.
 
 `vllm_transcribe.py FILE...` transcribes audio files through the server, one
-JSON line per file. Run both Python helpers with the venv's interpreter
+JSON line per file. With `--realtime` it paces the audio at 1x and reports the
+time to first text and the stop tail (last audio sent to final transcript). Run both Python helpers with the venv's interpreter
 (`~/work/voxtral-vllm/.venv/bin/python`).
 
 Settings, all environment variables:
@@ -46,6 +47,13 @@ Settings, all environment variables:
 | `VOXTRAL_VLLM_NEED_FREE_MIB` | `12500` | `up` refuses below this much free GPU memory |
 | `VOXTRAL_VLLM_COMPILE` | `0` | `1`: torch.compile and CUDA graphs |
 | `VOXTRAL_VLLM_LOGITS_PROCESSOR` | empty | `module:Class` of a logits processor on `PYTHONPATH` |
+| `VOXTRAL_VLLM_DELAY_MS` | unset (480) | transcription delay, a multiple of 80; needs a port other than 8000 |
+
+With `VOXTRAL_VLLM_DELAY_MS`, the server answers to
+`mistralai/Voxtral-Mini-4B-Realtime-2602-delay-<ms>ms` and keeps its files in
+`run-delay-<ms>/`, so pass the same two variables to `status`, `logs` and
+`down`. vLLM reads the delay once per server, from the snapshot's
+`tekken.json`, so the script serves a copy with that value patched.
 
 A take longer than the token limit ends its generation there, and the next
 one starts mid-word (#516). Raise both the limit and the KV cache for
