@@ -30,7 +30,9 @@ for how developers talk:
   When the target is a terminal or a Claude Code session in Claude Desktop's
   Code tab, polishing switches to an agent-tuned prompt. Spoken symbol forms
   become written ones ("dash dash force" → `--force`, "src slash auth" →
-  `src/auth`, "the dot env file" → `.env`). Code-like tokens, and only those,
+  `src/auth`, "the dot env file" → `.env`). An issue or PR number becomes a
+  GitHub reference the agent can look up ("PR seven twelve" → `PR #712`).
+  Code-like tokens, and only those,
   get backticks. Filler words go, self-corrections resolve to the final
   intent, and explicit enumerations become lists. Claude Desktop also hosts
   plain chat, so it gets this prompt only when the dictation joined a

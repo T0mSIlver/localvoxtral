@@ -41,6 +41,7 @@ package enum AgentDictationEvalCorpus {
         "paste-clipboard-macro",
         "repo-vocabulary",
         "guard-stress",
+        "github-references",
     ]
 
     /// Shared with the recorded audio sets, whose manifests carry it.

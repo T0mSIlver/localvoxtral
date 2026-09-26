@@ -58,7 +58,7 @@ final class AgentDictationEvalCorpusTests: XCTestCase {
             switch loaded.stratum.stratum {
             case "plain-asr-baseline":
                 expected = .asrOnly
-            case "punctuation-spacing-migration":
+            case "punctuation-spacing-migration", "github-references":
                 expected = .polishOnly
             default:
                 expected = .full
@@ -86,7 +86,7 @@ final class AgentDictationEvalCorpusTests: XCTestCase {
         for evalCase in try allCases() {
             XCTAssertTrue(seen.insert(evalCase.id).inserted, "duplicate case id: \(evalCase.id)")
             XCTAssertNotNil(
-                evalCase.id.range(of: "^[a-j]-(en|fr)-[a-z0-9-]+$", options: .regularExpression),
+                evalCase.id.range(of: "^[a-k]-(en|fr)-[a-z0-9-]+$", options: .regularExpression),
                 "\(evalCase.id): id must be <stratum-letter>-<lang>-<slug>"
             )
             XCTAssertTrue(

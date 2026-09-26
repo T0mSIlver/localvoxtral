@@ -27,7 +27,7 @@ fixtures/repo-<name>.json    repo specs the harness git-inits for
 
 The interactive recorder presents the 146 speech-running phrases, records
 mono 16-bit/16 kHz WAVs, offers optional playback, and saves progress after
-every accept. The 20 `polish-only` cases are text inputs and do not need
+every accept. The 36 `polish-only` cases are text inputs and do not need
 recordings.
 
 ```bash
@@ -137,6 +137,26 @@ are reported and skipped). A higher required-term score is insufficient on its
 own: always inspect surface exactness, word accuracy, large regressions, and the
 HTML text because a model can preserve the requested token while damaging the
 surrounding instruction.
+
+To compare prompt edits, give each version of the four `llm_*prompt*.toml`
+files a directory and pass one `--prompt-arm NAME=DIR` per version. The
+current-production variants then run once per arm, and deltas pair each arm
+with the first. A hosted model such as GLM 5.3 on the Mistral API is not
+deterministic at the production temperature, so add a second arm that names
+the baseline directory again: its deltas are the noise floor the others must
+beat.
+
+```bash
+./scripts/ablate-agent-eval.py <frozen log> \
+  --endpoint https://api.mistral.ai/v1/chat/completions --model zai-glm-5-3 \
+  --request-shape mistral --temperature 0.3 --reasoning-effort low \
+  --api-key-file ~/.config/localvoxtral/mistral_api_key \
+  --prompt-arm main=arms/main --prompt-arm main-repeat=arms/main \
+  --prompt-arm edit=arms/edit --variants current-production
+```
+
+A polish-only case the log predates is scored too: its input is the corpus
+text, so the runner adds it from the corpus.
 
 The `aligned-hint` and `aligned-preapply` arms narrow that upper bound. They run
 only as a fallback when the recorded production matcher emitted no repo or
@@ -257,7 +277,9 @@ Pipelines:
   assert raw recognition only.
 - `polish-only` — `spokenForm` is fed directly to the polish path as input
   text. Used by `punctuation-spacing-migration`, whose inputs carry
-  ASR-artifact spacing ("tomorrow ?") that TTS cannot speak.
+  ASR-artifact spacing ("tomorrow ?") that TTS cannot speak, and by
+  `github-references`, whose inputs are the recognizer's own spellings
+  (`PR349`, number words) that TTS would not reproduce.
 
 ## Case schema
 
@@ -302,6 +324,7 @@ Pipelines:
 | `h-paste-macro.json` | `paste-clipboard-macro` | "paste clipboard"/"colle le presse-papier" embedding + negatives that must not fire. |
 | `i-repo-vocabulary.json` | `repo-vocabulary` | git ls-files vocabulary resolves loose speech to exact repo paths (fixture-backed). |
 | `j-guard-stress.json` | `guard-stress` | Token-guard stress: flag/URL/hash/env-var-dense prompts. |
+| `k-github-references.json` | `github-references` | "issue"/"PR"/"pull request" + number → `PR #712`, from digits, number words or a glued `PR349`; negatives such as "PR 2 of 3". Polish-only. |
 
 ## Authoring rules
 
