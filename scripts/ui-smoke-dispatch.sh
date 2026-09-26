@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
-# Dispatches UI Smoke (the AX drill and the e2e dictation check) on a branch,
-# or refuses. Each run holds the only Mac for about ten minutes and takes the
-# owner's keyboard, so it runs once per PR, on the final diff (#544):
+# Dispatches UI Smoke on a branch, or refuses. The run's AX drill is on a
+# GitHub-hosted runner; its e2e dictation check holds the only Mac for several
+# minutes and takes the owner's keyboard. Releases require that check
+# (scripts/release.sh, #574); a PR takes at most one run, on the final diff,
+# and only for what the check alone reaches (#544):
 #
-#   refuse  the diff touches no session-path file (scripts/ci/e2e-dictation-filter.sh)
+#   refuse  the diff touches no insertion, focus or commit file (scripts/ci/e2e-dictation-filter.sh)
 #   refuse  build-test is not green on the branch head
 #   refuse  a UI Smoke run on the branch is still queued or running
 #   refuse  a UI Smoke run on the branch started less than an hour ago
 #   refuse  a UI Smoke run already ran on this head commit, whatever it
 #           concluded: a NOT RUN or lost-focus red is not retried; say so in
 #           the PR's Proof section and leave the rerun to the owner
+#
+# The last two count only runs whose job ran a step. Any label other than
+# needs-ui-smoke creates a run that is skipped, or cancelled by the next
+# label's run, without reaching the Mac (#570).
 #
 # Usage:
 #   scripts/ui-smoke-dispatch.sh [--dry-run] [--override <why>] <branch>
@@ -94,11 +100,20 @@ while IFS=$'\t' read -r id status run_sha created conclusion; do
   if [[ "$status" != completed ]]; then
     active_id="$id"
     active_status="$status"
-  elif [[ "$age" -lt "$COOLDOWN_SECONDS" ]] && ! $cooling; then
+    continue
+  fi
+  [[ "$age" -lt "$COOLDOWN_SECONDS" || "$run_sha" == "$sha" ]] || continue
+  steps="$(gh api "repos/{owner}/{repo}/actions/runs/$id/jobs" --jq '[.jobs[].steps | length] | add // 0')" \
+    || api_error "cannot read the jobs of run $id"
+  if [[ "$steps" == 0 ]]; then
+    echo "ignored: run $id never started (no job step ran)"
+    continue
+  fi
+  if [[ "$age" -lt "$COOLDOWN_SECONDS" ]] && ! $cooling; then
     cooling=true
     refusals+=("run $id started $((age / 60)) min ago; wait an hour between runs")
   fi
-  if [[ "$run_sha" == "$sha" && "$status" == completed ]]; then
+  if [[ "$run_sha" == "$sha" ]]; then
     refusals+=("run $id already ran on ${sha:0:9} ($conclusion); report it in Proof, the owner decides on a rerun")
   fi
 done <<<"$runs"

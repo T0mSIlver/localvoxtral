@@ -411,8 +411,8 @@ The fail-closed sequence is:
 
 Diagnosability mirrors the remote arm. The probe's own `remoteHerdrPanel:`
 cause is still tapped, while the arm adds `federated-herdr:
-federated-panel-not-rendered (<probe cause>)`. Only a settle timeout reports
-`likelyNotConfigured`, and it points at the LOCAL config: a federated client
+federated-panel-not-rendered (<probe cause>)`. Only a settle timeout logs the
+not-configured hint, and it points at the LOCAL config: a federated client
 renders rows from this Mac's `~/.config/herdr/config.toml` (`herdr-dev` for a
 dev build). The local offer appends the same three-row block only when no
 `[ui.sidebar.agents]` table or `rows` key exists, and refuses otherwise. It

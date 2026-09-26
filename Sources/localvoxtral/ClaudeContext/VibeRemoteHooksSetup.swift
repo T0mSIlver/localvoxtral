@@ -57,7 +57,6 @@ extension ClaudeRemoteEnrollmentService {
     public enum VibeHooksOutcome: Sendable, Equatable {
         case installed
         case updated
-        case removed
         /// The host has no Vibe, so nothing was written. Not a failure: the
         /// host's setup run installs what it finds.
         case vibeNotFound
@@ -281,36 +280,6 @@ extension ClaudeRemoteEnrollmentService {
         activation += Self.writeFileScript(path: "$D/token", content: token, mode: "600", seed: "TOKEN")
         try runVibe(activation, sshHostAlias: sshHostAlias, command: "activate Vibe hooks", token: token, timeout: timeout)
         return probe.installedVersion == nil ? .installed : .updated
-    }
-
-    /// Take the block out of the host's `hooks.toml` and delete the files,
-    /// token included.
-    public func removeRemoteVibeHooks(
-        sshHostAlias: String,
-        timeout: TimeInterval = defaultRemoteSetupTimeout
-    ) throws -> VibeHooksOutcome {
-        let probe = try probeVibeHost(sshHostAlias: sshHostAlias, token: "", timeout: timeout)
-        var script = Self.vibeMutationPreamble(probe: probe)
-        if let existing = probe.hooksText {
-            guard let remaining = try? VibeHooksBlockEditor.remote.hooksByRemoving(from: existing) else {
-                throw vibeFailure(
-                    "remove Vibe hooks", 48,
-                    "The host's ~/.vibe/hooks.toml needs a manual fix before the hooks can come out.", ""
-                )
-            }
-            if remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                script += "rm -f \"$H\"\n"
-            } else if remaining != existing {
-                script += "MODE=$(stat -c %a \"$H\" 2>/dev/null || stat -f %Lp \"$H\")\n"
-                script += Self.writeFileScript(path: "$H", content: remaining, mode: "\"$MODE\"", seed: "HOOKS")
-            }
-        }
-        // Block first, files second: the reverse would leave hooks.toml naming
-        // a script that is gone if the run died in between.
-        script += "rm -f \"$D/token\" \"$D/port\" \"$D/post.sh\" \"$D/compact.py\"\n"
-        script += "rmdir \"$D\" 2>/dev/null || :\n"
-        try runVibe(script, sshHostAlias: sshHostAlias, command: "remove Vibe hooks", token: "", timeout: timeout)
-        return .removed
     }
 
     /// An error whose description is the sentence the alert shows. The model's

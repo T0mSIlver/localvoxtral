@@ -203,7 +203,7 @@ final class TerminalScreenAppleScriptCaptureTests: XCTestCase {
         // Control scalars stripped, trailing padding compacted, blank runs
         // collapsed — and the head capped at the same absolute ceiling.
         let raw = "line one   \u{7}\n\n\n\nline two\t\u{1B}[31m"
-            + String(repeating: "x", count: TerminalScreenAXReader.screenCharacterCap)
+            + String(repeating: "x", count: TerminalScreenText.screenCharacterCap)
         TerminalScreenAppleScriptReader.debugContentsReadOverride = { _, _ in raw }
         TerminalScreenContextSource.debugFrontmostTargetOverride = { self.iterm2 }
         let capture = TerminalScreenContextSource.captureAtStart(
@@ -211,13 +211,13 @@ final class TerminalScreenAppleScriptCaptureTests: XCTestCase {
             endpointURL: loopback,
             isAccessibilityTrusted: true
         )
-        let expected = TerminalScreenAXReader.sanitizedScreenText(raw)
+        let expected = TerminalScreenText.sanitizedScreenText(raw)
         XCTAssertNotNil(expected)
         XCTAssertEqual(
             capture?.text, expected,
             "AppleScript text must be byte-identical to the AX pipeline's form"
         )
-        XCTAssertEqual(capture?.text.count, TerminalScreenAXReader.screenCharacterCap)
+        XCTAssertEqual(capture?.text.count, TerminalScreenText.screenCharacterCap)
     }
 
     func testEmptyOrWhitespaceOnlyContentsIsNotContext() {

@@ -22,6 +22,7 @@ struct PolishdMain {
         /// Default 2 = one per prompt profile (standard/agent); 1 reproduces
         /// the original single-slot behavior for tests.
         var promptCacheSlots = 2
+        var speculativeDecoding: SpeculativeDecodingMode = .off
     }
 
     static func main() async {
@@ -72,6 +73,11 @@ struct PolishdMain {
                     throw OptionError.invalidValue(flag)
                 }
                 options.promptCacheSlots = slots
+            case "--speculative-decoding":
+                guard let mode = SpeculativeDecodingMode(rawValue: try value(for: flag)) else {
+                    throw OptionError.invalidValue(flag)
+                }
+                options.speculativeDecoding = mode
             default:
                 throw OptionError.unknownFlag(flag)
             }
@@ -134,7 +140,8 @@ struct PolishdMain {
         let model = try await MLXPolishModel.load(
             directory: modelDirectory,
             defaultMaxTokens: options.defaultMaxTokens,
-            promptCacheSlots: options.promptCacheSlots
+            promptCacheSlots: options.promptCacheSlots,
+            speculativeDecoding: options.speculativeDecoding
         )
         PolishdLog.info(
             "model loaded in \(loadStart.duration(to: .now)); \(memorySummary()); "

@@ -1,5 +1,7 @@
 import ClaudeContextWire
+#if canImport(CoreGraphics)
 import CoreGraphics
+#endif
 import Foundation
 
 /// Resolves the focused pane to a live Claude session, and authorizes raw
@@ -62,7 +64,6 @@ struct ClaudeSessionJoinResolver {
     let panelSleepFor: HerdrPanelBindingProbe.SleepFor
     let panelRandomBits: HerdrPanelBindingProbe.RandomBits
     let indicatorSleepFor: HerdrPanelMicIndicator.SleepFor
-    let reportPanelStatus: @MainActor (HerdrPanelConfigurationStatus) -> Void
 
     /// - Parameters:
     ///   - focusedTerminalTTY: reads the focused pane's controlling TTY for a
@@ -90,7 +91,8 @@ struct ClaudeSessionJoinResolver {
     ///   - focusedWindowID: the join's window identity, from its own
     ///     PID-pinned AX read. It exists to pair a screen capture with the
     ///     join that authorized it; nil means unknown, which the authorizer
-    ///     refuses rather than treats as a match (review F2).
+    ///     refuses rather than treats as a match (review F2). It defaults to
+    ///     unknown; the app wires `TerminalScreenAXReader` explicitly.
     ///   - herdrClientProbe: reads the local process table to bind the focused
     ///     Ghostty surface to a herdr client. It DEFAULTS TO ABSTAIN: a test
     ///     that forgets to inject must never consult the live process table.
@@ -138,9 +140,7 @@ struct ClaudeSessionJoinResolver {
         focusedTerminalTTY: @escaping (String) async -> String? = { _ in nil },
         focusedBrowserTabURL: @escaping (String) async -> String? = { _ in nil },
         focusedDesktopSessionURL: @escaping (pid_t) async -> String? = { _ in nil },
-        focusedWindowID: @escaping (pid_t) -> CGWindowID? = {
-            TerminalScreenAXReader.focusedWindowIdentity(applicationPID: $0)
-        },
+        focusedWindowID: @escaping (pid_t) -> CGWindowID? = { _ in nil },
         herdrClientProbe: @escaping @Sendable (String) -> Bool = { _ in false },
         herdrFederation: @escaping @Sendable () -> HerdrMachineFederation = { .notFederated },
         herdrClientSurfaceCount: @escaping @Sendable () -> Int? = { nil },
@@ -170,8 +170,7 @@ struct ClaudeSessionJoinResolver {
         },
         indicatorSleepFor: @escaping HerdrPanelMicIndicator.SleepFor = { seconds in
             try? await Task.sleep(for: .seconds(seconds))
-        },
-        reportPanelStatus: @escaping @MainActor (HerdrPanelConfigurationStatus) -> Void = { _ in }
+        }
     ) {
         self.registry = registry
         self.focusedTerminalTTY = focusedTerminalTTY
@@ -197,7 +196,6 @@ struct ClaudeSessionJoinResolver {
         self.panelSleepFor = panelSleepFor
         self.panelRandomBits = panelRandomBits
         self.indicatorSleepFor = indicatorSleepFor
-        self.reportPanelStatus = reportPanelStatus
     }
 
     /// The join for `target`, or nil on any abstention.

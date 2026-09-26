@@ -62,6 +62,8 @@ expect true "the ssh -L forward runs the lane" \
   Sources/localvoxtral/ClaudeContext/ClaudeRemoteHerdrForward.swift
 expect true "forward supervision runs the lane" \
   Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardSupervisor.swift
+expect true "the forward process seam, split from the supervisor, runs the lane" \
+  Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardProcess.swift
 expect true "ssh -G canonicalization runs the lane" \
   Sources/localvoxtral/ClaudeContext/SSHDestinationCanonicalizer.swift
 expect true "the remote herdr config patch runs the lane" \

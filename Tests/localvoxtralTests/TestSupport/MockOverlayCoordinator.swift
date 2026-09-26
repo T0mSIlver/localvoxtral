@@ -24,12 +24,14 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     /// Runs inside `commitIfNeeded`, for tests that order the commit against
     /// what follows it.
     var onCommit: (() -> Void)?
+    /// Runs after each `refresh` is recorded, for tests that wait for the
+    /// buffer to show a text.
+    var onRefresh: ((BufferCall) -> Void)?
     private var commitBufferText = ""
     var dismissHoldVisibilities: [TimeInterval] = []
     var dismissAfterHoldCallCount: Int { dismissHoldVisibilities.count }
     var lastDismissAfterHoldMinimumVisibility: TimeInterval? { dismissHoldVisibilities.last }
     var resetCallCount = 0
-    var captureLiveCommitTargetAppPIDCallCount = 0
     var markPolishedCalls: [Bool] = []
 
     func resolveAnchorNow() -> OverlayAnchor {
@@ -51,10 +53,10 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     }
 
     func refresh(displayBufferText: String, commitBufferText: String) {
-        refreshCalls.append(
-            BufferCall(displayText: displayBufferText, commitText: commitBufferText)
-        )
+        let call = BufferCall(displayText: displayBufferText, commitText: commitBufferText)
+        refreshCalls.append(call)
         self.commitBufferText = commitBufferText
+        onRefresh?(call)
     }
 
     @discardableResult
@@ -76,9 +78,7 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
         resetCallCount += 1
     }
 
-    func captureLiveCommitTargetAppPID() {
-        captureLiveCommitTargetAppPIDCallCount += 1
-    }
+    func captureLiveCommitTargetAppPID() {}
 
     func markPolished(_ polished: Bool) {
         markPolishedCalls.append(polished)

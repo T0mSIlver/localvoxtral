@@ -4,22 +4,22 @@ on:
   workflow_dispatch:
   schedule:
     # Evening retry ladder anchored at 20:00 Paris (owner request,
-    # 2026-07-20): the AX drill needs an UNLOCKED GUI session, and the old
-    # 04:00 slot always found the MacBook locked (every window interaction
-    # false-reds — run 29722553773). Each slot runs the guard below and
-    # skips green when the Mac is on battery power (personal machine — owner
-    # request, 2026-07-24), the screen is locked, or an earlier slot's drill
-    # already ran and passed (a guard-skip does NOT count — it also
-    # concludes `success`, so the guard checks the drill step, not the run),
-    # so at most one real drill runs per day, at whichever slot
-    # finds the Mac unlocked. GitHub cron is UTC: 18:00 UTC = 20:00 Paris
+    # 2026-07-20): the e2e dictation needs an UNLOCKED GUI session on the
+    # owner's Mac, and the old 04:00 slot always found the MacBook locked
+    # (every window interaction false-reds — run 29722553773). Each slot runs
+    # the guard in the e2e-dictation job and skips green when the Mac is on
+    # battery power (personal machine — owner request, 2026-07-24), the
+    # screen is locked, or an earlier slot's dictation was already scored
+    # (see scripts/ci/ui-smoke-guard.sh), so at most one real dictation runs
+    # per day, at whichever slot finds the Mac unlocked. The hosted AX drill
+    # has no lock to wait for and runs at the first slot only. GitHub cron is UTC: 18:00 UTC = 20:00 Paris
     # in summer (CEST), 19:00 in winter (CET) — the lane needs "evening,
     # Mac likely unlocked", not a precise hour, so DST drift is fine.
     - cron: "0 18 * * *"
     - cron: "30 19 * * *"
     - cron: "0 21 * * *"
   # UI-affecting PRs get automated proof on demand: add the needs-ui-smoke
-  # label (re-add it to rerun after new pushes).
+  # label (re-add it to rerun after new pushes). Both jobs run.
   pull_request:
     types: [labeled]
 
@@ -33,7 +33,87 @@ permissions:
   actions: read
 
 jobs:
-  ui-smoke:
+  # The AX drill (scripts/ui-smoke.sh) on a GitHub-hosted runner (#573): it
+  # forces External URL mode, starts no dictation and has polishing off, so it
+  # needs no API key, microphone, Metal or backend, and reaches no server. The
+  # hosted image pre-grants Accessibility and Screen Recording to bash and
+  # osascript, which is what the drill's TCC preflight and System Events calls
+  # run as. It needs no unlocked Mac and no fork check: a hosted runner never
+  # sees the owner's machine.
+  ax-drill:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 18 * * *') ||
+      (github.event_name == 'pull_request' && github.event.label.name == 'needs-ui-smoke')
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history + tags so package_app.sh can git-describe the version.
+          fetch-depth: 0
+
+      - name: Record runner
+        # About 30 % of hosted macOS runners have no audio device. The drill
+        # must not depend on one; this line says which kind a red run had.
+        run: |
+          xcodebuild -version | tee -a "$GITHUB_STEP_SUMMARY"
+          if system_profiler SPAudioDataType 2>/dev/null | grep -q 'Input Channels'; then
+            echo "Audio input device: present" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Audio input device: none" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Package app bundle
+        # Ad-hoc signed and without the MLX helpers, like build-test's fork-PR
+        # bundle: the signing identity lives in the owner's keychain and the
+        # image has no MetalToolchain. The drill runs in External URL mode, so
+        # it launches neither helper.
+        env:
+          LOCALVOXTRAL_SKIP_POLISHD: "1"
+          LOCALVOXTRAL_SKIP_SPEECHD: "1"
+          LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY: "0"
+        run: ./scripts/package_app.sh release
+
+      - name: Run AX UI smoke
+        env:
+          # The ad-hoc bundle has no Team ID, so its first login-keychain read
+          # would raise the ACL prompt. The drill needs no API key.
+          LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN: "1"
+        run: |
+          # Launch a copy from outside the workspace with .build hidden, as
+          # build-test's launch smoke does: a same-tree launch passes even when
+          # the binary's resource lookup depends on the builder's .build path,
+          # which crashes on every other machine (#87).
+          SMOKE_DIR="$(mktemp -d "$RUNNER_TEMP/ui-smoke.XXXXXX")"
+          ditto dist/localvoxtral.app "$SMOKE_DIR/localvoxtral.app"
+          mv .build .build.smoke-hidden
+          trap 'mv .build.smoke-hidden .build' EXIT
+          mkdir -p logs
+          set -o pipefail
+          ./scripts/ui-smoke.sh "$SMOKE_DIR/localvoxtral.app" 2>&1 | tee logs/ui-smoke.log
+
+      - name: Capture the screen
+        if: failure()
+        run: |
+          mkdir -p logs
+          screencapture -x logs/ui-smoke-screen.png || true
+
+      - name: Upload UI smoke log
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ui-smoke-log
+          path: |
+            logs/ui-smoke.log
+            logs/ui-smoke-screen.png
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The e2e dictation check stays on the owner's Mac: it needs the STT server,
+  # the Accessibility grant of the signed bundle and an unlocked GUI session.
+  e2e-dictation:
     # Same security invariant as ci.yml: fork PRs must never reach the
     # self-hosted runner, label or no label.
     if: >-
@@ -41,8 +121,7 @@ jobs:
       (github.event.label.name == 'needs-ui-smoke' &&
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, macOS, ARM64]
-    # The AX drill, a second (dogfood) packaging pass and the e2e dictation.
-    timeout-minutes: 35
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -72,15 +151,9 @@ jobs:
           echo "$DECISION" >> "$GITHUB_OUTPUT"
           REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
           if [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" == "true" ]]; then
-            echo "UI smoke slot: RUNNING ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "E2E dictation slot: RUNNING ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           else
-            echo "UI smoke slot: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
-          fi
-          E2E_REASON="$(sed -n 's/^e2e_reason=//p' <<<"$DECISION")"
-          if [[ "$(sed -n 's/^e2e_run=//p' <<<"$DECISION")" == "true" ]]; then
-            echo "E2E dictation slot: RUNNING ($E2E_REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
-          else
-            echo "E2E dictation slot: SKIPPED ($E2E_REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "E2E dictation slot: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Clean stale outputs (keep build caches)
@@ -89,40 +162,17 @@ jobs:
         #
         # The guard condition compares `!= 'false'` (not `== 'true'`) so a
         # missing output fails OPEN: if the guard ever exits 0 without
-        # emitting run=..., the drill runs rather than every slot silently
-        # skipping green forever. Same condition on the two steps below; the
-        # e2e dictation steps read `e2e_run` the same way, and this step runs
-        # when either check does.
-        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false' || steps.guard.outputs.e2e_run != 'false'
+        # emitting run=..., the dictation runs rather than every slot
+        # silently skipping green forever. Same condition on the steps below.
+        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         run: ./scripts/ci/clean-stale-outputs.sh
-
-      - name: Package app bundle
-        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
-        env:
-          LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
-        run: ./scripts/package_app.sh release
-
-      - name: Run AX UI smoke
-        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
-        env:
-          # Launches the real bundle on the owner's Mac: a fresh build's first
-          # keychain read is an ACL partition mismatch (no Team ID), and macOS
-          # answers that with a modal prompt on his desktop. The lane needs no
-          # API key.
-          LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN: "1"
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          ./scripts/ui-smoke.sh 2>&1 | tee logs/ui-smoke.log
 
       - name: Package dogfood app bundle (dictates from a file)
         # The e2e dictation check needs the instrumented build: only it can
         # dictate from a WAV in place of the microphone (docs/dogfood-builds.md).
         # Enablement is the step env, never the .dogfood-capture-enable marker
         # file, for the reason ci.yml gives: this workspace is persistent.
-        # `!cancelled()` so a red smoke drill does not hide a dictation
-        # regression, or the other way round.
-        if: ${{ !cancelled() && (github.event_name != 'schedule' || steps.guard.outputs.e2e_run != 'false') }}
+        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         env:
           LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
           LOCALVOXTRAL_DOGFOOD: "1"
@@ -132,11 +182,12 @@ jobs:
         # The packaged app hears a WAV, dictates into a throwaway window, and
         # the inserted text is scored (scripts/e2e-dictation.sh). Exit 3 means
         # the Mac was not in a state to run it (locked, no STT server, no
-        # Accessibility grant): a scheduled slot reports that and stays green,
+        # Accessibility grant, a lagging speech service): a scheduled slot
+        # reports that and stays green,
         # like the guard's own skips, while a dispatch or a label is an operator
         # asking for a result and goes red.
         id: e2e
-        if: ${{ !cancelled() && (github.event_name != 'schedule' || steps.guard.outputs.e2e_run != 'false') }}
+        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         # A job timeout SIGKILLs the step, and then nothing restores the
         # owner's defaults until the next lane run. Two scenarios take about
         # two minutes; this bound ends a wedged run while the job can still
@@ -176,12 +227,3 @@ jobs:
           path: logs/e2e-dictation.log
           if-no-files-found: ignore
           retention-days: 14
-
-      - name: Upload UI smoke log
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ui-smoke-log
-          path: logs/ui-smoke.log
-          retention-days: 14
-

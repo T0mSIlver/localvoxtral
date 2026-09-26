@@ -46,8 +46,6 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         [ui.sidebar.agents]
         rows = [["state_icon", "workspace", "tab"], ["agent"], [{ token = "$lvmark", dim = true }]]
         """
-    static let herdrPanelExistingConfigMarker =
-        "localvoxtral: existing herdr agents/sidebar rows configuration; no changes made"
 
     let runner: Runner?
     /// Whether remote actions can run at all. A row whose button could only
@@ -58,20 +56,17 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// Nil (the default) disables `configureLocalHerdrPanel`, exactly as a nil
     /// runner disables every remote action.
     let localHerdrConfigFileSystem: (any ClaudeLocalHerdrConfigFileSystem)?
-    let now: @Sendable () -> Date
     let environmentProbeValue: @Sendable () -> String
 
     public init(
         runner: Runner? = nil,
         sshConfigFileSystem: (any ClaudeRemoteSSHConfigFileSystem)? = nil,
         localHerdrConfigFileSystem: (any ClaudeLocalHerdrConfigFileSystem)? = nil,
-        now: @escaping @Sendable () -> Date = Date.init,
         environmentProbeValue: @escaping @Sendable () -> String = { UUID().uuidString }
     ) {
         self.runner = runner
         self.sshConfigFileSystem = sshConfigFileSystem
         self.localHerdrConfigFileSystem = localHerdrConfigFileSystem
-        self.now = now
         self.environmentProbeValue = environmentProbeValue
     }
 

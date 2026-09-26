@@ -22,7 +22,8 @@ stage() {
 # Normal case: transient outputs removed, caches preserved.
 stage
 mkdir -p "$TMP_DIR/tree/.build" "$TMP_DIR/tree/PolishHelper/.build" \
-  "$TMP_DIR/tree/dist" "$TMP_DIR/tree/logs"
+  "$TMP_DIR/tree/dist" "$TMP_DIR/tree/logs" "$TMP_DIR/tree/.build-dogfood" \
+  "$TMP_DIR/tree/.build/debug/localvoxtralTests.build"
 touch "$TMP_DIR/tree/.build/cache-marker" \
   "$TMP_DIR/tree/format-lint.txt" "$TMP_DIR/tree/default.profraw" \
   "$TMP_DIR/tree/.agent-eval-e2e-enable.json" \
@@ -30,7 +31,8 @@ touch "$TMP_DIR/tree/.build/cache-marker" \
 "$TMP_DIR/tree/scripts/ci/clean-stale-outputs.sh"
 [[ -f "$TMP_DIR/tree/.build/cache-marker" ]] || fail "build cache was removed"
 [[ -d "$TMP_DIR/tree/PolishHelper/.build" ]] || fail "helper build cache was removed"
-for gone in dist logs format-lint.txt default.profraw \
+[[ -d "$TMP_DIR/tree/.build/debug/localvoxtralTests.build" ]] || fail "test module was removed"
+for gone in dist logs format-lint.txt default.profraw .build-dogfood \
   .agent-eval-e2e-enable.json .speechd-integration-enable.json; do
   [[ ! -e "$TMP_DIR/tree/$gone" ]] || fail "$gone survived cleanup"
 done

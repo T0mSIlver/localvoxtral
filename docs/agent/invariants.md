@@ -209,7 +209,7 @@ there is not.
   hand; a remembered term never outranks a live
   source (`.learned` is LAST in `PolishContextSource`, so a contested span
   abstains); unpinned terms decay at 90 days; and Text processing →
-  Advanced → Learned terms → Forget drops the file (Show forgets one). Verification candidates are never
+  Advanced → Terms learned from polishing → Forget drops the file (Show forgets one). Verification candidates are never
   recorded — they are questions put to the model, not answers. A dictation
   whose project cannot be established teaches nothing at all, which is not
   the same as one with no project: the latter teaches the shared bucket,
@@ -1582,7 +1582,6 @@ there is not.
   a Vibe installed later gets its hooks: the run is offered again after a
   relaunch. Removing a host contacts nothing, so the hook files stay there
   with a token that no longer authenticates, as the plugin does.
-  `removeRemoteVibeHooks` still exists and nothing in the app calls it.
   Host setup (`setUpRemoteVibeHooks`) follows the enrollment rules — BatchMode
   ssh, script on stdin, token in no argv on this Mac, fixed error strings — with
   one difference worth knowing: it EDITS A USER FILE on the host,

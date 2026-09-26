@@ -37,10 +37,7 @@ struct GeneralSettingsPane: View {
                         .accessibilityIdentifier("settings.general.loginItem")
                 }
 
-                SettingsFieldRow(
-                    title: "Open the window at launch",
-                    help: "It opens on History."
-                ) {
+                SettingsFieldRow(title: "Open the window at launch") {
                     Toggle("", isOn: $settings.opensWindowAtLaunch)
                         .labelsHidden()
                         .accessibilityIdentifier("settings.general.openWindowAtLaunch")

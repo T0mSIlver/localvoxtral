@@ -1,5 +1,7 @@
 import ClaudeContextWire
+#if canImport(CoreGraphics)
 import CoreGraphics
+#endif
 import Foundation
 
 extension ClaudeSessionJoinResolver {
@@ -336,7 +338,6 @@ extension ClaudeSessionJoinResolver {
                     // user is not looking at THAT server, not that its config
                     // is missing.
                     if cause == .settleTimeout, !speculative, socketPaths.count == 1 {
-                        reportPanelStatus(.likelyNotConfigured)
                         // Named as CANDIDATES, not as a finding. A stamped
                         // token that did not render has at least four causes
                         // and this side cannot tell them apart (herdr exposes
@@ -371,7 +372,6 @@ extension ClaudeSessionJoinResolver {
             }
         }
 
-        if !matches.isEmpty { reportPanelStatus(.ok) }
         guard matches.count <= 1 else {
             HerdrPanelBindingProbe.noteAbstention(.multiHostDoubleMatch)
             for match in matches {

@@ -245,10 +245,12 @@ jobs:
             ./scripts/ci/test-launch-app-shim.sh \
             ./scripts/ci/test-word-accuracy.sh \
             ./scripts/ci/test-e2e-dictation-preconditions.sh \
+            ./scripts/ci/test-speech-service-probe.sh \
             ./scripts/ci/test-ac-power-guard.sh \
             ./scripts/ci/test-llm-lane-filter.sh \
             ./scripts/ci/test-herdr-lane-filter.sh \
             ./scripts/ci/test-helper-lane-filter.sh \
+            ./scripts/ci/test-dogfood-filter.sh \
             ./scripts/ci/test-stt-lane-filter.sh \
             ./scripts/ci/test-herdr-fixture-recovery.sh \
             ./scripts/ci/test-clean-stale-outputs.sh \
@@ -562,8 +564,11 @@ jobs:
   # GitHub-hosted Ubuntu, every event, every contributor (#545). What builds
   # and runs without a Mac: every shell suite under scripts/ci, and the
   # Linux-buildable Swift targets (localvoxtralCore, the Claude hook publisher)
-  # with their tests. Not a required check yet: build-test still runs the
-  # shell suites, so nothing that gated a merge before stops gating it.
+  # with their tests. A required check on main. build-test runs the shell
+  # suites too, on purpose: the scripts they test run on the Mac under
+  # /bin/bash 3.2 and BSD tools, and only a macOS runner reproduces that
+  # (test-ui-gate.sh, test-run-supervised-command.sh and
+  # test-build-gate-process-cleanup.sh each guard a bash 3.2 failure).
   #
   # The shell suites are taken by glob, not listed, so a new one runs here
   # without a workflow edit; on Linux the whole set, test-ui-gate.sh included,
@@ -585,6 +590,51 @@ jobs:
           docker run --rm -v "$PWD:/src" -w /src \
             swift:6.2.0-bookworm@sha256:1fc848c3953417e3ba101ff35458fc0ad048b2401899fd51853bc5979f6220f5 \
             ./scripts/core-tests-linux.sh
+
+  # The dogfood capture suite. The capture is behind a COMPILE flag
+  # (Package.swift), so neither it nor its tests exist in the unit suite,
+  # which compiles the shipping shape; without this job nothing in CI would
+  # build it. The app target needs AppKit, so this is hosted macOS, not
+  # Linux. Moved off mac-lanes (#545): a cold debug build here costs about as
+  # much as build-test's, and runs beside it. No build cache: the define
+  # changes what the app and test modules contain, so it could not share
+  # build-test's, and a second one would double the main-push saves. Not a
+  # required check. A PR that changes no Swift input skips the build
+  # (scripts/ci/dogfood-filter.sh); a push to main and a dispatch always run.
+  dogfood:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Decide dogfood scope
+        id: dogfood_scope
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -uo pipefail
+          FILES="$RUNNER_TEMP/dogfood-changed-files.txt"
+          : > "$FILES"
+          # A diff of two trees needs no history, so a depth-1 fetch of the
+          # base is enough. Any failure leaves the list empty, and the filter
+          # runs the job on an empty list.
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" && -n "$PR_BASE_SHA" ]] \
+              && git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"; then
+            git diff --name-only --no-renames "$PR_BASE_SHA" HEAD -- > "$FILES" || : > "$FILES"
+          fi
+          if ! DECISION="$(./scripts/ci/dogfood-filter.sh "$FILES" "$GITHUB_EVENT_NAME")"; then
+            DECISION=$'run=true\nreason=dogfood filter failed — failing open'
+          fi
+          echo "$DECISION" >> "$GITHUB_OUTPUT"
+          echo "Dogfood suite: $(sed -n 's/^run=//p' <<<"$DECISION") ($(sed -n 's/^reason=//p' <<<"$DECISION"))" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Dogfood capture suite (instrumented build)
+        if: steps.dogfood_scope.outputs.run != 'false'
+        env:
+          LOCALVOXTRAL_DOGFOOD: "1"
+        run: swift test --build-system native --filter 'Dogfood'
 
   # EVERYTHING THAT NEEDS THIS PARTICULAR MAC, and nothing else.
   #
@@ -611,9 +661,16 @@ jobs:
   # on the current head. A draft that needs the signed artifact (try-pr.sh) or
   # a live lane carries the literal [mac-lanes] in its PR BODY. The body and
   # not the commit message, because a job-level `if:` sees only the event.
+  #
+  # Skips a push to main. Every PR that merged ran this job when it went
+  # ready, and the nightly release (release.yml) runs the unit suite, the live
+  # STT lane, packaging and the launch smoke on main every night, so a
+  # push-time rerun only took the Mac for about five minutes per merge. A
+  # dispatch still runs it: `gh workflow run CI --ref main -f herdr=false`
+  # builds main's signed bundle for try-pr.sh.
   mac-lanes:
     if: >-
-      github.event_name != 'pull_request' ||
+      github.event_name == 'workflow_dispatch' ||
       (github.event.pull_request.head.repo.full_name == github.repository &&
        (!github.event.pull_request.draft || contains(github.event.pull_request.body, '[mac-lanes]')))
     runs-on: [self-hosted, macOS, ARM64]
@@ -754,11 +811,13 @@ jobs:
         # because the owner and parallel worktrees may run legitimate tests.
         run: ./scripts/ci/cleanup-stale-test-processes.sh "$GITHUB_WORKSPACE"
 
-      - name: Decide LLM eval lane (path filter + [run-llm-eval] marker)
+      - name: Decide LLM eval lane (path filter + run and skip markers)
         # CI must not pay ~8 min of 4B weight-loading + live inference on
         # every push: the polishd live-model integration step below runs only
         # when the diff touches LLM-relevant paths, or when the PR body /
         # head commit message contains the literal marker [run-llm-eval].
+        # A [skip-llm-eval: <reason>] marker waives a path match; the waiver
+        # is raised as a warning annotation carrying its reason.
         # The path list and the matching logic live in
         # scripts/ci/llm-lane-filter.sh (kept out of the workflow so it is
         # testable locally); the human-judgment rule is docs/agent/test-tiers.md
@@ -827,6 +886,12 @@ jobs:
           else
             echo "LLM eval lane: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
+          # A waiver, or a skip marker that did not take, is worth an
+          # annotation on the run page, not just a line in the step log.
+          case "$(sed -n 's/^skip_marker=//p' <<<"$DECISION")" in
+            waived) echo "::warning title=LLM eval lane WAIVED::$REASON" ;;
+            no-reason|overridden) echo "::notice title=LLM eval lane skip marker not applied::$REASON" ;;
+          esac
 
       - name: Decide speechd integration lane (path filter + [run-speechd-integration] marker)
         # Real speechd inference loads the multi-GB Voxtral model on the
@@ -1171,30 +1236,6 @@ jobs:
         # is sound and scripts/ci/helper-lane-filter.sh for the rules.
         if: steps.ci_scope.outputs.docs_only != 'true' && steps.helper_lanes.outputs.speech_run == 'true'
         run: swift test --build-system native --package-path SpeechHelper
-
-      - name: Dogfood capture suite (instrumented build)
-        # The dogfooding capture is behind a COMPILE flag (Package.swift), so
-        # neither it nor its tests exist in any of the lanes above — the normal
-        # unit suite compiles the shipping shape, which is the point. Without
-        # this step the capture would rot silently: nothing else in CI ever
-        # builds it, and it is only ever exercised by hand.
-        #
-        # Kept on the Mac, matching the helper suites: it is a second full
-        # compile of the app target, which a cold hosted runner would pay
-        # from scratch.
-        #
-        # Its OWN scratch path, never the shared .build. The define changes
-        # what the app and test modules contain, and SwiftPM did not recompile
-        # the test objects when the define went away again: with `clean:
-        # false` the next run's first Swift step on this workspace linked the
-        # previous run's dogfood-only `DogfoodControlProtocolTests.swift.o`
-        # against a non-dogfood app module and died with undefined symbols
-        # (runs 34146743103 and 34147271131, 2026-09-07). Two caches cost disk,
-        # not correctness; one cache cost every Mac lane.
-        if: steps.ci_scope.outputs.docs_only != 'true'
-        env:
-          LOCALVOXTRAL_DOGFOOD: "1"
-        run: swift test --build-system native --filter 'Dogfood' --scratch-path .build-dogfood
 
       - name: Ensure Metal toolchain
         # Xcode 26 ships the Metal compiler as a separate component, and its

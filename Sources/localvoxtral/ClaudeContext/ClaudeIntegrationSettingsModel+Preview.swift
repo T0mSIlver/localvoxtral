@@ -43,13 +43,10 @@ extension ClaudeIntegrationSettingsModel {
         guard let plan = try? ClaudeRemoteEnrollmentService.plan(
             host: host,
             sshHostAlias: "build-host",
-            token: token,
             listenerPort: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port,
             remoteForwardPort: remoteForwardPort
         ) else { return }
         enrollmentConfirmation = nil
-        enrollmentStepStatuses = []
-        enrollmentResultsAction = nil
         verificationChecks = []
         presentedPlan = EnrollmentPresentation(
             host: host,
@@ -61,11 +58,5 @@ extension ClaudeIntegrationSettingsModel {
             isPreview: true
         )
         Log.claudeContext.info("Claude remote enrollment sheet presented in preview mode")
-    }
-
-    public static func redactedRemoteCommands(for presentation: EnrollmentPresentation) -> String {
-        presentation.plan.remoteCommands
-            .map { ClaudeRemoteTokenRedaction.redact($0, token: presentation.token) }
-            .joined(separator: "\n")
     }
 }

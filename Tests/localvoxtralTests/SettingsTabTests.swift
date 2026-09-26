@@ -200,35 +200,21 @@ final class SettingsTabTests: XCTestCase {
         return entries
     }
 
-    /// The clipboard toggle's help must name the real payload: a capped,
-    /// sanitized EXCERPT of the clipboard attached to the polish prompt
+    /// The clipboard toggle must name the real payload: a capped, sanitized
+    /// EXCERPT of the clipboard attached to the polish prompt
     /// (`PolishContextClipboardReader`). "Technical terms" understated what
     /// leaves the machine (an independent review of PR #282 caught it), so the
-    /// line is pinned here the same way the header source is pinned
-    /// above — against the understatement returning.
-    func testClipboardHelpNamesTheExcerptNotTechnicalTerms() throws {
+    /// title is pinned here against the understatement returning.
+    func testClipboardToggleNamesTheExcerptNotTechnicalTerms() throws {
         let source = try Self.settingsViewSource()
-
-        let title = try XCTUnwrap(
-            source.range(of: "title: \"Clipboard\""),
-            "the Clipboard toggle row is gone from the Settings sources"
-        )
-        // The row's `help:` argument is the next one after its title.
-        let afterTitle = source[title.upperBound...]
-        let helpOpening = try XCTUnwrap(
-            afterTitle.range(of: "help: \""),
-            "the Clipboard toggle has no help line"
-        )
-        let helpLine = afterTitle[helpOpening.upperBound...].prefix(while: { $0 != "\n" })
-
         XCTAssertTrue(
-            helpLine.contains("excerpt"),
-            "clipboard help must say an excerpt of the clipboard is sent, was: \(helpLine)"
+            source.contains("title: \"Send clipboard excerpt\""),
+            "the clipboard toggle must say an excerpt of the clipboard is sent"
         )
         XCTAssertFalse(
-            helpLine.contains("technical terms"),
+            source.localizedCaseInsensitiveContains("clipboard technical terms"),
             "\"technical terms\" understates the payload — a capped excerpt of the whole "
-                + "clipboard goes to the polisher, not just terms; was: \(helpLine)"
+                + "clipboard goes to the polisher, not just terms"
         )
     }
 

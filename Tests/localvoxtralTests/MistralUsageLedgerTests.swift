@@ -133,7 +133,6 @@ final class MistralUsageLedgerTests: XCTestCase {
 
     func testSummaryLine() {
         XCTAssertEqual(MistralUsageSummary().line, "No Mistral requests")
-        XCTAssertNil(MistralUsageSummary().unpricedNote)
 
         var summary = MistralUsageSummary()
         summary.costEUR = 0.4249
@@ -148,7 +147,7 @@ final class MistralUsageLedgerTests: XCTestCase {
         XCTAssertEqual(summary.line, "< €0.01 · 1 polish")
 
         summary.unpricedCount = 2
-        XCTAssertEqual(summary.unpricedNote, "2 requests have no price and are not in the total")
+        XCTAssertEqual(summary.line, "< €0.01 + 2 unpriced · 1 polish")
     }
 
     func testDurationFormatting() {

@@ -109,6 +109,7 @@ enum ClaudeSurfaceProbeCommand {
         return ClaudeSessionJoinResolver(
             registry: registry,
             focusedTerminalTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) },
+            focusedWindowID: { TerminalScreenAXReader.focusedWindowIdentity(applicationPID: $0) },
             herdrClientProbe: { HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0) },
             herdrFederation: { HerdrMachineFederationReader.live().federation() },
             herdrClientSurfaceCount: { HerdrClientTTYProbe.clientSurfaceCount() },

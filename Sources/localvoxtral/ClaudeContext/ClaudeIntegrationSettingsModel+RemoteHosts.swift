@@ -107,7 +107,6 @@ extension ClaudeIntegrationSettingsModel {
             let plan = try ClaudeRemoteEnrollmentService.plan(
                 host: enrollment.host,
                 sshHostAlias: alias,
-                token: enrollment.token,
                 listenerPort: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port,
                 remoteForwardPort: remoteForwardPort
             )
@@ -115,8 +114,6 @@ extension ClaudeIntegrationSettingsModel {
             // a still-running earlier action can repopulate the statuses after
             // dismissPlan() cleared them.
             enrollmentConfirmation = nil
-            enrollmentStepStatuses = []
-            enrollmentResultsAction = nil
             verificationChecks = []
             presentedPlan = EnrollmentPresentation(
                 host: enrollment.host,
@@ -150,13 +147,10 @@ extension ClaudeIntegrationSettingsModel {
             let plan = try ClaudeRemoteEnrollmentService.plan(
                 host: enrollment.host,
                 sshHostAlias: alias ?? Self.unknownAliasPlaceholder,
-                token: enrollment.token,
                 listenerPort: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port,
                 remoteForwardPort: remoteForwardPort
             )
             enrollmentConfirmation = nil
-            enrollmentStepStatuses = []
-            enrollmentResultsAction = nil
             verificationChecks = []
             presentedPlan = EnrollmentPresentation(
                 host: enrollment.host,
@@ -237,7 +231,7 @@ extension ClaudeIntegrationSettingsModel {
                 )
                 manualNotes.append(
                     "This host's block is still in ~/.ssh/config.\n\n"
-                        + Self.enrollmentFailureDetail(failure, action: .insertSSHConfig)
+                        + Self.enrollmentFailureDetail(failure, subject: "SSH setup")
                 )
             }
         }

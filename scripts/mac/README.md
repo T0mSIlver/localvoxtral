@@ -450,7 +450,7 @@ scripts/mac/runner-node-resign.sh install-agent
 
 # 4. Verify:
 scripts/mac/runner-node-resign.sh status     # expect: signed x2, agent loaded
-gh workflow run ui-smoke.yml --ref main      # TCC preflight = the live probe
+gh workflow run capture-assets.yml --ref main  # drives the GUI = the live probe
 ```
 
 Caveats: there is a sub-minute window between an auto-update landing and the

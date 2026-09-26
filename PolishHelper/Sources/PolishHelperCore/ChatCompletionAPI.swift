@@ -158,6 +158,75 @@ public struct ChatCompletionMessage: Codable, Sendable, Equatable {
     }
 }
 
+/// Where a request's time went, measured inside the helper. Returned as the
+/// response's `timings` object (the name llama.cpp's server uses; clients that
+/// don't know it ignore it) so latency evals read it without streaming.
+public struct PolishTimings: Codable, Sendable, Equatable {
+    /// From the request reaching the engine (queueing included) to the first
+    /// decoded text.
+    public var firstTokenMilliseconds: Double
+    public var totalMilliseconds: Double
+    public var promptTokens: Int
+    /// Prompt tokens served from a prefix checkpoint instead of prefilled.
+    public var cachedPromptTokens: Int
+    public var completionTokens: Int
+    /// Speculative decoding only: tokens the drafter proposed, and how many
+    /// the model kept. Nil when the request decoded one token at a time.
+    public var draftTokens: Int?
+    public var acceptedDraftTokens: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case firstTokenMilliseconds = "first_token_ms"
+        case totalMilliseconds = "total_ms"
+        case promptTokens = "prompt_tokens"
+        case cachedPromptTokens = "cached_prompt_tokens"
+        case completionTokens = "completion_tokens"
+        case draftTokens = "draft_tokens"
+        case acceptedDraftTokens = "accepted_draft_tokens"
+    }
+
+    public init(
+        firstTokenMilliseconds: Double,
+        totalMilliseconds: Double,
+        promptTokens: Int,
+        cachedPromptTokens: Int,
+        completionTokens: Int,
+        draftTokens: Int? = nil,
+        acceptedDraftTokens: Int? = nil
+    ) {
+        self.firstTokenMilliseconds = firstTokenMilliseconds
+        self.totalMilliseconds = totalMilliseconds
+        self.promptTokens = promptTokens
+        self.cachedPromptTokens = cachedPromptTokens
+        self.completionTokens = completionTokens
+        self.draftTokens = draftTokens
+        self.acceptedDraftTokens = acceptedDraftTokens
+    }
+
+    /// One log line; the drafts part only when the request speculated.
+    public var summary: String {
+        var line = String(
+            format: "first token %.0f ms, total %.0f ms, prompt %d (cached %d), completion %d",
+            firstTokenMilliseconds, totalMilliseconds, promptTokens, cachedPromptTokens,
+            completionTokens)
+        if let draftTokens, let acceptedDraftTokens {
+            line += ", drafts accepted \(acceptedDraftTokens)/\(draftTokens)"
+        }
+        return line
+    }
+}
+
+/// What a responder produced for one request.
+public struct ChatReply: Sendable, Equatable {
+    public var content: String
+    public var timings: PolishTimings?
+
+    public init(content: String, timings: PolishTimings? = nil) {
+        self.content = content
+        self.timings = timings
+    }
+}
+
 public struct ChatCompletionResponse: Codable, Sendable {
     public struct Choice: Codable, Sendable {
         public var index: Int
@@ -182,12 +251,16 @@ public struct ChatCompletionResponse: Codable, Sendable {
     public var created: Int
     public var model: String
     public var choices: [Choice]
+    public var timings: PolishTimings?
 
-    public init(id: String, created: Int, model: String, content: String) {
+    public init(
+        id: String, created: Int, model: String, content: String, timings: PolishTimings? = nil
+    ) {
         self.id = id
         self.object = "chat.completion"
         self.created = created
         self.model = model
+        self.timings = timings
         self.choices = [
             Choice(
                 index: 0,

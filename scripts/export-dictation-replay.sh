@@ -3,7 +3,7 @@
 # `./scripts/remote-build.sh eval-e2e --replay EvalRecordings/replay/<set>`.
 #
 # Run it on the Mac that dictated, as the user who dictated, with
-# "Keep dictation audio" on in Settings -> History for a while first:
+# "Keep dictation audio on this Mac" on in Settings -> History for a while first:
 #
 #   ./scripts/export-dictation-replay.sh ~/Desktop/replay-2026-10-01
 #
@@ -28,7 +28,7 @@ if [[ ! -f "$STORE" ]]; then
   exit 1
 fi
 if [[ ! -d "$AUDIO" ]] || [[ -z "$(ls -A "$AUDIO")" ]]; then
-  echo "no recordings in $AUDIO: turn on Keep dictation audio in Settings -> History and dictate first" >&2
+  echo "no recordings in $AUDIO: turn on Keep dictation audio on this Mac in Settings -> History and dictate first" >&2
   exit 1
 fi
 if [[ -e "$OUT" ]]; then

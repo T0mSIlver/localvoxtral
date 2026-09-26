@@ -543,6 +543,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 focusedDesktopSessionURL: {
                     await desktopSessionReader.focusedSessionURL(applicationPID: $0)
                 },
+                focusedWindowID: { TerminalScreenAXReader.focusedWindowIdentity(applicationPID: $0) },
                 herdrClientProbe: {
                     HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0)
                 },
@@ -584,9 +585,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 herdrPanelMetadata: herdrClient,
                 readFocusedGrid: { target in
                     TerminalScreenContextSource.readVisibleScreen(target: target)?.text
-                },
-                reportPanelStatus: { [weak viewModel] status in
-                    viewModel?.claudeIntegrationSettings?.herdrPanelStatus = status
                 }
             )
             viewModel.context.claudeSessionJoinResolver = resolver

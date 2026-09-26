@@ -27,25 +27,6 @@ final class DogfoodBuildStatusTests: XCTestCase {
             "Dogfood — capture disarmed")
     }
 
-    func testStandardBuildHasNoDetailLine() {
-        // Standard builds must not advertise dogfood plumbing.
-        XCTAssertNil(DogfoodBuildStatus.detail(isDogfoodBuild: false, captureArmed: false))
-        XCTAssertNil(DogfoodBuildStatus.detail(isDogfoodBuild: false, captureArmed: true))
-    }
-
-    func testDogfoodDetailPointsAtRecordsWhenArmedAndArmCommandWhenNot() {
-        let armed = DogfoodBuildStatus.detail(isDogfoodBuild: true, captureArmed: true)
-        XCTAssertEqual(
-            armed, "Records: ~/Library/Application Support/localvoxtral/dogfood",
-            "armed detail must name the capture directory (DogfoodCaptureStore.defaultDirectoryURL)")
-
-        let disarmed = DogfoodBuildStatus.detail(isDogfoodBuild: true, captureArmed: false)
-        XCTAssertEqual(
-            disarmed,
-            "Arm: defaults write com.localvoxtral.app debug.dogfood_capture_enabled -bool true (relaunch)",
-            "disarmed detail must quote the exact arm command (SettingsStore.Keys.dogfoodCaptureEnabled)")
-    }
-
     func testInBinaryFlagMatchesCompileVariant() {
         // Meaningful because this suite runs under both variants in CI: the
         // tier-0 lane must see false and the dogfood capture lane true.

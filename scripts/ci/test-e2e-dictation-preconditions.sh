@@ -54,7 +54,8 @@ run() {
 }
 
 untouched() {
-  if grep -qE '^(defaults|open|osascript|say|swiftc|pkill) ' "$EVENTS"; then
+  # untouched <case> [allowed]: `allowed` matches events the case may cause.
+  if grep -E '^(defaults|open|osascript|say|swiftc|pkill) ' "$EVENTS" | grep -qvE "${2:-^$}"; then
     fail "$1: the run touched the machine before refusing"
   fi
 }
@@ -113,6 +114,42 @@ STUB_DOGFOOD_STAMP=true LV_SCREEN_LOCK_STATE=unlocked STUB_NC_STATUS=0 run "$WOR
 grep -qE '^swiftc .*-target arm64-apple-macos15\.0 ' "$EVENTS" \
   || fail "the target app was not compiled for arm64-apple-macos15.0"
 echo "PASS: the target app is compiled for macOS 15.0"
+
+# A speech service already lagging before the app starts is NOT RUN, and the
+# owner's app and defaults are left alone (#548).
+stub swiftc <<'STUB'
+#!/bin/sh
+echo "swiftc $*" >>"$EVENTS"
+exit 0
+STUB
+stub say <<'STUB'
+#!/bin/sh
+echo "say $*" >>"$EVENTS"
+[ "$1" = -o ] || exit 0
+exec python3 -c 'import sys, wave
+w = wave.open(sys.argv[1], "wb"); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+w.writeframes(bytes(32000)); w.close()' "$2"
+STUB
+port_file="$WORK/fake-port"
+python3 "$ROOT_DIR/scripts/ci/fake-speech-service.py" "$port_file" 4 &
+FAKE_PID=$!
+trap 'kill "$FAKE_PID" 2>/dev/null || true; rm -rf "$WORK"' EXIT
+while [ ! -s "$port_file" ]; do python3 -c 'import time; time.sleep(0.05)'; done
+: >"$EVENTS"
+set +e
+HOME="$WORK/home" PATH="$BIN:$PATH" LV_E2E_PLISTBUDDY="$BIN/plistbuddy" LV_E2E_ANNOUNCE=0 \
+  STUB_DOGFOOD_STAMP=true LV_SCREEN_LOCK_STATE=unlocked STUB_NC_STATUS=0 \
+  LV_E2E_REALTIME_ENDPOINT="ws://127.0.0.1:$(cat "$port_file")/v1/realtime" \
+  "$ROOT_DIR/scripts/e2e-dictation.sh" "$WORK/app.app" >"$WORK/out" 2>&1
+STATUS=$?
+set -e
+[ "$STATUS" -eq 3 ] || fail "a lagging speech service exited $STATUS, want 3 (not runnable): $(cat "$WORK/out")"
+grep -q "NOT RUN: The speech service .* finished a clip [0-9.]* s after the speech ended, past the 3.5 s" "$WORK/out" \
+  || fail "the NOT RUN line does not give the measured lag: $(cat "$WORK/out")"
+# Compiling the target, writing the probe's WAV and sweeping the run's own
+# target app touch nothing of the owner's.
+untouched "lagging speech service" '^(swiftc |say -o |pkill -f .*/e2e-target\.app/)'
+echo "PASS: a speech service lagging before the app starts is 'not runnable', with its lag"
 
 # The scenarios that ship must parse.
 for scenario in "$ROOT_DIR"/scripts/e2e/scenarios/*.scenario; do

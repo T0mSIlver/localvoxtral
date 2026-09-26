@@ -2,7 +2,7 @@
 
 ## `ci.yml`
 
-`ci.yml` runs **three jobs in parallel**, split by what actually needs the
+`ci.yml` runs **four jobs in parallel**, split by what actually needs the
 owner's Mac (owner decision 2026-09-05):
 
 **`build-test` — GitHub-hosted macOS (`macos-latest`), every event, every
@@ -34,18 +34,28 @@ launch-smoking the bundle signed with the stable `localvoxtral-dev` identity
 live STT-service integration (path-gated on PRs by `scripts/ci/stt-lane-filter.sh`,
 always on main), the conditional polishd/speechd/herdr live-model
 lanes, the two MLX helper unit suites (kept here for the warm Cmlx build), the
-dogfood capture suite and packaging, the UI-gate install, and the process leak
+opt-in dogfood packaging, the UI-gate install, and the process leak
 check. It keeps `clean: false` — the persistent warm `.build` that makes those
 lanes affordable.
 
 **`linux` — GitHub-hosted Ubuntu, every event, every contributor (#545).**
 Every `scripts/ci/test-*.sh` suite, taken by glob so a new suite needs no
 workflow edit, and `scripts/core-tests-linux.sh` in the `swift:6.2.0` image
-pinned by digest. It is not a required check yet, so `build-test` keeps its
-own shell-suite step and nothing that gated a merge stops gating it.
+pinned by digest. A required check on main. `build-test` keeps its own
+shell-suite step anyway: the scripts those suites test run on the Mac under
+`/bin/bash` 3.2 and BSD tools, which only a macOS runner reproduces.
 
-The jobs run in parallel and share no artifact; the two Mac jobs each compute the
-docs-only fast-path decision themselves rather than serialising behind a `needs:`.
+**`dogfood` — GitHub-hosted macOS, not required (#545).** The
+dogfood capture suite (`LOCALVOXTRAL_DOGFOOD=1 swift test --filter Dogfood`),
+the only build of the capture in CI. It needs the app target, so macOS, and it
+runs cold with no build cache. A PR that changes nothing under `Sources/` or
+`Tests/`, no `Package.swift`/`Package.resolved`, `ci.yml` or the filter
+itself skips the build (`scripts/ci/dogfood-filter.sh`); pushes to main and
+dispatches always run it.
+
+The jobs run in parallel and share no artifact; `build-test` and `mac-lanes`
+each compute the docs-only fast-path decision themselves rather than
+serialising behind a `needs:`.
 
 **Any step that launches the app on the self-hosted Mac must set
 `LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN: "1"`** (the launch smoke's
@@ -117,7 +127,8 @@ forces the full run.
 The two helper unit suites are additionally path-gated per helper
 (`scripts/ci/helper-lane-filter.sh`): a PR runs a helper's suite only when the
 diff touches that helper's directory or the shared CI plumbing, while
-dispatches and every push to main run both.
+dispatches run both. Pushes to main skip `mac-lanes` altogether; the nightly
+release covers main.
 
 One tier-0 guard deliberately survives the fast path: `AGENTS.md` and the deep
 guides are `*.md`, so a diff that touches only them is `docs_only=true` and the
@@ -188,7 +199,7 @@ merges.
 The unit-test gate mirrors `ci.yml`'s tier-0 unit step skip for skip, under
 the same supervisor. Two of those skips are load-bearing:
 `HerdrIntegrationTests` starts a live herdr server and carries no `XCTSkip`
-by design, and `AgentDictationE2EEvalTests` is the nightly eval lane. A
+by design, and `AgentDictationE2EEvalTests` is the weekly eval lane. A
 release gate must not start either by accident.
 
 Release notes: GitHub's generated PR list is always included, and a release
@@ -239,49 +250,56 @@ builds the styled DMG, verifies it with `hdiutil`, and uploads it for eyeballing
 
 ## `ui-smoke.yml`
 
-Lock-aware evening AX smoke drill on the self-hosted Mac runner: three
-scheduled slots (18:00/19:30/21:00 UTC, 20:00 Paris anchor), each gated by
-`scripts/ci/ui-smoke-guard.sh` — a slot skips green when the Mac is on
-battery power (scheduled lanes never drain the owner's MacBook,
-`scripts/ci/ac-power-guard.sh`, shared with eval-e2e.yml's nightly), when
-the screen is locked (the drill needs an unlocked GUI session), or when a
-slot's drill already ran and passed that day, so at most one real drill runs
-per day. Manual dispatch bypasses the guard; agents dispatch through
-`scripts/ui-smoke-dispatch.sh`, which refuses a run the diff does not need, a
-second run on one commit and a run within an hour of the last (rules in
-`docs/agent/test-tiers.md`, "Proving a change with the e2e dictation check").
-Also runs on same-repo PRs when the owner adds the `needs-ui-smoke` label
-(re-add it to rerun after new pushes; fork PRs never reach the self-hosted
-runner, label or no label).
-It packages the app, launches a fresh menu bar instance, verifies the status
-item, checks that launch alone does not spawn managed backend processes, opens
-Settings from the status menu, selects the three settings tabs, checks the
-managed backend rows, and verifies clean quit. Failure uploads
-`ui-smoke-log`.
+Two jobs. Both run on manual dispatch and on same-repo PRs when the owner adds
+the `needs-ui-smoke` label (re-add it to rerun after new pushes). Agents
+dispatch through `scripts/ui-smoke-dispatch.sh`, which refuses a run the diff
+does not need, a second run on one commit and a run within an hour of the last
+(rules in `docs/agent/test-tiers.md`, "Proving a change with the e2e dictation
+check"). `scripts/release.sh` refuses a stable release unless a run on the
+release commit has its `E2E dictation scored` step green (#574).
 
-The same job then repackages the app as a dogfood build and runs
-`scripts/e2e-dictation.sh`: the packaged app dictates from a WAV in place of
-the microphone into a throwaway target window, once per scenario in
-`scripts/e2e/scenarios/`, and the inserted text is scored against the spoken
-phrase. Both checks run even when the other failed. The script exits 3 when
-the Mac could not run it (locked, no STT server, no Accessibility grant), which
-a scheduled slot reports as a warning and a dispatch or label reports as a
-failure. `e2e-dictation-log` is uploaded on every run. The guard answers
-"already covered today" separately for the drill and for the dictation, so a
-red drill neither hides a missing dictation nor makes all three slots repeat
-one that passed.
+`ax-drill` runs the AX drill (`scripts/ui-smoke.sh`) on a GitHub-hosted
+`macos-latest` runner, at the 18:00 UTC slot and on every dispatch or label,
+fork PRs included. It packages the app ad-hoc signed and without the MLX
+helpers, copies the bundle out of the workspace and hides `.build` (the #87
+launch check), then launches a fresh menu bar instance, verifies the status
+item, checks that launch in External URL mode spawns no managed backend,
+opens Settings from the status menu, asserts every settings pane, and
+verifies a clean quit. The drill starts no dictation and has polishing off,
+so it reaches no server and needs no microphone; about 30 % of hosted runners
+have no audio device, and the job summary says which kind ran. The hosted
+image pre-grants Accessibility and Screen Recording to `bash` and
+`osascript`. The ad-hoc bundle has no Team ID, so the drill runs with
+`LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN=1` as it did on the Mac. Failure uploads
+`ui-smoke-log` with a screenshot.
 
-One-time runner TCC grants are required because the runner is a launchd agent
-inside the owner's GUI session:
+`e2e-dictation` stays on the self-hosted Mac: it repackages the app as a
+signed dogfood build and runs `scripts/e2e-dictation.sh`, where the packaged
+app dictates from a WAV in place of the microphone into a throwaway target
+window, once per scenario in `scripts/e2e/scenarios/`, and the inserted text
+is scored against the spoken phrase. It has three scheduled slots
+(18:00/19:30/21:00 UTC, 20:00 Paris anchor), each gated by
+`scripts/ci/ui-smoke-guard.sh`: a slot skips green when the Mac is on battery
+power (scheduled lanes never drain the owner's MacBook,
+`scripts/ci/ac-power-guard.sh`, shared with eval-e2e.yml's weekly run), when the
+screen is locked (the check needs an unlocked GUI session), or when an
+earlier slot's dictation was already scored that day. Manual dispatch and the
+label bypass the guard; fork PRs never reach this job. The script exits 3
+when the Mac could not run it (locked, no STT server, no Accessibility
+grant), which a scheduled slot reports as a warning and a dispatch or label
+reports as a failure. `e2e-dictation-log` is uploaded on every run.
+
+The GUI lanes on the self-hosted runner (`e2e-dictation` here,
+`capture-assets.yml`) need one-time TCC grants, because the runner is a
+launchd agent inside the owner's GUI session:
 
 - Accessibility: allow the self-hosted runner process so System Events can
-  drive the menu bar and settings window.
+  drive the app's windows.
 - Screen Recording: allow the self-hosted runner process so CoreGraphics
   preflight and screenshot capture can read window contents.
 
-When either grant is missing, the smoke script fails immediately with an
-actionable TCC message. Grant it once in System Settings > Privacy & Security,
-then rerun the workflow.
+Grant each once in System Settings > Privacy & Security, then rerun the
+workflow.
 
 ## `capture-assets.yml`
 
@@ -291,8 +309,20 @@ the selected ref, then uploads `assets/*.png` as the `readme-screenshots`
 artifact. Before the screenshot script lands, the workflow intentionally
 prints a clear skip message and exits successfully.
 
-It needs the same one-time Accessibility and Screen Recording TCC grants as
-`ui-smoke.yml`.
+It needs the one-time Accessibility and Screen Recording TCC grants described
+under `ui-smoke.yml`.
+
+## `view-snapshots.yml`
+
+Manual dispatch on a GitHub-hosted macOS runner, never the Mac. It runs
+`ViewSnapshotTests` (or one of its cases, the `filter` input) and uploads the
+PNGs as the `view-snapshots` artifact. Agents dispatch it through
+`scripts/view-snapshots.sh`, which finds the run by the `request_id` input
+echoed in the run name and downloads the PNGs. It restores `build-test`'s
+SwiftPM cache but never saves one. A PR that edits the workflow file runs it
+too, which is how a change to it gets proved before it reaches main (dispatch
+works only once a workflow is on the default branch). See
+`docs/agent/view-snapshots.md`.
 
 ## `codeql.yml`
 

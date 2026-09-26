@@ -170,8 +170,7 @@ struct TextProcessingSettingsPane: View {
                 }
 
                 SettingsFieldRow(
-                    title: "Learned terms",
-                    help: "Spellings the app has watched polishing fix, kept per project.",
+                    title: "Terms learned from polishing",
                     status: learnedTermStatus
                 ) {
                     HStack(spacing: 8) {
@@ -191,15 +190,9 @@ struct TextProcessingSettingsPane: View {
                     }
                 }
 
-                SettingsFieldRow(
-                    title: "Replacement dictionary",
-                    help: "Legacy"
-                ) {
+                SettingsFieldRow(title: "Replacement dictionary (legacy)") {
                     Toggle("", isOn: $settings.replacementDictionaryEnabled)
                         .labelsHidden()
-                        .help(
-                            "In Live Auto-Paste, corrections briefly retype the last word in place. In apps that do not report the cursor position, stay in place mid-dictation. A correction after a move can overwrite characters at the new position."
-                        )
                 }
 
                 SettingsFieldRow(title: "Config folder") {

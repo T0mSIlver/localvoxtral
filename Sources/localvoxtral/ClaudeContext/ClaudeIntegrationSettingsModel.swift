@@ -37,12 +37,6 @@ public final class ClaudeIntegrationSettingsModel {
     /// The update plan for the host whose automated setup panel is open.
     public internal(set) var presentedPluginUpdate: PluginUpdatePresentation?
     public internal(set) var enrollmentConfirmation: EnrollmentConfirmation?
-    public internal(set) var enrollmentStepStatuses: [EnrollmentStepStatus] = []
-    /// Which action produced `enrollmentStepStatuses`. The sheet renders each
-    /// outcome inside the section whose button the user actually clicked; a
-    /// pooled results area below step 2 is how a step-1 success went unseen
-    /// and got re-confirmed (field report 2026-07-26).
-    public internal(set) var enrollmentResultsAction: EnrollmentAction?
     public internal(set) var isPerformingEnrollmentAction = false
     /// Step 3's verdicts. Empty until the user presses Check Setup — a check
     /// nobody asked for would spawn ssh on opening a sheet.
@@ -54,9 +48,8 @@ public final class ClaudeIntegrationSettingsModel {
     var setupSummaries: [String: String] = [:]
     public var alert: DetailAlert?
 
-    /// One busy flag for the sheet, so no two actions can interleave: an
-    /// insertion, a remote setup, a plugin update, and a check all drive the
-    /// same seams and the same result rows.
+    /// One busy flag for the sheet, so no two actions can interleave: a setup
+    /// run, a local panel edit, and a check all drive the same seams.
     public var isEnrollmentBusy: Bool { isPerformingEnrollmentAction || isPerformingVerification }
 
     /// Whether THIS Mac currently holds the listener port.
@@ -76,9 +69,6 @@ public final class ClaudeIntegrationSettingsModel {
     /// log. `.ok` renders nothing — a working feature says nothing.
     var cmuxStatus: CmuxSocketStatus = .ok
 
-    /// Set by the join probe after a successful stamp whose value never
-    /// appeared in the focused grid. This is inferential, not a config read.
-    var herdrPanelStatus: HerdrPanelConfigurationStatus = .ok
     /// Whether the live herdr machine catalog has an enabled machine. The
     /// federated panel row is offered only in that state; refreshed with the
     /// rest of the pane.

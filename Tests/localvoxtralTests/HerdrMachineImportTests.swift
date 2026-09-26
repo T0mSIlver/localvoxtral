@@ -3,39 +3,6 @@ import Synchronization
 import XCTest
 @testable import localvoxtral
 
-/// A host store in memory, so no test here touches a real host list.
-private final class MemoryStore: ClaudeRemoteHostStoreIO {
-    private let contents = Mutex<[String: Data]>([:])
-    func read(from url: URL) throws -> Data? { contents.withLock { $0[url.path] } }
-    func write(_ data: Data, to url: URL) throws { contents.withLock { $0[url.path] = data } }
-}
-
-/// No-op plugin service: the import path never reaches the plugin, and the
-/// stub keeps the model from needing a `claude` install to construct.
-private final class StubPluginService: ClaudePluginInstalling {
-    func installPlugin() throws {}
-    func updatePlugin() throws {}
-    func updateInstalledPlugin() throws {}
-    func uninstallPlugin() throws {}
-}
-
-/// A listener that binds nothing, so the suite never opens the real port.
-@MainActor
-private final class StubListener: ClaudeRemoteListenerControlling {
-    private let hosts: ClaudeRemoteHostRegistry
-    var isListening = false
-    var boundPort: UInt16 = 8473
-    var rejectionSnapshot = ClaudeRemoteRejectionTally.Snapshot()
-
-    init(hosts: ClaudeRemoteHostRegistry) {
-        self.hosts = hosts
-    }
-
-    func reconcile() throws {
-        isListening = hosts.hasActiveHosts
-    }
-}
-
 /// File scope, not nested in the @MainActor test class: the fixture builders
 /// are called from inside @Sendable seam closures, which must not capture an
 /// actor-isolated self.
@@ -59,7 +26,7 @@ final class HerdrMachineImportTests: XCTestCase {
     private func makeRegistry() throws -> ClaudeRemoteHostRegistry {
         try ClaudeRemoteHostRegistry(
             fileURL: URL(fileURLWithPath: "/tmp/lvx-herdr-import-test/hosts.json"),
-            io: MemoryStore(),
+            io: MemoryClaudeRemoteHostStore(),
             now: { Date(timeIntervalSince1970: 1_000_000) }
         )
     }
@@ -72,7 +39,7 @@ final class HerdrMachineImportTests: XCTestCase {
         ClaudeIntegrationSettingsModel(
             registry: registry,
             listener: listener,
-            pluginService: { StubPluginService() },
+            pluginService: { StubClaudePluginService() },
             // Synchronous (AGENTS: no wall-clock, no detached-task races).
             performAsync: { body in
                 do {
@@ -219,7 +186,7 @@ final class HerdrMachineImportTests: XCTestCase {
     /// the sheet's Set Up.
     func testImportPrefillsTheFormAndRunsTheTypedFormsEnrollmentFlow() async throws {
         let registry = try makeRegistry()
-        let listener = StubListener(hosts: registry)
+        let listener = StubClaudeRemoteListener(hosts: registry)
         let reading = catalog([machine("i", label: "build machine", target: "builder")])
         let model = makeModel(registry: registry, listener: listener, catalogReading: { reading })
         let candidate = try candidates(of: model.herdrMachines)[0]
@@ -237,7 +204,6 @@ final class HerdrMachineImportTests: XCTestCase {
         XCTAssertEqual(model.enrollSSHAlias, "")
         // Consent-gated: the sheet is up, but no step has run anywhere.
         XCTAssertNil(model.setupRun)
-        XCTAssertTrue(model.enrollmentStepStatuses.isEmpty)
         // The same refresh re-derived the row as enrolled.
         XCTAssertEqual(
             try candidates(of: model.herdrMachines).first?.status,
@@ -254,7 +220,7 @@ final class HerdrMachineImportTests: XCTestCase {
         let reading = catalog([machine("m", label: "build machine", target: "builder")])
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             catalogReading: { reading }
         )
         let stale = try candidates(of: model.herdrMachines)[0]
@@ -280,7 +246,7 @@ final class HerdrMachineImportTests: XCTestCase {
         let reading = catalog([machine("n", label: "build machine", target: "builder")])
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             catalogReading: { reading }
         )
         let candidate = try candidates(of: model.herdrMachines)[0]
@@ -307,7 +273,7 @@ final class HerdrMachineImportTests: XCTestCase {
         ])
         let model = makeModel(
             registry: registry,
-            listener: StubListener(hosts: registry),
+            listener: StubClaudeRemoteListener(hosts: registry),
             catalogReading: { reading }
         )
 

@@ -12,19 +12,6 @@ enum HerdrPanelBindingAbstention: String, Sendable, Equatable {
     case multiHostDoubleMatch = "multi-host-double-match"
 }
 
-enum HerdrPanelConfigurationStatus: Sendable, Equatable {
-    case ok
-    case likelyNotConfigured
-
-    var message: String? {
-        switch self {
-        case .ok: return nil
-        case .likelyNotConfigured:
-            return "The herdr agents-panel row may need setup."
-        }
-    }
-}
-
 protocol HerdrPanelMetadataReporting: Sendable {
     func reportPanelToken(
         socketPath: String,

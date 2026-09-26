@@ -111,6 +111,10 @@ quit_owner_app() {
 
 # Plain `open`, not lv_open: the owner's app must come back with the owner's
 # environment, not the lane's CI-only flags (they would hide its API keys).
+# `open` still hands the app this shell's RUNNER_TRACKING_ID, and at the end of
+# the job the Actions runner kills every process carrying the job's id as an
+# orphan, the relaunched owner app included. So the relaunch drops it, and the
+# lane's flags with it.
 relaunch_owner_app() {
   [[ -n "$OWNER_APP_BUNDLE" && "$OWNER_APP_BUNDLE" != "unknown" ]] || return 0
   if pgrep -x "$APP_PROCESS" >/dev/null 2>&1; then
@@ -121,7 +125,8 @@ relaunch_owner_app() {
     printf 'WARNING: the owner app at %s is gone; not relaunching it.\n' "$OWNER_APP_BUNDLE" >&2
     return 0
   fi
-  if open "$OWNER_APP_BUNDLE"; then
+  if env -u RUNNER_TRACKING_ID -u LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN -u LOCALVOXTRAL_DOGFOOD_AUDIO_FILE \
+    open "$OWNER_APP_BUNDLE"; then
     printf "Relaunched the owner's app at %s.\n" "$OWNER_APP_BUNDLE"
   else
     printf 'WARNING: failed to relaunch the owner app at %s.\n' "$OWNER_APP_BUNDLE" >&2

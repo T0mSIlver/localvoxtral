@@ -37,7 +37,7 @@ import Foundation
 ///   quote window titles, and a title is content); text is logged as char
 ///   counts only.
 /// - **Same pipeline.** The raw reply goes through
-///   `TerminalScreenAXReader.sanitizedScreenText` — identical control-scalar
+///   `TerminalScreenText.sanitizedScreenText` — identical control-scalar
 ///   stripping, chrome stripping, whitespace compaction, and the same
 ///   `screenCharacterCap` — so matching, start/stop comparison, and excerpt
 ///   rendering see exactly the form AX text takes.
@@ -57,7 +57,7 @@ enum TerminalScreenAppleScriptReader {
     /// renamed app, a runaway build) and is refused outright — abstain, never
     /// truncate, because truncating an implausible reply would still retain
     /// content we cannot account for. Distinct from
-    /// `TerminalScreenAXReader.screenCharacterCap`, which caps the SANITIZED
+    /// `TerminalScreenText.screenCharacterCap`, which caps the SANITIZED
     /// head for matching.
     nonisolated static let rawReplyCharacterCeiling = 200_000
 
@@ -113,7 +113,7 @@ enum TerminalScreenAppleScriptReader {
             // live reply, so a test cannot assert against a form production
             // never produces.
             guard let raw = validatedRawContents(override(target.pid, target.bundleID)),
-                  let text = TerminalScreenAXReader.sanitizedScreenText(raw)
+                  let text = TerminalScreenText.sanitizedScreenText(raw)
             else { return nil }
             return TerminalScreenAXReader.VisibleScreenRead(
                 text: text,
@@ -150,7 +150,7 @@ enum TerminalScreenAppleScriptReader {
             )
             return nil
         }
-        guard let text = TerminalScreenAXReader.sanitizedScreenText(raw) else { return nil }
+        guard let text = TerminalScreenText.sanitizedScreenText(raw) else { return nil }
         return TerminalScreenAXReader.VisibleScreenRead(
             text: text,
             windowID: TerminalScreenAXReader.focusedWindowIdentity(applicationPID: target.pid)

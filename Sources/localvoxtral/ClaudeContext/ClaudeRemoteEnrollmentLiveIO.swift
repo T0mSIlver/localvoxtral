@@ -1,7 +1,11 @@
 import Foundation
 
+#if canImport(Darwin) || canImport(Glibc)
 #if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 
 struct LiveClaudeRemoteSSHConfigFileSystem: ClaudeRemoteSSHConfigFileSystem {
     private let sshDirectoryURL: URL
@@ -75,7 +79,7 @@ struct LiveClaudeRemoteSSHConfigFileSystem: ClaudeRemoteSSHConfigFileSystem {
             var offset = 0
             while offset < raw.count {
                 let written = Self.retryingOnEINTR {
-                    Darwin.write(
+                    LibC.write(
                         descriptor,
                         baseAddress.advanced(by: offset),
                         raw.count - offset
@@ -200,7 +204,7 @@ struct LiveClaudeLocalHerdrConfigFileSystem: ClaudeLocalHerdrConfigFileSystem {
             var offset = 0
             while offset < raw.count {
                 let written = Self.retryingOnEINTR {
-                    Darwin.write(
+                    LibC.write(
                         descriptor,
                         baseAddress.advanced(by: offset),
                         raw.count - offset
@@ -364,7 +368,7 @@ struct LiveClaudeShellRCFileSystem: ClaudeShellRCFileSystem {
             guard let baseAddress = raw.baseAddress else { return }
             var offset = 0
             while offset < raw.count {
-                let written = Darwin.write(
+                let written = LibC.write(
                     descriptor, baseAddress.advanced(by: offset), raw.count - offset
                 )
                 if written == -1, errno == EINTR { continue }
@@ -542,12 +546,12 @@ extension ClaudeRemoteEnrollmentService {
                 let script = invocation.standardInput
                 Thread {
                     let descriptor = writer.fileDescriptor
-                    _ = fcntl(descriptor, F_SETNOSIGPIPE, 1)
+                    POSIXSocket.suppressSIGPIPE(onPipe: descriptor)
                     script.withUnsafeBytes { raw in
                         guard let base = raw.baseAddress else { return }
                         var offset = 0
                         while offset < raw.count {
-                            let written = Darwin.write(descriptor, base.advanced(by: offset), raw.count - offset)
+                            let written = LibC.write(descriptor, base.advanced(by: offset), raw.count - offset)
                             if written < 0, errno == EINTR { continue }
                             if written <= 0 { return } // EPIPE: the child is gone.
                             offset += written
@@ -567,7 +571,7 @@ extension ClaudeRemoteEnrollmentService {
                     terminate: { process.terminate() },
                     kill: {
                         let pid = process.processIdentifier
-                        if pid > 0, process.isRunning { _ = Darwin.kill(pid, SIGKILL) }
+                        if pid > 0, process.isRunning { _ = LibC.kill(pid, SIGKILL) }
                     },
                     waitForExit: waitForExit
                 )

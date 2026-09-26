@@ -1,5 +1,7 @@
 import ClaudeContextWire
+#if canImport(CoreGraphics)
 import CoreGraphics
+#endif
 import Foundation
 
 extension ClaudeSessionJoinResolver {
@@ -174,7 +176,6 @@ extension ClaudeSessionJoinResolver {
             paneID: confirmed.pane.paneID
         ) {
         case .matched(let match):
-            reportPanelStatus(.ok)
             Log.claudeContext.info(
                 "Terminal pane joined to a live Claude session via federated herdr agents-panel binding"
             )
@@ -207,7 +208,6 @@ extension ClaudeSessionJoinResolver {
             // the app cannot do itself: the app cannot reliably locate the
             // herdr binary to run `herdr server reload-config`.
             if cause == .settleTimeout {
-                reportPanelStatus(.likelyNotConfigured)
                 Log.claudeContext.info(
                     "Federated herdr panel token was stamped but did not render; check the LOCAL agents-panel row config, the sidebar width, and whether the entry fits this client's height, then reload config in herdr"
                 )

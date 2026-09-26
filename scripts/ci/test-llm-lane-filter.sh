@@ -21,15 +21,21 @@ fail() {
 }
 
 # expect <true|false> <description> <changed-path>... [--marker <text>]
+#   [--skip-marker <absent|waived|no-reason|overridden|unneeded>]
 expect() {
   local expected="$1" description="$2"
   shift 2
-  local changed="$TMP_DIR/changed" marker_file=""
+  local changed="$TMP_DIR/changed" marker_file="" expected_skip=""
   : >"$changed"
   while [[ $# -gt 0 ]]; do
     if [[ "$1" == "--marker" ]]; then
       marker_file="$TMP_DIR/marker"
       printf '%s\n' "$2" >"$marker_file"
+      shift 2
+      continue
+    fi
+    if [[ "$1" == "--skip-marker" ]]; then
+      expected_skip="$2"
       shift 2
       continue
     fi
@@ -48,6 +54,11 @@ expect() {
   [[ "$run" == "$expected" ]] \
     || fail "$description: expected run=$expected, got run=$run ($reason)"
   [[ -n "$reason" ]] || fail "$description: reason line is missing"
+  local skip
+  skip="$(sed -n 's/^skip_marker=//p' <<<"$output")"
+  [[ -n "$skip" ]] || fail "$description: skip_marker line is missing"
+  [[ -z "$expected_skip" || "$skip" == "$expected_skip" ]] \
+    || fail "$description: expected skip_marker=$expected_skip, got skip_marker=$skip ($reason)"
   printf 'PASS: %s (%s)\n' "$description" "$reason"
 }
 
@@ -62,12 +73,69 @@ expect true "opencode integration docs stay lane-relevant (claude-code parity)" 
 expect true "claude-code plugin change runs the lane" \
   integrations/claude-code/plugins/localvoxtral/hooks/hooks.json
 
+# Split out of files the lane already watched; they still shape the context.
+expect true "the screen text rules, split from the AX reader, run the lane" \
+  Sources/localvoxtral/TerminalScreenText.swift
+expect true "the browser allowlist, split from the tab url reader, runs the lane" \
+  Sources/localvoxtral/BrowserTabAllowlist.swift
+expect true "the git runner, split from repo vocabulary, runs the lane" \
+  Sources/localvoxtral/RepoGitRunner.swift
+expect true "the socket guard, moved to the core target, runs the lane" \
+  Sources/localvoxtralCore/ClaudeSocketGuard.swift
+expect true "the Claude Desktop allowlist, split from its reader, runs the lane" \
+  Sources/localvoxtral/ClaudeDesktopAllowlist.swift
+expect false "the forward process seam, split from the supervisor, stays exempt" \
+  Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardProcess.swift
+
 # --- Marker opt-in ----------------------------------------------------------
 
 expect true "[run-llm-eval] marker forces the lane on any diff" \
   README.md --marker 'judgment call, opting in [run-llm-eval]'
 expect false "unrelated marker text does not trigger" \
   README.md --marker 'no opt-in here'
+
+# --- Skip marker opt-out ----------------------------------------------------
+# A matching diff that cannot change what reaches the model (a test file moved
+# between targets) can waive the lane, but only with a written reason.
+
+expect false "[skip-llm-eval: reason] waives a matching diff" \
+  Sources/localvoxtralCore/PolishTokenGuard.swift \
+  --marker 'Move test files. [skip-llm-eval: pure move of PolishTokenGuardTests into the core target]' \
+  --skip-marker waived
+printf 'Sources/localvoxtralCore/PolishTokenGuard.swift\n' >"$TMP_DIR/changed"
+printf 'x [skip-llm-eval:  pure move ]\r\n' >"$TMP_DIR/marker"
+reason="$("$FILTER" "$TMP_DIR/changed" "$TMP_DIR/marker")"
+grep -qF 'reason=waived by the skip-llm-eval marker: pure move (the diff matched Sources/localvoxtralCore/PolishTokenGuard.swift' <<<"$reason" \
+  || fail "the waiver reason is not echoed trimmed: $reason"
+echo "PASS: the waiver echoes the marker's reason, trimmed"
+expect true "a bare [skip-llm-eval] does not skip" \
+  Sources/localvoxtralCore/PolishTokenGuard.swift \
+  --marker 'no reason given [skip-llm-eval]' \
+  --skip-marker no-reason
+expect true "[skip-llm-eval:] with a blank reason does not skip" \
+  Sources/localvoxtralCore/PolishTokenGuard.swift \
+  --marker '[skip-llm-eval:   ]' \
+  --skip-marker no-reason
+expect true "[run-llm-eval] beside the skip marker runs the lane" \
+  README.md \
+  --marker '[skip-llm-eval: only a move] and [run-llm-eval]' \
+  --skip-marker overridden
+expect true "[run-llm-eval] also overrides the skip marker on a matching diff" \
+  Sources/localvoxtralCore/PolishTokenGuard.swift \
+  --marker '[run-llm-eval] [skip-llm-eval: only a move]' \
+  --skip-marker overridden
+expect false "a skip marker on a non-matching diff changes nothing" \
+  README.md \
+  --marker '[skip-llm-eval: docs only]' \
+  --skip-marker unneeded
+expect true "the marker's name without brackets does not skip" \
+  Sources/localvoxtralCore/PolishTokenGuard.swift \
+  --marker 'add skip-llm-eval: with a reason to waive the lane' \
+  --skip-marker absent
+expect true "a longer marker name is not the skip marker" \
+  Sources/localvoxtralCore/PolishTokenGuard.swift \
+  --marker '[skip-llm-evals: typo]' \
+  --skip-marker absent
 
 # --- run=false side ---------------------------------------------------------
 
@@ -149,6 +217,8 @@ expect true "the clipboard vocabulary in the core target runs the lane" \
   Sources/localvoxtralCore/ClipboardVocabulary.swift
 expect true "the phonetic keys in the core target run the lane" \
   Sources/localvoxtralCore/DoubleMetaphone.swift
+expect true "the prompt loader and renderer in the core target run the lane" \
+  Sources/localvoxtralCore/AppConfigStore.swift
 expect true "the control-character sanitizer in the core target runs the lane" \
   Sources/localvoxtralCore/StringExtensions.swift
 expect false "the statusline combine script, moved to the core target, stays exempt" \

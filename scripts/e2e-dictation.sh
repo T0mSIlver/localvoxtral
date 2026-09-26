@@ -30,9 +30,18 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/launch-app.sh"
 # the app's Accessibility grant. It takes the keyboard focus for about half a
 # minute per scenario and says so out loud first (LV_E2E_ANNOUNCE=0 to mute).
 #
+# The speech service is shared, and under load it can fall seconds behind the
+# audio, which fails a correct app (#548). scripts/e2e/speech-service-probe.py
+# plays the same WAV to the service without the app and times the final
+# transcript. It runs once before the app starts and again after a scenario
+# fails; a failure is NOT RUN only when the probe finds the service lagging
+# past what the app waits for (SERVICE_LAG_LIMIT_SECONDS). A healthy probe, or
+# one that measured nothing, leaves the failure a FAIL.
+#
 # Exit status: 0 every scenario passed, 1 a scenario failed, 3 the machine was
-# not in a state to run one (locked, no STT server, no grant). A caller that
-# schedules this can treat 3 as "skipped" and 1 as a regression.
+# not in a state to run one (locked, no STT server, no grant, a lagging speech
+# service). A caller that schedules this can treat 3 as "skipped" and 1 as a
+# regression.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_PATH="${1:-dist/localvoxtral.app}"
@@ -56,6 +65,14 @@ REALTIME_MODEL="${LV_E2E_REALTIME_MODEL:-T0mSIlver/Voxtral-Mini-4B-Realtime-2602
 CONTROL_SOCKET="${HOME}/Library/Application Support/localvoxtral/dogfood/control/control.sock"
 TARGET_BUNDLE_ID="com.localvoxtral.e2e-target"
 TARGET_MACOS="15.0" # Package.swift's platform floor
+SPEECH_PROBE="${LV_E2E_SPEECH_PROBE:-$SCRIPT_DIR/e2e/speech-service-probe.py}"
+# The check stops the session this long after the file drains, and the app
+# then waits at least TimingConstants.finalizationMinimumOpen for the final
+# transcript. A service further behind the speech than the sum can drop the
+# last words from a correct app. test-speech-service-probe.sh pins the 1.5.
+POST_DRAIN_SILENCE_SECONDS=2
+APP_FINALIZATION_MINIMUM_OPEN_SECONDS=1.5
+SERVICE_LAG_LIMIT_SECONDS="$(awk -v a="$POST_DRAIN_SILENCE_SECONDS" -v b="$APP_FINALIZATION_MINIMUM_OPEN_SECONDS" 'BEGIN { print a + b }')"
 
 if command -v timeout >/dev/null 2>&1; then
   OSASCRIPT_TIMEOUT_BIN="$(command -v timeout)"
@@ -162,6 +179,41 @@ trap 'signal_cleanup 129' HUP
 scenario_value() {
   # scenario_value <file> <key>: the text after the first `key=`, verbatim.
   sed -n "s/^$2=//p" "$1" | head -n 1
+}
+
+# --- speech service lag -----------------------------------------------------
+
+probe_speech_service() {
+  # probe_speech_service <label> <wav>: 0 within the limit, 1 lagging past
+  # it, 2 nothing measured. Prints the probe's line either way.
+  local label="$1" wav="$2" line lag
+  if ! line="$(python3 "$SPEECH_PROBE" "$REALTIME_ENDPOINT" "$REALTIME_MODEL" "$wav" "$POST_DRAIN_SILENCE_SECONDS" 2>&1)"; then
+    printf '%s: speech service probe measured nothing: %s\n' "$label" "$line" >&2
+    return 2
+  fi
+  printf '%s: speech service probe: %s\n' "$label" "$line"
+  lag="$(sed -n 's/^lag=\([-0-9.]*\) .*/\1/p' <<<"$line")"
+  PROBE_LAG="$lag"
+  if [[ -z "$lag" ]]; then
+    return 2
+  fi
+  if awk -v l="$lag" -v m="$SERVICE_LAG_LIMIT_SECONDS" 'BEGIN { exit !(l + 0 > m + 0) }'; then
+    return 1
+  fi
+  return 0
+}
+
+fail_unless_service_lagged() {
+  # fail_unless_service_lagged <name> <wav> <reason>: a scenario failed after
+  # the app dictated. The service's lag right after decides whose failure it is.
+  local name="$1" wav="$2" reason="$3" status=0
+  PROBE_LAG=""
+  probe_speech_service "$name" "$wav" || status=$?
+  if ((status == 1)); then
+    record_not_runnable "$reason The speech service finished the same audio ${PROBE_LAG} s after the speech ended, past the ${SERVICE_LAG_LIMIT_SECONDS} s the app waits, so this measured the service, not the app."
+  else
+    record_fail "$reason"
+  fi
 }
 
 # --- control socket ---------------------------------------------------------
@@ -342,14 +394,14 @@ run_scenario() {
   fi
   # The source is sending silence now. Two seconds of it lets the server close
   # the last words before the stop finalizes.
-  sleep 2
+  sleep "$POST_DRAIN_SILENCE_SECONDS"
 
   reply="$(control "session stop")"
   printf '%s: session stop -> %s\n' "$name" "$reply"
 
   if ! wait_for_settled_text "$out/text" 45; then
-    record_fail "$name: no text reached the target within 45 s of the stop."
     app_log_since "$log_start" | tail -n 60 >&2
+    fail_unless_service_lagged "$name" "$wav" "$name: no text reached the target within 45 s of the stop."
     return
   fi
   if [[ "$(cat "$out/state" 2>/dev/null)" != "active=1 key=1 focused=1" ]]; then
@@ -363,8 +415,8 @@ run_scenario() {
   if awk -v s="$score" -v m="$minimum" 'BEGIN { exit !(s + 0 >= m + 0) }'; then
     record_pass "$name: word accuracy $score (minimum $minimum)."
   else
-    record_fail "$name: word accuracy $score is under the minimum $minimum."
     app_log_since "$log_start" | tail -n 60 >&2
+    fail_unless_service_lagged "$name" "$wav" "$name: word accuracy $score is under the minimum $minimum."
   fi
 }
 
@@ -438,6 +490,26 @@ if ! build_target_app; then
   finish
 fi
 record_pass "Target app compiled."
+
+# Before the app starts: a service already behind would fail every scenario,
+# and nothing the app does can have caused it yet.
+probe_wav="$WORK_DIR/speech-probe.wav"
+if ! say -o "$probe_wav" --file-format=WAVE --data-format=LEI16@16000 "$(scenario_value "${SCENARIOS[0]}" phrase)"; then
+  record_not_runnable "System TTS (say) could not write the speech probe's WAV."
+  finish
+fi
+PROBE_LAG=""
+probe_speech_service "before the app" "$probe_wav"
+case $? in
+  1)
+    record_not_runnable "The speech service on $REALTIME_ENDPOINT finished a clip ${PROBE_LAG} s after the speech ended, past the ${SERVICE_LAG_LIMIT_SECONDS} s the app waits; it is too loaded to measure the app."
+    finish
+    ;;
+  2)
+    record_not_runnable "The speech service on $REALTIME_ENDPOINT did not transcribe the probe clip."
+    finish
+    ;;
+esac
 
 announce "localvoxtral end to end check starting. It takes the keyboard for about a minute."
 ANNOUNCED=1

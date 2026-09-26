@@ -63,9 +63,9 @@ extension ClaudeIntegrationSettingsModel {
             )
         }
 
-        // Same late-result guard as `performPlanAction`, for the same reason:
-        // the sheet can be dismissed — and replaced by a rotation that REUSES
-        // the host id — while ssh is still running.
+        // The sheet can be dismissed — and replaced by a rotation that REUSES
+        // the host id — while ssh is still running, so the whole presentation
+        // must match, not just the host id.
         guard presentedPlan == presentation else { return }
 
         if let failure = attempt.failure {

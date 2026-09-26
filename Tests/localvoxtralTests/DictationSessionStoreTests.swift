@@ -137,8 +137,8 @@ final class DictationSessionStoreTests: XCTestCase {
         let entries = await store.entries(matching: query)
 
         XCTAssertEqual(entries.map(\.rawText), ["dictation 1", "dictation 2"])
-        let texts = await store.recentFinalTexts(limit: 1)
-        XCTAssertEqual(texts, ["dictation 1"])
+        let recent = await store.recentEntries(limit: 1)
+        XCTAssertEqual(recent.map(\.rawText), ["dictation 1"])
     }
 
     func testDeleteRemovesOneDictationAndLeavesTheRest() async throws {

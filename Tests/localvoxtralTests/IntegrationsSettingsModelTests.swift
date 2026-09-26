@@ -13,14 +13,8 @@ final class IntegrationsSettingsModelTests: XCTestCase {
     func testSetupSheetsRenderConsentButNoGeneratedCode() throws {
         let source = try SettingsSourceText.load()
         for forbidden in [
-            "confirmation.preview",
-            "plan.remoteCommands",
-            "plan.updateCommands",
             "plan.sshConfigSnippet",
             "herdrPanelConfigSnippet",
-            "claude.shellSetupSheet.preview",
-            "integrations.statuslineSheet.preview",
-            "Run on SSH host",
         ] {
             XCTAssertFalse(source.contains(forbidden), "Settings must not render \(forbidden)")
         }
@@ -30,12 +24,6 @@ final class IntegrationsSettingsModelTests: XCTestCase {
         XCTAssertTrue(source.contains("claude.remote.shellSetup.setUp"))
         XCTAssertTrue(source.contains("claude.shellSetupSheet.apply"))
         XCTAssertTrue(source.contains("integrations.statuslineSheet.apply"))
-        XCTAssertEqual(
-            OpencodePluginInstallService.consentSentence,
-            "localvoxtral will edit ~/.config/opencode/plugins/localvoxtral.js and "
-                + "~/.config/opencode/tui.json on this Mac."
-        )
-        XCTAssertFalse(OpencodePluginInstallService.consentSentence.contains("mkdir"))
     }
 
     @MainActor

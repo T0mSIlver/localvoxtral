@@ -7,6 +7,11 @@ struct DictationSettingsPane: View {
     let dictationShortcutBinding: Binding<DictationShortcut?>
     @Binding var shortcutValidationError: String?
 
+    /// The Trigger group's Learn more: what a tap and a hold do.
+    private static let shortcutsDocsURL = URL(
+        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/dictation.md#shortcuts"
+    )!
+
     private var dictationOutputModeBinding: Binding<DictationOutputMode> {
         Binding(
             get: { settings.dictationOutputMode },
@@ -96,7 +101,7 @@ struct DictationSettingsPane: View {
 
     var body: some View {
         SettingsPage(tab: .dictation) {
-            SettingsGroup(title: "Trigger") {
+            SettingsGroup(title: "Trigger", learnMoreURL: Self.shortcutsDocsURL) {
                 SettingsFieldRow(title: "Method") {
                     Picker("", selection: Binding(
                         get: { settings.modifierOnlyHotKeyEnabled },
@@ -114,10 +119,7 @@ struct DictationSettingsPane: View {
                 }
 
                 if settings.modifierOnlyHotKeyEnabled {
-                    SettingsFieldRow(
-                        title: "Modifier key",
-                        help: "Tap for Overlay Buffer, hold for Live Auto-Paste."
-                    ) {
+                    SettingsFieldRow(title: "Modifier key") {
                         Picker("", selection: Binding(
                             get: { settings.modifierOnlyHotKeyModifier },
                             set: { newValue in
@@ -307,11 +309,7 @@ struct DictationSettingsPane: View {
             }
 
             SettingsGroup(title: "Live Auto-Paste") {
-                // The help line is the trade-off, visible before turning it on.
-                SettingsFieldRow(
-                    title: "Say \u{201C}send it\u{201D} to press Return in a terminal",
-                    help: "In a terminal, text appears when you finish a phrase, not as you speak."
-                ) {
+                SettingsFieldRow(title: "Say \u{201C}send it\u{201D} to press Return in a terminal") {
                     Toggle("", isOn: $settings.liveSpokenSendEnabled)
                         .labelsHidden()
                 }
@@ -371,10 +369,8 @@ struct DictationSettingsPane: View {
 
                 SettingsFieldRow(
                     title: "Position",
-                    help: "Drag the overlay anywhere on it to move it; "
-                        + "double-click it to put it back.",
                     status: settings.overlayBufferPlacement == nil
-                        ? "Follows the focused window." : nil
+                        ? "Follows the focused window; drag the overlay to pin it" : nil
                 ) {
                     if settings.overlayBufferPlacement != nil {
                         Button("Re-anchor") { settings.overlayBufferPlacement = nil }
