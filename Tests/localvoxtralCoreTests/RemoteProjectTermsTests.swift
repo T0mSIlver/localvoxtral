@@ -351,7 +351,6 @@ final class RemoteProjectTermsTests: XCTestCase {
         let claudeShim = try text("integrations/claude-code/plugins/localvoxtral-remote/hooks/post.sh")
         let vibeShim = try text("integrations/vibe/remote/post.sh")
         let runner = try text("integrations/claude-code/plugins/localvoxtral-remote/hooks/terms.sh")
-        XCTAssertEqual(runner, try text("integrations/vibe/remote/terms.sh"))
 
         XCTAssertTrue(claudeShim.contains("X-Lvx-Plugin-Version: \(RemoteProjectTermRequests.minimumPluginVersion)"))
         XCTAssertTrue(vibeShim.contains("X-Lvx-Vibe-Hooks-Version: \(RemoteProjectTermRequests.minimumVibeHooksVersion)"))

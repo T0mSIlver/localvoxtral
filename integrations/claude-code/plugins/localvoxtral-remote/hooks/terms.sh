@@ -9,8 +9,8 @@
 # (ProjectTermProposal.swift), and posts the agent's answer to the Mac's
 # `/v1/terms` route. Nothing but that answer crosses the tunnel.
 #
-# The same file ships twice, next to the Claude Code plugin's shim and next to
-# the Vibe hooks' shim; a test keeps the two identical.
+# It ships in this plugin, and the app installs the same file next to the Vibe
+# hooks' shim on an enrolled host (VibeRemoteHooksFiles).
 #
 #   terms.sh <claude|vibe> <port> <session-id> <project-dir> <stamp-dir> [<user-vibe-dir>]
 #

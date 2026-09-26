@@ -219,10 +219,11 @@ final class RemoteProjectTermsLiveTests: XCTestCase {
         for name in ["config.toml", ".env"] {
             try fm.createSymbolicLink(atPath: vibeHome + "/" + name, withDestinationPath: realHome + "/.vibe/" + name)
         }
-        for name in ["post.sh", "compact.py", "terms.sh"] {
+        for path in ["integrations/vibe/remote/post.sh", "integrations/vibe/remote/compact.py",
+                     "integrations/claude-code/plugins/localvoxtral-remote/hooks/terms.sh"] {
             try fm.copyItem(
-                atPath: repoRoot.appendingPathComponent("integrations/vibe/remote/\(name)").path,
-                toPath: remote + "/" + name
+                atPath: repoRoot.appendingPathComponent(path).path,
+                toPath: remote + "/" + (path as NSString).lastPathComponent
             )
         }
         try token.write(toFile: remote + "/token", atomically: true, encoding: .utf8)

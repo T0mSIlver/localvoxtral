@@ -30,13 +30,18 @@ public struct VibeRemoteHooksFiles: Sendable, Equatable {
     }
 
     /// The four shipped files, from wherever `ClaudePluginAssets` finds them.
+    /// `terms.sh` comes from the remote Claude Code plugin, which ships the
+    /// same runner for its own shim and is copied into the app whole.
     public static func bundled() -> VibeRemoteHooksFiles? {
-        func text(_ name: String) -> String? {
-            ClaudePluginAssets.vibeFileURL(named: "remote/\(name)")
-                .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+        func text(_ url: URL?) -> String? {
+            url.flatMap { try? String(contentsOf: $0, encoding: .utf8) }
         }
-        guard let post = text("post.sh"), let compact = text("compact.py"), let block = text("hooks.toml"),
-              let terms = text("terms.sh")
+        func vibe(_ name: String) -> String? { text(ClaudePluginAssets.vibeFileURL(named: "remote/\(name)")) }
+        let terms = text(ClaudePluginAssets.marketplaceURL()?.appendingPathComponent(
+            "plugins/\(ClaudePluginAssets.remotePluginName)/hooks/terms.sh"
+        ))
+        guard let post = vibe("post.sh"), let compact = vibe("compact.py"), let block = vibe("hooks.toml"),
+              let terms
         else { return nil }
         return VibeRemoteHooksFiles(postScript: post, compactScript: compact, hooksBlock: block, termsScript: terms)
     }

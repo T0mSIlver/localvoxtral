@@ -108,7 +108,7 @@ done
 
 VIBE_DIR="$TMP_DIR/vibe-remote"
 mkdir -p "$VIBE_DIR" "$TMP_DIR/.vibe"
-cp "$VIBE_DIR_SRC/post.sh" "$VIBE_DIR_SRC/compact.py" "$VIBE_DIR_SRC/terms.sh" "$VIBE_DIR/"
+cp "$VIBE_DIR_SRC/post.sh" "$VIBE_DIR_SRC/compact.py" "$CLAUDE_HOOKS/terms.sh" "$VIBE_DIR/"
 echo vibetoken >"$VIBE_DIR/token"
 echo 18473 >"$VIBE_DIR/port"
 echo 'model = "x"' >"$TMP_DIR/.vibe/config.toml"
@@ -283,8 +283,3 @@ for agent in claude vibe; do
   pass "$label: no agent or a dead tunnel fails silently"
 done
 done
-
-# Both shims ship the same runner.
-cmp -s "$CLAUDE_HOOKS/terms.sh" "$VIBE_DIR_SRC/terms.sh" \
-  || fail "the Claude Code and Vibe copies of terms.sh differ"
-pass "both shims ship the same terms.sh"
