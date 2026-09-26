@@ -19,19 +19,19 @@ import Foundation
 /// against. Switching output mid-session must not push the old device's volume
 /// onto the new one.
 @MainActor
-final class AudioDuckingController {
-    typealias DateProvider = () -> Date
-    typealias SleepClosure = (Duration) async -> Void
+package final class AudioDuckingController {
+    package typealias DateProvider = () -> Date
+    package typealias SleepClosure = (Duration) async -> Void
 
     /// The ducked level, as a fraction of the volume the user had set. Loud
     /// enough that a call or a track is still audible, quiet enough to dictate
     /// over. Not a setting: the one setting is the fade duration.
-    static let duckedFractionOfOriginal: Float = 0.2
+    package static let duckedFractionOfOriginal: Float = 0.2
 
     /// One volume write per step while fading. 25 Hz is smooth to the ear and
     /// keeps a 2-second fade at 50 writes rather than hundreds.
-    static let fadeStepSeconds: TimeInterval = 0.04
-    static let fadeStep: Duration = .milliseconds(40)
+    package static let fadeStepSeconds: TimeInterval = 0.04
+    package static let fadeStep: Duration = .milliseconds(40)
 
     private let volumeControl: any SystemOutputVolumeControlling
     private let isEnabled: () -> Bool
@@ -48,7 +48,7 @@ final class AudioDuckingController {
     private var generation = 0
     private var fadeTask: Task<Void, Never>?
 
-    init(
+    package init(
         volumeControl: any SystemOutputVolumeControlling,
         isEnabled: @escaping () -> Bool,
         fadeDuration: @escaping () -> TimeInterval,
@@ -72,7 +72,7 @@ final class AudioDuckingController {
 
     /// Called once audio capture is actually running. A no-op while the setting
     /// is off, or when the output device reports no volume the Mac owns.
-    func duckForSessionStart() {
+    package func duckForSessionStart() {
         guard isEnabled() else { return }
 
         if duckedOutput == nil {
@@ -101,7 +101,7 @@ final class AudioDuckingController {
     /// Called on every path that ends a session — stop, escape-cancel, a lost
     /// socket, an aborted connect, a mic that failed to start. Safe to call
     /// when nothing was ducked.
-    func restoreAfterSession() {
+    package func restoreAfterSession() {
         guard let ducked = duckedOutput else { return }
         Log.ducking.info(
             "restore requested on \(ducked.deviceUID, privacy: .public) to \(ducked.volume, privacy: .public)"
@@ -112,7 +112,7 @@ final class AudioDuckingController {
     /// The app is quitting. `willTerminate` runs one synchronous main-thread
     /// closure and then the process is gone, so this writes the original
     /// volume in one shot — a fade would not get to finish.
-    func restoreImmediatelyForTermination() {
+    package func restoreImmediatelyForTermination() {
         guard let ducked = duckedOutput else { return }
         generation += 1
         fadeTask?.cancel()
@@ -135,7 +135,7 @@ final class AudioDuckingController {
     /// A previous launch was ducked when it died without restoring (a crash, a
     /// force quit). Puts the volume back at startup rather than leaving the
     /// user quiet with no dictation running.
-    func restoreInterruptedDuckFromPreviousLaunch() {
+    package func restoreInterruptedDuckFromPreviousLaunch() {
         guard let pending = interruptedDuck() else { return }
         guard volumeControl.volume(forDeviceUID: pending.deviceUID) != nil else {
             // Kept, not cleared: the device is merely unplugged, and the
@@ -255,7 +255,7 @@ final class AudioDuckingController {
 
     #if DEBUG
     /// Test seam: the in-flight fade, so a suite awaits it instead of polling.
-    var debugFadeTask: Task<Void, Never>? { fadeTask }
-    var debugDuckedOutput: OutputVolumeReading? { duckedOutput }
+    package var debugFadeTask: Task<Void, Never>? { fadeTask }
+    package var debugDuckedOutput: OutputVolumeReading? { duckedOutput }
     #endif
 }

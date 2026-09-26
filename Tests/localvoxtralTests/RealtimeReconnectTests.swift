@@ -2,6 +2,7 @@ import Foundation
 import Synchronization
 import XCTest
 
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 /// Mid-dictation reconnect (#380): a realtime socket that drops on its own

@@ -74,6 +74,9 @@ AppKit:
 - the Claude socket guard (`ClaudeSocketGuard`: `getpeereid` and
   `LOCAL_PEERPID` on Darwin, `SO_PEERCRED` on Linux), with the SHA-256 and
   HMAC helpers the Claude code hashes through
+- the ducking fade (`AudioDuckingController`) and the
+  `SystemOutputVolumeControlling` protocol it writes through; the CoreAudio
+  control stays in the app
 - the realtime clients: the `RealtimeClient` protocol, its event types and
   both websocket clients (#637). On Linux they speak through
   `FoundationNetworking`, whose upgrade and cancel differ from Apple's; the
