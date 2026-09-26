@@ -2,6 +2,13 @@ name: UI Smoke
 
 on:
   workflow_dispatch:
+    inputs:
+      drill_only:
+        # A change to the drill alone needs no dictation, and the dictation
+        # job takes the owner's Mac.
+        description: Run only the hosted AX drill, not the Mac's e2e dictation
+        type: boolean
+        default: false
   schedule:
     # Evening retry ladder anchored at 20:00 Paris (owner request,
     # 2026-07-20): the e2e dictation needs an UNLOCKED GUI session on the
@@ -117,8 +124,10 @@ jobs:
     # Same security invariant as ci.yml: fork PRs must never reach the
     # self-hosted runner, label or no label.
     if: >-
-      github.event_name != 'pull_request' ||
-      (github.event.label.name == 'needs-ui-smoke' &&
+      (github.event_name == 'schedule') ||
+      (github.event_name == 'workflow_dispatch' && !inputs.drill_only) ||
+      (github.event_name == 'pull_request' &&
+       github.event.label.name == 'needs-ui-smoke' &&
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 25

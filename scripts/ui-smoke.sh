@@ -39,6 +39,8 @@ OSASCRIPT_TIMEOUT_BIN=""
 LAUNCH_TIMEOUT_SECONDS="${UI_SMOKE_LAUNCH_TIMEOUT_SECONDS:-10}"
 BACKEND_SAMPLE_FILE=""
 BACKEND_SAMPLER_PID=""
+APP_LOG_FILE=""
+APP_LOG_STREAM_PID=""
 SUMMARY=()
 
 if command -v timeout >/dev/null 2>&1; then
@@ -72,7 +74,7 @@ print_summary() {
 source "${SCRIPT_DIR}/lib/owner-app-session.sh"
 
 managed_backend_pids() {
-  pgrep -f 'voxmlx-serve|mlx_lm\.server|localvoxtral-polishd' 2>/dev/null | sort || true
+  pgrep -f 'voxmlx-serve|mlx_lm\.server|localvoxtral-polishd|localvoxtral-speechd' 2>/dev/null | sort || true
 }
 
 start_backend_sampler() {
@@ -102,6 +104,39 @@ sampled_backend_pids() {
   fi
 }
 
+# The app's own log is the launch invariant's first signal (#594). On a hosted
+# runner the bundle has no MLX helpers and there is no model cache, so a
+# wrongly started managed warmup begins a download instead of spawning a
+# process, and the sampler above sees nothing. The warmup's request line comes
+# before any download or spawn. It is logged at info level, which macOS does
+# not keep, so it is streamed live rather than read back with `log show`.
+start_app_log_stream() {
+  APP_LOG_FILE="$(mktemp -t localvoxtral-app-log.XXXXXX)"
+  log stream --level info --style compact \
+    --predicate "process == \"$APP_PROCESS\" AND subsystem == \"com.localvoxtral\"" \
+    >"$APP_LOG_FILE" 2>&1 &
+  APP_LOG_STREAM_PID=$!
+  # `log stream` prints this header once it is attached; lines logged before
+  # that are lost.
+  local deadline=$((SECONDS + 10))
+  while ((SECONDS < deadline)); do
+    grep -q '^Filtering the log data' "$APP_LOG_FILE" 2>/dev/null && return 0
+    kill -0 "$APP_LOG_STREAM_PID" 2>/dev/null || return 1
+    sleep 0.2
+  done
+  return 1
+}
+
+stop_app_log_stream() {
+  if [[ -z "$APP_LOG_STREAM_PID" ]]; then
+    return
+  fi
+
+  kill "$APP_LOG_STREAM_PID" >/dev/null 2>&1 || true
+  wait "$APP_LOG_STREAM_PID" >/dev/null 2>&1 || true
+  APP_LOG_STREAM_PID=""
+}
+
 cleanup() {
   if ((CLEANED_UP)); then
     return
@@ -113,6 +148,7 @@ cleanup() {
   trap '' INT TERM HUP
 
   stop_backend_sampler
+  stop_app_log_stream
   # Only a drill that launched, or cleared the slot to launch, owns whatever
   # localvoxtral is running now. Before that point it is the owner's app.
   if ((DRILL_LAUNCHED)) || [[ -n "$OWNER_APP_BUNDLE" ]]; then
@@ -126,6 +162,7 @@ cleanup() {
   fi
   [[ -n "$PREFLIGHT_HELPER" ]] && rm -f "$PREFLIGHT_HELPER"
   [[ -n "$BACKEND_SAMPLE_FILE" ]] && rm -f "$BACKEND_SAMPLE_FILE"
+  [[ -n "$APP_LOG_FILE" ]] && rm -f "$APP_LOG_FILE"
 }
 
 signal_cleanup() {
@@ -229,6 +266,12 @@ record_pass "Defaults domain snapshot captured and smoke run forced to external 
 # AFTER app launch count as violations.
 BASELINE_BACKEND_PIDS="$(managed_backend_pids)"
 
+APP_LOG_STREAM_STARTED=0
+if start_app_log_stream; then
+  APP_LOG_STREAM_STARTED=1
+else
+  record_fail "Could not start log stream on the app's log before launch: $(tail -n 3 "$APP_LOG_FILE" 2>/dev/null)"
+fi
 start_backend_sampler
 DRILL_LAUNCHED=1
 lv_open -n "$APP_PATH"
@@ -516,6 +559,22 @@ if pgrep -x "$APP_PROCESS" >/dev/null 2>&1; then
   record_fail "App did not quit cleanly; process still exists after quit."
 else
   record_pass "App quit cleanly."
+fi
+
+# Launch to quit is over; give the stream a moment to deliver the last lines.
+if ((APP_LOG_STREAM_STARTED)); then
+  sleep 1
+  stop_app_log_stream
+  # The predicate admits only the app's own lines, which compact style tags
+  # [com.localvoxtral:<category>]. None means the stream saw nothing, and an
+  # absent warmup line would prove nothing.
+  if ! grep -qF '[com.localvoxtral:' "$APP_LOG_FILE"; then
+    record_fail "The app's log stream captured no line from the app between launch and quit, so the managed warmup check cannot run. Capture tail: $(tail -n 5 "$APP_LOG_FILE")"
+  elif grep -F 'managed backend warmup requested' "$APP_LOG_FILE" >&2; then
+    record_fail "App launch requested a managed backend warmup in external mode (its log, above)."
+  else
+    record_pass "App logged no managed backend warmup request between launch and quit in external mode ($(grep -cF '[com.localvoxtral:' "$APP_LOG_FILE") app log lines captured)."
+  fi
 fi
 
 if ps -axo stat=,comm= | awk -v app="/${APP_PROCESS}$" '$2 ~ app && $1 ~ /Z/ { found = 1 } END { exit found ? 0 : 1 }'; then
