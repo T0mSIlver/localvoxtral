@@ -22,17 +22,39 @@ fail() {
 }
 
 mkdir -p "$TMP_DIR/bin"
+# A run holding LV_TEST_HOLD_GC parks its background `gc` until the test
+# writes to the gc-go FIFO, then reports on gc-done once the line is logged.
+# That lets the test replay #679's interleaving on purpose: the gc of one run
+# logs while a later run is being checked.
 for tool in ssh rsync; do
   cat >"$TMP_DIR/bin/$tool" <<STUB
 #!/usr/bin/env bash
+held=""
+if [[ "\${!#}" == gc && -n "\${LV_TEST_HOLD_GC:-}" ]]; then
+  held=1
+  read -r _ <"\$LV_TEST_HOLD_GC/gc-go"
+fi
 printf '$tool %s\n' "\$*" >>"\$LV_TEST_TRANSPORT_LOG"
+[[ -z "\$held" ]] || echo logged >"\$LV_TEST_HOLD_GC/gc-done"
 exit 0
 STUB
   chmod +x "$TMP_DIR/bin/$tool"
 done
+# Held open read-write so neither side of a FIFO blocks on open, only on read.
+mkfifo "$TMP_DIR/gc-go" "$TMP_DIR/gc-done"
+exec 3<>"$TMP_DIR/gc-go" 4<>"$TMP_DIR/gc-done"
 
-transport_log="$TMP_DIR/transport.log"
-: >"$transport_log"
+# Every remote-build.sh run that reaches its end leaves a backgrounded
+# `ssh … gc` behind, which can log after the run exits (#679). A check that
+# starts a fresh log per run therefore reads only that run's transport; a gc
+# from an earlier run lands in the earlier run's file.
+transport_runs=0
+new_transport_log() {
+  transport_runs=$((transport_runs + 1))
+  transport_log="$TMP_DIR/transport.$transport_runs.log"
+  : >"$transport_log"
+}
+new_transport_log
 common_env=(
   "PATH=$TMP_DIR/bin:$PATH"
   "LV_BUILD_HOST=fake-host"
@@ -42,16 +64,18 @@ common_env=(
   # at the end (#617) override this.
   "LV_ALLOW_HEAVY_MAC_RUN=1"
   "LV_BUILD_DIR=work/localvoxtral-gate-args-regression"
-  "LV_TEST_TRANSPORT_LOG=$transport_log"
   "LOCALVOXTRAL_REMOTE_LOG=$TMP_DIR/remote-build.log"
   "LOCALVOXTRAL_GC_LOG=$TMP_DIR/last-gc.log"
 )
 
 # $1 = description, $2 = expected exit status, rest = remote-build.sh arguments.
+# extra_env, when set, is appended to the environment of the next call.
+extra_env=()
 run_remote_build() {
   local description="$1" expected="$2" status=0
   shift 2
-  env "${common_env[@]}" "$REMOTE_BUILD" "$@" \
+  env "${common_env[@]}" "LV_TEST_TRANSPORT_LOG=$transport_log" \
+    ${extra_env[@]+"${extra_env[@]}"} "$REMOTE_BUILD" "$@" \
     >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr" || status=$?
   [[ "$status" == "$expected" ]] \
     || fail "$description: exit $status, expected $expected"
@@ -85,7 +109,11 @@ assert_stderr_has 'quoting it for transport produces'
   || fail "refused run still reached the host: $(cat "$transport_log")"
 
 # The guard is not a filter on the rest: a clean run still syncs and runs.
+# Its background gc is held (see the stubs) until a later run has been checked.
+extra_env=("LV_TEST_HOLD_GC=$TMP_DIR")
 run_remote_build 'clean --filter' 0 test --filter TextMergingAlgorithmsTests
+extra_env=()
+clean_run_log="$transport_log"
 grep -q '^rsync ' "$transport_log" || fail "clean run never synced the tree"
 grep -q 'swift test' "$transport_log" || fail "clean run never sent its payload"
 
@@ -102,8 +130,9 @@ assert_no_transport() {
 without_opt_in() {
   local description="$1" expected="$2" status=0
   shift 2
-  : >"$transport_log"
-  env "${common_env[@]}" LV_ALLOW_HEAVY_MAC_RUN=0 "$REMOTE_BUILD" "$@" \
+  new_transport_log
+  env "${common_env[@]}" "LV_TEST_TRANSPORT_LOG=$transport_log" LV_ALLOW_HEAVY_MAC_RUN=0 \
+    "$REMOTE_BUILD" "$@" \
     >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr" || status=$?
   [[ "$status" == "$expected" ]] \
     || fail "$description: exit $status, expected $expected: $(cat "$TMP_DIR/stderr")"
@@ -112,6 +141,12 @@ without_opt_in() {
 without_opt_in 'bare invocation' 2
 assert_stderr_has 'test --filter <Suite>'
 assert_stderr_has 'LV_ALLOW_HEAVY_MAC_RUN=1'
+# #679: the clean run's gc logs only now, after this refused run started. It
+# must not count as this run's transport. The read's timeout is a hang guard
+# for a remote-build.sh that stops running gc, not a wait for timing.
+echo go >&3
+read -t 60 -r _ <&4 || fail "the clean run's background gc never reached the host"
+grep -q ' gc$' "$clean_run_log" || fail "the clean run's gc was not logged as that run's"
 assert_no_transport 'a bare invocation'
 for args in 'test' 'test --skip AlphaTests'; do
   # shellcheck disable=SC2086
@@ -142,11 +177,11 @@ for command in diag disk svc-status; do
 done
 
 # The opt-in lets them through.
-: >"$transport_log"
-env "${common_env[@]}" LV_TEST_SHARDS=1 "$REMOTE_BUILD" test >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr" || true
+new_transport_log
+env "${common_env[@]}" "LV_TEST_TRANSPORT_LOG=$transport_log" LV_TEST_SHARDS=1 "$REMOTE_BUILD" test >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr" || true
 grep -q 'swift test' "$transport_log" || fail "an opted-in plain test never ran: $(cat "$TMP_DIR/stderr")"
-: >"$transport_log"
-env "${common_env[@]}" "$REMOTE_BUILD" integration >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr" || true
+new_transport_log
+env "${common_env[@]}" "LV_TEST_TRANSPORT_LOG=$transport_log" "$REMOTE_BUILD" integration >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr" || true
 grep -q 'swift test' "$transport_log" || fail "an opted-in integration never ran: $(cat "$TMP_DIR/stderr")"
 if grep -q 'runs live inference' "$TMP_DIR/stderr"; then
   fail "an opted-in integration was refused"
