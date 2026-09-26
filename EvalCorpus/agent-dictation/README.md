@@ -304,7 +304,7 @@ Pipelines:
   `stratum.resolvedPipeline`.
 - Feed either a manifest-bound human WAV set or speak `spokenForm` with
   `/usr/bin/say` at LEI16@16000 (see
-  `RealtimeAPIVLLMIntegrationTests.makeSpokenPCM16Data`), FR cases with a
+  `EvalSpeechStage.synthesizedPCM16`), FR cases with a
   French voice. Never mix sources within one scoreboard.
 - Arrange `features` BEFORE the run: pasteboard payload, git-inited fixture
   repo (files from the spec, checked out on the spec's `branch`) fronted as

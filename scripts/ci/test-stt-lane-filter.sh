@@ -38,9 +38,11 @@ expect() {
 }
 
 expect true "the realtime client runs the lane" \
-  Sources/localvoxtral/RealtimeAPIWebSocketClient.swift
+  Sources/localvoxtralCore/RealtimeAPIWebSocketClient.swift
 expect true "the shared base client runs the lane" \
-  Sources/localvoxtral/BaseRealtimeWebSocketClient.swift
+  Sources/localvoxtralCore/BaseRealtimeWebSocketClient.swift
+expect true "the Mistral client, which shares the base, runs the lane" \
+  Sources/localvoxtralCore/MistralRealtimeWebSocketClient.swift
 expect true "what the client trims keys and model names with runs the lane" \
   Sources/localvoxtralCore/StringExtensions.swift
 expect true "what the unavailable-device test calls runs the lane" \
@@ -53,8 +55,12 @@ expect false "the reconnect policy does not" \
   Sources/localvoxtral/RealtimeReconnectPolicy.swift
 expect true "the scorer's normalizer runs the lane" \
   Sources/localvoxtralCore/TextMergingAlgorithms.swift
-expect true "the suite itself runs the lane" \
+expect true "the suite's client half runs the lane" \
+  Tests/localvoxtralCoreTests/RealtimeAPIVLLMIntegrationTests.swift
+expect true "the suite's microphone half runs the lane" \
   Tests/localvoxtralTests/RealtimeAPIVLLMIntegrationTests.swift
+expect true "the TTS fixture and scorer run the lane" \
+  Tests/localvoxtralTestSupport/IntegrationTestSupport.swift
 expect true "a dependency pin runs the lane" Package.resolved
 expect true "the workflow that invokes it runs the lane" .github/workflows/ci.yml
 
@@ -111,8 +117,8 @@ while IFS= read -r pattern; do
   [[ -e "$ROOT_DIR/$pattern" ]] || fail "listed path does not exist: $pattern"
 done <<<"$patterns"
 for client in BaseRealtimeWebSocketClient RealtimeAPIWebSocketClient MistralRealtimeWebSocketClient; do
-  [[ -e "$ROOT_DIR/Sources/localvoxtral/$client.swift" ]] || fail "client file is gone: $client.swift"
-  expect true "$client is in the client family" "Sources/localvoxtral/$client.swift"
+  [[ -e "$ROOT_DIR/Sources/localvoxtralCore/$client.swift" ]] || fail "client file is gone: $client.swift"
+  expect true "$client is in the client family" "Sources/localvoxtralCore/$client.swift"
 done
 echo "PASS: every listed path exists and the glob covers the three clients"
 

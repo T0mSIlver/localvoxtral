@@ -44,7 +44,7 @@ filter_expect false "session start and stop" Sources/localvoxtral/DictationViewM
 filter_expect true "the controller's stop-commit" "Sources/localvoxtral/DictationSessionController+StopCommit.swift"
 filter_expect false "another session controller file" "Sources/localvoxtral/DictationSessionController+Realtime.swift"
 filter_expect true "the stop-commit" Sources/localvoxtral/StopCommitCoordinator.swift
-filter_expect false "a realtime client" Sources/localvoxtral/MistralRealtimeWebSocketClient.swift
+filter_expect false "a realtime client" Sources/localvoxtralCore/MistralRealtimeWebSocketClient.swift
 filter_expect false "the reconnect schedule" Sources/localvoxtral/RealtimeReconnectPolicy.swift
 filter_expect false "the live correction" Sources/localvoxtralCore/LiveReplacementCorrector.swift
 filter_expect false "transcript merging in core" Sources/localvoxtralCore/TextMergingAlgorithms.swift

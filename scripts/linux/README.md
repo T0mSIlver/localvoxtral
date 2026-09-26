@@ -122,8 +122,16 @@ To redo the comparison against a newer run, download its
 
 ## What can use it today
 
-Python tools can, through `vllm_transcribe.py`. The Swift suites that speak
-the realtime protocol (`TermRecallEvalTests`, `RealtimeAPIVLLMIntegrationTests`,
-the ASR half of the agent-dictation eval) live in the app test target, which
-builds only on macOS; #637 moves them to Linux. `SpeechdStreamingBenchTests`
-drives the MLX helper itself and stays on the Mac.
+Python tools, through `vllm_transcribe.py`, and two Swift suites, which run
+the production realtime client under `scripts/core-tests-linux.sh` (#637):
+
+```bash
+VLLM_REALTIME_TEST_ENABLE=1 scripts/core-tests-linux.sh --filter RealtimeAPIVLLMIntegrationTests
+```
+
+`TermRecallEvalTests` runs in audio mode over a recorded set, with the marker
+written by hand (there is no `say` here); see `EvalCorpus/term-recall/README.md`.
+Its scoreboard names the engine through the marker's `asr` and `asrModel`.
+
+The ASR half of the agent-dictation eval still runs only on the Mac.
+`SpeechdStreamingBenchTests` drives the MLX helper itself and stays there.

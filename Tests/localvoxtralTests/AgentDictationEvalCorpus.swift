@@ -43,10 +43,8 @@ enum AgentDictationEvalCorpus {
         "guard-stress",
     ]
 
-    enum Language: String, Codable {
-        case en
-        case fr
-    }
+    /// Shared with the recorded audio sets, whose manifests carry it.
+    typealias Language = RecordedAudioSet.Language
 
     enum Status: String, Codable {
         case required

@@ -1,8 +1,10 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import Synchronization
-import os
 
-final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked Sendable, RealtimeClient {
+package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked Sendable, RealtimeClient {
     /// Tracks stop-finalization commit coordination so we only emit
     /// `.transcriptionFinalized` once the final commit response completes.
     private enum FinalCommitCompletionGate {
@@ -32,27 +34,25 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
     }
 
     private let state = Mutex(State())
-    let supportsPeriodicCommit = true
-    var isConnected: Bool {
+    package let supportsPeriodicCommit = true
+    package var isConnected: Bool {
         state.withLock { $0.base.socketState == .connected }
     }
-    var connectionGeneration: RealtimeConnectionGeneration {
+    package var connectionGeneration: RealtimeConnectionGeneration {
         state.withLock { $0.base.connectionGeneration }
     }
-
-    override var logger: Logger { Log.realtime }
 
     override func withBaseState<R>(_ body: (inout BaseState) -> R) -> R {
         state.withLock { body(&$0.base) }
     }
 
-    func setEventHandler(
+    package func setEventHandler(
         _ handler: @escaping @Sendable (RealtimeEvent, RealtimeConnectionGeneration) -> Void
     ) {
         state.withLock { $0.base.onEvent = handler }
     }
 
-    func connect(configuration: RealtimeSessionConfiguration) throws {
+    package func connect(configuration: RealtimeSessionConfiguration) throws {
         try validateWebSocketScheme(
             configuration.endpoint, errorDomain: "localvoxtral.realtime.websocket")
 
@@ -110,7 +110,7 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         }
     }
 
-    func disconnect() {
+    package func disconnect() {
         let closed: RealtimeConnectionGeneration? = state.withLock { s in
             guard s.base.socketState != .disconnected else { return nil }
             s.base.isUserInitiatedDisconnect = true
@@ -125,7 +125,7 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         }
     }
 
-    func sendAudioChunk(_ pcm16Data: Data) {
+    package func sendAudioChunk(_ pcm16Data: Data) {
         guard !pcm16Data.isEmpty else { return }
         state.withLock { $0.hasUncommittedAudio = true }
         debugLog("send append bytes=\(pcm16Data.count)")
@@ -136,7 +136,7 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         send(event: payload)
     }
 
-    func sendCommit(final: Bool) {
+    package func sendCommit(final: Bool) {
         enum CommitAction {
             case none
             case sendCommitFrame(final: Bool)
@@ -522,31 +522,31 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
 
 #if DEBUG
 extension RealtimeAPIWebSocketClient {
-    struct DebugStateSnapshot {
-        let isConnected: Bool
-        let hasPingTimer: Bool
-        let hasSessionReadyTimer: Bool
-        let pendingMessageCount: Int
-        let hasUncommittedAudio: Bool
-        let isGenerationInProgress: Bool
-        let hasReceivedSessionCreated: Bool
-        let isAwaitingFinalCommitDone: Bool
+    package struct DebugStateSnapshot {
+        package let isConnected: Bool
+        package let hasPingTimer: Bool
+        package let hasSessionReadyTimer: Bool
+        package let pendingMessageCount: Int
+        package let hasUncommittedAudio: Bool
+        package let isGenerationInProgress: Bool
+        package let hasReceivedSessionCreated: Bool
+        package let isAwaitingFinalCommitDone: Bool
     }
 
     /// Keeps view-model unit tests on the complete session-start path without
     /// creating a process-retained URLSession or touching a live backend.
-    func debugSkipSocketCreationForTesting() {
+    package func debugSkipSocketCreationForTesting() {
         state.withLock { $0.skipsSocketCreationForTesting = true }
     }
 
     /// The configuration the most recent `connect(configuration:)` was handed,
     /// recorded before the socket-skip check so a socketless test still sees
     /// exactly what the session would have dialled with.
-    func debugLastConnectConfigurationForTesting() -> RealtimeSessionConfiguration? {
+    package func debugLastConnectConfigurationForTesting() -> RealtimeSessionConfiguration? {
         state.withLock { $0.lastConnectConfigurationForTesting }
     }
 
-    func debugPrimeConnectedStateForTesting(
+    package func debugPrimeConnectedStateForTesting(
         task: URLSessionWebSocketTask, isUserInitiatedDisconnect: Bool = false
     ) {
         state.withLock { s in
@@ -563,7 +563,7 @@ extension RealtimeAPIWebSocketClient {
         }
     }
 
-    func debugHandleTerminalSocketErrorForTesting(
+    package func debugHandleTerminalSocketErrorForTesting(
         task: URLSessionWebSocketTask, errorMessage: String?
     ) {
         handleTerminalSocketError(for: task, errorMessage: errorMessage)
@@ -571,11 +571,11 @@ extension RealtimeAPIWebSocketClient {
 
     /// Put the client where a stop-finalization leaves it: the final commit is
     /// out and the socket owes a `transcription.done` for it.
-    func debugPrimeFinalCommitGateForTesting() {
+    package func debugPrimeFinalCommitGateForTesting() {
         state.withLock { $0.finalCommitCompletionGate = .awaitingFinalCommitTranscriptionDone }
     }
 
-    func debugSetGenerationTrackingState(
+    package func debugSetGenerationTrackingState(
         hasUncommittedAudio: Bool,
         isGenerationInProgress: Bool
     ) {
@@ -586,7 +586,7 @@ extension RealtimeAPIWebSocketClient {
         }
     }
 
-    func debugStateSnapshot() -> DebugStateSnapshot {
+    package func debugStateSnapshot() -> DebugStateSnapshot {
         state.withLock { s in
             DebugStateSnapshot(
                 isConnected: s.base.socketState == .connected,

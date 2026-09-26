@@ -54,14 +54,15 @@ MARKER='[run-stt-integration]'
 # nightly e2e dictation are what see it.
 PATTERNS=(
   'Sources/localvoxtralCore/RealtimeClient.swift'
-  'Sources/localvoxtral/*RealtimeWebSocketClient.swift'   # Base, and Mistral, which shares it
-  'Sources/localvoxtral/RealtimeAPIWebSocketClient.swift' # the client under test
+  'Sources/localvoxtralCore/*RealtimeWebSocketClient.swift'   # Base, and Mistral, which shares it
+  'Sources/localvoxtralCore/RealtimeAPIWebSocketClient.swift' # the client under test
   'Sources/localvoxtralCore/StringExtensions.swift'       # API key and model trimming
   'Sources/localvoxtral/MicrophoneCaptureService.swift'
   'Sources/localvoxtral/AudioDeviceManager.swift'         # the unavailable-device test
   'Sources/localvoxtralCore/TextMergingAlgorithms.swift'  # the scorer normalizes through it
-  'Tests/localvoxtralTests/RealtimeAPIVLLMIntegrationTests.swift'
-  'Tests/localvoxtralTests/IntegrationTestSupport.swift'
+  'Tests/localvoxtralCoreTests/RealtimeAPIVLLMIntegrationTests.swift' # the client half
+  'Tests/localvoxtralTests/RealtimeAPIVLLMIntegrationTests.swift'     # the microphone half
+  'Tests/localvoxtralTestSupport/IntegrationTestSupport.swift'
   'Package.swift'                                   # unless LANE_PACKAGE_DEPS_CHANGED=false
   'Package.resolved'
   '.github/workflows/ci.yml'                        # unless LANE_MAC_LANES_JOB_CHANGED=false
