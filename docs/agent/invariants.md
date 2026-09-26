@@ -534,9 +534,14 @@ there is not.
     registered pid for a local pane, the parent pid or agent name for a
     remote one). A pane back at its shell gets no Enter: it would run the
     prompt as a command.
-    *Resolution:* only after the context join resolved a herdr pane, and
-    only when opencode's relay did not resolve, so an opencode pane with a
-    relay keeps it.
+    *Resolution:* only when opencode's relay did not resolve, so an opencode
+    pane with a relay keeps it; from the context join's herdr binding when
+    the join resolved one, and, when no join ran (polishing off), from a
+    LOCAL herdr's focused pane with the local arm's checks
+    (`ClaudeSessionJoinResolver.localHerdrPromptRoute`, #759). That lookup is
+    never kept as a join, reads nothing from the pane, never reaches a
+    remote or federated herdr, and asks the focused TTY only while a live
+    local session sits in a herdr pane.
 - **Claude Code context reaches the prompt only through a positive join.**
   The joined session's repository (status, uncommitted diffs, contents
   of files the agent just touched) and its prior user prompt are attached as
