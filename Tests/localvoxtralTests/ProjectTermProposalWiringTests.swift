@@ -188,7 +188,8 @@ final class ProjectTermProposalWiringTests: XCTestCase {
         seedProposal(harness)
         await dictate(harness, join: join())
 
-        let request = try XCTUnwrap(await harness.service.lastRequest)
+        let lastRequest = await harness.service.lastRequest
+        let request = try XCTUnwrap(lastRequest)
         XCTAssertEqual(request.inputText, "rename the PageComposer struct")
         XCTAssertFalse(
             (request.userPrompts + [request.systemPrompt]).contains {
@@ -206,7 +207,8 @@ final class ProjectTermProposalWiringTests: XCTestCase {
         seedProposal(harness)
         await dictate(harness, join: join())
 
-        let request = try XCTUnwrap(await harness.service.lastRequest)
+        let lastRequest = await harness.service.lastRequest
+        let request = try XCTUnwrap(lastRequest)
         XCTAssertEqual(request.inputText, "rename the page composer struct")
         XCTAssertEqual(harness.store.snapshot().projects.first?.terms.first?.dictations, 0)
     }
