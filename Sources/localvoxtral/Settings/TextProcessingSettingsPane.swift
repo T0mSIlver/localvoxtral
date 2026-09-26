@@ -13,14 +13,10 @@ struct TextProcessingSettingsPane: View {
 
     /// What the Polishing rows do, including when Claude Desktop gets the
     /// agent prompt (only with the session-context settings on, #669).
-    private static let polishingLearnMoreURL = URL(
-        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/coding-agents.md#polishing"
-    )!
+    private static let polishingLearnMoreURL = DocsLink.page("docs/coding-agents/#polishing")
 
     /// What the agent's terms request costs and sends, per agent (#609).
-    private static let advancedDocsURL = URL(
-        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/dictation.md#terms-from-your-coding-agent"
-    )!
+    private static let advancedDocsURL = DocsLink.page("docs/dictation/#terms-from-your-coding-agent")
 
     private var isLLMPolishingReachable: Bool {
         settings.isOverlayBufferSessionReachable
