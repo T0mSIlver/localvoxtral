@@ -2,11 +2,7 @@ import ClaudeContextWire
 import Foundation
 
 #if canImport(Darwin)
-#if canImport(Darwin)
 import Darwin
-#elseif canImport(Glibc)
-import Glibc
-#endif
 import Synchronization
 
 /// Supervises and leases a persistent `ssh -L` tunnel to a remote herdr socket.
@@ -21,7 +17,7 @@ import Synchronization
 /// clock and the sleep: readiness is a poll, and a poll with a real clock in it
 /// is a test that sleeps.
 @MainActor
-package final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
+final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
     /// How long a forward has to become dialable before it is abandoned.
     ///
     /// This is on the dictation-start path, so it is a latency ceiling as much
@@ -29,7 +25,7 @@ package final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding
     /// beat, not a stall. Two seconds is roughly four times a LAN ssh
     /// handshake and still short enough to be invisible against the model
     /// connect that follows.
-    package static let defaultReadinessTimeout: TimeInterval = 2.0
+    static let defaultReadinessTimeout: TimeInterval = 2.0
 
     private let spawner: any ClaudeRemoteHerdrForwardSpawning
     private let workspaces: any ClaudeRemoteHerdrWorkspaceProviding
@@ -82,7 +78,7 @@ package final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding
     private var orphanReapComplete: Bool
     private var orphanReapWaiters: [CheckedContinuation<Void, Never>] = []
 
-    package init(
+    init(
         spawner: any ClaudeRemoteHerdrForwardSpawning,
         workspaces: any ClaudeRemoteHerdrWorkspaceProviding,
         isSocketDialable: @escaping @Sendable (String) -> Bool = {
@@ -125,7 +121,7 @@ package final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding
     /// never handed to `FileManager`, never `stat`ed, never opened — the only
     /// thing that ever happens to it is being passed through to `ssh`, which
     /// resolves it on the host that named it.
-    package func open(alias: String, remoteSocketPath: String) async -> ClaudeRemoteHerdrForwardHandle? {
+    func open(alias: String, remoteSocketPath: String) async -> ClaudeRemoteHerdrForwardHandle? {
         await waitForOrphanReap()
         guard ClaudeRemoteEnrollmentService.isValidHostAlias(alias) else {
             Log.claudeContext.info("Remote herdr forward refused: invalid host alias")
@@ -211,7 +207,7 @@ package final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding
 
     /// Start or refresh a forward when an authenticated hook proves the host
     /// active. Readiness is intentionally not awaited on this background path.
-    package func prepare(hostID: String, alias: String, remoteSocketPath: String) async {
+    func prepare(hostID: String, alias: String, remoteSocketPath: String) async {
         await waitForOrphanReap()
         guard ClaudeRemoteEnrollmentService.isValidHostAlias(alias),
               Self.isForwardableRemoteSocketPath(remoteSocketPath)
@@ -250,19 +246,19 @@ package final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding
         armIdleTeardown(for: entry)
     }
 
-    package func reconcileEnrollment(activeHostIDs: Set<String>) {
+    func reconcileEnrollment(activeHostIDs: Set<String>) {
         for hostID in Array(entries.keys) where !activeHostIDs.contains(hostID) {
             stopNow(hostID: hostID, reason: .revoked)
         }
     }
 
-    package func stopAllForQuit() {
+    func stopAllForQuit() {
         for hostID in Array(entries.keys) { stopNow(hostID: hostID, reason: .quit) }
     }
 
-    package var drainingTeardowns: [Task<Void, Never>] { Array(pendingTeardowns.values) }
+    var drainingTeardowns: [Task<Void, Never>] { Array(pendingTeardowns.values) }
 
-    package func markOrphanReapComplete() {
+    func markOrphanReapComplete() {
         guard !orphanReapComplete else { return }
         orphanReapComplete = true
         let waiters = orphanReapWaiters
@@ -444,7 +440,7 @@ package final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding
     /// rather than to our child, and killing our child would not be a
     /// teardown. Persistence amortizes that handshake across dictations without
     /// transferring ownership to a user's multiplexed session.
-    package nonisolated static func argv(
+    nonisolated static func argv(
         alias: String,
         localSocketPath: String,
         remoteSocketPath: String
@@ -485,7 +481,7 @@ package final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding
     ///   remote path would re-split the argument into a different forward;
     /// * no leading `-` (implied by the absolute rule, asserted anyway) so it
     ///   can never be read as an option.
-    package nonisolated static func isForwardableRemoteSocketPath(_ path: String) -> Bool {
+    nonisolated static func isForwardableRemoteSocketPath(_ path: String) -> Bool {
         guard path.hasPrefix("/"), !path.hasPrefix("-") else { return false }
         guard !path.contains(":") else { return false }
         return ClaudeRemoteEnvironmentCodec.isAcceptableValue(path)
@@ -494,9 +490,9 @@ package final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding
     /// `sun_path` is 104 bytes on Darwin including the terminator, and a path
     /// that does not fit produces a socket nothing can dial — a failure worth
     /// naming rather than discovering as a readiness timeout.
-    package nonisolated static let maxLocalSocketPathBytes = 100
+    nonisolated static let maxLocalSocketPathBytes = 100
 
-    package nonisolated static func isUsableLocalSocketPath(_ path: String) -> Bool {
+    nonisolated static func isUsableLocalSocketPath(_ path: String) -> Bool {
         path.hasPrefix("/") && !path.contains(":")
             && !path.isEmpty && path.utf8.count <= maxLocalSocketPathBytes
     }
@@ -508,7 +504,7 @@ package final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding
     /// listener at all — both look identical to `lstat`. A successful connect
     /// proves only the LOCAL listener, which is the point: what is on the other
     /// end is then re-proven by the herdr response itself.
-    package nonisolated static func dial(_ socketPath: String) -> Bool {
+    nonisolated static func dial(_ socketPath: String) -> Bool {
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
@@ -546,27 +542,27 @@ package final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding
 /// (host-key notices, forwarding warnings) and reading a child's pipe is how
 /// this app crashed in the field once already (PR #60). Nothing here needs
 /// ssh's words — the socket either answers or it does not.
-package struct ClaudeRemoteHerdrForwardSpawner: ClaudeRemoteHerdrForwardSpawning {
+struct ClaudeRemoteHerdrForwardSpawner: ClaudeRemoteHerdrForwardSpawning {
     /// Absolute, exactly like the enrollment runner's: a PATH lookup for the
     /// program we hand another machine's socket path to is not a lookup worth
     /// having.
-    package var executablePath = "/usr/bin/ssh"
+    var executablePath = "/usr/bin/ssh"
     /// Injected so a test can spawn something observable instead of ssh.
-    package var environment: [String: String] = ProcessInfo.processInfo.environment
+    var environment: [String: String] = ProcessInfo.processInfo.environment
     /// Passed through to the spawned process, so a test can drive the reap
     /// path's failure handling against a REAL child in a real process group.
-    package var waitForChild: @Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t = {
+    var waitForChild: @Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t = {
         waitpid($0, $1, $2)
     }
     /// Collection budget, passed through to the spawned process so a test can
     /// observe exhaustion without waiting out the production default.
-    package var reapPollAttempts = LiveHerdrForwardProcess.defaultReapPollAttempts
-    package var reapPollInterval = LiveHerdrForwardProcess.defaultReapPollInterval
+    var reapPollAttempts = LiveHerdrForwardProcess.defaultReapPollAttempts
+    var reapPollInterval = LiveHerdrForwardProcess.defaultReapPollInterval
     /// Test seams, passed straight through. See `LiveHerdrForwardProcess`.
-    package var reapEffortDidFinish: @Sendable () -> Void = {}
-    package var willAttemptTeardownLock: @Sendable () -> Void = {}
+    var reapEffortDidFinish: @Sendable () -> Void = {}
+    var willAttemptTeardownLock: @Sendable () -> Void = {}
 
-    package func spawn(argv: [String]) throws -> any ClaudeRemoteHerdrForwardProcess {
+    func spawn(argv: [String]) throws -> any ClaudeRemoteHerdrForwardProcess {
         guard !argv.isEmpty else { throw SpawnError.emptyArgv }
 
         // Every one of these is checked. A silently failed SETPGROUP is the
@@ -631,7 +627,7 @@ package struct ClaudeRemoteHerdrForwardSpawner: ClaudeRemoteHerdrForwardSpawning
         )
     }
 
-    package enum SpawnError: Error, Equatable {
+    enum SpawnError: Error, Equatable {
         case emptyArgv
         case launchFailed(code: Int32)
         case setupFailed(code: Int32)
@@ -640,19 +636,15 @@ package struct ClaudeRemoteHerdrForwardSpawner: ClaudeRemoteHerdrForwardSpawning
         /// not spawn a tunnel we cannot promise to close.
         case processGroupUnavailable
     }
-
-    package init(environment: [String: String] = ProcessInfo.processInfo.environment) {
-        self.environment = environment
-    }
 }
 
 /// A spawned forward, tracked by pid and torn down by process GROUP.
-package final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked Sendable {
+final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked Sendable {
     /// Short on purpose. This is our own `ssh -N`: it installs no SIGTERM
     /// handler and dies at once, and the call runs on user-visible exit paths
     /// (a cancelled dictation, app quit) where seconds of blocking would be
     /// felt. SIGKILL to the group follows immediately after.
-    package static let gracePeriod: TimeInterval = 0.25
+    static let gracePeriod: TimeInterval = 0.25
 
     /// Everything teardown has to agree about, in one lock.
     private struct State {
@@ -672,7 +664,7 @@ package final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @u
     private let state = Mutex(State())
     private let source: any DispatchSourceProcess
     private let stderrContinuation: AsyncStream<String>.Continuation
-    package let standardErrorLines: AsyncStream<String>
+    let standardErrorLines: AsyncStream<String>
     /// `waitpid`, injected so the reap path's error handling is testable
     /// without arranging real signal delivery. Same signature and same errno
     /// semantics as the real thing.
@@ -697,7 +689,7 @@ package final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @u
     /// test must establish before it starts timing anything (review round 8b).
     private let willAttemptTeardownLock: @Sendable () -> Void
 
-    package init(
+    init(
         pid: pid_t,
         waitForChild: @escaping @Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t = {
             waitpid($0, $1, $2)
@@ -731,18 +723,18 @@ package final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @u
         source.cancel()
     }
 
-    package var isRunning: Bool { !state.withLock { $0.leaderExited } }
-    package var processIdentifier: pid_t { pid }
+    var isRunning: Bool { !state.withLock { $0.leaderExited } }
+    var processIdentifier: pid_t { pid }
 
     /// The group leader's pid. Exposed so the teardown test can kill the LEADER
     /// alone and prove that a dead leader does not suppress the group SIGKILL —
     /// the exact shape of the bug this guards.
-    package var leaderPID: pid_t { pid }
+    var leaderPID: pid_t { pid }
 
     /// Test seams for the reuse guard: how many signals reached the group, and
     /// whether the child has been collected.
-    package var groupSignalsSent: Int { state.withLock { $0.groupSignalsSent } }
-    package var hasBeenReaped: Bool { state.withLock { $0.reaped } }
+    var groupSignalsSent: Int { state.withLock { $0.groupSignalsSent } }
+    var hasBeenReaped: Bool { state.withLock { $0.reaped } }
 
     /// SIGTERM the group, wait a beat for the LEADER, SIGKILL the group
     /// unconditionally — and only then reap.
@@ -767,7 +759,7 @@ package final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @u
     /// as long as we might still need to signal the group. Teardown signals,
     /// then reaps, and every later call is a no-op. Cost: one zombie per
     /// supervised forward if its leader exits before teardown.
-    package func terminate() {
+    func terminate() {
         // Announced BEFORE the first thing that needs the mutex — the guard
         // below is itself a lock acquisition, so this is where a teardown
         // arrives at the door.
@@ -798,14 +790,14 @@ package final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @u
         reapWithoutBlocking()
     }
 
-    package func forceTerminate() {
+    func forceTerminate() {
         // `terminate()` already carries the load-bearing sequence: group TERM,
         // unconditional group KILL, then reap. Re-entering it is the production
         // retry for a collection that was not definitive the first time.
         terminate()
     }
 
-    package func waitUntilExit() async -> ClaudeRemoteForwardExitStatus {
+    func waitUntilExit() async -> ClaudeRemoteForwardExitStatus {
         await withCheckedContinuation { continuation in
             let status = state.withLock { current -> ClaudeRemoteForwardExitStatus? in
                 if let status = current.exitStatus { return status }
@@ -850,8 +842,8 @@ package final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @u
     /// Total budget for collecting the child, in poll attempts of
     /// `reapPollInterval` each. Generous, because the only cost of waiting is a
     /// background timer; when it runs out we give up rather than block.
-    package static let defaultReapPollAttempts = 600
-    package static let defaultReapPollInterval: TimeInterval = 0.005
+    static let defaultReapPollAttempts = 600
+    static let defaultReapPollInterval: TimeInterval = 0.005
 
     private enum CollectOutcome {
         /// Definitively collected (or the kernel disowned the pid).
@@ -1011,11 +1003,11 @@ package final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @u
 /// OS and shorter. The directory is created fresh (never reused, never
 /// "repaired"), validated with the same lstat rules as the broker's run
 /// directory, and removed on close.
-package struct ClaudeRemoteHerdrForwardWorkspaces: ClaudeRemoteHerdrWorkspaceProviding {
-    package var base: String = NSTemporaryDirectory()
-    package var makeName: @Sendable () -> String = { UUID().uuidString.prefix(8).lowercased() }
+struct ClaudeRemoteHerdrForwardWorkspaces: ClaudeRemoteHerdrWorkspaceProviding {
+    var base: String = NSTemporaryDirectory()
+    var makeName: @Sendable () -> String = { UUID().uuidString.prefix(8).lowercased() }
 
-    package func makeWorkspace() throws -> ClaudeRemoteHerdrForwardWorkspace {
+    func makeWorkspace() throws -> ClaudeRemoteHerdrForwardWorkspace {
         let directory = (base as NSString)
             .appendingPathComponent("lvx-herdr-fwd-\(makeName())")
         // withIntermediateDirectories: false — the create must FAIL if the path
@@ -1040,17 +1032,13 @@ package struct ClaudeRemoteHerdrForwardWorkspaces: ClaudeRemoteHerdrWorkspacePro
         )
     }
 
-    package func remove(_ workspace: ClaudeRemoteHerdrForwardWorkspace) {
+    func remove(_ workspace: ClaudeRemoteHerdrForwardWorkspace) {
         unlink(workspace.socketPath)
         try? FileManager.default.removeItem(atPath: workspace.directoryPath)
     }
 
-    package enum WorkspaceError: Error, Equatable {
+    enum WorkspaceError: Error, Equatable {
         case directoryNotPrivate
-    }
-
-    package init(base: String = NSTemporaryDirectory()) {
-        self.base = base
     }
 }
 #endif
