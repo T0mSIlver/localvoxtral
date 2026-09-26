@@ -67,15 +67,19 @@ private struct InboxCaptureRow: View {
             case .ready, .filed:
                 EmptyView()
             }
-            Picker("Project", selection: projectBinding) {
-                Text("No project").tag(String?.none)
-                ForEach(model.projectChoices, id: \.key) { project in
-                    Text(project.name).tag(String?.some(project.key))
+            if item.state == .filed {
+                Text(item.repository ?? "")
+            } else {
+                Picker("Project", selection: projectBinding) {
+                    Text("No project").tag(String?.none)
+                    ForEach(model.projectChoices, id: \.key) { project in
+                        Text(project.name).tag(String?.some(project.key))
+                    }
                 }
+                .labelsHidden()
+                .fixedSize()
+                .disabled(!isEditable)
             }
-            .labelsHidden()
-            .fixedSize()
-            .disabled(!isEditable)
         }
         .font(.callout)
         .foregroundStyle(.secondary)
