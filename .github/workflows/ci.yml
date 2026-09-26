@@ -376,6 +376,14 @@ jobs:
             HerdrIntegrationTests \
             PolishContextPreparationTests
 
+      - name: PROOF ONLY (#753), removed before review
+        if: ${{ steps.ci_scope.outputs.docs_only != 'true' }}
+        run: |
+          LV_PROOF_753_NO_WRITE=1 swift test --build-system native --skip-build --ignore-lock \
+            --filter 'BackendProcessSupervisorTests/testMaxFailuresFailsWithStderrTail' \
+            >"$RUNNER_TEMP/nowrite-753.log" 2>&1 || true
+          grep -E 'error:' "$RUNNER_TEMP/nowrite-753.log" | sed 's/^/PROOF no-write: /' || echo "PROOF no-write: no failure"
+
       - name: Upload complete unit-test log
         if: ${{ always() && steps.ci_scope.outputs.docs_only != 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
