@@ -37,7 +37,7 @@ Tests/localvoxtralTests/HerdrIntegrationSupport.swift contentsOfDirectory( none
 Tests/localvoxtralTests/SettingsSourceText.swift contentsOfDirectory( none
 Tests/localvoxtralTests/SettingsTabTests.swift enumerator( none
 Tests/localvoxtralTests/SpeechHelperIntegrationTests.swift contentsOfDirectory( none
-Tests/localvoxtralTests/VibeHooksInstallServiceTests.swift contentsOfDirectory( none
+Tests/localvoxtralCoreTests/VibeHooksInstallServiceTests.swift contentsOfDirectory( none
 Tests/localvoxtralTests/WorkflowActionPinningTests.swift contentsOfDirectory( none
 Tests/localvoxtralCoreTests/RemoteProjectTermsLiveTests.swift /README.md none
 Tests/localvoxtralCoreTests/RemoteProjectTermsLiveTests.swift contentsOfDirectory( none
