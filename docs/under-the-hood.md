@@ -99,7 +99,10 @@ second time when you stop. The realtime model takes no vocabulary, so the app
 keeps the dictation's audio in memory and sends it whole to Voxtral Mini
 Transcribe 2 (`voxtral-mini-latest`) with up to 100 terms: your Names and
 terms, your replacement dictionary's spellings and, only with the
-trusted-endpoint setting on, the terms learned from polishing. If the answer
+trusted-endpoint setting on, terms from this dictation's context: the terms
+learned from polishing, the ones the project's coding agent proposed, and the
+identifiers and file names in the joined session and on the screen as it was
+when you started speaking. If the answer
 comes back within 2.5 seconds plus one second per minute of audio, its text
 replaces the realtime text and polishing runs on it; otherwise the realtime
 text stays. The audio is written to disk only if History keeps audio. The

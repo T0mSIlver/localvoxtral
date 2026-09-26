@@ -45,4 +45,36 @@ final class MistralBatchTranscriptionLiveTests: XCTestCase {
             "context_bias did not recover \(term): \(biased.text)"
         )
     }
+
+    /// The same noun, known only from the screen: the directory of the
+    /// terminal prompt the speaker was looking at (#647).
+    func testAScreenTermRecoversTheNameWithTrustOn() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let apiKey = env["MISTRAL_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !apiKey.isEmpty,
+            let wavPath = env["MISTRAL_BATCH_LIVE_WAV"], !wavPath.isEmpty,
+            let term = env["MISTRAL_BATCH_LIVE_TERM"], !term.isEmpty
+        else {
+            throw XCTSkip("Set MISTRAL_API_KEY, MISTRAL_BATCH_LIVE_WAV and MISTRAL_BATCH_LIVE_TERM.")
+        }
+        let wav = try Data(contentsOf: URL(fileURLWithPath: wavPath))
+        let endpoint = try XCTUnwrap(MistralBatchTranscription.endpoint(
+            forRealtimeEndpoint: URL(string: "wss://api.mistral.ai/v1/audio/transcriptions/realtime")!))
+        let screen = "~/work/\(term) $ git status\nOn branch main\nnothing to commit, working tree clean"
+        let context = StopSecondPass.ContextTerms(
+            screen: StopSecondPass.speakableTerms(in: screen, newestFirst: true))
+        let untrusted = StopSecondPass.vocabulary(
+            userTerms: [], dictionarySpellings: [], learnedTerms: [], context: context, contextTrusted: false)
+        XCTAssertEqual(untrusted, [], "without trust the screen sends nothing")
+        let bias = StopSecondPass.vocabulary(
+            userTerms: [], dictionarySpellings: [], learnedTerms: [], context: context, contextTrusted: true)
+
+        let biased = try await MistralBatchTranscriptionClient().transcribe(
+            wav: wav, language: nil, contextBias: bias, apiKey: apiKey, endpoint: endpoint)
+        print("mistral batch live: screen terms \(bias): \(biased.text)")
+        XCTAssertTrue(
+            biased.text.localizedCaseInsensitiveContains(term),
+            "the screen's terms did not recover \(term): \(biased.text)"
+        )
+    }
 }

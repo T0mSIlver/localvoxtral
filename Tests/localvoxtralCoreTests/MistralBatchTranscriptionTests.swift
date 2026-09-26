@@ -53,6 +53,15 @@ final class MistralBatchTranscriptionTests: XCTestCase {
 
     // MARK: - Wire shape
 
+    func testAPhraseTheModelWritesAsSentGetsItsSpacesBack() {
+        let candidates = ["Claude Code", "polish_context", "Vibe CLI"]
+        XCTAssertEqual(
+            MistralBatchTranscription.restoringPhrases(
+                in: "Ask Claude_Code, not vibe_cli, about polish_context and Claude_Codex.",
+                candidates: candidates),
+            "Ask Claude Code, not Vibe CLI, about polish_context and Claude_Codex.")
+    }
+
     func testTheRequestIsAMultipartPostWithTheWavAndOneFieldPerTerm() throws {
         let wav = Data([0x52, 0x49, 0x46, 0x46, 0x00, 0xFF])
         let request = MistralBatchTranscription.request(

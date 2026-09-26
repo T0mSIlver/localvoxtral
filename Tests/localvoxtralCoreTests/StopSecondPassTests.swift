@@ -13,25 +13,45 @@ final class StopSecondPassTests: XCTestCase {
         XCTAssertGreaterThan(StopSecondPass.deadline(audioSeconds: 600), .milliseconds(4_500 * 2))
     }
 
-    func testLearnedTermsGoOnlyToATrustedEndpoint() {
+    private static let context = StopSecondPass.ContextTerms(
+        session: ["StopCommitCoordinator"], repository: ["inkwell"], screen: ["useAuth.ts"])
+
+    func testWithoutTrustOnlyTheUsersOwnTermsLeave() {
         let untrusted = StopSecondPass.vocabulary(
             userTerms: ["Qwen"], dictionarySpellings: ["PostgreSQL"],
-            learnedTerms: ["useAuth.ts"], contextTrusted: false)
+            learnedTerms: ["herdr"], context: Self.context, contextTrusted: false)
         XCTAssertEqual(untrusted, ["Qwen", "PostgreSQL"])
 
         let trusted = StopSecondPass.vocabulary(
             userTerms: ["Qwen"], dictionarySpellings: ["PostgreSQL"],
-            learnedTerms: ["useAuth.ts"], contextTrusted: true)
-        XCTAssertEqual(trusted, ["Qwen", "PostgreSQL", "useAuth.ts"])
+            learnedTerms: ["herdr"], context: Self.context, contextTrusted: true)
+        XCTAssertEqual(
+            trusted, ["Qwen", "PostgreSQL", "herdr", "inkwell", "StopCommitCoordinator", "useAuth.ts"])
     }
 
-    func testTheUsersOwnTermsAreTheLastToBeCut() {
-        let learned = (0..<120).map { "learned\($0)" }
+    func testTheCapCutsTheScreenFirstAndTheUsersOwnTermsLast() {
+        let screen = (0..<120).map { "screen\($0)" }
         let terms = StopSecondPass.vocabulary(
-            userTerms: ["Qwen"], dictionarySpellings: ["PostgreSQL"],
-            learnedTerms: learned, contextTrusted: true)
+            userTerms: ["Qwen"], dictionarySpellings: ["PostgreSQL"], learnedTerms: ["herdr"],
+            context: StopSecondPass.ContextTerms(
+                session: ["StopCommitCoordinator"], repository: ["inkwell"], screen: screen),
+            contextTrusted: true)
         XCTAssertEqual(terms.count, 100)
-        XCTAssertEqual(Array(terms.prefix(2)), ["Qwen", "PostgreSQL"])
+        XCTAssertEqual(
+            Array(terms.prefix(6)),
+            ["Qwen", "PostgreSQL", "herdr", "inkwell", "StopCommitCoordinator", "screen0"])
+        XCTAssertEqual(terms.last, "screen94")
+    }
+
+    func testScreenTermsAreTheOnesSomeoneCouldSayNewestFirst() {
+        let screen = """
+            ~/work/quillmark $ swift test --filter PageComposerTests
+            see https://example.com/docs/PageComposer for details
+            Sources/Quill/useAuth.ts: SESSION_TOKEN_TTL not set, a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3
+            """
+        XCTAssertEqual(
+            StopSecondPass.speakableTerms(in: screen, newestFirst: true),
+            ["useAuth.ts", "SESSION_TOKEN_TTL", "quillmark", "PageComposerTests"])
     }
 
     func testAnAnswerBeforeTheDeadlineReplacesTheText() async {

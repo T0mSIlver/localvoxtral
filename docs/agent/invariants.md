@@ -159,9 +159,16 @@ there is not.
   differently, and a merge would repeat or drop words at every seam. A blank answer, a failure or a missed
   deadline keeps the realtime text and is only logged.
   The term list leaves the Mac. The user's own words go to any endpoint, as
-  they do in the polish prompt; learned terms come from screen, session and
-  repository context, so they go only with the trusted-endpoint opt-in.
-  Live context terms are not sent yet (#647). A new dictation that cancels
+  they do in the polish prompt. Everything else comes from screen, session
+  and repository context, so it goes only with the trusted-endpoint opt-in,
+  and each source also passes the gate it passes for the polish (#647):
+  learned terms, the project's agent proposals (repo vocabulary on), the
+  joined session's text (live join, session context on) and the start
+  screen the stop sample reconciled. They are read from what the stop
+  holds; the repository pipeline is not run for the pass, since it can take
+  3 s and nominates only what the realtime text nearly spells. The screen
+  goes last against the 100-term cap: a listed term nobody says is
+  sometimes written anyway. A new dictation that cancels
   the pass saves the realtime text as not inserted, as it does for a polish.
 - **Claude Desktop is a text field whose Return sends, and gets its
   newlines as Shift+Return** (#660). Three lists name it, each for one

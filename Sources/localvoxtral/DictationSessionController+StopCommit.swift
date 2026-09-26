@@ -99,7 +99,7 @@ extension DictationSessionController {
                 )
             }
         )
-        if let secondPass = stopSecondPassRequest(audio: sessionAudio) {
+        if let secondPass = stopSecondPassRequest(audio: sessionAudio, capture: sample.capture) {
             startStopSecondPass(secondPass, sessionMode: sessionMode, sample: sample)
             return
         }
@@ -740,7 +740,8 @@ extension DictationSessionController {
 // MARK: - Second pass (#317)
 
 /// An Overlay Buffer dictation in Mistral API mode is transcribed a second
-/// time on stop, whole, by Mistral's batch model with the user's vocabulary.
+/// time on stop, whole, by Mistral's batch model with the user's vocabulary
+/// and, with the trusted-endpoint opt-in, this dictation's context (#647).
 /// Its text replaces the realtime text only when it answers before a
 /// deadline; the commit then goes on exactly as it would have.
 extension DictationSessionController {
@@ -750,11 +751,20 @@ extension DictationSessionController {
         let apiKey: String
         let endpoint: URL
         let contextBias: [String]
+        /// The terms before `contextBias` joined their phrases, to put the
+        /// spaces back in the answer.
+        let candidates: [String]
     }
 
     /// Nil when this stop gets no second pass; every reason but "not this
     /// kind of session" is logged.
-    func stopSecondPassRequest(audio sessionAudio: Data?) -> StopSecondPassRequest? {
+    ///
+    /// `capture` is the stop sample's, taken before any wait; with no
+    /// polishing configuration there is none, and the screen gives no terms.
+    func stopSecondPassRequest(
+        audio sessionAudio: Data?,
+        capture: StopCommitCoordinator.Capture? = nil
+    ) -> StopSecondPassRequest? {
         guard sessionHasStopSecondPass else { return nil }
         guard !transcript.currentDictationEventText
             .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -777,22 +787,62 @@ extension DictationSessionController {
             Log.backends.notice("second pass skipped: the session's endpoint has no batch route")
             return nil
         }
-        let contextBias = StopSecondPass.vocabulary(
+        let contextTrusted = PolishContextClipboardReader.isPermittedContextEndpoint(
+            endpoint,
+            trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
+        )
+        let contextTerms = contextTrusted
+            ? stopSecondPassContextTerms(capture: capture, endpoint: endpoint)
+            : .none
+        let candidates = StopSecondPass.candidates(
             userTerms: settings.polishSpeakerTerms,
             dictionarySpellings: sessionReplacementDictionary?.entries.map(\.replaceWith) ?? [],
             learnedTerms: learnedTermStore?.snapshot().confirmedEverywhere().map(\.term) ?? [],
-            contextTrusted: PolishContextClipboardReader.isPermittedContextEndpoint(
-                endpoint,
-                trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
-            )
+            context: contextTerms,
+            contextTrusted: contextTrusted
+        )
+        let contextBias = MistralBatchTranscription.contextBias(from: candidates)
+        // Counts only: the terms are screen, session and repository content.
+        Log.backends.info(
+            "second pass terms: context \(contextTrusted ? "trusted" : "not sent", privacy: .public), repository \(contextTerms.repository.count, privacy: .public), session \(contextTerms.session.count, privacy: .public), screen \(contextTerms.screen.count, privacy: .public), sent \(contextBias.count, privacy: .public)"
         )
         return StopSecondPassRequest(
             wav: DictationAudioRecording.wav(fromPCM16: pcm),
             audioSeconds: Double(pcm.count) / Double(AudioChunkBuffer.bytesPerSecond),
             apiKey: configuration.apiKey,
             endpoint: endpoint,
-            contextBias: contextBias
+            contextBias: contextBias,
+            candidates: candidates
         )
+    }
+
+    /// This dictation's context terms, from what the stop already holds: the
+    /// joined session (the capture's, or with no polishing the one still on
+    /// the context) and the start screen the capture reconciled. Each source
+    /// passes the gate it passes for the polish, asked about `endpoint`.
+    private func stopSecondPassContextTerms(
+        capture: StopCommitCoordinator.Capture?,
+        endpoint: URL
+    ) -> StopSecondPass.ContextTerms {
+        let join = capture?.claudeJoin ?? context.claudeSessionJoin
+        var terms = StopSecondPass.ContextTerms()
+        terms.session = StopSecondPass.speakableTerms(
+            in: context.claudeSessionTextIfEnabled(join: join, endpointURL: endpoint))
+        // An agent's unconfirmed proposals go only where repo vocabulary may
+        // (#609): until use confirms them they are the repo's words. The
+        // repository pipeline itself is not run: it can take 3 s, and it
+        // returns only terms the realtime text already nearly spells.
+        if settings.repoVocabularyEnabled,
+            let project = LearnedTermProjectResolver.resolve(
+                repositoryRoot: .unknown, workspace: join?.snapshot.learnedTermWorkspace)
+        {
+            terms.repository = learnedTermStore?.snapshot()
+                .unconfirmedProposals(projectKey: project.key) ?? []
+        }
+        if let screen = capture?.screenDecision.vocabularyGroundingText {
+            terms.screen = StopSecondPass.speakableTerms(in: screen, newestFirst: true)
+        }
+        return terms
     }
 
     /// Runs the second pass as the commit's task, then commits. A new
@@ -840,13 +890,15 @@ extension DictationSessionController {
                     costEUR: MistralPricing.dictationCost(
                         model: MistralBatchTranscription.model, audioSeconds: request.audioSeconds)
                 ))
-                return try await transcriber.transcribe(
+                let text = try await transcriber.transcribe(
                     wav: request.wav,
                     language: nil,
                     contextBias: request.contextBias,
                     apiKey: request.apiKey,
                     endpoint: request.endpoint
                 ).text
+                return MistralBatchTranscription.restoringPhrases(
+                    in: text, candidates: request.candidates)
             }
             guard let self, outcome != .cancelled, !Task.isCancelled else { return }
             self.applyStopSecondPass(outcome)
