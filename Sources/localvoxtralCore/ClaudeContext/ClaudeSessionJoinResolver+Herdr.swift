@@ -42,19 +42,40 @@ extension ClaudeSessionJoinResolver {
             }
         }
 
+        guard let (pane, snapshot, socketPath) = await focusedLocalHerdrPaneSession(
+            abstain: { Self.abstainedHerdrJoin(outcome: $0) }
+        ) else { return nil }
+
+        Log.claudeContext.info("Terminal pane joined to a live Claude session via herdr pane")
+        return ClaudeSessionJoin(
+            target: target,
+            snapshot: snapshot,
+            windowID: focusedWindowID(target.pid),
+            mechanism: .herdrPane,
+            herdrPane: ClaudeHerdrPaneBinding(paneID: pane.paneID, socketPath: socketPath)
+        )
+    }
+
+    /// The local herdr arm's pane question, once the surface is bound to a
+    /// herdr client showing the local machine: the one live local socket's
+    /// focused pane, the live local session registered in it, herdr's own
+    /// session claim not disagreeing, and that session's pid in the pane's
+    /// foreground. Shared by the context join and the opencode relay
+    /// lookup (#733), which must accept exactly what the join accepts.
+    package func focusedLocalHerdrPaneSession(
+        abstain: (String) -> Void
+    ) async -> (pane: HerdrFocusedPane, snapshot: ClaudeSessionSnapshot, socketPath: String)? {
         let sockets = registry.liveLocalHerdrSocketPaths()
         guard sockets.count == 1, let socketPath = sockets.first else {
-            Self.abstainedHerdrJoin(
-                outcome: sockets.isEmpty ? "no live registered socket" : "multiple live sockets"
-            )
+            abstain(sockets.isEmpty ? "no live registered socket" : "multiple live sockets")
             return nil
         }
         guard let herdrPanes else {
-            Self.abstainedHerdrJoin(outcome: "pane query capability unavailable")
+            abstain("pane query capability unavailable")
             return nil
         }
         guard let pane = await herdrPanes.focusedPane(socketPath: socketPath) else {
-            Self.abstainedHerdrJoin(outcome: "focused pane unavailable")
+            abstain("focused pane unavailable")
             return nil
         }
 
@@ -63,13 +84,13 @@ extension ClaudeSessionJoinResolver {
         case .resolved(let resolved):
             snapshot = resolved
         case .unknown:
-            Self.abstainedHerdrJoin(outcome: "focused pane has no live session")
+            abstain("focused pane has no live session")
             return nil
         case .stale:
-            Self.abstainedHerdrJoin(outcome: "focused pane session stale")
+            abstain("focused pane session stale")
             return nil
         case .ambiguous:
-            Self.abstainedHerdrJoin(outcome: "focused pane session ambiguous")
+            abstain("focused pane session ambiguous")
             return nil
         }
 
@@ -84,31 +105,23 @@ extension ClaudeSessionJoinResolver {
            ClaudeAgentSessionScope.scopedSessionID(
                agent: snapshot.agent, sessionID: claimed
            ) != snapshot.sessionID {
-            Self.abstainedHerdrJoin(outcome: "pane session claim disagrees")
+            abstain("pane session claim disagrees")
             return nil
         }
         guard let foreground = await herdrPanes.paneForegroundInfo(
             socketPath: socketPath, paneID: pane.paneID
         ) else {
-            Self.abstainedHerdrJoin(outcome: "foreground process query unavailable")
+            abstain("foreground process query unavailable")
             return nil
         }
         guard let foregroundPIDs = foreground.foregroundPIDs else {
-            Self.abstainedHerdrJoin(outcome: "foreground process detection unavailable")
+            abstain("foreground process detection unavailable")
             return nil
         }
         guard Self.registeredAgentIsForeground(
-            snapshot: snapshot, foregroundPIDs: foregroundPIDs
+            snapshot: snapshot, foregroundPIDs: foregroundPIDs, abstain: abstain
         ) else { return nil }
-
-        Log.claudeContext.info("Terminal pane joined to a live Claude session via herdr pane")
-        return ClaudeSessionJoin(
-            target: target,
-            snapshot: snapshot,
-            windowID: focusedWindowID(target.pid),
-            mechanism: .herdrPane,
-            herdrPane: ClaudeHerdrPaneBinding(paneID: pane.paneID, socketPath: socketPath)
-        )
+        return (pane, snapshot, socketPath)
     }
 
     /// The joined herdr pane's visible text, or nil on any refusal or failure.
@@ -192,19 +205,27 @@ extension ClaudeSessionJoinResolver {
     /// named — the abstention wording must not claim Claude for both.
     package static func registeredAgentIsForeground(
         snapshot: ClaudeSessionSnapshot,
-        foregroundPIDs: [Int32]
+        foregroundPIDs: [Int32],
+        abstain: (String) -> Void
     ) -> Bool {
         guard let process = snapshot.process else {
-            abstainedHerdrJoin(outcome: "registered session has no process metadata")
+            abstain("registered session has no process metadata")
             return false
         }
         guard foregroundPIDs.contains(process.claudePID) else {
-            abstainedHerdrJoin(
-                outcome: "registered \(snapshot.agent.rawValue) process is not foreground"
-            )
+            abstain("registered \(snapshot.agent.rawValue) process is not foreground")
             return false
         }
         return true
+    }
+
+    package static func registeredAgentIsForeground(
+        snapshot: ClaudeSessionSnapshot,
+        foregroundPIDs: [Int32]
+    ) -> Bool {
+        registeredAgentIsForeground(snapshot: snapshot, foregroundPIDs: foregroundPIDs) {
+            abstainedHerdrJoin(outcome: $0)
+        }
     }
 
     /// Outcome only: pane ids, socket paths, tty paths, and payload contents are

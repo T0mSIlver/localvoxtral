@@ -477,13 +477,17 @@ there is not.
     the pane no longer displays. It forwards through the TUI's in-process
     client, so the app never needs or sees opencode's server password.
     *Resolution:* it reuses the join's session when the join resolved, and
-    otherwise asks only the focused TTY
-    (`ClaudeSessionJoinResolver.opencodePromptRelay(target:)`), never the
+    otherwise asks only local questions
+    (`ClaudeSessionJoinResolver.opencodePromptRelay(target:)`): the focused
+    TTY, then, when that TTY is a local herdr client's, that herdr's focused
+    pane, with exactly the local herdr arm's checks
+    (`focusedLocalHerdrPaneSession`, #733). Never the remote or federated
     herdr, ssh or cmux arms: those open sockets and tunnels on a context
-    consent that writing does not have. The TTY question is asked only while
-    some fresh declaration carries a relay, so a Mac without the updated
-    plugin sends no Apple event for it. A pane in herdr joins through the
-    relay only when the context join resolved it.
+    consent that writing does not have. A herdr showing a saved machine, or
+    whose machine state is unreadable, is not asked. These questions are
+    asked only while some fresh declaration carries a relay, so a Mac
+    without the updated plugin sends no Apple event and dials no herdr for
+    it.
   - *herdr panes* (#726, `HerdrPanePromptRoute`; owner ruling on #723,
     2026-09-26). herdr's socket is unauthenticated full control of every
     pane, so what the app sends is bounded here, not by herdr.

@@ -307,10 +307,40 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertFalse(pipeline.viewModel.textInsertion.promptRelayTakesText)
     }
 
+    /// An opencode pane inside a local herdr, with no context join
+    /// (polishing off): the focused TTY is herdr's client, so the relay is
+    /// found through herdr's focused pane (#733), and the words go to it.
+    func testLiveAutoPasteIntoAnOpencodePaneInHerdrAppendsThroughItsRelayWithoutAJoin() async throws {
+        let relay = try FakeOpencodePromptRelay()
+        addTeardownBlock { relay.stop() }
+        let herdr = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2") { [(4242, "opencode")] })
+        addTeardownBlock { herdr.stop() }
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        joinOpencodePane(pipeline, relay: relay.relay(sessionID: "ses_a").address, inHerdr: herdr)
+        let typed = recordTypedText(pipeline)
+
+        await startAndSpeak(pipeline)
+        XCTAssertNil(pipeline.viewModel.context.claudeSessionJoin, "precondition: no context join")
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline)
+        let phrase = Self.phrase
+        let appendedAll = await relay.waitUntil { calls in
+            calls.compactMap(\.text).joined() == phrase
+        }
+        XCTAssertTrue(appendedAll, "appended: \(relay.appendedText.debugDescription)")
+        XCTAssertEqual(Set(relay.calls.map(\.sessionID)), ["ses_a"])
+        XCTAssertEqual(herdr.writes, [], "herdr is asked, never written to")
+        XCTAssertEqual(typed.text, "")
+    }
+
     /// Joins the dictation to an opencode pane: a Ghostty pane whose TTY a
     /// fresh focus declaration names, with `relay` on it, in a registry the
     /// session's resolver reads.
-    private func joinOpencodePane(_ pipeline: Pipeline, relay: OpencodePromptRelayAddress) {
+    /// With `inHerdr`, the session runs in that herdr's pane `w1:p2` and the
+    /// focused TTY is herdr's client's, which no session reported.
+    private func joinOpencodePane(
+        _ pipeline: Pipeline, relay: OpencodePromptRelayAddress, inHerdr herdr: FakeHerdrSocket? = nil
+    ) {
         let tty = "/dev/ttys042"
         let opencodePID: Int32 = 4242
         let epoch = Date(timeIntervalSince1970: 3_000_000)
@@ -319,7 +349,10 @@ final class DictationPipelineTests: XCTestCase {
         let process = ClaudeHookProcessInfo(hookPID: opencodePID, claudePID: opencodePID, tty: tty)
         registry.ingest(
             ClaudeHookRecord(event: .sessionStart, agent: .opencode, sessionID: "ses_a", timestamp: 0,
-                             process: ClaudeHookProcessInfo(hookPID: opencodePID, claudePID: opencodePID)),
+                             process: ClaudeHookProcessInfo(
+                                 hookPID: opencodePID, claudePID: opencodePID,
+                                 herdrPaneID: herdr.map { _ in "w1:p2" }, herdrSocketPath: herdr?.socketPath
+                             )),
             origin: origin
         )
         XCTAssertNotNil(registry.ingest(
@@ -327,8 +360,12 @@ final class DictationPipelineTests: XCTestCase {
                              process: process, promptRelay: relay),
             origin: origin
         ))
+        let client = HerdrSocketClient(timeout: 2)
         pipeline.viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
-            registry: registry, focusedTerminalTTY: { _ in tty }
+            registry: registry,
+            focusedTerminalTTY: { _ in herdr == nil ? tty : "/dev/ttys-herdr-client" },
+            herdrClientProbe: { _ in herdr != nil },
+            herdrPanes: herdr == nil ? nil : client
         )
         let ghostty = TerminalScreenAllowlist.ghosttyBundleID
         TerminalScreenContextSource.debugFrontmostTargetOverride = {
