@@ -155,7 +155,8 @@ there is not.
   `.unverified`.
 - **Live Auto-Paste holds back only what may still read "go to"** (#747).
   Typed words cannot be taken back, so while a session is live a segment is
-  held while its words so far may still become "go to" ("G", "Go", "go t"),
+  held while its words so far may still become "go to" ("G", "Go", "go t")
+  or "call this session",
   and one that opens with "go to" and at most four more words is held until
   its final. Any other segment is released the moment a letter rules the
   phrase out, then typed live; with no session live nothing is held. Only
@@ -167,6 +168,16 @@ there is not.
   pane is the old one. Segments that end while the go-to resolves and
   focuses wait and land after it, in order; a stop waits for them too.
   History keeps the live dictation whole, the phrase included.
+- **"Call this session <name>" names only a session the dictation is
+  in** (#723 step 2). The phrase ("call this session" or "name this
+  session", then at most four words; never "call this one", a coding
+  prompt) is parsed and held back like go-to. Its target is the session the
+  dictation joined or, in Live Auto-Paste after a go-to, the session whose
+  pane read back as `.focused`; after an `.unverified` go-to there is none.
+  No target, or one no longer live: the phrase is text. A nickname is
+  matched ahead of every default name, one session holds it at a time (the
+  last one named), and it is kept per registry session id in
+  `UserDefaults`, at most 100.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
   endpoint on stop (`DictationSessionController+StopCommit.swift`,

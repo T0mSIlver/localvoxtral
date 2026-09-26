@@ -16,6 +16,14 @@ enum LiveGoToSegmentMode {
     case passThrough
 }
 
+/// Where a go-to moved the words this dictation.
+enum LiveGoToLanding {
+    /// Its pane, read back.
+    case verified(sessionID: String)
+    /// A pane came forward, but not provably the session's.
+    case unverified
+}
+
 /// A segment that ended while a go-to was resolving or focusing.
 enum LiveGoToQueuedSegment {
     case final(String, merged: String, startsMidWord: Bool)
@@ -39,6 +47,18 @@ extension DictationSessionController {
         liveGoToQueuedSegments = []
         liveGoToSegmentMode = .undecided
         liveGoToHeldText = ""
+        liveGoToLanding = nil
+    }
+
+    /// The session "call this session" names: the one the dictation joined,
+    /// or the one a go-to brought forward since. Nil after a go-to whose pane
+    /// did not read back as the session's.
+    var liveThisSessionID: String? {
+        switch liveGoToLanding {
+        case .verified(let sessionID)?: sessionID
+        case .unverified?: nil
+        case nil: context.claudeSessionJoin?.snapshot.sessionID
+        }
     }
 
     /// A partial. True when the go-to hold-back took it: nothing else may
@@ -61,7 +81,7 @@ extension DictationSessionController {
             return true
         case .holding, .possibleCommand:
             liveGoToHeldText += delta
-            switch GoToSessionCommandParser.segmentPrefix(liveGoToHeldText) {
+            switch SessionVoiceCommandParser.segmentPrefix(liveGoToHeldText) {
             case .undecided:
                 liveGoToSegmentMode = .holding
             case .possibleCommand:
@@ -88,7 +108,7 @@ extension DictationSessionController {
                 return true
             }
             guard sessionNavigator?.hasLiveSessions == true,
-                  GoToSessionCommandParser.spokenName(in: finalText) != nil
+                  SessionVoiceCommandParser.command(in: finalText) != nil
             else { return false }
         case .behindGoTo where liveGoToTask != nil:
             liveGoToQueuedSegments.append(.final(finalText, merged: merged, startsMidWord: startsMidWord))
@@ -188,9 +208,21 @@ extension DictationSessionController {
         // Only the backend's final names a session, as only it can trigger a
         // send: the accumulator's merge can hold words the final dropped.
         guard let navigator = sessionNavigator,
-              let spokenName = GoToSessionCommandParser.spokenName(in: finalText)
+              let command = SessionVoiceCommandParser.command(in: finalText)
         else {
             deliverLiveGoToHeldFinal(finalText, merged: merged, startsMidWord: startsMidWord)
+            return
+        }
+        let spokenName: String
+        switch command {
+        case .goTo(let name):
+            spokenName = name
+        case .nameThisSession(let nickname):
+            if nameSession(nickname, sessionID: liveThisSessionID, navigator: navigator) {
+                statusText = GoToSessionStatus.named
+            } else {
+                deliverLiveGoToHeldFinal(finalText, merged: merged, startsMidWord: startsMidWord)
+            }
             return
         }
         liveGoToTask = Task { @MainActor [weak self] in
@@ -211,10 +243,14 @@ extension DictationSessionController {
                 guard !Task.isCancelled else { return }
                 Log.dictation.notice("live go to session: \(String(describing: outcome), privacy: .public)")
                 switch outcome {
-                case .focused, .unverified:
+                case .focused:
                     // The relay writes into the pane the dictation started
                     // in; from here on the words go where the user went.
                     self.textInsertion.endPromptRelay()
+                    self.liveGoToLanding = .verified(sessionID: session.sessionID)
+                case .unverified:
+                    self.textInsertion.endPromptRelay()
+                    self.liveGoToLanding = .unverified
                 case .paneNotFound, .unsupported:
                     break
                 }

@@ -453,6 +453,9 @@ final class DictationSessionController {
     /// Segments that ended while `liveGoToTask` ran, in order.
     @ObservationIgnored
     var liveGoToQueuedSegments: [LiveGoToQueuedSegment] = []
+    /// Where the last go-to of this dictation moved the words, if one did.
+    @ObservationIgnored
+    var liveGoToLanding: LiveGoToLanding?
     @ObservationIgnored
     var firstChunkPreprocessor = FirstChunkPreprocessor()
 

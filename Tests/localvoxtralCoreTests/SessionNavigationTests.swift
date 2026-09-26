@@ -27,13 +27,30 @@ final class SessionNavigationTests: XCTestCase {
             ("", nil),
         ]
         for (text, expected) in cases {
-            XCTAssertEqual(GoToSessionCommandParser.spokenName(in: text), expected, text)
+            XCTAssertEqual(SessionVoiceCommandParser.spokenName(in: text), expected, text)
         }
+    }
+
+    /// #723 step 2. Not "call this one": that is a coding prompt.
+    func testNamingThisSessionIsACommandOnlyAsTheWholeText() {
+        let cases: [(String, SessionVoiceCommand?)] = [
+            ("call this session payments", .nameThisSession("payments")),
+            ("Name this session Payments API.", .nameThisSession("Payments API")),
+            ("go to payments", .goTo("payments")),
+            ("call this one payments", nil),
+            ("call this session", nil),
+            ("call this session the one that fixes the build", nil),
+            ("please call this session payments", nil),
+        ]
+        for (text, expected) in cases {
+            XCTAssertEqual(SessionVoiceCommandParser.command(in: text), expected, text)
+        }
+        XCTAssertNil(SessionVoiceCommandParser.spokenName(in: "call this session payments"))
     }
 
     /// #747: Live Auto-Paste holds a segment only while it may read "go to".
     func testALiveSegmentIsHeldOnlyWhileItMayReadGoTo() {
-        let cases: [(String, GoToSessionCommandParser.SegmentPrefix)] = [
+        let cases: [(String, SessionVoiceCommandParser.SegmentPrefix)] = [
             ("", .undecided),
             (" G", .undecided),
             (" Go", .undecided),
@@ -52,9 +69,13 @@ final class SessionNavigationTests: XCTestCase {
             ("Gotta", .ordinary),
             ("run the tests", .ordinary),
             ("please go to payments", .ordinary),
+            // #723 step 2's phrase is held the same way.
+            ("Call this", .undecided),
+            ("call this session pay", .possibleCommand),
+            ("Call the tests", .ordinary),
         ]
         for (text, expected) in cases {
-            XCTAssertEqual(GoToSessionCommandParser.segmentPrefix(text), expected, text)
+            XCTAssertEqual(SessionVoiceCommandParser.segmentPrefix(text), expected, text)
         }
     }
 
@@ -121,6 +142,31 @@ final class SessionNavigationTests: XCTestCase {
     func testTheRepositoryNameReachesALoneWorktree() {
         let candidates = [candidate("wt", tty: "/dev/ttys002", primary: "cool-roentgen", repository: "localvoxtral")]
         XCTAssertEqual(resolvedID("local voxtral", candidates), "wt")
+    }
+
+    func testANicknameWinsOverEveryDefaultName() {
+        var named = candidate("wt", tty: "/dev/ttys002", primary: "cool-roentgen", repository: "localvoxtral")
+        named.nickname = "payments"
+        let candidates = [candidate("pay", tty: "/dev/ttys001", primary: "payments"), named]
+        XCTAssertEqual(resolvedID("payments", candidates), "wt")
+        XCTAssertEqual(resolvedID("cool roentgen", candidates), "wt", "the default names still work")
+    }
+
+    @MainActor
+    func testANamedSessionIsFoundByItsNickname() async {
+        let session = localSession("s", cwd: "/r/localvoxtral", tty: "/dev/ttys002")
+        let store = SessionNicknameStore(load: []) { _ in }
+        let navigator = SessionNavigator(
+            liveSessions: { [session] },
+            repositoryRoot: { _ in .unknown },
+            focuser: FakeSessionPaneFocuser(),
+            sleep: ManualSessionClock().sleep,
+            nicknames: store
+        )
+        XCTAssertFalse(navigator.name(sessionID: "gone", nickname: "payments"), "only a live session")
+        XCTAssertTrue(navigator.name(sessionID: "s", nickname: "payments"))
+        let resolution = await navigator.resolve(spokenName: "Payments")
+        XCTAssertEqual(resolution, .resolved(session))
     }
 
     func testTwoPanesOnOneNameAreAmbiguous() {
