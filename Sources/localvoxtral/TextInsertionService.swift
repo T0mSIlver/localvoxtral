@@ -166,6 +166,8 @@ final class TextInsertionService {
     @ObservationIgnored
     private var debugReturnKeyPoster: ((pid_t) -> Bool)?
     @ObservationIgnored
+    private var debugShiftReturnPoster: (() -> Bool)?
+    @ObservationIgnored
     private var debugFrontmostPIDReader: (() -> pid_t?)?
 #endif
 
@@ -629,7 +631,7 @@ final class TextInsertionService {
             return false
         }
 
-        guard postUnicodeTextEvents(text) else {
+        guard postKeyboardText(text) else {
             if modifiersActive {
                 Log.insertion.debug("keyboard unicode insertion failed with active modifiers")
             }
@@ -824,6 +826,67 @@ final class TextInsertionService {
 
     // MARK: - Low-level AX Helpers
 
+    /// Apps whose prompt box mishandles a newline inside a unicode key event.
+    /// MEASURED on Claude Desktop 2.9939.2 (2026-09-26, #660), posting what
+    /// `postUnicodeTextEvents` posts: a newline never submitted, but one that
+    /// opened an event, or was the whole event, was dropped with the text
+    /// after it or glued the lines together, and a multi-line text sent as
+    /// consecutive events came out with its pieces reordered. Shift+Return,
+    /// which the prompt handles as a key, gave a line break.
+    private static let shiftReturnNewlineBundleIDs: Set<String> = [
+        ClaudeDesktopAllowlist.bundleID,
+    ]
+
+    /// Types `text` into the frontmost app. In an app on
+    /// `shiftReturnNewlineBundleIDs` each line is typed on its own and every
+    /// newline is pressed as Shift+Return. Like `postUnicodeTextEvents`, true
+    /// when anything was posted.
+    private func postKeyboardText(_ text: String) -> Bool {
+        guard text.contains(where: \.isNewline),
+              let bundleID = TerminalTargetDetector.currentFrontmostBundleID(),
+              Self.shiftReturnNewlineBundleIDs.contains(bundleID)
+        else {
+            return postUnicodeTextEvents(text)
+        }
+        let lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        var posted = false
+        for (index, line) in lines.enumerated() {
+            if index > 0 {
+                posted = postShiftReturn() || posted
+            }
+            if !line.isEmpty {
+                posted = postUnicodeTextEvents(String(line)) || posted
+            }
+        }
+        Log.insertion.notice(
+            "typed \(lines.count - 1, privacy: .public) newline(s) as Shift+Return bundle=\(bundleID, privacy: .public)"
+        )
+        return posted
+    }
+
+    private func postShiftReturn() -> Bool {
+#if DEBUG
+        if let debugShiftReturnPoster {
+            return debugShiftReturnPoster()
+        }
+        // A test that did not pin the hook must never press keys in whatever
+        // the host has focused.
+        if TerminalTargetDetector.isRunningUnderXCTest { return false }
+#endif
+        guard let source = CGEventSource(stateID: .combinedSessionState),
+              // 36 is kVK_Return: the same key on every layout.
+              let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: false)
+        else {
+            return false
+        }
+        keyDown.flags = .maskShift
+        keyUp.flags = .maskShift
+        keyDown.post(tap: .cgAnnotatedSessionEventTap)
+        keyUp.post(tap: .cgAnnotatedSessionEventTap)
+        return true
+    }
+
     private func postUnicodeTextEvents(_ text: String) -> Bool {
 #if DEBUG
         if let debugUnicodePoster {
@@ -965,13 +1028,15 @@ extension TextInsertionService {
         modifierStateReader: (() -> Bool)? = nil,
         accessibilityInserter: ((String, pid_t?) -> Bool)? = nil,
         returnKeyPoster: ((pid_t) -> Bool)? = nil,
-        frontmostPIDReader: (() -> pid_t?)? = nil
+        frontmostPIDReader: (() -> pid_t?)? = nil,
+        shiftReturnPoster: (() -> Bool)? = nil
     ) {
         debugUnicodePoster = unicodePoster
         debugModifierStateReader = modifierStateReader
         debugAccessibilityInserter = accessibilityInserter
         debugReturnKeyPoster = returnKeyPoster
         debugFrontmostPIDReader = frontmostPIDReader
+        debugShiftReturnPoster = shiftReturnPoster
     }
 
     func debugInsertionSnapshot() -> DebugInsertionSnapshot {

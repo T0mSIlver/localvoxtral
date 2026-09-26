@@ -171,7 +171,9 @@ enum TerminalTargetDetector {
         return IsSecureEventInputEnabled()
     }
 
-    private static func currentFrontmostBundleID() -> String? {
+    /// The frontmost app's bundle ID. Pinned under XCTest like the other
+    /// live reads (`debugFrontmostBundleIDOverride`, nil by default).
+    static func currentFrontmostBundleID() -> String? {
         #if DEBUG
         if let override = debugFrontmostBundleIDOverride {
             return override()
