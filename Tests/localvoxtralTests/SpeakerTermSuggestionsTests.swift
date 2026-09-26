@@ -45,7 +45,7 @@ final class SpeakerTermSuggestionsTests: XCTestCase {
     }
 
     func testTheKnownAndRefusedListsSpendTheRequestBudget() {
-        let text = String(repeating: "a", count: 100)
+        let text = dictation(String(repeating: "a", count: 100))
         XCTAssertEqual(
             SpeakerTermSuggestions.selected(
                 [text, text], reserved: SpeakerTermSuggestions.maxRequestCharacters - 150
@@ -54,24 +54,18 @@ final class SpeakerTermSuggestionsTests: XCTestCase {
         )
     }
 
-    /// Counting checks the model's frequency claim without deciding what a
-    /// name is: a recovered spelling that occurs in no text stays in.
-    func testRankingPutsVerifiedTermsFirstAndDropsNothing() {
-        let texts = [
-            "we serve coin 3.6 behind the MCP server", "the mcp tools", "MCP again, with Glossator",
-            "Kuen is the model", "open localvoxtral.js",
-        ]
-        XCTAssertEqual(
-            SpeakerTermSuggestions.ranked(["localvoxtral.js", "Qwen", "MCP", "Glossator"], texts: texts),
-            ["MCP", "localvoxtral.js", "Qwen", "Glossator"]
-        )
+    private func dictation(_ text: String) -> TermSuggestionScreen.Dictation {
+        TermSuggestionScreen.Dictation(raw: text, final: text)
     }
 
     func testSelectionKeepsNewestWithinTheRequestBudget() {
         let long = String(repeating: "a", count: SpeakerTermSuggestions.maxRequestCharacters)
-        XCTAssertEqual(SpeakerTermSuggestions.selected(["  newest ", "", long, "older"]), ["newest"])
         XCTAssertEqual(
-            SpeakerTermSuggestions.selected(Array(repeating: "x", count: 500)).count,
+            SpeakerTermSuggestions.selected(["  newest ", "", long, "older"].map(dictation)).map(\.final),
+            ["newest"]
+        )
+        XCTAssertEqual(
+            SpeakerTermSuggestions.selected(Array(repeating: dictation("x"), count: 500)).count,
             SpeakerTermSuggestions.maxDictations
         )
     }
@@ -188,11 +182,13 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         settings: SettingsStore,
         service: Service,
         texts: [String] = ["a text", "another"],
+        dictations: [TermSuggestionScreen.Dictation]? = nil,
         learned: [String] = []
     ) -> SpeakerTermSuggestionModel {
-        SpeakerTermSuggestionModel(
+        let dictations = dictations ?? texts.map { .init(raw: $0, final: $0) }
+        return SpeakerTermSuggestionModel(
             settings: settings,
-            recentTexts: { texts },
+            recentDictations: { dictations },
             learnedTerms: { learned },
             service: { service }
         )
@@ -281,6 +277,28 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         await model.suggest()
 
         XCTAssertEqual(model.suggestions, ["Qwen", "Voxtral"])
+    }
+
+    /// #610: the owner's GLM run offered IBM and Mac, which every recognizer
+    /// spells. What the recognizer wrote right and polishing never fixed is
+    /// not offered; the fix and the recovered name are, the fix first.
+    func testWordsTheRecognizerSpellsRightAreNotOffered() async {
+        let settings = makePolishingSettings()
+        let service = Service()
+        service.reply = .success(#"["IBM", "Mac", "Qwen", "MCP"]"#)
+        let model = makeModel(settings: settings, service: service, dictations: [
+            .init(raw: "IBM made the Mac", final: "IBM made the Mac."),
+            .init(raw: "the mcp server on my Mac", final: "The MCP server on my Mac."),
+            .init(raw: "coin runs on the IBM box", final: "Qwen runs on the IBM box."),
+        ])
+
+        await model.suggest()
+
+        XCTAssertEqual(model.suggestions, ["Qwen", "MCP"])
+        XCTAssertEqual(
+            service.requests.first?.userPrompts.first?.contains("Qwen runs on the IBM box."), true,
+            "the model still reads the final text"
+        )
     }
 
     func testNothingIsAddedWithoutAClick() async {
@@ -386,7 +404,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         let service = GatedService()
         let start = Date(timeIntervalSince1970: 1_000)
         let model = SpeakerTermSuggestionModel(
-            settings: settings, recentTexts: { ["one", "two", "three"] }, service: { service },
+            settings: settings, recentDictations: { ["one", "two", "three"].map { .init(raw: $0, final: $0) } }, service: { service },
             now: { start }
         )
 
@@ -413,7 +431,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         let settings = makePolishingSettings()
         let service = Service()
         let model = SpeakerTermSuggestionModel(
-            settings: settings, recentTexts: { ["a text"] }, service: { service },
+            settings: settings, recentDictations: { [.init(raw: "a text", final: "a text")] }, service: { service },
             unavailableReason: { "Needs a hosted polishing model." }
         )
         await model.suggest()

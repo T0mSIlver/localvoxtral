@@ -391,10 +391,10 @@ final class DictationSessionStore {
 
     /// The text each recent dictation ended up as (polished when there was a
     /// polish, raw otherwise), newest first.
-    func recentFinalTexts(limit: Int) async -> [String] {
+    func recentEntries(limit: Int) async -> [DictationHistoryEntry] {
         var query = DictationHistoryQuery()
         query.limit = limit
-        return await entries(matching: query).map(\.finalText)
+        return await entries(matching: query)
     }
 
     private func read<Value: Sendable>(
