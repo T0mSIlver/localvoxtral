@@ -45,8 +45,10 @@ package struct OpencodePromptRoute: AgentPromptRoute {
 
     package var name: String { "opencode prompt relay" }
 
-    package func deliver(_ call: AgentPromptCall) async -> Bool {
-        await client.post(call, to: relay)
+    /// Every failure types instead, as #719 shipped it. An append that
+    /// timed out after it was sent may still have landed.
+    package func deliver(_ call: AgentPromptCall) async -> AgentPromptDelivery {
+        await client.post(call, to: relay) ? .delivered : .typeInstead
     }
 }
 

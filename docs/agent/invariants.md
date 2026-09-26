@@ -444,7 +444,11 @@ there is not.
   in order, for the rest of the dictation, and drops any queued submit: that
   text may have landed elsewhere. A route failure records a nil landing,
   which blocks a keyboard Return for the rest of the dictation, like text
-  typed under Secure Keyboard Entry.
+  typed under Secure Keyboard Entry. A route that cannot tell whether a call
+  landed, or whose target is not where keys would go, answers
+  `keepInHistory` instead: the text is typed nowhere for the rest of the
+  dictation, and the popover says it is in History. Typing it would put it
+  in the wrong app, or in twice.
   - *opencode's prompt relay* (#719, `OpencodePromptRoute`).
     *Loopback only:* the wire carries a port and a token
     (`OpencodePromptRelayAddress`), never a host; `OpencodePromptRelayClient`

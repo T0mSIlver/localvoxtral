@@ -368,16 +368,18 @@ final class TextInsertionService {
 
     /// Arms the route for the dictation starting now, or disarms it with nil.
     /// `fallback` receives, in order, text the route did not take; Live
-    /// Auto-Paste passes nil to type it here.
+    /// Auto-Paste passes nil to type it here. `kept` hears of text typed
+    /// nowhere.
     func beginPromptRelay(
         _ route: (any AgentPromptRoute)?,
+        kept: @escaping @MainActor (String) -> Void = { _ in },
         fallback: (@MainActor (String) -> Void)? = nil
     ) {
         guard let route else {
             promptRelaySink = nil
             return
         }
-        promptRelaySink = AgentPromptSink(route: route) { [weak self] text in
+        promptRelaySink = AgentPromptSink(route: route, kept: kept) { [weak self] text in
             if let fallback {
                 fallback(text)
             } else {

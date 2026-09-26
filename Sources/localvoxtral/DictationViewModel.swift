@@ -110,6 +110,7 @@ final class DictationViewModel {
         static let networkLostDictationStopped = "Dictation stopped after the network disconnected."
         static let liveDictationBlockedBySecureInput = "Secure Keyboard Entry blocks Live Auto-Paste."
         static let overlayCopiedToClipboard = "Copied for manual paste."
+        static let agentPromptTextKeptInHistory = "Not delivered; the text is in History."
         static let noNetworkConnection = "No network connection."
         static let microphoneAccessDenied = "Microphone access denied."
         static let finalizing = "Finalizing..."

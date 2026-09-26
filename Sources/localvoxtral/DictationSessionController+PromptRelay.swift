@@ -12,7 +12,9 @@ extension DictationSessionController {
     /// Connect time, once per dictation: hands the relay resolved at start to
     /// the insertion service, or disarms the previous one.
     func armPromptRelayForSession() {
-        textInsertion.beginPromptRelay(context.agentPromptRoute)
+        textInsertion.beginPromptRelay(context.agentPromptRoute, kept: { [weak self] _ in
+            self?.lastError = StatusStrings.agentPromptTextKeptInHistory
+        })
     }
 
     /// What the overlay commit inserts through: the relay while it is
