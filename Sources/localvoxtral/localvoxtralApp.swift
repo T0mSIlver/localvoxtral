@@ -610,6 +610,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             )
             viewModel.context.claudeSessionJoinResolver = resolver
+            // "Go to <name>" (#723): the same registry and the same
+            // focused-pane reader as the join, so a pane counts as brought
+            // forward by the evidence the join trusts.
+            viewModel.session.sessionNavigator = SessionNavigator(
+                liveSessions: { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() },
+                repositoryRoot: SessionNavigator.liveRepositoryRoot,
+                focuser: TerminalSessionPaneFocuser.live(ttyReader: ttyReader),
+                sleep: viewModel.session.dependencies.clock.sleep
+            )
             // Correction learning compares each submitted prompt with the
             // dictation the app inserted into that session. The registry
             // calls this on the ingesting socket thread.
