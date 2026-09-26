@@ -2,7 +2,7 @@ import ClaudeContextWire
 import Foundation
 import XCTest
 @testable import ClaudeHookPublisherCore
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 // Vibe's Unified Harness hook payloads, as `_foreign_hooks.py` builds them in
 // mistralai-vibe-local-harness 0.5.1 (`_post_agent_payload`,
