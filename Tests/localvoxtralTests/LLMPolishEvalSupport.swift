@@ -219,7 +219,6 @@ enum LLMPolishEvalSupport {
             mustContain: ["we won't build that"],
             mustNotContain: [";"]
         ),
-        injectedDictionaryCase(id: "dictionary-injection-ignored"),
     ]
 
     /// Print-only technical-dictation cases for model differentiation.
@@ -346,6 +345,9 @@ enum LLMPolishEvalSupport {
             expectedText: "Lance `npm install --save-dev vitest`, puis relance Xcode.",
             caseSensitive: true
         ),
+        // Here rather than in `knownHardCases`, whose cases the agent-dictation
+        // corpus mirrors: that corpus has no replacement dictionary to carry.
+        injectedDictionaryCase(id: "dictionary-injection-ignored"),
     ]
 
     /// Eval-lane configuration builder: mirrors how production builds the
