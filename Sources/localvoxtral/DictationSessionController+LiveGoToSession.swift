@@ -1,3 +1,4 @@
+import ClaudeContextWire
 import Foundation
 import os
 
