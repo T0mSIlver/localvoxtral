@@ -2,54 +2,83 @@ import ClaudeContextWire
 import Foundation
 import Synchronization
 
-// Going to a joined session by voice (#723 step 1): "go to payments" brings
-// that session's pane to the front. Nothing is typed and no Return is
-// pressed. The pieces here are pure: the command parse, a session's default
-// names, the name lookup and which route can focus a session's pane. The
-// Apple events live in the app (`TerminalSessionPaneFocuser`).
+// Going to a joined session by voice (#723): "go to payments" brings that
+// session's pane to the front, and "call this session payments" gives the
+// session dictated into that name. Nothing is typed and no Return is
+// pressed. The pieces here are pure: the command parse, a session's names,
+// the name lookup and which route can focus a session's pane. The Apple
+// events live in the app (`TerminalSessionPaneFocuser`).
 
-package enum GoToSessionCommandParser {
-    /// A longer tail is a sentence that happens to start with "go to", not a
-    /// session name.
+/// A spoken session command (#723): the whole dictation, or in Live
+/// Auto-Paste a whole segment.
+package enum SessionVoiceCommand: Equatable, Sendable {
+    /// "go to <name>": bring that session's pane forward (step 1).
+    case goTo(String)
+    /// "call this session <name>": nickname the session dictated into
+    /// (step 2).
+    case nameThisSession(String)
+}
+
+package enum SessionVoiceCommandParser {
+    /// A longer tail is a sentence that happens to start with the opening,
+    /// not a session name.
     package static let maxNameWords = 4
 
     private static let edgePunctuation = CharacterSet(charactersIn: ".,;:!?…\"'")
 
-    /// The spoken name when the WHOLE dictation is "go to <name>" (or
-    /// "goto <name>"), else nil. Case and edge punctuation do not count.
-    package static func spokenName(in text: String) -> String? {
+    /// Not "call this one": "call this one fetchUser" is a coding prompt.
+    private enum Kind: Sendable {
+        case goTo, nameThisSession
+    }
+
+    private static let openings: [(words: [String], kind: Kind)] = [
+        (["go", "to"], .goTo),
+        (["goto"], .goTo),
+        (["call", "this", "session"], .nameThisSession),
+        (["name", "this", "session"], .nameThisSession),
+    ]
+
+    /// The command when the WHOLE text is an opening plus one to
+    /// `maxNameWords` name words, else nil. Case and edge punctuation do not
+    /// count.
+    package static func command(in text: String) -> SessionVoiceCommand? {
         let words = text
             .split(whereSeparator: \.isWhitespace)
             .map { String($0).trimmingCharacters(in: edgePunctuation) }
             .filter { !$0.isEmpty }
-        let nameWords: ArraySlice<String>
-        if words.count >= 3,
-           words[0].caseFoldedForMatching == "go",
-           words[1].caseFoldedForMatching == "to"
-        {
-            nameWords = words.dropFirst(2)
-        } else if words.count >= 2, words[0].caseFoldedForMatching == "goto" {
-            nameWords = words.dropFirst(1)
-        } else {
-            return nil
+        let folded = words.map(\.caseFoldedForMatching)
+        for opening in openings where folded.starts(with: opening.words) {
+            let nameWords = words.dropFirst(opening.words.count)
+            guard !nameWords.isEmpty, nameWords.count <= maxNameWords else { return nil }
+            let name = nameWords.joined(separator: " ")
+            guard !SessionNameMatching.key(name).isEmpty else { return nil }
+            switch opening.kind {
+            case .goTo: return .goTo(name)
+            case .nameThisSession: return .nameThisSession(name)
+            }
         }
-        guard nameWords.count <= maxNameWords else { return nil }
-        let name = nameWords.joined(separator: " ")
-        return SessionNameMatching.key(name).isEmpty ? nil : name
+        return nil
+    }
+
+    /// The spoken name when the whole text is "go to <name>" (or "goto
+    /// <name>").
+    package static func spokenName(in text: String) -> String? {
+        guard case .goTo(let name)? = command(in: text) else { return nil }
+        return name
     }
 
     /// What a Live Auto-Paste segment heard so far can still become (#747).
     package enum SegmentPrefix: Equatable, Sendable {
-        /// "g", "Go", "go t": it may yet read "go to".
+        /// "g", "Go", "go t", "call this": it may yet open a command.
         case undecided
-        /// It opens with "go to" (or "goto") and no more name words than a
-        /// command takes: only its final can say.
+        /// It opens a command and has no more name words than a command
+        /// takes: only its final can say.
         case possibleCommand
-        /// No go-to phrase can come of it.
+        /// No command can come of it.
         case ordinary
     }
 
-    /// Case and edge punctuation do not count, as in `spokenName(in:)`.
+    /// Case and edge punctuation do not count, as in `command(in:)`.
     package static func segmentPrefix(_ text: String) -> SegmentPrefix {
         let words = text
             .split(whereSeparator: \.isWhitespace)
@@ -58,11 +87,11 @@ package enum GoToSessionCommandParser {
         let endsInSpace = text.last?.isWhitespace == true
         var heard = words.joined(separator: " ")
         if endsInSpace, !heard.isEmpty { heard += " " }
-        let openings = ["go to ", "goto "]
-        if openings.contains(where: { $0.hasPrefix(heard) }) { return .undecided }
-        guard let opening = openings.first(where: { heard.hasPrefix($0) }) else { return .ordinary }
-        let nameWords = words.count - opening.split(separator: " ").count
-        return nameWords > maxNameWords ? .ordinary : .possibleCommand
+        let spokenOpenings = openings.map { $0.words.joined(separator: " ") + " " }
+        if spokenOpenings.contains(where: { $0.hasPrefix(heard) }) { return .undecided }
+        guard let opening = openings.first(where: { words.starts(with: $0.words) && words.count > $0.words.count })
+        else { return .ordinary }
+        return words.count - opening.words.count > maxNameWords ? .ordinary : .possibleCommand
     }
 }
 
@@ -135,10 +164,13 @@ package struct SessionDefaultNames: Equatable, Sendable {
 package struct SessionNameCandidate: Equatable, Sendable {
     package var snapshot: ClaudeSessionSnapshot
     package var names: SessionDefaultNames
+    /// What the user called it (#723 step 2), matched ahead of `names`.
+    package var nickname: String?
 
-    package init(snapshot: ClaudeSessionSnapshot, names: SessionDefaultNames) {
+    package init(snapshot: ClaudeSessionSnapshot, names: SessionDefaultNames, nickname: String? = nil) {
         self.snapshot = snapshot
         self.names = names
+        self.nickname = nickname
     }
 }
 
@@ -151,8 +183,8 @@ package enum SessionNameResolution: Equatable, Sendable {
 }
 
 package enum SessionNameResolver {
-    /// A match on a git root's name wins over a match on a repository's
-    /// name, so "go to cool-roentgen" reaches that worktree even while three
+    /// A nickname wins over any default name. A match on a git root's name
+    /// wins over a match on a repository's name, so "go to cool-roentgen" reaches that worktree even while three
     /// other worktrees of the same repository are open. Sessions on one local
     /// tty are one pane: the most recently active one stands for it.
     package static func resolve(
@@ -162,9 +194,10 @@ package enum SessionNameResolver {
         let spoken = SessionNameMatching.key(spokenName)
         guard !spoken.isEmpty else { return .unknown }
         let panes = onePerPane(candidates)
-        for tier in [\SessionDefaultNames.primary, \SessionDefaultNames.repository] {
+        let tiers: [(SessionNameCandidate) -> String?] = [\.nickname, \.names.primary, \.names.repository]
+        for tier in tiers {
             let matches = panes.filter { candidate in
-                guard let name = candidate.names[keyPath: tier] else { return false }
+                guard let name = tier(candidate) else { return false }
                 return SessionNameMatching.key(name) == spoken
             }
             switch matches.count {
@@ -260,22 +293,36 @@ package final class SessionNavigator {
     private let liveSessions: @Sendable () -> [ClaudeSessionSnapshot]
     private let repositoryRoot: @Sendable (String) -> LearnedTermProjectResolver.RepositoryRoot
     private let sleep: @Sendable (Duration) async -> Void
+    private let nicknames: SessionNicknameStore?
     package let focuser: any SessionPaneFocusing
 
     /// - Parameters:
     ///   - repositoryRoot: the git root and main checkout above a local
     ///     directory. Runs off the main actor.
     ///   - sleep: the clock the name bound runs on.
+    ///   - nicknames: spoken nicknames; nil, and no session has one.
     package init(
         liveSessions: @escaping @Sendable () -> [ClaudeSessionSnapshot],
         repositoryRoot: @escaping @Sendable (String) -> LearnedTermProjectResolver.RepositoryRoot,
         focuser: any SessionPaneFocusing,
-        sleep: @escaping @Sendable (Duration) async -> Void
+        sleep: @escaping @Sendable (Duration) async -> Void,
+        nicknames: SessionNicknameStore? = nil
     ) {
         self.liveSessions = liveSessions
         self.repositoryRoot = repositoryRoot
         self.focuser = focuser
         self.sleep = sleep
+        self.nicknames = nicknames
+    }
+
+    /// Gives a live session a nickname. False when the session is no longer
+    /// live or there is no store.
+    package func name(sessionID: String, nickname: String) -> Bool {
+        guard let nicknames, liveSessions().contains(where: { $0.sessionID == sessionID }) else {
+            return false
+        }
+        nicknames.setNickname(nickname, for: sessionID)
+        return true
     }
 
     /// Whether any session is live: with none, no dictation can be a go-to,
@@ -287,12 +334,17 @@ package final class SessionNavigator {
     package func resolve(spokenName: String) async -> SessionNameResolution {
         let sessions = liveSessions()
         guard !sessions.isEmpty else { return .unknown }
-        let candidates = await Self.candidates(
+        var candidates = await Self.candidates(
             for: sessions,
             bound: Self.repositoryRootBound,
             sleep: sleep,
             repositoryRoot: repositoryRoot
         )
+        if let nicknames {
+            for index in candidates.indices {
+                candidates[index].nickname = nicknames.nickname(for: candidates[index].snapshot.sessionID)
+            }
+        }
         return SessionNameResolver.resolve(spokenName: spokenName, candidates: candidates)
     }
 

@@ -195,6 +195,52 @@ final class LiveGoToSessionWiringTests: XCTestCase {
         XCTAssertEqual(harness.events.value.last, "return:\(Self.terminalPID)")
     }
 
+    // MARK: - Naming this session (#723 step 2)
+
+    func testNamingThisSessionTypesNothingAndNamesTheJoinedSession() async {
+        let harness = makeHarness()
+        harness.viewModel.session.context.claudeSessionJoin = join(harness.sessions[0])
+
+        harness.partial("Call this session ")
+        harness.partial("billing.")
+        XCTAssertEqual(harness.typedText, "")
+        harness.final("Call this session billing.")
+        await harness.settle()
+
+        XCTAssertEqual(harness.typedText, "")
+        XCTAssertEqual(harness.nicknames.nickname(for: "pay"), "billing")
+        XCTAssertEqual(harness.viewModel.statusText, DictationSessionController.GoToSessionStatus.named)
+    }
+
+    /// "This session" follows the words: after a go-to, it is the session
+    /// that came forward.
+    func testAfterAGoToThisSessionIsTheOneThatCameForward() async {
+        let other = session("other", cwd: "/r/other", tty: "/dev/ttys002")
+        let harness = makeHarness(sessions: [session("pay", cwd: "/r/payments"), other])
+        harness.viewModel.session.context.claudeSessionJoin = join(other)
+
+        harness.partial("go to payments")
+        harness.final("go to payments")
+        harness.partial("call this session billing")
+        harness.final("call this session billing")
+        await harness.settle()
+
+        XCTAssertEqual(harness.nicknames.nickname(for: "pay"), "billing")
+        XCTAssertNil(harness.nicknames.nickname(for: "other"))
+        XCTAssertEqual(harness.typedText, "")
+    }
+
+    func testNamingWithNoJoinedSessionIsTypedAsText() async {
+        let harness = makeHarness()
+
+        harness.partial("call this session billing")
+        harness.final("call this session billing")
+        await harness.settle()
+
+        XCTAssertEqual(harness.typedText, "call this session billing")
+        XCTAssertNil(harness.nicknames.nickname(for: "pay"))
+    }
+
     // MARK: - Harness
 
     private struct Harness {
@@ -204,6 +250,8 @@ final class LiveGoToSessionWiringTests: XCTestCase {
         let frontmost: Box<pid_t?>
         let typedPerApp: Box<[(pid: pid_t?, text: String)]>
         let records: Box<[DictationSessionRecord]>
+        let sessions: [ClaudeSessionSnapshot]
+        let nicknames: SessionNicknameStore
 
         var typedText: String {
             events.value
@@ -248,6 +296,15 @@ final class LiveGoToSessionWiringTests: XCTestCase {
         snapshot.workspace = ClaudeWorkspaceReference.make(rawCwd: cwd, origin: local)
         snapshot.process = ClaudeHookProcessInfo(hookPID: 1, claudePID: 2, tty: tty, termProgram: "ghostty")
         return snapshot
+    }
+
+    private func join(_ snapshot: ClaudeSessionSnapshot) -> ClaudeSessionJoin {
+        ClaudeSessionJoin(
+            target: TerminalScreenTarget(pid: Self.terminalPID, bundleID: Self.ghostty),
+            snapshot: snapshot,
+            windowID: 101,
+            mechanism: .ttyDevice
+        )
     }
 
     private func makeHarness(
@@ -295,11 +352,13 @@ final class LiveGoToSessionWiringTests: XCTestCase {
         viewModel.session.applyPreCapturedSessionTargetVerdict()
 
         let focuser = FakeSessionPaneFocuser()
+        let nicknames = SessionNicknameStore(load: []) { _ in }
         viewModel.session.sessionNavigator = SessionNavigator(
             liveSessions: { sessions },
             repositoryRoot: { _ in .unknown },
             focuser: focuser,
-            sleep: ManualSessionClock().sleep
+            sleep: ManualSessionClock().sleep,
+            nicknames: nicknames
         )
         viewModel.session.sessionOutputMode = .liveAutoPaste
         viewModel.isDictating = true
@@ -310,7 +369,9 @@ final class LiveGoToSessionWiringTests: XCTestCase {
             events: events,
             frontmost: frontmost,
             typedPerApp: typedPerApp,
-            records: records
+            records: records,
+            sessions: sessions,
+            nicknames: nicknames
         )
     }
 }
