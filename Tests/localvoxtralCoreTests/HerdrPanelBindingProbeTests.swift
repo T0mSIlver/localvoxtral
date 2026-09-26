@@ -1,9 +1,7 @@
 import Foundation
 import Synchronization
 import XCTest
-@testable import localvoxtral
-
-#if canImport(Darwin)
+@testable import localvoxtralCore
 
 private final class PanelMetadataRecorder: HerdrPanelMetadataReporting, @unchecked Sendable {
     struct Report: Equatable {
@@ -289,7 +287,7 @@ final class HerdrPanelBindingProbeTests: XCTestCase {
         )
     }
 
-    func testRenderedMatchGradesThePrefixItActuallyFound() {
+    func testRenderedMatchGradesThePrefixItActuallyFound() async {
         let token = HerdrPanelBindingProbe.token(randomBits: 0xFEED_FACE_1234_5678)
         let nonce = String(token.dropFirst(HerdrPanelBindingProbe.tokenPrefix.count))
 
@@ -347,7 +345,7 @@ final class HerdrPanelBindingProbeTests: XCTestCase {
     /// log carries the one fact that separates them in practice — the shape of
     /// the grid that was read, as counts. An 80x24 client cannot show a six-row
     /// agent entry below a workspace list; a 133x50 one can.
-    func testGridGeometryReportsTheShapeThatExplainsAMissingRow() {
+    func testGridGeometryReportsTheShapeThatExplainsAMissingRow() async {
         let small = ([String](repeating: String(repeating: "x", count: 80), count: 24))
             .joined(separator: "\n")
         XCTAssertEqual(HerdrPanelBindingProbe.gridGeometry(small).rows, 24)
@@ -437,5 +435,3 @@ final class HerdrPanelBindingProbeTests: XCTestCase {
         XCTAssertNil(metadata.reports.withLock { $0.first?.value })
     }
 }
-
-#endif

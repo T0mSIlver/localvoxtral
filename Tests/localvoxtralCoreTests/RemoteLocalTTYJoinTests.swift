@@ -1,10 +1,10 @@
 import ClaudeContextWire
+#if canImport(CoreGraphics)
 import CoreGraphics
+#endif
 import Foundation
 import XCTest
-@testable import localvoxtral
-
-#if canImport(Darwin)
+@testable import localvoxtralCore
 
 /// The local-tty echo arm: a plain `ssh host` Claude session joined on the tty
 /// of the window the user is dictating into.
@@ -477,4 +477,3 @@ final class ClaudeRemoteLocalTTYPathTests: XCTestCase {
         }
     }
 }
-#endif

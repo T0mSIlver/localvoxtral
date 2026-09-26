@@ -2,7 +2,7 @@ import ClaudeContextWire
 import Foundation
 import Synchronization
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// One pane.read request as the seam saw it. The pane id here is the whole
 /// point of half these tests: it must always be the JOINED pane's id.
