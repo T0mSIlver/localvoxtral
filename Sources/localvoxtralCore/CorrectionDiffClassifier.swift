@@ -202,12 +202,13 @@ package enum CorrectionDiffClassifier {
 
     // MARK: Text
 
-    /// `text` without the spaces between a sentence end and the capital that
-    /// opens the next sentence. `package. json` keeps its space: a lowercase
-    /// word after a dot does not open a sentence.
+    /// `text` without the spaces between a sentence end, comma or semicolon
+    /// and the capital after it: none of them joins an identifier.
+    /// `package. json` keeps its space, a lowercase word after a dot not
+    /// opening a sentence, and so does `https: //`.
     static func withoutSentenceSpacing(_ text: String) -> String {
         text.replacingOccurrences(
-            of: #"([.!?])\s+(?=\p{Lu})"#,
+            of: #"([.!?,;])\s+(?=\p{Lu})"#,
             with: "$1",
             options: .regularExpression
         )

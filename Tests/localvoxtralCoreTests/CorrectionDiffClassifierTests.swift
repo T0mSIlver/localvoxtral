@@ -182,6 +182,11 @@ final class CorrectionDiffClassifierTests: XCTestCase {
             classify("is it done? Then ship", "is it done?Then ship"),
             .nothing(.notTermShaped)
         )
+        XCTAssertEqual(
+            classify("it was a mistake, So revert it", "it was a mistake,So revert it"),
+            .nothing(.notTermShaped),
+            "a dictation may end on a comma too (Vibe review of #804)"
+        )
     }
 
     /// The user splitting the glue back is not a fix either, and forgets a
