@@ -167,7 +167,7 @@ final class SettingsWindowChromeView: NSView {
     /// wants it. Read on every window update and on every write to
     /// `titleVisibility`, so it stays a field comparison — the assignments in
     /// `applyChrome` are what cost, not this.
-    static func chromeIsStale(_ window: NSWindow) -> Bool {
+    private static func chromeIsStale(_ window: NSWindow) -> Bool {
         window.title != windowTitle
             || window.titleVisibility != .hidden
             || !window.titlebarAppearsTransparent
@@ -181,7 +181,7 @@ final class SettingsWindowChromeView: NSView {
     /// Each setting is written only when it is wrong. A window property
     /// notifies its observers whether or not the value changed, and this runs
     /// on every window update pass.
-    static func applyChrome(to window: NSWindow) {
+    private static func applyChrome(to window: NSWindow) {
         if window.title != windowTitle { window.title = windowTitle }
         if !window.titlebarAppearsTransparent { window.titlebarAppearsTransparent = true }
         if window.titleVisibility != .hidden { window.titleVisibility = .hidden }
