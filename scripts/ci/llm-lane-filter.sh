@@ -78,6 +78,7 @@ PATTERNS=(
   '*ClaudeDesktopSessionURL*'                        # strict parse of the Claude Desktop join URL
   '*ClaudeSocketGuard*'                              # who may hand the broker a hook record at all
   'Sources/localvoxtral/ClaudeContext/*'             # every gate/collector/renderer feeding the Claude blocks
+  'Sources/localvoxtralCore/ClaudeContext/*'         # the same, moved to the core so it builds on Linux (#591)
   '*ClaudeContextBroker*'                            # the socket that feeds the registry
   '*ClaudeHookWire*'                                 # the record shape the snapshot is reduced from
   '*ClaudeHookInputParser*'                          # which hook fields become session state
@@ -175,9 +176,9 @@ EXEMPT=(
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Verification.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Vibe.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationActionAttempts.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudePluginInstalling.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeShellSetupStatus.swift'
-  'Sources/localvoxtral/ClaudeContext/RemoteHostSetupRun.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudePluginInstalling.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeShellSetupStatus.swift'
+  'Sources/localvoxtralCore/ClaudeContext/RemoteHostSetupRun.swift'
   'Sources/localvoxtral/ClaudeContext/HerdrMachineImport.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationLiveIO.swift'         # its process/file seams
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService.swift'   # one-time host setup over ssh
@@ -193,16 +194,16 @@ EXEMPT=(
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteSSHConfigFileSystem.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeLocalHerdrConfigFileSystem.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentLiveIO.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudePluginInstallService.swift'      # `claude plugin` install/update
-  'Sources/localvoxtral/ClaudeContext/ClaudePluginListing.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudePluginStatus.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudePluginAssets.swift'              # locates the bundled marketplace
-  'Sources/localvoxtral/ClaudeContext/ClaudeMarketplaceMirror.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudePublisherPointer.swift'
-  'Sources/localvoxtral/ClaudeContext/OpencodePluginInstallService.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeStatuslineInstallService.swift'  # status line indicator
+  'Sources/localvoxtralCore/ClaudeContext/ClaudePluginInstallService.swift'      # `claude plugin` install/update
+  'Sources/localvoxtralCore/ClaudeContext/ClaudePluginListing.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudePluginStatus.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudePluginAssets.swift'              # locates the bundled marketplace
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeMarketplaceMirror.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudePublisherPointer.swift'
+  'Sources/localvoxtralCore/ClaudeContext/OpencodePluginInstallService.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeStatuslineInstallService.swift'  # status line indicator
   'Sources/localvoxtralCore/ClaudeStatuslineCombine.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeShellRCSetup.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeShellRCSetup.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardCoordinator.swift'  # keeping the ssh forward alive
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardLiveProcess.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardOrphanReaper.swift'
