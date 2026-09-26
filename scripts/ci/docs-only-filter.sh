@@ -56,6 +56,10 @@ is_fast_path_allowlisted() {
   local path="$1"
 
   case "$path" in
+    .github/pull_request_template.md)
+      # The PR form: prose GitHub shows, not something CI runs.
+      return 0
+      ;;
     .github/*)
       REJECTION_REASON="workflow path: $path"
       return 1
