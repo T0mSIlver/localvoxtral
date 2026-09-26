@@ -6,6 +6,7 @@ public enum DictationNoteAgent: String, Sendable, CaseIterable, Hashable {
     case claudeCode
     case opencode
     case vibe
+    case codex
 
     /// The name the row's title uses.
     public var displayName: String {
@@ -13,12 +14,13 @@ public enum DictationNoteAgent: String, Sendable, CaseIterable, Hashable {
         case .claudeCode: return "Claude Code"
         case .opencode: return "opencode"
         case .vibe: return "Mistral Vibe"
+        case .codex: return "Codex"
         }
     }
 
     /// The files the agent loads as user-level instructions, most preferred
-    /// first; it loads only the first one that exists. Paths are relative to
-    /// home. Probed on the installed versions (2026-09-26):
+    /// first; it loads only the first one that exists (for Codex, the first
+    /// with more than whitespace in it). Paths are relative to home. Probed on the installed versions (2026-09-26):
     ///
     /// - Claude Code 2.1: `~/.claude/CLAUDE.md`.
     /// - opencode 1.18: `~/.config/opencode/AGENTS.md`, and when that file is
@@ -28,13 +30,33 @@ public enum DictationNoteAgent: String, Sendable, CaseIterable, Hashable {
     ///   into whichever file opencode reads today.
     /// - Mistral Vibe 2.25: `$VIBE_HOME/AGENTS.md`. A GUI app cannot see
     ///   `VIBE_HOME`, so this is `~/.vibe`, as for the hooks.
+    /// - Codex 0.156: `$CODEX_HOME/AGENTS.override.md` when it holds more than
+    ///   whitespace, else `$CODEX_HOME/AGENTS.md` (`codex debug prompt-input`
+    ///   with each combination). An override hides AGENTS.md, so a note in
+    ///   AGENTS.md would go unread while an override is in use. `CODEX_HOME`
+    ///   is invisible to a GUI app, so this is `~/.codex`.
     public var instructionsFiles: [String] {
         switch self {
         case .claudeCode: return [".claude/CLAUDE.md"]
         case .opencode: return [".config/opencode/AGENTS.md", ".claude/CLAUDE.md"]
         case .vibe: return [".vibe/AGENTS.md"]
+        case .codex: return [".codex/AGENTS.override.md", ".codex/AGENTS.md"]
         }
     }
+
+    /// The file to create when the agent reads none of `instructionsFiles`.
+    /// For Codex it is AGENTS.md: a new override would hide an AGENTS.md the
+    /// user writes later.
+    public var newInstructionsFile: String {
+        switch self {
+        case .codex: return ".codex/AGENTS.md"
+        case .claudeCode, .opencode, .vibe: return instructionsFiles[0]
+        }
+    }
+
+    /// Whether the agent reads a candidate that holds only whitespace, which
+    /// then hides the rest. Codex skips it; opencode does not.
+    public var readsBlankInstructionsFile: Bool { self != .codex }
 }
 
 /// Adds and removes the dictation note: a short marked block in a coding
@@ -135,12 +157,22 @@ public struct DictationNoteInstallService: Sendable {
 
     package static func displayPath(_ relativePath: String) -> String { "~/" + relativePath }
 
-    /// The file the agent reads today: the first of its candidates that
-    /// exists, or the first candidate when none does.
+    /// The file the agent reads today, or the one to create when it reads
+    /// none.
     public func targetPath() -> String? {
         guard let fileSystem else { return nil }
-        let candidates = agent.instructionsFiles
-        return candidates.first { fileSystem.readFile(relativePath: $0).exists } ?? candidates.first
+        return agent.instructionsFiles.first { agentReads(fileSystem.readFile(relativePath: $0)) }
+            ?? agent.newInstructionsFile
+    }
+
+    /// A file whose text cannot be read (a symlink, unreadable, not UTF-8)
+    /// counts as read, so the row reports it instead of writing past it.
+    private func agentReads(_ file: DictationNoteFile) -> Bool {
+        guard file.exists else { return false }
+        guard !agent.readsBlankInstructionsFile,
+              let data = file.data, let text = String(data: data, encoding: .utf8)
+        else { return true }
+        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     public func status() -> Status {

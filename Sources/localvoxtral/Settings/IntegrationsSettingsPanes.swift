@@ -157,6 +157,7 @@ struct CodexSettingsPane: View {
             SettingsGroup(title: "Setup", learnMoreURL: Self.learnMoreURL) {
                 if let claude = viewModel.claudeIntegrationSettings {
                     CodexPluginRow(model: claude)
+                    DictationNoteRow(model: claude, agent: .codex)
                 }
             }
         }

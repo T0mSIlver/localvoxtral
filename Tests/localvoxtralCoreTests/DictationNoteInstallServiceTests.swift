@@ -9,6 +9,8 @@ final class DictationNoteInstallServiceTests: XCTestCase {
     private static let claudeFile = ".claude/CLAUDE.md"
     private static let opencodeFile = ".config/opencode/AGENTS.md"
     private static let vibeFile = ".vibe/AGENTS.md"
+    private static let codexFile = ".codex/AGENTS.md"
+    private static let codexOverride = ".codex/AGENTS.override.md"
     private static let snippet = DictationNoteInstallService.snippet
     private static let userText = "# Working with me\n\n- Be blunt.\n- Keep it short.\n"
 
@@ -201,6 +203,39 @@ final class DictationNoteInstallServiceTests: XCTestCase {
         let fs = MemoryDictationNoteFileSystem()
         try service(.vibe, fs).add()
         XCTAssertEqual(fs.snapshot.writes.map(\.path), [Self.vibeFile])
+    }
+
+    /// Codex 0.156 reads AGENTS.override.md instead of AGENTS.md when the
+    /// override holds more than whitespace, and skips a blank one.
+    func testCodexWritesTheFileCodexReads() throws {
+        let cases: [(files: [String: String], target: String)] = [
+            ([:], Self.codexFile),
+            ([Self.codexFile: Self.userText], Self.codexFile),
+            ([Self.codexOverride: Self.userText, Self.codexFile: Self.userText], Self.codexOverride),
+            ([Self.codexOverride: Self.userText], Self.codexOverride),
+            ([Self.codexOverride: " \n\n", Self.codexFile: Self.userText], Self.codexFile),
+            // A new override would hide an AGENTS.md written later.
+            ([Self.codexOverride: ""], Self.codexFile),
+        ]
+        for (files, target) in cases {
+            let fs = MemoryDictationNoteFileSystem(files: files)
+
+            try service(.codex, fs).add()
+
+            XCTAssertEqual(fs.snapshot.writes.map(\.path), [target], "\(files.keys.sorted())")
+            XCTAssertEqual(service(.codex, fs).status(), .added(path: target))
+        }
+    }
+
+    /// A symlinked override is what Codex reads; the row reports it rather
+    /// than writing into AGENTS.md, which Codex would ignore.
+    func testCodexDoesNotWritePastAnOverrideItCannotRead() {
+        let fs = MemoryDictationNoteFileSystem(files: [Self.codexFile: Self.userText])
+        fs.set(Self.codexOverride, DictationNoteFile(exists: true, isSymlink: true))
+
+        XCTAssertEqual(service(.codex, fs).status(), .needsManualFix(path: Self.codexOverride, .symlink))
+        XCTAssertThrowsError(try service(.codex, fs).add())
+        XCTAssertTrue(fs.snapshot.writes.isEmpty)
     }
 
     // MARK: - The note itself
