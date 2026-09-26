@@ -160,12 +160,12 @@ final class TextInsertionService {
     /// it went to the terminal the Return is for.
     @ObservationIgnored
     private(set) var liveInsertionTargetPIDs: [pid_t?] = []
-    /// This dictation's opencode prompt relay (#719), when the focused pane
-    /// declared one at start. While it is healthy, live text goes to it and
-    /// not to the keyboard, and records no landing PID: it lands in that
-    /// pane's prompt wherever focus is.
+    /// This dictation's route into the joined agent's prompt, when one
+    /// resolved at start. While it is healthy, live text goes to it and not
+    /// to the keyboard, and records no landing PID: it lands in that
+    /// agent's prompt wherever focus is.
     @ObservationIgnored
-    private(set) var promptRelaySink: OpencodePromptRelaySink?
+    private(set) var promptRelaySink: AgentPromptSink?
 
 #if DEBUG
     @ObservationIgnored
@@ -364,41 +364,47 @@ final class TextInsertionService {
         return NSWorkspace.shared.frontmostApplication?.processIdentifier
     }
 
-    // MARK: - opencode prompt relay (#719)
+    // MARK: - Agent prompt route (#719)
 
-    /// Arms the relay for the dictation starting now, or disarms it with nil.
-    /// `fallback` receives, in order, text the relay did not take; Live
-    /// Auto-Paste passes nil to type it here.
+    /// Arms the route for the dictation starting now, or disarms it with nil.
+    /// `fallback` receives, in order, text the route did not take; Live
+    /// Auto-Paste passes nil to type it here. `kept` hears of text typed
+    /// nowhere.
     func beginPromptRelay(
-        _ relay: OpencodePromptRelay?,
-        poster: any OpencodePromptRelayPosting = OpencodePromptRelayClient.shared,
+        _ route: (any AgentPromptRoute)?,
+        kept: @escaping @MainActor (String) -> Void = { _ in },
         fallback: (@MainActor (String) -> Void)? = nil
     ) {
-        guard let relay else {
+        guard let route else {
             promptRelaySink = nil
             return
         }
-        promptRelaySink = OpencodePromptRelaySink(relay: relay, poster: poster) { [weak self] text in
+        promptRelaySink = AgentPromptSink(route: route, kept: { [weak self] text in
+            // Kept text landed nowhere: no keyboard Return may follow it.
+            self?.liveInsertionTargetPIDs.append(nil)
+            kept(text)
+        }) { [weak self] text in
             if let fallback {
                 fallback(text)
             } else {
                 self?.typeLiveTextThePromptRelayRefused(text)
             }
         }
-        Log.insertion.notice("opencode prompt relay armed for this dictation")
+        Log.insertion.notice("\(route.name, privacy: .public) armed for this dictation")
     }
 
     func endPromptRelay() {
         promptRelaySink = nil
     }
 
-    /// Whether text goes to the relay now. False once it failed.
-    var promptRelayIsHealthy: Bool {
-        promptRelaySink?.isHealthy ?? false
+    /// Whether text goes to the route now, to be delivered or kept in
+    /// History. False once it failed over to the keyboard.
+    var promptRelayTakesText: Bool {
+        promptRelaySink?.takesText ?? false
     }
 
     private func handToPromptRelay(_ text: String) -> Bool {
-        guard let sink = promptRelaySink, sink.isHealthy else { return false }
+        guard let sink = promptRelaySink, sink.takesText else { return false }
         sink.append(text)
         return true
     }

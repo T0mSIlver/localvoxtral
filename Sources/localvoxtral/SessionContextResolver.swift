@@ -34,10 +34,10 @@ final class SessionContextResolver {
     /// re-derived: they must all describe the same session. Nil whenever the
     /// pane did not positively join. Cleared on every session exit.
     var claudeSessionJoin: ClaudeSessionJoin?
-    /// The focused opencode pane's prompt relay, resolved once at start next
-    /// to the join (#719). Nil unless that pane declared one. Cleared with
-    /// the join.
-    var opencodePromptRelay: OpencodePromptRelay?
+    /// The route into the joined agent's prompt, resolved once at start
+    /// next to the join: opencode's prompt relay (#719). Nil unless one
+    /// resolved. Cleared with the join.
+    var agentPromptRoute: (any AgentPromptRoute)?
     /// Panel indicators own their associated remote forward until an explicit
     /// token clear has completed, so teardown cannot close the tunnel before
     /// the clear request reaches herdr.
@@ -153,19 +153,28 @@ final class SessionContextResolver {
     /// some opencode pane has a relay, so a Mac with none sends no Apple
     /// event for it. Needs none of the join's context gates: nothing is read
     /// here, and what is written is what the user dictated into that pane.
-    func resolveOpencodePromptRelay() async {
-        opencodePromptRelay = nil
+    private func resolveOpencodePromptRoute() async -> OpencodePromptRoute? {
         guard let resolver = claudeSessionJoinResolver,
               resolver.registry.hasFreshOpencodePromptRelay()
-        else { return }
+        else { return nil }
+        let relay: OpencodePromptRelay?
         if let join = claudeSessionJoin {
-            guard join.snapshot.agent == .opencode else { return }
-            opencodePromptRelay = resolver.registry.opencodePromptRelay(sessionID: join.snapshot.sessionID)
+            guard join.snapshot.agent == .opencode else { return nil }
+            relay = resolver.registry.opencodePromptRelay(sessionID: join.snapshot.sessionID)
         } else if let target = TerminalScreenContextSource.frontmostTarget() {
-            opencodePromptRelay = await resolver.opencodePromptRelay(target: target)
+            relay = await resolver.opencodePromptRelay(target: target)
+        } else {
+            relay = nil
         }
-        if opencodePromptRelay != nil {
-            Log.claudeContext.notice("opencode prompt relay: focused pane declared one; dictation writes through it")
+        return relay.map { OpencodePromptRoute(relay: $0) }
+    }
+
+    /// This dictation's route into the joined agent, if any. Runs after the
+    /// join.
+    func resolveAgentPromptRoute() async {
+        agentPromptRoute = await resolveOpencodePromptRoute()
+        if let route = agentPromptRoute {
+            Log.claudeContext.notice("\(route.name, privacy: .public): resolved; dictation writes through it")
         }
     }
 
@@ -274,7 +283,7 @@ final class SessionContextResolver {
         // attached to an unrelated sentence.
         //
         claudeSessionJoin = nil
-        opencodePromptRelay = nil
+        agentPromptRoute = nil
         // And the pane text with the join: it is that session's screen.
         socketPaneStartCapture = nil
         // Every `ssh -L` lease, not just this join's — abandoning a dictation

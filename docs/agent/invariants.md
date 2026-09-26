@@ -437,43 +437,53 @@ there is not.
   checkpoints every message but the last, and its two prompt-cache slots
   belong to the dictation profiles.
 
-- **The app writes into an agent only through opencode's prompt relay**
-  (#719). Everywhere else the app reads from agents and types into
-  whatever has focus; this is the one place it writes into an agent's own
-  state, so it is held to four rules:
-  (1) *Loopback only.* The wire carries a port and a token
-  (`OpencodePromptRelayAddress`), never a host; `OpencodePromptRelayClient`
-  dials `127.0.0.1` with no proxy, and a malformed port or token is dropped
-  at decode.
-  (2) *Published by a verified peer.* The address rides only on an opencode
-  `FocusChanged`, which the broker accepts only when the record's pid is the
-  socket peer's, and the registry only when that pid owns the session.
-  `ClaudeSessionRegistry.opencodePromptRelay(sessionID:)` answers only from a
-  fresh declaration by the session's own pid, and two declarations naming
-  different relays abstain. Declarations stay in memory, so the token never
-  reaches the persisted registry file.
-  (3) *Append and submit only.* The plugin's relay implements
-  `/tui/append-prompt` and `/tui/submit-prompt` and refuses everything else,
-  any caller without the token, a `Host` other than its own address, and any
-  call for a session the pane no longer displays. It forwards through the
-  TUI's in-process client, so the app never needs or sees opencode's server
-  password. Widening it (clear, commands, another session) is a new
-  capability and needs the owner's decision.
-  (4) *Keystrokes are the fallback, not a race.* `OpencodePromptRelaySink`
-  sends one call at a time, in order; the first failure (refused, timed out,
-  non-200) hands that call's text and every append queued behind it to the
-  keyboard path, in order, for the rest of the dictation, and drops any
-  queued submit: that text may have landed elsewhere. A relay failure
-  records a nil landing, which blocks a keyboard Return for the rest of the
-  dictation, like text typed under Secure Keyboard Entry.
-  The relay is resolved once at start, next to the join. It reuses the
-  join's session when the join resolved, and otherwise asks only the focused
-  TTY (`ClaudeSessionJoinResolver.opencodePromptRelay(target:)`), never the
-  herdr, ssh or cmux arms: those open sockets and tunnels on a context
-  consent that writing does not have. The TTY question is asked only while
-  some fresh declaration carries a relay, so a Mac without the updated
-  plugin sends no Apple event for it. A pane in herdr joins through the relay
-  only when the context join resolved it.
+- **The app writes into an agent only through its routes.** Everywhere
+  else the app reads from agents and types into whatever has focus; a route
+  writes into an agent's own prompt, so every route is held to three rules,
+  and each adds its own below:
+  (1) *One route, resolved at start.* `SessionContextResolver.resolveAgentPromptRoute()`
+  picks at most one route per dictation, next to the join, for the session
+  the join resolved and nothing else. It is dropped with the join.
+  (2) *Append and submit only* (`AgentPromptCall`). Widening a route (clear,
+  commands, another session or pane) is a new capability and needs the
+  owner's decision.
+  (3) *Keystrokes are the fallback, not a race.* `AgentPromptSink` sends one
+  call at a time, in order, and counts a call delivered only when the target
+  confirmed it; the first failure (refused, timed out, unconfirmed) hands
+  that call's text and every append queued behind it to the keyboard path,
+  in order, for the rest of the dictation, and drops any queued submit: that
+  text may have landed elsewhere. A route failure records a nil landing,
+  which blocks a keyboard Return for the rest of the dictation, like text
+  typed under Secure Keyboard Entry. A route that cannot tell whether a call
+  landed, or whose target is not where keys would go, answers
+  `keepInHistory` instead: the text is typed nowhere for the rest of the
+  dictation, and the popover says it is in History. Typing it would put it
+  in the wrong app, or in twice.
+  - *opencode's prompt relay* (#719, `OpencodePromptRoute`).
+    *Loopback only:* the wire carries a port and a token
+    (`OpencodePromptRelayAddress`), never a host; `OpencodePromptRelayClient`
+    dials `127.0.0.1` with no proxy, and a malformed port or token is dropped
+    at decode.
+    *Published by a verified peer:* the address rides only on an opencode
+    `FocusChanged`, which the broker accepts only when the record's pid is
+    the socket peer's, and the registry only when that pid owns the session.
+    `ClaudeSessionRegistry.opencodePromptRelay(sessionID:)` answers only from
+    a fresh declaration by the session's own pid, and two declarations naming
+    different relays abstain. Declarations stay in memory, so the token never
+    reaches the persisted registry file.
+    *The relay's own limits:* the plugin implements `/tui/append-prompt` and
+    `/tui/submit-prompt` and refuses everything else, any caller without the
+    token, a `Host` other than its own address, and any call for a session
+    the pane no longer displays. It forwards through the TUI's in-process
+    client, so the app never needs or sees opencode's server password.
+    *Resolution:* it reuses the join's session when the join resolved, and
+    otherwise asks only the focused TTY
+    (`ClaudeSessionJoinResolver.opencodePromptRelay(target:)`), never the
+    herdr, ssh or cmux arms: those open sockets and tunnels on a context
+    consent that writing does not have. The TTY question is asked only while
+    some fresh declaration carries a relay, so a Mac without the updated
+    plugin sends no Apple event for it. A pane in herdr joins through the
+    relay only when the context join resolved it.
 - **Claude Code context reaches the prompt only through a positive join.**
   The joined session's repository (status, uncommitted diffs, contents
   of files the agent just touched) and its prior user prompt are attached as
