@@ -379,6 +379,11 @@ final class DictationSessionController {
     /// then an Overlay Buffer dictation is never a command.
     @ObservationIgnored
     var sessionNavigator: SessionNavigator?
+    /// The needs-you queue (#717). Nil until the app installs it. Observed:
+    /// the menu bar icon and the popover read its queue.
+    var agentAttention: AgentAttentionModel?
+    @ObservationIgnored
+    var answerAgentTask: Task<Void, Never>?
     @ObservationIgnored
     var polishAndCommitTask: Task<Void, Never>?
     /// Saves the dictation `polishAndCommitTask` is polishing, as not
@@ -986,6 +991,7 @@ extension DictationSessionController {
         dogfoodEditSignalWatcher.supersede()
         #endif
         sessionClaudeJoinBadge = await context.captureAtStart()
+        noteDictationJoinedAgentSession(context.claudeSessionJoin?.snapshot.sessionID)
         await context.resolveAgentPromptRoute()
     }
 }

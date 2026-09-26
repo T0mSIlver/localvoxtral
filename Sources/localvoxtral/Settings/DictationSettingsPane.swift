@@ -31,6 +31,7 @@ struct DictationSettingsPane: View {
     @State private var overlayValidationError: String?
     @State private var livePasteValidationError: String?
     @State private var copyLastDictationValidationError: String?
+    @State private var answerAgentValidationError: String?
     @State private var pendingShortcutMove: PendingShortcutMove?
 
     /// A recording that would take the other mode's key, held until the user
@@ -77,6 +78,24 @@ struct DictationSettingsPane: View {
 
     private func assignCopyLastDictationShortcut(_ shortcut: DictationShortcut?) {
         copyLastDictationValidationError = viewModel.shortcuts.requestCopyLastDictationShortcut(shortcut)
+    }
+
+    /// Setting the shortcut turns the needs-you cue on (#717), so that is
+    /// when macOS is asked to allow its banner.
+    private func assignAnswerAgentShortcut(_ shortcut: DictationShortcut?) {
+        answerAgentValidationError = viewModel.shortcuts.requestAnswerAgentShortcut(shortcut)
+        if settings.answerAgentShortcut != nil {
+            viewModel.agentAttention?.announcer?.requestPermission()
+        } else {
+            viewModel.agentAttention?.tracker.clear()
+        }
+    }
+
+    private var answerAgentShortcutBinding: Binding<DictationShortcut?> {
+        Binding(
+            get: { settings.answerAgentShortcut },
+            set: { assignAnswerAgentShortcut($0) }
+        )
     }
 
     private var copyLastDictationShortcutBinding: Binding<DictationShortcut?> {
@@ -281,6 +300,33 @@ struct DictationSettingsPane: View {
                 } footer: {
                     if let copyLastDictationValidationError {
                         SettingsInlineMessage(copyLastDictationValidationError, color: .red)
+                    }
+                }
+
+                // The needs-you cue (#717) is on while this is set: a sound,
+                // a banner and the menu bar icon when a coding agent waits
+                // for you; the shortcut brings its pane forward to answer.
+                SettingsFieldRow(
+                    title: "Answer the agent that needs you",
+                    controlAlignment: .top
+                ) {
+                    HStack(alignment: .center, spacing: 8) {
+                        ShortcutRecorderField(
+                            shortcut: answerAgentShortcutBinding,
+                            validationError: $answerAgentValidationError,
+                            fixedWidth: 132
+                        )
+                        .frame(height: 24, alignment: .leading)
+
+                        Button("Clear") {
+                            answerAgentValidationError = nil
+                            assignAnswerAgentShortcut(nil)
+                        }
+                        .disabled(settings.answerAgentShortcut == nil)
+                    }
+                } footer: {
+                    if let answerAgentValidationError {
+                        SettingsInlineMessage(answerAgentValidationError, color: .red)
                     }
                 }
 
