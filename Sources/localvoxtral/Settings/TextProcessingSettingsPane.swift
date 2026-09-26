@@ -4,6 +4,7 @@ import SwiftUI
 struct TextProcessingSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
+    @State private var isShowingLearnedTerms = false
 
     static let speakerProfileExample = """
         Backend engineer at Acme, mostly Swift and Python.
@@ -172,10 +173,21 @@ struct TextProcessingSettingsPane: View {
                     title: "Terms learned from polishing",
                     status: learnedTermStatus
                 ) {
-                    Button("Forget") {
-                        viewModel.learnedTermStore?.forgetAll()
+                    HStack(spacing: 8) {
+                        Button("Show") {
+                            isShowingLearnedTerms = true
+                        }
+                        .accessibilityIdentifier("settings.learnedTerms.show")
+                        Button("Forget") {
+                            viewModel.learnedTermStore?.forgetAll()
+                        }
                     }
                     .disabled(learnedTermCount == 0)
+                }
+                .sheet(isPresented: $isShowingLearnedTerms) {
+                    LearnedTermsSheet(viewModel: viewModel) {
+                        isShowingLearnedTerms = false
+                    }
                 }
 
                 SettingsFieldRow(title: "Replacement dictionary (legacy)") {

@@ -1,0 +1,257 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "id": "ordinary-01",
+      "learnedTerm": "useAuth",
+      "transcript": "we should use auth tokens for the upload",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-02",
+      "learnedTerm": "useAuth",
+      "transcript": "Use auth headers only when the proxy asks for them.",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-03",
+      "learnedTerm": "SessionStart",
+      "transcript": "at session start the app loads the config",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-04",
+      "learnedTerm": "SessionStart",
+      "transcript": "clear the cache on every session start",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-05",
+      "learnedTerm": "toolInput",
+      "transcript": "the agent asked for more tool input than it needed",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-06",
+      "learnedTerm": "sendNow",
+      "transcript": "just send now and we will check the result later",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-07",
+      "learnedTerm": "sendNow",
+      "transcript": "I want to send now, not after the timeout.",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-08",
+      "learnedTerm": "startRecording",
+      "transcript": "start recording when I press the key twice",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-09",
+      "learnedTerm": "isReady",
+      "transcript": "tell me when it is ready",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-10",
+      "learnedTerm": "getUser",
+      "transcript": "we need to get user feedback before the release",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-11",
+      "learnedTerm": "fetchData",
+      "transcript": "it takes a while to fetch data over the tunnel",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-12",
+      "learnedTerm": "newSession",
+      "transcript": "open a new session and paste the log there",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-13",
+      "learnedTerm": "dryRun",
+      "transcript": "do a dry run first so we see what it deletes",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-14",
+      "learnedTerm": "buildHost",
+      "transcript": "wake the build host before you push",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-15",
+      "learnedTerm": "lastSeen",
+      "transcript": "when was that crash last seen",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-16",
+      "learnedTerm": "firstSeen",
+      "transcript": "the bug was first seen on Monday after the update",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-17",
+      "learnedTerm": "isEmpty",
+      "transcript": "the list is empty after a restart",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-18",
+      "learnedTerm": "isEnabled",
+      "transcript": "check that polish is enabled in settings",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-19",
+      "learnedTerm": "userName",
+      "transcript": "type your user name and press return",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-20",
+      "learnedTerm": "startTime",
+      "transcript": "what is the start time of the meeting",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-21",
+      "learnedTerm": "errorMessage",
+      "transcript": "the error message is confusing, rewrite it in plain words",
+      "meant": "ordinary"
+    },
+    {
+      "id": "ordinary-22",
+      "learnedTerm": "PushToTalk",
+      "transcript": "I prefer push to talk over the toggle",
+      "meant": "ordinary"
+    },
+    {
+      "id": "term-01",
+      "learnedTerm": "useAuth",
+      "transcript": "call use auth before the first render",
+      "meant": "term"
+    },
+    {
+      "id": "term-02",
+      "learnedTerm": "useAuth",
+      "transcript": "la fonction use auth renvoie nil au premier lancement",
+      "meant": "term"
+    },
+    {
+      "id": "term-03",
+      "learnedTerm": "SessionStart",
+      "transcript": "the session start hook fires twice",
+      "meant": "term"
+    },
+    {
+      "id": "term-04",
+      "learnedTerm": "SessionStart",
+      "transcript": "le hook session start se déclenche deux fois",
+      "meant": "term"
+    },
+    {
+      "id": "term-05",
+      "learnedTerm": "toolInput",
+      "transcript": "log the tool input field before we send it",
+      "meant": "term"
+    },
+    {
+      "id": "term-06",
+      "learnedTerm": "sendNow",
+      "transcript": "the send now command should skip polish",
+      "meant": "term"
+    },
+    {
+      "id": "term-07",
+      "learnedTerm": "startRecording",
+      "transcript": "rename start recording to begin capture",
+      "meant": "term"
+    },
+    {
+      "id": "term-08",
+      "learnedTerm": "isReady",
+      "transcript": "the is ready property never flips back",
+      "meant": "term"
+    },
+    {
+      "id": "term-09",
+      "learnedTerm": "getUser",
+      "transcript": "the get user function returns nil for guests",
+      "meant": "term"
+    },
+    {
+      "id": "term-10",
+      "learnedTerm": "fetchData",
+      "transcript": "import fetch data from the network module",
+      "meant": "term"
+    },
+    {
+      "id": "term-11",
+      "learnedTerm": "newSession",
+      "transcript": "the new session event carries the workspace",
+      "meant": "term"
+    },
+    {
+      "id": "term-12",
+      "learnedTerm": "dryRun",
+      "transcript": "the dry run flag is ignored by the installer",
+      "meant": "term"
+    },
+    {
+      "id": "term-13",
+      "learnedTerm": "buildHost",
+      "transcript": "read the build host key from git config",
+      "meant": "term"
+    },
+    {
+      "id": "term-14",
+      "learnedTerm": "isEmpty",
+      "transcript": "make the is empty check cover whitespace",
+      "meant": "term"
+    },
+    {
+      "id": "term-15",
+      "learnedTerm": "userName",
+      "transcript": "the user name field is optional in the schema",
+      "meant": "term"
+    },
+    {
+      "id": "term-16",
+      "learnedTerm": "errorMessage",
+      "transcript": "set the error message property on failure",
+      "meant": "term"
+    },
+    {
+      "id": "term-17",
+      "learnedTerm": "PushToTalk",
+      "transcript": "the push to talk shortcut stops working after sleep",
+      "meant": "term"
+    },
+    {
+      "id": "term-18",
+      "learnedTerm": "fetchData",
+      "transcript": "fetch data should retry on a timeout",
+      "meant": "term"
+    },
+    {
+      "id": "term-19",
+      "learnedTerm": "toolInput",
+      "transcript": "tool input is nil here, add a guard",
+      "meant": "term"
+    },
+    {
+      "id": "term-20",
+      "learnedTerm": "SessionStart",
+      "transcript": "session start fires before the plugin loads",
+      "meant": "term"
+    }
+  ]
+}

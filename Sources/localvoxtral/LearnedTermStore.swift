@@ -116,6 +116,51 @@ final class LearnedTermStore: @unchecked Sendable {
         }
     }
 
+    /// A spelling the user fixed a dictation to by hand, confirmed at once
+    /// (`LearnedTerms.recordCorrection`). Ordered on the write queue like
+    /// `record`.
+    func recordCorrection(_ term: String, project: LearnedTermProjectResolver.Identity) {
+        let moment = now()
+        mutate { terms in
+            terms.recordCorrection(term, project: project, now: moment)
+        }
+        Log.polishing.info(
+            "Learned terms: correction recorded in project \(project.key == LearnedTermProjectResolver.shared.key ? "shared" : "keyed", privacy: .public)"
+        )
+    }
+
+    /// Drops one spelling from one project: Undo, or the user reverting it.
+    func forget(_ term: String, projectKey: String) {
+        mutate { terms in
+            terms.forget(term, projectKey: projectKey)
+        }
+        Log.polishing.info("Learned terms: one term forgotten")
+    }
+
+    /// Settings' pin: keeps one spelling past decay and caps.
+    func setPinned(_ pinned: Bool, term: String, projectKey: String) {
+        mutate { terms in
+            terms.setPinned(pinned, term: term, projectKey: projectKey)
+        }
+        Log.polishing.info("Learned terms: one term \(pinned ? "pinned" : "unpinned", privacy: .public)")
+    }
+
+    /// Folds `change` in on the write queue, behind the launch load and every
+    /// earlier write, so an Undo can never land before the term it undoes.
+    private func mutate(_ change: @escaping @Sendable (inout LearnedTerms) -> Void) {
+        writeQueue.async { [self] in
+            let fallback = state.withLock { $0.terms } ?? loadFromDisk()
+            let updated: LearnedTerms = state.withLock { state in
+                var terms = state.terms ?? fallback
+                change(&terms)
+                state.terms = terms
+                return terms
+            }
+            write(updated)
+            onChange?()
+        }
+    }
+
     /// The Forget button. Drops the file as well as the memory: a user who
     /// asks to forget should not find the terms back after a relaunch.
     ///

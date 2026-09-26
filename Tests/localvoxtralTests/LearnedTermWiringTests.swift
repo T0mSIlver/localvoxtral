@@ -212,6 +212,72 @@ final class LearnedTermWiringTests: XCTestCase {
         XCTAssertEqual(stored?.sources, ["repository"])
     }
 
+    /// The memory rewriting a dictation is what Settings counts as applied
+    /// (#522).
+    func testGroundingFromMemoryCountsAsApplied() async {
+        let (viewModel, store) = makeViewModel(outcome: nil)
+        seed(store, term: "useAuth.ts", dictations: 3)
+
+        await commit(viewModel, text: "open useauth.ts please")
+
+        let stored = store.snapshot()
+            .confirmed(projectKey: LearnedTermProjectResolver.shared.key).first
+        XCTAssertEqual(stored?.appliedCount, 1)
+        XCTAssertNotNil(stored?.lastApplied)
+    }
+
+    /// A learned join spoken as plain words in prose keeps the words: the term
+    /// goes to the model as a question, is not counted as applied, and the
+    /// dictation does not confirm it again (#522).
+    func testLearnedJoinOverOrdinaryWordsIsOfferedNotPreApplied() async {
+        let recording = FakePolishingService()
+        let (viewModel, store) = makeViewModel(outcome: nil, service: recording)
+        seed(store, term: "useAuth", dictations: 3)
+
+        await commit(viewModel, text: "we should use auth tokens for the upload")
+
+        let request = await recording.lastRequest
+        XCTAssertEqual(request?.inputText, "we should use auth tokens for the upload")
+        let prompt = request?.userPrompts.joined(separator: "\n") ?? ""
+        XCTAssertTrue(prompt.contains(RepoVocabularyMatcher.verificationCandidatesHeader), prompt)
+        XCTAssertTrue(prompt.contains("useAuth"), prompt)
+        XCTAssertFalse(prompt.contains(RepoVocabularyMatcher.learnedVocabularyHeader), prompt)
+        let stored = store.snapshot()
+            .confirmed(projectKey: LearnedTermProjectResolver.shared.key).first
+        XCTAssertEqual(stored?.appliedCount, 0)
+        XCTAssertEqual(stored?.dictations, 3)
+    }
+
+    /// The same join next to a code word is the identifier, and is applied.
+    func testLearnedJoinWithACodeCueIsPreApplied() async {
+        let recording = FakePolishingService()
+        let (viewModel, store) = makeViewModel(outcome: nil, service: recording)
+        seed(store, term: "useAuth", dictations: 3)
+
+        await commit(viewModel, text: "call use auth before the first render")
+
+        let request = await recording.lastRequest
+        XCTAssertEqual(request?.inputText, "call useAuth before the first render")
+        XCTAssertEqual(
+            store.snapshot().confirmed(projectKey: LearnedTermProjectResolver.shared.key).first?.appliedCount,
+            1
+        )
+    }
+
+    /// A pinned term is used below the three-dictation bar.
+    func testPinnedTermGroundsBelowTheBar() async {
+        let recording = FakePolishingService()
+        let (viewModel, store) = makeViewModel(outcome: nil, service: recording)
+        seed(store, term: "useAuth.ts", dictations: 1)
+        store.setPinned(true, term: "useAuth.ts", projectKey: LearnedTermProjectResolver.shared.key)
+        store.waitForPendingWrites()
+
+        await commit(viewModel, text: "open useauth.ts please")
+
+        let request = await recording.lastRequest
+        XCTAssertEqual(request?.inputText, "open useAuth.ts please")
+    }
+
     // MARK: - Helpers
 
 }

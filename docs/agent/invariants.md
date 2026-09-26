@@ -205,10 +205,11 @@ there is not.
   configured. What the app owes in exchange is stated here rather than
   enforced by a gate: each term keeps the sources that proposed it, so a
   later setting can drop what one source taught; nothing below the
-  three-dictation bar is ever sent; a remembered term never outranks a live
+  three-dictation bar is ever sent unless the user pinned it or fixed it by
+  hand; a remembered term never outranks a live
   source (`.learned` is LAST in `PolishContextSource`, so a contested span
-  abstains); terms decay at 90 days; and Text processing → Advanced →
-  Terms learned from polishing → Forget drops the file. Verification candidates are never
+  abstains); unpinned terms decay at 90 days; and Text processing →
+  Advanced → Terms learned from polishing → Forget drops the file (Show forgets one). Verification candidates are never
   recorded — they are questions put to the model, not answers. A dictation
   whose project cannot be established teaches nothing at all, which is not
   the same as one with no project: the latter teaches the shared bucket,
@@ -216,6 +217,56 @@ there is not.
   project-less dictation reads them. Known limit of the bar: it counts
   dictations, not independent evidence, so one stale clipboard read across
   three dictations is three confirmations.
+
+- **A learned term does not rewrite ordinary words** (#522). The exact tier
+  pre-applies any span that normalizes to a term, so a learned `useAuth`
+  would turn "we should use auth tokens" into code. For the `.learned`
+  source only, `RepoVocabularyMatcher.withholdingOrdinaryReadings` moves a
+  two-word span of plain lowercase words with no code word next to it
+  (`codeNounCues`, `codeVerbCues`) from the pre-applied entries to the
+  verification pairs: the model sees the sentence and decides. Live sources
+  are not guarded: a term on screen now is evidence this dictation is about
+  it; memory is not. A withheld term is neither recorded nor counted as
+  applied, which also stops a learned term confirming itself on prose.
+  Single words (the exact tier only changes their case), spans of three
+  words or more, acronyms and spans with a capital, digit or spoken
+  separator are applied as before. `LearnedTermOverApplicationEvalTests`
+  pins the numbers; its known misses are a three-word join said as prose
+  ("push to talk") and identifiers said with no code word nearby.
+
+- **A fix is learned only from the prompt the joined session submits** (#520).
+  `CorrectionLearning` compares the text a commit inserted with the next
+  `UserPromptSubmit` of the session the dictation JOINED, within 3 minutes,
+  once. No screen, AX field or keystroke is read for it: the agent hands over
+  the final prompt through the hook the join already trusts, so a fix is seen
+  only when the user sends it, and only in a positively joined session.
+  Screen reads were rejected as the source (comment on #520, 2026-09-24): a
+  Ghostty or `pane.read` grid re-wraps the prompt inside TUI chrome, and the
+  insertion path has no field read at all. Claude Code 2.1.280 hands a long
+  paste to the hook wrapped in `<pasted_content id=…>` markers, which the
+  classifier strips. The registry calls the observer outside its lock with
+  the scoped session id; the inserted text and the prompt live in memory for
+  one comparison, nothing but the spelling is written, and the log gets
+  verdict categories only. `CorrectionDiffClassifier` favours precision: one
+  substitution of at most 4 words, few other changed words, a spelling that
+  sounds like what it replaced, and a capital that is not a sentence start, a
+  digit or an inner joiner, unless the spelling is already a known term. A
+  hand fix is confirmed at once (`confirmedByCorrection`), bypassing the
+  three-dictation bar, because that bar guards against polish repeating
+  itself and a hand fix is not polish. Undo, or a later fix that changes a
+  learned spelling back, deletes the term outright rather than lowering its
+  count. The feature inherits the join's gates: no polish endpoint, both
+  context settings off, or an endpoint that is neither loopback nor trusted
+  means no join and nothing learned. A prompt that arrives before its
+  dictation's commit (Enter pressed as the last word appears) waits 10 s,
+  no longer. A Live dictation is compared as the insertion service
+  recorded it typing, and not at all when text is still pending or the
+  spoken send trigger pressed Return: the user sent that unedited. Known
+  limit (GLM review of #532): without polish the project key is the
+  joined session's own directory, not the repository the vocabulary
+  pipeline would widen it to, so a session in a subdirectory learns into
+  a separate bucket; resolving the root would walk the filesystem on the
+  commit path, which `LearnedTermProjectResolver` forbids.
 
 - **"About you" is the only place the model is told to infer a misheard name.**
   `LLMPromptTemplates.withSpeakerProfile` appends the user's own text to the

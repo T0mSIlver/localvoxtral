@@ -743,6 +743,47 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         XCTAssertEqual(registry.evictRemoteSessions(notIn: ["ssh:hkeep"]), 0, "nothing left to evict")
         XCTAssertNotNil(registry.snapshot(sessionID: "remote:hkeep:s1"))
     }
+
+    // MARK: Submitted prompts
+
+    /// Correction learning hears each submitted prompt once, under the scoped
+    /// id the join carries, and hears nothing for any other event or an empty
+    /// prompt.
+    func testSubmittedPromptObserverHearsEachPromptOnce() {
+        let registry = makeRegistry()
+        let heard = Mutex<[String]>([])
+        registry.setSubmittedPromptObserver { sessionID, prompt in
+            heard.withLock { $0.append("\(sessionID)|\(prompt)") }
+        }
+
+        registry.ingest(record(.sessionStart), origin: local)
+        registry.ingest(record(.userPromptSubmit, prompt: "fix the Qwen tokenizer"), origin: local)
+        registry.ingest(record(.userPromptSubmit, prompt: ""), origin: local)
+        registry.ingest(record(.postToolUse), origin: local)
+        registry.ingest(record(.stop), origin: local)
+        registry.ingest(
+            record(.userPromptSubmit, session: "o1", prompt: "run it"),
+            origin: local
+        )
+
+        XCTAssertEqual(heard.withLock { $0 }, ["s1|fix the Qwen tokenizer", "o1|run it"])
+    }
+
+    /// A prompt the registry refuses is not heard either: a record from the
+    /// wrong origin must not teach a spelling to the session it names.
+    func testRefusedPromptIsNotHeard() {
+        let registry = makeRegistry()
+        let heard = Mutex<Int>(0)
+        registry.setSubmittedPromptObserver { _, _ in heard.withLock { $0 += 1 } }
+
+        registry.ingest(record(.sessionStart), origin: local)
+        registry.ingest(
+            record(.userPromptSubmit, prompt: "fix the Qwen tokenizer"),
+            origin: .remote(channel: "ssh")
+        )
+
+        XCTAssertEqual(heard.withLock { $0 }, 0)
+    }
 }
 
 private final class MemoryClaudeSessionStore: ClaudeSessionStore, @unchecked Sendable {

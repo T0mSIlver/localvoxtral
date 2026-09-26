@@ -225,6 +225,10 @@ final class DictationSessionController {
     /// writes the user's file.
     @ObservationIgnored
     var learnedTermStore: LearnedTermStore?
+    /// Learns a spelling from the fix the user makes before sending a
+    /// dictation to the joined session. Nil without runtime services.
+    @ObservationIgnored
+    var correctionLearning: CorrectionLearning?
 
     @ObservationIgnored
     private var storedTermSuggestions: SpeakerTermSuggestionModel?
@@ -395,6 +399,10 @@ final class DictationSessionController {
     /// withheld segment needs a space before it.
     @ObservationIgnored
     var liveSpokenSendTypedSinceReturn = false
+    /// The trigger pressed Return at least once this dictation, so the user
+    /// sent it unedited (`liveDictationCanTeachACorrection`).
+    @ObservationIgnored
+    var liveSpokenSendReturnPressed = false
     /// The last word typed live since the last Return, punctuation
     /// included; empty after a space. A withheld segment that starts mid-word
     /// is glued onto it only when it ends in a letter.

@@ -130,6 +130,14 @@ final class TextInsertionService {
     /// user's app and can never be recalled.
     @ObservationIgnored
     private var liveTypedTextForSession = ""
+
+    /// What this Live session typed, or nil when it typed without the
+    /// hold-back stream and so kept no record. Read before
+    /// `endLiveReplacementSession`: the record is only reset when a stream
+    /// begins, so outside one it describes an earlier dictation.
+    var liveTypedTextThisSession: String? {
+        liveHoldBackStream != nil ? liveTypedTextForSession : nil
+    }
     /// Set for a Live Auto-Paste session judged non-terminal at its start:
     /// answers whether the target focused now is terminal-like, so a newline
     /// typed after focus moved to a terminal still collapses to a space

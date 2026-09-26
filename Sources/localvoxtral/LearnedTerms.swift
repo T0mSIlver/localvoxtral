@@ -25,6 +25,32 @@ struct LearnedTerm: Codable, Equatable, Sendable {
     var dictations: Int
     var firstSeen: Date
     var lastSeen: Date
+    /// The user fixed a dictation to this spelling themselves
+    /// (`CorrectionLearning`). That is confirmation enough on its own: the
+    /// three-dictation bar exists because polish can repeat a mistake, and a
+    /// hand fix is not polish. Optional so files written before it decode;
+    /// nil reads as false.
+    var confirmedByCorrection: Bool? = nil
+    /// Dictations the memory itself rewrote with this spelling: the merged
+    /// `.learned` entries, which exist only where no live source already
+    /// had the term. What Settings shows to audit over-application (#522).
+    /// Optional, like every field added after version 1; nil reads as 0.
+    var applied: Int? = nil
+    var lastApplied: Date? = nil
+    /// The user asked to keep it: confirmed whatever the count, never
+    /// decayed, and the last thing a cap evicts. Nil reads as false.
+    var pinned: Bool? = nil
+
+    /// The provenance a hand correction records in `sources`.
+    static let correctionSource = "correction"
+
+    var isConfirmedByCorrection: Bool { confirmedByCorrection == true }
+    var isPinned: Bool { pinned == true }
+    var appliedCount: Int { applied ?? 0 }
+
+    func isConfirmed(minimumDictations: Int) -> Bool {
+        isPinned || isConfirmedByCorrection || dictations >= minimumDictations
+    }
 }
 
 /// One project's remembered terms. A project is a git root, a remote session's
@@ -108,7 +134,7 @@ struct LearnedTerms: Codable, Equatable, Sendable {
     ) -> [LearnedTerm] {
         guard let project = projects.first(where: { $0.key == projectKey }) else { return [] }
         return project.terms
-            .filter { $0.dictations >= minimumDictations }
+            .filter { $0.isConfirmed(minimumDictations: minimumDictations) }
             .sorted(by: LearnedTerms.isStrongerEvidence)
     }
 
@@ -119,7 +145,7 @@ struct LearnedTerms: Codable, Equatable, Sendable {
     ) -> [LearnedTerm] {
         var strongest: [String: LearnedTerm] = [:]
         for project in projects {
-            for term in project.terms where term.dictations >= minimumDictations {
+            for term in project.terms where term.isConfirmed(minimumDictations: minimumDictations) {
                 let key = term.term.caseFoldedForMatching
                 guard let existing = strongest[key] else {
                     strongest[key] = term
@@ -134,7 +160,13 @@ struct LearnedTerms: Codable, Equatable, Sendable {
                     sources: LearnedTerms.merging(existing.sources, term.sources),
                     dictations: existing.dictations + term.dictations,
                     firstSeen: min(existing.firstSeen, term.firstSeen),
-                    lastSeen: max(existing.lastSeen, term.lastSeen)
+                    lastSeen: max(existing.lastSeen, term.lastSeen),
+                    confirmedByCorrection: existing.isConfirmedByCorrection
+                        || term.isConfirmedByCorrection ? true : nil,
+                    applied: existing.applied == nil && term.applied == nil
+                        ? nil : existing.appliedCount + term.appliedCount,
+                    lastApplied: [existing.lastApplied, term.lastApplied].compactMap { $0 }.max(),
+                    pinned: existing.isPinned || term.isPinned ? true : nil
                 )
             }
         }
@@ -177,6 +209,11 @@ struct LearnedTerms: Codable, Equatable, Sendable {
                 projects[index].terms[existing].sources = LearnedTerms.merging(
                     projects[index].terms[existing].sources, observation.sources
                 )
+                if observation.fromMemory {
+                    projects[index].terms[existing].applied =
+                        projects[index].terms[existing].appliedCount + 1
+                    projects[index].terms[existing].lastApplied = now
+                }
             } else {
                 projects[index].terms.append(
                     LearnedTerm(
@@ -184,12 +221,99 @@ struct LearnedTerms: Codable, Equatable, Sendable {
                         sources: observation.sources,
                         dictations: 1,
                         firstSeen: now,
-                        lastSeen: now
+                        lastSeen: now,
+                        applied: observation.fromMemory ? 1 : nil,
+                        lastApplied: observation.fromMemory ? now : nil
                     )
                 )
             }
         }
         prune(now: now)
+    }
+
+    /// The user fixed a dictation in this project to `term` by hand. The term
+    /// is confirmed at once and counts one more dictation. Returns false when
+    /// there was nothing new to tell the user: the spelling was already
+    /// confirmed by an earlier correction, or it sanitizes to nothing.
+    @discardableResult
+    mutating func recordCorrection(
+        _ raw: String,
+        project: LearnedTermProjectResolver.Identity,
+        now: Date
+    ) -> Bool {
+        let term = LearnedTerms.sanitized(raw)
+        guard !term.isEmpty else { return false }
+        let index = projectIndex(for: project, now: now)
+        var isNew = true
+        if let existing = projects[index].terms.firstIndex(where: {
+            $0.term.caseFoldedForMatching == term.caseFoldedForMatching
+        }) {
+            isNew = !projects[index].terms[existing].isConfirmedByCorrection
+            // The user's spelling wins over the one polish settled on.
+            projects[index].terms[existing].term = term
+            projects[index].terms[existing].dictations += 1
+            projects[index].terms[existing].lastSeen = now
+            projects[index].terms[existing].confirmedByCorrection = true
+            projects[index].terms[existing].sources = LearnedTerms.merging(
+                projects[index].terms[existing].sources, [LearnedTerm.correctionSource]
+            )
+        } else {
+            projects[index].terms.append(
+                LearnedTerm(
+                    term: term,
+                    sources: [LearnedTerm.correctionSource],
+                    dictations: 1,
+                    firstSeen: now,
+                    lastSeen: now,
+                    confirmedByCorrection: true
+                )
+            )
+        }
+        prune(now: now)
+        return isNew
+    }
+
+    /// Pins or unpins one spelling in one project. Returns false when the
+    /// project does not hold it.
+    @discardableResult
+    mutating func setPinned(_ pinned: Bool, term raw: String, projectKey: String) -> Bool {
+        let key = LearnedTerms.sanitized(raw).caseFoldedForMatching
+        guard !key.isEmpty,
+              let index = projects.firstIndex(where: { $0.key == projectKey }),
+              let termIndex = projects[index].terms.firstIndex(where: {
+                  $0.term.caseFoldedForMatching == key
+              })
+        else { return false }
+        projects[index].terms[termIndex].pinned = pinned ? true : nil
+        return true
+    }
+
+    /// Drops one spelling from one project, whatever taught it. Undo and a
+    /// revert both come here: the constraint is that the term is gone, not
+    /// kept at a lower count where three more dictations would bring it back
+    /// unnoticed.
+    mutating func forget(_ raw: String, projectKey: String) {
+        let key = LearnedTerms.sanitized(raw).caseFoldedForMatching
+        guard !key.isEmpty,
+              let index = projects.firstIndex(where: { $0.key == projectKey })
+        else { return }
+        projects[index].terms.removeAll { $0.term.caseFoldedForMatching == key }
+        projects.removeAll { $0.terms.isEmpty }
+    }
+
+    private mutating func projectIndex(
+        for project: LearnedTermProjectResolver.Identity,
+        now: Date
+    ) -> Int {
+        if let index = projects.firstIndex(where: { $0.key == project.key }) {
+            projects[index].name = project.name
+            projects[index].lastSeen = now
+            return index
+        }
+        projects.append(
+            LearnedTermProject(key: project.key, name: project.name, terms: [], lastSeen: now)
+        )
+        return projects.count - 1
     }
 
     /// Decay and caps, applied after every write and after every load: a file
@@ -198,7 +322,7 @@ struct LearnedTerms: Codable, Equatable, Sendable {
     mutating func prune(now: Date) {
         let cutoff = now.addingTimeInterval(-Double(LearnedTerms.staleAfterDays) * 86_400)
         for index in projects.indices {
-            projects[index].terms.removeAll { $0.lastSeen < cutoff }
+            projects[index].terms.removeAll { !$0.isPinned && $0.lastSeen < cutoff }
             if projects[index].terms.count > LearnedTerms.maxTermsPerProject {
                 projects[index].terms = Array(
                     projects[index].terms
@@ -209,10 +333,14 @@ struct LearnedTerms: Codable, Equatable, Sendable {
         }
         projects.removeAll { $0.terms.isEmpty }
         if projects.count > LearnedTerms.maxProjects {
+            // A project holding a pinned term is evicted last.
             projects = Array(
                 projects
                     .sorted { lhs, rhs in
-                        lhs.lastSeen == rhs.lastSeen
+                        let lhsPinned = lhs.terms.contains(where: \.isPinned)
+                        let rhsPinned = rhs.terms.contains(where: \.isPinned)
+                        if lhsPinned != rhsPinned { return lhsPinned }
+                        return lhs.lastSeen == rhs.lastSeen
                             ? lhs.key < rhs.key
                             : lhs.lastSeen > rhs.lastSeen
                     }
@@ -223,23 +351,30 @@ struct LearnedTerms: Codable, Equatable, Sendable {
 
     // MARK: Rules
 
-    /// Total order, strongest evidence first: confirmations, then recency,
-    /// then the spelling. Nothing here may depend on dictionary iteration
-    /// order — the same memory must always render the same list.
+    /// Total order, strongest evidence first: a pin, then a hand correction,
+    /// then confirmations, then recency, then the spelling. Nothing here may
+    /// depend on dictionary iteration order — the same memory must always
+    /// render the same list.
     static func isStrongerEvidence(_ lhs: LearnedTerm, _ rhs: LearnedTerm) -> Bool {
+        if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
+        if lhs.isConfirmedByCorrection != rhs.isConfirmedByCorrection {
+            return lhs.isConfirmedByCorrection
+        }
         if lhs.dictations != rhs.dictations { return lhs.dictations > rhs.dictations }
         if lhs.lastSeen != rhs.lastSeen { return lhs.lastSeen > rhs.lastSeen }
         return lhs.term < rhs.term
     }
 
-    /// One entry per spelling, its sources unioned, in first-seen order.
-    /// A spelling that survives sanitizing to nothing is dropped here rather
-    /// than stored as an empty term.
+    /// One entry per spelling, its sources unioned, in first-seen order, and
+    /// whether the memory itself applied it. A spelling that survives
+    /// sanitizing to nothing is dropped here rather than stored as an empty
+    /// term.
     static func folded(
         _ observations: [LearnedTermObservation]
-    ) -> [(term: String, sources: [String])] {
+    ) -> [(term: String, sources: [String], fromMemory: Bool)] {
         var order: [String] = []
         var sources: [String: [String]] = [:]
+        var fromMemory = Set<String>()
         var spelling: [String: String] = [:]
         for observation in observations {
             let term = sanitized(observation.term)
@@ -256,10 +391,11 @@ struct LearnedTerms: Codable, Equatable, Sendable {
                 sources[key] ?? [],
                 observation.source == .learned ? [] : [observation.source.rawValue]
             )
+            if observation.source == .learned { fromMemory.insert(key) }
         }
         return order.compactMap { key in
             guard let term = spelling[key] else { return nil }
-            return (term: term, sources: sources[key] ?? [])
+            return (term: term, sources: sources[key] ?? [], fromMemory: fromMemory.contains(key))
         }
     }
 
