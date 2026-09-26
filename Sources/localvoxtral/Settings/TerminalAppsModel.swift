@@ -1,6 +1,18 @@
 import AppKit
 import Foundation
 
+extension SettingsStatusDot {
+    /// One pane sentence for TERMINAL rows (the owner decision fixes the exact
+    /// copy; the dot's meaning lives in the pane, never in a legend).
+    var terminalSentence: String {
+        switch self {
+        case .green: return "Installed. Dictation, session join and screen context."
+        case .yellow: return "Installed. Dictation only."
+        case .grey: return "Not installed."
+        }
+    }
+}
+
 /// One terminal the Settings → Terminals section has a row for.
 ///
 /// Covers BOTH lists the section draws from — the built-in terminals

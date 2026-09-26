@@ -11,14 +11,4 @@ package enum SettingsStatusDot: Equatable, Sendable {
     case green
     case yellow
     case grey
-
-    /// One pane sentence for TERMINAL rows (the owner decision fixes the exact
-    /// copy; the dot's meaning lives in the pane, never in a legend).
-    package var terminalSentence: String {
-        switch self {
-        case .green: return "Installed. Dictation, session join and screen context."
-        case .yellow: return "Installed. Dictation only."
-        case .grey: return "Not installed."
-        }
-    }
 }
