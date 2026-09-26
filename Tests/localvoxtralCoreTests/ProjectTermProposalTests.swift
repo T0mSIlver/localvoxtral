@@ -4,9 +4,10 @@ import XCTest
 
 @testable import localvoxtralCore
 
-/// The command lines, the answer parsers and the term filter of #609. The
-/// fixtures are real outputs from 2026-09-26 probes (Claude Code 2.1.283,
-/// Vibe 2.25.4) against a fixture repository, trimmed to the fields read.
+/// The command lines, the answer parsers and the term filter of #609 and
+/// #642. The fixtures are real outputs from 2026-09-26 probes (Claude Code
+/// 2.1.283, Vibe 2.25.4, opencode 1.18.31) against a fixture repository,
+/// trimmed to the fields read.
 final class ProjectTermProposalTests: XCTestCase {
     // MARK: Command lines
 
@@ -49,12 +50,58 @@ final class ProjectTermProposalTests: XCTestCase {
         XCTAssertFalse(prompt.contains("src/File200.swift"))
     }
 
+    func testTheOpencodeRunIsPureAndRunsItsOwnAgent() {
+        XCTAssertEqual(ProjectTermProposal.opencodeArguments(workingDirectory: "/Users/me/quillmark"), [
+            "run",
+            "--pure",
+            "--format", "json",
+            "--dir", "/Users/me/quillmark",
+            "--agent", "localvoxtral-terms",
+            ProjectTermProposal.prompt,
+        ])
+    }
+
+    func testTheOpencodeRunIsReadOnlyCappedAndKeptOutOfTheUsersState() throws {
+        var environment = ProjectTermProposal.opencodeEnvironment
+        let config = try XCTUnwrap(environment.removeValue(forKey: "OPENCODE_CONFIG_CONTENT"))
+        XCTAssertEqual(environment, [
+            "OPENCODE_DB": ":memory:",
+            "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
+            "OPENCODE_DISABLE_CLAUDE_CODE": "1",
+            "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
+            "OPENCODE_DISABLE_AUTOUPDATE": "1",
+            "OPENCODE_DISABLE_LSP_DOWNLOAD": "1",
+            "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": "4096",
+        ])
+
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(config.utf8)) as? [String: Any])
+        let readOnly: [String: String] = [
+            "*": "deny", "read": "allow", "glob": "allow", "grep": "allow", "list": "allow",
+            "bash": "deny", "edit": "deny", "task": "deny", "webfetch": "deny", "websearch": "deny",
+            "external_directory": "deny", "skill": "deny",
+        ]
+        XCTAssertEqual(object["permission"] as? [String: String], readOnly)
+        let agent = try XCTUnwrap((object["agent"] as? [String: Any])?["localvoxtral-terms"] as? [String: Any])
+        XCTAssertEqual(agent["permission"] as? [String: String], readOnly)
+        XCTAssertEqual(agent["steps"] as? Int, 12)
+        XCTAssertEqual(agent["mode"] as? String, "primary")
+        XCTAssertEqual(agent["prompt"] as? String, ProjectTermProposal.claudeSystemPrompt)
+        XCTAssertEqual(object["share"] as? String, "disabled")
+        XCTAssertEqual(object["autoupdate"] as? Bool, false)
+        XCTAssertEqual(object["snapshot"] as? Bool, false)
+    }
+
     func testTheInvocationPicksTheAgentsArguments() {
         let claude = ProjectTermProposal.invocation(agent: .claude, workingDirectory: "/r", trackedFiles: ["a"])
         XCTAssertEqual(claude.arguments, ProjectTermProposal.claudeArguments())
         XCTAssertEqual(claude.workingDirectory, "/r")
+        XCTAssertEqual(claude.environment, [:])
         let vibe = ProjectTermProposal.invocation(agent: .vibe, workingDirectory: "/r", trackedFiles: ["a"])
         XCTAssertEqual(vibe.arguments, ProjectTermProposal.vibeArguments(trackedFiles: ["a"]))
+        XCTAssertEqual(vibe.environment, [:])
+        let opencode = ProjectTermProposal.invocation(agent: .opencode, workingDirectory: "/r", trackedFiles: ["a"])
+        XCTAssertEqual(opencode.arguments, ProjectTermProposal.opencodeArguments(workingDirectory: "/r"))
+        XCTAssertEqual(opencode.environment, ProjectTermProposal.opencodeEnvironment)
     }
 
     // MARK: Which join asks
@@ -71,14 +118,15 @@ final class ProjectTermProposalTests: XCTestCase {
         return snapshot
     }
 
-    func testOnlyALocalClaudeOrVibeSessionAsks() {
+    func testOnlyALocalSessionAsks() {
         XCTAssertEqual(ProjectTermProposal.request(for: snapshot(agent: .claude))?.agent, .claude)
         XCTAssertEqual(
             ProjectTermProposal.request(for: snapshot(agent: .claude))?.workspace.path,
             "/Users/me/work/quillmark"
         )
         XCTAssertEqual(ProjectTermProposal.request(for: snapshot(agent: .vibe))?.agent, .vibe)
-        XCTAssertNil(ProjectTermProposal.request(for: snapshot(agent: .opencode)))
+        XCTAssertEqual(ProjectTermProposal.request(for: snapshot(agent: .opencode))?.agent, .opencode)
+        XCTAssertNil(ProjectTermProposal.request(for: snapshot(agent: .opencode, origin: .remote(channel: "ssh"))))
         XCTAssertNil(ProjectTermProposal.request(for: snapshot(agent: .claude, origin: .remote(channel: "ssh"))))
         XCTAssertNil(ProjectTermProposal.request(for: snapshot(agent: .vibe, origin: .remote(channel: "ssh"))))
         XCTAssertNil(ProjectTermProposal.request(for: snapshot(agent: .claude, cwd: nil)))
@@ -210,6 +258,112 @@ final class ProjectTermProposalTests: XCTestCase {
         XCTAssertEqual(ProjectTermProposal.parseVibe(stdout: Data("{}".utf8), exitCode: 0), .failed(.malformedOutput))
         let prose = #"[{"type":"message","role":"assistant","content":[{"type":"text","text":"The terms are inkwell and qmk."}]}]"#
         XCTAssertEqual(ProjectTermProposal.parseVibe(stdout: Data(prose.utf8), exitCode: 0), .failed(.malformedOutput))
+    }
+
+    // MARK: opencode's answer
+
+    /// Five steps: globs and reads, then the answer. The model named
+    /// `localvoxtral` because the fixture repository sat under a path
+    /// holding it.
+    private static let opencodeSuccess = #"""
+        {"type":"step_start","sessionID":"ses_1","part":{"type":"step-start","messageID":"msg_0deb73ab"}}
+        {"type":"tool_use","sessionID":"ses_1","part":{"type":"tool","messageID":"msg_0deb73ab","tool":"glob","state":{"status":"completed"}}}
+        {"type":"step_finish","sessionID":"ses_1","part":{"type":"step-finish","messageID":"msg_0deb73ab","reason":"tool-calls","tokens":{"total":1475,"input":1447,"output":28,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0.0023805}}
+        {"type":"step_start","sessionID":"ses_1","part":{"type":"step-start","messageID":"msg_0deb73eb"}}
+        {"type":"tool_use","sessionID":"ses_1","part":{"type":"tool","messageID":"msg_0deb73eb","tool":"read","state":{"status":"completed"}}}
+        {"type":"tool_use","sessionID":"ses_1","part":{"type":"tool","messageID":"msg_0deb73eb","tool":"read","state":{"status":"completed"}}}
+        {"type":"step_finish","sessionID":"ses_1","part":{"type":"step-finish","messageID":"msg_0deb73eb","reason":"tool-calls","tokens":{"total":1827,"input":1644,"output":183,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0.0038385}}
+        {"type":"step_start","sessionID":"ses_1","part":{"type":"step-start","messageID":"msg_0deb7431"}}
+        {"type":"tool_use","sessionID":"ses_1","part":{"type":"tool","messageID":"msg_0deb7431","tool":"glob","state":{"status":"completed"}}}
+        {"type":"step_finish","sessionID":"ses_1","part":{"type":"step-finish","messageID":"msg_0deb7431","reason":"tool-calls","tokens":{"total":2165,"input":2154,"output":11,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0.0033135}}
+        {"type":"step_start","sessionID":"ses_1","part":{"type":"step-start","messageID":"msg_0deb7464"}}
+        {"type":"tool_use","sessionID":"ses_1","part":{"type":"tool","messageID":"msg_0deb7464","tool":"glob","state":{"status":"completed"}}}
+        {"type":"tool_use","sessionID":"ses_1","part":{"type":"tool","messageID":"msg_0deb7464","tool":"glob","state":{"status":"completed"}}}
+        {"type":"step_finish","sessionID":"ses_1","part":{"type":"step-finish","messageID":"msg_0deb7464","reason":"tool-calls","tokens":{"total":2222,"input":122,"output":52,"reasoning":0,"cache":{"write":0,"read":2048}},"cost":0.000573}}
+        {"type":"step_start","sessionID":"ses_1","part":{"type":"step-start","messageID":"msg_0deb748f"}}
+        {"type":"text","sessionID":"ses_1","part":{"type":"text","messageID":"msg_0deb748f","text":"{\"terms\": [\"quillmark\", \"inkwell\", \"QUILLMARK_FONT_DIR\", \"qmk\", \"localvoxtral\"]}"}}
+        {"type":"step_finish","sessionID":"ses_1","part":{"type":"step-finish","messageID":"msg_0deb748f","reason":"stop","tokens":{"total":2280,"input":199,"output":33,"reasoning":0,"cache":{"write":0,"read":2048}},"cost":0.000546}}
+        """#
+
+    /// Asked to call bash, edit and webfetch, the model said what it had
+    /// before the JSON.
+    private static let opencodeProseFirst = #"""
+        {"type":"step_start","sessionID":"ses_1","part":{"type":"step-start","messageID":"msg_0deb84d1"}}
+        {"type":"text","sessionID":"ses_1","part":{"type":"text","messageID":"msg_0deb84d1","text":"I have the following tools: `glob`, `grep`, `read`.\nThe `bash`, `write`, `edit`, and `webfetch` tools are not available, so all three calls failed.\n\n{\"terms\": [\"inkwell\"]}"}}
+        {"type":"step_finish","sessionID":"ses_1","part":{"type":"step-finish","messageID":"msg_0deb84d1","reason":"stop","tokens":{"total":3314,"input":3266,"output":48,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0.005259}}
+        """#
+
+    /// A spent provider quota: one event, exit 1.
+    private static let opencodeQuota = #"""
+        {"type":"error","sessionID":"ses_1","error":{"name":"APIError","data":{"message":"Usage limit reached for 5 hour. Your limit will reset at 2026-09-27 03:13:26","statusCode":429,"isRetryable":true}}}
+        """#
+
+    /// At the step cap (here `steps: 1`) opencode forces a text-only
+    /// answer; this model echoed the instruction instead of answering.
+    private static let opencodeStepCap = #"""
+        {"type":"step_start","sessionID":"ses_1","part":{"type":"step-start","messageID":"msg_0deb78d8"}}
+        {"type":"text","sessionID":"ses_1","part":{"type":"text","messageID":"msg_0deb78d8","text":"CRITICAL - MAXIMUM STEPS REACHED\n\nThe maximum number of steps allowed for this task has been reached. Tools are disabled until next user input. Respond with text only."}}
+        {"type":"step_finish","sessionID":"ses_1","part":{"type":"step-finish","messageID":"msg_0deb78d8","reason":"stop","tokens":{"total":3397,"input":3232,"output":165,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0.0060855}}
+        """#
+
+    func testOpencodesAnswerAndSummedUsageAreRead() throws {
+        guard case .terms(let terms, let usage) = ProjectTermProposal.parseOpencode(
+            stdout: Data(Self.opencodeSuccess.utf8), exitCode: 0
+        ) else { return XCTFail("expected terms") }
+        XCTAssertEqual(terms, ["quillmark", "inkwell", "QUILLMARK_FONT_DIR", "qmk", "localvoxtral"])
+        let summed = try XCTUnwrap(usage)
+        XCTAssertEqual(summed.turns, 5)
+        XCTAssertEqual(summed.inputTokens, 1447 + 1644 + 2154 + 122 + 199)
+        XCTAssertEqual(summed.outputTokens, 28 + 183 + 11 + 52 + 33)
+        XCTAssertEqual(summed.cacheReadTokens, 4096)
+        XCTAssertEqual(summed.cacheWriteTokens, 0)
+        XCTAssertEqual(try XCTUnwrap(summed.costUSD), 0.0106515, accuracy: 1e-9)
+    }
+
+    func testOpencodesAnswerAfterASentenceIsRead() {
+        guard case .terms(let terms, _) = ProjectTermProposal.parseOpencode(
+            stdout: Data(Self.opencodeProseFirst.utf8), exitCode: 0
+        ) else { return XCTFail("expected terms") }
+        XCTAssertEqual(terms, ["inkwell"])
+    }
+
+    func testAnOpencodeErrorEventIsAFailure() {
+        XCTAssertEqual(
+            ProjectTermProposal.parseOpencode(stdout: Data(Self.opencodeQuota.utf8), exitCode: 1),
+            .failed(.agentError("APIError"))
+        )
+        // An error after a complete answer still fails the run.
+        XCTAssertEqual(
+            ProjectTermProposal.parseOpencode(
+                stdout: Data((Self.opencodeSuccess + "\n" + Self.opencodeQuota).utf8), exitCode: 0
+            ),
+            .failed(.agentError("APIError"))
+        )
+    }
+
+    func testAnOpencodeAnswerWithoutTermsIsAFailure() {
+        XCTAssertEqual(
+            ProjectTermProposal.parseOpencode(stdout: Data(Self.opencodeStepCap.utf8), exitCode: 0),
+            .failed(.malformedOutput)
+        )
+        XCTAssertEqual(ProjectTermProposal.parseOpencode(stdout: Data(), exitCode: 0), .failed(.malformedOutput))
+        XCTAssertEqual(
+            ProjectTermProposal.parseOpencode(stdout: Data("Error: unknown option --pure".utf8), exitCode: 1),
+            .failed(.exit(1))
+        )
+        XCTAssertEqual(
+            ProjectTermProposal.parseOpencode(stdout: Data(Self.opencodeSuccess.utf8), exitCode: 1),
+            .failed(.exit(1))
+        )
+    }
+
+    func testATermsObjectAfterProseIsReadFencedOrBare() {
+        XCTAssertEqual(
+            ProjectTermProposal.termsObject(in: "Read two files.\n\n```json\n{\"terms\": [\"qmk\"]}\n```"),
+            ["qmk"]
+        )
+        XCTAssertEqual(ProjectTermProposal.termsObject(in: "Done: {\"terms\": [\"terms\", \"qmk\"]}"), ["terms", "qmk"])
+        XCTAssertNil(ProjectTermProposal.termsObject(in: "The terms are inkwell and qmk."))
     }
 
     // MARK: The term filter

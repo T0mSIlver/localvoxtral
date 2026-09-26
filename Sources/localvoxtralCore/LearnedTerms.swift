@@ -69,7 +69,8 @@ package struct LearnedTerm: Codable, Equatable, Sendable {
     }
 
     package static let correctionSource = "correction"
-    /// `agent:claude`, `agent:vibe`: the coding agent that proposed the term
+    /// `agent:claude`, `agent:vibe`, `agent:opencode`: the coding agent that
+    /// proposed the term
     /// (`ProjectTermProposal.Agent.source`).
     package static let agentSourcePrefix = "agent:"
 

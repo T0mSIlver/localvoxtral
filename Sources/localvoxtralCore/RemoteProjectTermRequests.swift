@@ -71,13 +71,13 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
     // MARK: Step 1, at commit
 
     /// Marks `join` as wanting terms when it is a remote Claude Code or Vibe
-    /// session, its host's shim reads the header, and its project has no
+    /// session (opencode has no host shim), its host's shim reads the header, and its project has no
     /// stamp. Returns whether it marked. Runs on the commit path: no I/O
     /// beyond the in-memory store snapshot.
     @discardableResult
     package func request(for join: ClaudeSessionSnapshot, excluding: [String]) -> Bool {
+        let agent = ProjectTermProposal.Agent(join.agent)
         guard case .remote = join.origin,
-              let agent = ProjectTermProposal.Agent(join.agent),
               let hostID = ClaudeRemoteSessionScope.hostID(fromScopedSessionID: join.sessionID),
               let host = hosts.host(id: hostID), !host.isRevoked,
               Self.hostReadsTheHeader(host, agent: agent),
@@ -122,6 +122,8 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
         case .vibe:
             guard let version = host.reportedVibeHooksVersion else { return false }
             return !ClaudeRemotePluginVersionCodec.isVersion(version, olderThan: minimumVibeHooksVersion)
+        case .opencode:
+            return false
         }
     }
 

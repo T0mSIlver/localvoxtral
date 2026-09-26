@@ -307,7 +307,8 @@ there is not.
 
 - **An agent's proposals are vocabulary with a source, confirmed only by use
   or a pin** (#609). With the opt-in setting on, the first dictation that
-  joins a LOCAL Claude Code or Vibe session in an unstamped project runs that
+  joins a LOCAL Claude Code, Vibe or opencode (#642) session in an unstamped
+  project runs that
   agent headless in the project (`ProjectTermProposer`), after the commit
   inserted its text and off the commit path. The run is the app's own
   process, never the user's session, so it cannot interrupt a turn, and the
@@ -319,7 +320,16 @@ there is not.
   even so), 12 turns, $0.30, `--experimental-harness` (legacy looped to the
   turn limit), and an app-owned `VIBE_HOME` holding only links to the user's
   `config.toml` and `.env` (Vibe has no flag to skip hooks, and under the
-  user's home our `post_agent` hook would publish a phantom session). The
+  user's home our `post_agent` hook would publish a phantom session);
+  `opencode run` gets `--pure` (without it our plugin in the global plugin
+  directory loads into the run), its own agent through
+  `OPENCODE_CONFIG_CONTENT` that denies every tool but read/glob/grep/list
+  (denied tools are not offered, even when the user's config allows them),
+  12 steps, 4096 output tokens a step, `OPENCODE_DISABLE_PROJECT_CONFIG` (a
+  repo's `opencode.json` could start MCP servers) and `OPENCODE_DB=:memory:`
+  (the run stays out of the user's session list); opencode has no price cap,
+  so the 120 s timeout is its budget. There is no remote opencode shim, so a
+  remote opencode join is never asked. The
   working directory comes only from `localWorkspacePath` via the git root,
   so a remote label can never become one (a remote project is run on its
   host: "The Mac asks a host to spend", below). The

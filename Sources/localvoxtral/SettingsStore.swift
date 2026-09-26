@@ -515,11 +515,11 @@ final class SettingsStore {
         }
     }
 
-    /// When true, the first dictation that joins a local Claude Code or Vibe
-    /// session in a project the app has not asked about runs that agent
-    /// headless in the project for its terms (#609,
+    /// When true, the first dictation that joins a local Claude Code, Vibe
+    /// or opencode session in a project the app has not asked about runs
+    /// that agent headless in the project for its terms (#609, #642,
     /// `ProjectTermProposer`). Off by default: each run spends the user's
-    /// Claude quota or Mistral credits.
+    /// Claude quota, Mistral credits or opencode provider's tokens.
     var projectTermProposalsEnabled: Bool {
         didSet {
             defaults.set(projectTermProposalsEnabled, forKey: Keys.projectTermProposalsEnabled)

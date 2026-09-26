@@ -17,7 +17,7 @@ package protocol ProjectTermProposalStoring: Sendable {
 }
 
 /// Asks a project's coding agent for its terms after the first joined
-/// dictation there (#609).
+/// dictation there (#609; opencode, #642).
 ///
 /// The commit path calls `dictationCommitted` once the text is inserted, and
 /// it returns at once: everything else runs in a detached task, so neither
@@ -63,8 +63,8 @@ package final class ProjectTermProposer: @unchecked Sendable {
     }
 
     /// Returns the task that asks, or nil when this dictation starts no local
-    /// run: the setting is off, there was no join, or the join is not a local
-    /// Claude Code or Vibe session. A remote Claude Code or Vibe join is
+    /// run: the setting is off, there was no join, or the join is not local.
+    /// A remote Claude Code or Vibe join is
     /// handed to `RemoteProjectTermRequests`, which only marks the session
     /// for its host to run on. Tests await the task; the app drops it.
     ///

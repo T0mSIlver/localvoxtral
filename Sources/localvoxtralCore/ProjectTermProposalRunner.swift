@@ -6,7 +6,8 @@ package protocol ProjectTermProposalRunning: Sendable {
     func run(_ invocation: ProjectTermProposal.Invocation) async -> ProjectTermProposal.Outcome
 }
 
-/// The real run: the agent's CLI in the project directory, stdin from
+/// The real run: the agent's CLI in the project directory, with the
+/// invocation's variables over the app's environment, stdin from
 /// `/dev/null`, a `ProjectTermProposal.timeoutSeconds` deadline, stdout
 /// read through `BoundedProcess`.
 package struct ProjectTermProposalProcessRunner: ProjectTermProposalRunning {
@@ -38,7 +39,7 @@ package struct ProjectTermProposalProcessRunner: ProjectTermProposalRunning {
         guard let executable = Self.locate(agent, environment: environment, isExecutable: isExecutable) else {
             return .failed(.agentNotFound)
         }
-        var environment = environment
+        var environment = environment.merging(invocation.environment) { _, run in run }
         if agent == .vibe {
             guard VibeProposalHome.prepare(at: vibeHome, linkingTo: userVibeDirectory) else {
                 return .failed(.launchFailed)
@@ -61,6 +62,7 @@ package struct ProjectTermProposalProcessRunner: ProjectTermProposalRunning {
         switch agent {
         case .claude: return ProjectTermProposal.parseClaude(stdout: output.data, exitCode: output.exitCode)
         case .vibe: return ProjectTermProposal.parseVibe(stdout: output.data, exitCode: output.exitCode)
+        case .opencode: return ProjectTermProposal.parseOpencode(stdout: output.data, exitCode: output.exitCode)
         }
     }
 
@@ -72,19 +74,32 @@ package struct ProjectTermProposalProcessRunner: ProjectTermProposalRunning {
         case .claude:
             return ClaudePluginInstallService.claudeCLICandidates(environment: environment)
         case .vibe:
-            var candidates: [String] = []
-            if let home = environment["HOME"], !home.isEmpty {
-                candidates.append("\(home)/.local/bin/vibe")
-            }
-            if let path = environment["PATH"] {
-                for directory in path.split(separator: ":") where !directory.isEmpty {
-                    candidates.append("\(directory)/vibe")
-                }
-            }
-            candidates.append("/opt/homebrew/bin/vibe")
-            candidates.append("/usr/local/bin/vibe")
-            return candidates
+            return commonCandidates(for: "vibe", environment: environment, homeDirectories: [".local/bin"])
+        case .opencode:
+            // opencode's install script puts it in ~/.opencode/bin.
+            return commonCandidates(
+                for: "opencode", environment: environment, homeDirectories: [".opencode/bin", ".local/bin"]
+            )
         }
+    }
+
+    private static func commonCandidates(
+        for name: String,
+        environment: [String: String],
+        homeDirectories: [String]
+    ) -> [String] {
+        var candidates: [String] = []
+        if let home = environment["HOME"], !home.isEmpty {
+            candidates += homeDirectories.map { "\(home)/\($0)/\(name)" }
+        }
+        if let path = environment["PATH"] {
+            for directory in path.split(separator: ":") where !directory.isEmpty {
+                candidates.append("\(directory)/\(name)")
+            }
+        }
+        candidates.append("/opt/homebrew/bin/\(name)")
+        candidates.append("/usr/local/bin/\(name)")
+        return candidates
     }
 
     static func locate(

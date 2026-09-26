@@ -652,13 +652,13 @@ public final class ClaudeRemoteContextListener: Sendable {
             return
         }
         guard let hookAgent = ClaudeRemoteAgentCodec.agent(in: request.headers),
-              let agent = ProjectTermProposal.Agent(hookAgent),
               let rawSessionID = RemoteProjectTermRequests.answerSessionID(in: request.headers)
         else {
             Log.backends.error("Project terms: refused a remote answer: no valid agent or session")
             respond(fd: fd, status: 400)
             return
         }
+        let agent = ProjectTermProposal.Agent(hookAgent)
         while buffer.count - bodyOffset < request.contentLength {
             guard readMore(fd: fd, into: &buffer, deadline: deadline) else {
                 respond(fd: fd, status: 400)

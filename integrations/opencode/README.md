@@ -15,6 +15,12 @@ localvoxtral's private UNIX socket, which authenticates the connecting peer.
 Its one listener is the prompt relay on 127.0.0.1 (see below). There is no
 telemetry. When the app is not running, every write silently does nothing.
 
+The plugin spends no tokens. One opt-in feature outside it does: with **Ask
+the coding agent for each new project's terms** on, the app runs its own
+read-only `opencode run --pure` once per project, never in your session, with
+your default model; see
+[Terms from your coding agent](../../docs/dictation.md#terms-from-your-coding-agent).
+
 ## Install
 
 In localvoxtral, open **Settings → opencode → Plugin →
