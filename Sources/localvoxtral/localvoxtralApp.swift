@@ -864,6 +864,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             viewModel.learnedTermStore.map { RemoteProjectTermRequests(store: $0, hosts: hosts) }
         }
         viewModel.session.projectTermProposer?.attachRemote(projectTerms)
+        // Quick capture's README summaries and drafts for remote projects
+        // (#745), on the same channel.
+        let quickCapture: RemoteQuickCaptureRequests? = registry.flatMap { hosts in
+            viewModel.learnedTermStore.map {
+                RemoteQuickCaptureRequests(store: $0, hosts: hosts, registry: claudeSessionRegistry)
+            }
+        }
+        viewModel.quickCapture?.attachRemote(quickCapture)
 
         let coordinator = registry.map { hosts in
             ClaudeRemoteListenerCoordinator(
@@ -884,7 +892,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         )
                     }
                 },
-                projectTerms: projectTerms
+                projectTerms: projectTerms,
+                quickCapture: quickCapture
             )
         }
         claudeRemoteListenerCoordinator = coordinator

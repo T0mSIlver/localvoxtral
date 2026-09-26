@@ -134,6 +134,11 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
     /// next joined dictation asks again once `ProjectTermProposal.retryAfter`
     /// has passed.
     package var proposalAttemptedAt: Date? = nil
+    /// A remote project's README summary, as its host reported it (#745),
+    /// for quick capture's router. A local checkout's is read from disk.
+    package var summary: String? = nil
+    /// When the host last reported it, a README with no prose included.
+    package var summaryAt: Date? = nil
 
     package init(
         key: String,
@@ -208,6 +213,8 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// vocabulary follows the work: a name from a project finished last
     /// quarter should stop competing with the current one's.
     package static let staleAfterDays = 90
+    /// A remote README summary is asked for again after this long.
+    package static let summaryRefreshDays = 7
 
     /// Longest spelling remembered. Matches `SpeakerTerms.maxTermCharacters`,
     /// since both feed the same prompt slot.
@@ -259,6 +266,27 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// Whether a joined dictation in this project should ask its agent for
     /// terms: never asked, or the last attempt failed at least
     /// `ProjectTermProposal.retryAfter` ago.
+    /// Whether a remote project's host should be asked for its README
+    /// (#745): a project a dictation has shown the app, with no report or
+    /// one older than `LearnedTerms.summaryRefreshDays`.
+    package func needsSummary(projectKey: String, now: Date) -> Bool {
+        guard projectKey.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix),
+              let project = projects.first(where: { $0.key == projectKey })
+        else { return false }
+        guard let reported = project.summaryAt else { return true }
+        return now.timeIntervalSince(reported) >= Double(LearnedTerms.summaryRefreshDays) * 86_400
+    }
+
+    /// Keeps a host's README summary on an existing project; nil records a
+    /// README with no prose. Returns false when the project is gone.
+    @discardableResult
+    package mutating func recordSummary(_ summary: String?, projectKey: String, now: Date) -> Bool {
+        guard let index = projects.firstIndex(where: { $0.key == projectKey }) else { return false }
+        projects[index].summary = summary
+        projects[index].summaryAt = now
+        return true
+    }
+
     package func needsProposal(projectKey: String, now: Date) -> Bool {
         guard let project = projects.first(where: { $0.key == projectKey }) else { return true }
         if project.proposedAt != nil { return false }

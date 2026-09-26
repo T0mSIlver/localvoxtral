@@ -95,13 +95,18 @@ package enum QuickCaptureDraft {
         #"{"type":"object","properties":{"title":{"type":"string"},"body":{"type":"string"},"relation":{"type":"string","enum":["none","duplicate","extends"]},"issue":{"type":["integer","null"]}},"required":["title","body","relation","issue"],"additionalProperties":false}"#
 
     /// Read, Glob and Grep only, as #609: no Bash, so no `gh` that could
-    /// file; no MCP; no hooks.
+    /// file; no MCP; no hooks. `dontAsk` with reads allowed under the
+    /// checkout keeps all three inside it: on a remote host the capture text
+    /// comes from whatever answers on the forwarded port (#745), and without
+    /// the rule Read opens any file the user can.
     package static func claudeArguments(prompt: String) -> [String] {
         [
             "-p", prompt,
             "--model", "sonnet",
             "--system-prompt", claudeSystemPrompt,
             "--tools", "Read,Glob,Grep",
+            "--permission-mode", "dontAsk",
+            "--allowedTools", "Read(./**)",
             "--settings", #"{"disableAllHooks":true}"#,
             "--strict-mcp-config",
             "--no-session-persistence",
@@ -177,6 +182,11 @@ package enum QuickCaptureDraft {
         /// a working directory on this Mac (docs/agent/invariants.md).
         case remoteProject
         case checkoutMissing
+        /// A remote project with no live session on a host that drafts
+        /// (#745), or none that sent a hook in time.
+        case noHostSession
+        /// A remote project whose host runs a shim from before drafting.
+        case hostNeedsUpdate
     }
 
     package enum Outcome: Equatable, Sendable {
@@ -236,6 +246,16 @@ package enum QuickCaptureDraft {
         guard let answer = jsonObject(in: text), let draft = draft(from: answer, openIssues: openIssues) else {
             return .failed(.malformedOutput)
         }
+        return .draft(draft, usage: nil)
+    }
+
+    /// `vibe -p --output text`, as a remote host runs it (#745): the final
+    /// answer alone, with no usage and no turn record.
+    package static func parseVibeText(stdout: Data, exitCode: Int32, openIssues: [Int]) -> Outcome {
+        guard exitCode == 0 else { return .failed(.exit(exitCode)) }
+        guard let answer = jsonObject(in: String(decoding: stdout, as: UTF8.self)),
+              let draft = draft(from: answer, openIssues: openIssues)
+        else { return .failed(.malformedOutput) }
         return .draft(draft, usage: nil)
     }
 

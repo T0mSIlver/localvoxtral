@@ -12,8 +12,9 @@ package struct QuickCaptureProject: Equatable, Sendable {
     /// `LearnedTermProject.key`: a main checkout's path, or `remote:<label>`.
     package let key: String
     package let name: String
-    /// The README's first paragraph. Nil for a remote project, whose files
-    /// are on another machine, and for a checkout without one.
+    /// The README's opening paragraphs: read from a local checkout, or kept
+    /// from the host's report for a remote project (#745). Nil when neither
+    /// has one.
     package let summary: String?
     package let terms: [String]
     /// What the user wrote about the project, when they did.
@@ -64,7 +65,7 @@ package enum QuickCaptureProjects {
                     + learned.unconfirmedProposals(projectKey: project.key)
                 let summary = project.key.hasPrefix("/")
                     ? readme(project.key).flatMap(summary(ofReadme:))
-                    : nil
+                    : project.summary
                 return QuickCaptureProject(
                     key: project.key,
                     name: project.name,
@@ -76,6 +77,16 @@ package enum QuickCaptureProjects {
                 )
             }
     }
+
+    /// The summary kept for a remote project from the README opening its
+    /// host sent (#745): the same cut as a local README's.
+    package static func summary(ofRemoteReadme data: Data) -> String? {
+        summary(ofReadme: String(decoding: data.prefix(maxRemoteReadmeBytes), as: UTF8.self))
+            .map { clipped($0, to: maxSummaryCharacters) }
+    }
+
+    /// How much of a README a host sends: its opening is all that is read.
+    package static let maxRemoteReadmeBytes = 16_384
 
     /// The README at a checkout's root: `README.md`, `README`, `readme.md`,
     /// `README.markdown`, the first one that reads. Capped at 64 KB, since
@@ -145,6 +156,8 @@ package enum QuickCaptureProjects {
         if line.hasPrefix("#") || line.hasPrefix("<") || line.hasPrefix(">") || line.hasPrefix("|") { return true }
         if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") { return true }
         if line.allSatisfy({ "=-_*".contains($0) }) { return true }
+        // A bare link on its own line: an embedded video or a demo URL.
+        if line.range(of: #"^<?https?://\S+>?$"#, options: .regularExpression) != nil { return true }
         // A line of nothing but images and links: badges, a logo.
         let stripped = line.replacingOccurrences(
             of: #"\[?!\[[^\]]*\]\([^)]*\)\]?(\([^)]*\))?"#,
@@ -154,11 +167,15 @@ package enum QuickCaptureProjects {
         return stripped.isEmpty
     }
 
-    /// Links and images become their text; emphasis and code marks go.
+    /// Links and images become their text; emphasis, code marks, HTML tags
+    /// and entities go.
     private static func inlineText(_ text: String) -> String {
         var result = text.replacingOccurrences(of: #"!\[([^\]]*)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
         result = result.replacingOccurrences(of: #"\[([^\]]*)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
         result = result.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+        // A README's `&nbsp;` spacer, and any other entity, is no prose.
+        result = result.replacingOccurrences(of: "&amp;", with: "&")
+        result = result.replacingOccurrences(of: #"&(#[0-9]+|[A-Za-z]+);"#, with: " ", options: .regularExpression)
         for mark in ["**", "__", "`"] {
             result = result.replacingOccurrences(of: mark, with: "")
         }

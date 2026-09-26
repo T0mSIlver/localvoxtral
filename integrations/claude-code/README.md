@@ -22,6 +22,9 @@ $0.03–0.12, or the same share of a Claude.ai plan's quota (see
 On an enrolled host, `localvoxtral-remote` runs that `claude -p` on the host
 instead, when the Mac asks for a session's project
 ([Terms from the coding agent on a host](../../docs/remote-claude-context.md#terms-from-the-coding-agent-on-a-host)).
+It also drafts a quick capture routed to one of that host's projects, with
+the same caps as the Mac's own draft, $0.50 at most
+([Quick capture on a host](../../docs/remote-claude-context.md#quick-capture-on-a-host)).
 
 On each hook event, Claude Code runs `hooks/publish.sh`. It finds the
 `localvoxtral-claude-hook` publisher and runs it as a **child process**, not

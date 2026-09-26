@@ -361,7 +361,12 @@ final class RemoteProjectTermsTests: XCTestCase {
         XCTAssertFalse(ClaudeRemotePluginVersionCodec.isVersion(
             shipped, olderThan: RemoteProjectTermRequests.minimumPluginVersion
         ))
-        XCTAssertTrue(vibeShim.contains("X-Lvx-Vibe-Hooks-Version: \(RemoteProjectTermRequests.minimumVibeHooksVersion)"))
+        let vibeVersion = try XCTUnwrap(VibeRemoteHooksFiles(
+            postScript: vibeShim, compactScript: "", hooksBlock: "", termsScript: "", captureScript: ""
+        ).version)
+        XCTAssertFalse(ClaudeRemotePluginVersionCodec.isVersion(
+            vibeVersion, olderThan: RemoteProjectTermRequests.minimumVibeHooksVersion
+        ))
         for shim in [claudeShim, vibeShim] {
             XCTAssertTrue(shim.contains("[Xx]-[Ll][Vv][Xx]-[Tt][Ee][Rr][Mm][Ss]: \(wanted)$"))
         }

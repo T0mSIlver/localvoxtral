@@ -2214,6 +2214,26 @@ there is not.
   term filter, stored only as unconfirmed proposals. A refusal logs its reason,
   never a byte of the body. What stays as it was: the stdout gate, the hook's
   fail-open exit, the forward, and what is sent to herdr.
+- **Quick capture asks a host the way #641 does, and the capture goes only
+  to the session asked** (#745, `RemoteQuickCaptureRequests`). Two more fixed
+  reply headers: `X-Lvx-Readme: wanted` (a remote project the learned terms
+  hold, no summary or a week-old one, once per project per day this launch)
+  and `X-Lvx-Draft: <32 hex>` (the next accepted hook from a live session in
+  the routed project). Both go only to a request whose own shim reads them.
+  `/v1/readme`, `/v1/draft/prompt` and `/v1/draft` authenticate like a hook,
+  scope the session id under the authenticating host and the named agent, and
+  take one answer from exactly the session and agent asked; unlike
+  `/v1/terms` the session need not still be live, since the ask recorded all
+  three. The capture text leaves the Mac only in the prompt reply. The
+  README bytes are only summarized, the host's issue list only quoted into
+  the prompt (a related issue counts only if listed there), the output read
+  as a local draft. A squatter on the port can send both headers and answer
+  the prompt request with a prompt of its own, so the host's run is the
+  Mac's drafting command with Claude Code's reads confined to the checkout
+  (`--permission-mode dontAsk --allowedTools Read(./**)`; without it Read
+  opens any file, measured 2026-09-27; Vibe's tools are workspace-bound) and
+  the shim allows one draft at a time and 20 a day. `capture.sh` never runs
+  `gh` for anything but `issue list`.
 - **The SendEnv probe uses a random value that is never logged and never
   interpreted beyond equality.** `probeRemoteEnvironment` mints a fresh nonce
   per call (a UUID by default, injected in tests), exports it into that one
@@ -2313,5 +2333,5 @@ there is not.
   untrusted text: a one-line capped title, a body without control
   characters, a related issue only if it was listed. `QuickCaptureInboxModel.file`
   is the one call to `gh issue create`, reached only from the Inbox's File
-  button. A remote project gets no draft (a remote label never becomes a
-  working directory here; #745 moves drafting to the host).
+  button. A remote project is drafted on its host (#745, below): a remote
+  label never becomes a working directory here.
