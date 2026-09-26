@@ -56,9 +56,20 @@ for _ in range(3):
     _, closed = pump(3)
     if closed:
         break
-try:
-    os.kill(pid, signal.SIGTERM)
-except ProcessLookupError:
-    pass
-os.waitpid(pid, 0)
+# Keep draining the pty while Vibe exits: a process whose terminal output
+# nobody reads cannot finish exiting.
+deadline = time.time() + 20
+while time.time() < deadline:
+    done, _ = os.waitpid(pid, os.WNOHANG)
+    if done:
+        break
+    if time.time() > deadline - 15:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    pump(1)
+else:
+    os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
 print(int(time.time()))

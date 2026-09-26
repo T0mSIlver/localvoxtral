@@ -444,8 +444,9 @@ lvx_claude_is_desktop_session() {
 # run the agent itself: the repository is here, and it never holds a path on
 # this host. So this starts terms.sh, next to this file, DETACHED: its own
 # session (setsid, or an ignored HUP where there is none), every descriptor on
-# /dev/null, `env -i HOME PATH LANG` so no CLAUDE_* or plugin option reaches
-# the agent, and the token on stdin, never in an argv or the environment. The
+# /dev/null, `env -i HOME PATH LANG USER LOGNAME` so no CLAUDE_* or plugin
+# option reaches the agent (macOS finds a Claude Code login in the keychain
+# only with the user's name set), and the token on stdin, never in an argv or the environment. The
 # hook's own exit, output and timing do not change.
 #
 # One run per project per 24 hours whatever asks, a squatter on the port
@@ -473,7 +474,14 @@ lvx_terms_start() {
   if ! mkdir "$_lvx_stamp" 2>/dev/null; then
     [ ! -e "$_lvx_stamp/done" ] || return 0
     _lvx_last="$(cat "$_lvx_stamp/attempt" 2>/dev/null)" || _lvx_last=""
-    case "$_lvx_last" in "" | *[!0-9]* | ?????????????*) _lvx_last=0 ;; esac
+    case "$_lvx_last" in
+    "" | *[!0-9]* | ?????????????*)
+      # No attempt time yet: another hook holds a fresh claim and is about
+      # to write it. Only a directory a day old is a claim that died.
+      [ -z "$(find "$_lvx_stamp" -prune -mmin +1440 2>/dev/null)" ] && return 0
+      _lvx_last=0
+      ;;
+    esac
     if [ "$_lvx_last" -gt "$NOW" ] || [ $((NOW - _lvx_last)) -lt 86400 ]; then
       return 0
     fi
@@ -484,7 +492,7 @@ lvx_terms_start() {
   fi
   echo "$NOW" >"$_lvx_stamp/attempt" 2>/dev/null || return 0
   if command -v setsid >/dev/null 2>&1; then
-    setsid env -i HOME="$HOME" PATH="${PATH:-}" LANG="${LANG:-}" sh "$_lvx_runner" \
+    setsid env -i HOME="$HOME" PATH="${PATH:-}" LANG="${LANG:-}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" sh "$_lvx_runner" \
       "$_lvx_agent" "$PORT" "$_lvx_session" "$_lvx_dir" "$_lvx_stamp" "$_lvx_vibe" \
       >/dev/null 2>&1 <<TERMS &
 $TOKEN
@@ -492,7 +500,7 @@ TERMS
   else
     (
       trap '' HUP
-      exec env -i HOME="$HOME" PATH="${PATH:-}" LANG="${LANG:-}" sh "$_lvx_runner" \
+      exec env -i HOME="$HOME" PATH="${PATH:-}" LANG="${LANG:-}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" sh "$_lvx_runner" \
         "$_lvx_agent" "$PORT" "$_lvx_session" "$_lvx_dir" "$_lvx_stamp" "$_lvx_vibe"
     ) >/dev/null 2>&1 <<TERMS &
 $TOKEN

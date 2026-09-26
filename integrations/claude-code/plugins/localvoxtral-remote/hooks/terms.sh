@@ -3,7 +3,7 @@
 #
 # The Mac asked for this project's terms (`X-Lvx-Terms: wanted` on a hook's
 # reply), and the hook shim started this script detached, in a clean
-# environment (`env -i HOME PATH LANG`), with stdin carrying the host token
+# environment (`env -i HOME PATH LANG USER LOGNAME`), with stdin carrying the host token
 # and nothing else. It runs the session's own agent headless in the project,
 # read-only and with hooks off, exactly as the app does for a local project
 # (ProjectTermProposal.swift), and posts the agent's answer to the Mac's
@@ -92,7 +92,9 @@ else
   # the user's model config and key, keeps every hooks.toml hook out, ours
   # included, and keeps the run out of the user's Vibe history.
   case "$USER_VIBE" in /*) ;; *) exit 0 ;; esac
-  VIBE_RUN_HOME="$HOME/.vibe/localvoxtral/remote/vibe-home"
+  # One per project stamp: two runs at once never share, or rewrite, the
+  # other's links.
+  VIBE_RUN_HOME="$HOME/.vibe/localvoxtral/remote/vibe-home/${STATE##*/}"
   mkdir -p "$VIBE_RUN_HOME" || exit 0
   for name in config.toml .env; do
     link="$VIBE_RUN_HOME/$name"

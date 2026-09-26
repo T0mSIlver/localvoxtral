@@ -674,32 +674,36 @@ public final class ClaudeRemoteContextListener: Sendable {
             agent: hookAgent,
             sessionID: ClaudeRemoteSessionScope.scopedSessionID(hostID: host.id, sessionID: rawSessionID)
         )
-        // Under the host lock, so a revocation cannot land between the check
-        // and taking the slot.
-        guard let slot = hosts.withAuthenticatedHost(token: token, expectedHostID: host.id, { _ in
-            guard let session = registry.snapshot(sessionID: sessionID), session.agent == hookAgent else {
-                return RemoteProjectTermRequests.Pending?.none
-            }
-            return projectTerms.takeAnswerSlot(sessionID: sessionID, agent: agent)
+        // Under the host lock, check to store: a revocation or rotation cannot
+        // land between the check and the answer entering the store.
+        enum Verdict { case notAsked, notTerms, accepted(Int) }
+        guard let verdict = hosts.withAuthenticatedHost(token: token, expectedHostID: host.id, { _ -> Verdict in
+            guard let session = registry.snapshot(sessionID: sessionID), session.agent == hookAgent,
+                  let slot = projectTerms.takeAnswerSlot(sessionID: sessionID, agent: agent)
+            else { return .notAsked }
+            return projectTerms.accept(answer: body, slot: slot).map(Verdict.accepted) ?? .notTerms
         }) else {
             Log.claudeContext.error("Rejected remote connection: host was revoked before ingest")
             respond(fd: fd, status: 401)
             return
         }
         hosts.noteActivity(hostID: host.id)
-        guard let slot else {
+        let count: Int
+        switch verdict {
+        case .notAsked:
             Log.backends.error(
                 "Project terms: refused a remote \(agent.rawValue, privacy: .public) answer: no live session was asked"
             )
             respond(fd: fd, status: 409)
             return
-        }
-        guard let count = projectTerms.accept(answer: body, slot: slot) else {
+        case .notTerms:
             Log.backends.error(
                 "Project terms: refused a remote \(agent.rawValue, privacy: .public) answer: not a terms object"
             )
             respond(fd: fd, status: 400)
             return
+        case .accepted(let accepted):
+            count = accepted
         }
         Log.backends.info(
             "Project terms: remote \(agent.rawValue, privacy: .public) answered \(body.count, privacy: .public) bytes, \(count, privacy: .public) term-shaped"

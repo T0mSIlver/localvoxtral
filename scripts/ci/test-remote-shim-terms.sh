@@ -133,14 +133,14 @@ run_hook() {
     cd "$dir"
     if [ "$agent" = claude ]; then
       printf '{"session_id":"sess-1"}' | env -i PATH="$STUB:$agents:$PATH" HOME="$TMP_DIR" \
-        LANG=C.UTF-8 XDG_RUNTIME_DIR="$TMP_DIR/run" LVX_T="$TMP_DIR" \
+        LANG=C.UTF-8 USER=tester XDG_RUNTIME_DIR="$TMP_DIR/run" LVX_T="$TMP_DIR" \
         GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
         CLAUDE_PLUGIN_OPTION_TOKEN=unit-test-token CLAUDE_PLUGIN_OPTION_PORT=18473 \
         CLAUDE_CODE_SESSION_ID=leak CLAUDECODE=1 \
         "$SH" "$CLAUDE_HOOKS/post.sh" UserPromptSubmit >"$TMP_DIR/stdout"
     else
       printf '%s' "$VIBE_PAYLOAD" | env -i PATH="$STUB:$agents:$PATH" HOME="$TMP_DIR" \
-        LANG=C.UTF-8 XDG_RUNTIME_DIR="$TMP_DIR/run" LVX_T="$TMP_DIR" \
+        LANG=C.UTF-8 USER=tester XDG_RUNTIME_DIR="$TMP_DIR/run" LVX_T="$TMP_DIR" \
         GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
         LOCALVOXTRAL_VIBE_REMOTE_DIR="$VIBE_DIR" LOCALVOXTRAL_VIBE_WATCHER=off \
         CLAUDE_CODE_SESSION_ID=leak "$SH" "$VIBE_DIR/post.sh" >"$TMP_DIR/stdout"
@@ -201,22 +201,24 @@ for agent in claude vibe; do
 
   # 2. The run's environment: HOME, PATH, LANG (and Vibe's own home), nothing
   #    Claude Code or the plugin exported, and never the token.
-  extra="$(grep -v -e '^HOME=' -e '^PATH=' -e '^LANG=' -e '^PWD=' -e '^SHLVL=' -e '^_=' \
+  extra="$(grep -v -e '^HOME=' -e '^PATH=' -e '^LANG=' -e '^USER=' -e '^LOGNAME=' -e '^PWD=' -e '^SHLVL=' -e '^_=' \
     -e '^OLDPWD=' -e '^VIBE_HOME=' "$TMP_DIR/$agent-env" || true)"
   [ -z "$extra" ] || fail "$label: the run inherited: $extra"
   ! grep -q "$(token_of "$agent")" "$TMP_DIR/$agent-env" "$TMP_DIR/$agent-argv" \
     || fail "$label: the token reached the run"
   if [ "$agent" = vibe ]; then
-    grep -qx "VIBE_HOME=$TMP_DIR/.vibe/localvoxtral/remote/vibe-home" "$TMP_DIR/vibe-env" \
-      || fail "$label: the run did not get its own Vibe home"
-    [ "$(readlink "$TMP_DIR/.vibe/localvoxtral/remote/vibe-home/config.toml")" = "$TMP_DIR/.vibe/config.toml" ] \
+    run_home="$(sed -n 's/^VIBE_HOME=//p' "$TMP_DIR/vibe-env")"
+    [ "$run_home" = "$TMP_DIR/.vibe/localvoxtral/remote/vibe-home/$(basename "$(find "$TMP_DIR/run/localvoxtral/terms" -mindepth 1 -maxdepth 1 -type d)")" ] \
+      || fail "$label: the run's Vibe home is $run_home, not one of its own"
+    [ "$(readlink "$run_home/config.toml")" = "$TMP_DIR/.vibe/config.toml" ] \
       || fail "$label: the Vibe home does not link the user's config"
     grep -qx 'Sources/Quillmark.swift' "$TMP_DIR/vibe-argv" || fail "$label: the prompt lists no files"
   else
     grep -qx -- '--output-format' "$TMP_DIR/claude-argv" && grep -qx text "$TMP_DIR/claude-argv" \
       || fail "$label: claude does not print text"
   fi
-  pass "$label: the run saw only HOME, PATH and LANG"
+  grep -qx 'USER=tester' "$TMP_DIR/$agent-env" || fail "$label: the run lost USER (macOS keychain logins need it)"
+  pass "$label: the run saw only HOME, PATH, LANG, USER and LOGNAME"
 
   # 3. A done project is never asked again.
   rm -f "$TMP_DIR/$agent-started"
@@ -245,6 +247,18 @@ for agent in claude vibe; do
   wait_for "$TMP_DIR/$agent-started" || fail "$label: no run a day after a failure"
   [ "$(stamp_dirs)" = 1 ] || fail "$label: the retry left $(stamp_dirs) stamps"
   pass "$label: a failure retries after 24 hours, not before"
+
+  # 4b. A claim whose attempt time is not written yet belongs to another hook
+  #     that is still starting its run; only one a day old is taken over.
+  rm -f "$stamp/attempt" "$TMP_DIR/$agent-started"
+  touch "$stamp"
+  run_hook "$agent" "$TMP_DIR/repo"
+  sleep 0.5
+  [ ! -e "$TMP_DIR/$agent-started" ] || fail "$label: a fresh claim was taken over"
+  touch -t "$(date -d '2 days ago' +%Y%m%d%H%M 2>/dev/null || date -v-2d +%Y%m%d%H%M)" "$stamp"
+  run_hook "$agent" "$TMP_DIR/repo"
+  wait_for "$TMP_DIR/$agent-started" || fail "$label: a dead claim blocked the project"
+  pass "$label: a claim still starting is left alone, a dead one is taken over"
 
   # 5. No ask, no run.
   reset_state

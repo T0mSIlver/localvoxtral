@@ -92,7 +92,7 @@ On the host, each hook runs `remote/post.sh`:
    read-only `vibe -p` in the project and posts its answer, the project's own
    names, to the Mac
    ([Terms from the coding agent on a host](../../docs/remote-claude-context.md#terms-from-the-coding-agent-on-a-host)).
-   It runs under its own Vibe home, `~/.vibe/localvoxtral/remote/vibe-home`, so
+   It runs under a Vibe home of its own, under `~/.vibe/localvoxtral/remote/vibe-home/`, so
    none of your hooks fire and the run stays out of your Vibe history.
 
 It prints nothing and always exits 0.

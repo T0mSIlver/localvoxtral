@@ -405,11 +405,13 @@ only a label for it, never a path it could hand to ssh.
    toplevel of the hook's working directory, or that directory outside git. A
    project marked done, or attempted in the last 24 hours, is skipped.
    Otherwise the shim starts `terms.sh` detached (`setsid`, or an ignored
-   `HUP` where there is none) under `env -i HOME PATH LANG`, with every
-   descriptor on `/dev/null` and the token on stdin, and returns.
+   `HUP` where there is none) under `env -i HOME PATH LANG USER LOGNAME`,
+   with every descriptor on `/dev/null` and the token on stdin, and returns.
+   (On macOS, `claude` finds its keychain login only with `USER` set.)
 4. **Host runner.** `terms.sh` runs the same read-only `claude -p` or `vibe -p`
    as the Mac's local run, in the project directory, with a 180 s watchdog.
-   Vibe runs under `~/.vibe/localvoxtral/remote/vibe-home`, which holds only
+   Vibe runs under `~/.vibe/localvoxtral/remote/vibe-home/<stamp>`, one per
+   project, which holds only
    links to your `config.toml` and `.env`, so no Vibe hook fires. It posts the
    first 8 KiB of the answer to `POST /v1/terms`, with the token in a header
    file and the session id in `X-Lvx-Terms-Session`. A 200 marks the project

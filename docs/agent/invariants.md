@@ -1960,7 +1960,8 @@ there is not.
   stamp. A squatter on the port can send it too; the host's per-project stamp
   (atomic `mkdir`, attempt time, `done` after a 200) bounds that to one run per
   project per 24 hours, under the #609 caps. The shim starts `terms.sh`
-  detached under `env -i HOME PATH LANG` with every descriptor on `/dev/null`:
+  detached under `env -i HOME PATH LANG USER LOGNAME` (macOS finds a Claude
+  Code keychain login only with `USER`) with every descriptor on `/dev/null`:
   a run started from a hook inherits the session's `CLAUDE_CODE_*` ids and the
   plugin's `CLAUDE_PLUGIN_OPTION_TOKEN`, and the token reaches the runner only
   on stdin, then a header file for curl, never an argv or an environment.
