@@ -53,7 +53,7 @@ for token in "${HARNESS_TOKENS[@]}"; do
   if [[ "$n" == 0 ]]; then
     missing+=("$token")
   else
-    found+=("$token×$n")
+    found+=("${token}×${n}")
   fi
 done
 
