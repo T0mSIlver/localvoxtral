@@ -157,8 +157,12 @@ package enum CorrectionDiffClassifier {
         guard withoutSentenceSpacing(replaced) != withoutSentenceSpacing(term) else {
             return .notTermShaped
         }
+        // Capitals alone are not a recognizer mistake (#612); on a word this
+        // short (`i` → `I`, `ok` → `OK`) they are ordinary casing (#803).
+        let isShortCaseFix = term.count <= 2
+            && term.caseFoldedForMatching == replaced.caseFoldedForMatching
         guard knownTerms.contains(term.caseFoldedForMatching)
-            || isTermShaped(term, atSentenceStart: atSentenceStart)
+            || (!isShortCaseFix && isTermShaped(term, atSentenceStart: atSentenceStart))
         else { return .notTermShaped }
         return nil
     }
@@ -188,9 +192,11 @@ package enum CorrectionDiffClassifier {
     /// a joiner inside it, or a capital that is not just the capital every
     /// sentence starts with. `their` → `there` is a real fix, but a word
     /// every sentence may hold is not vocabulary, and neither is a span with
-    /// a sentence end inside it (`doing. Usually`).
+    /// a sentence end inside it (`doing. Usually`) or lowercase shorthand
+    /// (`e.g`, `i.e`).
     package static func isTermShaped(_ term: String, atSentenceStart: Bool) -> Bool {
         if term.range(of: #"[.!?]\s"#, options: .regularExpression) != nil { return false }
+        if term.range(of: #"^(\p{Ll}\.)+\p{Ll}$"#, options: .regularExpression) != nil { return false }
         if term.contains(where: \.isNumber) { return true }
         let inner = term.dropFirst().dropLast()
         if inner.contains(where: { "._-/:@#+".contains($0) }) { return true }

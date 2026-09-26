@@ -232,6 +232,42 @@ final class CorrectionDiffClassifierTests: XCTestCase {
         )
     }
 
+    /// Capitalization alone is not a recognizer mistake worth a term (#612),
+    /// and a word of two letters or fewer is too short for it to be a name
+    /// the user fixed rather than ordinary casing (#803).
+    func testCaseOnlyFixOfAShortWordIsNotATerm() {
+        XCTAssertEqual(
+            classify("then i think it works", "then I think it works"),
+            .nothing(.notTermShaped)
+        )
+        XCTAssertEqual(
+            classify("it is ok now", "it is OK now"),
+            .nothing(.notTermShaped)
+        )
+        XCTAssertEqual(
+            classify("it is ok now", "it is OK now", known: ["OK"]),
+            .learn(term: "OK", replaced: "ok", forgetting: nil),
+            "a listed term is the user's spelling"
+        )
+        XCTAssertEqual(
+            classify("then vibe runs the hooks", "then Vibe runs the hooks"),
+            .learn(term: "Vibe", replaced: "vibe", forgetting: nil),
+            "a longer name fixed by case alone mid-sentence stays learned"
+        )
+    }
+
+    /// Latin shorthand written with dots is prose, not an identifier.
+    func testDottedShorthandIsNotATerm() {
+        XCTAssertEqual(
+            classify("use a flag eg the verbose one", "use a flag e.g. the verbose one"),
+            .nothing(.notTermShaped)
+        )
+        XCTAssertEqual(
+            classify("the old one ie the first", "the old one i.e. the first"),
+            .nothing(.notTermShaped)
+        )
+    }
+
     func testRewordingIsNotLearned() {
         XCTAssertEqual(
             classify("fix the bug in the parser", "fix the issue in the parser"),
@@ -330,6 +366,8 @@ final class CorrectionDiffClassifierTests: XCTestCase {
         XCTAssertFalse(CorrectionDiffClassifier.isTermShaped("there", atSentenceStart: false))
         XCTAssertFalse(CorrectionDiffClassifier.isTermShaped("doing. Usually", atSentenceStart: false))
         XCTAssertTrue(CorrectionDiffClassifier.isTermShaped("os.Exit", atSentenceStart: false))
+        XCTAssertFalse(CorrectionDiffClassifier.isTermShaped("e.g", atSentenceStart: false))
+        XCTAssertTrue(CorrectionDiffClassifier.isTermShaped("U.S", atSentenceStart: false))
     }
 
     func testEdgeTrimKeepsInnerAndLeadingDots() {
