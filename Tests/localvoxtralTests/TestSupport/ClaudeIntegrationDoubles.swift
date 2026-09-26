@@ -99,31 +99,6 @@ final class StubLocalHerdrConfigFileSystem: ClaudeLocalHerdrConfigFileSystem, @u
     }
 }
 
-/// Fixture-driven test double for the opencode file system.
-final class StubOpencodeFileSystem: OpencodePluginFileSystem, @unchecked Sendable {
-    var state: OpencodePluginState
-    var writtenPlugin: (data: Data, permissions: UInt16)?
-    var writtenTUI: (data: Data, permissions: UInt16)?
-    var createdPluginsDir = false
-    var createdConfigDir = false
-    var deletedPlugin = false
-    var deletedTUI = false
-
-    init(state: OpencodePluginState) { self.state = state }
-
-    func readState() throws -> OpencodePluginState { state }
-    func createPluginsDirectory(permissions: UInt16) throws { createdPluginsDir = true }
-    func createConfigDirectory(permissions: UInt16) throws { createdConfigDir = true }
-    func atomicWritePlugin(_ data: Data, permissions: UInt16) throws {
-        writtenPlugin = (data, permissions)
-    }
-    func atomicWriteTUI(_ data: Data, permissions: UInt16) throws {
-        writtenTUI = (data, permissions)
-    }
-    func deletePlugin() throws { deletedPlugin = true }
-    func deleteTUI() throws { deletedTUI = true }
-}
-
 /// In-memory `~/.vibe`: the two files the service touches, and a log of what
 /// it did to them.
 final class StubVibeHooksFileSystem: VibeHooksFileSystem, @unchecked Sendable {
@@ -190,21 +165,4 @@ final class StubVibeHooksFileSystem: VibeHooksFileSystem, @unchecked Sendable {
             _state.hooksData = nil
         }
     }
-}
-
-/// Fixture-driven test double for the statusline file system.
-final class StubStatuslineFileSystem: ClaudeStatuslineFileSystem, @unchecked Sendable {
-    var state: ClaudeStatuslineState
-    var written: (data: Data, permissions: UInt16)?
-    var createdDirectory = false
-    var deleted = false
-
-    init(state: ClaudeStatuslineState) { self.state = state }
-
-    func readState() throws -> ClaudeStatuslineState { state }
-    func createDirectory(permissions: UInt16) throws { createdDirectory = true }
-    func atomicWrite(_ data: Data, permissions: UInt16) throws {
-        written = (data, permissions)
-    }
-    func deleteFile() throws { deleted = true }
 }
