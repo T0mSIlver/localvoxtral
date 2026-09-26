@@ -79,14 +79,30 @@ package protocol HerdrPaneQuerying: Sendable {
     func paneVisibleText(socketPath: String, paneID: String) async -> String?
 }
 
+/// The two calls that write into a herdr pane (#726), and nothing else: no
+/// `pane.run`, no other key. Wire shapes from herdr 0.9.0
+/// (`src/api/schema/panes.rs`, `src/app/api/panes.rs`). Read
+/// docs/agent/invariants.md ("The app writes into an agent only through
+/// three routes") before adding a third.
+package protocol HerdrPaneWriting: Sendable {
+    /// `pane.send_text`: the bytes of `text` into the pane's input, as-is.
+    /// herdr applies no bracketed paste to it, so the caller must never pass
+    /// a control character. True only when herdr answered `ok`.
+    func sendText(socketPath: String, paneID: String, text: String) async -> Bool
+    /// `pane.send_keys` with exactly `["enter"]`. True only on `ok`.
+    func pressEnter(socketPath: String, paneID: String) async -> Bool
+}
+
 /// Minimal capability-bounded client for herdr's one-request-per-connection
-/// JSON API. Reads are limited to the focused/joined pane; the sole mutation is
-/// the short-lived `lvmark` panel token used by remote surface authorization.
+/// JSON API. Reads are limited to the focused/joined pane; the mutations are
+/// the short-lived `lvmark` panel token used by remote surface authorization
+/// and the two `HerdrPaneWriting` calls, which only the dictation's herdr
+/// route makes.
 ///
 /// Every syscall shares one absolute monotonic deadline. A per-phase timeout
 /// would let a slow connect, write, and response each consume the whole budget,
 /// while a per-read timeout would let a trickling peer retain the task forever.
-package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
+package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting, HerdrPaneWriting {
     /// Per-request observation: method name, latency in seconds, success, and
     /// — on failure only — the server's error payload verbatim
     /// (`"<code>: <message>"`, content-free) or a local failure cause
@@ -266,6 +282,45 @@ package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting
                 return false
             }
             noteLatency(method: "pane.report_metadata", startNanos: startNanos, success: true, detail: "ok")
+            return true
+        }.value
+    }
+
+    package func sendText(socketPath: String, paneID: String, text: String) async -> Bool {
+        await sendOK(
+            socketPath: socketPath,
+            method: "pane.send_text",
+            params: ["pane_id": paneID, "text": text]
+        )
+    }
+
+    package func pressEnter(socketPath: String, paneID: String) async -> Bool {
+        await sendOK(
+            socketPath: socketPath,
+            method: "pane.send_keys",
+            params: PaneSendKeysParams(paneID: paneID, keys: ["enter"])
+        )
+    }
+
+    /// One write whose only success answer is `ok`. Logs the method and the
+    /// outcome, never the pane id or the text.
+    private func sendOK(socketPath: String, method: String, params: some Encodable & Sendable) async -> Bool {
+        await Task.detached(priority: .userInitiated) { [self] in
+            let startNanos = uptimeNanos()
+            let request = Request(id: Self.requestID(), method: method, params: params)
+            guard let line = query(socketPath: socketPath, request: request) else {
+                noteLatency(method: method, startNanos: startNanos, success: false, detail: "no-response")
+                return false
+            }
+            guard let envelope = try? JSONDecoder().decode(Envelope<OKResult>.self, from: line),
+                  envelope.id == request.id,
+                  envelope.result?.type == "ok"
+            else {
+                let detail = Self.errorPayload(from: line) ?? "invalid-response"
+                noteLatency(method: method, startNanos: startNanos, success: false, detail: detail)
+                return false
+            }
+            noteLatency(method: method, startNanos: startNanos, success: true, detail: "ok")
             return true
         }.value
     }
@@ -515,6 +570,16 @@ package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting
             case source
             case format
             case stripANSI = "strip_ansi"
+        }
+    }
+
+    private struct PaneSendKeysParams: Encodable, Sendable {
+        var paneID: String
+        var keys: [String]
+
+        enum CodingKeys: String, CodingKey {
+            case paneID = "pane_id"
+            case keys
         }
     }
 
