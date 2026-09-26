@@ -77,6 +77,10 @@ extension DictationSessionController {
     /// first when the session has a second pass, then committed.
     private func commitOverlayBufferSession(sessionMode: DictationOutputMode) {
         let sessionAudio = audio.sessionRecording.finish()
+        // The stop's own from here: the session cleanup no longer reaches it.
+        let earlyPolish = earlyPolishRun
+        earlyPolishRun = nil
+        earlyPolish?.close()
         let polishingConfig = settings.llmPolishingConfiguration
         let sample = OverlayStopSample(
             record: StoppedSessionRecordFields(
@@ -100,17 +104,19 @@ extension DictationSessionController {
             }
         )
         if let secondPass = stopSecondPassRequest(audio: sessionAudio, capture: sample.capture) {
+            earlyPolish?.cancel()
             startStopSecondPass(secondPass, sessionMode: sessionMode, sample: sample)
             return
         }
-        commitOverlayBufferText(sessionMode: sessionMode, sample: sample)
+        commitOverlayBufferText(sessionMode: sessionMode, sample: sample, earlyPolish: earlyPolish)
     }
 
     /// Polished and committed by a task when polishing has a configuration,
     /// committed as-is otherwise.
     private func commitOverlayBufferText(
         sessionMode: DictationOutputMode,
-        sample: OverlayStopSample
+        sample: OverlayStopSample,
+        earlyPolish: EarlyPolishRun? = nil
     ) {
         // Before the dictionary and the polisher: the trigger is a command,
         // not text, so neither may see it.
@@ -200,11 +206,13 @@ extension DictationSessionController {
                         audio: capturedAudio
                     ),
                     polishProfile: capturedPolishProfile,
-                    spokenSend: spokenSend
+                    spokenSend: spokenSend,
+                    earlyPolish: earlyPolish
                 )
             }
             return
         }
+        earlyPolish?.cancel()
 
         // Non-polishing overlay commit path
         let overlayCommit = StopCommitCoordinator.commit(
@@ -264,7 +272,8 @@ extension DictationSessionController {
         capture: StopCommitCoordinator.Capture,
         record: StoppedSessionRecordFields,
         polishProfile capturedPolishProfile: String,
-        spokenSend: OverlaySpokenSend?
+        spokenSend: OverlaySpokenSend?,
+        earlyPolish: EarlyPolishRun?
     ) async {
         let originalText = preparation.originalText
         let workingText = preparation.workingText
@@ -288,7 +297,8 @@ extension DictationSessionController {
                 context: self.context,
                 repoVocabularyGrounding: self.repoVocabularyGrounding,
                 learnedTermStore: self.learnedTermStore,
-                service: self.llmPolishingService
+                service: self.llmPolishingService,
+                earlyPolish: earlyPolish
             )
         ) else { return }
         let assembly = outcome.assembly

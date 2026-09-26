@@ -397,6 +397,73 @@ enum StopCommitCoordinator {
         let repoVocabularyGrounding: any RepoVocabularyGrounding
         let learnedTermStore: LearnedTermStore?
         let service: any LLMPolishingServicing
+        /// The pieces polished while the user spoke, if any (#709).
+        var earlyPolish: EarlyPolishRun? = nil
+    }
+
+    /// The stop's share of an early polish: the pieces and the tail.
+    struct EarlyPolishTail {
+        let handoff: EarlyPolishRun.Handoff
+        let tail: String
+    }
+
+    /// The tail left after the early pieces, or nil when the whole text must
+    /// be polished: this request carries grounding the pieces were sent
+    /// without, the profile or endpoint changed since, or the stop's text no
+    /// longer starts with the pieces (dictionary, payload macro, spoken send
+    /// cut). Every nil is logged.
+    static func earlyPolishTail(
+        _ handoff: EarlyPolishRun.Handoff,
+        assembly: PolishRequestAssembler.Assembly,
+        workingText: String,
+        input: PolishInput
+    ) -> EarlyPolishTail? {
+        let reason: String
+        let bare = PolishRequestAssembler.bareRequest(workingText: workingText, templates: input.promptTemplates)
+        if handoff.templates != input.promptTemplates {
+            reason = "the prompt changed since the pieces were sent"
+        } else if handoff.configuration.endpointURL != input.configuration.endpointURL
+            || handoff.configuration.model != input.configuration.model
+            || handoff.configuration.apiKey != input.configuration.apiKey {
+            reason = "the polishing endpoint changed since the pieces were sent"
+        } else if assembly.request.systemPrompt != bare.systemPrompt
+            || assembly.request.userPrompts != bare.userPrompts
+            || assembly.groundedWorkingText != workingText {
+            reason = "the stop grounds the polish in context the pieces did not have"
+        } else if let tail = EarlyPolishPlan.tail(workingText: workingText, consumedPrefix: handoff.consumedPrefix) {
+            let tailWords = tail.split(whereSeparator: \.isWhitespace).count
+            Log.polishing.info(
+                "early polish: reusing \(handoff.pieces.count, privacy: .public) pieces; polishing the \(tailWords, privacy: .public)-word tail"
+            )
+            return EarlyPolishTail(handoff: handoff, tail: tail)
+        } else {
+            reason = "the stop's text no longer starts with the pieces"
+        }
+        Log.polishing.notice(
+            "early polish: \(handoff.pieces.count, privacy: .public) pieces discarded, polishing the whole text: \(reason, privacy: .public)"
+        )
+        return nil
+    }
+
+    /// Polishes the tail alone and joins it to the pieces. The duration is
+    /// what the stop waited: the piece in flight, then the tail.
+    @MainActor
+    private static func polishTail(_ early: EarlyPolishTail, input: PolishInput) async throws -> LLMPolishingResult {
+        var parts = early.handoff.pieces.map(\.output)
+        var tailSeconds = 0.0
+        if !early.tail.isEmpty {
+            let result = try await input.service.polish(
+                request: PolishRequestAssembler.bareRequest(workingText: early.tail, templates: input.promptTemplates),
+                configuration: input.configuration
+            )
+            parts.append(result.polishedText)
+            tailSeconds = result.durationSeconds
+        }
+        return LLMPolishingResult(
+            rawText: input.preparation.workingText,
+            polishedText: EarlyPolishPlan.joined(parts),
+            durationSeconds: early.handoff.waitSeconds + tailSeconds
+        )
     }
 
     /// Gathers, records what the dictation taught, assembles, and sends. Nil
@@ -491,13 +558,26 @@ enum StopCommitCoordinator {
         ))
 
         guard !workingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            input.earlyPolish?.cancel()
             return PolishOutcome(material: material, assembly: assembly, reply: .notSent)
         }
+        // The pieces polished while the user spoke (#709), when this request
+        // would carry nothing they lacked; the whole text otherwise.
+        let earlyHandoff = await input.earlyPolish?.finish()
+        guard !Task.isCancelled else { return nil }
+        let early = earlyHandoff.flatMap {
+            earlyPolishTail($0, assembly: assembly, workingText: workingText, input: input)
+        }
         do {
-            let result = try await input.service.polish(
-                request: assembly.request,
-                configuration: input.configuration
-            )
+            let result: LLMPolishingResult
+            if let early {
+                result = try await polishTail(early, input: input)
+            } else {
+                result = try await input.service.polish(
+                    request: assembly.request,
+                    configuration: input.configuration
+                )
+            }
 
             // Trust the polishing model for both prompt profiles.
             // Human evaluation found deterministic token repair

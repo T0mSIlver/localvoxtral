@@ -175,6 +175,26 @@ there is not.
   goes last against the 100-term cap: a listed term nobody says is
   sometimes written anyway. A new dictation that cancels
   the pass saves the realtime text as not inserted, as it does for a polish.
+- **Early polish reuses a piece only when the stop would have sent it the
+  same way** (#709). In Overlay Buffer with polishing, `EarlyPolishRun`
+  polishes each settled piece (whole sentences past 30 words of backend
+  finals, `EarlyPolishPlan`) while the user speaks, alone and one at a
+  time. A piece request carries only the templates, the reference guide and
+  About you. The stop still gathers and assembles the request for the whole
+  text, and polishes only the tail when that request equals the bare one
+  (`PolishRequestAssembler.bareRequest`), the templates and endpoint are the
+  pieces', and the prepared text starts with the pieces' exact prefix.
+  Otherwise the pieces are dropped and the whole text is polished: context,
+  vocabulary or a pre-applied spelling from the stop sample, a changed
+  profile, the dictionary, the payload macro and the spoken send cut all
+  land here, so learned terms, the macro and the trigger keep working on
+  the whole text. A piece is never given the text polished before it, and
+  the stop never re-polishes a piece's last sentence: both changed more
+  words than polishing it alone on the #709 replay. The stop waits for the
+  piece in flight and keeps it rather than cancelling it, because polishd
+  keeps generating a dropped request on its one slot. Sessions with a
+  second pass never start early polish: Mistral's realtime stream settles
+  nothing before the stop, and the batch text replaces the realtime text.
 - **Claude Desktop is a text field whose Return sends, and gets its
   newlines as Shift+Return** (#660). Three lists name it, each for one
   capability: `TerminalTargetDetector`'s text-field list fixes its verdict
