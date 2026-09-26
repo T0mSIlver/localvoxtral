@@ -1,19 +1,19 @@
 # Roadmap
 
-- [ ] Developer ID signing + notarization — install with no Gatekeeper
-      workarounds
-- [ ] Hotword boosting in the speech model itself — bias transcription (not
+- [ ] Developer ID signing and notarization, so installing needs no
+      Gatekeeper workarounds
+- [ ] Hotword boosting in the speech model itself, to bias transcription (not
       only polishing) toward your repo's vocabulary
-      ([#316](https://github.com/T0mSIlver/localvoxtral/issues/316), gated on
+      ([#316](https://github.com/T0mSIlver/localvoxtral/issues/316), waiting on
       the eval corpus in
       [#315](https://github.com/T0mSIlver/localvoxtral/issues/315))
-- [ ] Claude Code session joins on more terminals — WezTerm is next;
+- [ ] Claude Code session joins on more terminals: WezTerm is next, then
       tmux support
-- [ ] Repo context for remote sessions — collect git status, diffs and
+- [ ] Repo context for remote sessions: collect git status, diffs and
       recently touched files on the enrolled host over the app's own ssh, so
-      a joined remote session grounds polishing the way a local one does
-- [ ] Documentation website — a visual, end-user guide beyond these docs
-- [ ] Revisable transcripts for the Overlay Buffer, so a streaming model may
+      polishing for a joined remote session gets the same context as a local one
+- [ ] Documentation website: a visual end-user guide beyond these docs
+- [ ] Revisable transcripts for the Overlay Buffer, so a streaming model can
       correct text it has already emitted
       ([#383](https://github.com/T0mSIlver/localvoxtral/issues/383); the second
       streaming ASR model it asked for,
@@ -22,8 +22,8 @@
 
 ## Specified and open
 
-Smaller than the lines above, and already written up with scope, the
-constraints this repo adds, and the proof a PR needs to carry.
+These are smaller than the items above. Each issue already states its scope,
+the constraints this repo adds, and the proof a PR must carry.
 
 - [Duck other audio while dictating, and fade it back](https://github.com/T0mSIlver/localvoxtral/issues/375)
 - [A dropped WebSocket ends the dictation instead of reconnecting](https://github.com/T0mSIlver/localvoxtral/issues/380)
@@ -33,4 +33,4 @@ constraints this repo adds, and the proof a PR needs to carry.
 Several of these came from people who forked the repo and solved the problem
 for themselves. The
 [`from-fork`](https://github.com/T0mSIlver/localvoxtral/labels/from-fork)
-label tracks them; a PR that takes one credits the author it came from.
+label tracks them, and a PR that takes one up credits the original author.

@@ -1,0 +1,87 @@
+# The docs site at t0msilver.github.io/localvoxtral. scripts/docs-site/stage.py
+# copies this file next to the staged pages; build with
+# scripts/docs-site/build.sh. Paths below are repo paths.
+
+[project]
+site_name = "localvoxtral"
+site_description = "Realtime dictation for macOS, on a local or remote speech model"
+site_url = "https://t0msilver.github.io/localvoxtral/"
+repo_url = "https://github.com/T0mSIlver/localvoxtral"
+repo_name = "T0mSIlver/localvoxtral"
+edit_uri = "edit/main/"
+docs_dir = "pages"
+site_dir = "site"
+nav = [
+  { "Home" = "README.md" },
+  { "Using localvoxtral" = [
+    { "Install" = "docs/install.md" },
+    { "Dictating" = "docs/dictation.md" },
+    { "Terminals & coding agents" = "docs/coding-agents.md" },
+    { "Integration matrix" = "docs/integration-matrix.md" },
+    { "Under the hood" = "docs/under-the-hood.md" },
+    { "Roadmap" = "docs/roadmap.md" },
+  ] },
+  { "Integrations" = [
+    { "Claude Code" = "integrations/claude-code/README.md" },
+    { "opencode" = "integrations/opencode/README.md" },
+    { "Mistral Vibe" = "integrations/vibe/README.md" },
+    { "Remote Claude Code over SSH" = "docs/remote-claude-context.md" },
+  ] },
+  { "Developing" = [
+    { "All docs" = "docs/README.md" },
+    { "Building from source" = "docs/building.md" },
+    { "Architecture" = "docs/architecture.md" },
+    { "Dogfood builds" = "docs/dogfood-builds.md" },
+  ] },
+  { "Release notes" = [
+    { "v0.9.0" = "docs/release-notes/v0.9.0.md" },
+  ] },
+]
+
+[project.theme]
+language = "en"
+logo = "assets/icons/app/AppIcon.png"
+favicon = "assets/icons/app/AppIcon.png"
+features = [
+  "content.code.copy",
+  "content.action.view",
+  "navigation.footer",
+  "navigation.instant",
+  "navigation.path",
+  "navigation.sections",
+  "navigation.top",
+  "navigation.tracking",
+  "search.highlight",
+]
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme)"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "Switch to light mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to system preference"
+
+[project.markdown_extensions]
+abbr = {}
+admonition = {}
+attr_list = {}
+def_list = {}
+footnotes = {}
+md_in_html = {}
+tables = {}
+toc.permalink = true
+pymdownx.details = {}
+pymdownx.highlight = {}
+pymdownx.inlinehilite = {}
+pymdownx.superfences = {}
+pymdownx.tasklist.custom_checkbox = true

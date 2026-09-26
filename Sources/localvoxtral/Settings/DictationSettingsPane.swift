@@ -8,14 +8,10 @@ struct DictationSettingsPane: View {
     @Binding var shortcutValidationError: String?
 
     /// The Trigger group's Learn more: what a tap and a hold do.
-    private static let shortcutsDocsURL = URL(
-        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/dictation.md#shortcuts"
-    )!
+    private static let shortcutsDocsURL = DocsLink.page("docs/dictation/#shortcuts")
     /// The Overlay Buffer group's Learn more: what keeping words on their
     /// line trades for.
-    private static let overlayWordHoldDocsURL = URL(
-        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/dictation.md#keeping-words-on-their-line"
-    )!
+    private static let overlayWordHoldDocsURL = DocsLink.page("docs/dictation/#keeping-words-on-their-line")
 
     private var dictationOutputModeBinding: Binding<DictationOutputMode> {
         Binding(

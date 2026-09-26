@@ -14,9 +14,7 @@ struct ClaudeHerdrLocalPanelSettingsRow: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
     @State private var isShowingSetup = false
 
-    private static let documentationURL = URL(
-        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/remote-claude-context.md#federated-herdr-machines"
-    )!
+    private static let documentationURL = DocsLink.page("docs/remote-claude-context/#federated-herdr-machines")
 
     var body: some View {
         if model.hasEnabledHerdrMachine {
@@ -50,9 +48,7 @@ private struct ClaudeLocalHerdrPanelSetupSheet: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
     var dismiss: () -> Void
 
-    private static let documentationURL = URL(
-        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/remote-claude-context.md#federated-herdr-machines"
-    )!
+    private static let documentationURL = DocsLink.page("docs/remote-claude-context/#federated-herdr-machines")
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {

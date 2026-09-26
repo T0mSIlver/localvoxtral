@@ -16,14 +16,13 @@ swift build        # app package (never compiles the MLX C++ core)
 swift test         # tier-0 unit suite (500+ tests)
 ```
 
-The MLX helpers (`PolishHelper/`, `SpeechHelper/` — the bundled
-`localvoxtral-polishd` / `localvoxtral-speechd` engines) are separate SwiftPM
-packages. `swift build` of a helper compiles but cannot produce working Metal
-kernels — only the xcodebuild lane inside `package_app.sh` can, which is why
-"build the app" is `package_app.sh` and not `swift build`.
+The MLX helpers in `PolishHelper/` and `SpeechHelper/` (the bundled
+`localvoxtral-polishd` and `localvoxtral-speechd` engines) are separate
+SwiftPM packages. `swift build` compiles a helper but cannot produce working
+Metal kernels. Only the xcodebuild step inside `package_app.sh` can, so build
+the app with `package_app.sh`, not `swift build`.
 
-Working from a non-Mac machine, wanting to run the integration or eval
-lanes, or contributing a change? See [CONTRIBUTING.md](../CONTRIBUTING.md)
-and the agent guide ([AGENTS.md](../AGENTS.md)), which documents the
-remote-build workflow. The full test-tier matrix is in
-[docs/agent/test-tiers.md](agent/test-tiers.md).
+To work from a non-Mac machine, run the integration or eval lanes, or
+contribute a change, see [CONTRIBUTING.md](../CONTRIBUTING.md) and the agent
+guide ([AGENTS.md](../AGENTS.md)), which documents the remote-build workflow.
+[docs/agent/test-tiers.md](agent/test-tiers.md) lists every test tier.

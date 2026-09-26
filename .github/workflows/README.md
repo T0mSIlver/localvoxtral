@@ -365,6 +365,18 @@ no log (#470). Retrying it belongs on a hosted runner too: never move code
 scanning to `[self-hosted, macOS, ARM64]`, the one Mac every agent queues
 behind (#418).
 
+## `docs-site.yml`
+
+Builds the user docs into t0msilver.github.io/localvoxtral on hosted Ubuntu,
+then deploys it on pushes to main. `scripts/docs-site/stage.py` copies only
+the public pages (README, `docs/*.md` without `docs/agent/`, the integration
+READMEs) because Zensical has no `exclude_docs` yet. `check-app-links.py` then
+fails the run when a `DocsLink.page` path or anchor in `Sources/` is missing
+from the built site. A PR gets the build, the check and the site as the
+`github-pages` artifact. Zensical is pinned in the workflow; after a bump,
+look at the built site before merging. Build it locally with
+`scripts/docs-site/build.sh` (needs `zensical` on `PATH`).
+
 ## Action pins
 
 Every `uses:` names a 40-character commit SHA with the tag in a trailing

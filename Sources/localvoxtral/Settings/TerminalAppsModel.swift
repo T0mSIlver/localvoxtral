@@ -96,10 +96,7 @@ enum TerminalAppCatalog {
     static let cmuxSocketReason = "Needs socket password"
 
     /// cmux's two-step setup doc, linked from the cmux pane.
-    static let cmuxDocsURL = URL(
-        string:
-            "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/claude-code/README.md#which-terminal-am-i-dictating-into"
-    )!
+    static let cmuxDocsURL = DocsLink.page("integrations/claude-code/#which-terminal-am-i-dictating-into")
 
     /// The terminals whose session join (and TTY read) goes through
     /// AppleScript, so the FIRST join prompts for the Automation

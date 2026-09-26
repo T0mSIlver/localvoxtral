@@ -26,7 +26,7 @@
 
 https://github.com/user-attachments/assets/81a341ff-0c53-4fcf-9b7f-ef148b24dfae
 
-Unlike tools that transcribe after you stop speaking, localvoxtral streams text as the audio arrives, powered by Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) running on your own Apple Silicon. It is built first for [prompting coding agents by voice](docs/coding-agents.md), and it stays a solid general dictation app everywhere else. Everything runs on-device, with no account and no subscription. Nothing leaves your Mac unless you decide it should.
+localvoxtral streams text as the audio arrives instead of transcribing after you stop speaking. It runs Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) on your own Apple Silicon. It is built first for [prompting coding agents by voice](docs/coding-agents.md), and it works as a general dictation app in any other app too. Everything runs on-device, with no account and no subscription. Nothing leaves your Mac unless you point it at a server yourself.
 
 ## Install
 
@@ -34,15 +34,15 @@ Unlike tools that transcribe after you stop speaking, localvoxtral streams text 
 curl -fsSL https://raw.githubusercontent.com/T0mSIlver/localvoxtral/main/scripts/install.sh | bash
 ```
 
-Or `brew install --cask T0mSIlver/localvoxtral/localvoxtral`, or download the latest `.dmg` from [Releases](https://github.com/T0mSIlver/localvoxtral/releases/latest). Requires an Apple Silicon Mac on macOS 15+. A first-launch wizard handles permissions and the engine download; if Gatekeeper complains about a hand-installed DMG, see the [install guide](docs/install.md).
+Or `brew install --cask T0mSIlver/localvoxtral/localvoxtral`, or download the latest `.dmg` from [Releases](https://github.com/T0mSIlver/localvoxtral/releases/latest). Requires an Apple Silicon Mac on macOS 15+. On first launch, a setup wizard asks for permissions and downloads the engine. If Gatekeeper blocks a DMG you installed by hand, see the [install guide](docs/install.md).
 
 ## Features
 
 - **Built for coding agents.** Dictate prompts straight into any CLI agent ([opencode](integrations/opencode/README.md) and [Mistral Vibe](integrations/vibe/README.md) get their own integrations), in any terminal: Warp, WezTerm, kitty, Alacritty, and more. Polishing understands developer speech: "dash dash force" becomes `--force`, "use auth dot t s" becomes `useAuth.ts` ([details](docs/coding-agents.md)).
 - **Claude Code aware.** Dictation joins the exact session under your cursor: Ghostty, iTerm2, Terminal.app, a single [herdr](https://herdr.dev) or [cmux](https://github.com/manaflow-ai/cmux) pane, over SSH, or a [claude.ai/code](https://claude.ai/code) Remote Control tab in your browser. Polishing is grounded in that session's screen, your last prompt, the files Claude just touched, and the repo's vocabulary ([details](docs/coding-agents.md#dictating-into-claude-code)).
 - **One key, two modes.** Tap for a reviewable overlay with optional LLM polishing, hold to stream words live into the focused app ([shortcuts](docs/dictation.md)).
-- **Private.** Audio, transcription, and polishing are local processes. No telemetry, no account, no cloud fallback ([how it works](docs/under-the-hood.md)).
-- **Menu bar native.** Instant popover with dictation status at a glance, microphone picker, auto-copy of the final text, and the raw transcript one click away after a polished commit.
+- **Private.** Audio capture, transcription and polishing run on your Mac. No telemetry, no account, no cloud fallback ([how it works](docs/under-the-hood.md)).
+- **Menu bar native.** The popover shows dictation status and a microphone picker. The app can copy the final text for you, and after a polished commit the raw transcript is one click away.
 - **Bring your own server.** Dictation and polishing can each point at any OpenAI-compatible endpoint, or at Mistral's hosted API with one key, instead of the built-in local engines ([details](docs/under-the-hood.md#bring-your-own-server)).
 - **Multilingual.** Dictate in English, French, or any language [Voxtral](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) understands. Polishing answers in the language you spoke (English and French are covered by the test suite).
 

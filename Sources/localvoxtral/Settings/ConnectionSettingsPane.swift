@@ -108,10 +108,7 @@ struct ConnectionSettingsPane: View {
     }
 
     private enum LearnMore {
-        static let mistralAPI = URL(
-            string:
-                "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/under-the-hood.md#mistral-api"
-        )!
+        static let mistralAPI = DocsLink.page("docs/under-the-hood/#mistral-api")
     }
 
     private var managedPolishingModelEntries: [PolishModelPickerEntry] {

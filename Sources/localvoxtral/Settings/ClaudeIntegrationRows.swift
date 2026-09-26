@@ -65,9 +65,7 @@ struct ClaudeStatuslineRow: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
     @State private var isShowingSetup = false
 
-    private static let docsURL = URL(
-        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/claude-code/README.md#connection-indicator-opt-in-status-line"
-    )!
+    private static let docsURL = DocsLink.page("integrations/claude-code/#connection-indicator-opt-in-status-line")
 
     var body: some View {
         // One line like the plugin row: status leads, small buttons trail.
@@ -240,9 +238,7 @@ struct ClaudeShellSetupRow: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
     @State private var isShowingShellSetup = false
 
-    private static let manualStepsURL = URL(
-        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/claude-code/README.md#1-the-tty-echo-works-through-jump-hosts-and-controlmaster"
-    )!
+    private static let manualStepsURL = DocsLink.page("integrations/claude-code/#1-the-tty-echo-works-through-jump-hosts-and-controlmaster")
 
     var body: some View {
         SettingsGroupRow {
@@ -541,9 +537,7 @@ struct ClaudeRemoteHostsRows: View {
         }
     }
 
-    private static let remoteSetupDocumentationURL = URL(
-        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/remote-claude-context.md"
-    )!
+    private static let remoteSetupDocumentationURL = DocsLink.page("docs/remote-claude-context/")
 
     private var enrollmentForm: some View {
         HStack(spacing: 8) {
@@ -705,9 +699,7 @@ private struct ClaudeRemoteEnrollmentSheet: View {
     let presentation: ClaudeIntegrationSettingsModel.EnrollmentPresentation
     let onDismiss: () -> Void
 
-    private static let documentationURL = URL(
-        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/remote-claude-context.md"
-    )!
+    private static let documentationURL = DocsLink.page("docs/remote-claude-context/")
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -774,9 +766,7 @@ private struct ClaudeShellSetupSheet: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
     var dismiss: () -> Void
 
-    private static let documentationURL = URL(
-        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/remote-claude-context.md"
-    )!
+    private static let documentationURL = DocsLink.page("docs/remote-claude-context/")
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -821,9 +811,7 @@ private struct ClaudeStatuslineSetupSheet: View {
         }
     }
 
-    private static let documentationURL = URL(
-        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/claude-code/README.md#connection-indicator-opt-in-status-line"
-    )!
+    private static let documentationURL = DocsLink.page("integrations/claude-code/#connection-indicator-opt-in-status-line")
 
     var body: some View {
         let status = model.statuslineStatus
@@ -861,9 +849,7 @@ private struct OpencodePluginSetupSheet: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
     var dismiss: () -> Void
 
-    private static let documentationURL = URL(
-        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/opencode/README.md#install"
-    )!
+    private static let documentationURL = DocsLink.page("integrations/opencode/#install")
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -898,9 +884,7 @@ private struct VibeHooksSetupSheet: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
     var dismiss: () -> Void
 
-    private static let documentationURL = URL(
-        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/vibe/README.md#install"
-    )!
+    private static let documentationURL = DocsLink.page("integrations/vibe/#install")
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
