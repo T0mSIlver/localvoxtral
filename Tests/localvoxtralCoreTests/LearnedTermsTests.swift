@@ -1,5 +1,5 @@
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// The rules of what the app remembers: one confirmation per dictation, per
 /// project, decayed and capped. Pure value, no disk — `LearnedTermStoreTests`

@@ -1,10 +1,12 @@
 import Foundation
+#if canImport(os)
 import os
+#endif
 
 /// Shows the user, in one line, that a fix of theirs was learned, and offers
 /// to take it back.
 @MainActor
-protocol CorrectionLearningPresenting: AnyObject {
+package protocol CorrectionLearningPresenting: AnyObject {
     func showLearned(term: String, undo: @escaping @MainActor () -> Void)
 }
 
@@ -25,32 +27,32 @@ protocol CorrectionLearningPresenting: AnyObject {
 /// `earlyPromptGrace`. Only the learned spelling reaches the disk (`LearnedTermStore`);
 /// the log gets verdict categories, never text.
 @MainActor
-final class CorrectionLearning {
+package final class CorrectionLearning {
     /// A prompt sent later than this after the dictation is not a fix of it:
     /// the user moved on, and what they sent is likely other work.
-    static let window: TimeInterval = 180
+    package static let window: TimeInterval = 180
     /// Sessions waiting at once. One per terminal tab is plenty.
-    static let maxPending = 8
+    package static let maxPending = 8
     /// How long a prompt that arrived with nothing to compare is kept for a
     /// dictation still finishing. An Enter pressed the moment the last word
     /// appears can reach the app before the stop's commit does; a prompt
     /// older than this belongs to no dictation still in flight.
-    static let earlyPromptGrace: TimeInterval = 10
+    package static let earlyPromptGrace: TimeInterval = 10
 
-    struct Pending {
-        var inserted: String
-        let project: LearnedTermProjectResolver.Identity
-        var insertedAt: Date
+    package struct Pending {
+        package var inserted: String
+        package let project: LearnedTermProjectResolver.Identity
+        package var insertedAt: Date
     }
 
     private let store: LearnedTermStore
     private let knownTerms: @MainActor () -> [String]
     private let now: @MainActor () -> Date
-    weak var presenter: (any CorrectionLearningPresenting)?
-    private(set) var pending: [String: Pending] = [:]
-    private(set) var earlyPrompts: [String: (prompt: String, at: Date)] = [:]
+    package weak var presenter: (any CorrectionLearningPresenting)?
+    package private(set) var pending: [String: Pending] = [:]
+    package private(set) var earlyPrompts: [String: (prompt: String, at: Date)] = [:]
 
-    init(
+    package init(
         store: LearnedTermStore,
         knownTerms: @escaping @MainActor () -> [String],
         now: @escaping @MainActor () -> Date = { Date() }
@@ -63,7 +65,7 @@ final class CorrectionLearning {
     /// Called after a commit put `inserted` into the joined session's prompt.
     /// Two dictations before one send are one prompt, so a second one within
     /// the window appends rather than replaces.
-    func expect(inserted: String, sessionID: String, project: LearnedTermProjectResolver.Identity) {
+    package func expect(inserted: String, sessionID: String, project: LearnedTermProjectResolver.Identity) {
         let text = inserted.trimmed
         guard !text.isEmpty, !sessionID.isEmpty else { return }
         let moment = now()
@@ -86,7 +88,7 @@ final class CorrectionLearning {
 
     /// The joined session submitted `prompt`. Compared once with what was
     /// inserted into it, then both are dropped whatever the verdict.
-    func promptSubmitted(sessionID: String, prompt: String) {
+    package func promptSubmitted(sessionID: String, prompt: String) {
         let moment = now()
         dropExpired(at: moment)
         guard let entry = pending.removeValue(forKey: sessionID) else {
