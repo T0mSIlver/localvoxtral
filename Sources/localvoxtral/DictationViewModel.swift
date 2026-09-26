@@ -160,7 +160,6 @@ final class DictationViewModel {
     var transcript: TranscriptAccumulator { get { session.transcript } set { session.transcript = newValue } }
     var statusText: String { get { session.statusText } set { session.statusText = newValue } }
     var lastError: String? { get { session.lastError } set { session.lastError = newValue } }
-    var lastFinalSegment: String { session.lastFinalSegment }
     var lastPolishChangedRawTranscript: String? {
         get { session.lastPolishChangedRawTranscript }
         set { session.lastPolishChangedRawTranscript = newValue }
@@ -219,11 +218,9 @@ final class DictationViewModel {
     func selectMicrophoneInputChannel(_ channel: Int) { session.selectMicrophoneInputChannel(channel) }
     func clearTranscript() { session.clearTranscript() }
     func copyTranscript() { session.copyTranscript() }
-    func copyLatestSegment(updateStatus: Bool = true) { session.copyLatestSegment(updateStatus: updateStatus) }
     func copyRawTranscript() { session.copyRawTranscript() }
     var canCopyLastDictation: Bool { session.canCopyLastDictation }
     func copyLastDictation() { session.copyLastDictation() }
-    func pasteLatestSegment() { session.pasteLatestSegment() }
     func applyDictationHistoryRetention(now: Date = Date()) { session.applyDictationHistoryRetention(now: now) }
     func prepareLLMPolishingPromptAccessIfNeeded() { session.prepareLLMPolishingPromptAccessIfNeeded() }
 
