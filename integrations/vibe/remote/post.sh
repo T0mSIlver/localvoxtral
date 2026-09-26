@@ -182,7 +182,7 @@ write_header() {
   cat 2>/dev/null >"$1" <<HEADERS
 Authorization: Bearer $2
 X-Lvx-Agent: vibe
-X-Lvx-Vibe-Hooks-Version: 1.0.1
+X-Lvx-Vibe-Hooks-Version: 1.1.0
 HEADERS
 }
 write_header "$WORK/header" "$TOKEN" || exit 0
@@ -213,6 +213,57 @@ if [ -r "$WORK/agent-pid" ]; then
 fi
 case "$AGENT_PID" in "" | *[!0-9]* | ??????????*) AGENT_PID="" ;; esac
 
+# --- Project label (#652) ----------------------------------------------------
+# The Mac files what a remote session teaches it under a label. Without this
+# header the label is the last component of the session's cwd, so each
+# worktree of a repository, and each subdirectory a session starts in, learned
+# alone. The label is the basename of the repository's main checkout: the
+# parent of the shared git directory for a linked worktree, the toplevel
+# otherwise (a submodule keeps its own). One git call, from this hook's cwd,
+# which is the session's.
+#
+# A label like every value here, never a path: only the basename leaves, and
+# only when it is a plain name in the charset the Mac's labels use (enumerated,
+# as above), with no leading dot and at most 64 bytes. No git, no repository,
+# a git too old for --path-format (it echoes the option back, which makes four
+# lines) or anything else sends no header, and the Mac falls back to the cwd's
+# last component.
+# A function called through $( ), not a `case` written inside $( ): the
+# bash 3.2 that is macOS's /bin/sh reads a case pattern's `)` as the end
+# of the command substitution. Called in a subshell, so its locale, IFS,
+# `set -f` and positional parameters stay there.
+lvx_project() {
+  LC_ALL=C
+  export LC_ALL
+  command -v git >/dev/null 2>&1 || return 0
+  _lvx_git="$(git rev-parse --path-format=absolute --show-toplevel --git-dir \
+    --git-common-dir 2>/dev/null)" || return 0
+  set -f
+  IFS='
+'
+  # shellcheck disable=SC2086  # one field per line is the point
+  set -- $_lvx_git
+  [ "$#" -eq 3 ] || return 0
+  for _lvx_path in "$1" "$2" "$3"; do
+    case "$_lvx_path" in /*) ;; *) return 0 ;; esac
+  done
+  if [ "$2" = "$3" ]; then
+    _lvx_name="${1##*/}"
+  elif [ "${3##*/}" = ".git" ]; then
+    _lvx_main="${3%/*}"
+    _lvx_name="${_lvx_main##*/}"
+  else
+    # A bare repository's worktree: the shared directory is the repository.
+    _lvx_name="${3##*/}"
+  fi
+  case "$_lvx_name" in
+  "" | .* | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) return 0 ;;
+  esac
+  [ "${#_lvx_name}" -le 64 ] || return 0
+  echo "$_lvx_name"
+}
+LVX_PROJECT="$(lvx_project 2>/dev/null)" || LVX_PROJECT=""
+
 (
   LC_ALL=C
   export LC_ALL
@@ -236,6 +287,7 @@ case "$AGENT_PID" in "" | *[!0-9]* | ??????????*) AGENT_PID="" ;; esac
   fi
   set +f
   lvx_env_header 'X-Lvx-Env-Hook-Parent-Pid' "$AGENT_PID"
+  lvx_env_header 'X-Lvx-Env-Project' "${LVX_PROJECT:-}"
 ) 2>/dev/null || :
 
 # --- Send --------------------------------------------------------------------

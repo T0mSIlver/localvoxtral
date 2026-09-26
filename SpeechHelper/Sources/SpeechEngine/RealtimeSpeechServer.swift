@@ -37,7 +37,7 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         port: UInt16,
         transcriptionDelayMs: Int?,
         cacheLimitMB: Int,
-        stepMilliseconds: Int = 100,
+        stepMilliseconds: Int = 80,
         utteranceLimit: UtteranceLimit = UtteranceLimit()
     ) async throws -> RealtimeSpeechServer {
         Memory.cacheLimit = cacheLimitMB * 1024 * 1024
@@ -128,7 +128,7 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         var phase: Phase = .http
         var buffer = Data()
         var session: SpeechASRStreamingSession?
-        var stepBatcher: StepBatcher
+        let feed: CoalescingStepFeed
         // Append-only delta contract lives in OUR layer now (the engine is an upstream
         // dependency whose raw `Delta` re-emits the whole transcript on a non-prefix step).
         // Feed it the session's full-transcript snapshot after each step/finish; emit only
@@ -140,7 +140,7 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         enum Phase { case http, webSocket }
 
         init(stepMilliseconds: Int) {
-            self.stepBatcher = StepBatcher(cadenceMilliseconds: stepMilliseconds)
+            self.feed = CoalescingStepFeed(minimumMilliseconds: stepMilliseconds)
         }
     }
 
@@ -233,31 +233,40 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
     // MARK: - Inference (serial queue)
 
     private func dispatch(_ message: RealtimeClientMessage, _ connection: NWConnection, _ ctx: Connection) {
+        if case .audioAppend(let base64) = message {
+            // Decoded here, on the network queue, so every append the feed counts
+            // reaches `receive`.
+            guard let samples = PCM16.decode(base64: base64) else {
+                sendServer(connection, .error(message: "Invalid PCM16 payload"))
+                return
+            }
+            ctx.feed.audioQueued()
+            inferenceQueue.async { [weak self] in
+                guard let self, let batch = ctx.feed.receive(samples) else { return }
+                let session = self.ensureSession(ctx)
+                session.step(batch)
+                // Emit the append-only delta from the full transcript snapshot, NOT the
+                // engine's raw `Delta` (which re-emits the whole transcript on a non-prefix
+                // step — our no-backspace insertion path would duplicate it).
+                let delta = ctx.deltas.emit(fullText: session.text)
+                if !delta.isEmpty { self.sendServer(connection, .transcriptDelta(delta)) }
+                self.reportEarlyStopIfNeeded(session, connection, ctx)
+            }
+            return
+        }
         inferenceQueue.async { [weak self] in
             guard let self else { return }
             switch message {
             case .sessionUpdate:
                 self.sendServer(connection, .sessionUpdated)
-            case .audioAppend(let base64):
-                guard let samples = PCM16.decode(base64: base64) else {
-                    self.sendServer(connection, .error(message: "Invalid PCM16 payload"))
-                    return
-                }
-                for batch in ctx.stepBatcher.append(samples) {
-                    let session = self.ensureSession(ctx)
-                    session.step(batch)
-                    // Emit the append-only delta from the full transcript snapshot, NOT the
-                    // engine's raw `Delta` (which re-emits the whole transcript on a non-prefix
-                    // step — our no-backspace insertion path would duplicate it).
-                    let delta = ctx.deltas.emit(fullText: session.text)
-                    if !delta.isEmpty { self.sendServer(connection, .transcriptDelta(delta)) }
-                    self.reportEarlyStopIfNeeded(session, connection, ctx)
-                }
+            case .audioAppend:
+                break  // queued above
             case .commit(let final):
                 guard final else { return }  // non-final commit is a no-op, matching voxmlx
                 let session = self.ensureSession(ctx)
-                let remainder = ctx.stepBatcher.flushRemainder()
+                let remainder = ctx.feed.flushRemainder()
                 if !remainder.isEmpty { session.step(remainder) }
+                self.reportGrownSteps(ctx)
                 // The remainder can be what crosses the limit (Nemotron then drops it).
                 // Check before finish(), which ends every Voxtral stream and would
                 // read as the model stopping early.
@@ -271,7 +280,6 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                 ctx.session = nil  // ready for the next utterance
                 ctx.deltas = TranscriptDeltaEmitter()
                 ctx.stopReporter.reset()
-                ctx.stepBatcher.clear()
                 // The engine's finish() clears the buffer pool, but at that point the
                 // session's KV caches and encoder state are still live — dropping the
                 // session afterwards releases them INTO the pool, which then sits at
@@ -284,7 +292,8 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                 ctx.session = nil
                 ctx.deltas = TranscriptDeltaEmitter()
                 ctx.stopReporter.reset()
-                ctx.stepBatcher.clear()
+                ctx.feed.clear()
+                _ = ctx.feed.takeLargestStepSamples()
                 // Same idle-footprint contract as the commit path above.
                 Memory.clearCache()
             case .ignored:
@@ -302,6 +311,16 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         )
         ctx.session = s
         return s
+    }
+
+    /// Steps grow past the minimum only when one step took longer than the audio it
+    /// covered: the GPU is not keeping up at the minimum. Say so once per utterance.
+    /// Must be called on `inferenceQueue`.
+    private func reportGrownSteps(_ ctx: Connection) {
+        let largest = ctx.feed.takeLargestStepSamples()
+        guard largest > ctx.feed.minimumSamples else { return }
+        FileHandle.standardError.write(Data(
+            "speechd: steps grew to \(largest / 16) ms (minimum \(stepMilliseconds) ms); the GPU did not keep up with the minimum step\n".utf8))
     }
 
     /// An engine session that stops before the client's final commit returns nothing from

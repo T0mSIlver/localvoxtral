@@ -10,7 +10,8 @@ public struct SpeechdLaunchOptions: Equatable {
     public var parentPID: pid_t?
     public var transcriptionDelayMs: Int?
     public var cacheLimitMB = 2048
-    public var stepMilliseconds = 100
+    /// The smallest streaming step (`--step-ms`); see `CoalescingStepFeed`.
+    public var stepMilliseconds = 80
     /// Maximum length of one utterance (one engine stream session); see `UtteranceLimit`.
     public var utteranceLimit = UtteranceLimit()
     public var benchmark: SpeechdBenchmarkOptions?
@@ -54,7 +55,7 @@ public enum SpeechdOptionParser {
         var options = SpeechdLaunchOptions()
         var benchmarkEnabled = false
         var benchmarkSeconds: Int?
-        var benchmarkCadenceMilliseconds = 100
+        var benchmarkCadenceMilliseconds = 80
         var benchmarkWAVPath: String?
         var sawBenchmarkOnlyFlag: String?
         var iterator = arguments.makeIterator()

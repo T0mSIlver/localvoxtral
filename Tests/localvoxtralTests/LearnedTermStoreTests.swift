@@ -65,6 +65,40 @@ final class LearnedTermStoreTests: XCTestCase {
     /// A torn write or a hand edit starts over empty rather than refusing to
     /// start: losing what was learned costs a few dictations, refusing costs
     /// the feature.
+    /// What a worktree learned under its own key, before #652 or through a
+    /// hand fix keyed by the session's directory, is filed under the main
+    /// checkout when the store loads, and the file says so after a relaunch.
+    func testLoadFoldsAWorktreesProjectIntoItsMainCheckout() throws {
+        let fileURL = try makeFileURL()
+        let base = fileURL.deletingLastPathComponent().standardizedFileURL
+        let main = base.appendingPathComponent("repo")
+        let gitDir = main.appendingPathComponent(".git/worktrees/wt")
+        let worktree = main.appendingPathComponent(".claude/worktrees/wt")
+        for directory in [gitDir, worktree] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        try "../..\n".write(to: gitDir.appendingPathComponent("commondir"), atomically: true, encoding: .utf8)
+        try "gitdir: \(gitDir.path)\n".write(
+            to: worktree.appendingPathComponent(".git"), atomically: true, encoding: .utf8
+        )
+        let seeded = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        for _ in 0..<3 {
+            seeded.record(
+                observations("Voxtral"),
+                project: .init(key: worktree.path, name: "wt")
+            )
+        }
+        seeded.waitForPendingWrites()
+
+        let reopened = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        reopened.waitForPendingWrites()
+        XCTAssertEqual(reopened.snapshot().projects.map(\.key), [main.path])
+        XCTAssertEqual(reopened.confirmedTerms(projectKey: main.path), ["Voxtral"])
+
+        let written = LearnedTermStore.terms(fromFileContents: try Data(contentsOf: fileURL))
+        XCTAssertEqual(written.projects.map(\.key), [main.path])
+    }
+
     func testDamagedFileReadsAsEmpty() {
         XCTAssertEqual(LearnedTermStore.terms(fromFileContents: Data("{ not json".utf8)).termCount, 0)
     }

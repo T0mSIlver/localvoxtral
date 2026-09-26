@@ -162,6 +162,19 @@ public enum ClaudeWorkspaceReference: Sendable, Equatable, Hashable {
         }
     }
 
+    /// A remote workspace relabelled with the name its host gave the
+    /// session's repository (`X-Lvx-Env-Project`, #652), so every worktree
+    /// and subdirectory of one remote repository reads as one project. Self
+    /// when there is no such name, when it is not already a label under the
+    /// rule below (it is refused, not reshaped), or when this is a local
+    /// workspace: a remote header never renames a local path.
+    public func preferringRemoteProject(_ project: String?) -> ClaudeWorkspaceReference {
+        guard case .remoteOpaque = self, let project, !project.isEmpty,
+              Self.opaqueLabel(for: project) == project
+        else { return self }
+        return .remoteOpaque(label: project)
+    }
+
     /// Reduce a foreign path to a bare, separator-free name.
     ///
     /// Strips directories, then anything that could reconstitute a path or

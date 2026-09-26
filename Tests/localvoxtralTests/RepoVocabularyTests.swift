@@ -1,3 +1,4 @@
+@testable import ClaudeContextWire
 import Foundation
 import XCTest
 @testable import localvoxtral
@@ -625,7 +626,7 @@ final class RepoVocabularyIndexerEndToEndTests: XCTestCase {
             cache: RepoVocabularyCache(),
             rootSink: { root in reportedRoot.report(root) }
         )
-        guard case .root(let reported) = reportedRoot.value else {
+        guard case .root(let reported, _) = reportedRoot.value else {
             return XCTFail("the pipeline resolved a repo but reported \(reportedRoot.value)")
         }
         XCTAssertEqual(
@@ -656,6 +657,111 @@ final class RepoVocabularyIndexerEndToEndTests: XCTestCase {
             workingDirectoryForPID: { _ in nil }
         )
         XCTAssertEqual(titlePreferredEntries?.entries.first?.replaceWith, "useAuth.ts")
+    }
+
+    /// A git repo with no commits whose `.github/dictation.md` holds `terms`:
+    /// `ls-files` answers empty, so the file's terms are the whole vocabulary.
+    private func makeRepoWithDictationTerms(_ name: String, terms: String) throws -> URL {
+        let repo = FileManager.default.temporaryDirectory
+            .appendingPathComponent("repovocab-\(name)-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: repo) }
+        XCTAssertEqual(runGit(["init", "-b", "main"], in: repo), 0)
+        let github = repo.appendingPathComponent(".github")
+        try FileManager.default.createDirectory(at: github, withIntermediateDirectories: true)
+        try terms.write(
+            to: github.appendingPathComponent("dictation.md"), atomically: true, encoding: .utf8
+        )
+        return repo
+    }
+
+    /// The join named the session's directory; a title naming another repo
+    /// (another tab, a stale title) does not override it (#661).
+    func testAJoinedWorkspaceDecidesTheRepoOverTheTitle() async throws {
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: "/usr/bin/git"))
+        let titled = try makeRepoWithDictationTerms("titled", terms: "- Parakeet Stream\n")
+        let joined = try makeRepoWithDictationTerms("joined", terms: "- Voxtral Realtime\n")
+        let subdirectory = joined.appendingPathComponent("Sources/App")
+        try FileManager.default.createDirectory(at: subdirectory, withIntermediateDirectories: true)
+
+        let root = RepoVocabularyRootBox()
+        let outcome = await RepoVocabularyService.entries(
+            forWindowTitle: "user@mac: \(titled.path) — zsh",
+            joinedWorkspaceDirectory: subdirectory.path,
+            transcript: "ask voxtral realtime and parakeet stream",
+            cache: RepoVocabularyCache(),
+            rootSink: { root.report($0) }
+        )
+
+        let terms = outcome?.entries.map(\.replaceWith) ?? []
+        XCTAssertTrue(terms.contains("Voxtral Realtime"), "entries: \(terms)")
+        XCTAssertFalse(terms.contains("Parakeet Stream"), "entries: \(terms)")
+        guard case .root(let reported) = root.value else {
+            return XCTFail("the joined workspace's repo was not reported: \(root.value)")
+        }
+        XCTAssertEqual(
+            URL(fileURLWithPath: reported).standardizedFileURL.path,
+            joined.standardizedFileURL.path
+        )
+    }
+
+    /// A joined workspace outside any repo is the answer, not a reason to
+    /// guess from the title: no vocabulary, and "no repository" reported.
+    func testAJoinedWorkspaceOutsideARepoYieldsNoVocabulary() async throws {
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: "/usr/bin/git"))
+        let titled = try makeRepoWithDictationTerms("titled", terms: "- Parakeet Stream\n")
+        let plain = FileManager.default.temporaryDirectory
+            .appendingPathComponent("repovocab-plain-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: plain, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: plain) }
+
+        let root = RepoVocabularyRootBox()
+        let outcome = await RepoVocabularyService.entries(
+            forWindowTitle: "user@mac: \(titled.path) — zsh",
+            joinedWorkspaceDirectory: plain.path,
+            transcript: "ask parakeet stream",
+            cache: RepoVocabularyCache(),
+            rootSink: { root.report($0) }
+        )
+
+        XCTAssertNil(outcome)
+        XCTAssertEqual(root.value, .noRepository)
+    }
+
+    /// The Claude Desktop case end to end through the production pipeline: no
+    /// terminal PID and a target that is not a terminal, and the joined
+    /// workspace's `.github/dictation.md` still grounds the transcript.
+    @MainActor
+    func testThePipelineGroundsAJoinedWorkspaceWithoutATerminal() async throws {
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: "/usr/bin/git"))
+        let repo = try makeRepoWithDictationTerms("desktop", terms: "- Voxtral Realtime\n")
+        let pipeline = RepoVocabularyPipeline(
+            settings: makeSettings(),
+            commitTargetAppPID: { nil },
+            targetBundleID: { ClaudeDesktopAllowlist.bundleID }
+        )
+
+        let root = RepoVocabularyRootBox()
+        let outcome = await pipeline.grounding(
+            endpointURL: URL(string: "http://127.0.0.1:8080/v1/chat/completions")!,
+            transcript: "ask voxtral realtime",
+            joinedWorkspace: LocalWorkspacePath(verifiedLocal: repo.path),
+            repositoryRoot: root
+        )
+
+        XCTAssertEqual(outcome?.entries.map(\.replaceWith), ["Voxtral Realtime"])
+        guard case .root = root.value else {
+            return XCTFail("the joined workspace's repo was not reported: \(root.value)")
+        }
+
+        // The same dictation without the join has nothing to read.
+        let unjoined = await pipeline.grounding(
+            endpointURL: URL(string: "http://127.0.0.1:8080/v1/chat/completions")!,
+            transcript: "ask voxtral realtime",
+            joinedWorkspace: nil,
+            repositoryRoot: nil
+        )
+        XCTAssertNil(unjoined)
     }
 
     func testTitleClobberedAgentResolvesRepoFromTerminalDescendant() async throws {

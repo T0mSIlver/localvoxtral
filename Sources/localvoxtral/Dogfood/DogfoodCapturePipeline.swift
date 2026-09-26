@@ -49,6 +49,14 @@ final class DogfoodCaptureTap: Sendable {
 
     private let state = Mutex(State())
 
+    /// The join resolver and the herdr panel probe live in the core, which
+    /// can't see this tap, so they note abstentions through this sink.
+    private init() {
+        ClaudeJoinAbstentionTap.dogfoodSink.withLock {
+            $0 = { [self] cause in noteJoinAbstention(cause) }
+        }
+    }
+
     /// The generation a harvest note was created under. The repo-vocabulary
     /// pipeline is a DETACHED task racing `RepoVocabularyPipeline.deadline`
     /// (3 s at the time of writing); when the deadline

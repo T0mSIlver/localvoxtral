@@ -431,8 +431,7 @@ final class DictationViewModel {
             ?? BackendManager(
                 polishingModelProvider: { settings.resolvedManagedLLMPolishingModel },
                 speechModelProvider: { settings.resolvedManagedSpeechModel },
-                speechdCacheLimitProvider: { settings.speechdCacheLimit.megabytes },
-                speechdStepCadenceProvider: { settings.speechdStepCadence.milliseconds }
+                speechdCacheLimitProvider: { settings.speechdCacheLimit.megabytes }
             )
         self.managesRuntimeServices = startRuntimeServices
         let context = SessionContextResolver(settings: settings, textInsertion: textInsertion)
@@ -473,7 +472,8 @@ final class DictationViewModel {
                     metricsProvider: {
                         OverlayLayoutMetrics(
                             bodyFontSize: settings.overlayBufferFontSize,
-                            visibleLines: settings.overlayBufferVisibleLines)
+                            visibleLines: settings.overlayBufferVisibleLines,
+                            wordHold: settings.overlayBufferWordHold)
                     },
                     storedPlacementProvider: { settings.overlayBufferPlacement },
                     placementWriter: { settings.overlayBufferPlacement = $0 }

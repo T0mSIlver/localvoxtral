@@ -43,13 +43,17 @@ expect() {
 # What goes into the bundle, or runs in the packaging and smoke steps.
 expect true "an app source packages" Sources/localvoxtral/SettingsView.swift
 expect true "a bundled prompt packages" Sources/localvoxtral/Resources/Config/llm_polish.toml
-expect true "a markdown file under Sources packages" Sources/localvoxtral/Resources/Notes.md
+expect true "a markdown file under Resources packages" Sources/localvoxtral/Resources/Notes.md
+expect true "a markdown file in a nested Resources directory packages" \
+  Sources/localvoxtral/Resources/Config/README.md
 expect true "the manifest packages, even a target-only edit" Package.swift
 expect true "the lockfile packages" Package.resolved
 expect true "a PolishHelper source packages" PolishHelper/Sources/PolishHelperCore/PolishdRouter.swift
 expect true "a SpeechHelper manifest packages" SpeechHelper/Package.swift
 expect true "an icon packages" assets/icons/app/AppIcon.png
-expect true "the shipped Claude Code plugin packages, docs included" integrations/claude-code/README.md
+expect true "the shipped Claude Code plugin packages, docs included" \
+  integrations/claude-code/README.md
+expect true "the Claude Code plugin's agent guide ships too" integrations/claude-code/AGENTS.md
 expect true "the opencode plugin packages" integrations/opencode/localvoxtral.js
 expect true "package_app.sh packages" scripts/package_app.sh
 expect true "what cleans dist/ before packaging packages" scripts/ci/clean-stale-outputs.sh
@@ -74,6 +78,15 @@ expect false "a dev script does not" scripts/remote-build.sh scripts/try-pr.sh
 expect false "another workflow does not" .github/workflows/ui-smoke.yml .github/workflows/README.md
 expect false "a ci.yml edit outside the mac-lanes job does not" \
   --env LANE_MAC_LANES_JOB_CHANGED=false .github/workflows/ci.yml scripts/ci/test-dogfood-filter.sh
+expect false "an agent guide under Sources does not" \
+  Sources/localvoxtral/ClaudeContext/AGENTS.md Sources/localvoxtralCore/ClaudeContext/NOTES.md
+expect false "the opencode and vibe READMEs do not (their integrations ship named files)" \
+  integrations/opencode/README.md integrations/vibe/README.md
+expect true "a Swift file beside an agent guide still packages" \
+  Sources/localvoxtral/ClaudeContext/AGENTS.md Sources/localvoxtral/SettingsView.swift
+expect true "the opencode plugin itself still packages" \
+  integrations/opencode/README.md integrations/opencode/localvoxtral.js
+expect true "a vibe hook file still packages" integrations/vibe/hooks.toml
 expect false "docs and eval data do not" \
   docs/agent/test-tiers.md AGENTS.md EvalCorpus/agent-dictation/cases.jsonl
 

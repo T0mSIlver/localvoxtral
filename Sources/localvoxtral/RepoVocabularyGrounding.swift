@@ -1,16 +1,22 @@
+import ClaudeContextWire
 import Foundation
 import Synchronization
 
 /// The repository vocabulary a commit grounds against: the entries the
-/// terminal's working directory offers for this transcript, and the git root
-/// it resolved (the learned-terms project key). The production pipeline
-/// walks the commit target's window title and git index off the main actor
-/// under a deadline; a test fake answers from memory.
+/// working directory offers for this transcript, and the git root it
+/// resolved (the learned-terms project key). The directory is a joined local
+/// session's workspace when the dictation has one, else the terminal's. The
+/// production pipeline walks it, or the commit target's window title, and
+/// the git index off the main actor under a deadline; a test fake answers
+/// from memory.
 protocol RepoVocabularyGrounding: AnyObject {
+    /// - Parameter joinedWorkspace: the workspace of the local session this
+    ///   dictation joined. A remote session has none, by type.
     @MainActor
     func grounding(
         endpointURL: URL,
         transcript: String,
+        joinedWorkspace: LocalWorkspacePath?,
         repositoryRoot: RepoVocabularyRootBox?
     ) async -> RepoVocabularyMatcher.GroundingOutcome?
 }
@@ -59,8 +65,9 @@ final class RepoVocabularyPipeline: RepoVocabularyGrounding {
     }
 
     /// Repo-vocabulary grounding: harvests file names / path components /
-    /// the branch from the git repo in the focused terminal and returns the
-    /// transcript-relevant ones as replacement entries.
+    /// the branch from the git repo of the joined local session, or else of
+    /// the focused terminal, and returns the transcript-relevant ones as
+    /// replacement entries.
     ///
     /// The consent gates (setting on, permitted endpoint) are NOT here: they
     /// sit above, in `PolishContextGatherer.repoVocabularyGroundingIfEnabled`,
@@ -91,6 +98,7 @@ final class RepoVocabularyPipeline: RepoVocabularyGrounding {
     func grounding(
         endpointURL: URL,
         transcript: String,
+        joinedWorkspace: LocalWorkspacePath? = nil,
         repositoryRoot: RepoVocabularyRootBox? = nil
     ) async -> RepoVocabularyMatcher.GroundingOutcome? {
         guard inFlight.acquire() else {
@@ -98,7 +106,9 @@ final class RepoVocabularyPipeline: RepoVocabularyGrounding {
             return nil
         }
         guard let pipelineTask = makePipelineTask(
-            transcript: transcript, repositoryRoot: repositoryRoot
+            transcript: transcript,
+            joinedWorkspace: joinedWorkspace,
+            repositoryRoot: repositoryRoot
         ) else {
             inFlight.release()
             return nil
@@ -161,17 +171,33 @@ final class RepoVocabularyPipeline: RepoVocabularyGrounding {
     }
 
     /// The detached focused-title/terminal-PID -> cwd -> index -> match
-    /// pipeline as a task. A title is optional because foreground terminal
+    /// pipeline as a task. A joined local workspace replaces the title and
+    /// the process walk, so neither the AX read nor a terminal PID is needed
+    /// for it. Otherwise a title is optional because foreground terminal
     /// programs commonly overwrite it; the captured terminal app PID enables
     /// the conservative descendant-CWD fallback. Split out so the deadline
     /// race above stays readable and the DEBUG pipeline seam replaces exactly
     /// the detached section (keeping the race in play for deadline tests).
     private func makePipelineTask(
         transcript: String,
+        joinedWorkspace: LocalWorkspacePath?,
         repositoryRoot: RepoVocabularyRootBox? = nil
     ) -> Task<RepoVocabularyMatcher.GroundingOutcome?, Never>? {
         if let pipeline {
             return Self.detachedRepoVocabularyPipeline { await pipeline(transcript) }
+        }
+        let cache = cache
+        if let joinedWorkspace {
+            let directory = joinedWorkspace.path
+            return Self.detachedRepoVocabularyPipeline {
+                await RepoVocabularyService.entries(
+                    forWindowTitle: nil,
+                    joinedWorkspaceDirectory: directory,
+                    transcript: transcript,
+                    cache: cache,
+                    rootSink: { root in repositoryRoot?.report(root) }
+                )
+            }
         }
         guard let terminalApplicationPID = commitTargetAppPID() else {
             Log.polishing.info("Repo vocabulary: no terminal application PID available")
@@ -193,7 +219,6 @@ final class RepoVocabularyPipeline: RepoVocabularyGrounding {
             // unrelated repos; never treat those as a focused-terminal signal.
             processFallbackPID = nil
         }
-        let cache = cache
         return Self.detachedRepoVocabularyPipeline {
             await RepoVocabularyService.entries(
                 forWindowTitle: title,
@@ -244,8 +269,15 @@ final class RepoVocabularyRootBox: @unchecked Sendable {
 
     /// Nil means the pipeline resolved no repository, which is not the same as
     /// never reporting — see `LearnedTermProjectResolver.RepositoryRoot`.
-    func report(_ root: String?) {
-        outcome.withLock { $0 = root.map { .root($0) } ?? .noRepository }
+    ///
+    /// Called from the pipeline's detached task, so reading a worktree's
+    /// `.git` file for its main checkout happens here, off the main actor and
+    /// under the pipeline's deadline, never on the commit path.
+    func report(_ root: String?, fileManager: FileManager = .default) {
+        let resolved: LearnedTermProjectResolver.RepositoryRoot = root.map {
+            .root($0, mainCheckout: RepoIndexing.mainCheckout(ofRoot: $0, fileManager: fileManager))
+        } ?? .noRepository
+        outcome.withLock { $0 = resolved }
     }
 }
 

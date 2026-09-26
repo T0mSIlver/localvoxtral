@@ -323,7 +323,7 @@ def production_v2_system_prompt(system: str) -> str:
 # The Swift constants PolishReferenceGuide interpolates: (file, constant).
 REFERENCE_GUIDE_LABELS = {
     "PolishContextClipboardReader.contextMessageInstruction": (
-        "../localvoxtralCore/PolishContextClipboardReader.swift", "contextMessageInstruction"),
+        "PolishContextClipboardReader.swift", "contextMessageInstruction"),
     "TerminalScreenContext.contextMessageInstruction": (
         "TerminalScreenContext.swift", "contextMessageInstruction"),
     "ClaudeContextInstructions.repositoryInstruction": (
@@ -331,17 +331,17 @@ REFERENCE_GUIDE_LABELS = {
     "ClaudeContextInstructions.sessionInstruction": (
         "ClaudeContext/ClaudeContextBlocks.swift", "sessionInstruction"),
     "RepoVocabularyMatcher.repositoryVocabularyHeader": (
-        "../localvoxtralCore/RepoVocabularyMatcher.swift", "repositoryVocabularyHeader"),
+        "RepoVocabularyMatcher.swift", "repositoryVocabularyHeader"),
     "RepoVocabularyMatcher.clipboardVocabularyHeader": (
-        "../localvoxtralCore/RepoVocabularyMatcher.swift", "clipboardVocabularyHeader"),
+        "RepoVocabularyMatcher.swift", "clipboardVocabularyHeader"),
     "RepoVocabularyMatcher.terminalScreenVocabularyHeader": (
-        "../localvoxtralCore/RepoVocabularyMatcher.swift", "terminalScreenVocabularyHeader"),
+        "RepoVocabularyMatcher.swift", "terminalScreenVocabularyHeader"),
     "RepoVocabularyMatcher.claudeSessionVocabularyHeader": (
-        "../localvoxtralCore/RepoVocabularyMatcher.swift", "claudeSessionVocabularyHeader"),
+        "RepoVocabularyMatcher.swift", "claudeSessionVocabularyHeader"),
     "RepoVocabularyMatcher.learnedVocabularyHeader": (
-        "../localvoxtralCore/RepoVocabularyMatcher.swift", "learnedVocabularyHeader"),
+        "RepoVocabularyMatcher.swift", "learnedVocabularyHeader"),
     "RepoVocabularyMatcher.verificationCandidatesHeader": (
-        "../localvoxtralCore/RepoVocabularyMatcher.swift", "verificationCandidatesHeader"),
+        "RepoVocabularyMatcher.swift", "verificationCandidatesHeader"),
 }
 
 
@@ -359,7 +359,7 @@ def reference_guide() -> str:
 
     The app appends it to every system prompt; a Swift test pins this
     rendering to the constant byte for byte."""
-    sources = ROOT / "Sources/localvoxtral"
+    sources = ROOT / "Sources/localvoxtralCore"
     values: dict[str, str] = {}
     for qualified, (file, name) in REFERENCE_GUIDE_LABELS.items():
         text = (sources / file).read_text(encoding="utf-8")

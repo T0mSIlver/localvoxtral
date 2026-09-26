@@ -37,9 +37,23 @@ final class LearnedTermStore: @unchecked Sendable {
         self.onChange = onChange
         if fileURL != nil {
             writeQueue.async { [self] in
-                let loaded = loadFromDisk()
-                state.withLock { state in
-                    if state.terms == nil { state.terms = loaded }
+                var loaded = loadFromDisk()
+                // Every launch, not once: a hand fix in a worktree is keyed by
+                // the joined session's directory (the commit path may not read
+                // `.git`), and this is where it reaches the main checkout.
+                // Idempotent, so a file with nothing to fold is not rewritten.
+                let folded = loaded.foldWorktreesIntoMainCheckouts(now: now())
+                let adopted = state.withLock { state in
+                    guard state.terms == nil else { return false }
+                    state.terms = loaded
+                    return true
+                }
+                if folded > 0, adopted {
+                    Log.polishing.info(
+                        "Learned terms: folded \(folded, privacy: .public) worktree projects into their main checkouts"
+                    )
+                    write(loaded)
+                    onChange?()
                 }
             }
         }

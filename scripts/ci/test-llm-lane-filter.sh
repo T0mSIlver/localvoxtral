@@ -4,9 +4,9 @@
 # files, so it runs anywhere (hosted fork PRs included).
 #
 # Not a mirror of the whole pattern list: it pins the decisions that were
-# bugs or near-misses — model-input integrations (the opencode plugin
-# shipped without a pattern, PR #204 review), the marker path, and the
-# run=false side that keeps UI/doc-only diffs off the live-model lane.
+# bugs or near-misses, or owner calls — the join, hook and integration paths
+# the lane executes none of (#643), the marker path, and the run=false side
+# that keeps UI/doc-only diffs off the live-model lane.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd -P)"
@@ -62,30 +62,49 @@ expect() {
   printf 'PASS: %s (%s)\n' "$description" "$reason"
 }
 
-# --- Model-input integrations ---------------------------------------------
-# Both agent plugins shape what reaches the polish model (prompt extraction,
-# cwd, file grounding); a plugin-only diff must run the lane.
+# --- The join, the hooks and the integrations (owner call, #643) -----------
+# The lane executes none of them; PolishRequestGoldenTests pins what a join
+# hands the request. Each of these used to run the lane.
 
-expect true "opencode plugin change runs the lane" \
-  integrations/opencode/localvoxtral.js
-expect true "opencode integration docs stay lane-relevant (claude-code parity)" \
-  integrations/opencode/README.md
-expect true "claude-code plugin change runs the lane" \
-  integrations/claude-code/plugins/localvoxtral/hooks/hooks.json
+expect false "an agent plugin change does not run the lane" \
+  integrations/opencode/localvoxtral.js \
+  integrations/claude-code/plugins/localvoxtral/hooks/hooks.json \
+  integrations/vibe/README.md
+expect false "the hook publishers and parsers do not run the lane" \
+  Sources/ClaudeHookPublisherCore/ClaudeHookPublisher.swift \
+  Sources/ClaudeContextWire/ClaudeHookWire.swift \
+  Sources/ClaudeContextWire/ClaudeHookInputParser.swift
+expect false "the join resolver, registry and broker do not run the lane" \
+  Sources/localvoxtralCore/ClaudeContext/ClaudeSessionJoinResolver.swift \
+  Sources/localvoxtralCore/ClaudeContext/ClaudeSessionRegistry.swift \
+  Sources/localvoxtralCore/ClaudeContext/ClaudeContextBroker.swift \
+  Sources/localvoxtralCore/ClaudeContext/TerminalScreenClaudeJoin.swift
+expect false "what decides which session the context comes from does not run the lane" \
+  Sources/localvoxtralCore/ClaudeSocketGuard.swift \
+  Sources/localvoxtralCore/ClaudeDesktopAllowlist.swift \
+  Sources/localvoxtralCore/BrowserTabAllowlist.swift \
+  Sources/localvoxtralCore/ClaudeBridgeSessionURL.swift \
+  Sources/localvoxtralCore/ClaudeDesktopSessionURL.swift \
+  Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteContextListener.swift \
+  Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteListenerCoordinator.swift \
+  Sources/localvoxtralCore/ClaudeContext/CmuxSocketPasswordStore.swift
+# What shapes the bytes of a Claude block still runs it.
+expect true "the repository harvest runs the lane" \
+  Sources/localvoxtralCore/ClaudeContext/ClaudeRepoCollector.swift
+expect true "the block framing runs the lane" \
+  Sources/localvoxtralCore/ClaudeContext/ClaudeContextBlocks.swift
+expect true "a multiplexer pane's excerpt runs the lane" \
+  Sources/localvoxtralCore/ClaudeContext/SocketPaneScreenContext.swift
+expect true "the snapshot the session block renders from runs the lane" \
+  Sources/localvoxtralCore/ClaudeSessionState.swift
 
 # Split out of files the lane already watched; they still shape the context.
 expect true "the screen text rules, split from the AX reader, run the lane" \
-  Sources/localvoxtral/TerminalScreenText.swift
-expect true "the browser allowlist, split from the tab url reader, runs the lane" \
-  Sources/localvoxtral/BrowserTabAllowlist.swift
+  Sources/localvoxtralCore/TerminalScreenText.swift
 expect true "the git runner, split from repo vocabulary, runs the lane" \
-  Sources/localvoxtral/RepoGitRunner.swift
-expect true "the socket guard, moved to the core target, runs the lane" \
-  Sources/localvoxtralCore/ClaudeSocketGuard.swift
-expect true "the Claude Desktop allowlist, split from its reader, runs the lane" \
-  Sources/localvoxtral/ClaudeDesktopAllowlist.swift
+  Sources/localvoxtralCore/RepoGitRunner.swift
 expect false "the forward process seam, split from the supervisor, stays exempt" \
-  Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardProcess.swift
+  Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardProcess.swift
 
 # --- Marker opt-in ----------------------------------------------------------
 
@@ -141,28 +160,24 @@ expect true "a longer marker name is not the skip marker" \
 
 # --- The ClaudeContext exemption list (#418) --------------------------------
 expect false "an enrollment change does not run the lane" \
-  Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService.swift
+  Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService.swift
 expect false "the enrollment service's split-out files do not run the lane" \
-  Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+Verification.swift \
-  Sources/localvoxtral/ClaudeContext/ClaudeRemoteSSHConfigFileSystem.swift
+  Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+Verification.swift \
+  Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteSSHConfigFileSystem.swift
 expect false "a settings-model plus forward-supervisor change does not run the lane" \
   Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel.swift \
   Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardSupervisor.swift
 expect false "the settings model's files by area do not run the lane" \
   "Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+SetupRun.swift" \
-  Sources/localvoxtral/ClaudeContext/ClaudeShellSetupStatus.swift \
-  Sources/localvoxtral/ClaudeContext/HerdrMachineImport.swift
-expect true "an exempt file beside a join change still runs the lane" \
-  Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService.swift \
-  Sources/localvoxtral/ClaudeContext/SSHDestinationTTYProbe.swift
+  Sources/localvoxtralCore/ClaudeContext/ClaudeShellSetupStatus.swift \
+  Sources/localvoxtralCore/ClaudeContext/HerdrMachineImport.swift
+expect true "an exempt file beside a content change still runs the lane" \
+  Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService.swift \
+  Sources/localvoxtralCore/ClaudeContext/ClaudeRepoContextSelection.swift
 expect true "a NEW file in ClaudeContext runs the lane until it is exempted" \
   Sources/localvoxtral/ClaudeContext/SomethingNobodyClassifiedYet.swift
-expect true "what reads a screen or accepts a hook record is not exempt" \
-  Sources/localvoxtral/ClaudeContext/ClaudeRemoteContextListener.swift
-expect true "what evicts sessions from the registry is not exempt" \
-  Sources/localvoxtral/ClaudeContext/ClaudeRemoteListenerCoordinator.swift
-expect true "what decides whether the cmux join arm authenticates is not exempt" \
-  Sources/localvoxtral/ClaudeContext/CmuxSocketPasswordStore.swift
+expect true "a NEW file in the core's ClaudeContext runs the lane too" \
+  Sources/localvoxtralCore/ClaudeContext/SomethingNobodyClassifiedYet.swift
 
 # Every exempt path must exist (a rename must not leave a dead exemption that a
 # new file of the old name would inherit), and the catch-all must be the ONLY
@@ -182,6 +197,7 @@ while IFS= read -r exempt; do
   [[ -e "$ROOT_DIR/$exempt" ]] || fail "exempt path does not exist: $exempt"
   while IFS= read -r pattern; do
     [[ "$pattern" == 'Sources/localvoxtral/ClaudeContext/*' ]] && continue
+    [[ "$pattern" == 'Sources/localvoxtralCore/ClaudeContext/*' ]] && continue
     # shellcheck disable=SC2254
     case "$exempt" in
       $pattern) fail "exempt path $exempt is also asked for by pattern $pattern" ;;
@@ -230,12 +246,6 @@ expect true "the context budget in the core target runs the lane" \
   Sources/localvoxtralCore/PolishContextBudget.swift
 expect true "the cross-source grounding merge in the core target runs the lane" \
   Sources/localvoxtralCore/PolishContextGrounding.swift
-# The strict join-URL parsers moved to the core target and still run the
-# lane: which session (if any) the Claude context comes from.
-expect true "the bridge session URL parser in the core target runs the lane" \
-  Sources/localvoxtralCore/ClaudeBridgeSessionURL.swift
-expect true "the desktop session URL parser in the core target runs the lane" \
-  Sources/localvoxtralCore/ClaudeDesktopSessionURL.swift
 # Test files run the lane only when they are its own suite or the eval harness
 # (#545: test-target moves bought live inference through the name globs).
 expect false "a unit test named after a polish type does not run the lane" \
@@ -255,7 +265,9 @@ expect true "the e2e eval harness runs the lane" \
 expect true "the e2e corpus loader runs the lane" \
   Tests/localvoxtralTests/AgentDictationEvalCorpus.swift
 expect true "the harness's TTS and ASR stage runs the lane" \
-  Tests/localvoxtralTests/TestSupport/EvalSpeechStage.swift
+  Tests/localvoxtralTestSupport/EvalSpeechStage.swift
+expect true "the harness's recording reader runs the lane" \
+  Tests/localvoxtralTestSupport/RecordedAudioSet.swift
 expect true "the source a test covers still runs the lane" \
   Tests/localvoxtralTests/PolishTokenGuardTests.swift \
   Sources/localvoxtralCore/PolishTokenGuard.swift

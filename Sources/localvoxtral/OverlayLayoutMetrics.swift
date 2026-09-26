@@ -11,7 +11,9 @@ import SwiftUI
 /// (`SettingsStore.overlayBufferFontSize`). All other fonts and the panel
 /// width scale proportionally so the buffer keeps its shape at any size.
 /// A second setting (`SettingsStore.overlayBufferVisibleLines`) sets how many
-/// body lines show before the text scrolls.
+/// body lines show before the text scrolls, and a third
+/// (`SettingsStore.overlayBufferWordHold`) whether the overlay writes its own
+/// line breaks to keep a word still being dictated on its line.
 struct OverlayLayoutMetrics: Equatable {
     /// The body font size the fixed-size overlay historically used; scale 1.0.
     static let baseBodyFontSize: CGFloat = 13
@@ -25,10 +27,16 @@ struct OverlayLayoutMetrics: Equatable {
 
     let bodyFontSize: CGFloat
     let visibleLines: Int
+    let wordHold: OverlayWordHold
 
-    init(bodyFontSize: Double, visibleLines: Int = defaultVisibleLines) {
+    init(
+        bodyFontSize: Double,
+        visibleLines: Int = defaultVisibleLines,
+        wordHold: OverlayWordHold = .off
+    ) {
         self.bodyFontSize = CGFloat(Self.clampedBodyFontSize(bodyFontSize))
         self.visibleLines = Self.clampedVisibleLines(visibleLines)
+        self.wordHold = wordHold
     }
 
     static func clampedBodyFontSize(_ size: Double) -> Double {
@@ -81,9 +89,12 @@ struct OverlayLayoutMetrics: Equatable {
     }
 
     /// Room a word still being streamed needs to start a line mid-way through
-    /// it. Ten lowercase letters: long enough to cover the great majority of
-    /// words, short enough that the ragged right edge it costs stays subtle.
-    var liveWordReserveWidth: CGFloat { bodyTextWidth(of: "abcdefghij") }
+    /// it: `letters` lowercase letters, the length the user chose in
+    /// `OverlayWordHold`. The ragged right edge it costs is up to that wide.
+    func liveWordReserveWidth(letters: Int) -> CGFloat {
+        let alphabet = "abcdefghijklmnopqrstuvwxyz"
+        return bodyTextWidth(of: String(alphabet.prefix(letters)))
+    }
 
     /// Width the body text gets once the buffer scrolls. The body's
     /// `ScrollView` then takes a scroller's width off its content, even with
@@ -96,11 +107,13 @@ struct OverlayLayoutMetrics: Equatable {
     }
 
     /// A wrapper that breaks lines at `bodyTextWrapWidth` — see
-    /// `OverlayStableLineWrapper` for why the overlay wraps its own text.
-    func makeStableLineWrapper() -> OverlayStableLineWrapper {
-        OverlayStableLineWrapper(
+    /// `OverlayStableLineWrapper` for why the overlay can wrap its own text.
+    /// Nil when `wordHold` is off: SwiftUI then wraps at the full width.
+    func makeStableLineWrapper() -> OverlayStableLineWrapper? {
+        guard let letters = wordHold.letters else { return nil }
+        return OverlayStableLineWrapper(
             availableWidth: bodyTextWrapWidth,
-            reserveWidth: liveWordReserveWidth,
+            reserveWidth: liveWordReserveWidth(letters: letters),
             widthOf: bodyTextWidth(of:)
         )
     }

@@ -37,12 +37,14 @@ SKIP_MARKER='skip-llm-eval'
 # in-flight branches (EvalCorpus, RepoVocabulary, clipboard context); an
 # unmatched pattern costs nothing.
 #
-# The Claude Code context paths ARE here as of the branch that first fed them
-# into a prompt: the joined session's repository contents, its prior user
-# prompt, and the marker join that decides which session (if any) those come
-# from all now alter what reaches the model. The registry/broker/transport are
-# included with them — they are what the join resolves against, so a change to
-# session liveness or workspace trust changes which repo gets attached.
+# The Claude Code context paths here are the ones that shape the CONTENT of
+# the Claude blocks: what repository text is harvested and selected, how the
+# blocks are framed, what screen text becomes the excerpt. The join (which
+# session, if any, the context comes from), the hook publishers and parsers,
+# the broker and registry, and the agent integrations are NOT here (owner call,
+# #643): the live lane replays a fixed corpus through LLMPolishingService and
+# executes none of them, and PolishRequestGoldenTests pins what a join hands
+# the request (docs/agent/test-tiers.md, "When must the LLM lanes run?").
 PATTERNS=(
   'PolishHelper/*'                                   # helper engine, server, its own package
   'Sources/localvoxtral/Resources/Config/llm_*.toml' # bundled polish prompts
@@ -70,34 +72,14 @@ PATTERNS=(
   '*ClaudeRepoContextSelection*'                     # WHICH repo sections/lines reach the model
   '*ClaudeRepoContextPreparation*'                   # repo matching + selection over the harvest
   '*ClaudeContextBlocks*'                            # the repo/session prompt blocks and their framing
-  '*TerminalScreenClaudeJoin*'                       # which session (if any) the context comes from
-  '*ClaudeSessionRegistry*'                          # session liveness: what the join resolves against
+  '*SocketPaneScreenContext*'                        # a herdr or cmux pane's text: the excerpt's bytes on those joins
   '*ClaudeSessionState*'                             # the snapshot the session block renders from
-  '*ClaudeTransportOrigin*'                          # workspace trust: whether a cwd can be read at all
-  '*ClaudeBridgeSessionURL*'                         # strict parse of the Remote Control join URL (also core: ClaudeSessionPageURL)
-  '*ClaudeDesktopSessionURL*'                        # strict parse of the Claude Desktop join URL
-  '*ClaudeSocketGuard*'                              # who may hand the broker a hook record at all
   'Sources/localvoxtral/ClaudeContext/*'             # every gate/collector/renderer feeding the Claude blocks
-  '*ClaudeContextBroker*'                            # the socket that feeds the registry
-  '*ClaudeHookWire*'                                 # the record shape the snapshot is reduced from
-  '*ClaudeHookInputParser*'                          # which hook fields become session state
-  '*ClaudeHookPublisher*'                            # the identity metadata (tty/pid/herdr pane) joins key on
-  'integrations/claude-code/*'                       # the plugin that publishes those hooks
-  'integrations/opencode/*'                          # the opencode publisher: prompt extraction, cwd, file grounding
-  'integrations/vibe/*'                              # the Vibe hooks: which events publish, and through which shim
-  '*VibeHookInputParser*'                            # which Vibe hook fields become session state
-  '*VibeTranscriptPrompt*'                           # the prior prompt, read from Vibe's session log
-  '*VibeHookPublisher*'                              # the Vibe pid/tty the joins key on
-  '*ClaudeRemoteAgent*'                              # which agent a remote session is filed under
+  'Sources/localvoxtralCore/ClaudeContext/*'         # the same, moved to the core so it builds on Linux (#591)
   '*TerminalScreenContext*'                          # screen context source/policy feeding the prompt
   '*TerminalScreenAXReader*'                         # the AX screen read: which pane's text becomes the excerpt
   '*TerminalScreenText*'                             # screen text sanitization/compaction: the excerpt's exact bytes
   '*TerminalScreenAppleScriptReader*'                # iTerm2/Terminal.app focused-pane contents: the excerpt's exact bytes
-  '*TerminalFocusedTTYReader*'                       # per-terminal tty readers: which session the context comes from
-  '*BrowserTabURLReader*'                            # per-browser focused-tab url reads: which session the context comes from
-  '*BrowserTabAllowlist*'                            # which browsers may be asked for that url at all
-  '*ClaudeDesktopSessionReader*'                     # Claude Desktop focused web view address: which session the context comes from
-  '*ClaudeDesktopAllowlist*'                         # which app may be asked for that address at all
   '*SessionContextResolver*'                        # the context gates themselves (#432 step 4b)
   '*PolishRequestAssembler*'                        # sections, pre-application, prompts, blocks (#432 step 5)
   '*PolishOutcomeClassifier*'                       # placeholder integrity, failure copy (#432 step 5)
@@ -110,6 +92,7 @@ PATTERNS=(
   '*AgentDictationE2EEval*'                          # agent-dictation E2E eval harness (suite + support + its unit tests)
   '*AgentDictationEvalCorpus*'                       # the E2E corpus loader/schema
   '*EvalSpeechStage*'                                # the E2E harness's TTS and ASR stage, shared with term recall
+  '*RecordedAudioSet*'                               # the E2E harness's human-recording reader, shared with term recall
   '*EvalCorpus/*'                                    # standalone eval corpora
 )
 
@@ -126,6 +109,7 @@ LANE_TEST_PATTERNS=(
   '*AgentDictationE2EEval*'
   '*AgentDictationEvalCorpus*'
   '*EvalSpeechStage*'
+  '*RecordedAudioSet*'
 )
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
@@ -136,23 +120,19 @@ fi
 CHANGED_FILES_FILE="$1"
 MARKER_TEXT_FILE="${2:-}"
 
-# Files under the ClaudeContext catch-all that install, configure or keep a
-# tunnel open, and neither read context nor decide which session it comes
-# from. The live lane replays the eval corpus through the packaged helper, so
-# it cannot see a change to any of them, and between them they were most of why
-# the lane ran in 60 % of mac-lanes runs (#418): live 4B inference on the
-# owner's MacBook for an enrollment or settings diff.
+# Files under the ClaudeContext catch-alls that neither shape the content of
+# the Claude blocks nor read a screen or a repository: installs, settings,
+# tunnels, and (owner call, #643) the join and hook plumbing that decides
+# WHICH session the context comes from. The live lane replays the eval corpus
+# through the packaged helper, so it cannot see a change to any of them, and
+# PolishRequestGoldenTests pins what a join hands the request.
 #
 # An EXEMPTION list under a catch-all, not an allowlist in its place, so a new
-# file in that directory runs the lane until someone decides it should not.
+# file in those directories runs the lane until someone decides it should not.
 # A file belongs here only if NO other pattern above matches it
-# (test-llm-lane-filter.sh checks that), and only if the answer to "can this
-# change what reaches the model, or which session's context does" is no:
-# anything that resolves a join, reads a screen or a repository, or accepts or
-# rejects a hook record stays out. Two that look like plumbing and are not:
-# ClaudeRemoteListenerCoordinator evicts remote sessions from the registry the
-# join resolves against, and CmuxSocketPasswordStore decides whether the cmux
-# client authenticates, which decides whether that join arm resolves at all.
+# (test-llm-lane-filter.sh checks that), and only if it cannot change the
+# bytes of a block: anything that harvests, selects, frames or sanitizes
+# repository or screen text stays out.
 EXEMPT=(
   'Sources/localvoxtral/ClaudeContext/AGENTS.md'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel.swift'  # Settings pane model, and its files by area
@@ -174,45 +154,84 @@ EXEMPT=(
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Statusline.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Verification.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Vibe.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationActionAttempts.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudePluginInstalling.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeShellSetupStatus.swift'
-  'Sources/localvoxtral/ClaudeContext/RemoteHostSetupRun.swift'
-  'Sources/localvoxtral/ClaudeContext/HerdrMachineImport.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationLiveIO.swift'         # its process/file seams
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService.swift'   # one-time host setup over ssh
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+Types.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+Plan.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+SSHConfig.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteSetup.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+RemotePlugin.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteEnvironment.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteHerdr.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+LocalHerdrPanel.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+Verification.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteSSHConfigFileSystem.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeLocalHerdrConfigFileSystem.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentLiveIO.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudePluginInstallService.swift'      # `claude plugin` install/update
-  'Sources/localvoxtral/ClaudeContext/ClaudePluginListing.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudePluginStatus.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudePluginAssets.swift'              # locates the bundled marketplace
-  'Sources/localvoxtral/ClaudeContext/ClaudeMarketplaceMirror.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudePublisherPointer.swift'
-  'Sources/localvoxtral/ClaudeContext/OpencodePluginInstallService.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeStatuslineInstallService.swift'  # status line indicator
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationActionAttempts.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudePluginInstalling.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeShellSetupStatus.swift'
+  'Sources/localvoxtralCore/ClaudeContext/RemoteHostSetupRun.swift'
+  'Sources/localvoxtralCore/ClaudeContext/HerdrMachineImport.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationLiveIO.swift'         # its process/file seams
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService.swift'   # one-time host setup over ssh
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+Types.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+Plan.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+SSHConfig.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteSetup.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+RemotePlugin.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteEnvironment.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteHerdr.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+LocalHerdrPanel.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+Verification.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteSSHConfigFileSystem.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeLocalHerdrConfigFileSystem.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentLiveIO.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudePluginInstallService.swift'      # `claude plugin` install/update
+  'Sources/localvoxtralCore/ClaudeContext/ClaudePluginListing.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudePluginStatus.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudePluginAssets.swift'              # locates the bundled marketplace
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeMarketplaceMirror.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudePublisherPointer.swift'
+  'Sources/localvoxtralCore/ClaudeContext/OpencodePluginInstallService.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeStatuslineInstallService.swift'  # status line indicator
   'Sources/localvoxtralCore/ClaudeStatuslineCombine.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeShellRCSetup.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeShellRCSetup.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardCoordinator.swift'  # keeping the ssh forward alive
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardLiveProcess.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardOrphanReaper.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardOwnership.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardPidLedger.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardPort.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardLiveProcess.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardOrphanReaper.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardOwnership.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardPidLedger.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardPort.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardSupervisor.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardProcess.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteTokenRedaction.swift'      # log redaction
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardProcess.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteTokenRedaction.swift'      # log redaction
   'Sources/localvoxtral/ClaudeContext/ClaudeSurfaceProbeCommand.swift'       # the --probe-surface CLI wrapper
+  # The join and hook plumbing (owner call, #643)
+  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteHerdrForward.swift'
+  'Sources/localvoxtral/ClaudeContext/CmuxSocketClient+RunningApplication.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeContextBroker.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeJoinAbstentionTap.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteContextListener.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteHerdrForwarding.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteHostRegistry.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteListenerCoordinator.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteRejection.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeSessionJoinResolver+BrowserTab.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeSessionJoinResolver+Cmux.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeSessionJoinResolver+DesktopSession.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeSessionJoinResolver+FederatedHerdr.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeSessionJoinResolver+Herdr.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeSessionJoinResolver+PlainSSH.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeSessionJoinResolver+RemoteHerdr.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeSessionJoinResolver+RemoteLocalTTY.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeSessionJoinResolver.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeSessionJoinSummary.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeSessionRegistry.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeSessionStore.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeSurfaceProbe.swift'
+  'Sources/localvoxtralCore/ClaudeContext/CmuxSocketClient.swift'
+  'Sources/localvoxtralCore/ClaudeContext/CmuxSocketPasswordStore.swift'
+  'Sources/localvoxtralCore/ClaudeContext/CmuxSurfaceQuerying.swift'
+  'Sources/localvoxtralCore/ClaudeContext/HerdrClientTTYProbe.swift'
+  'Sources/localvoxtralCore/ClaudeContext/HerdrMachineFederation.swift'
+  'Sources/localvoxtralCore/ClaudeContext/HerdrPanelBindingProbe.swift'
+  'Sources/localvoxtralCore/ClaudeContext/HerdrSocketClient.swift'
+  'Sources/localvoxtralCore/ClaudeContext/MarkedTextBlock.swift'
+  'Sources/localvoxtralCore/ClaudeContext/SSHDestinationCanonicalizer.swift'
+  'Sources/localvoxtralCore/ClaudeContext/SSHDestinationTTYProbe.swift'
+  'Sources/localvoxtralCore/ClaudeContext/SSHProcessSocketReader.swift'
+  'Sources/localvoxtralCore/ClaudeContext/TerminalScreenClaudeJoin.swift'
+  'Sources/localvoxtralCore/ClaudeContext/TerminalScreenClaudeJoinAuthorizer.swift'
+  'Sources/localvoxtralCore/ClaudeContext/VibeHooksBlockEditor.swift'
+  'Sources/localvoxtralCore/ClaudeContext/VibeHooksInstallService.swift'
+  'Sources/localvoxtralCore/ClaudeContext/VibeRemoteHooksSetup.swift'
 )
 
 if [[ ! -f "$CHANGED_FILES_FILE" ]]; then

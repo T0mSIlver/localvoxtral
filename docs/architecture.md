@@ -65,7 +65,20 @@ the app hands it the resource bundle, and on Linux it hashes with
 (`LiveReplacementCorrector`, `LiveHoldBackReplacementStream`), and the Claude
 socket guard (`ClaudeSocketGuard`: `getpeereid` and `LOCAL_PEERPID` on Darwin,
 `SO_PEERCRED` on Linux), with the SHA-256 and HMAC helpers the Claude code
-hashes through, and the `RealtimeClient` protocol and its event types.
+hashes through, and the realtime clients: the `RealtimeClient` protocol, its
+event types and both websocket clients (#637). On Linux they speak through
+`FoundationNetworking`, whose upgrade and cancel differ from Apple's; the base
+client's comments say how. The Mistral client reports usage through
+`MistralRealtimeUsageRecording`, so the ledger and its price table stay in the
+app.
+`Sources/localvoxtralCore/ClaudeContext` holds the part of the Claude context
+path that needs no AppKit (#591): the join resolver and its arms, the session
+registry and store, the broker and the remote listener, the herdr and cmux
+clients, the ssh forward and enrollment, the repository collector and its
+selection, the context blocks, and the plugin, statusline, opencode and Vibe
+installers. The settings model, the forward coordinator and supervisor
+(`@Observable`) and the `--probe-surface` command stay in
+`Sources/localvoxtral/ClaudeContext`.
 It builds and tests on Linux (`scripts/core-tests-linux.sh`); the app
 re-exports it. Test doubles that need only the core live in
 `Tests/localvoxtralTestSupport`, a library both test targets depend on; a
@@ -114,7 +127,7 @@ Key subsystems:
   the login Keychain), `AppConfigStore` (TOML at
   `~/Library/Application Support/localvoxtral/config`)
 - Hotkey: `HotKeyManager` (Carbon, single global hotkey)
-- Claude Code session context (`Sources/ClaudeContext*`, `Sources/localvoxtral/ClaudeContext/`,
+- Claude Code session context (`Sources/ClaudeContext*`, `Sources/localvoxtral*/ClaudeContext/`,
   `integrations/claude-code/`): off-screen context for dictation into Claude
   Code. Two plugins in one marketplace, structurally separate — never modes of
   each other. Both declare hooks only (no skill/command/agent/statusLine —
@@ -155,7 +168,8 @@ Key subsystems:
     `SSH_TTY`, `SSH_CONNECTION` (re-joined with commas, since space is outside
     the charset), `LC_LVX_TTY` (the CLIENT's tty, exported by the user's shell
     and carried by ssh's `SendEnv`/`AcceptEnv LC_*` — the one value here that
-    describes the Mac), the shim's `$PPID` — rides as `X-Lvx-Env-*` HEADERS, written into the same
+    describes the Mac), the shim's `$PPID`, the basename of the session's
+    repository's main checkout (the learned-terms key, #652) — rides as `X-Lvx-Env-*` HEADERS, written into the same
     0600 header file as the token and charset-whitelisted
     (`[A-Za-z0-9._:/@+,=%-]`, ≤200 bytes) before a byte is written so CR/LF
     injection is impossible by construction; the listener re-validates and

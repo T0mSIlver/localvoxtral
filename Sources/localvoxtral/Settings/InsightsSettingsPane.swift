@@ -5,48 +5,14 @@ import SwiftUI
 /// `DictationInsights`; this file only lays them out.
 struct InsightsSettingsPane: View {
     let viewModel: DictationViewModel
+    let model: DictationInsightsModel
     var navigator: SettingsNavigator?
 
-    @AppStorage("dictationInsightsPeriod") private var periodRawValue =
-        DictationInsightsPeriod.month.rawValue
-    @State private var insights: DictationInsights?
-    /// The period `insights` was counted over. While it is not the selected
-    /// one the rows show no numbers, not the previous period's.
-    @State private var countedPeriod: DictationInsightsPeriod?
-    /// Where the counted period started, for the History rows Show opens.
-    @State private var countedSince: Date?
-    /// The last twelve weeks, whatever the period says: a trend inside a
-    /// 7-day period is one bar.
-    @State private var trend: DictationLearningTrend?
-    /// LaunchServices is asked once per bundle id, not once per render.
-    @State private var appNames: [String: String] = [:]
-
-    /// For a caller that needs the pane showing given numbers (a rendering
-    /// check); the app lets the pane read the store.
-    private let fixedInsights: DictationInsights?
-    private let fixedTrend: DictationLearningTrend?
-
-    init(
-        viewModel: DictationViewModel, navigator: SettingsNavigator? = nil,
-        insights: DictationInsights? = nil, trend: DictationLearningTrend? = nil
-    ) {
-        self.viewModel = viewModel
-        self.navigator = navigator
-        fixedInsights = insights
-        fixedTrend = trend
-    }
-
     private var period: Binding<DictationInsightsPeriod> {
-        Binding(
-            get: { DictationInsightsPeriod(rawValue: periodRawValue) ?? .month },
-            set: { periodRawValue = $0.rawValue }
-        )
+        Binding(get: { model.period }, set: { model.period = $0 })
     }
 
-    /// No count for the selected period yet. A zero would read as a fact.
-    private var isCounting: Bool {
-        fixedInsights == nil && countedPeriod != period.wrappedValue
-    }
+    private var isCounting: Bool { model.isCounting }
 
     private func count(_ value: Int) -> String {
         isCounting ? "—" : value.formatted()
@@ -54,66 +20,25 @@ struct InsightsSettingsPane: View {
 
     private struct ReloadTrigger: Equatable {
         let revision: Int
-        let period: String
+        let period: DictationInsightsPeriod
     }
 
     var body: some View {
-        let counted = countedPeriod == period.wrappedValue ? insights : nil
-        let shown = fixedInsights ?? counted ?? DictationInsights()
+        let shown = (isCounting ? nil : model.insights) ?? DictationInsights()
         SettingsPage(tab: .insights) {
             activityGroup(shown)
             reliabilityGroup(shown)
             polishingGroup(shown)
-            learningGroup(fixedTrend ?? trend ?? DictationLearningTrend())
+            learningGroup(model.trend ?? DictationLearningTrend())
             recurringFixesGroup(shown)
             appsGroup(shown)
         }
         .onAppear { viewModel.applyDictationHistoryRetention() }
         .task(id: ReloadTrigger(
-            revision: viewModel.dictationHistoryRevision, period: periodRawValue
+            revision: viewModel.dictationHistoryRevision, period: model.period
         )) {
-            guard fixedInsights == nil else { return }
-            await reload()
+            await model.reload()
         }
-    }
-
-    private func reload() async {
-        let period = period.wrappedValue
-        guard let store = viewModel.sessionStore else {
-            insights = DictationInsights()
-            trend = DictationLearningTrend()
-            countedPeriod = period
-            return
-        }
-        let now = Date()
-        let since = period.start(now: now)
-        let entries = await store.entries(since: since)
-        let trendStart = DictationLearningTrend.start(now: now)
-        let trendEntries = since.map { $0 <= trendStart } == true
-            ? entries.filter { $0.startedAt >= trendStart }
-            : await store.entries(since: trendStart)
-        let terms = viewModel.settings.polishSpeakerTerms
-            + (viewModel.learnedTermStore?.snapshot().confirmedEverywhere().map(\.term) ?? [])
-        // A year of dictations is thousands of word diffs: not on the main
-        // actor, and stopped when the pane closes or the period changes.
-        let counting = Task.detached {
-            (DictationInsights(entries: entries),
-             DictationLearningTrend(entries: trendEntries, terms: terms, now: now))
-        }
-        let (computed, computedTrend) = await withTaskCancellationHandler {
-            await counting.value
-        } onCancel: {
-            counting.cancel()
-        }
-        guard !Task.isCancelled else { return }
-        trend = computedTrend
-        for app in computed.topApps where appNames[app.bundleID] == nil {
-            appNames[app.bundleID] =
-                DictationHistoryModel.installedAppName(bundleID: app.bundleID) ?? app.bundleID
-        }
-        insights = computed
-        countedPeriod = period
-        countedSince = since
     }
 
     // MARK: - Groups
@@ -217,7 +142,7 @@ struct InsightsSettingsPane: View {
             } else {
                 ForEach(insights.topApps) { app in
                     InsightRow(
-                        title: appNames[app.bundleID] ?? app.bundleID,
+                        title: model.appNames[app.bundleID] ?? app.bundleID,
                         value: DictationInsightsText.share(app.dictations, of: insights.dictations))
                 }
             }
@@ -225,7 +150,7 @@ struct InsightsSettingsPane: View {
     }
 
     private func showHistory(_ filter: DictationHistoryQuery.Filter) {
-        navigator?.historyRequest = .init(filter: filter, since: countedSince)
+        navigator?.historyRequest = .init(filter: filter, since: model.countedSince)
         navigator?.selectedTab = .history
     }
 

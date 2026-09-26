@@ -1,3 +1,4 @@
+import ClaudeContextWire
 import Foundation
 
 /// Everything a commit gathers before it builds the polish request: the
@@ -61,6 +62,7 @@ enum PolishContextGatherer {
         grounding: any RepoVocabularyGrounding,
         endpointURL: URL,
         transcript: String,
+        joinedWorkspace: LocalWorkspacePath?,
         repositoryRoot: RepoVocabularyRootBox?
     ) async -> RepoVocabularyMatcher.GroundingOutcome? {
         guard settings.repoVocabularyEnabled else { return nil }
@@ -74,6 +76,7 @@ enum PolishContextGatherer {
         return await grounding.grounding(
             endpointURL: endpointURL,
             transcript: transcript,
+            joinedWorkspace: joinedWorkspace,
             repositoryRoot: repositoryRoot
         )
     }
@@ -142,6 +145,10 @@ enum PolishContextGatherer {
         // deadline writes into a box nobody reads again, instead
         // of attributing a later dictation to the wrong project.
         let repositoryRootBox = RepoVocabularyRootBox()
+        // A joined LOCAL session names the repo directly, which is the only
+        // way a Claude Desktop dictation finds one: its window has no path in
+        // the title and no shell under it. The type keeps a remote session's
+        // cwd out of this, as it does for the collector below.
         if (templateCarriesDictionarySlot || needsRepoGroundingForConflictSafety),
            let endpointURL = endpointURL,
            let outcome = await Self.repoVocabularyGroundingIfEnabled(
@@ -149,6 +156,7 @@ enum PolishContextGatherer {
                grounding: repoVocabularyGrounding,
                endpointURL: endpointURL,
                transcript: workingText,
+               joinedWorkspace: capturedClaudeJoin?.localWorkspacePath,
                repositoryRoot: repositoryRootBox
            )
         {
@@ -320,7 +328,7 @@ enum PolishContextGatherer {
         // same matcher every other source runs.
         let learnedProject = LearnedTermProjectResolver.resolve(
             repositoryRoot: repositoryRootBox.value,
-            workspace: capturedClaudeJoin?.snapshot.workspace
+            workspace: capturedClaudeJoin?.snapshot.learnedTermWorkspace
         )
         let learnedVocabularyOutcome = await Self.learnedTermGrounding(store: learnedTermStore,
             project: learnedProject,

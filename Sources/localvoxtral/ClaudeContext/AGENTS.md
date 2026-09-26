@@ -1,9 +1,12 @@
 # Claude Code context path — agent notes
 
-STOP: before changing anything here (or in `Sources/ClaudeContext*` /
-`integrations/claude-code/`), read `../../../docs/agent/invariants.md` in
+STOP: before changing anything here (or in `Sources/ClaudeContext*`, in
+`Sources/localvoxtralCore/ClaudeContext/`, which holds the part that builds on
+Linux, or in `integrations/claude-code/`), read `../../../docs/agent/invariants.md` in
 full. Every join arm, trust boundary, and fail-closed rule in this subtree is
 deliberate, most encode measured failures, and several are security
 boundaries (transport-derived trust, `LocalWorkspacePath`'s no-public-init
-rule, abstain-on-ambiguity). These paths are also LLM-lane-relevant
-(`scripts/ci/llm-lane-filter.sh`).
+rule, abstain-on-ambiguity). What shapes a Claude block's bytes (repository harvest
+and selection, block framing, pane excerpts) runs the LLM lane; the join and
+hook plumbing does not, and proves itself through `PolishRequestGoldenTests`
+(`scripts/ci/llm-lane-filter.sh`, #643).

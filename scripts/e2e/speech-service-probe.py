@@ -30,7 +30,7 @@ import time
 import wave
 from urllib.parse import urlsplit
 
-CHUNK_SECONDS = 0.1  # TimingConstants.audioSendInterval
+CHUNK_SECONDS = 0.08  # TimingConstants.audioSendInterval
 SAMPLE_RATE = 16000
 TIMEOUT_SECONDS = float(os.environ.get("LV_E2E_PROBE_TIMEOUT", "60"))
 DONE_TYPES = (

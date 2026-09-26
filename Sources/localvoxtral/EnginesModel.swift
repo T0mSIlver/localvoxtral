@@ -294,13 +294,6 @@ final class EnginesModel {
         restartManagedDictationEngineForSettingChange(reason: "memory limit changed")
     }
 
-    /// See `applySpeechdCacheLimitChange` — same restart contract.
-    func applySpeechdStepCadenceChange(_ cadence: SpeechdStepCadence) {
-        guard settings.speechdStepCadence != cadence else { return }
-        settings.speechdStepCadence = cadence
-        restartManagedDictationEngineForSettingChange(reason: "step interval changed")
-    }
-
     /// Same restart contract again, and the same reason: speechd loads its
     /// checkpoint once, at launch. The new model downloads (with progress in
     /// the status row) as part of that restart.

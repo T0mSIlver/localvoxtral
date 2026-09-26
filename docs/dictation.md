@@ -61,6 +61,17 @@ one or listed in Settings → Terminals. In Live Auto-Paste, once any text of a
 dictation lands in another app, "send it" does nothing until the dictation
 ends.
 
+### Keeping words on their line
+
+Words reach the overlay a few letters at a time, so a word that starts near
+the end of a line can move down to the next one once it no longer fits. By
+default the overlay lets that happen and fills every line to the edge.
+**Keep words from jumping to the next line** (Settings → Dictation → Overlay
+Buffer) stops it for words up to 6, 10 or 14 letters: a word that starts
+without that much room goes straight to the next line, and stays there for the
+rest of the dictation. The cost is empty space at the end of lines, up to the
+width of that many letters. The finished text commits the same either way.
+
 ## The menu bar popover
 
 localvoxtral lives in the menu bar: the popover shows dictation status at a
@@ -161,15 +172,15 @@ History; the panes sit under the sidebar's Settings header:
   group). Dictation accepts an OpenAI Realtime-compatible endpoint. For
   polishing, enter either a base URL such as `http://127.0.0.1:8080` or the
   full chat completions URL; the app appends `/v1/chat/completions` to a base
-  URL. Lower dictation step intervals show words sooner, while higher values
-  use less compute. Memory limit caps the dictation helper's buffer cache
+  URL. Memory limit caps the dictation helper's buffer cache
   (2 GB by default); Nemotron never fills it, so the row appears only for
   Voxtral.
 - **Dictation** — the trigger (single modifier key with tap/hold gestures, or
   per-mode keyboard shortcuts), the menu-bar mode, copy on stop, the **Copy
   last dictation** shortcut, ducking other
   audio, the spoken "send it" trigger for each mode, and the overlay's font
-  size and how many lines it shows before scrolling. **Lower other audio while dictating**, on unless you turn it off,
+  size, how many lines it shows before scrolling, and whether it
+  [keeps words on their line](#keeping-words-on-their-line). **Lower other audio while dictating**, on unless you turn it off,
   drops music and calls to a fifth of your volume for as long as a session
   runs, in both output modes, and fades back when it ends; **Fade** sets how
   long each fade takes. It moves the volume of
@@ -202,7 +213,9 @@ History; the panes sit under the sidebar's Settings header:
   spelling for that project, and after three dictations it starts correcting
   the name on its own — including in dictations where nothing on screen
   mentions it. Those terms are offered as tags in **Suggestions** too, with
-  no API credits. **Advanced → Terms learned from polishing → Show** lists them by
+  no API credits. A project is a repository: all its git worktrees share one
+  list, on this Mac and on a remote host whose plugin is 1.13.0 or later.
+  **Advanced → Terms learned from polishing → Show** lists them by
   project, with how often each was applied and when it last was. Pin a term
   to keep it: it is used at once and never expires. Forget one, or all of
   them with **Forget**. **Export…** and **Import…** at the bottom of that

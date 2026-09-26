@@ -112,7 +112,9 @@ struct localvoxtralApp: App {
                 viewModel: appDelegate.viewModel,
                 backendManager: appDelegate.backendManager,
                 navigator: appDelegate.settingsNavigator,
-                loginItem: appDelegate.loginItemController
+                loginItem: appDelegate.loginItemController,
+                historyModel: appDelegate.historyModel,
+                insightsModel: appDelegate.insightsModel
             )
             // Fixed width, resizable height: the two-column layout has a fixed
             // 208pt sidebar and dense right-hand rows, so horizontal resizing
@@ -171,6 +173,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let backendManager: BackendManager
     let viewModel: DictationViewModel
     let settingsNavigator = SettingsNavigator()
+    /// What the History and Insights panes show, kept while the app runs so
+    /// that neither starts from nothing each time it opens.
+    lazy var historyModel = DictationHistoryModel(
+        store: { [weak viewModel] in viewModel?.sessionStore })
+    lazy var insightsModel = DictationInsightsModel(viewModel: viewModel)
     /// "Open localvoxtral at login". Built here so the pane reads the login
     /// item once per launch rather than on every view update.
     let loginItemController = LoginItemController()
@@ -289,8 +296,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let manager = BackendManager(
             polishingModelProvider: { settings.resolvedManagedLLMPolishingModel },
             speechModelProvider: { settings.resolvedManagedSpeechModel },
-            speechdCacheLimitProvider: { settings.speechdCacheLimit.megabytes },
-            speechdStepCadenceProvider: { settings.speechdStepCadence.milliseconds }
+            speechdCacheLimitProvider: { settings.speechdCacheLimit.megabytes }
         )
         settingsStore = settings
         backendManager = manager
@@ -550,7 +556,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 herdrFederation: { HerdrMachineFederationReader.live().federation() },
                 herdrClientSurfaceCount: { HerdrClientTTYProbe.clientSurfaceCount() },
                 herdrPanes: herdrClient,
-                cmuxSurfaces: CmuxSocketClient(password: { cmuxPasswords.password() }),
+                cmuxSurfaces: CmuxSocketClient(
+                    password: { cmuxPasswords.password() },
+                    bundleIDOfRunningPID: { CmuxSocketClient.runningBundleID(ofPID: $0) }
+                ),
                 cmuxJoinEnabled: { [weak viewModel] in
                     viewModel?.settings.cmuxSurfaceJoinEnabled ?? false
                 },

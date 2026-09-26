@@ -52,6 +52,14 @@ public enum ClaudeRemoteEnvironmentField: String, CaseIterable, Sendable {
     /// that the OTHER side's kernel also knows.
     case sshConnection
     case hookParentPID
+    /// The basename of the session's repository's main checkout, which the
+    /// shim computes with git on the host (#652). The one value that is not
+    /// read from the environment: `$LVX_PROJECT` is the shim's own variable.
+    /// It keys learned terms in place of the cwd's last component, so every
+    /// worktree of one repository shares one bucket. A label, never a path:
+    /// read it through `ClaudeSessionSnapshot.learnedTermWorkspace`, which
+    /// re-applies `ClaudeWorkspaceReference`'s label rule.
+    case project
 
     /// The header the shim writes, in its canonical spelling.
     ///
@@ -75,6 +83,7 @@ public enum ClaudeRemoteEnvironmentField: String, CaseIterable, Sendable {
         case .localTTY: return "X-Lvx-Env-Local-Tty"
         case .sshConnection: return "X-Lvx-Env-Ssh-Connection"
         case .hookParentPID: return "X-Lvx-Env-Hook-Parent-Pid"
+        case .project: return "X-Lvx-Env-Project"
         }
     }
 
@@ -101,6 +110,7 @@ public enum ClaudeRemoteEnvironmentField: String, CaseIterable, Sendable {
         case .localTTY: return "$LC_LVX_TTY"
         case .sshConnection: return "$SSH_CONNECTION"
         case .hookParentPID: return "$PPID"
+        case .project: return "$LVX_PROJECT"
         }
     }
 }
@@ -127,7 +137,7 @@ public struct ClaudeRemoteEnvironmentLimits: Sendable, Equatable {
 
     public init(
         maxValueBytes: Int = 200,
-        maxFieldCount: Int = 16,
+        maxFieldCount: Int = 20,
         maxTotalBytes: Int = 1024
     ) {
         self.maxValueBytes = maxValueBytes
@@ -193,6 +203,8 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
     /// The remote shim's `$PPID` — Claude Code's pid ON THAT HOST. Diagnostics
     /// and cross-checks against another remote report only; never a local pid.
     public var hookParentPID: String?
+    /// The host's name for the session's repository (`X-Lvx-Env-Project`).
+    public var project: String?
 
     public init(
         herdrPaneID: String? = nil,
@@ -209,7 +221,8 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
         sshTTY: String? = nil,
         localTTY: String? = nil,
         sshConnection: String? = nil,
-        hookParentPID: String? = nil
+        hookParentPID: String? = nil,
+        project: String? = nil
     ) {
         self.herdrPaneID = herdrPaneID
         self.herdrSocketPath = herdrSocketPath
@@ -226,6 +239,7 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
         self.localTTY = localTTY
         self.sshConnection = sshConnection
         self.hookParentPID = hookParentPID
+        self.project = project
     }
 
     public var isEmpty: Bool {
@@ -252,6 +266,7 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
             case .localTTY: return localTTY
             case .sshConnection: return sshConnection
             case .hookParentPID: return hookParentPID
+            case .project: return project
             }
         }
         set {
@@ -271,6 +286,7 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
             case .localTTY: localTTY = newValue
             case .sshConnection: sshConnection = newValue
             case .hookParentPID: hookParentPID = newValue
+            case .project: project = newValue
             }
         }
     }

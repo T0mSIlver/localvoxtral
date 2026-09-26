@@ -68,6 +68,110 @@ final class RepoIndexingWalkTests: XCTestCase {
     }
 }
 
+// MARK: - Main checkout of a worktree (#652)
+
+final class RepoIndexingMainCheckoutTests: XCTestCase {
+    private func makeTempDir() -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("repovocab-main-\(UUID().uuidString)")
+        try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url.standardizedFileURL
+    }
+
+    private func write(_ content: String, to url: URL) {
+        try! FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try! content.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    func testPlainCheckoutIsItsOwnMainCheckout() {
+        let repo = makeTempDir()
+        write("ref: refs/heads/main\n", to: repo.appendingPathComponent(".git/HEAD"))
+
+        XCTAssertEqual(RepoIndexing.mainCheckout(ofRoot: repo.path), repo.path)
+    }
+
+    /// The layout `git worktree add` writes: a `.git` file naming
+    /// `<main>/.git/worktrees/<name>`, whose `commondir` is `../..`.
+    func testLinkedWorktreeResolvesToTheMainCheckout() {
+        let main = makeTempDir()
+        let worktreeGitDir = main.appendingPathComponent(".git/worktrees/wt")
+        write("ref: refs/heads/wt\n", to: worktreeGitDir.appendingPathComponent("HEAD"))
+        write("../..\n", to: worktreeGitDir.appendingPathComponent("commondir"))
+
+        let inside = main.appendingPathComponent(".claude/worktrees/wt")
+        let outside = makeTempDir()
+        for worktree in [inside, outside] {
+            write("gitdir: \(worktreeGitDir.path)\n", to: worktree.appendingPathComponent(".git"))
+            XCTAssertEqual(RepoIndexing.mainCheckout(ofRoot: worktree.path), main.path)
+        }
+    }
+
+    /// A submodule's `.git` file points into the parent's `.git/modules`, and
+    /// that directory is its own common dir: the submodule is its own project.
+    func testSubmoduleKeepsItsOwnRoot() {
+        let parent = makeTempDir()
+        write("ref: refs/heads/main\n", to: parent.appendingPathComponent(".git/HEAD"))
+        write(
+            "ref: refs/heads/main\n",
+            to: parent.appendingPathComponent(".git/modules/vendor/lib/HEAD")
+        )
+        let submodule = parent.appendingPathComponent("vendor/lib")
+        write("gitdir: ../../.git/modules/vendor/lib\n", to: submodule.appendingPathComponent(".git"))
+
+        XCTAssertEqual(RepoIndexing.mainCheckout(ofRoot: submodule.path), submodule.path)
+    }
+
+    /// A bare repository has no checkout; its worktrees share the bare
+    /// directory, which stands for the repository.
+    func testWorktreeOfABareRepositoryResolvesToTheSharedGitDirectory() {
+        let bare = makeTempDir().appendingPathComponent("api.git")
+        let worktreeGitDir = bare.appendingPathComponent("worktrees/feature")
+        write("ref: refs/heads/feature\n", to: worktreeGitDir.appendingPathComponent("HEAD"))
+        write("../..\n", to: worktreeGitDir.appendingPathComponent("commondir"))
+        let worktree = makeTempDir()
+        write("gitdir: \(worktreeGitDir.path)\n", to: worktree.appendingPathComponent(".git"))
+
+        XCTAssertEqual(RepoIndexing.mainCheckout(ofRoot: worktree.path), bare.path)
+    }
+
+    /// The fixtures above are a claim about git's layout; this checks the
+    /// claim against git itself, which the issue names as the reference.
+    func testAgreesWithGitRevParseOnARealWorktree() throws {
+        let main = makeTempDir().appendingPathComponent("repo")
+        let worktree = main.deletingLastPathComponent().appendingPathComponent("repo-wt")
+        try git(["init", "-q", main.path])
+        try git(["-C", main.path, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"])
+        try git(["-C", main.path, "worktree", "add", "-q", worktree.path])
+
+        let common = try git([
+            "-C", worktree.path, "rev-parse", "--path-format=absolute", "--git-common-dir",
+        ])
+        let root = try XCTUnwrap(RepoIndexing.findGitRoot(startingAt: worktree.path))
+        XCTAssertEqual(
+            URL(fileURLWithPath: RepoIndexing.mainCheckout(ofRoot: root)).resolvingSymlinksInPath().path,
+            URL(fileURLWithPath: common).deletingLastPathComponent().resolvingSymlinksInPath().path
+        )
+    }
+
+    @discardableResult
+    private func git(_ arguments: [String]) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["git"] + arguments
+        process.environment = ["PATH": ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"]
+        let output = Pipe()
+        process.standardOutput = output
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0, "git \(arguments.joined(separator: " "))")
+        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 // MARK: - ls-files parsing + vocabulary build (synthesized bytes)
 
 final class RepoIndexingParsingTests: XCTestCase {

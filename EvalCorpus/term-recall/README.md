@@ -48,6 +48,30 @@ EvalRecordings/term-recall/<set>` replaces `say` with human WAVs in the
 agent-dictation manifest format. The full option list is in the header of
 `scripts/remote-build.sh`.
 
+### On Linux, against vLLM
+
+`TermRecallEvalTests` is in the core suite, so the dev box runs it against
+`scripts/linux/voxtral-vllm.sh` (BF16 weights, not the shipped 4-bit model:
+`scripts/linux/README.md`). There is no `say` there, so audio mode needs a
+recording set, and `remote-build.sh` does not write the marker: write
+`.term-recall-eval-enable.json` at the checkout root yourself, then run the
+suite and delete the marker.
+
+```json
+{"mode":"audio","label":"vllm-bf16-none","asr":"vllm-voxtral-bf16",
+ "endpoint":"ws://127.0.0.1:8000/v1/realtime",
+ "asrModel":"mistralai/Voxtral-Mini-4B-Realtime-2602","bias":"none",
+ "recordingDirectory":"EvalRecordings/term-recall/<set>"}
+```
+
+```bash
+scripts/linux/voxtral-vllm.sh up
+scripts/core-tests-linux.sh --filter TermRecallEvalTests
+```
+
+The set can be a symlink to a directory outside the checkout. `hypotheses` and
+`compare` markers take the same fields as on the Mac.
+
 ## Cases
 
 `cases.json` (schema 2) holds `noiseTerms` and a list of cases, each with:

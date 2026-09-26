@@ -940,8 +940,10 @@ The same allowlist as the local plugin, plus two additions:
   `HERDR_PANE_ID`, `HERDR_SOCKET_PATH`, `HERDR_SESSION`, `CMUX_SURFACE_ID`,
   `CMUX_SOCKET_PATH`, `CLAUDE_CODE_BRIDGE_SESSION_ID`,
   `CLAUDE_CODE_HOST_SESSION_ID`, `TMUX`, `TMUX_PANE`,
-  `STY`, `ZELLIJ`, `SSH_TTY`, `SSH_CONNECTION`, `LC_LVX_TTY`, and the shim's own
-  parent pid. Each is sent only
+  `STY`, `ZELLIJ`, `SSH_TTY`, `SSH_CONNECTION`, `LC_LVX_TTY`, the shim's own
+  parent pid, and the name of the session's repository (the basename of its
+  main checkout, from `git rev-parse`, so every worktree of one repository
+  keeps one set of learned terms). Each is sent only
   if it is non-empty, at most 200 characters, and made purely of ASCII
   alphanumerics plus `._:/@+,=%-`; anything else is dropped rather than
   escaped. `SSH_CONNECTION` is the one value the shim reshapes: `sshd` writes
