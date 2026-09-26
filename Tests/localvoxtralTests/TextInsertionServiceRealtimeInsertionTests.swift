@@ -49,10 +49,48 @@ final class TextInsertionServiceRealtimeInsertionTests: XCTestCase {
         let (service, posted) = makeRecordingService(frontmostBundleID: ClaudeDesktopAllowlist.bundleID)
         defer { TerminalTargetDetector.debugFrontmostBundleIDOverride = nil }
 
-        service.enqueueRealtimeInsertion("see:\n```\nline one\n```\n\nthanks")
+        service.enqueueRealtimeInsertion("see:\nline one\n\nthanks")
 
-        XCTAssertEqual(posted.value, ["see:", "⇧⏎", "```", "⇧⏎", "line one", "⇧⏎", "```", "⇧⏎", "⇧⏎", "thanks"])
+        XCTAssertEqual(posted.value, ["see:", "⇧⏎", "line one", "⇧⏎", "⇧⏎", "thanks"])
         XCTAssertFalse(service.hasPendingInsertionText)
+    }
+
+    // MARK: - Code fences in Claude Desktop (#695)
+
+    /// Typed key by key, a fence line opened a Desktop code block that took
+    /// the text after the closing fence (measured 2026-09-26), so the text is
+    /// pasted whole. The overlay commit's call.
+    func testClaudeDesktopGetsTextWithAFenceAsOnePaste() {
+        let (service, posted) = makeRecordingService(frontmostBundleID: ClaudeDesktopAllowlist.bundleID)
+        defer { TerminalTargetDetector.debugFrontmostBundleIDOverride = nil }
+        let text = "see:\n```\nline one\nline two\n```\nthanks"
+
+        let result = service.insertTextPrioritizingKeyboard(text)
+
+        XCTAssertEqual(result, .insertedByKeyboardFallback)
+        XCTAssertEqual(posted.value, ["⌘V " + text])
+    }
+
+    func testClaudeDesktopTypesTheFenceTextWhenThePasteFails() {
+        let (service, posted) = makeRecordingService(
+            frontmostBundleID: ClaudeDesktopAllowlist.bundleID,
+            pasteSucceeds: false
+        )
+        defer { TerminalTargetDetector.debugFrontmostBundleIDOverride = nil }
+
+        let result = service.insertTextPrioritizingKeyboard("see:\n```\ncode")
+
+        XCTAssertEqual(result, .insertedByKeyboardFallback)
+        XCTAssertEqual(posted.value, ["⌘V see:\n```\ncode", "see:", "⇧⏎", "```", "⇧⏎", "code"])
+    }
+
+    func testOtherAppsGetTheFenceTextTyped() {
+        let (service, posted) = makeRecordingService(frontmostBundleID: "com.example.editor")
+        defer { TerminalTargetDetector.debugFrontmostBundleIDOverride = nil }
+
+        service.enqueueRealtimeInsertion("see:\n```\ncode")
+
+        XCTAssertEqual(posted.value, ["see:\n```\ncode"])
     }
 
     func testClaudeDesktopTextWithoutNewlinesIsOneUnicodeInsertion() {
@@ -73,7 +111,10 @@ final class TextInsertionServiceRealtimeInsertionTests: XCTestCase {
         XCTAssertEqual(posted.value, ["one\ntwo"])
     }
 
-    private func makeRecordingService(frontmostBundleID: String) -> (TextInsertionService, PostedKeys) {
+    private func makeRecordingService(
+        frontmostBundleID: String,
+        pasteSucceeds: Bool = true
+    ) -> (TextInsertionService, PostedKeys) {
         let posted = PostedKeys()
         let service = TextInsertionService()
         service.debugConfigureInsertionHooks(
@@ -86,6 +127,10 @@ final class TextInsertionServiceRealtimeInsertionTests: XCTestCase {
             shiftReturnPoster: {
                 posted.value.append("⇧⏎")
                 return true
+            },
+            commandVPaster: { text in
+                posted.value.append("⌘V " + text)
+                return pasteSucceeds
             }
         )
         TerminalTargetDetector.debugFrontmostBundleIDOverride = { frontmostBundleID }

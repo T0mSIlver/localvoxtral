@@ -98,6 +98,11 @@ final class TextInsertionService {
     var isScalarTracingEnabled = false
 
     private var pendingRealtimeInsertionText = ""
+    /// The user's clipboard while a paste's temporary text is on it, with
+    /// the change count of that text. A paste landing before the restore
+    /// keeps this snapshot, or it would restore the earlier paste's text.
+    @ObservationIgnored
+    private var pendingPasteboardRestore: (snapshot: PasteboardSnapshot, changeCount: Int)?
     private var insertionRetryTask: Task<Void, Never>?
     private var axInsertionSuccessCount = 0
     private var keyboardFallbackSuccessCount = 0
@@ -167,6 +172,8 @@ final class TextInsertionService {
     private var debugReturnKeyPoster: ((pid_t) -> Bool)?
     @ObservationIgnored
     private var debugShiftReturnPoster: (() -> Bool)?
+    @ObservationIgnored
+    private var debugCommandVPaster: ((String) -> Bool)?
     @ObservationIgnored
     private var debugFrontmostPIDReader: (() -> pid_t?)?
 #endif
@@ -245,7 +252,21 @@ final class TextInsertionService {
         if !ensurePasteTargetIsActive(preferredAppPID: preferredAppPID) {
             return false
         }
+        return postCommandVPaste(text)
+    }
 
+    /// Puts `text` on the clipboard and presses Cmd+V in the frontmost app.
+    /// The clipboard is restored 150 ms later unless someone changed it.
+    private func postCommandVPaste(_ text: String) -> Bool {
+#if DEBUG
+        if let debugCommandVPaster {
+            return debugCommandVPaster(text)
+        }
+        // A test that did not pin the hook must never paste into whatever
+        // the host has focused.
+        if TerminalTargetDetector.isRunningUnderXCTest { return false }
+#endif
+        // 9 is kVK_ANSI_V, which is V on the ANSI and AZERTY layouts alike.
         guard let eventSource = CGEventSource(stateID: .combinedSessionState),
               let keyDown = CGEvent(keyboardEventSource: eventSource, virtualKey: 9, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: eventSource, virtualKey: 9, keyDown: false)
@@ -254,13 +275,19 @@ final class TextInsertionService {
         }
 
         let pasteboard = NSPasteboard.general
-        let snapshot = capturePasteboardSnapshot(from: pasteboard)
+        let snapshot: PasteboardSnapshot
+        if let pending = pendingPasteboardRestore, pending.changeCount == pasteboard.changeCount {
+            snapshot = pending.snapshot
+        } else {
+            snapshot = capturePasteboardSnapshot(from: pasteboard)
+        }
         pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string) else {
             Self.restorePasteboardSnapshot(snapshot, to: pasteboard, expectedChangeCount: pasteboard.changeCount)
             return false
         }
         let insertedChangeCount = pasteboard.changeCount
+        pendingPasteboardRestore = (snapshot, insertedChangeCount)
 
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
@@ -268,7 +295,12 @@ final class TextInsertionService {
         keyDown.post(tap: .cgAnnotatedSessionEventTap)
         keyUp.post(tap: .cgAnnotatedSessionEventTap)
         // Restore clipboard only if the user did not change it after our temporary write.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [snapshot] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, snapshot] in
+            MainActor.assumeIsolated {
+                if self?.pendingPasteboardRestore?.changeCount == insertedChangeCount {
+                    self?.pendingPasteboardRestore = nil
+                }
+            }
             let pasteboard = NSPasteboard.general
             Self.restorePasteboardSnapshot(snapshot, to: pasteboard, expectedChangeCount: insertedChangeCount)
         }
@@ -838,14 +870,30 @@ final class TextInsertionService {
     ]
 
     /// Types `text` into the frontmost app. In an app on
-    /// `shiftReturnNewlineBundleIDs` each line is typed on its own and every
-    /// newline is pressed as Shift+Return. Like `postUnicodeTextEvents`, true
-    /// when anything was posted.
+    /// `shiftReturnNewlineBundleIDs` a text holding a code fence line is
+    /// pasted whole (#695): typed key by key, the fence triggers Claude
+    /// Desktop's markdown shortcut and opens a code block that takes the
+    /// text after the closing fence. Otherwise each line is typed on its own
+    /// and every newline is pressed as Shift+Return. Like
+    /// `postUnicodeTextEvents`, true when anything was posted.
     private func postKeyboardText(_ text: String) -> Bool {
-        guard text.contains(where: \.isNewline),
-              let bundleID = TerminalTargetDetector.currentFrontmostBundleID(),
+        guard let bundleID = TerminalTargetDetector.currentFrontmostBundleID(),
               Self.shiftReturnNewlineBundleIDs.contains(bundleID)
         else {
+            return postUnicodeTextEvents(text)
+        }
+        if MarkdownCodeFence.containsFenceLine(text) {
+            if postCommandVPaste(text) {
+                Log.insertion.notice(
+                    "pasted text with a code fence instead of typing it bundle=\(bundleID, privacy: .public)"
+                )
+                return true
+            }
+            Log.insertion.error(
+                "paste of text with a code fence failed; typing it bundle=\(bundleID, privacy: .public)"
+            )
+        }
+        guard text.contains(where: \.isNewline) else {
             return postUnicodeTextEvents(text)
         }
         let lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
@@ -1029,7 +1077,8 @@ extension TextInsertionService {
         accessibilityInserter: ((String, pid_t?) -> Bool)? = nil,
         returnKeyPoster: ((pid_t) -> Bool)? = nil,
         frontmostPIDReader: (() -> pid_t?)? = nil,
-        shiftReturnPoster: (() -> Bool)? = nil
+        shiftReturnPoster: (() -> Bool)? = nil,
+        commandVPaster: ((String) -> Bool)? = nil
     ) {
         debugUnicodePoster = unicodePoster
         debugModifierStateReader = modifierStateReader
@@ -1037,6 +1086,7 @@ extension TextInsertionService {
         debugReturnKeyPoster = returnKeyPoster
         debugFrontmostPIDReader = frontmostPIDReader
         debugShiftReturnPoster = shiftReturnPoster
+        debugCommandVPaster = commandVPaster
     }
 
     func debugInsertionSnapshot() -> DebugInsertionSnapshot {

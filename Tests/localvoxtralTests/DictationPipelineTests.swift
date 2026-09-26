@@ -161,6 +161,48 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertFalse(typed.chunks.contains { $0.contains(where: \.isNewline) }, "no newline is typed as text")
     }
 
+    /// Claude Desktop (#695): a code fence typed at the start of a line
+    /// opened a code block that took the text after it, so a text holding
+    /// one is pasted whole, with no typed keys and no Shift+Return.
+    func testLiveAutoPasteIntoClaudeDesktopPastesTextWithACodeFence() async throws {
+        let text = "see:\n```\nline one\nline two\n```\nthanks."
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { ClaudeDesktopAllowlist.bundleID }
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .noFocusedElement }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { @MainActor in
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+            TerminalTargetDetector.debugFocusedElementProbeOverride = nil
+            TerminalTargetDetector.debugSecureEventInputOverride = nil
+        }
+        let typed = TypedText()
+        var pasted: [String] = []
+        pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { chunk in
+                typed.append(chunk)
+                return true
+            },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false },
+            shiftReturnPoster: {
+                typed.append("⇧⏎")
+                return true
+            },
+            commandVPaster: { text in
+                pasted.append(text)
+                return true
+            }
+        )
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.delta", "delta": text])
+        await stopAndFinalize(pipeline, finalText: text)
+
+        XCTAssertEqual(pasted, [text])
+        XCTAssertEqual(typed.text, "", "nothing is typed key by key")
+    }
+
     // MARK: - The two halves every scenario shares
 
     /// Start, connect, open the microphone, and get one captured chunk to the
