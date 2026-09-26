@@ -169,10 +169,24 @@ final class SessionContextResolver {
         return relay.map { OpencodePromptRoute(relay: $0) }
     }
 
+    /// The joined herdr pane, written through herdr's socket (#726). Only a
+    /// herdr pane join yields one, so it carries that join's consent and
+    /// reaches only its pane.
+    private func resolveHerdrPaneRoute() -> HerdrPanePromptRoute? {
+        guard let join = claudeSessionJoin else { return nil }
+        return claudeSessionJoinResolver?.herdrPromptRoute(for: join) {
+            TerminalScreenContextSource.frontmostTarget()?.pid
+        }
+    }
+
     /// This dictation's route into the joined agent, if any. Runs after the
     /// join.
     func resolveAgentPromptRoute() async {
-        agentPromptRoute = await resolveOpencodePromptRoute()
+        if let opencode = await resolveOpencodePromptRoute() {
+            agentPromptRoute = opencode
+        } else {
+            agentPromptRoute = resolveHerdrPaneRoute()
+        }
         if let route = agentPromptRoute {
             Log.claudeContext.notice("\(route.name, privacy: .public): resolved; dictation writes through it")
         }

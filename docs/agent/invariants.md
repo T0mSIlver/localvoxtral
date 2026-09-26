@@ -484,6 +484,38 @@ there is not.
     some fresh declaration carries a relay, so a Mac without the updated
     plugin sends no Apple event for it. A pane in herdr joins through the
     relay only when the context join resolved it.
+  - *herdr panes* (#726, `HerdrPanePromptRoute`; owner ruling on #723,
+    2026-09-26). herdr's socket is unauthenticated full control of every
+    pane, so what the app sends is bounded here, not by herdr.
+    *Two calls, nothing else:* an append is `pane.send_text {pane_id, text}`
+    and a submit is `pane.send_keys {pane_id, keys: ["enter"]}`
+    (`HerdrPaneWriting`; wire shapes from herdr 0.9.0, the version installed
+    when this was written). Never `pane.run`, never another key, never
+    `agent.prompt`, `agent.send_keys`, `pane.send_input` or a focus call.
+    *Only the joined pane:* the route exists only for a herdr pane join
+    (local, remote or federated) and is keyed by the binding the arm captured
+    (`ClaudeSessionJoinResolver.herdrPromptRoute(for:)`), so it writes to
+    that pane id over the socket or `ssh -L` forward the join already
+    trusted, and only while that dictation runs. It never asks herdr which
+    pane to write to.
+    *No control characters:* herdr writes `send_text` to the pane's input
+    byte for byte, with no bracketed paste, so a newline would press Enter
+    and an escape would start a key sequence. Text holding any Unicode
+    control character (or over 32 KiB) is never sent.
+    *Typed only into the same pane:* a text herdr refused (its own error
+    answer for that request, or a request that never reached the socket) is
+    typed only while keys would land in the joined pane: its terminal is
+    frontmost and herdr's `pane.current` is that pane. Otherwise, and
+    whenever the request went out with no valid answer (it may have landed),
+    the text stays in History (`keepInHistory`).
+    *Enter only over the joined agent:* before each Enter the route asks the
+    pane's foreground processes again, with the test its arm joined on (the
+    registered pid for a local pane, the parent pid or agent name for a
+    remote one). A pane back at its shell gets no Enter: it would run the
+    prompt as a command.
+    *Resolution:* only after the context join resolved a herdr pane, and
+    only when opencode's relay did not resolve, so an opencode pane with a
+    relay keeps it.
 - **Claude Code context reaches the prompt only through a positive join.**
   The joined session's repository (status, uncommitted diffs, contents
   of files the agent just touched) and its prior user prompt are attached as
@@ -580,9 +612,10 @@ there is not.
     exists (`scripts/mac/localvoxtral-ui-gate.sh`).
     The hook publishes `HERDR_PANE_ID`/`HERDR_SOCKET_PATH` from the pane env;
     `HerdrSocketClient` (hand-written and capability-bounded — reads are only
-    `pane.current`, `pane.process_info`, and `pane.read`; its sole mutation is
+    `pane.current`, `pane.process_info`, and `pane.read`; its mutations are
     the remote panel probe's short-lived `lvmark` through
-    `pane.report_metadata`. herdr was AGPL when this
+    `pane.report_metadata` and the herdr pane route's two writes, bounded in
+    "The app writes into an agent only through its routes". herdr was AGPL when this
     was written and is Apache-2.0 since v0.8.0, repo `herdrdev/herdr`, so its
     docs and source are freely readable; the client stays hand-written anyway,
     because a vendored dependency would be a second implementation of the trust
