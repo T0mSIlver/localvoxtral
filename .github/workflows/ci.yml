@@ -265,6 +265,7 @@ jobs:
             ./scripts/ci/test-restore-mtimes.sh \
             ./scripts/ci/test-watch-checks.sh \
             ./scripts/ci/test-ui-gate-suite-filter.sh \
+            ./scripts/ci/test-docs-only-filter.sh \
             ./scripts/ci/test-unit-test-shards.sh
 
       - name: Record hosted toolchain
@@ -1102,8 +1103,9 @@ jobs:
           fi
 
       - name: Decide helper unit lanes (path filter)
-        # The two helper UNIT suites (11 s + 20 s) ran on every self-hosted run,
-        # including diffs that could not change what they test. Both helpers are
+        # The two helper UNIT suites ran on every self-hosted run, including
+        # diffs that could not change what they test (cost: docs/agent/test-tiers.md
+        # "Why the helper unit suites are path-gated"). Both helpers are
         # HERMETIC SwiftPM packages — only remote dependencies, no `path:` dep,
         # no `..`, no symlink out, no source shared with the root package — so a
         # suite's only inputs are its own directory (Package.swift and

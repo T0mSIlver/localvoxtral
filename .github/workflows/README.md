@@ -118,8 +118,12 @@ The docs/scripts-only fast path applies to `build-test` and `mac-lanes` when eve
 passes `scripts/ci/docs-only-filter.sh`; they then skip all Swift, helper,
 packaging, artifact, smoke, warm, and integration steps. The filter fails open
 to the full run for unknown or ambiguous diffs and excludes CI control files,
-packaging inputs (`assets/icons/**`), and every path selected by the
-LLM/speechd lane filters; an explicit `[run-llm-eval]` /
+packaging inputs (`assets/icons/**`), every path selected by the
+LLM/speechd lane filters, and every file a Swift test reads (#707): a path a
+test names outside a comment, or a read declared in `scripts/ci/test-reads.txt`
+(a bare file name joined onto a directory, a directory walk).
+`scripts/ci/test-docs-only-filter.sh` fails when a test adds such a read
+without a line there. An explicit `[run-llm-eval]` /
 `[run-speechd-integration]` / `[run-herdr-integration]` /
 `[run-stt-integration]` / `[dogfood-package]` / `[mac-lanes]` marker also
 forces the full run.
@@ -150,12 +154,13 @@ dependency, pin, platform or build-setting line. An edit to `build-test`,
 suites nor packaging, and moving files between targets does not run the STT
 lane. A fact the script cannot read counts as changed.
 
-One tier-0 guard deliberately survives the fast path: `AGENTS.md` and the deep
-guides are `*.md`, so a diff that touches only them is `docs_only=true` and the
-Swift lane — including `AgentsGuideSizeTests`, whose entire job is guarding
-`AGENTS.md`'s 32 KiB Codex truncation budget — used to be skipped exactly on
-the diffs that can break it. `scripts/ci/test-agents-guide-budget.sh` is a
-shell port of that test, run in the ungated shell-test step. It parses the cap,
+One tier-0 guard deliberately survives the fast path. `AGENTS.md` and the deep
+guides are `*.md`, so before #707 a diff that touched only them skipped the
+Swift lane, including `AgentsGuideSizeTests`, whose entire job is guarding
+`AGENTS.md`'s 32 KiB Codex truncation budget. That test names those files, so
+such a diff now runs the Swift lane, but
+`scripts/ci/test-agents-guide-budget.sh`, a shell port of that test, still
+runs in the ungated shell-test step. It parses the cap,
 the router targets and the anchors out of `AgentsGuideSizeTests.swift` rather
 than restating them, and fails if that file grows an assertion it has not
 ported — so the two cannot drift.

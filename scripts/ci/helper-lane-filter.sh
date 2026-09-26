@@ -25,9 +25,9 @@
 # the other lane filters.
 #
 # WHY THIS IS SAFE TO GATE AT ALL (owner decision 2026-09-05, "option 8").
-# These two suites ran on every self-hosted run — 11 s + 20 s — including on
-# diffs that could not possibly change what they test. They can be gated
-# because both helpers are HERMETIC packages: `PolishHelper/Package.swift` and
+# These two suites ran on every self-hosted run (cost: docs/agent/test-tiers.md
+# "Why the helper unit suites are path-gated"), including on diffs that could
+# not possibly change what they test. They can be gated because both helpers are HERMETIC packages: `PolishHelper/Package.swift` and
 # `SpeechHelper/Package.swift` declare only REMOTE dependencies (no `path:`
 # dependency, no `..` reference, no symlink out of the directory, no source
 # shared with the root package), so the only inputs to a helper's unit suite
