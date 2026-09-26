@@ -134,7 +134,9 @@ Packaging, the uploads and the launch smoke (about 95 s of the Mac) are
 path-gated on PRs too (`scripts/ci/mac-package-filter.sh`). A PR whose every
 changed path stays out of the bundle (tests, docs, `scripts/` other than
 `package_app.sh` and `clean-stale-outputs.sh`, workflows other than
-`ci.yml`'s `mac-lanes` job, eval data) builds no bundle, unless a lane that
+`ci.yml`'s `mac-lanes` job, eval data, and Markdown under `Sources/` outside
+a `Resources/` directory or in the opencode and vibe integrations) builds no
+bundle, unless a lane that
 reads it runs (polishd, speechd, the dogfood pass) or its body carries
 `[mac-lanes]`. An unclassified path packages. Such a PR has no
 `localvoxtral-app` artifact for `try-pr.sh`, which says so; its bundle would

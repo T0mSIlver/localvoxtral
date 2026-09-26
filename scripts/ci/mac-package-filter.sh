@@ -33,9 +33,10 @@
 # helper packages' sources and manifests, the icons, the integrations it
 # ships, and package_app.sh; clean-stale-outputs.sh decides what of dist/
 # survives into the step. A diff can skip packaging only when EVERY path is
-# on the SKIPPABLE list below: tests, docs, CI scripts, other workflows, the
-# eval data. Anything else, including a path nobody classified, packages, so
-# a new input can only cost Mac time, never ship an unsmoked bundle. build-test
+# on the SKIPPABLE list below (tests, docs, CI scripts, other workflows, the
+# eval data) or is Markdown the bundle never ships (is_skippable). Anything
+# else, including a path nobody classified, packages, so a new input can only
+# cost Mac time, never ship an unsmoked bundle. build-test
 # still packages and launch-smokes a bundle for fork PRs only, and the nightly
 # release packages main every night.
 set -euo pipefail
@@ -101,6 +102,18 @@ is_skippable() {
   local path="$1" pattern
   case "$path" in
     PolishHelper/Tests/* | SpeechHelper/Tests/*)
+      return 0
+      ;;
+    # Markdown the bundle never ships (#650). Order matters: these arms run
+    # before the packaging-input arm below. `.process("Resources")` bundles
+    # every file in a Resources/ directory, and package_app.sh copies
+    # integrations/claude-code/ whole, so Markdown there still packages; the
+    # opencode and vibe integrations ship named files only.
+    Sources/*/Resources/*)
+      REJECTION="bundled resource: $path"
+      return 1
+      ;;
+    Sources/*.md | integrations/opencode/*.md | integrations/vibe/*.md)
       return 0
       ;;
     Sources/* | PolishHelper/* | SpeechHelper/* | Package.* | assets/* | integrations/* \
