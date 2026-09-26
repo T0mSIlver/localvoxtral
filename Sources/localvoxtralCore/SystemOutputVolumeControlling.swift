@@ -35,6 +35,8 @@ package protocol SystemOutputVolumeControlling: Sendable {
 /// Answers "no output volume" to everything, so a view model built without
 /// runtime services (every unit test) cannot move the host's volume.
 package struct UnavailableSystemOutputVolumeControl: SystemOutputVolumeControlling {
+    package init() {}
+
     package func readDefaultOutput() -> OutputVolumeReading? { nil }
     package func volume(forDeviceUID deviceUID: String) -> Float? { nil }
 
