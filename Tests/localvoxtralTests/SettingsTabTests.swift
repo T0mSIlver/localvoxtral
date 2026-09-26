@@ -67,11 +67,12 @@ final class SettingsTabTests: XCTestCase {
         )
         let rawValues = Set(SettingsTab.allKnownPanes.map(\.rawValue))
 
-        // History and Insights are drilled by neither script. Both run on the
-        // owner's Mac against his real store, the capture publishes a picture
-        // of the pane and the drill dumps the window's AX tree into a public CI
-        // log when an assertion fails: either would publish what he dictated.
-        let scriptedRawValues = rawValues.subtracting(["history", "insights"])
+        // History, Insights and the Inbox are drilled by neither script. Both
+        // run on the owner's Mac against his real store, the capture publishes
+        // a picture of the pane and the drill dumps the window's AX tree into a
+        // public CI log when an assertion fails: either would publish what he
+        // dictated.
+        let scriptedRawValues = rawValues.subtracting(["history", "insights", "inbox"])
         XCTAssertEqual(
             Self.firstQuotedArguments(ofCalls: "assert_tab ", in: uiSmoke),
             scriptedRawValues,
