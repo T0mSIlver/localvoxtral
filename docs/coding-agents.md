@@ -20,18 +20,23 @@ more), and apps that embed a terminal can be added in
   into the void, and an overlay commit falls back to copying the text to the
   clipboard
 
+## Polishing
+
 When an Overlay Buffer dictation commits, optional LLM polishing understands
 how developers talk:
 
-- **Agent prompt profile** (on by default) — when the target is a terminal
-  or a Claude Code session in Claude Desktop's Code tab, polishing switches
-  to an agent-tuned prompt. Spoken symbol forms become written ones ("dash
+- **Agent prompt profile in terminals and Claude Desktop** (on by default) —
+  when the target is a terminal or a Claude Code session in Claude Desktop's
+  Code tab, polishing switches to an agent-tuned prompt. Spoken symbol forms become written ones ("dash
   dash force" → `--force`, "src slash auth" → `src/auth`, "the dot env
   file" → `.env`), code-like tokens (and only those) get backticks, filler
   words are stripped, self-corrections resolve to the final intent, and
   explicit enumerations become lists. Claude Desktop also hosts plain chat,
-  so it gets this prompt only when the dictation joined a Code-tab session,
-  which needs **Send diff, recent files and last prompt**
+  so it gets this prompt only when the dictation joined a Code-tab session.
+  That needs **Send diff, recent files and last prompt** in **Settings →
+  Context** and, when the polisher is not on this Mac (the Mistral API, say),
+  **Send context to non-local polishing servers** too; with either off,
+  Claude Desktop gets the standard prompt
 - **Model-first polishing** — polishing trusts the model's final wording and
   technical formatting, so useful Markdown and reconstructed identifiers
   survive

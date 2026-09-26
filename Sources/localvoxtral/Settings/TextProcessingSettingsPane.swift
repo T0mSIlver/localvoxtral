@@ -11,6 +11,12 @@ struct TextProcessingSettingsPane: View {
         • Names I say a lot: Qwen, Claude Code, vLLM, Ghostty
         """
 
+    /// What the Polishing rows do, including when Claude Desktop gets the
+    /// agent prompt (only with the session-context settings on, #669).
+    private static let polishingLearnMoreURL = URL(
+        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/coding-agents.md#polishing"
+    )!
+
     private var isLLMPolishingReachable: Bool {
         settings.isOverlayBufferSessionReachable
     }
@@ -123,7 +129,7 @@ struct TextProcessingSettingsPane: View {
                 }
             }
 
-            SettingsGroup(title: "Polishing") {
+            SettingsGroup(title: "Polishing", learnMoreURL: Self.polishingLearnMoreURL) {
                 if !isLLMPolishingReachable {
                     SettingsAvailabilityCard(
                         title: "No Overlay Buffer shortcut",
@@ -142,7 +148,7 @@ struct TextProcessingSettingsPane: View {
                             .labelsHidden()
                     }
 
-                    SettingsFieldRow(title: "Agent prompt profile in terminals") {
+                    SettingsFieldRow(title: "Agent prompt profile in terminals and Claude Desktop") {
                         Toggle("", isOn: $settings.agentPolishProfileEnabled)
                             .labelsHidden()
                     }
