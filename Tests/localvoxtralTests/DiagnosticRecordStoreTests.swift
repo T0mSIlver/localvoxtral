@@ -509,7 +509,8 @@ final class DiagnosticRecordRedactionTests: XCTestCase {
         XCTAssertFalse(encoded.contains("ClaudeHookPublisher to HookPublisher"))
         XCTAssertFalse(encoded.contains("update the tests in HookTests"))
         XCTAssertTrue(encoded.contains(DiagnosticRecordRedaction.withheldPromptPlaceholder))
-        XCTAssertTrue(encoded.contains("Sources/App.swift (edit)"), "the rest of the context stays")
+        XCTAssertTrue(
+            record.text.userPrompts[0].contains("Sources/App.swift (edit)"), "the rest of the context stays")
         XCTAssertEqual(record.text.rawTranscript, "rename the hook publisher",
                        "this dictation's own words are not the prior prompt")
     }
