@@ -21,7 +21,7 @@ FIXTURE="$ROOT_DIR/scripts/herdr-integration-fixture.sh"
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lv-herdr-fixture-recovery.XXXXXX")"
 DECOY_PID=""
-trap '[[ -z "$DECOY_PID" ]] || kill "$DECOY_PID" 2>/dev/null; rm -rf "$TMP_DIR"' EXIT
+trap '[[ -z "$DECOY_PID" ]] || kill "$DECOY_PID" 2>/dev/null || :; rm -rf "$TMP_DIR"' EXIT
 
 fail() {
   printf 'FAIL: %s\n' "$*" >&2
