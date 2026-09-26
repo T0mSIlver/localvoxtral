@@ -63,6 +63,7 @@ common_env=(
   "PATH=$TMP_DIR/bin:$PATH"
   "SWIFT=$TMP_DIR/bin/fake-swift"
   "LV_BUILD_HOST=fake-host"
+  "LV_ALLOW_HEAVY_MAC_RUN=1"
   "LV_BUILD_DIR=work/localvoxtral-linux-routing-regression"
   "LV_LINUX_SCRATCH=$TMP_DIR/linux-build"
   "LV_TEST_SSH_LOG=$ssh_log"

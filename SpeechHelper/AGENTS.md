@@ -16,5 +16,5 @@ Its vendored dependency pin and upgrade procedure live in `DEPENDENCY.md`.
 - Engine, model-pin, packaging, or integration-contract changes here MUST run
   the speechd live-model lane once, on the final diff: the PR's CI lane runs
   it when its filter matches (or with `[run-speechd-integration]` in the
-  PR), so run `./scripts/remote-build.sh integration-speechd` by hand only
+  PR), so run `LV_ALLOW_HEAVY_MAC_RUN=1 ./scripts/remote-build.sh integration-speechd` by hand only
   when neither applies. Triggers in `../docs/agent/test-tiers.md`.

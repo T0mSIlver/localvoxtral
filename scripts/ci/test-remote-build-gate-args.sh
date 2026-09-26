@@ -38,6 +38,9 @@ common_env=(
   "LV_BUILD_HOST=fake-host"
   # The Mac path; test-remote-build-linux-routing.sh covers the Linux one.
   "LV_TEST_ON_MAC=1"
+  # The argument cases below include an unfiltered `test`; the opt-in cases
+  # at the end (#617) override this.
+  "LV_ALLOW_HEAVY_MAC_RUN=1"
   "LV_BUILD_DIR=work/localvoxtral-gate-args-regression"
   "LV_TEST_TRANSPORT_LOG=$transport_log"
   "LOCALVOXTRAL_REMOTE_LOG=$TMP_DIR/remote-build.log"
@@ -90,4 +93,64 @@ grep -q 'swift test' "$transport_log" || fail "clean run never sent its payload"
 run_remote_build 'diag rejects arguments' 1 diag extra
 assert_stderr_has 'does not accept extra arguments'
 
+# #617: the full suite and the live lanes and evals need the opt-in; they
+# refuse before any sync, naming the way out.
+assert_no_transport() {
+  [[ ! -s "$transport_log" ]] \
+    || fail "$1 still reached the host: $(cat "$transport_log")"
+}
+without_opt_in() {
+  local description="$1" expected="$2" status=0
+  shift 2
+  : >"$transport_log"
+  env "${common_env[@]}" LV_ALLOW_HEAVY_MAC_RUN=0 "$REMOTE_BUILD" "$@" \
+    >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr" || status=$?
+  [[ "$status" == "$expected" ]] \
+    || fail "$description: exit $status, expected $expected: $(cat "$TMP_DIR/stderr")"
+}
+
+without_opt_in 'bare invocation' 2
+assert_stderr_has 'test --filter <Suite>'
+assert_stderr_has 'LV_ALLOW_HEAVY_MAC_RUN=1'
+assert_no_transport 'a bare invocation'
+for args in 'test' 'test --skip AlphaTests'; do
+  # shellcheck disable=SC2086
+  without_opt_in "$args" 2 $args
+  assert_stderr_has "hosted build-test already runs it"
+  assert_no_transport "$args"
+done
+for command in integration integration-keychain integration-mistral \
+  integration-polishd integration-speechd integration-herdr eval-llm eval-e2e \
+  eval-term-recall speechd-bench polishd-bench; do
+  without_opt_in "$command" 2 "$command"
+  assert_stderr_has "$command runs live inference"
+  assert_stderr_has 'AGENTS.md'
+  assert_stderr_has "LV_ALLOW_HEAVY_MAC_RUN=1"
+  assert_no_transport "$command"
+done
+
+# Scoped and light runs need no opt-in.
+for args in 'test --filter AlphaTests' 'test --filter=AlphaTests' \
+  'test --package-path SpeechHelper' 'build' 'package' 'exec true'; do
+  # shellcheck disable=SC2086
+  without_opt_in "$args" 0 $args
+  grep -q '^ssh ' "$transport_log" || fail "$args never reached the host"
+done
+for command in diag disk svc-status; do
+  without_opt_in "$command" 0 "$command"
+  grep -q "^ssh .*$command" "$transport_log" || fail "$command never reached the host"
+done
+
+# The opt-in lets them through.
+: >"$transport_log"
+env "${common_env[@]}" LV_TEST_SHARDS=1 "$REMOTE_BUILD" test >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr" || true
+grep -q 'swift test' "$transport_log" || fail "an opted-in plain test never ran: $(cat "$TMP_DIR/stderr")"
+: >"$transport_log"
+env "${common_env[@]}" "$REMOTE_BUILD" integration >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr" || true
+grep -q 'swift test' "$transport_log" || fail "an opted-in integration never ran: $(cat "$TMP_DIR/stderr")"
+if grep -q 'runs live inference' "$TMP_DIR/stderr"; then
+  fail "an opted-in integration was refused"
+fi
+
 printf 'PASS: remote-build refuses gate-blocked arguments before the tree sync\n'
+printf 'PASS: the full suite and the live lanes need LV_ALLOW_HEAVY_MAC_RUN=1\n'

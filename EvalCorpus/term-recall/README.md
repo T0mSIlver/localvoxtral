@@ -29,15 +29,15 @@ run if either sits in `EvalRecordings/term-recall/`.
 From the same machine, against the Mac's speech test services:
 
 ```bash
-./scripts/remote-build.sh eval-term-recall --asr voxtral
+LV_ALLOW_HEAVY_MAC_RUN=1 ./scripts/remote-build.sh eval-term-recall --asr voxtral
 ```
 
 ```bash
-./scripts/remote-build.sh eval-term-recall --asr nemotron
+LV_ALLOW_HEAVY_MAC_RUN=1 ./scripts/remote-build.sh eval-term-recall --asr nemotron
 ```
 
 ```bash
-./scripts/remote-build.sh eval-term-recall compare voxtral-none nemotron-none
+LV_ALLOW_HEAVY_MAC_RUN=1 ./scripts/remote-build.sh eval-term-recall compare voxtral-none nemotron-none
 ```
 
 Each run prints a scoreboard and leaves its run file in

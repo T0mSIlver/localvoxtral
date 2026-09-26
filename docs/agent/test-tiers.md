@@ -32,7 +32,9 @@ owner runbook `scripts/mac/README.md`), so their weights are not resident 24/7.
 This is hands-free: CI warms speechd in a step before the integration suite, and
 `remote-build.sh integration|eval-llm|eval-e2e` warm the right server through the gate's
 `ensure` verb first (names `speechd`/`polishd`, with `voxmlx`/`mlxlm` accepted as
-deprecated aliases), blocking until the port is healthy. A burst of runs reuses
+deprecated aliases), blocking until the port is healthy. Every live verb and
+the unfiltered `test` refuse without `LV_ALLOW_HEAVY_MAC_RUN=1` (#617), so a hand
+run is a decision: the commands below leave it out. A burst of runs reuses
 one warm process (each `ensure` resets a ~20 min idle window); the reaper frees
 the RAM once the machine goes quiet.
 

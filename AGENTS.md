@@ -25,7 +25,9 @@ it only where nothing else can do the job:
 - On the Mac, run only the suites your change touches:
   `remote-build.sh test --filter <Suite>`, the flag repeated per suite (the
   host's SSH gate refuses `|`). Never run the full suite there: the PR's
-  hosted `build-test` runs it on every push, drafts included.
+  hosted `build-test` runs it on every push, drafts included. The script
+  refuses a `test` with no `--filter` and the live verbs below unless
+  `LV_ALLOW_HEAVY_MAC_RUN=1` is set; set it only when a rule here requires.
 - Live lanes and evals (`integration*`, `eval-e2e`, `eval-term-recall`) run
   minutes to half an hour of inference. Run one only when a rule below
   requires it, once, on the final diff. When the PR's CI lane runs it, don't

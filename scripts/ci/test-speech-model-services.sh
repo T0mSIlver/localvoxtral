@@ -226,6 +226,7 @@ STUB
 chmod +x "$TMP_DIR/bin/rsync"
 remote_build() {
   env PATH="$TMP_DIR/bin:$PATH" LV_BUILD_HOST=fake-host \
+    LV_ALLOW_HEAVY_MAC_RUN=1 \
     LV_BUILD_DIR=work/localvoxtral-speech-services-test \
     LV_TEST_SPEECH_MODELS="$LIST" \
     LOCALVOXTRAL_REMOTE_LOG="$TMP_DIR/remote-build.log" \
