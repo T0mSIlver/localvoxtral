@@ -6,6 +6,23 @@ import CoreGraphics
 #endif
 import Foundation
 
+/// One dictation's join, and the one fact about a non-join the overlay badge
+/// needs from the same resolution.
+package struct ClaudeJoinResolution: Sendable, Equatable {
+    package var join: ClaudeSessionJoin?
+    /// The focused surface itself named a Claude Code session and nothing
+    /// joined it: Claude Desktop focus inside a session's web view whose id
+    /// the registry did not resolve to one live session. Never true with a
+    /// join, and never set by an arm that cannot tell a session view from
+    /// anything else on screen.
+    package var focusedSessionUnmatched: Bool
+
+    package init(join: ClaudeSessionJoin?, focusedSessionUnmatched: Bool = false) {
+        self.join = join
+        self.focusedSessionUnmatched = focusedSessionUnmatched
+    }
+}
+
 /// Resolves the focused pane to a live Claude session, and authorizes raw
 /// screen attachment only when that join is unambiguous.
 ///
@@ -236,18 +253,29 @@ package struct ClaudeSessionJoinResolver {
     /// This remains the only place a join is resolved, once per dictation, at
     /// start — whichever mechanism answers.
     package func resolve(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {
+        await resolution(target: target).join
+    }
+
+    /// `resolve(target:)`, plus whether the surface named a Claude Code session
+    /// that did not join. The overlay badge reads that from here, from the one
+    /// resolution, rather than asking the surface a second time.
+    package func resolution(target: TerminalScreenTarget) async -> ClaudeJoinResolution {
+        // Claude Desktop is the third kind of target: one address, read over
+        // Accessibility, no screen. Its allowlist is disjoint from the other
+        // two (pinned by a test).
+        if ClaudeDesktopAllowlist.isSupported(target.bundleID) {
+            return await resolveViaDesktopSession(target: target)
+        }
+        return ClaudeJoinResolution(join: await resolveSurface(target: target))
+    }
+
+    private func resolveSurface(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {
         // A browser is a different kind of target with a different capability:
         // one short URL string, no screen, no pane. The two allowlists are
         // disjoint (pinned by a test), so this branch and the terminal path
         // below can never both apply to one app.
         if BrowserTabAllowlist.isSupported(target.bundleID) {
             return await resolveViaBrowserTab(target: target)
-        }
-        // Claude Desktop is the third kind of target: one address, read over
-        // Accessibility, no screen. Its allowlist is disjoint from the other
-        // two (pinned by a test).
-        if ClaudeDesktopAllowlist.isSupported(target.bundleID) {
-            return await resolveViaDesktopSession(target: target)
         }
         // The allowlist is re-checked here even though the capture gate already
         // enforced it. This object is reachable independently of that gate, and

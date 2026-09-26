@@ -22,7 +22,7 @@ enum ClaudeSurfaceProbeCommand {
 
     /// - Returns: the process exit status. 0 an arm joined, 1 no arm joined.
     static func run(options: ClaudeSurfaceProbe.Options) -> Int32 {
-        let summary = resolveWithinDeadline()
+        let summary = resolveWithinDeadline(options: options)
         print(options.json ? summary.jsonLine : summary.textLines)
         return ClaudeSurfaceProbe.exitCode(for: summary)
     }
@@ -31,10 +31,12 @@ enum ClaudeSurfaceProbeCommand {
     /// run loop, the same shape `AppDelegate.drainRemoteForwardTeardowns` uses
     /// — blocking the main thread on a semaphore instead would deadlock the
     /// main-actor task it is waiting for.
-    private static func resolveWithinDeadline() -> ClaudeSessionJoinSummary {
+    private static func resolveWithinDeadline(
+        options: ClaudeSurfaceProbe.Options
+    ) -> ClaudeSessionJoinSummary {
         let answer = Mutex<ClaudeSessionJoinSummary?>(nil)
         Task { @MainActor in
-            let summary = await probe()
+            let summary = await probe(options: options)
             answer.withLock { $0 = summary }
         }
         let expiry = Date().addingTimeInterval(deadline)
@@ -47,17 +49,49 @@ enum ClaudeSurfaceProbeCommand {
         )
     }
 
-    private static func probe() async -> ClaudeSessionJoinSummary {
-        let registry = ClaudeSessionRegistry()
-        let resolver = makeResolver(registry: registry)
+    private static func probe(options: ClaudeSurfaceProbe.Options) async -> ClaudeSessionJoinSummary {
+        // Read-only: `init` parses the enrollment file and every query used
+        // here is a pure lookup over the parsed value. An unreadable or absent
+        // file means no candidates, which is the same as no enrollment.
+        let hosts = try? ClaudeRemoteHostRegistry()
+        let registry = savedRegistry(hosts: hosts)
+        let resolver = makeResolver(registry: registry, hosts: hosts, readsClaudeDesktop: options.desktop)
         return await ClaudeSurfaceProbe.summarize(
             // Never `AXIsProcessTrustedWithOptions`: a diagnostic must report
             // the permission state, not change it by raising the grant sheet.
             accessibilityTrusted: AXIsProcessTrusted(),
-            frontmostTarget: frontmostTarget(),
+            frontmostTarget: options.desktop ? claudeDesktopTarget() : frontmostTarget(),
+            targetUnavailable: options.desktop ? .claudeDesktopNotRunning : .noFrontmostApplication,
             hasLiveSessions: { registry.hasLiveSessions() },
             resolve: { await resolver.resolve(target: $0) }
         )
+    }
+
+    /// The sessions the running app last saved, restored through the same
+    /// checks the app applies at launch (TTL, pid liveness, boot identity,
+    /// active enrollment for a remote origin) and never written back: the
+    /// restore rewrites the file when it drops a row, and that file belongs to
+    /// the app.
+    private static func savedRegistry(hosts: ClaudeRemoteHostRegistry?) -> ClaudeSessionRegistry {
+        let activeRemoteChannels = Set(
+            (hosts?.hosts() ?? [])
+                .filter { !$0.isRevoked }
+                .map { ClaudeRemoteSessionScope.channel(hostID: $0.id) }
+        )
+        return ClaudeSessionRegistry(
+            store: ReadOnlyClaudeSessionStore(),
+            allowedRemoteChannels: activeRemoteChannels
+        )
+    }
+
+    /// The running Claude Desktop, focused or not: the Desktop arm reads the
+    /// web view that holds focus INSIDE that app, which it keeps while the
+    /// terminal running this verb is frontmost.
+    private static func claudeDesktopTarget() -> TerminalScreenTarget? {
+        guard let app = NSRunningApplication.runningApplications(
+            withBundleIdentifier: ClaudeDesktopAllowlist.bundleID
+        ).first else { return nil }
+        return TerminalScreenTarget(pid: app.processIdentifier, bundleID: ClaudeDesktopAllowlist.bundleID)
     }
 
     /// The frontmost app as a target. Not `TerminalScreenContextSource`'s
@@ -94,21 +128,27 @@ enum ClaudeSurfaceProbeCommand {
     /// * `focusedBrowserTabURL` — a tab URL is a page the user is looking at.
     ///   The browser arm abstains here rather than have a debug verb read the
     ///   address bar.
-    /// * `focusedDesktopSessionURL` — the same, for the Claude Desktop web
-    ///   view holding focus; the read also switches Electron's accessibility
-    ///   tree on, which a diagnostic has no business doing.
+    /// * `focusedDesktopSessionURL`, unless `--desktop` asked for it — the
+    ///   address of the Claude Desktop web view holding focus. The read also
+    ///   switches Electron's accessibility tree on, so only the flag that
+    ///   names Claude Desktop as the surface to probe turns it on.
     /// * `readFocusedGrid` — screen text, and only the panel-nonce match ever
     ///   needed it. The probe reads no screen content at all.
-    private static func makeResolver(registry: ClaudeSessionRegistry) -> ClaudeSessionJoinResolver {
+    private static func makeResolver(
+        registry: ClaudeSessionRegistry,
+        hosts: ClaudeRemoteHostRegistry?,
+        readsClaudeDesktop: Bool
+    ) -> ClaudeSessionJoinResolver {
         let ttyReader = AppleScriptTerminalTTYReader()
-        // Read-only: `init` parses the enrollment file and every query used
-        // here is a pure lookup over the parsed value. An unreadable or absent
-        // file means no candidates, which is the same as no enrollment.
-        let hosts = try? ClaudeRemoteHostRegistry()
+        let desktopReader = AXClaudeDesktopSessionURLReader()
         let canonicalizer = SSHDestinationCanonicalizer.live()
         return ClaudeSessionJoinResolver(
             registry: registry,
             focusedTerminalTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) },
+            focusedDesktopSessionURL: { pid in
+                guard readsClaudeDesktop else { return nil }
+                return await desktopReader.focusedSessionURL(applicationPID: pid)
+            },
             focusedWindowID: { TerminalScreenAXReader.focusedWindowIdentity(applicationPID: $0) },
             herdrClientProbe: { HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0) },
             herdrFederation: { HerdrMachineFederationReader.live().federation() },
@@ -127,4 +167,13 @@ enum ClaudeSurfaceProbeCommand {
             speculativeHosts: { hosts?.hosts() ?? [] }
         )
     }
+}
+
+/// The app's saved session file, loaded and never saved or cleared.
+private struct ReadOnlyClaudeSessionStore: ClaudeSessionStore {
+    private let file = ClaudeSessionFileStore()
+
+    func load() throws -> Data? { try file.load() }
+    func save(_ data: Data) throws {}
+    func clear() throws {}
 }

@@ -3,11 +3,12 @@ import Foundation
 /// The join, reduced to the handful of facts that can be reported outside the
 /// process without leaking anything the logs redact.
 ///
-/// One type, two consumers: the dogfood capture record's `join` block and the
-/// `--probe-surface` diagnostic verb. Two mappings of one vocabulary is one too
-/// many — an arm renamed on one side and not the other would make a probe run
-/// and a captured record disagree about the same dictation, which is exactly
-/// the drift a diagnostic must never introduce.
+/// One type for every consumer: the dogfood capture record's `join` block, the
+/// `--probe-surface` diagnostic verb, and the per-dictation outcome line in the
+/// unified log. Two mappings of one vocabulary is one too many — an arm
+/// renamed on one side and not the other would make a probe run and a captured
+/// record disagree about the same dictation, which is exactly the drift a
+/// diagnostic must never introduce.
 ///
 /// What is deliberately NOT here is the point. A join knows the session id,
 /// the workspace path, the herdr socket path, the remote host, and (for
@@ -125,6 +126,13 @@ package struct ClaudeSessionJoinSummary: Codable, Equatable, Sendable {
               array.count >= 2
         else { return "\"\"" }
         return String(array.dropFirst().dropLast())
+    }
+
+    /// The dictation's persisted log line (`SessionContextResolver`): the arm,
+    /// the origin class and every cause, gates included. Nothing else, so the
+    /// line stays safe to paste from a public `log show`.
+    package var noticeText: String {
+        "arm=\(arm) origin=\(origin ?? "none") causes=\(abstentionReason ?? "none")"
     }
 
     /// The same six facts as aligned text, for a human reading a terminal.

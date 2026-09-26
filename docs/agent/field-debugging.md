@@ -126,18 +126,40 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   missing when a Ghostty ssh wrapper made every remote probe report
   `undeterminable` (2026-08-03).
 
-  Two limits to read the output with. **The registry is per-process**: live
-  session records live in the running app, built from hook traffic its broker
-  received, so a separate one-shot process starts with none and says so first
-  (`probe: no live Claude sessions in this process`) — the arms then decline
-  for that reason, and what you are reading is how far each one got on the
-  SURFACE side. **The remote-herdr arm is read-only here by construction**: the
+  **Claude Desktop is not frontmost while you type the command**, so it gets
+  its own flag: `--probe-surface --desktop` probes the session focused inside
+  the running Claude Desktop, with the Desktop arm's Accessibility read wired
+  in (it is withheld otherwise, because it switches Electron's accessibility
+  tree on).
+
+  Two limits to read the output with. **The registry is the app's saved
+  copy**: live session records live in the running app, built from hook
+  traffic its broker received, and the verb restores what the app last saved
+  to disk (read-only, through the app's own restore checks). It says so first
+  when that is empty (`probe: no live Claude sessions in the registry`) — the
+  arms then decline for that reason, and what you are reading is how far each
+  one got on the SURFACE side. **The remote-herdr arm is read-only here by construction**: the
   forward and panel-metadata capabilities are passed as `nil`, so the probe
   cannot open an `ssh -L` that outlives it or leave an `lv-mic-…` stamp in an
   agents panel, and there is no flag that turns them on. It reaches
   `forward capability unavailable` and stops. Same reasoning withholds the cmux
   arm (Keychain prompt), the browser arm (reads the address bar), and every
   screen read.
+
+  **After the fact, read the dictation's own line.** Every dictation writes one
+  `.notice` line naming the arm that joined, or the gate or abstention chain
+  that stopped it, and `.notice` survives in the unified log where the arms'
+  `.info` lines do not:
+
+  ```
+  log show --last 1h --predicate 'subsystem == "com.localvoxtral" AND eventMessage BEGINSWITH "Claude join outcome"'
+  ```
+
+  `arm=none origin=none causes=gate: Claude Desktop target without session context`
+  means the join was never attempted; `causes=desktopSession: no live session
+  reports this desktop session` means the view was a session whose hooks never
+  reached this Mac. The line carries no id, path or host, so it is safe to
+  paste into an issue.
 
   Both of those limits are gone in a **dogfood build with the control socket
   armed** (`docs/dogfood-builds.md`): `surface probe` runs the same

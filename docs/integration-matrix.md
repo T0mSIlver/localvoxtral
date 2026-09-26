@@ -36,7 +36,10 @@ contributes to a dictation, plus how the app learns about the session.
 Statusline / connection indicator: the local `--statusline` query for local
 Claude Code sessions; the remote plugin's hook-status stamp for enrolled
 hosts; nothing for opencode or Mistral Vibe (Vibe has no status line to
-extend).
+extend). The status line is terminal-only: Claude Desktop's Code tab does not
+render Claude Code's status line, so a Desktop session shows no indicator.
+There, the overlay badge (Overlay Buffer mode) and the log's
+`Claude join outcome` line say whether a dictation joined.
 
 **Settings → Terminals shows this matrix per machine**: one pane per terminal
 app, with the row's status dot and the capabilities spelled out as Dictation /
