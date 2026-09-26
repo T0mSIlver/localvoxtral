@@ -1,7 +1,10 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Every learned term, one row each, grouped by project: how often the memory
-/// applied it, when it last did, and a pin and a forget button (#522).
+/// applied it, when it last did, and a pin and a forget button (#522). Its
+/// footer exports and imports them, to move them between machines (#523).
 ///
 /// Reads the store's in-memory snapshot like the Settings row does, and
 /// re-renders on the same revision counter, so a dictation that lands while
@@ -9,6 +12,7 @@ import SwiftUI
 struct LearnedTermsSheet: View {
     let viewModel: DictationViewModel
     let onDone: () -> Void
+    @State private var fileMessage: String?
 
     private var projects: [LearnedTermProject] {
         _ = viewModel.learnedTermRevision
@@ -35,7 +39,19 @@ struct LearnedTermsSheet: View {
                 }
                 .accessibilityIdentifier("settings.learnedTerms.list")
             }
+            if let fileMessage {
+                Text(fileMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
             HStack {
+                Button("Import…", action: importTerms)
+                    .accessibilityIdentifier("settings.learnedTerms.import")
+                if !projects.isEmpty {
+                    Button("Export…", action: exportTerms)
+                        .accessibilityIdentifier("settings.learnedTerms.export")
+                }
                 Spacer()
                 Button("Done", action: onDone)
                     .keyboardShortcut(.defaultAction)
@@ -72,6 +88,89 @@ struct LearnedTermsSheet: View {
             .buttonStyle(.borderless)
             .help("Forget")
             .accessibilityLabel("Forget \(term.term)")
+        }
+    }
+
+    // MARK: Export and import
+
+    private func exportTerms() {
+        fileMessage = nil
+        guard let store = viewModel.learnedTermStore else { return }
+        let data: Data
+        do {
+            data = try LearnedTermsExport.data(for: store.snapshot(), exportedAt: Date())
+        } catch {
+            Log.persistence.error(
+                "learned terms: export encode failed: \(error.localizedDescription, privacy: .public)"
+            )
+            fileMessage = "Could not export the terms."
+            return
+        }
+        let panel = NSSavePanel()
+        panel.title = "Export learned terms"
+        panel.nameFieldStringValue = LearnedTermsExport.defaultFileName
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            // Off the main actor: the destination can be a network volume.
+            let saved = await Task.detached(priority: .userInitiated) {
+                do {
+                    try data.write(to: url, options: .atomic)
+                    Log.persistence.info("learned terms: exported \(data.count, privacy: .public) bytes")
+                    return true
+                } catch {
+                    Log.persistence.error(
+                        "learned terms: export write failed: \(error.localizedDescription, privacy: .public)"
+                    )
+                    return false
+                }
+            }.value
+            fileMessage = saved ? "Exported." : "Could not save the file."
+        }
+    }
+
+    private func importTerms() {
+        fileMessage = nil
+        guard let store = viewModel.learnedTermStore else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Import learned terms"
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            let read = await Task.detached(priority: .userInitiated) {
+                Result { try LearnedTermsExport.projects(from: Data(contentsOf: url)) }
+            }.value
+            switch read {
+            case .failure(let error):
+                Log.persistence.error(
+                    "learned terms: import refused: \(String(describing: error), privacy: .public)"
+                )
+                fileMessage = LearnedTermsSheet.importRefusal(error)
+            case .success(let projects):
+                let summary = await withCheckedContinuation { continuation in
+                    store.importProjects(projects) { continuation.resume(returning: $0) }
+                }
+                fileMessage = LearnedTermsSheet.importResult(summary)
+            }
+        }
+    }
+
+    private static func importResult(_ summary: LearnedTermsExport.ImportSummary) -> String {
+        switch (summary.terms, summary.projects) {
+        case (0, _): "No terms to import."
+        case (1, _): "Imported 1 term."
+        case (let terms, 1): "Imported \(terms) terms."
+        case (let terms, let projects): "Imported \(terms) terms in \(projects) projects."
+        }
+    }
+
+    private static func importRefusal(_ error: any Error) -> String {
+        switch error as? LearnedTermsExport.ImportError {
+        case .newerVersion: "Made by a newer version of localvoxtral."
+        case .unreadable: "Not a learned terms file."
+        case nil: "Could not read the file."
         }
     }
 

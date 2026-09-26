@@ -205,7 +205,10 @@ History; the panes sit under the sidebar's Settings header:
   no API credits. **Advanced → Terms learned from polishing → Show** lists them by
   project, with how often each was applied and when it last was. Pin a term
   to keep it: it is used at once and never expires. Forget one, or all of
-  them with **Forget**. A learned name that you say as ordinary words in a
+  them with **Forget**. **Export…** and **Import…** at the bottom of that
+  list move the terms to another Mac as a JSON file. An import adds to what
+  is there, and a term still being learned stays that way until you have
+  said it in three dictations. A learned name that you say as ordinary words in a
   sentence ("we should use auth tokens" with `useAuth` learned) is not
   rewritten; polishing decides from the sentence. Next to a code word ("call
   use auth", "the session start hook") it is.

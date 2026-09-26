@@ -174,6 +174,8 @@ struct TextProcessingSettingsPane: View {
                     status: learnedTermStatus
                 ) {
                     HStack(spacing: 8) {
+                        // Enabled at zero: the sheet is where a new machine
+                        // imports terms (#523).
                         Button("Show") {
                             isShowingLearnedTerms = true
                         }
@@ -181,8 +183,8 @@ struct TextProcessingSettingsPane: View {
                         Button("Forget") {
                             viewModel.learnedTermStore?.forgetAll()
                         }
+                        .disabled(learnedTermCount == 0)
                     }
-                    .disabled(learnedTermCount == 0)
                 }
                 .sheet(isPresented: $isShowingLearnedTerms) {
                     LearnedTermsSheet(viewModel: viewModel) {

@@ -26,10 +26,7 @@ enum LearnedTermProjectResolver {
     /// project at all. Those three shapes cannot collide: a local key always
     /// starts with `/`, and a remote label is stripped to alphanumerics, `-`,
     /// `_` and `.` before it gets here (`ClaudeWorkspaceReference.opaqueLabel`).
-    struct Identity: Equatable, Sendable {
-        let key: String
-        let name: String
-    }
+    typealias Identity = LearnedTermProjectIdentity
 
     /// Where a dictation that belongs to no project remembers what it learned.
     /// Not a fallback for a project we failed to resolve — from the app's side
