@@ -506,8 +506,10 @@ final class ClaudeDesktopSessionReaderTests: XCTestCase {
     private struct Node {
         var role: String?
         var url: String?
+        var classes: [String] = []
         var parent: Int?
         var failsRole = false
+        var failsClasses = false
         var failsParent = false
     }
 
@@ -520,6 +522,46 @@ final class ClaudeDesktopSessionReaderTests: XCTestCase {
             parent: { nodes[$0].failsParent ? .failure(Failure()) : .success(nodes[$0].parent) },
             maxHops: maxHops
         )
+    }
+
+    /// Claude Desktop 2.9939.2 in split view, as measured on 2026-09-26 and
+    /// cut down to the elements the rule reads: one session web area for the
+    /// whole window, whose address names the PRIMARY pane's session.
+    private enum Split {
+        static let primaryAddress = "https://claude.ai/epitaxy/local_primary"
+        static let secondaryPrompt = 0
+        static let primaryPrompt = 7
+        static let sidebarRow = 10
+        static let primaryTerminal = 12
+        static let nodes = [
+            // 0–2: the secondary pane's prompt box, chat panel and pane.
+            Node(role: "AXTextArea", parent: 1),
+            Node(role: "AXGroup", classes: ["relative", "isolate", "min-w-0", "epitaxy-chat-panel"], parent: 2),
+            Node(role: "AXGroup", classes: ["dframe-pane", "dframe-pane-extra", "min-w-0"], parent: 3),
+            // 3–6: the main landmark, the session web area, the shell, the window.
+            Node(role: "AXGroup", classes: ["dframe-pane-col"], parent: 4),
+            Node(role: "AXWebArea", url: primaryAddress, parent: 5),
+            Node(role: "AXWebArea", url: "file:///shell/index.html", parent: 6),
+            Node(role: "AXWindow", parent: nil),
+            // 7–9: the primary pane's prompt box, chat panel and pane.
+            Node(role: "AXTextArea", parent: 8),
+            Node(role: "AXGroup", classes: ["relative", "isolate", "min-w-0", "epitaxy-chat-panel"], parent: 9),
+            Node(role: "AXGroup", classes: ["dframe-pane", "dframe-pane-primary", "min-w-0"], parent: 3),
+            // 10–11: a sidebar row, inside the same session web area.
+            Node(role: "AXButton", parent: 11),
+            Node(role: "AXGroup", classes: ["dframe-sidebar", "df-hub-rail"], parent: 4),
+            // 12–13: the primary pane's terminal, beside its chat panel.
+            Node(role: "AXTextField", parent: 13),
+            Node(role: "AXGroup", classes: ["xterm-helper-textarea"], parent: 9),
+        ]
+    }
+
+    // #662: in split view both panes share one web area, and its address
+    // names the primary pane's session. Focus in the secondary pane read it
+    // and joined the wrong session.
+    func testFocusInTheSecondaryPaneDoesNotReadThePrimarysAddress() {
+        let lookup = walk(Split.nodes, from: Split.secondaryPrompt)
+        XCTAssertNotEqual(lookup, .webArea(url: Split.primaryAddress))
     }
 
     // The measured shape: button → … → session web area → shell web area →
