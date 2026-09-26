@@ -77,6 +77,90 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, true)
     }
 
+    /// Claude Desktop (#660): a text field whose prompt sends on Return. The
+    /// dictation starts before Electron has built its accessibility tree, so
+    /// the AX probe finds nothing focused, which alone reads as a terminal.
+    /// The session stays a text-field session, and "send it" submits there.
+    func testLiveAutoPasteIntoClaudeDesktopSendsOnTheSpokenTrigger() async throws {
+        let desktopPID: pid_t = 4343
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        pipeline.viewModel.settings.liveSpokenSendEnabled = true
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == desktopPID ? ClaudeDesktopAllowlist.bundleID : nil
+        }
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { ClaudeDesktopAllowlist.bundleID }
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .noFocusedElement }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { @MainActor in
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+            TerminalTargetDetector.debugFocusedElementProbeOverride = nil
+            TerminalTargetDetector.debugSecureEventInputOverride = nil
+        }
+        let typed = TypedText()
+        var returns: [pid_t] = []
+        pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { chunk in
+                typed.append(chunk)
+                return true
+            },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false },
+            returnKeyPoster: { pid in
+                returns.append(pid)
+                return true
+            },
+            frontmostPIDReader: { desktopPID }
+        )
+
+        await startAndSpeak(pipeline)
+        XCTAssertFalse(pipeline.viewModel.session.sessionTargetIsTerminalLike)
+        pipeline.server.send(["type": "transcription.delta", "delta": "run the tests, send"])
+        pipeline.server.send(["type": "transcription.done", "text": "run the tests, send it."])
+        let typedTheSegment = await typed.waitFor("run the tests")
+        XCTAssertTrue(typedTheSegment, "typed so far: \(typed.text.debugDescription)")
+        XCTAssertEqual(returns, [desktopPID], "Return follows the segment, in Claude Desktop")
+
+        await stopAndFinalize(pipeline)
+        XCTAssertEqual(returns, [desktopPID], "the stop's final holds no trigger")
+    }
+
+    /// Claude Desktop (#660): a newline inside a typed unicode event was
+    /// dropped or scrambled there, so each one is pressed as Shift+Return.
+    func testLiveAutoPasteIntoClaudeDesktopTypesNewlinesAsShiftReturn() async throws {
+        let text = "first line\nsecond line."
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { ClaudeDesktopAllowlist.bundleID }
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .noFocusedElement }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { @MainActor in
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+            TerminalTargetDetector.debugFocusedElementProbeOverride = nil
+            TerminalTargetDetector.debugSecureEventInputOverride = nil
+        }
+        let typed = TypedText()
+        pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { chunk in
+                typed.append(chunk)
+                return true
+            },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false },
+            shiftReturnPoster: {
+                typed.append("⇧⏎")
+                return true
+            }
+        )
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.delta", "delta": text])
+        await stopAndFinalize(pipeline, finalText: text)
+
+        XCTAssertEqual(typed.text, "first line⇧⏎second line.")
+        XCTAssertFalse(typed.chunks.contains { $0.contains(where: \.isNewline) }, "no newline is typed as text")
+    }
+
     // MARK: - The two halves every scenario shares
 
     /// Start, connect, open the microphone, and get one captured chunk to the
@@ -117,7 +201,8 @@ final class DictationPipelineTests: XCTestCase {
     /// the finalization: the final commit is answered with the full text,
     /// the client closes, and the session commits and records.
     private func stopAndFinalize(
-        _ pipeline: Pipeline, file: StaticString = #filePath, line: UInt = #line
+        _ pipeline: Pipeline, finalText: String = DictationPipelineTests.phrase,
+        file: StaticString = #filePath, line: UInt = #line
     ) async {
         let viewModel = pipeline.viewModel
         let unsent = Self.speech(seed: 2)
@@ -141,7 +226,7 @@ final class DictationPipelineTests: XCTestCase {
             XCTAssertLessThan(flushed, finalCommit, "and sends it ahead of the final commit", file: file, line: line)
         }
 
-        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
+        pipeline.server.send(["type": "transcription.done", "text": finalText])
         let recorded = await pipeline.records.written.value(failAfter: 10)
         XCTAssertTrue(recorded, "the session never finished and wrote its record", file: file, line: line)
         await pipeline.server.awaitClose(file: file, line: line)

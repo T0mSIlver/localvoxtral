@@ -46,7 +46,7 @@ sees them.
   talking. Dictionary replacements are applied before text is typed;
   localvoxtral never backspaces over what an app has already drawn.
 
-**Say "send it" to press Return.** In a terminal, ending a dictation with
+**Say "send it" to press Return.** In a terminal or Claude Desktop, ending a dictation with
 "send it" or "send now" inserts the text without those words, then presses
 Return in the same app, so a coding agent gets the prompt without you
 touching the keyboard. It is off by default and set per mode in Settings →
@@ -54,10 +54,11 @@ Dictation. In Overlay Buffer the words are removed before polishing, so the
 polisher never sees them. In Live Auto-Paste the trigger can only be removed
 before it is typed, so with the option on each phrase appears when you finish
 it rather than word by word, and saying the same "… send it" phrase twice in a
-row sends it once. Neither mode presses Return in an app that is not a
-terminal, while Secure Keyboard Entry is on, or when the text could not be
-inserted into that terminal. A terminal is recognized only if it is a known
-one or listed in Settings → Terminals. In Live Auto-Paste, once any text of a
+row sends it once. Neither mode presses Return in any other app, while
+Secure Keyboard Entry is on, or when the text could not be inserted into that
+app. A terminal is recognized only if it is a known one or listed in Settings
+→ Terminals. Claude Desktop is recognized on its own; listing it there would
+make localvoxtral treat its prompt box as a terminal. In Live Auto-Paste, once any text of a
 dictation lands in another app, "send it" does nothing until the dictation
 ends.
 

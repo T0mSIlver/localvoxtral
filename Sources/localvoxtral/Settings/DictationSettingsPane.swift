@@ -314,7 +314,7 @@ struct DictationSettingsPane: View {
             }
 
             SettingsGroup(title: "Live Auto-Paste") {
-                SettingsFieldRow(title: "Say \u{201C}send it\u{201D} to press Return in a terminal") {
+                SettingsFieldRow(title: "Say \u{201C}send it\u{201D} to press Return in terminals and Claude Desktop") {
                     Toggle("", isOn: $settings.liveSpokenSendEnabled)
                         .labelsHidden()
                 }
@@ -377,7 +377,7 @@ struct DictationSettingsPane: View {
                     .labelsHidden()
                 }
 
-                SettingsFieldRow(title: "Say \u{201C}send it\u{201D} to press Return in a terminal") {
+                SettingsFieldRow(title: "Say \u{201C}send it\u{201D} to press Return in terminals and Claude Desktop") {
                     Toggle("", isOn: $settings.overlaySpokenSendEnabled)
                         .labelsHidden()
                 }

@@ -99,8 +99,8 @@ there is not.
   (`flushRemainder()` releases it at stop) but it costs latency of appearance.
 - **The spoken send trigger withholds whole segments in Live Auto-Paste.**
   "send it" / "send now" at the end of a segment must be cut before it is
-  typed, and nothing typed can be taken back, so with the opt-in on in a
-  terminal NO partial is typed: each segment is typed at its final (or at the
+  typed, and nothing typed can be taken back, so with the opt-in on in an
+  app where Return submits NO partial is typed: each segment is typed at its final (or at the
   promotion a stop or dropped socket does), then Return is pressed. That is
   the owner's accepted cost (2026-09-24), shown next to the toggle. The
   Return is pressed only in the PID the session pinned, only while that PID
@@ -108,13 +108,15 @@ there is not.
   Keyboard Entry, and only once the hold-back stream has released every
   word — a Return ahead of the last word would submit half a prompt. Every
   Live decision is taken when it is needed, from the app frontmost THEN
-  (terminal by bundle ID only); nothing sampled at session start or connect
+  (by bundle ID only, on `ReturnSubmitsAppList`: every terminal plus Claude
+  Desktop, whose prompt box sends on Return but which is not a terminal,
+  #660); nothing sampled at session start or connect
   time takes part, because focus can move in between (Codex round 2 on #494:
   a verdict from before the connect and a PID from audio start sent both
-  text and Return to an editor). A segment is withheld only if a terminal is
-  frontmost at its first insertion. Live text goes to whatever has focus, so
+  text and Return to an editor). A segment is withheld only if an app on the
+  list is frontmost at its first insertion. Live text goes to whatever has focus, so
   `TextInsertionService` records the frontmost PID at every live insertion;
-  the Return goes to the frontmost terminal only when every one since the
+  the Return goes to the frontmost app only when every one since the
   last Return SENT is that PID (an unreadable one, or one made under Secure
   Keyboard Entry, which swallows posted keys while reporting success, counts
   as elsewhere). The Return is decided before the segment is typed, and the
@@ -131,11 +133,10 @@ there is not.
   a non-submitting final comes between: no backend names its segments, and
   partials cannot tell a repeat from a straggler, so "send it" twice in a row
   presses Return once. In Overlay Buffer the trigger is cut from the raw
-  transcript before the dictionary and the polisher; the target counts as a
-  terminal only by its own bundle ID on the built-in or Settings → Terminals
-  list (the AX probe reads the element focused NOW, which need not be the
-  commit target's), and the Return follows only a commit that reported
-  `.succeeded`.
+  transcript before the dictionary and the polisher; the target qualifies
+  only by its own bundle ID on `ReturnSubmitsAppList` (the AX probe reads the
+  element focused NOW, which need not be the commit target's), and the Return
+  follows only a commit that reported `.succeeded`.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
   endpoint on stop (`DictationSessionController+StopCommit.swift`,
@@ -162,6 +163,28 @@ there is not.
   repository context, so they go only with the trusted-endpoint opt-in.
   Live context terms are not sent yet (#647). A new dictation that cancels
   the pass saves the realtime text as not inserted, as it does for a polish.
+- **Claude Desktop is a text field whose Return sends, and gets its
+  newlines as Shift+Return** (#660). Three lists name it, each for one
+  capability: `TerminalTargetDetector`'s text-field list fixes its verdict
+  (the AX probe cannot: Electron builds its tree only once the join read has
+  set `AXManualAccessibility`, after the verdict, so the first dictation after
+  the app launched found nothing focused and read as a terminal);
+  `ReturnSubmitsAppList` lets the spoken send trigger press Return there; and
+  `TextInsertionService`'s Shift+Return list changes how a newline is typed.
+  MEASURED on Claude Desktop 2.9939.2 (2026-09-26), posting exactly what
+  `postUnicodeTextEvents` posts: a newline never submitted, but one opening
+  an event or making up a whole event was dropped (`alpha` + `\n` + `beta`
+  landed as `alphabeta`), and a fenced block sent as consecutive 20-unit
+  events came out with pieces reordered. So in Desktop each line is typed on
+  its own and each newline is pressed as Shift+Return, which the prompt
+  handles as a key; the same probe then posted exactly that sequence back to
+  back and the text arrived in order. One cost is known (#695): a line that
+  opens with a code fence, typed key by key, triggers Desktop's markdown
+  shortcut and opens a code block that also takes the text after the closing
+  fence. The list is judged from the app frontmost when the keys
+  are posted, after the insertion made its target frontmost. Listing Desktop
+  under Settings → Terminals overrides the verdict (the user list wins), and
+  a terminal session collapses its newlines before any reach the keyboard.
 - **The overlay panel's click-through is insertion machinery, not window
   chrome.** `NonActivatingPanel` refuses key and main and swallows every click
   on its body, because the panel is on screen exactly while the app it is

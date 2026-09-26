@@ -161,6 +161,26 @@ final class TerminalTargetDetectorTests: XCTestCase {
         XCTAssertEqual(decision.reason, .bundleMatch)
     }
 
+    /// #660: Electron builds Claude Desktop's accessibility tree only once a
+    /// client sets `AXManualAccessibility`, which the join read does after
+    /// this verdict. Until then the probe finds no text field, and the verdict
+    /// read "terminal" for the first dictation after the app launched.
+    func testClaudeDesktopIsATextFieldWhateverTheProbeWouldSay() {
+        let decision = TerminalTargetDetector.decision(forBundleID: "com.anthropic.claudefordesktop") {
+            XCTFail("the AX probe must not decide Claude Desktop's verdict")
+            return .noFocusedElement
+        }
+        XCTAssertEqual(decision, .init(isTerminalLike: false, reason: .textFieldBundleMatch))
+    }
+
+    func testUserTerminalListOutranksTheTextFieldList() {
+        let decision = TerminalTargetDetector.decision(
+            forBundleID: "com.anthropic.claudefordesktop",
+            userBundleIDs: ["com.anthropic.claudefordesktop"]
+        ) { .valueSettable }
+        XCTAssertEqual(decision, .init(isTerminalLike: true, reason: .userBundleMatch))
+    }
+
     func testDetectCurrentTargetUsesInjectedSeams() {
         TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.example.unknown" }
         TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueNotSettable }
