@@ -51,7 +51,7 @@ extension DictationSessionController {
     }
 
     /// The record fields a stopped session samples at stop.
-    private struct StoppedSessionRecordFields {
+    struct StoppedSessionRecordFields {
         let startedAt: Date
         let provider: String
         let model: String
@@ -67,7 +67,7 @@ extension DictationSessionController {
     /// fields, and with a polishing configuration the world the polish is
     /// grounded in. The screen re-read compares against the start capture,
     /// and seconds of agent output scrolling past would drop it as mutated.
-    private struct OverlayStopSample {
+    struct OverlayStopSample {
         let record: StoppedSessionRecordFields
         let polishingConfig: LLMPolishingConfiguration?
         let capture: StopCommitCoordinator.Capture?
@@ -108,10 +108,14 @@ extension DictationSessionController {
 
     /// Polished and committed by a task when polishing has a configuration,
     /// committed as-is otherwise.
-    private func commitOverlayBufferText(
+    func commitOverlayBufferText(
         sessionMode: DictationOutputMode,
-        sample: OverlayStopSample
+        sample: OverlayStopSample,
+        goToChecked: Bool = false
     ) {
+        if !goToChecked, startGoToSessionIfSpoken(sessionMode: sessionMode, sample: sample) {
+            return
+        }
         // Before the dictionary and the polisher: the trigger is a command,
         // not text, so neither may see it.
         let spokenSend = stripOverlaySpokenSendTrigger()
@@ -648,7 +652,7 @@ extension DictationSessionController {
     }
 
 
-    private func saveSessionRecord(
+    func saveSessionRecord(
         startedAt: Date,
         rawText: String,
         polishedText: String?,
