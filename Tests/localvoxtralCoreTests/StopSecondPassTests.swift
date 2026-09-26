@@ -1,7 +1,7 @@
 import Foundation
-import Synchronization
 import XCTest
 @testable import localvoxtralCore
+import localvoxtralTestSupport
 
 final class StopSecondPassTests: XCTestCase {
     func testTheDeadlineGrowsWithTheAudio() {
@@ -35,171 +35,61 @@ final class StopSecondPassTests: XCTestCase {
     }
 
     func testAnAnswerBeforeTheDeadlineReplacesTheText() async {
-        let deadline = HeldSleep()
+        let clock = ManualSessionClock()
         let outcome = await StopSecondPass.run(
-            deadline: .seconds(3), sleep: deadline.sleep,
+            deadline: .seconds(3), sleep: clock.clock.sleep,
             transcribe: { "  Look at localvoxtral. \n" }
         )
         XCTAssertEqual(outcome, .replaced("Look at localvoxtral."))
-        XCTAssertEqual(deadline.cancelledCount, 1, "the losing deadline is cancelled")
+        XCTAssertEqual(clock.pendingSleepers, 0, "the losing deadline is cancelled")
     }
 
     func testTheDeadlineWinsOverASlowAnswerAndCancelsIt() async {
-        let deadline = HeldSleep()
-        let answer = HeldAnswer()
-        let task = Task {
-            await StopSecondPass.run(
-                deadline: .seconds(3), sleep: deadline.sleep, transcribe: answer.wait)
-        }
-        await deadline.waitUntilSleeping()
-        await answer.waitUntilAsked()
-        deadline.fire()
+        let clock = ManualSessionClock()
+        let answer = FakeBatchTranscriber(.held)
+        let task = Task { await race(answer, clock: clock) }
+        _ = await answer.called.value(failAfter: 10)
+        await clock.waitForSleepers(1)
+        clock.advance(by: 2.9)
+        XCTAssertEqual(answer.cancelledCount, 0, "not before the deadline")
+        clock.advance(by: 0.1)
         let outcome = await task.value
         XCTAssertEqual(outcome, .deadlinePassed)
-        XCTAssertTrue(answer.wasCancelled, "the request that lost is cancelled")
-        XCTAssertEqual(deadline.requested, [.seconds(3)])
+        XCTAssertEqual(answer.cancelledCount, 1, "the request that lost is cancelled")
     }
 
     func testAFailureFallsBack() async {
         struct Boom: Error {}
-        let outcome = await StopSecondPass.run(
-            deadline: .seconds(3), sleep: HeldSleep().sleep, transcribe: { throw Boom() })
+        let outcome = await race(FakeBatchTranscriber(.failure(Boom())), clock: ManualSessionClock())
         guard case .failed = outcome else { return XCTFail("got \(outcome)") }
     }
 
     func testABlankAnswerKeepsTheRealtimeText() async {
-        let outcome = await StopSecondPass.run(
-            deadline: .seconds(3), sleep: HeldSleep().sleep, transcribe: { " \n" })
+        let outcome = await race(FakeBatchTranscriber(.text(" \n")), clock: ManualSessionClock())
         XCTAssertEqual(outcome, .empty)
     }
 
     func testACancelledCommitCommitsNothing() async {
-        let deadline = HeldSleep()
-        let answer = HeldAnswer()
-        let task = Task {
-            await StopSecondPass.run(
-                deadline: .seconds(3), sleep: deadline.sleep, transcribe: answer.wait)
-        }
-        await deadline.waitUntilSleeping()
+        let clock = ManualSessionClock()
+        let answer = FakeBatchTranscriber(.held)
+        let task = Task { await race(answer, clock: clock) }
+        _ = await answer.called.value(failAfter: 10)
+        await clock.waitForSleepers(1)
         task.cancel()
         let outcome = await task.value
         XCTAssertEqual(outcome, .cancelled)
-        XCTAssertTrue(answer.wasCancelled)
+        XCTAssertEqual(answer.cancelledCount, 1)
     }
 }
 
-/// A deadline that passes only when the test fires it, or when its task is
-/// cancelled. No wall clock.
-private final class HeldSleep: Sendable {
-    private struct State {
-        var requested: [Duration] = []
-        var continuation: CheckedContinuation<Void, Never>?
-        var fired = false
-        var cancelledCount = 0
-        var sleepingWaiters: [CheckedContinuation<Void, Never>] = []
-    }
-    private let state = Mutex(State())
-
-    var requested: [Duration] { state.withLock { $0.requested } }
-    var cancelledCount: Int { state.withLock { $0.cancelledCount } }
-
-    var sleep: @Sendable (Duration) async -> Void {
-        { [self] duration in await self.hold(duration) }
-    }
-
-    private func hold(_ duration: Duration) async {
-        await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                let (resumeNow, waiters) = state.withLock { s -> (Bool, [CheckedContinuation<Void, Never>]) in
-                    s.requested.append(duration)
-                    let waiters = s.sleepingWaiters
-                    s.sleepingWaiters = []
-                    if s.fired { return (true, waiters) }
-                    s.continuation = continuation
-                    return (false, waiters)
-                }
-                waiters.forEach { $0.resume() }
-                if resumeNow { continuation.resume() }
-            }
-        } onCancel: {
-            let continuation = state.withLock { s -> CheckedContinuation<Void, Never>? in
-                s.fired = true
-                s.cancelledCount += 1
-                defer { s.continuation = nil }
-                return s.continuation
-            }
-            continuation?.resume()
-        }
-    }
-
-    func waitUntilSleeping() async {
-        await withCheckedContinuation { continuation in
-            let sleeping = state.withLock { s -> Bool in
-                if !s.requested.isEmpty { return true }
-                s.sleepingWaiters.append(continuation)
-                return false
-            }
-            if sleeping { continuation.resume() }
-        }
-    }
-
-    func fire() {
-        let continuation = state.withLock { s -> CheckedContinuation<Void, Never>? in
-            s.fired = true
-            defer { s.continuation = nil }
-            return s.continuation
-        }
-        continuation?.resume()
-    }
-}
-
-/// A transcription that never answers; it only notices being cancelled.
-private final class HeldAnswer: Sendable {
-    private struct State {
-        var asked = false
-        var cancelled = false
-        var continuation: CheckedContinuation<Void, Never>?
-        var askedWaiters: [CheckedContinuation<Void, Never>] = []
-    }
-    private let state = Mutex(State())
-
-    var wasCancelled: Bool { state.withLock { $0.cancelled } }
-
-    var wait: @Sendable () async throws -> String {
-        { [self] in
-            await withTaskCancellationHandler {
-                await withCheckedContinuation { continuation in
-                    let (cancelled, waiters) = state.withLock { s -> (Bool, [CheckedContinuation<Void, Never>]) in
-                        s.asked = true
-                        let waiters = s.askedWaiters
-                        s.askedWaiters = []
-                        if s.cancelled { return (true, waiters) }
-                        s.continuation = continuation
-                        return (false, waiters)
-                    }
-                    waiters.forEach { $0.resume() }
-                    if cancelled { continuation.resume() }
-                }
-            } onCancel: {
-                let continuation = state.withLock { s -> CheckedContinuation<Void, Never>? in
-                    s.cancelled = true
-                    defer { s.continuation = nil }
-                    return s.continuation
-                }
-                continuation?.resume()
-            }
-            throw CancellationError()
-        }
-    }
-
-    func waitUntilAsked() async {
-        await withCheckedContinuation { continuation in
-            let asked = state.withLock { s -> Bool in
-                if s.asked { return true }
-                s.askedWaiters.append(continuation)
-                return false
-            }
-            if asked { continuation.resume() }
-        }
+/// The race as the stop-commit runs it, against `transcriber`.
+private func race(
+    _ transcriber: FakeBatchTranscriber, clock: ManualSessionClock
+) async -> StopSecondPass.Outcome {
+    await StopSecondPass.run(deadline: .seconds(3), sleep: clock.clock.sleep) {
+        try await transcriber.transcribe(
+            wav: Data(), language: nil, contextBias: [], apiKey: "k",
+            endpoint: URL(string: "https://api.mistral.ai/v1/audio/transcriptions")!
+        ).text
     }
 }
