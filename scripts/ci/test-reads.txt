@@ -41,3 +41,4 @@ Tests/localvoxtralCoreTests/VibeHooksInstallServiceTests.swift contentsOfDirecto
 Tests/localvoxtralTests/WorkflowActionPinningTests.swift contentsOfDirectory( none
 Tests/localvoxtralCoreTests/RemoteProjectTermsLiveTests.swift /README.md none
 Tests/localvoxtralCoreTests/RemoteProjectTermsLiveTests.swift contentsOfDirectory( none
+Tests/localvoxtralCoreTests/RemoteQuickCaptureLiveTests.swift /README.md none
