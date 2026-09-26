@@ -30,6 +30,7 @@ Each 80 ms step reaches the processor as a new request whose prompt carries
 every token generated so far, so match state is rebuilt from the prompt.
 """
 
+import itertools
 import json
 import os
 import time
@@ -127,8 +128,8 @@ class TermBias(LogitsProcessor):
         self._stamp = None
         self._cfg: dict = {}
         self._root = _Node()
-        self._rows: dict[int, list[int]] = {}
-        self._stats: dict[str, dict] = {}
+        self._rows: dict[int, tuple[list[int], list[int]]] = {}
+        self._stats: dict = {}
 
     def is_argmax_invariant(self) -> bool:
         return False
@@ -144,6 +145,9 @@ class TermBias(LogitsProcessor):
             return
         cfg = json.loads(self._file.read_text())
         self._root = build_trie(cfg.get("terms", []), self._encode, self._piece)
+        if cfg.get("session") != self._cfg.get("session"):
+            # A rerun reuses session ids; start its counts from zero.
+            self._stats = {}
         self._cfg, self._stamp = cfg, stamp
 
     def update_state(self, batch_update: BatchUpdate | None):
@@ -152,9 +156,9 @@ class TermBias(LogitsProcessor):
         for index in batch_update.removed:
             self._rows.pop(index, None)
         for index, _params, prompt, output in batch_update.added:
-            # The realtime path feeds generated tokens back as prompt;
-            # `output` is empty there but not in ordinary generation.
-            self._rows[index] = (prompt or []) + list(output)
+            # The realtime path feeds generated tokens back as prompt and
+            # leaves `output` empty. Elsewhere `output` is vLLM's live list.
+            self._rows[index] = (prompt or [], output)
         for a, b, _direction in batch_update.moved:
             ra, rb = self._rows.pop(a, None), self._rows.pop(b, None)
             if ra is not None:
@@ -168,10 +172,9 @@ class TermBias(LogitsProcessor):
             return logits
         started = time.perf_counter()
         session = str(self._cfg.get("session", "default"))
-        stats = self._stats.setdefault(
-            session, {"steps": 0, "textSteps": 0, "flipsFirst": 0, "flipsContinuation": 0, "applySeconds": 0.0}
-        )
-        for row, history in self._rows.items():
+        stats = self._stats or {"steps": 0, "textSteps": 0, "flipsFirst": 0, "flipsContinuation": 0, "applySeconds": 0.0}
+        self._stats = stats
+        for row, (prompt, output) in self._rows.items():
             if row >= logits.shape[0]:
                 continue
             stats["steps"] += 1
@@ -179,7 +182,7 @@ class TermBias(LogitsProcessor):
             if top < FIRST_TEXT_TOKEN:
                 continue
             stats["textSteps"] += 1
-            live = live_matches(self._root, history)
+            live = live_matches(self._root, itertools.chain(prompt, output))
             chosen, kind = decide(
                 self._root, live, top,
                 lambda ids, r=row: logits[r, torch.tensor(ids, device=logits.device)].tolist(),
