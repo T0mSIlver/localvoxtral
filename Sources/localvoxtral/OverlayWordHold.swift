@@ -18,6 +18,6 @@ enum OverlayWordHold: Int, CaseIterable, Identifiable, Sendable {
     var letters: Int? { self == .off ? nil : rawValue }
 
     var displayName: String {
-        self == .off ? "Off" : "Words up to \(rawValue) letters"
+        self == .off ? "Off" : "Up to \(rawValue) letters"
     }
 }
