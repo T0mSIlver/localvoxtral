@@ -1,0 +1,91 @@
+name: PR waits labels
+
+# Adds the waits labels a PR earns from its diff: waits:mac-llm and
+# waits:mac-voxtral when a live-model lane will run on the Mac (in the night
+# window), waits:stack when the base is another PR's branch. The decision is
+# scripts/ci/waits-labels.sh. This workflow only adds: the scheduler clears a
+# Mac label once the night run passed, and a later push adds it back because
+# the lanes must pass on the final diff. The label set and who clears what:
+# docs/agent/test-tiers.md, "Why a PR waits: the waits labels".
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, edited]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: pr-waits-labels-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    # A fork PR's token cannot label, and mac-lanes never runs a fork PR.
+    # An edit matters only when it changed the body (a lane marker) or the base.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.action != 'edited' ||
+       github.event.changes.body != null || github.event.changes.base != null)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The head, not the merge ref: a conflicting PR has no merge ref.
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Add waits labels
+        env:
+          # env indirection, not inline ${{ }} in the script body: PR bodies
+          # are attacker-shaped strings.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          FILES="$RUNNER_TEMP/changed-files.txt"
+          MARKER_TEXT="$RUNNER_TEMP/marker-text.txt"
+          # Diff the merge ref like ci.yml does, so a stack whose base was
+          # rebased doesn't count the base PR's files. A conflicting PR has
+          # no merge ref and falls back to its head.
+          TIP=HEAD
+          if git fetch -q origin "refs/pull/$PR_NUMBER/merge" 2>/dev/null; then
+            TIP=FETCH_HEAD
+          fi
+          BASE="$(git merge-base "origin/$BASE_REF" "$TIP" || true)"
+
+          if [[ -z "$BASE" ]]; then
+            # Fail open like ci.yml: an uncomputable diff runs every lane.
+            echo "::warning title=waits labels::diff unavailable, adding both Mac labels"
+            LABELS="$(printf 'waits:mac-llm\nwaits:mac-voxtral')"
+            [[ "$BASE_REF" == "main" ]] || LABELS+=$'\nwaits:stack'
+          else
+            git diff --name-only "$BASE" "$TIP" > "$FILES"
+            printf '%s\n' "$PR_BODY" > "$MARKER_TEXT"
+            git log -1 --format=%B HEAD >> "$MARKER_TEXT"
+            # Same narrowing facts ci.yml hands the STT filter.
+            while IFS='=' read -r key value; do
+              case "$key" in
+                mac_lanes_job_changed) export LANE_MAC_LANES_JOB_CHANGED="$value" ;;
+                package_deps_changed) export LANE_PACKAGE_DEPS_CHANGED="$value" ;;
+              esac
+            done < <(./scripts/ci/lane-diff-facts.sh "$BASE" "$TIP")
+            LABELS="$(./scripts/ci/waits-labels.sh "$FILES" "$MARKER_TEXT" "$BASE_REF")"
+          fi
+
+          if [[ -z "$LABELS" ]]; then
+            echo "No waits label from the diff" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          args=()
+          while read -r label; do
+            args+=(-f "labels[]=$label")
+          done <<<"$LABELS"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels" "${args[@]}" > /dev/null
+          echo "Added: $(tr '\n' ' ' <<<"$LABELS")" | tee -a "$GITHUB_STEP_SUMMARY"
