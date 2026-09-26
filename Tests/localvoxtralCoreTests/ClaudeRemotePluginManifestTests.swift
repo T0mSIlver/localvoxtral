@@ -1660,7 +1660,9 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     /// The fake daemon, a fake Claude under it, and a `HOME` that holds the
     /// daemon. With `nested`, the hook's Claude is a `claude -p` started from
     /// a shell inside the session instead: daemon → claude → sh → claude.
-    private func desktopTreeLauncher(nested: Bool, event: String) throws -> (
+    private func desktopTreeLauncher(
+        nested: Bool, event: String, symlinkedHome: Bool = false
+    ) throws -> (
         launcher: ShimLauncher, environment: [String: String], root: URL
     ) {
         // Resolved: the daemon check compares against the kernel's path.
@@ -1677,6 +1679,11 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         let claude = binDirectory.appendingPathComponent("claude")
         try FileManager.default.copyItem(at: shell, to: daemon)
         try FileManager.default.copyItem(at: shell, to: claude)
+        var homeSeenByShim = home
+        if symlinkedHome {
+            homeSeenByShim = root.appendingPathComponent("home-link")
+            try FileManager.default.createSymbolicLink(at: homeSeenByShim, withDestinationURL: home)
+        }
 
         // Each `; :` keeps its shell alive as the parent of what it ran,
         // instead of letting it exec the last command.
@@ -1686,7 +1693,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             ? #"/bin/sh -c '"$LVX_FAKE_CLAUDE" -c "$LVX_CLAUDE_BODY"; :'; :"#
             : claudeBody
         let environment = [
-            "HOME": home.path,
+            "HOME": homeSeenByShim.path,
             "CLAUDE_CODE_HOST_SESSION_ID": desktopID,
             "LVX_SHIM": shimURL.path,
             "LVX_EVENT": event,
@@ -1702,8 +1709,12 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         return (launcher, environment, root)
     }
 
-    private func desktopHeaders(nested: Bool) throws -> ClaudeRemoteSessionEnvironment? {
-        let tree = try desktopTreeLauncher(nested: nested, event: "SessionStart")
+    private func desktopHeaders(
+        nested: Bool, symlinkedHome: Bool = false
+    ) throws -> ClaudeRemoteSessionEnvironment? {
+        let tree = try desktopTreeLauncher(
+            nested: nested, event: "SessionStart", symlinkedHome: symlinkedHome
+        )
         defer { try? FileManager.default.removeItem(at: tree.root) }
         let run = try runShimCapturingHeaders(
             environment: tree.environment, event: "SessionStart", launcher: tree.launcher
@@ -1717,6 +1728,14 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
 
     func testTheDesktopSessionItselfSendsItsDesktopID() throws {
         XCTAssertEqual(try desktopHeaders(nested: false)?.desktopSessionID, desktopID)
+    }
+
+    /// The kernel reports the daemon's exe with symlinks resolved, and a
+    /// dotfiles setup often links the home directory or `~/.claude`.
+    func testTheDesktopSessionSendsItsIDWhenHomeIsASymlink() throws {
+        XCTAssertEqual(
+            try desktopHeaders(nested: false, symlinkedHome: true)?.desktopSessionID, desktopID
+        )
     }
 
     /// A `claude -p` started from a Desktop session inherits the session's

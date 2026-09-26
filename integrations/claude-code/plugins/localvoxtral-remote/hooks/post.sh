@@ -349,6 +349,9 @@ lvx_ppid() {
 lvx_claude_is_desktop_session() {
   [ -d /proc/self ] || return 0
   [ -n "${HOME:-}" ] || return 1
+  # Physical, because the kernel reports the daemon's exe with every symlink
+  # resolved, and a dotfiles setup often links ~ or ~/.claude.
+  _lvx_srv="$(cd "$HOME/.claude/remote/srv" && pwd -P)" || return 1
   _lvx_pid="${PPID:-}"
   _lvx_shells=0
   while :; do
@@ -367,7 +370,7 @@ lvx_claude_is_desktop_session() {
   # `(deleted)`: the daemon keeps running its sessions after an update
   # replaces its binary.
   case "$_lvx_parent_exe" in
-  "$HOME/.claude/remote/srv/"*/server | "$HOME/.claude/remote/srv/"*"/server (deleted)") return 0 ;;
+  "$_lvx_srv/"*/server | "$_lvx_srv/"*"/server (deleted)") return 0 ;;
   esac
   return 1
 }
