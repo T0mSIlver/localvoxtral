@@ -137,6 +137,23 @@ there is not.
   only by its own bundle ID on `ReturnSubmitsAppList` (the AX probe reads the
   element focused NOW, which need not be the commit target's), and the Return
   follows only a commit that reported `.succeeded`.
+- **"Go to <name>" is a command only when the name resolves** (#723 step
+  1). An Overlay Buffer dictation that is only "go to" plus at most four
+  words is looked up against the live registry's default names (the git
+  root's directory name first, then the main checkout's) before the spoken
+  send cut, the dictionary and the polisher. No match: it is ordinary text
+  and commits as dictated, because "go to the tests" is a prompt too. A
+  match: nothing is inserted, no Return is pressed, and nothing is saved to
+  History. Two panes on one name is ambiguous and does nothing; sessions on
+  one local tty count as one pane. The pane is found by the tty the hooks
+  reported, asked only of Ghostty, iTerm2 and Terminal.app while they run
+  (`tell application id` would launch one that is not), and the tty is
+  spliced into AppleScript only when it is `/dev/tty` plus letters and
+  digits. The result is read back with the join's focused-pane reader:
+  `.focused` only when that tty is the session's. A Return after a focus
+  (#723 step 3) or #717's answer hotkey must require `.focused`, never
+  `.unverified`. Live Auto-Paste has no go-to: its words are typed before the
+  phrase ends.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
   endpoint on stop (`DictationSessionController+StopCommit.swift`,
