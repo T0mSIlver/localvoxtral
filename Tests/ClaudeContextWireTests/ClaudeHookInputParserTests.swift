@@ -24,6 +24,42 @@ final class ClaudeHookInputParserTests: XCTestCase {
         XCTAssertEqual(record.timestamp, 1_700_000_000)
     }
 
+    /// Payload shape from Claude Code 2.1.283's hooks documentation: the
+    /// common fields plus `message`, `title` and `notification_type`.
+    func testANotificationKeepsItsTypeAndNeverItsText() throws {
+        for type in ClaudeNotificationType.allCases {
+            let record = try XCTUnwrap(parse(#"""
+            {"session_id":"s1","transcript_path":"/home/u/.claude/projects/p/s1.jsonl","cwd":"/repo","hook_event_name":"Notification","message":"Claude needs your permission to use Bash","title":"rm -rf build","notification_type":"\#(type.rawValue)"}
+            """#), type.rawValue)
+            XCTAssertEqual(record.event, .notification)
+            XCTAssertEqual(record.notificationType, type)
+            XCTAssertEqual(record.rawCwd, "/repo")
+            XCTAssertNil(record.prompt)
+            XCTAssertNil(record.toolName)
+            let line = String(decoding: try XCTUnwrap(ClaudeHookWireCodec.encodeLine(record)), as: UTF8.self)
+            for text in ["permission to use", "rm -rf", "transcript"] {
+                XCTAssertFalse(line.contains(text), "\(text) crossed the socket")
+            }
+        }
+    }
+
+    func testANotificationOfAnotherTypeIsNotPublished() {
+        for type in ["idle_prompt", "auth_success", "agent_completed", ""] {
+            XCTAssertNil(parse(#"""
+            {"session_id":"s1","hook_event_name":"Notification","message":"m","notification_type":"\#(type)"}
+            """#), type)
+        }
+        XCTAssertNil(parse(#"{"session_id":"s1","hook_event_name":"Notification","message":"m"}"#))
+    }
+
+    func testStopNeverCarriesTheReplyText() throws {
+        let record = try XCTUnwrap(parse(#"""
+        {"session_id":"s1","hook_event_name":"Stop","cwd":"/repo","stop_hook_active":false,"last_assistant_message":"The build is green."}
+        """#))
+        let line = String(decoding: try XCTUnwrap(ClaudeHookWireCodec.encodeLine(record)), as: UTF8.self)
+        XCTAssertFalse(line.contains("green"))
+    }
+
     func testFallsBackToArgvEventWhenPayloadOmitsIt() throws {
         let record = try XCTUnwrap(parse(#"{"session_id":"s1"}"#, fallbackEvent: "Stop"))
         XCTAssertEqual(record.event, .stop)

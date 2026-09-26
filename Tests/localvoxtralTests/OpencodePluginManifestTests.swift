@@ -141,7 +141,7 @@ final class OpencodePluginManifestTests: XCTestCase {
         let text = try source()
         let published = [
             "SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd",
-            "FocusChanged", "FocusCleared",
+            "FocusChanged", "FocusCleared", "Notification",
         ]
         for event in published {
             XCTAssertTrue(text.contains("\"\(event)\""), "plugin should publish \(event)")

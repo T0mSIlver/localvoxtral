@@ -39,6 +39,7 @@ private UNIX socket owned by the app and exits.
 | `CwdChanged` | the session moved to another directory |
 | `PostToolUse` (`Read`/`Edit`/`Write`/`NotebookEdit`) | which files were just read or edited |
 | `Stop` | the turn finished |
+| `Notification` (`permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`) | the session waits for you: its type, never its text |
 | `SessionEnd` | the session is gone (the app evicts it immediately) |
 
 There is no `FileChanged` hook. Claude Code fires it only for a hook that
@@ -500,6 +501,9 @@ Only what this allowlist names:
 
 * the event name, session id, timestamp, and cwd
 * your prompt text (`UserPromptSubmit` only)
+* what a `Notification` waits for: its `notification_type`, one of the four
+  above. Its `message` and `title` stay behind, since they quote tool names
+  and command text
 * absolute file paths from the tools above
 * safe process metadata: pid, ppid, controlling TTY, `$TERM_PROGRAM`, and the
   multiplexer and bridge handles that say which pane the session lives in:
@@ -511,6 +515,7 @@ These never cross:
 
 * **transcript contents**. The publisher drops `transcript_path` entirely, so
   there is nothing to scrape and no pointer to it.
+* **the agent's replies**. `Stop`'s `last_assistant_message` is dropped.
 * **file contents**: `Write.content`, `Edit.new_string`, `Read` output.
 * **command strings**. The plugin does not subscribe to `Bash`.
 * **anything claiming to be trusted**. The app decides trust from UNIX peer
@@ -1015,4 +1020,6 @@ overrides, and zero-width characters before it is stored, so foreign text
 stays text and cannot act on anything.
 
 Transcript contents, `Bash` command strings, and anything claiming to be trusted
-still never cross, exactly as locally.
+still never cross, exactly as locally. A `Notification` is the one event whose
+body the shim rebuilds instead of posting as-is: it sends the session id and
+the `notification_type`, and its `message` and `title` never leave the host.

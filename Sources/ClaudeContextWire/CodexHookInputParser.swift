@@ -28,6 +28,9 @@ public enum CodexHookInputParser {
         "UserPromptSubmit": .userPromptSubmit,
         "PostToolUse": .postToolUse,
         "Stop": .stop,
+        // Codex asks the user to approve a tool call (#717). Published as a
+        // wait, with none of its `tool_input`.
+        "PermissionRequest": .notification,
         "SessionEnd": .sessionEnd,
     ]
 
@@ -73,7 +76,8 @@ public enum CodexHookInputParser {
             rawCwd: cwd,
             prompt: event == .userPromptSubmit ? payload["prompt"] as? String : nil,
             toolName: toolName,
-            files: toolName == patchTool ? patchedFiles(in: payload, cwd: cwd) : []
+            files: toolName == patchTool ? patchedFiles(in: payload, cwd: cwd) : [],
+            notificationType: event == .notification ? .permissionPrompt : nil
         )
         return ClaudeHookWireCodec.clamp(record, limits: limits)
     }
