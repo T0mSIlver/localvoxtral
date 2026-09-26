@@ -22,6 +22,7 @@ struct SettingsTab: Hashable, Sendable {
         case integrationsClaude = "integrations.claude"
         case integrationsOpencode = "integrations.opencode"
         case integrationsVibe = "integrations.vibe"
+        case integrationsCodex = "integrations.codex"
         case integrationsHerdr = "integrations.herdr"
         case integrationsRemote = "integrations.remote"
         /// Raw value completed with the terminal row's slug — see `rawValue`.
@@ -101,8 +102,8 @@ extension SettingsTab {
     /// own row because both the Claude Code remote plugin and remote herdr
     /// joins ride its tunnels.
     static let integrationsSidebarItems: [SettingsTab] = [
-        .integrationsClaude, .integrationsOpencode, .integrationsVibe, .integrationsHerdr,
-        .integrationsRemote,
+        .integrationsClaude, .integrationsOpencode, .integrationsVibe, .integrationsCodex,
+        .integrationsHerdr, .integrationsRemote,
     ]
 
     /// Convenience accessors for the static panes, so call sites keep the
@@ -115,6 +116,7 @@ extension SettingsTab {
     static let integrationsClaude = SettingsTab(.integrationsClaude)
     static let integrationsOpencode = SettingsTab(.integrationsOpencode)
     static let integrationsVibe = SettingsTab(.integrationsVibe)
+    static let integrationsCodex = SettingsTab(.integrationsCodex)
     static let integrationsHerdr = SettingsTab(.integrationsHerdr)
     static let integrationsRemote = SettingsTab(.integrationsRemote)
     static let about = SettingsTab(.about)

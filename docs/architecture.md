@@ -81,8 +81,8 @@ AppKit:
 path that needs no AppKit (#591): the join resolver and its arms, the session
 registry and store, the broker and the remote listener, the herdr and cmux
 clients, the ssh forward and enrollment, the repository collector and its
-selection, the context blocks, and the plugin, statusline, opencode and Vibe
-installers. The settings model, the forward coordinator and supervisor
+selection, the context blocks, and the plugin, statusline, opencode, Vibe and
+Codex installers. The settings model, the forward coordinator and supervisor
 (`@Observable`) and the `--probe-surface` command stay in
 `Sources/localvoxtral/ClaudeContext`.
 

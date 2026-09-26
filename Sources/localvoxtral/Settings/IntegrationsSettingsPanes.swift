@@ -147,6 +147,22 @@ struct VibeSettingsPane: View {
     }
 }
 
+struct CodexSettingsPane: View {
+    let viewModel: DictationViewModel
+
+    private static let learnMoreURL = DocsLink.page("integrations/codex/")
+
+    var body: some View {
+        SettingsPage(tab: .integrationsCodex) {
+            SettingsGroup(title: "Setup", learnMoreURL: Self.learnMoreURL) {
+                if let claude = viewModel.claudeIntegrationSettings {
+                    CodexPluginRow(model: claude)
+                }
+            }
+        }
+    }
+}
+
 /// Everything herdr: whether it is found, the hosts reporting a herdr pane,
 /// and herdr's saved machines — importable as remote hosts — with the local
 /// panel row federated clients need. herdr needs no setup of its own, so the

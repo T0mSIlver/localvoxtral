@@ -25,6 +25,7 @@ nav = [
     { "Claude Code" = "integrations/claude-code/README.md" },
     { "opencode" = "integrations/opencode/README.md" },
     { "Mistral Vibe" = "integrations/vibe/README.md" },
+    { "Codex" = "integrations/codex/README.md" },
     { "Remote Claude Code over SSH" = "docs/remote-claude-context.md" },
   ] },
   { "Developing" = [

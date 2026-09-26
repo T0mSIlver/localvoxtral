@@ -149,6 +149,11 @@ public final class ClaudeSessionRegistry: Sendable {
     private let persistenceWriter: ClaudeSessionStoreWriter?
     private let submittedPromptObserver =
         Mutex<(@Sendable (_ sessionID: String, _ prompt: String) -> Void)?>(nil)
+    /// Agents whose hooks this Mac has accepted a record from since launch
+    /// (or since `forgetHeard`). In memory only: it answers the Integrations
+    /// pane's "has this agent's hook ever run", which for Codex is the only
+    /// proof its trust gate let the hook through.
+    private let heardLocalAgents = Mutex<Set<ClaudeHookAgent>>([])
 
     /// - Parameters:
     ///   - now: injected clock. Nothing here reads the wall clock directly, so
@@ -326,6 +331,9 @@ public final class ClaudeSessionRegistry: Sendable {
                 "Claude session registry evicted \(capEvictions.count, privacy: .public) session(s) over the session cap (\(capEvictions.desktopCount, privacy: .public) reporting a Claude Desktop session id; per-origin \(capEvictions.originQuotaCount, privacy: .public), Desktop per-origin \(capEvictions.desktopQuotaCount, privacy: .public), global \(capEvictions.globalCount, privacy: .public))"
             )
         }
+        if ingested != nil, origin.isLocalAuthenticated {
+            _ = heardLocalAgents.withLock { $0.insert(record.agent) }
+        }
         // The record's own prompt, never the snapshot's: a submit without
         // one leaves the PREVIOUS prompt in the snapshot, and announcing that
         // would compare a new dictation with an old prompt.
@@ -337,6 +345,18 @@ public final class ClaudeSessionRegistry: Sendable {
             observer(ingested.sessionID, prompt)
         }
         return ingested
+    }
+
+    /// Whether a record from `agent`'s local hooks was accepted since launch
+    /// or since the last `forgetHeard(localAgent:)`.
+    public func hasHeard(localAgent agent: ClaudeHookAgent) -> Bool {
+        heardLocalAgents.withLock { $0.contains(agent) }
+    }
+
+    /// Called when the agent's hooks are installed again: a record from the
+    /// previous install proves nothing about the new one.
+    public func forgetHeard(localAgent agent: ClaudeHookAgent) {
+        _ = heardLocalAgents.withLock { $0.remove(agent) }
     }
 
     /// Hands every prompt a session submits, once the registry holds it, to

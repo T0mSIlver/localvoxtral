@@ -1,0 +1,15 @@
+{
+  "name": "localvoxtral",
+  "version": "1.0.0",
+  "description": "Tells localvoxtral which Codex session you dictate into: its last prompt, working directory and the files it edited.",
+  "author": {
+    "name": "localvoxtral"
+  },
+  "homepage": "https://github.com/T0mSIlver/localvoxtral",
+  "license": "MIT",
+  "interface": {
+    "displayName": "localvoxtral",
+    "shortDescription": "Dictation context for localvoxtral",
+    "category": "Productivity"
+  }
+}
