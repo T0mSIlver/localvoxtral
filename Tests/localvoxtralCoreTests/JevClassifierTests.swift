@@ -58,6 +58,38 @@ final class JevClassifierTests: XCTestCase {
         XCTAssertEqual(try Jev.probabilities(status: 200, body: body), ["website": 0.7])
     }
 
+    func testABusyGatewayIsRetriedAfterEachDelayThenGivenUp() async throws {
+        final class Log: @unchecked Sendable { var attempts = 0; var slept: [TimeInterval] = [] }
+        let log = Log()
+        let answer = try await Jev.withRetries(sleep: { log.slept.append($0) }) { () async throws -> String in
+            log.attempts += 1
+            if log.attempts < 3 { throw Jev.Failure.http(status: log.attempts == 1 ? 429 : 503, message: nil) }
+            return "routed"
+        }
+        XCTAssertEqual(answer, "routed")
+        XCTAssertEqual(log.slept, [1, 2])
+
+        let busy = Log()
+        do {
+            _ = try await Jev.withRetries(sleep: { busy.slept.append($0) }) { () async throws -> String in
+                busy.attempts += 1
+                throw Jev.Failure.http(status: 429, message: "high demand")
+            }
+            XCTFail("a gateway busy past the last delay is a failure")
+        } catch {
+            XCTAssertEqual(error as? Jev.Failure, .http(status: 429, message: "high demand"))
+        }
+        XCTAssertEqual(busy.attempts, 4)
+        XCTAssertEqual(busy.slept, Jev.retryDelays)
+
+        let refused = Log()
+        _ = try? await Jev.withRetries(sleep: { refused.slept.append($0) }) { () async throws -> String in
+            refused.attempts += 1
+            throw Jev.Failure.http(status: 401, message: nil)
+        }
+        XCTAssertEqual(refused.attempts, 1, "a bad key is not retried")
+    }
+
     func testFailuresCarryTheAPIsMessage() {
         let cases: [(Int, String, Jev.Failure)] = [
             (422, #"{"detail":[{"type":"missing","loc":["body","model"],"msg":"Field required"}]}"#,

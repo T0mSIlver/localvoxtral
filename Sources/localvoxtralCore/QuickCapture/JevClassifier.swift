@@ -118,23 +118,62 @@ package enum Jev {
     }
 }
 
+extension Jev {
+    /// Waits before the second, third and fourth attempt. The gateway
+    /// answered 429 "high demand" to most calls on the evening of the replay
+    /// (2026-09-26), and most succeeded within a few retries. A capture routes
+    /// in the background, so seven seconds of waiting costs the user nothing,
+    /// and the chat model takes over after the last.
+    package static let retryDelays: [TimeInterval] = [1, 2, 4]
+
+    /// Runs `attempt`, again after each delay while the answer is a 429 or a
+    /// 503. Any other failure, and the last one, is thrown.
+    package static func withRetries<Value>(
+        delays: [TimeInterval] = retryDelays,
+        sleep: (TimeInterval) async throws -> Void,
+        _ attempt: () async throws -> Value
+    ) async throws -> Value {
+        var remaining = delays[...]
+        while true {
+            do {
+                return try await attempt()
+            } catch Failure.http(let status, _) where (status == 429 || status == 503) && !remaining.isEmpty {
+                let delay = remaining.removeFirst()
+                Log.backends.info(
+                    "Quick capture: Jev answered \(status, privacy: .public), retrying in \(delay, privacy: .public) s"
+                )
+                try await sleep(delay)
+            }
+        }
+    }
+}
+
 package struct JevClassifier: QuickCaptureClassifying {
     private let host: Jev.Host
     private let apiKey: String
     private let session: URLSession
+    private let sleep: @Sendable (TimeInterval) async throws -> Void
 
-    package init(host: Jev.Host, apiKey: String, session: URLSession = .shared) {
+    package init(
+        host: Jev.Host,
+        apiKey: String,
+        session: URLSession = .shared,
+        sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }
+    ) {
         self.host = host
         self.apiKey = apiKey
         self.session = session
+        self.sleep = sleep
     }
 
     package var kind: QuickCaptureRoute.Classifier { .jev }
 
     package func classify(capture: String, options: [QuickCaptureOption]) async throws -> [String: Double] {
         let request = Jev.request(host: host, apiKey: apiKey, capture: capture, options: options)
-        let (data, response) = try await session.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        return try Jev.probabilities(status: status, body: data)
+        return try await Jev.withRetries(sleep: sleep) {
+            let (data, response) = try await session.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            return try Jev.probabilities(status: status, body: data)
+        }
     }
 }
