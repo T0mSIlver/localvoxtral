@@ -30,16 +30,26 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
         let userLine: String?
     }
 
-    /// Prints a classifier's error: `Log` is silent on Linux.
+    /// Prints a classifier's error (`Log` is silent on Linux), and retries a
+    /// 429 up to five times with backoff: the replay measures the routing,
+    /// not the provider's load at that minute. The app itself falls back on
+    /// the first failure.
     private struct Printing: QuickCaptureClassifying {
         let inner: any QuickCaptureClassifying
         var kind: QuickCaptureRoute.Classifier { inner.kind }
         func classify(capture: String, options: [QuickCaptureOption]) async throws -> [String: Double] {
-            do {
-                return try await inner.classify(capture: capture, options: options)
-            } catch {
-                print("QC error \(inner.kind.rawValue): \(error)")
-                throw error
+            var attempt = 0
+            while true {
+                do {
+                    return try await inner.classify(capture: capture, options: options)
+                } catch Jev.Failure.http(status: 429, _) where attempt < 5 {
+                    attempt += 1
+                    print("QC retry \(inner.kind.rawValue): 429, attempt \(attempt)")
+                    try await Task.sleep(nanoseconds: UInt64(attempt) * 3_000_000_000)
+                } catch {
+                    print("QC error \(inner.kind.rawValue): \(error)")
+                    throw error
+                }
             }
         }
     }
