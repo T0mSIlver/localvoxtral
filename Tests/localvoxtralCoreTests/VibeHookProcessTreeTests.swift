@@ -1,5 +1,9 @@
 import ClaudeHookPublisherCore
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import XCTest
 
 /// The ancestor walk against a REAL process tree, spawned the way Vibe spawns a
@@ -63,12 +67,27 @@ final class VibeHookProcessTreeTests: XCTestCase {
     }
 
     private func spawnInNewSession(shell command: String, home: String) throws -> pid_t {
+        #if canImport(Darwin)
         var attributes: posix_spawnattr_t?
+        #else
+        var attributes = posix_spawnattr_t()
+        #endif
         posix_spawnattr_init(&attributes)
         defer { posix_spawnattr_destroy(&attributes) }
-        XCTAssertEqual(posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID)), 0)
+        #if canImport(Darwin)
+        let setsid = Int16(POSIX_SPAWN_SETSID)
+        #else
+        // glibc's spawn.h defines it only under _GNU_SOURCE, which Swift's
+        // Glibc module does not import.
+        let setsid: Int16 = 0x80
+        #endif
+        XCTAssertEqual(posix_spawnattr_setflags(&attributes, setsid), 0)
 
+        #if canImport(Darwin)
         var actions: posix_spawn_file_actions_t?
+        #else
+        var actions = posix_spawn_file_actions_t()
+        #endif
         posix_spawn_file_actions_init(&actions)
         defer { posix_spawn_file_actions_destroy(&actions) }
         for fd in [Int32(0), 1, 2] {

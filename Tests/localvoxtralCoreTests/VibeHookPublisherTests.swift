@@ -1,10 +1,14 @@
 import ClaudeContextWire
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Foundation
 import Synchronization
 import XCTest
 @testable import ClaudeHookPublisherCore
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 // Payload shapes below were captured from Vibe 2.25.4 with a probe hook
 // (`model_dump_json` of `PostToolInvocation` / `PostAgentInvocation`).
@@ -411,7 +415,11 @@ final class VibeStdinTests: XCTestCase {
         var descriptors: [Int32] = [-1, -1]
         XCTAssertEqual(pipe(&descriptors), 0)
         let (readEnd, writeEnd) = (descriptors[0], descriptors[1])
+        // Linux has no F_SETNOSIGPIPE; its test process ignores SIGPIPE instead
+        // (localvoxtralTestSupportSignals).
+        #if canImport(Darwin)
         _ = fcntl(writeEnd, F_SETNOSIGPIPE, 1)
+        #endif
         let written = Mutex(0)
         let done = DispatchSemaphore(value: 0)
         Thread {
