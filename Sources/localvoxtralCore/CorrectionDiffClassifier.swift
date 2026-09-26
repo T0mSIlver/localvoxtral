@@ -157,8 +157,13 @@ package enum CorrectionDiffClassifier {
         guard withoutSentenceSpacing(replaced) != withoutSentenceSpacing(term) else {
             return .notTermShaped
         }
+        // Capitals alone are not a recognizer mistake (#612); on a word this
+        // short (`i` → `I`, `ok` → `OK`) they are ordinary casing (#803).
+        let isShortCaseFix = term.count <= 2
+            && term.caseFoldedForMatching == replaced.caseFoldedForMatching
         guard knownTerms.contains(term.caseFoldedForMatching)
-            || isTermShaped(term, atSentenceStart: atSentenceStart)
+            || (!isShortCaseFix && !isDottedShorthand(term, of: replaced)
+                && isTermShaped(term, atSentenceStart: atSentenceStart))
         else { return .notTermShaped }
         return nil
     }
@@ -182,6 +187,13 @@ package enum CorrectionDiffClassifier {
 
         let longest = max(left.count, right.count)
         return editDistance(left, right) <= max(1, longest / 4)
+    }
+
+    /// `eg` → `e.g`: dots put between the letters of the same word. A path
+    /// spoken as `a dot b` is not this and stays an identifier (#803).
+    static func isDottedShorthand(_ term: String, of replaced: String) -> Bool {
+        term.range(of: #"^(\p{Ll}\.)+\p{Ll}$"#, options: .regularExpression) != nil
+            && term.replacingOccurrences(of: ".", with: "") == replaced
     }
 
     /// Looks like a name or identifier rather than an ordinary word: a digit,
