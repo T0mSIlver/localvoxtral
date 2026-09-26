@@ -492,6 +492,142 @@ final class DictationPipelineTests: XCTestCase {
         }
     }
 
+    // MARK: - cmux surface route (#727)
+
+    /// Live Auto-Paste into a joined cmux surface: the words go through
+    /// cmux's socket to that surface while the dictation runs, and not one
+    /// key is typed.
+    func testLiveAutoPasteIntoACmuxSurfaceSendsThroughItsSocket() async throws {
+        let cmux = try FakeCmuxSocket()
+        addTeardownBlock { cmux.stop() }
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        joinCmuxSurface(pipeline, cmux: cmux)
+        let typed = recordTypedText(pipeline)
+
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+        let sentWhileDictating = await cmux.waitUntil { !$0.isEmpty }
+        XCTAssertTrue(sentWhileDictating)
+        XCTAssertTrue(pipeline.viewModel.isDictating, "sent before the stop, not by it")
+
+        await stopAndFinalize(pipeline)
+        let phrase = Self.phrase
+        let sentAll = await cmux.waitUntil { writes in writes.compactMap(\.text).joined() == phrase }
+        XCTAssertTrue(sentAll, "sent: \(cmux.sentText.debugDescription)")
+        XCTAssertEqual(Set(cmux.writes.map(\.method)), ["surface.send_text"])
+        XCTAssertEqual(Set(cmux.writes.map(\.surfaceID)), [cmux.surfaceID])
+        XCTAssertEqual(typed.text, "", "nothing is typed")
+    }
+
+    /// Overlay Buffer with the spoken send trigger: the committed text goes
+    /// to the surface once, then `enter` through the socket, and no Return
+    /// key is pressed anywhere, though focus moved to another app.
+    func testOverlayBufferSendsOnceThroughCmuxAndSubmitsWithItsEnterKey() async throws {
+        let cmux = try FakeCmuxSocket(answer: { _ in .accepted(queued: true) })
+        addTeardownBlock { cmux.stop() }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        pipeline.overlay.insertsThroughCommitter = true
+        joinCmuxSurface(pipeline, cmux: cmux)
+        var returns: [pid_t] = []
+        let typed = recordTypedText(pipeline, returnKeyPoster: { pid in
+            returns.append(pid)
+            return true
+        })
+
+        await startAndSpeak(pipeline)
+        cmux.setSurfaceFocused(false)
+        TerminalScreenContextSource.debugFrontmostTargetOverride = {
+            TerminalScreenTarget(pid: 4343, bundleID: "com.apple.Safari")
+        }
+        pipeline.server.send(["type": "transcription.delta", "delta": "run the tests, send it."])
+        await stopAndFinalize(pipeline, finalText: "run the tests, send it.")
+
+        let submitted = await cmux.waitUntil { $0.last?.method == "surface.send_key" }
+        XCTAssertTrue(submitted, "writes: \(cmux.writes)")
+        XCTAssertEqual(cmux.writes, [
+            .init(method: "surface.send_text", surfaceID: cmux.surfaceID, text: "run the tests"),
+            .init(method: "surface.send_key", surfaceID: cmux.surfaceID, key: "enter"),
+        ])
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 1)
+        XCTAssertEqual(returns, [], "no Return key")
+        XCTAssertEqual(typed.text, "")
+    }
+
+    /// cmux refuses the write while the surface is frontmost and focused:
+    /// the dictation types, as it would with no route, and nothing is lost
+    /// or doubled.
+    func testLiveAutoPasteFallsBackToKeystrokesWhenCmuxRefuses() async throws {
+        let cmux = try FakeCmuxSocket(answer: { _ in .error(code: "surface_unavailable") })
+        addTeardownBlock { cmux.stop() }
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        joinCmuxSurface(pipeline, cmux: cmux)
+        let typed = recordTypedText(pipeline)
+
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline)
+
+        let typedAll = await typed.waitFor(Self.phrase)
+        XCTAssertTrue(typedAll, "typed: \(typed.text.debugDescription)")
+        XCTAssertFalse(pipeline.viewModel.textInsertion.promptRelayTakesText)
+        XCTAssertEqual(cmux.writes.count, 1, "nothing is sent after a refusal")
+    }
+
+    /// An older cmux that does not report delivery, and a surface whose tab
+    /// is not focused (manaflow-ai/cmux#3129 drops such text): the text is
+    /// typed nowhere, it is in History, and the popover says so.
+    func testAnUnconfirmedDeliveryToAnUnfocusedSurfaceIsKeptInHistory() async throws {
+        let cmux = try FakeCmuxSocket(answer: { _ in .accepted(queued: nil) })
+        addTeardownBlock { cmux.stop() }
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        joinCmuxSurface(pipeline, cmux: cmux)
+        let typed = recordTypedText(pipeline)
+
+        await startAndSpeak(pipeline)
+        cmux.setSurfaceFocused(false)
+        sendPartials(pipeline)
+        let sent = await cmux.waitUntil { !$0.isEmpty }
+        XCTAssertTrue(sent)
+        await pipeline.viewModel.textInsertion.promptRelaySink?.waitUntilIdle()
+        await stopAndFinalize(
+            pipeline, expectedError: DictationViewModel.StatusStrings.agentPromptTextKeptInHistory
+        )
+
+        XCTAssertEqual(cmux.writes.count, 1, "nothing is sent after an unconfirmed write")
+        XCTAssertEqual(typed.text, "", "nothing is typed into another surface or app")
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase], "the text is in History")
+    }
+
+    /// Joins the dictation to a cmux surface: the frontmost app is cmux, the
+    /// fake socket reports the surface focused, and a local session
+    /// published its id and tty.
+    private func joinCmuxSurface(_ pipeline: Pipeline, cmux: FakeCmuxSocket) {
+        let epoch = Date(timeIntervalSince1970: 3_000_000)
+        let registry = ClaudeSessionRegistry(now: { epoch }, isProcessAlive: { _ in true })
+        XCTAssertNotNil(registry.ingest(
+            ClaudeHookRecord(
+                event: .sessionStart, sessionID: "cmux-session", timestamp: 0, rawCwd: "/repo",
+                prompt: nil, files: [],
+                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001, tty: cmux.tty,
+                                               cmuxSurfaceID: cmux.surfaceID)
+            ),
+            origin: .localAuthenticated(peerUID: 501)
+        ))
+        pipeline.viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
+            registry: registry, cmuxSurfaces: cmux.client(), cmuxJoinEnabled: { true }
+        )
+        let target = TerminalScreenTarget(pid: FakeCmuxSocket.pid, bundleID: TerminalScreenAllowlist.cmuxBundleID)
+        TerminalScreenContextSource.debugFrontmostTargetOverride = { target }
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { TerminalScreenAllowlist.cmuxBundleID }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { @MainActor in
+            TerminalScreenContextSource.debugFrontmostTargetOverride = nil
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+            TerminalTargetDetector.debugSecureEventInputOverride = nil
+        }
+    }
+
     /// Records every key the dictation would type.
     private func recordTypedText(
         _ pipeline: Pipeline, returnKeyPoster: ((pid_t) -> Bool)? = nil
@@ -556,6 +692,7 @@ final class DictationPipelineTests: XCTestCase {
     /// the client closes, and the session commits and records.
     private func stopAndFinalize(
         _ pipeline: Pipeline, finalText: String = DictationPipelineTests.phrase,
+        expectedError: String? = nil,
         file: StaticString = #filePath, line: UInt = #line
     ) async {
         let viewModel = pipeline.viewModel
@@ -588,7 +725,7 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertFalse(viewModel.isFinalizingStop, file: file, line: line)
         XCTAssertFalse(viewModel.isDictating, file: file, line: line)
         XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready, file: file, line: line)
-        XCTAssertNil(viewModel.lastError, file: file, line: line)
+        XCTAssertEqual(viewModel.lastError, expectedError, file: file, line: line)
         XCTAssertTrue(pipeline.presenter.presented.isEmpty, file: file, line: line)
     }
 
