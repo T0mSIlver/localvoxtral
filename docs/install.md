@@ -59,8 +59,8 @@ haven't edited and asks before touching the ones you have (see
 
 ## Homebrew
 
-The cask follows stable releases only, so `brew upgrade` never moves you onto
-a nightly. Nightlies come from the installer script (below). The tap is
+The cask follows stable releases, which ship every day that `main` has
+something new and checked, so `brew upgrade` never moves you onto a nightly. The tap is
 [T0mSIlver/homebrew-localvoxtral](https://github.com/T0mSIlver/homebrew-localvoxtral),
 and the release pipeline points it at each stable release once that release
 is public. The cask is not in Homebrew's own repository, because that
@@ -75,19 +75,20 @@ The cask was first written by [@achembarpu](https://github.com/achembarpu).
 
 ## Nightly channel
 
-Nightlies are built from `main` every night and published as prereleases.
-They carry whatever landed that day and pass the same checks as a stable
-release: unit tests, live speech-to-text integration, packaging, and a launch
-smoke test. Use them if you want fixes and features as they land and can live
-with rough edges.
+Stable releases ship daily, so most people need nothing else. Nightlies are
+prereleases of `main` cut on demand, for testing a fix before the next daily
+release. They pass the same checks as a stable release except the end-to-end
+dictation check: unit tests, live speech-to-text integration, packaging, and
+a launch smoke test.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/T0mSIlver/localvoxtral/main/scripts/install.sh | LOCALVOXTRAL_CHANNEL=nightly bash
 ```
 
-Run that line again to update to the newest nightly. To go back to stable,
-run the installer without `LOCALVOXTRAL_CHANNEL`. The stable build replaces
-the nightly in `/Applications`, and your settings and models are kept.
+That line installs the newest nightly or stable release, whichever is newer,
+so re-running it never leaves you behind stable. To follow stable only, run
+the installer without `LOCALVOXTRAL_CHANNEL`. Your settings and models are
+kept either way.
 
 Nightlies are ad-hoc signed like stable releases, so the Gatekeeper section
 above applies to them too. To install one specific build, pass its tag:

@@ -28,7 +28,8 @@ set -euo pipefail
 # PolishRequestGoldenTests proves it), the overlay's look (wrap, layout,
 # anchor; UI change rules apply), settings, onboarding, the Claude context
 # path, the helpers (their integration lanes), docs and CI plumbing. The
-# evening runs on main catch what a path list misses.
+# owner's runs on main, which the releases require, catch what a path list
+# misses.
 PATTERNS=(
   'Sources/localvoxtral/DictationSessionController+StopCommit.swift'
   'Sources/localvoxtral/StopCommitCoordinator*.swift'      # the stop-commit, in both modes
