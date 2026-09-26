@@ -59,7 +59,11 @@ it only where nothing else can do the job:
 4. **Open the PR as a draft** (`gh pr create --draft`) with `Closes #<n>` in
    the body. The link moves the issue's card on the project board
    (github.com/users/T0mSIlver/projects/1) to In progress, and the merge moves
-   it to Done.
+   it to Done. Keep one `waits:` label on it per reason it can't merge yet
+   (a Mac night run, the UI Smoke dictation, a stack, a known red, an outside
+   key). CI adds the lane and stack ones, the scheduler removes a Mac one
+   after the night run, and you remove the rest when they clear. The set: `docs/agent/test-tiers.md`, "Why a PR
+   waits: the waits labels".
 5. **Mark it ready** (`gh pr ready <n>`) only once `build-test` is green and
    none of your other PRs is waiting on `mac-lanes`. Ready starts the Mac
    lanes; see CI below.
