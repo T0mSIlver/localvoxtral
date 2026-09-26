@@ -105,6 +105,12 @@ markers and hook names differ.
 Delete the marked block from `~/.vibe/hooks.toml` and remove
 `~/.vibe/localvoxtral/`.
 
+## Telling Vibe you dictate
+
+**Settings → Mistral Vibe → Tell Mistral Vibe you dictate → Add** puts a short
+note in `~/.vibe/AGENTS.md` saying your prompts come from speech-to-text. See
+[Telling the agent you dictate](../../docs/coding-agents.md#telling-the-agent-you-dictate).
+
 ## What is published
 
 Vibe 2.25 has three hook types: `pre_tool`, `post_tool` and `post_agent`. This

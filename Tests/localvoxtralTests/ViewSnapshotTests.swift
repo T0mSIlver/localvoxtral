@@ -31,8 +31,9 @@ final class ViewSnapshotTests: XCTestCase {
     }
 
     /// Each harness pane twice: before anything is set up, and with the
-    /// plugin, hooks, status line and herdr panel installed and one host
-    /// enrolled. The model reads all of it through the doubles below.
+    /// plugin, hooks, status line, dictation note and herdr panel installed
+    /// and one host enrolled. The model reads all of it through the doubles
+    /// below.
     func testIntegrationPanes() async throws {
         for pane in SettingsTab.integrationsSidebarItems {
             for setUp in [false, true] {
@@ -268,6 +269,16 @@ final class ViewSnapshotTests: XCTestCase {
             bundledShimData: { vibeShim }, bundledHooksBlock: { vibeBlock },
             fileSystem: StubVibeHooksFileSystem(state: vibeState))
 
+        // Set up: the note is in CLAUDE.md, which opencode also reads, and
+        // in Vibe's AGENTS.md.
+        let dictationNotes = MemoryDictationNoteFileSystem(
+            files: setUp
+                ? [
+                    ".claude/CLAUDE.md": DictationNoteInstallService.snippet + "\n",
+                    ".vibe/AGENTS.md": DictationNoteInstallService.snippet + "\n",
+                ]
+                : [:])
+
         let herdrConfig = StubLocalHerdrConfigFileSystem(
             state: ClaudeLocalHerdrConfigState(
                 directoryExists: setUp,
@@ -300,6 +311,7 @@ final class ViewSnapshotTests: XCTestCase {
             statuslineHookCommand: { statuslineHook },
             opencodeService: { opencode },
             vibeService: { vibe },
+            dictationNoteService: { DictationNoteInstallService(agent: $0, fileSystem: dictationNotes) },
             herdrBinaryAvailable: { setUp },
             herdrPresenceReport: { setUp },
             herdrMachineCatalogReading: { herdrMachines },

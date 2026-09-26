@@ -409,6 +409,12 @@ Verify:
 claude plugin list
 ```
 
+## Telling Claude Code you dictate
+
+**Settings → Claude Code → Tell Claude Code you dictate → Add** puts a short
+note in `~/.claude/CLAUDE.md` saying your prompts come from speech-to-text.
+See [Telling the agent you dictate](../../docs/coding-agents.md#telling-the-agent-you-dictate).
+
 ## Connection indicator (opt-in status line)
 
 Claude Code's bottom bar can show whether localvoxtral is connected to this

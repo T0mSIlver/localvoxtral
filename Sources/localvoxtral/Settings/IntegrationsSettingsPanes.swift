@@ -106,6 +106,7 @@ struct ClaudeCodeSettingsPane: View {
                 if let claude = viewModel.claudeIntegrationSettings {
                     ClaudePluginInstallRow(model: claude)
                     ClaudeStatuslineRow(model: claude)
+                    DictationNoteRow(model: claude, agent: .claudeCode)
                 }
             }
         }
@@ -122,6 +123,7 @@ struct OpencodeSettingsPane: View {
             SettingsGroup(title: "Setup", learnMoreURL: Self.learnMoreURL) {
                 if let claude = viewModel.claudeIntegrationSettings {
                     OpencodePluginRow(model: claude)
+                    DictationNoteRow(model: claude, agent: .opencode)
                 }
             }
         }
@@ -138,6 +140,7 @@ struct VibeSettingsPane: View {
             SettingsGroup(title: "Setup", learnMoreURL: Self.learnMoreURL) {
                 if let claude = viewModel.claudeIntegrationSettings {
                     VibeHooksRow(model: claude)
+                    DictationNoteRow(model: claude, agent: .vibe)
                 }
             }
         }

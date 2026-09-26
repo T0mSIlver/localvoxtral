@@ -102,6 +102,13 @@ public final class ClaudeIntegrationSettingsModel {
     /// Short outcome of the last Vibe action, e.g. "Installed.".
     public internal(set) var vibeResult: String?
     public internal(set) var isPerformingVibeAction = false
+    /// Each agent's dictation note, refreshed with the rest of the pane and
+    /// after every note action (opencode and Claude Code can share a file).
+    public internal(set) var dictationNoteStatuses: [DictationNoteAgent: DictationNoteInstallService.Status] = [:]
+    /// "Could not add." or "Could not remove." after a failed note action;
+    /// success needs no line, the status says where the note is.
+    public internal(set) var dictationNoteResults: [DictationNoteAgent: String] = [:]
+    public internal(set) var isPerformingDictationNoteAction = false
     /// Whether the herdr row is shown at all. Refreshed with the rest of the
     /// pane; hidden until something reports herdr.
     public internal(set) var isHerdrDetected = false
@@ -189,6 +196,9 @@ public final class ClaudeIntegrationSettingsModel {
     /// Copies the bundled Vibe shim and edits `~/.vibe/hooks.toml`. Nil
     /// disables the row's actions.
     let vibeService: @Sendable () -> VibeHooksInstallService?
+    /// Adds and removes the dictation note in an agent's instructions file.
+    /// Nil disables the row's actions.
+    let dictationNoteService: @Sendable (DictationNoteAgent) -> DictationNoteInstallService?
     /// The files the setup run writes onto a host that has Vibe. Nil skips
     /// that step, which is what a test that injects nothing gets.
     let vibeRemoteFiles: @Sendable () -> VibeRemoteHooksFiles?
@@ -326,6 +336,7 @@ public final class ClaudeIntegrationSettingsModel {
         statuslineHookCommand: @escaping @Sendable () -> String? = { nil },
         opencodeService: @escaping @Sendable () -> OpencodePluginInstallService? = { nil },
         vibeService: @escaping @Sendable () -> VibeHooksInstallService? = { nil },
+        dictationNoteService: @escaping @Sendable (DictationNoteAgent) -> DictationNoteInstallService? = { _ in nil },
         vibeRemoteFiles: @escaping @Sendable () -> VibeRemoteHooksFiles? = { nil },
         herdrBinaryAvailable: @escaping @Sendable () -> Bool = { false },
         herdrPresenceReport: @escaping @Sendable () -> Bool = { false },
@@ -346,6 +357,7 @@ public final class ClaudeIntegrationSettingsModel {
         self.statuslineHookCommand = statuslineHookCommand
         self.opencodeService = opencodeService
         self.vibeService = vibeService
+        self.dictationNoteService = dictationNoteService
         self.vibeRemoteFiles = vibeRemoteFiles
         self.herdrBinaryAvailable = herdrBinaryAvailable
         self.herdrPresenceReport = herdrPresenceReport

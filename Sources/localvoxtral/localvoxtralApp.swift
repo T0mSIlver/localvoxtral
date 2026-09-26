@@ -943,6 +943,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     fileSystem: LiveVibeHooksFileSystem()
                 )
             },
+            dictationNoteService: { agent in
+                DictationNoteInstallService(agent: agent, fileSystem: LiveDictationNoteFileSystem())
+            },
             vibeRemoteFiles: { VibeRemoteHooksFiles.bundled() },
             // A binary on this Mac: a synchronous PATH scan, decided at model
             // construction so the row paints on first paint.
