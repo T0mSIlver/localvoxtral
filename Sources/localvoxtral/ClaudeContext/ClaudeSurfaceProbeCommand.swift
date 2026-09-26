@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import ClaudeContextWire
 import Foundation
 import Synchronization
 
