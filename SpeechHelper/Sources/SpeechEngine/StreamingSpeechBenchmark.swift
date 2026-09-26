@@ -105,6 +105,10 @@ public enum StreamingSpeechBenchmark {
                 + "tokens=\(session.decodedTokenCount) "
                 + "stopped=\(session.utteranceStop.map(String.init(describing:)) ?? "none")"
         )
+        // Flush the held-back tail as a dictation's stop does, so the digest covers
+        // the whole transcript. After `BENCH done`, so the timings above exclude it.
+        _ = session.finish()
+        print(BenchTranscriptDigest.line(for: session.text))
     }
 
     /// The first steps after a load compile kernels and can take seconds, which only the
