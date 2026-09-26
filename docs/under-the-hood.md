@@ -122,6 +122,15 @@ Mac because the audio duration Mistral reports back is wrong (it reported 2
 seconds for clips from 4.6 to 30.7 seconds long). For the billed figure, see
 the usage page in Mistral's admin console.
 
+## Terms from your coding agent
+
+The opt-in project-terms run
+([Terms from your coding agent](dictation.md#terms-from-your-coding-agent))
+pins Claude Code's `--model sonnet` alias, with Read, Glob and Grep and a $0.50
+cap, and uses Vibe's own configured model under a $0.30 cap. Haiku 4.5 was
+measured and rejected: the same cost, ten times the time, and a list padded
+with generic names.
+
 ## Bring your own server
 
 Prefer your own hardware? Switch Dictation or Polishing to **External URL**

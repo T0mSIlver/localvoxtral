@@ -194,4 +194,24 @@ final class LearnedTermsViewTests: XCTestCase {
         XCTAssertEqual(once.lastApplied, start)
         XCTAssertEqual(LearnedTermsSheet.detailParts(for: term(dictations: 9, applied: 6)).text, "Applied 6 times, last")
     }
+
+    /// #609: a proposal says which agent proposed it until use or a pin
+    /// confirms it, then reads like any learned term.
+    func testSheetDetailLineForAnAgentsProposal() {
+        func proposal(_ agent: ProjectTermProposal.Agent, dictations: Int, pinned: Bool? = nil) -> LearnedTerm {
+            LearnedTerm(
+                term: "inkwell", sources: [agent.source], dictations: dictations,
+                firstSeen: start, lastSeen: start, pinned: pinned
+            )
+        }
+        XCTAssertEqual(
+            LearnedTermsSheet.detailParts(for: proposal(.claude, dictations: 0)).text,
+            "Proposed by Claude Code: heard in 0 of 3 dictations"
+        )
+        XCTAssertEqual(
+            LearnedTermsSheet.detailParts(for: proposal(.vibe, dictations: 2)).text,
+            "Proposed by Mistral Vibe: heard in 2 of 3 dictations"
+        )
+        XCTAssertEqual(LearnedTermsSheet.detailParts(for: proposal(.claude, dictations: 0, pinned: true)).text, "Not applied yet")
+    }
 }

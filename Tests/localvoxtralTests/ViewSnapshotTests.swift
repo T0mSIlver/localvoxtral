@@ -67,7 +67,8 @@ final class ViewSnapshotTests: XCTestCase {
     }
 
     /// Advanced → Terms learned from polishing → Show: empty, which is where
-    /// a new machine imports (#523), and with terms, where Export… shows.
+    /// a new machine imports (#523), and with terms, where Export… shows,
+    /// agent proposals (#609) included.
     func testLearnedTermsSheet() throws {
         let frozen = Date(timeIntervalSince1970: 1_790_000_000)
         for filled in [false, true] {
@@ -82,6 +83,13 @@ final class ViewSnapshotTests: XCTestCase {
                         LearnedTerm(
                             term: "Voxtral", sources: ["repo"], dictations: 2,
                             firstSeen: frozen, lastSeen: frozen),
+                        // What a new project's agents proposed (#609).
+                        LearnedTerm(
+                            term: "inkwell", sources: [ProjectTermProposal.Agent.claude.source],
+                            dictations: 0, firstSeen: frozen, lastSeen: frozen),
+                        LearnedTerm(
+                            term: "GlyphAtlasCache", sources: [ProjectTermProposal.Agent.vibe.source],
+                            dictations: 1, firstSeen: frozen, lastSeen: frozen),
                     ], lastSeen: frozen),
                 ]) { _ in }
                 store.waitForPendingWrites()

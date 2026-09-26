@@ -268,6 +268,34 @@ there is not.
   pins the numbers; its known misses are a three-word join said as prose
   ("push to talk") and identifiers said with no code word nearby.
 
+- **An agent's proposals are vocabulary with a source, confirmed only by use
+  or a pin** (#609). With the opt-in setting on, the first dictation that
+  joins a LOCAL Claude Code or Vibe session in an unstamped project runs that
+  agent headless in the project (`ProjectTermProposer`), after the commit
+  inserted its text and off the commit path. The run is the app's own
+  process, never the user's session, so it cannot interrupt a turn, and the
+  hooks still print nothing. Its bounds are each a measured failure:
+  `claude -p` gets Read/Glob/Grep only, `disableAllHooks` (a project's
+  `SessionStart` hook fired inside `-p` without it; `--bare` would skip hooks
+  but never reads a Claude.ai login), `--strict-mcp-config`, 12 turns, $0.50;
+  `vibe -p` gets read-only file tools under `--auto-approve` (bash is refused
+  even so), 12 turns, $0.30, `--experimental-harness` (legacy looped to the
+  turn limit), and an app-owned `VIBE_HOME` holding only links to the user's
+  `config.toml` and `.env` (Vibe has no flag to skip hooks, and under the
+  user's home our `post_agent` hook would publish a phantom session). The
+  working directory comes only from `localWorkspacePath` via the git root,
+  so a remote label can never become one (#641 covers remote hosts). The
+  answer is untrusted text repo contents can steer: only term-shaped strings
+  are kept (`DictationTermsFile.accepted`, no control characters, 40 at most),
+  terms already known or refused are dropped, and a proposal starts at zero
+  dictations with source `agent:<name>`. Until three dictations or a pin
+  confirm it, it matches only in the `.learned` exact tier, only where repo
+  vocabulary may go (setting on, loopback or trusted endpoint), is never a
+  sound-alike nomination or verification pair, and is not in
+  `confirmedTerms`; it is evicted first and decays like any unpinned term.
+  One stamp per project key (main checkout, #652), whichever agent answers
+  first; a failure stamps only an attempt time and retries after 24 h.
+
 - **A fix is learned only from the prompt the joined session submits** (#520).
   `CorrectionLearning` compares the text a commit inserted with the next
   `UserPromptSubmit` of the session the dictation JOINED, within 3 minutes,

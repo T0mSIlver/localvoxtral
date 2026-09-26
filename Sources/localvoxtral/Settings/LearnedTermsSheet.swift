@@ -3,8 +3,10 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// Every learned term, one row each, grouped by project: how often the memory
-/// applied it, when it last did, and a pin and a forget button (#522). Its
-/// footer exports and imports them, to move them between machines (#523).
+/// applied it, when it last did, and a pin and a forget button (#522). A
+/// coding agent's proposal (#609) is a row like any other: Pin accepts it,
+/// Forget removes it. The footer exports and imports them, to move them
+/// between machines (#523).
 ///
 /// Reads the store's in-memory snapshot like the Settings row does, and
 /// re-renders on the same revision counter, so a dictation that lands while
@@ -194,11 +196,16 @@ struct LearnedTermsSheet: View {
             }
     }
 
-    /// The line under a term. A term below the bar is still being learned
-    /// and is never applied, so it says how far along it is instead.
+    /// The line under a term. A term below the bar is still being learned,
+    /// or was proposed by the project's coding agent (#609), so it says how
+    /// far along it is instead.
     nonisolated static func detailParts(for term: LearnedTerm) -> (text: String, lastApplied: Date?) {
         guard term.isConfirmed(minimumDictations: LearnedTerms.confirmedDictations) else {
-            return ("Learning: heard in \(term.dictations) of \(LearnedTerms.confirmedDictations) dictations", nil)
+            let progress = "heard in \(term.dictations) of \(LearnedTerms.confirmedDictations) dictations"
+            if let agent = term.proposingAgent {
+                return ("Proposed by \(agent.displayName): \(progress)", nil)
+            }
+            return ("Learning: \(progress)", nil)
         }
         switch term.appliedCount {
         case 0: return ("Not applied yet", nil)

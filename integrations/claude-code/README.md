@@ -14,6 +14,11 @@ without a checkout and without a separate marketplace repository.
 The plugin declares **hooks only**. It ships no skill, no slash command, and no
 agent — nothing here consumes Claude tokens, adds latency to your turn, or
 appears in Claude's context. It is a data channel, not a Claude feature.
+One opt-in feature outside the plugin does spend tokens: with **Ask the coding
+agent for each new project's terms** on, the app runs its own read-only
+`claude -p` once per project, never in your session (about $0.03–0.12, or the
+same share of a Claude.ai plan's quota; see
+[Terms from your coding agent](../../docs/dictation.md#terms-from-your-coding-agent)).
 
 On each hook event, Claude Code runs `hooks/publish.sh`, which locates the
 `localvoxtral-claude-hook` publisher and runs it as a **child process** — not

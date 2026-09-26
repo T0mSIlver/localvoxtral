@@ -332,7 +332,8 @@ enum PolishContextGatherer {
         )
         let learnedVocabularyOutcome = await Self.learnedTermGrounding(store: learnedTermStore,
             project: learnedProject,
-            transcript: workingText
+            transcript: workingText,
+            proposalsPermitted: Self.repoVocabularyPermitted(settings: settings, endpointURL: endpointURL)
         )
 
         guard !Task.isCancelled else { return nil }
@@ -448,25 +449,36 @@ enum PolishContextGatherer {
     ///
     /// A nil `project` means the app could not establish one, so there is
     /// nothing to read: see `LearnedTermProjectResolver.resolve`.
+    ///
+    /// An agent's unconfirmed proposals (#609) join only where repo
+    /// vocabulary may go (`proposalsPermitted`): before use confirms them
+    /// they are the repo's words, not yet the speaker's.
     private static func learnedTermGrounding(
         store learnedTermStore: LearnedTermStore?,
         project: LearnedTermProjectResolver.Identity?,
-        transcript: String
+        transcript: String,
+        proposalsPermitted: Bool
     ) async -> RepoVocabularyMatcher.GroundingOutcome {
         guard let learnedTermStore, let project else { return .empty }
-        let terms = learnedTermStore.confirmedTerms(projectKey: project.key)
-        guard !terms.isEmpty else { return .empty }
+        let memory = learnedTermStore.snapshot()
+        let confirmed = memory.confirmedTerms(projectKey: project.key)
+        let proposals = proposalsPermitted ? memory.unconfirmedProposals(projectKey: project.key) : []
+        guard !confirmed.isEmpty || !proposals.isEmpty else { return .empty }
         return await Task.detached(priority: .userInitiated) {
             // Memory, not evidence on screen now: a learned term spoken as
             // plain words in prose is offered to the model rather than
             // pre-applied (`withholdingOrdinaryReadings`, #522).
-            RepoVocabularyMatcher.withholdingOrdinaryReadings(
-                RepoVocabularyMatcher.groundedCandidates(
-                    transcript: transcript,
-                    vocabulary: RepoVocabulary(terms: terms, branch: nil)
-                ),
-                transcript: transcript
-            )
+            LearnedTermGrounding.outcome(transcript: transcript, confirmed: confirmed, proposals: proposals)
         }.value
+    }
+
+    /// The repo-vocabulary gate: the setting, and a loopback or trusted
+    /// endpoint.
+    private static func repoVocabularyPermitted(settings: SettingsStore, endpointURL: URL?) -> Bool {
+        guard settings.repoVocabularyEnabled, let endpointURL else { return false }
+        return PolishContextClipboardReader.isPermittedContextEndpoint(
+            endpointURL,
+            trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
+        )
     }
 }
