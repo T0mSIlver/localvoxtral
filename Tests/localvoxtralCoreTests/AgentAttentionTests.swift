@@ -90,9 +90,9 @@ final class AgentAttentionTests: XCTestCase {
         )
         tracker.onCue = { entry in cues.set(cues.get() + [entry]) }
         // The app hops to the main queue; the test ingests on it already.
-        registry.setTurnObserver { event, session in
+        registry.setTurnObserver { event, session, sequence in
             MainActor.assumeIsolated {
-                if let check = tracker.receive(event, session: session) {
+                if let check = tracker.receive(event, session: session, sequence: sequence) {
                     checks.set(checks.get() + [check])
                 }
             }
@@ -176,6 +176,28 @@ final class AgentAttentionTests: XCTestCase {
         gate.open()
         await check.value
         XCTAssertTrue(tracker.queue.isEmpty, "the prompt came after the stop, so nothing is finished")
+    }
+
+    /// Two broker threads can hand the observer a session's records out of
+    /// order; the registry's sequence restores it.
+    @MainActor
+    func testAnOlderEventArrivingLateChangesNothing() async throws {
+        let h = harness()
+        let registry = ClaudeSessionRegistry(now: { Self.epoch }, isProcessAlive: { _ in true })
+        let delivered = Box<[(ClaudeHookEvent, ClaudeSessionSnapshot, UInt64)]>([])
+        registry.setTurnObserver { event, session, sequence in
+            delivered.set(delivered.get() + [(event, session, sequence)])
+        }
+        registry.ingest(try claude(#"{"hook_event_name":"Stop","session_id":"s1","cwd":"/w/p"}"#), origin: local)
+        registry.ingest(try claude(#"{"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":"/w/p","prompt":"next"}"#), origin: local)
+        let (stop, prompt) = (delivered.get()[0], delivered.get()[1])
+        XCTAssertLessThan(stop.2, prompt.2)
+
+        h.tracker.receive(prompt.0, session: prompt.1, sequence: prompt.2)
+        let late = h.tracker.receive(stop.0, session: stop.1, sequence: stop.2)
+        XCTAssertNil(late, "the late stop is dropped before any pane check")
+        XCTAssertTrue(h.tracker.queue.isEmpty)
+        XCTAssertTrue(h.cues.get().isEmpty)
     }
 
     @MainActor

@@ -124,6 +124,9 @@ package final class AgentAttentionTracker {
     /// whose pane check finished after the session's next event does not
     /// undo that event.
     private var eventCount: [String: Int] = [:]
+    /// The registry's sequence of the last event applied per session: an
+    /// older one arriving late (two broker threads) is dropped.
+    private var lastSequence: [String: UInt64] = [:]
 
     /// - Parameters:
     ///   - isEnabled: whether the user turned the feature on (an answer
@@ -146,13 +149,19 @@ package final class AgentAttentionTracker {
     /// end asks whether the user is looking at the pane; the returned task
     /// finishes when that answer has been applied.
     @discardableResult
-    package func receive(_ event: ClaudeHookEvent, session: ClaudeSessionSnapshot) -> Task<Void, Never>? {
+    package func receive(
+        _ event: ClaudeHookEvent, session: ClaudeSessionSnapshot, sequence: UInt64? = nil
+    ) -> Task<Void, Never>? {
         guard let signal = AgentAttentionSignal.of(event) else { return nil }
         guard isEnabled() else {
             clear()
             return nil
         }
         let id = session.sessionID
+        if let sequence {
+            if let last = lastSequence[id], sequence <= last { return nil }
+            lastSequence[id] = sequence
+        }
         eventCount[id, default: 0] += 1
         let count = eventCount[id]
         let name = AgentAttentionText.name(of: session)

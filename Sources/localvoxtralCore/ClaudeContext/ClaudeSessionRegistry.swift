@@ -137,6 +137,9 @@ public final class ClaudeSessionRegistry: Sendable {
     private struct State {
         var sessions: [String: ClaudeSessionSnapshot] = [:]
         var focusByTTY: [String: FocusDeclaration] = [:]
+        /// Counts accepted records, so the turn observer, which runs off the
+        /// lock on whichever broker thread ingested, can tell their order.
+        var acceptedCount: UInt64 = 0
     }
 
     private let state = Mutex(State())
@@ -150,7 +153,7 @@ public final class ClaudeSessionRegistry: Sendable {
     private let submittedPromptObserver =
         Mutex<(@Sendable (_ sessionID: String, _ prompt: String) -> Void)?>(nil)
     private let turnObserver =
-        Mutex<(@Sendable (_ event: ClaudeHookEvent, _ session: ClaudeSessionSnapshot) -> Void)?>(nil)
+        Mutex<(@Sendable (_ event: ClaudeHookEvent, _ session: ClaudeSessionSnapshot, _ sequence: UInt64) -> Void)?>(nil)
     /// Agents whose hooks this Mac has accepted a record from since launch
     /// (or since `forgetHeard`). In memory only: it answers the Integrations
     /// pane's "has this agent's hook ever run", which for Codex is the only
@@ -241,6 +244,7 @@ public final class ClaudeSessionRegistry: Sendable {
             agent: record.agent, sessionID: record.sessionID
         )
         var capEvictions = CapEvictions()
+        var sequence: UInt64 = 0
         let ingested = state.withLock { state -> ClaudeSessionSnapshot? in
             let before = state.sessions
             defer {
@@ -317,6 +321,8 @@ public final class ClaudeSessionRegistry: Sendable {
                 now: timestamp
             )
 
+            state.acceptedCount += 1
+            sequence = state.acceptedCount
             if record.event == .sessionEnd {
                 // Explicit end: evict immediately, but hand the final snapshot
                 // back so a caller can react to the teardown.
@@ -347,7 +353,7 @@ public final class ClaudeSessionRegistry: Sendable {
             observer(ingested.sessionID, prompt)
         }
         if let ingested, let observer = turnObserver.withLock({ $0 }) {
-            observer(record.event, ingested)
+            observer(record.event, ingested, sequence)
         }
         return ingested
     }
@@ -378,9 +384,11 @@ public final class ClaudeSessionRegistry: Sendable {
     /// Hands every accepted record's event and the session it left, to the
     /// needs-you queue (#717): a wait, a turn's end, a new prompt, the end of
     /// the session. Called on the ingesting thread, outside the registry
-    /// lock, with the scoped session id.
+    /// lock, with the scoped session id. Two broker threads can call it out
+    /// of order; `sequence`, taken under the lock, is the order the registry
+    /// accepted the records in.
     public func setTurnObserver(
-        _ observer: (@Sendable (_ event: ClaudeHookEvent, _ session: ClaudeSessionSnapshot) -> Void)?
+        _ observer: (@Sendable (_ event: ClaudeHookEvent, _ session: ClaudeSessionSnapshot, _ sequence: UInt64) -> Void)?
     ) {
         turnObserver.withLock { $0 = observer }
     }
