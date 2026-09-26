@@ -190,6 +190,9 @@ final class BackendProcessSupervisorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let countFile = directory.appendingPathComponent("count")
+        // PROOF ONLY (#753), removed before review.
+        let countWrite = ProcessInfo.processInfo.environment["LV_PROOF_753_NO_WRITE"] == nil
+            ? "echo \"$count\" > \"\(countFile.path)\"" : ":"
         let script = try writeScript(
             in: directory,
             name: "backend.sh",
@@ -200,7 +203,7 @@ final class BackendProcessSupervisorTests: XCTestCase {
               count=$(cat "\(countFile.path)")
             fi
             count=$((count + 1))
-            echo "$count" > "\(countFile.path)"
+            \(countWrite)
             echo "fatal backend failure $count" >&2
             exit 7
             """

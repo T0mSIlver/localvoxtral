@@ -395,6 +395,7 @@ jobs:
                 --filter 'BackendProcessSupervisorTests/testMaxFailuresFailsWithStderrTail' \
                 >"$RUNNER_TEMP/one-753.log" 2>&1; then
               pass=$((pass + 1))
+              grep -hE 'Executed [0-9]+ test' "$RUNNER_TEMP/one-753.log" | tail -1
             else
               failed=$((failed + 1))
               grep -E 'error:|failed' "$RUNNER_TEMP/one-753.log" || tail -20 "$RUNNER_TEMP/one-753.log"
@@ -403,6 +404,12 @@ jobs:
           touch "$stop"
           wait "$load"
           echo "PROOF testMaxFailuresFailsWithStderrTail under shard load: $pass passed, $failed failed of 50"
+          grep -E '==> (Shard|Unit shards)' "$RUNNER_TEMP/load-753.log" || tail -5 "$RUNNER_TEMP/load-753.log"
+          # The backend's write removed: the failure must name the missing file.
+          LV_PROOF_753_NO_WRITE=1 swift test --build-system native --skip-build --ignore-lock \
+            --filter 'BackendProcessSupervisorTests/testMaxFailuresFailsWithStderrTail' \
+            >"$RUNNER_TEMP/nowrite-753.log" 2>&1 || true
+          grep -E 'error:' "$RUNNER_TEMP/nowrite-753.log" | sed 's/^/PROOF no-write: /' || echo "PROOF no-write: no failure"
 
       - name: Upload complete unit-test log
         if: ${{ always() && steps.ci_scope.outputs.docs_only != 'true' }}
