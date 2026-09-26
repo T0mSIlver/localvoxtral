@@ -49,6 +49,9 @@ package struct OpencodePromptRelayClient: OpencodePromptRelayPosting {
     /// at 64 KiB; anything longer goes by keystrokes instead.
     package static let maxAppendBytes = 32 * 1024
     package static let timeout: TimeInterval = 2
+    /// One for the app: a URLSession lives until invalidated, so one per
+    /// dictation would pile up.
+    package static let shared = OpencodePromptRelayClient()
 
     private let session: URLSession
 
@@ -122,7 +125,7 @@ package final class OpencodePromptRelaySink {
 
     package init(
         relay: OpencodePromptRelay,
-        poster: any OpencodePromptRelayPosting = OpencodePromptRelayClient(),
+        poster: any OpencodePromptRelayPosting = OpencodePromptRelayClient.shared,
         fallback: @escaping @MainActor (String) -> Void
     ) {
         self.relay = relay

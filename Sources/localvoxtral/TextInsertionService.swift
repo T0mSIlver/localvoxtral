@@ -371,7 +371,7 @@ final class TextInsertionService {
     /// Auto-Paste passes nil to type it here.
     func beginPromptRelay(
         _ relay: OpencodePromptRelay?,
-        poster: any OpencodePromptRelayPosting = OpencodePromptRelayClient(),
+        poster: any OpencodePromptRelayPosting = OpencodePromptRelayClient.shared,
         fallback: (@MainActor (String) -> Void)? = nil
     ) {
         guard let relay else {
