@@ -32,6 +32,7 @@ struct DictationSettingsPane: View {
     @State private var livePasteValidationError: String?
     @State private var copyLastDictationValidationError: String?
     @State private var answerAgentValidationError: String?
+    @State private var quickCaptureValidationError: String?
     @State private var pendingShortcutMove: PendingShortcutMove?
 
     /// A recording that would take the other mode's key, held until the user
@@ -95,6 +96,17 @@ struct DictationSettingsPane: View {
         Binding(
             get: { settings.answerAgentShortcut },
             set: { assignAnswerAgentShortcut($0) }
+        )
+    }
+
+    private func assignQuickCaptureShortcut(_ shortcut: DictationShortcut?) {
+        quickCaptureValidationError = viewModel.shortcuts.requestQuickCaptureShortcut(shortcut)
+    }
+
+    private var quickCaptureShortcutBinding: Binding<DictationShortcut?> {
+        Binding(
+            get: { settings.quickCaptureShortcut },
+            set: { assignQuickCaptureShortcut($0) }
         )
     }
 
@@ -327,6 +339,33 @@ struct DictationSettingsPane: View {
                 } footer: {
                     if let answerAgentValidationError {
                         SettingsInlineMessage(answerAgentValidationError, color: .red)
+                    }
+                }
+
+                // A capture's words go to the Inbox, never into the focused
+                // app (#725); like the copy shortcut, it works whichever
+                // trigger method is picked.
+                SettingsFieldRow(
+                    title: "Quick capture to Inbox",
+                    controlAlignment: .top
+                ) {
+                    HStack(alignment: .center, spacing: 8) {
+                        ShortcutRecorderField(
+                            shortcut: quickCaptureShortcutBinding,
+                            validationError: $quickCaptureValidationError,
+                            fixedWidth: 132
+                        )
+                        .frame(height: 24, alignment: .leading)
+
+                        Button("Clear") {
+                            quickCaptureValidationError = nil
+                            assignQuickCaptureShortcut(nil)
+                        }
+                        .disabled(settings.quickCaptureShortcut == nil)
+                    }
+                } footer: {
+                    if let quickCaptureValidationError {
+                        SettingsInlineMessage(quickCaptureValidationError, color: .red)
                     }
                 }
 

@@ -164,6 +164,39 @@ sessions opened with `cmux ssh`. Your Keychain stores the socket password,
 and localvoxtral sends it only to cmux's local socket. Saving an empty field
 removes it.
 
+## Quick capture
+
+The **Quick capture to Inbox** shortcut (**Settings → Dictation**) records an
+Overlay Buffer dictation for an idea that has no place in the app you are in.
+Your words never reach the focused app. They are saved in History, then shown
+on the **Inbox** page of the localvoxtral window.
+
+1. **Route.** A classifier picks one of the projects localvoxtral has joined.
+   It reads each project's name, the first paragraph of its README (for a
+   checkout on this Mac), and its learned terms. When it is unsure, or two
+   projects tie, the capture stays unplaced.
+2. **Draft.** For a checkout on this Mac, that project's Claude Code (or
+   Mistral Vibe) runs in the background with read-only tools and drafts an
+   issue: title, scope, constraints and proof, following the repository's
+   AGENTS.md, and naming any open issue it duplicates. The run is capped at
+   20 turns and $0.50 (Claude Code) or $0.30 (Vibe) of your agent plan or API
+   key. A project on a remote host gets no draft yet.
+3. **Review.** On the Inbox page you edit the draft, move the capture to
+   another project, or discard it. **File** creates the issue with your GitHub
+   CLI (`gh issue create`), with your dictated words quoted under the draft.
+   Nothing is filed any other way.
+
+Which classifier routes a capture:
+
+- **Send quick captures to Jev for routing**, when on and with a **Jev API
+  key** set (TypeSafe's, or a Vercel AI Gateway key starting `vck_`), sends
+  the capture text and the project descriptions to Jev, TypeSafe's hosted
+  classifier. It is off by default.
+- Otherwise, or when Jev fails, your polishing model routes it, wherever
+  polishing runs: on this Mac for the bundled helper, at the endpoint you
+  configured otherwise.
+- With neither, every capture waits in the Inbox for you to place it.
+
 ## Dictating into Claude Code
 
 localvoxtral ships a

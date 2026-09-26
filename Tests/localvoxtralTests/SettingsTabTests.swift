@@ -400,7 +400,7 @@ final class SettingsTabTests: XCTestCase {
     func testSidebarOrderIsThePresentationContract() {
         let panes = SettingsTab.allKnownPanes
         XCTAssertEqual(Set(panes).count, panes.count, "a pane is listed in two sidebar sections")
-        XCTAssertEqual(SettingsTab.historySidebarItems, [.history, .insights])
+        XCTAssertEqual(SettingsTab.historySidebarItems, [.inbox, .history, .insights])
         XCTAssertEqual(
             SettingsTab.primarySidebarItems,
             [.general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about]
@@ -431,7 +431,7 @@ final class SettingsTabTests: XCTestCase {
             Set(SettingsTab.allKnownPanes.map(\.rawValue)),
             [
                 "general", "endpoints", "dictation", "textProcessing", "about", "history",
-                "insights",
+                "insights", "inbox",
                 "integrations.context", "integrations.claude", "integrations.opencode",
                 "integrations.vibe", "integrations.codex", "integrations.herdr", "integrations.remote",
                 "terminals.ghostty", "terminals.iterm2", "terminals.apple-terminal",
