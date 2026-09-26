@@ -167,6 +167,8 @@ extension DictationSessionController {
             statusText = StatusStrings.polishing
             debugLog("LLM polishing started for \(workingText.count) chars")
 
+            // A value, not the join: the closure outlives the stop.
+            let historyJoin = capture.claudeJoin.map(AgentCLIJoin.init)
             saveInterruptedPolishCommit = { [weak self] in
                 self?.saveSessionRecord(
                     startedAt: capturedSessionStartedAt,
@@ -180,7 +182,8 @@ extension DictationSessionController {
                     status: .sttCompleted,
                     commitSucceeded: false,
                     polishContextSummary: payloadProvenanceSummary,
-                    clipboardPayload: clipboardPayload
+                    clipboardPayload: clipboardPayload,
+                    joined: historyJoin
                 )
             }
             polishAndCommitTask = Task { @MainActor [weak self] in
@@ -207,6 +210,9 @@ extension DictationSessionController {
         }
 
         // Non-polishing overlay commit path
+        // Read before the cleanup below discards the join; a capture taken
+        // for a polish that could not run holds it instead.
+        let historyJoin = (sample.capture?.claudeJoin ?? context.claudeSessionJoin).map(AgentCLIJoin.init)
         let overlayCommit = StopCommitCoordinator.commit(
             overlay: overlayBufferCoordinator,
             textInsertion: overlayTextCommitter,
@@ -243,7 +249,8 @@ extension DictationSessionController {
             commitSucceeded: overlayCommit.succeeded,
             polishContextSummary: payloadProvenanceSummary,
             clipboardPayload: clipboardPayload,
-            audio: capturedAudio
+            audio: capturedAudio,
+            joined: historyJoin
         )
 
         if let llmConfigurationFailure {
@@ -382,7 +389,8 @@ extension DictationSessionController {
                 )
             ),
             clipboardPayload: preparation.clipboardPayload,
-            audio: record.audio
+            audio: record.audio,
+            joined: capture.claudeJoin.map(AgentCLIJoin.init)
         )
 
         #if LOCALVOXTRAL_DOGFOOD
@@ -474,6 +482,7 @@ extension DictationSessionController {
         let sessionAudio = audio.sessionRecording.finish()
         let capturedAudio = sessionStoresAudio ? sessionAudio : nil
         textInsertion.flushFinalLiveReplacementCorrections()
+        let historyJoin = context.claudeSessionJoin.map(AgentCLIJoin.init)
         // Read before the cleanup below discards the join.
         if liveDictationCanTeachACorrection {
             expectCorrection(of: liveTypedText(), join: context.claudeSessionJoin, project: nil)
@@ -498,7 +507,8 @@ extension DictationSessionController {
             targetAppBundleID: nil,
             status: .sttCompleted,
             commitSucceeded: true,
-            audio: capturedAudio
+            audio: capturedAudio,
+            joined: historyJoin
         )
     }
 
@@ -662,7 +672,8 @@ extension DictationSessionController {
         polishProfile: String? = nil,
         polishContextSummary: String? = nil,
         clipboardPayload: String? = nil,
-        audio: Data? = nil
+        audio: Data? = nil,
+        joined: AgentCLIJoin?
     ) {
         let trimmedRawText = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedRawText.isEmpty else {
@@ -685,6 +696,12 @@ extension DictationSessionController {
             polishProfile: polishProfile,
             polishContextSummary: polishContextSummary
         )
+        // What `localvoxtral history` and `status` report (#721): the
+        // session's own directory or remote label, nothing read from disk.
+        record.projectKey = joined?.project?.key
+        record.projectName = joined?.project?.name
+        record.joinedAgent = joined?.agent
+        lastDictationJoin = joined
         dependencies.onSessionRecord?(record)
         let retention = settings.dictationHistoryRetention
         // The record holds the clipboard placeholder; the copy the user takes
@@ -922,6 +939,9 @@ extension DictationSessionController {
     ) {
         statusText = StatusStrings.transcribingAgain
         let realtimeText = transcript.currentDictationEventText
+        // Only what the history keeps: the closure outlives the stop, and a
+        // join can hold an ssh forward open.
+        let historyJoin = (sample.capture?.claudeJoin ?? context.claudeSessionJoin).map(AgentCLIJoin.init)
         saveInterruptedPolishCommit = { [weak self] in
             self?.saveSessionRecord(
                 startedAt: sample.record.startedAt,
@@ -934,7 +954,8 @@ extension DictationSessionController {
                 targetAppBundleID: sample.record.targetAppBundleID,
                 status: .sttCompleted,
                 commitSucceeded: false,
-                audio: sample.record.audio
+                audio: sample.record.audio,
+                joined: historyJoin
             )
         }
         let deadline = StopSecondPass.deadline(audioSeconds: request.audioSeconds)

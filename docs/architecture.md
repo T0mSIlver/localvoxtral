@@ -154,6 +154,9 @@ Key subsystems:
     the app is absent. In the app, `ClaudeContextBroker` verifies the peer UID
     *before reading*. It only ever unlinks a socket it has PROVED stale by
     connect-probe, because a second live instance owns its socket legitimately.
+    The `localvoxtral` command (`Sources/localvoxtral-cli`, #721) asks on the
+    same socket; `AgentCLIService` answers from the history store, the
+    learned terms and Settings (`AgentCLIAppDataSource`).
   - **Remote** (`localvoxtral-remote`, installed on the REMOTE host): command
     hooks run the bundled POSIX-sh shim `hooks/post.sh`, which curls the
     event JSON to `127.0.0.1:<port>/v1/hook/<Event>` through an OpenSSH

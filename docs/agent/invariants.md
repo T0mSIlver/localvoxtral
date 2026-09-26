@@ -2069,3 +2069,26 @@ there is not.
     a supervised `ssh -L` and a nonce lease, and the app is the good one. A
     probe that withheld them would answer a different question from the one a
     dictation asks.
+- **The `localvoxtral` command shares the hook socket, and its replies are the
+  one place that socket returns data** (#721). A line with a `cli` key is a
+  command request (`AgentCLIWire`); it is answered and the connection closes,
+  and it never reaches the registry. The trust is the hook path's, unchanged:
+  the 0700 directory, the 0600 socket and `getpeereid` before the first byte,
+  so only processes running as the user can ask, and each of them could read
+  `default.store` and `learned-terms.json` from disk already. That equivalence
+  is the whole argument, so it bounds what the command may do: no TCP
+  listener, ever (a loopback port is reachable by every local user and every
+  page a browser loads); no command that writes history or starts a
+  dictation; and replies carry what the stores hold and nothing more. History
+  keeps the clipboard placeholder, never the clipboard, and so does the
+  command. Under History's **Don't keep**, `history` answers an empty list
+  with `historyKept: false`, not an error: nothing is kept, so nothing is
+  found, and the flag says why. `terms propose` writes only unconfirmed proposals
+  (`LearnedTerms.recordCommandProposal`), under the same rules as #609's:
+  term-shaped only, never a term the user listed or refused, confirmed only
+  by three dictations or a pin. The caller's name (`agent:<name>`) is read
+  from the agent's own environment and is a label, not a credential: every
+  caller shares the uid. Unlike the headless run's answer, a command proposal
+  does not stamp the project, because it is a few names, not the project's
+  list. The hook receipt (`ClaudeBrokerResponse`) is untouched and still
+  carries nothing a hook could print.
