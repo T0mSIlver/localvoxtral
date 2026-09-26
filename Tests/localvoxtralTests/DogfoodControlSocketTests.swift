@@ -181,22 +181,6 @@ final class DogfoodControlSocketTests: XCTestCase {
         XCTAssertFalse(reached.withLock { $0 })
     }
 
-    // PROOF ONLY (#743), removed before review: the client writes after the
-    // rejected connection is closed, the ordering that killed the dogfood job.
-    func testProofClientWritesAfterRejection() throws {
-        let socket = makeSocket(handler: { _ in "handled" }, peerUID: { _ in nil })
-        try socket.start()
-        defer { socket.stop() }
-        let fd = try connectedClient()
-        defer { close(fd) }
-        var byte: UInt8 = 0
-        XCTAssertEqual(read(fd, &byte, 1), 0, "the server closes a rejected peer unread")
-        let payload = Array("join report\n".utf8)
-        let written = payload.withUnsafeBytes { write(fd, $0.baseAddress, payload.count) }
-        XCTAssertEqual(written, -1)
-        XCTAssertEqual(errno, EPIPE)
-    }
-
     func testTheOwnUIDIsAccepted() throws {
         let socket = makeSocket(
             handler: { _ in "ok" },
