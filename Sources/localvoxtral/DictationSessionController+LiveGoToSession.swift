@@ -118,11 +118,20 @@ extension DictationSessionController {
         return true
     }
 
-    /// Stop: the session finishes once the go-to and the segments behind it
-    /// are done. A new dictation cancels the wait, and the transcript goes to
-    /// History as not inserted.
-    func finishLiveAutoPasteSessionAfterGoTo(sessionMode: DictationOutputMode, finish: @escaping @MainActor () -> Void) -> Bool {
-        guard let goTo = liveGoToTask else { return false }
+    /// Stop: the session finishes once every go-to and the segments behind
+    /// them are done, with the audio recorded up to the stop. The wait counts
+    /// as finalizing on every stop path, so a new dictation takes the
+    /// recovery that cancels it, and the transcript goes to History as not
+    /// inserted.
+    func finishLiveAutoPasteSessionAfterGoTo(
+        sessionMode: DictationOutputMode,
+        finish: @escaping @MainActor (_ sessionAudio: Data?) -> Void
+    ) -> Bool {
+        guard liveGoToTask != nil else { return false }
+        isFinalizingStop = true
+        statusText = StatusStrings.finalizing
+        let sessionAudio = audio.sessionRecording.finish()
+        let storedAudio = sessionStoresAudio ? sessionAudio : nil
         let startedAt = sessionStartedAt ?? Date()
         let provider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
         let model = sessionModelName ?? settings.effectiveModelName
@@ -140,15 +149,20 @@ extension DictationSessionController {
                 targetAppBundleID: nil,
                 status: .sttCompleted,
                 commitSucceeded: false,
-                audio: nil,
+                audio: storedAudio,
                 joined: join
             )
         }
         polishAndCommitTask = Task { @MainActor [weak self] in
-            await goTo.value
+            // A go-to the queue started after the first one is waited for
+            // too, or the cleanup would cancel it and drop what follows it.
+            while let goTo = self?.liveGoToTask {
+                await goTo.value
+                guard !Task.isCancelled else { return }
+            }
             guard let self, !Task.isCancelled else { return }
             self.saveInterruptedPolishCommit = nil
-            finish()
+            finish(sessionAudio)
         }
         return true
     }

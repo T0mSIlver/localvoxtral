@@ -49,8 +49,8 @@ extension DictationSessionController {
 
         // A go-to still bringing a pane forward: the segments behind it land
         // before the session ends.
-        guard !finishLiveAutoPasteSessionAfterGoTo(sessionMode: sessionMode, finish: { [weak self] in
-            self?.finishLiveAutoPasteSession(sessionMode: sessionMode)
+        guard !finishLiveAutoPasteSessionAfterGoTo(sessionMode: sessionMode, finish: { [weak self] sessionAudio in
+            self?.finishLiveAutoPasteSession(sessionMode: sessionMode, finishedAudio: sessionAudio)
         }) else { return }
         finishLiveAutoPasteSession(sessionMode: sessionMode)
     }
@@ -482,13 +482,15 @@ extension DictationSessionController {
 
     /// A Live Auto-Paste session: the text is already typed, so what is left
     /// is the final flush and the record.
-    private func finishLiveAutoPasteSession(sessionMode: DictationOutputMode) {
+    /// - Parameter finishedAudio: the recording, when the stop already
+    ///   finished it.
+    private func finishLiveAutoPasteSession(sessionMode: DictationOutputMode, finishedAudio: Data?? = nil) {
         // Non-overlay path (live auto-paste)
         let capturedSessionStartedAt = sessionStartedAt ?? Date()
         let capturedProvider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
         let capturedModel = sessionModelName ?? settings.effectiveModelName
         let capturedOutputMode = sessionMode.rawValue
-        let sessionAudio = audio.sessionRecording.finish()
+        let sessionAudio = finishedAudio ?? audio.sessionRecording.finish()
         let capturedAudio = sessionStoresAudio ? sessionAudio : nil
         textInsertion.flushFinalLiveReplacementCorrections()
         let historyJoin = context.claudeSessionJoin.map(AgentCLIJoin.init)

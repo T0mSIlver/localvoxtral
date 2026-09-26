@@ -127,6 +127,46 @@ final class LiveGoToSessionWiringTests: XCTestCase {
         XCTAssertEqual(harness.records.value.count, 1, "the dictation is saved once the go-to is done")
     }
 
+    /// Review of #773 (P2): the stop waited only for the first go-to, and
+    /// the cleanup cancelled the one queued behind it.
+    func testAStopWaitsForAGoToQueuedBehindAnother() async {
+        let harness = makeHarness(sessions: [
+            session("pay", cwd: "/r/payments", tty: "/dev/ttys001"),
+            session("bill", cwd: "/r/billing", tty: "/dev/ttys002"),
+        ])
+
+        harness.partial("go to payments")
+        harness.final("go to payments")
+        harness.partial("go to billing")
+        harness.final("go to billing")
+        harness.stop()
+        await awaitStoppedSessionCommit(harness.viewModel)
+
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, ["pay", "bill"])
+        XCTAssertEqual(harness.typedText, "")
+        XCTAssertEqual(harness.records.value.count, 1)
+    }
+
+    /// Review of #773 (P1): a lost connection stops without finalizing, and
+    /// a new dictation then skipped the recovery that ends the wait, leaving
+    /// the session refusing every start.
+    func testANewDictationEndsAGoToWaitOnAStopThatDidNotFinalize() {
+        let harness = makeHarness()
+
+        harness.partial("go to payments")
+        harness.final("go to payments")
+        harness.viewModel.isDictating = false
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: true)
+        XCTAssertTrue(harness.viewModel.isFinalizingStop, "the wait counts as finalizing")
+
+        XCTAssertTrue(harness.viewModel.session.cancelPolishingForNewSessionIfNeeded())
+
+        XCTAssertFalse(harness.viewModel.session.isCompletingStoppedSession)
+        XCTAssertFalse(harness.viewModel.isFinalizingStop)
+        XCTAssertNil(harness.viewModel.session.liveGoToTask)
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false], "History keeps it as not inserted")
+    }
+
     func testAnAmbiguousNameTypesNothingAndSaysSo() async {
         let harness = makeHarness(sessions: [
             session("a", cwd: "/r/localvoxtral", tty: "/dev/ttys001"),
