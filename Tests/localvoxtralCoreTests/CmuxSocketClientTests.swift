@@ -902,7 +902,12 @@ final class CmuxSocketClientTests: XCTestCase {
         }
         _ = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                // Qualified: inside an XCTestCase, a bare `bind` is NSObject's.
+                #if canImport(Darwin)
+                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                #else
+                Glibc.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                #endif
             }
         }
         // Bound but never listening.
