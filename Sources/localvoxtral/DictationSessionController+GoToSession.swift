@@ -1,3 +1,4 @@
+import ClaudeContextWire
 import Foundation
 import os
 
@@ -25,6 +26,9 @@ extension DictationSessionController {
               let spokenName = GoToSessionCommandParser.spokenName(in: transcript.currentDictationEventText)
         else { return false }
         let text = transcript.currentDictationEventText
+        // Only what the history keeps: the closure outlives the stop, and a
+        // join can hold an ssh forward open.
+        let historyJoin = (sample.capture?.claudeJoin ?? context.claudeSessionJoin).map(AgentCLIJoin.init)
         // Until the name resolves this is still a dictation: one a new
         // dictation interrupts goes to History as not inserted.
         saveInterruptedPolishCommit = { [weak self] in
@@ -39,7 +43,8 @@ extension DictationSessionController {
                 targetAppBundleID: sample.record.targetAppBundleID,
                 status: .sttCompleted,
                 commitSucceeded: false,
-                audio: sample.record.audio
+                audio: sample.record.audio,
+                joined: historyJoin
             )
         }
         polishAndCommitTask = Task { @MainActor [weak self] in
