@@ -282,8 +282,8 @@ History; the panes sit under the sidebar's Settings header.
 
 **Text Processing → Advanced → Ask the coding agent for each new project's
 terms** is off by default. When it is on, the first dictation that joins a
-local Claude Code or Mistral Vibe session in a project the app has not asked
-about starts that agent once, headless, in the project's repository. The
+local Claude Code, Mistral Vibe or opencode session in a project the app has
+not asked about starts that agent once, headless, in the project's repository. The
 agent reads a few files and answers with up to 40 of the project's own names:
 modules, types, commands, environment variables. Your session never sees the
 request, so it cannot interrupt a turn. Every worktree of a repository counts
@@ -291,7 +291,8 @@ as one project, and the app asks each project once, whichever agent joins
 first. It retries a failed run a day later.
 
 The names show in **Terms learned from polishing → Show** as "Proposed by
-Claude Code" or "Proposed by Mistral Vibe". They are suggestions. Polishing
+Claude Code", "Proposed by Mistral Vibe" or "Proposed by opencode". They are
+suggestions. Polishing
 applies one only where you allow repo vocabulary and only where the
 transcript spells it out, and it never reaches the polishing prompt's list of
 your terms. Three dictations that use it, or **Pin**, make it yours;
@@ -309,6 +310,16 @@ What a run costs and sends:
   run stays out of your Vibe history. Its prompt lists up to 200 tracked file
   names. Measured runs used about 115k input tokens, $0.05–0.10 at Vibe's
   default model prices, in 10–25 s.
+- **opencode**: `opencode run --pure` with your default model, read, glob,
+  grep and list only, at most 12 steps and 4,096 output tokens a step.
+  opencode has no price cap, so a run is also cut off after 2 minutes.
+  `--pure` keeps every plugin out, ours included. The run ignores the
+  repository's `opencode.json` (no MCP server starts) and keeps its session
+  in memory, so it stays out of your opencode history. A provider that only an
+  environment variable configures is not seen, because the app does not have
+  your shell's environment; `opencode auth login` stores a key it can use.
+  Measured runs with Mistral Medium used 5 steps, 5–9k input and 200–350
+  output tokens (under $0.02), in 5–14 s.
 
 Either way, the agent sends the files it reads to its provider, as it does in
 your own sessions.

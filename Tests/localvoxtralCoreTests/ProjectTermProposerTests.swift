@@ -216,15 +216,43 @@ final class ProjectTermProposerTests: XCTestCase {
         XCTAssertEqual(runner.count, 0)
     }
 
+    // MARK: opencode
+
+    /// From a subdirectory, the run's `--dir` and working directory are both
+    /// the repository root, and it needs no file list.
+    func testALocalOpencodeJoinRunsOpencodeInTheRepositoryRoot() async throws {
+        let repo = try checkout("quillmark")
+        let runner = FakeRunner(.terms(["inkwell"]))
+        let (proposer, store) = proposer(runner)
+
+        await commit(proposer, join(repo + "/src", agent: .opencode))
+
+        XCTAssertEqual(runner.invocations.withLock { $0 }, [
+            ProjectTermProposal.Invocation(
+                agent: .opencode,
+                workingDirectory: repo,
+                arguments: ProjectTermProposal.opencodeArguments(workingDirectory: repo),
+                environment: ProjectTermProposal.opencodeEnvironment
+            ),
+        ])
+        XCTAssertEqual(store.snapshot().projects.first?.terms.first?.sources, ["agent:opencode"])
+
+        await commit(proposer, join(repo, agent: .opencode))
+        await commit(proposer, join(repo, agent: .claude))
+        XCTAssertEqual(runner.count, 1, "one ask per project, whichever agent joins next")
+    }
+
     // MARK: Does not run
 
-    func testNothingRunsWithoutALocalClaudeOrVibeJoinOrWithTheSettingOff() async throws {
+    func testNothingRunsWithoutALocalJoinOrWithTheSettingOff() async throws {
         let repo = try checkout("quillmark")
         let runner = FakeRunner(.terms(["inkwell"]))
         let (proposer, _) = proposer(runner)
 
         XCTAssertNil(proposer.dictationCommitted(join: nil, enabled: true, excluding: []))
-        XCTAssertNil(proposer.dictationCommitted(join: join(repo, agent: .opencode), enabled: true, excluding: []))
+        XCTAssertNil(proposer.dictationCommitted(
+            join: join(repo, agent: .opencode, origin: .remote(channel: "ssh")), enabled: true, excluding: []
+        ))
         XCTAssertNil(proposer.dictationCommitted(
             join: join(repo, origin: .remote(channel: "ssh")), enabled: true, excluding: []
         ))

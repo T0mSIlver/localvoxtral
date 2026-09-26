@@ -163,6 +163,8 @@ final class RemoteProjectTermsTests: XCTestCase {
         case .vibe:
             headers["X-Lvx-Agent"] = "vibe"
             headers["X-Lvx-Vibe-Hooks-Version"] = version ?? RemoteProjectTermRequests.minimumVibeHooksVersion
+        case .opencode:
+            preconditionFailure("opencode has no remote shim")
         }
         if let project { headers["X-Lvx-Env-Project"] = project }
         let body = #"{"hook_event_name":"\#(event)","session_id":"\#(session)","cwd":"/srv/work/quill-fix","prompt":"hello"}"#

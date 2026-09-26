@@ -212,6 +212,10 @@ final class LearnedTermsViewTests: XCTestCase {
             LearnedTermsSheet.detailParts(for: proposal(.vibe, dictations: 2)).text,
             "Proposed by Mistral Vibe: heard in 2 of 3 dictations"
         )
+        XCTAssertEqual(
+            LearnedTermsSheet.detailParts(for: proposal(.opencode, dictations: 1)).text,
+            "Proposed by opencode: heard in 1 of 3 dictations"
+        )
         XCTAssertEqual(LearnedTermsSheet.detailParts(for: proposal(.claude, dictations: 0, pinned: true)).text, "Not applied yet")
     }
 }
