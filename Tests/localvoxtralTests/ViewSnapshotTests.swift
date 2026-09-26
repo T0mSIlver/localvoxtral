@@ -94,6 +94,7 @@ final class ViewSnapshotTests: XCTestCase {
             var filed = QuickCaptureItem(capturedAt: now.addingTimeInterval(-7_200), text: "add a dark mode to the settings window")
             filed.state = .filed
             filed.title = "Dark mode for the settings window"
+            filed.repository = "example/demo"
             filed.filedURL = "https://github.com/example/demo/issues/12"
             try QuickCaptureInboxFile.save(QuickCaptureInbox(items: [drafted, unplaced, filed]), to: fileURL)
             self.addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
