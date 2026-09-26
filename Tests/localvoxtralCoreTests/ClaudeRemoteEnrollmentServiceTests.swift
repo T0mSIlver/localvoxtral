@@ -1,7 +1,8 @@
 import Foundation
 import Synchronization
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
+import localvoxtralTestSupport
 
 private final class MemoryLocalHerdrConfigFileSystem: ClaudeLocalHerdrConfigFileSystem {
     struct Storage: Sendable {
@@ -59,7 +60,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     )
     private let token = "tokenAAAABBBBCCCCDDDDEEEEFFFF00001111"
 
-    /// Tests/localvoxtralTests/<this file> → repo root. Derived from the source
+    /// Tests/localvoxtralCoreTests/<this file> → repo root. Derived from the source
     /// path, not the build path, so it resolves on any checkout.
     private var repositoryRoot: URL {
         URL(fileURLWithPath: #filePath)
@@ -157,11 +158,20 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     private func assertEveryConfigArgumentIsThePort(
         in text: String, line: UInt = #line
     ) {
+        for violation in configArgumentViolations(in: text) {
+            XCTFail(violation, line: line)
+        }
+    }
+
+    /// What `assertEveryConfigArgumentIsThePort` fails with, one message per
+    /// broken rule; empty when every `--config` is the port.
+    private func configArgumentViolations(in text: String) -> [String] {
         let key = ClaudeRemoteEnrollmentService.portConfigKey
+        var violations: [String] = []
         for range in text.ranges(of: "--config ") {
             let rest = text[range.upperBound...]
             guard let closing = rest.dropFirst().firstIndex(of: "'") else {
-                XCTFail("unterminated --config argument in: \(text)", line: line)
+                violations.append("unterminated --config argument in: \(text)")
                 continue
             }
             let argument = String(rest[rest.startIndex...closing])
@@ -175,19 +185,17 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             // 2026-08-04). So a trailing quote is allowed only when it is the
             // last thing on the line.
             let tail: Substring = after.first == "'" ? after.dropFirst() : after
-            XCTAssertTrue(
-                after.isEmpty || after.first == " " || after.first == "\n"
-                    || (after.first == "'" && (tail.isEmpty || tail.first == " " || tail.first == "\n")),
-                "a --config argument must END at its closing quote: \(text)"
-            )
+            if !(after.isEmpty || after.first == " " || after.first == "\n"
+                || (after.first == "'" && (tail.isEmpty || tail.first == " " || tail.first == "\n")))
+            {
+                violations.append("a --config argument must END at its closing quote: \(text)")
+            }
             let digits = argument.dropFirst("'\(key)=".count).dropLast()
-            XCTAssertTrue(
-                argument.hasPrefix("'\(key)=") && !digits.isEmpty
-                    && digits.allSatisfy(\.isNumber),
-                "the only config this path may write is a numeric port, got \(argument)",
-                line: line
-            )
+            if !(argument.hasPrefix("'\(key)=") && !digits.isEmpty && digits.allSatisfy(\.isNumber)) {
+                violations.append("the only config this path may write is a numeric port, got \(argument)")
+            }
         }
+        return violations
     }
 
     /// The anchoring above is load-bearing, so it gets its own test: these are
@@ -200,9 +208,9 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             "ssh builder 'claude plugin install ref --config '\(key)=28511x''",
             "ssh builder 'claude plugin install ref --config 'token=secret''",
         ] {
-            XCTExpectFailure("this shape must be rejected by the anchoring: \(smuggled)") {
-                assertEveryConfigArgumentIsThePort(in: smuggled)
-            }
+            XCTAssertFalse(
+                configArgumentViolations(in: smuggled).isEmpty,
+                "this shape must be rejected by the anchoring: \(smuggled)")
         }
     }
 
