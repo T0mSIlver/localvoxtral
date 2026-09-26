@@ -115,10 +115,18 @@ package enum POSIXSocket {
 
     /// `SO_NOSIGPIPE` on Darwin. A no-op on Linux, where sends pass
     /// `sendFlags` instead.
-    package static func suppressSIGPIPE(onSocket fd: Int32) {
+    ///
+    /// Returns false when Darwin refused the option. It refuses every socket
+    /// option once both directions are shut down, as they are when the peer
+    /// closed before this call, and a write to that socket still raises
+    /// SIGPIPE (#743).
+    @discardableResult
+    package static func suppressSIGPIPE(onSocket fd: Int32) -> Bool {
         #if canImport(Darwin)
         var noSigPipe: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+        return setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size)) == 0
+        #else
+        return true
         #endif
     }
 

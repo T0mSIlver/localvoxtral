@@ -326,6 +326,14 @@ final class DogfoodControlSocket: Sendable {
 
     private func serve(connectionFD fd: Int32) {
         defer { close(fd) }
+        // A client that leaves before its reply would otherwise turn the
+        // reply's write into a SIGPIPE that kills the app (#743). Darwin
+        // refuses the option once the peer has closed; then nobody is left
+        // to answer.
+        guard POSIXSocket.suppressSIGPIPE(onSocket: fd) else {
+            Log.claudeContext.error("Dogfood control: the client left before it was served")
+            return
+        }
 
         // Authenticated BEFORE the first read: an unauthorized peer never gets
         // to hand us bytes at all. The directory is 0700 and the socket 0600,
