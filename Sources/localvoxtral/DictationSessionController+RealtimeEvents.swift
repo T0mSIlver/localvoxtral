@@ -187,6 +187,10 @@ extension DictationSessionController {
         }
         noteFinalTextForSilenceAutoStop(overlayTextBefore: overlayTextBeforeFinal)
         statusText = activeStatusText
+        // Finals after the stop are the tail, which the stop polishes itself.
+        if !isFinalizingStop {
+            earlyPolishRun?.settledTextChanged(transcript.currentDictationEventText)
+        }
 
         if isLiveAutoPasteModeEnabled, liveSpokenSendWithholdsSegment() {
             // No partial of this segment was typed, so the whole segment is.

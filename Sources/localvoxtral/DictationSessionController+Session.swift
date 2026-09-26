@@ -48,6 +48,8 @@ extension DictationSessionController {
         sessionRealtimeConfiguration = nil
         sessionStoresAudio = false
         sessionHasStopSecondPass = false
+        earlyPolishRun?.cancel()
+        earlyPolishRun = nil
     }
 
     /// Live Auto-Paste preflight for Secure Keyboard Entry: a live session
@@ -442,11 +444,47 @@ extension DictationSessionController {
         sessionOutputMode = requestedOutputMode
         sessionStartedAt = Date()
         latchSessionAudio(outputMode: requestedOutputMode)
+        armEarlyPolish(outputMode: requestedOutputMode)
         sessionReplacementDictionary = StopCommitCoordinator.effectiveReplacementDictionary(
             settings: settings,
             appConfigStore: appConfigStore
         )
         setRealtimeIndicatorIdle()
+    }
+
+    /// Overlay Buffer with polishing polishes settled pieces while the user
+    /// speaks (#709). Not with a second pass: Mistral's realtime stream
+    /// settles nothing before the stop, and the batch text replaces the
+    /// realtime text there anyway. Latched after `latchSessionAudio`, which
+    /// decides the second pass.
+    func armEarlyPolish(outputMode: DictationOutputMode) {
+        earlyPolishRun?.cancel()
+        earlyPolishRun = nil
+        guard outputMode == .overlayBuffer, !sessionHasStopSecondPass,
+            let configuration = settings.llmPolishingConfiguration
+        else { return }
+        earlyPolishRun = EarlyPolishRun(
+            service: llmPolishingService,
+            configuration: configuration,
+            templates: { [weak self] in
+                self?.earlyPolishTemplates() ?? LLMPromptTemplates(systemContent: "", userContent: "")
+            },
+            now: dependencies.clock.now
+        )
+    }
+
+    /// The templates the stop would pick for this session's target and join
+    /// as they are now; the stop discards the pieces if its own differ.
+    private func earlyPolishTemplates() -> LLMPromptTemplates {
+        StopCommitCoordinator.promptTemplates(
+            profile: StopCommitCoordinator.polishProfile(
+                forTargetBundleID: resolveTargetAppBundleID(),
+                claudeJoin: context.claudeSessionJoin,
+                settings: settings
+            ),
+            settings: settings,
+            appConfigStore: appConfigStore
+        )
     }
 
     /// Whether this session's audio goes to the audio store, and whether it

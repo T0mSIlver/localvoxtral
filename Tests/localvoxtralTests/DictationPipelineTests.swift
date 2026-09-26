@@ -79,6 +79,61 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, true)
     }
 
+    /// A settled sentence past 30 words, the first piece early polish takes.
+    private static let settledPiece =
+        "the first part of this dictation is long enough to settle into a piece of its own "
+        + "because it has more than thirty words in it and ends right here."
+    private static let tail = "and this is the tail."
+
+    /// Overlay Buffer with polishing (#709): a settled piece is polished
+    /// while the user still speaks, and the stop polishes only the tail.
+    func testOverlayBufferPolishesTheSettledPieceWhileDictatingAndOnlyTheTailAtStop() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish)
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.done", "text": Self.settledPiece])
+        let pieceSent = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(pieceSent, "no piece was polished while dictating")
+        XCTAssertTrue(pipeline.viewModel.isDictating, "polished before the stop, not by it")
+
+        await stopAndFinalize(pipeline, finalText: Self.tail)
+
+        let inputs = await polish.requests.map(\.inputText)
+        XCTAssertEqual(inputs, [Self.settledPiece, Self.tail])
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(Self.settledPiece)> <\(Self.tail)>"])
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), ["\(Self.settledPiece) \(Self.tail)"])
+        XCTAssertEqual(pipeline.records.all.first?.polishedText, "<\(Self.settledPiece)> <\(Self.tail)>")
+    }
+
+    /// Grounding is sampled at stop: when the stop's request carries context
+    /// the piece was polished without (here the clipboard), the piece is
+    /// discarded and the whole text is polished in one request, as before.
+    func testOverlayBufferPolishesTheWholeTextWhenTheStopGroundsItInContext() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish)
+        pipeline.viewModel.settings.polishClipboardContextEnabled = true
+        pipeline.viewModel.dependencies.pasteboardReader = {
+            PasteboardStub(string: "error in PolishContextBudget.swift line 40", types: [.string])
+        }
+        let whole = "\(Self.settledPiece) \(Self.tail)"
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.done", "text": Self.settledPiece])
+        let pieceSent = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(pieceSent, "no piece was polished while dictating")
+
+        await stopAndFinalize(pipeline, finalText: Self.tail)
+
+        let requests = await polish.requests
+        XCTAssertEqual(requests.map(\.inputText), [Self.settledPiece, whole])
+        XCTAssertTrue(
+            requests.last?.userPrompts.last?.contains("PolishContextBudget.swift") == true,
+            "the stop's request carries the clipboard"
+        )
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(whole)>"])
+    }
+
     /// Claude Desktop (#660): a text field whose prompt sends on Return. The
     /// dictation starts before Electron has built its accessibility tree, so
     /// the AX probe finds nothing focused, which alone reads as a terminal.
@@ -455,7 +510,20 @@ final class DictationPipelineTests: XCTestCase {
         let records: SessionRecords
     }
 
-    private func makePipeline(outputMode: DictationOutputMode) async throws -> Pipeline {
+    /// True once `count` polish requests arrived, false after 10 s of wall time.
+    private func waitForPolishRequests(_ polish: FakePolishingService, _ count: Int) async -> Bool {
+        let arrived = BoundedWait()
+        Task {
+            await polish.waitForRequests(count)
+            arrived.resolve()
+        }
+        return await arrived.value(failAfter: 10)
+    }
+
+    private func makePipeline(
+        outputMode: DictationOutputMode,
+        polish: FakePolishingService? = nil
+    ) async throws -> Pipeline {
         let server = try FakeRealtimeServer()
         addTeardownBlock { server.stop() }
         let endpoint = try await server.start()
@@ -488,6 +556,15 @@ final class DictationPipelineTests: XCTestCase {
             )
         )
         viewModel.appConfigStore = MockAppConfigStore()
+        if let polish {
+            settings.llmPolishingEnabled = true
+            settings.llmPolishingEndpointURL = "http://127.0.0.1:8080/v1/chat/completions"
+            settings.polishClipboardContextEnabled = false
+            settings.terminalScreenContextEnabled = false
+            settings.repoVocabularyEnabled = false
+            settings.claudeRepoContextEnabled = false
+            viewModel.llmPolishingService = polish
+        }
         retainForTestProcessLifetime(viewModel)
         // The session start arms Escape as a cancel key; keep it off the
         // host's global hotkeys.

@@ -373,6 +373,11 @@ final class DictationSessionController {
     var sessionOutputMode: DictationOutputMode?
     @ObservationIgnored
     var polishAndCommitTask: Task<Void, Never>?
+    /// This Overlay Buffer dictation's pieces polished while the user speaks
+    /// (#709). Handed to the stop's polish task, and cancelled on every
+    /// other session exit.
+    @ObservationIgnored
+    var earlyPolishRun: EarlyPolishRun?
     /// Saves the dictation `polishAndCommitTask` is polishing, as not
     /// inserted, if the task never gets to. A new dictation started over the
     /// polish cancels it, and that dictation used to reach neither the

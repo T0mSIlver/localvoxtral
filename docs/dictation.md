@@ -33,7 +33,9 @@ never sees them.
 
 - **Overlay Buffer.** Your words collect in a floating overlay while you
   speak. When you stop, the text goes through the replacement dictionary and
-  optional LLM polishing, then commits into the focused app. The overlay
+  optional LLM polishing, then commits into the focused app. A long
+  dictation is polished a few sentences at a time while you speak, so the
+  stop only waits for the last ones. The overlay
   shows a **Polished** badge when the LLM changed your text, and the menu bar
   popover keeps the raw transcript. You can drag the overlay by any part of
   it to a spot of your choice, and it stays there across restarts. A
