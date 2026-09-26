@@ -30,4 +30,6 @@ final class FakeShortcutSession: ShortcutSessionControlling {
     func clearSecureInputRefusalSignalsIfAttemptEnded() { refusalSignalClears += 1 }
     func overlayReachabilityDidChange(wasReachable: Bool) {}
     func copyLastDictation() { copyLastDictationCalls += 1 }
+    private(set) var toggleQuickCaptureCalls = 0
+    func toggleQuickCapture() { toggleQuickCaptureCalls += 1 }
 }

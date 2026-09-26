@@ -45,8 +45,12 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
-    private func recordSettings(pane: SettingsTab, name: String, setUp: Bool) async throws {
+    private func recordSettings(
+        pane: SettingsTab, name: String, setUp: Bool,
+        configure: ((DictationViewModel) throws -> Void)? = nil
+    ) async throws {
         let (settings, viewModel) = makeViewModel()
+        try configure?(viewModel)
         let claude = try makeClaudeIntegrationModel(setUp: setUp)
         // What the pane's onAppear starts, finished before the render so the
         // first frame is not "Checking…".
@@ -65,6 +69,45 @@ final class ViewSnapshotTests: XCTestCase {
         try record(
             view, name: name,
             width: Self.settingsSize.width, height: Self.settingsSize.height, growToFit: true)
+    }
+
+    /// The Inbox with a drafted capture, one no project took, and one filed
+    /// (#725). Made-up words: the artifacts are public.
+    func testInboxWithCaptures() async throws {
+        try await recordSettings(pane: .inbox, name: "settings-inbox-captures", setUp: false) { viewModel in
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("inbox-snapshot-\(UUID().uuidString)")
+            let fileURL = directory.appendingPathComponent("quick-captures.json")
+            let now = Date()
+            var drafted = QuickCaptureItem(
+                capturedAt: now.addingTimeInterval(-300),
+                text: "the overlay should remember its size per display, not just its position")
+            drafted.state = .ready
+            drafted.projectKey = "/work/demo"
+            drafted.projectName = "demo"
+            drafted.repository = "example/demo"
+            drafted.title = "Remember the overlay's size per display"
+            drafted.body = "## Scope\nStore the overlay's size with its position, per display.\n\n## Proof\nA test that restores both."
+            var unplaced = QuickCaptureItem(capturedAt: now.addingTimeInterval(-3_600), text: "renew the passport before December")
+            unplaced.state = .ready
+            unplaced.note = "Not routed to a project. Move it to one."
+            var filed = QuickCaptureItem(capturedAt: now.addingTimeInterval(-7_200), text: "add a dark mode to the settings window")
+            filed.state = .filed
+            filed.title = "Dark mode for the settings window"
+            filed.repository = "example/demo"
+            filed.filedURL = "https://github.com/example/demo/issues/12"
+            try QuickCaptureInboxFile.save(QuickCaptureInbox(items: [drafted, unplaced, filed]), to: fileURL)
+            self.addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+            let learned = LearnedTerms(projects: [
+                LearnedTermProject(key: "/work/demo", name: "demo", terms: [], lastSeen: now),
+            ])
+            viewModel.installQuickCaptureInbox(QuickCaptureInboxViewModel(
+                settings: viewModel.settings,
+                learnedTerms: { learned },
+                fileURL: fileURL,
+                applicationSupport: directory
+            ))
+        }
     }
 
     /// Advanced → Terms learned from polishing → Show: empty, which is where
