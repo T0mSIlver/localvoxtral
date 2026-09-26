@@ -1394,6 +1394,55 @@ there is not.
     launches can still join. Both identifiers are UNDOCUMENTED: a desktop
     update that renames either stops the arm joining, and cannot make it join
     the wrong session. `--probe-surface` reads it only under `--desktop`.
+    **A Desktop session must stay in the registry while its window is open,
+    and exactly one process may report its id** (#657). Four things lost it,
+    each measured on an ssh host with 18 Desktop sessions live at once, and
+    each cost an abstention:
+    (1) Freshness. Only hooks refresh activity, and the next hook of a
+    session left idle is the UserPromptSubmit of the prompt being dictated,
+    so past the 4 h TTL the first dictation back always missed. A record
+    that reports a desktop id is fresh for `desktopSessionTTL` (7 days)
+    instead. That cannot widen a join: the key names the view the user is
+    looking at and matches only by exact equality. A local record still needs
+    its pid alive, and a pidless local one keeps the 5-minute bound.
+    (2) The cap. Once a second origin is present, each keeps
+    `maxSessionsPerOrigin` (8) records. Eviction takes records without a
+    desktop id first, least recently active within each group, and logs a
+    count. The record that triggered the eviction is never its victim, in the
+    global cap as in the per-origin one, so a new terminal session still
+    registers when the cap is full of Desktop records. Preference is all this
+    buys: a host with more than 8 Desktop sessions and nothing else still
+    loses the least recently active ones.
+    (3) Children. Every process in a Desktop session inherits
+    `CLAUDE_CODE_HOST_SESSION_ID`, so a `claude -p` started from it reported
+    the id under its own session id: two reporters, ambiguous at start, dead
+    at commit, and on a remote record, with no pid liveness, for the whole
+    TTL if the child died without SessionEnd. The remote shim (1.14.0) sends
+    the id only when the hook's Claude process is a direct child of Desktop's
+    daemon. MEASURED on Linux (Claude Desktop's ssh daemon at
+    `~/.claude/remote/srv/<hash>/server`, parent pid 1; each session a direct
+    child running `~/.claude/remote/ccd-cli/<ver>`; Claude Code 2.1.283 runs
+    a hook through `sh -c`, so `$PPID` is that shell): the shim skips at most
+    three shells from `$PPID`, takes the first non-shell ancestor as Claude,
+    and requires its parent's `/proc/<pid>/exe` under that directory. Unreadable
+    drops the id. A host without `/proc` sends it as before: Desktop's layout
+    there is unmeasured, and dropping it would cost the join. The LOCAL
+    publisher has no equivalent check yet; a local child's record goes stale
+    when its pid dies, which bounds it. The listener and the publisher still
+    strip the id from every non-Claude agent.
+    (4) The shared backoff. `post.sh` keeps one backoff stamp per user, so a
+    transport failure in any session muted SessionStart and SessionEnd for
+    every session on the host for 300 s. Both now always dial: they fire once
+    per session and cannot storm the ssh client's terminal.
+    An ambiguous desktop or bridge lookup logs how many live sessions report
+    the id, local and remote counted apart, and never the id.
+    RESIDUALS. Exact equality stays the only match; there is no newest-wins
+    relaxation (owner's call). So a remote session that dies without
+    SessionEnd next to a live reporter of the same id (a Desktop restart
+    without SessionEnd that leaves two reporters, or a child on a host whose
+    plugin predates 1.14.0) keeps the view ambiguous for up to 7 days rather
+    than 4 h. Ambiguity abstains; it never joins the wrong
+    session.
   - The overlay's join badge (`OverlayClaudeJoinBadge`) DESCRIBES the resolved
     join; it never resolves one. It reads `claudeSessionJoin` after the single
     start-time resolution and nothing else — a badge that asked again could name

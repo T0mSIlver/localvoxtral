@@ -183,7 +183,7 @@ final class DesktopSessionClaudeJoinTests: XCTestCase {
         let clock = DesktopJoinTestClock(epoch)
         let registry = makeRegistry(clock: clock)
         XCTAssertNotNil(registry.ingest(record(), origin: local))
-        clock.advance(ClaudeRegistryLimits.default.sessionTTL + 1)
+        clock.advance(ClaudeRegistryLimits.default.desktopSessionTTL + 1)
         // Focus IS in a session view: the badge says it did not join (#658).
         let resolution = await resolver(registry: registry, address: sessionAddress)
             .resolution(target: desktop)
@@ -359,7 +359,7 @@ final class DesktopSessionClaudeJoinTests: XCTestCase {
         let joinResolver = resolver(registry: registry, address: sessionAddress)
         let resolved = await joinResolver.resolve(target: desktop)
         let join = try XCTUnwrap(resolved)
-        clock.advance(ClaudeRegistryLimits.default.sessionTTL + 1)
+        clock.advance(ClaudeRegistryLimits.default.desktopSessionTTL + 1)
         XCTAssertFalse(joinResolver.isStillLive(join))
     }
 
@@ -402,7 +402,7 @@ final class DesktopSessionClaudeJoinTests: XCTestCase {
         let clock = DesktopJoinTestClock(epoch)
         let registry = makeRegistry(clock: clock)
         XCTAssertNotNil(registry.ingest(record(), origin: local))
-        clock.advance(ClaudeRegistryLimits.default.sessionTTL + 1)
+        clock.advance(ClaudeRegistryLimits.default.desktopSessionTTL + 1)
         XCTAssertEqual(registry.resolve(desktopSessionID: desktopID), .stale)
     }
 

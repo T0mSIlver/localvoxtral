@@ -620,6 +620,94 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         )
     }
 
+    // MARK: Claude Desktop sessions (#657)
+
+    private let desktopHost = ClaudeTransportOrigin.remote(channel: "ssh:desktop-host")
+
+    private func ingestDesktopSession(
+        _ registry: ClaudeSessionRegistry, session: String, desktopID: String
+    ) {
+        XCTAssertNotNil(registry.ingest(
+            record(.sessionStart, session: session, cwd: "/srv/repo"),
+            origin: desktopHost,
+            environment: ClaudeRemoteSessionEnvironment(desktopSessionID: desktopID)
+        ))
+    }
+
+    /// The next hook of a Desktop session left idle is the UserPromptSubmit
+    /// of the prompt being dictated, so the first dictation back used to find
+    /// the record pruned.
+    func testADesktopSessionIdleLongerThanTheSessionTTLStillJoins() throws {
+        let clock = TestClock(epoch)
+        let registry = makeRegistry(clock: clock)
+        ingestDesktopSession(registry, session: "desktop", desktopID: "local_a")
+        registry.ingest(record(.sessionStart, session: "terminal"), origin: desktopHost)
+
+        clock.advance(ClaudeRegistryLimits.default.sessionTTL + 1)
+
+        guard case .resolved(let snapshot) = registry.resolve(desktopSessionID: "local_a") else {
+            return XCTFail("an idle Desktop session must still join the view that shows it")
+        }
+        XCTAssertEqual(snapshot.sessionID, "desktop")
+        XCTAssertNil(
+            registry.snapshot(sessionID: "terminal"),
+            "a session reporting no Desktop id keeps the ordinary TTL"
+        )
+    }
+
+    func testADesktopSessionStillExpiresAfterAWeek() {
+        let clock = TestClock(epoch)
+        let registry = makeRegistry(clock: clock)
+        ingestDesktopSession(registry, session: "desktop", desktopID: "local_a")
+
+        clock.advance(8 * 24 * 60 * 60)
+
+        XCTAssertEqual(registry.resolve(desktopSessionID: "local_a"), .stale)
+    }
+
+    /// The owner's host ran 18 Desktop sessions at once. Once another origin
+    /// is present, each keeps `maxSessionsPerOrigin` records, and the
+    /// least recently active used to go first whatever it was.
+    func testTheCapEvictsSessionsWithoutADesktopIDFirst() {
+        let clock = TestClock(epoch)
+        let registry = makeRegistry(
+            limits: ClaudeRegistryLimits(maxSessions: 32, maxSessionsPerOrigin: 2),
+            clock: clock
+        )
+        registry.ingest(record(.sessionStart, session: "mac-local"), origin: local)
+        ingestDesktopSession(registry, session: "desktop", desktopID: "local_a")
+        clock.advance(1)
+        registry.ingest(record(.sessionStart, session: "terminal-1"), origin: desktopHost)
+        clock.advance(1)
+        registry.ingest(record(.sessionStart, session: "terminal-2"), origin: desktopHost)
+
+        guard case .resolved = registry.resolve(desktopSessionID: "local_a") else {
+            return XCTFail("the idle Desktop session must outlast a newer terminal session")
+        }
+        XCTAssertNil(registry.snapshot(sessionID: "terminal-1"))
+        XCTAssertNotNil(registry.snapshot(sessionID: "terminal-2"))
+    }
+
+    func testANewSessionStillRegistersWhenTheCapIsFullOfDesktopSessions() {
+        let clock = TestClock(epoch)
+        let registry = makeRegistry(
+            limits: ClaudeRegistryLimits(maxSessions: 2),
+            clock: clock
+        )
+        ingestDesktopSession(registry, session: "desktop-1", desktopID: "local_a")
+        clock.advance(1)
+        ingestDesktopSession(registry, session: "desktop-2", desktopID: "local_b")
+        clock.advance(1)
+        registry.ingest(record(.sessionStart, session: "terminal"), origin: desktopHost)
+
+        XCTAssertNotNil(
+            registry.snapshot(sessionID: "terminal"),
+            "the record that triggered the cap must never be its victim"
+        )
+        XCTAssertNil(registry.snapshot(sessionID: "desktop-1"))
+        XCTAssertNotNil(registry.snapshot(sessionID: "desktop-2"))
+    }
+
     func testStaleSessionsArePrunedOnIngest() {
         let clock = TestClock(epoch)
         let registry = makeRegistry(

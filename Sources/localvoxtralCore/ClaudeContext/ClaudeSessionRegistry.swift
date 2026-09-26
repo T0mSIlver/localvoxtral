@@ -39,6 +39,15 @@ public struct ClaudeRegistryLimits: Sendable, Equatable {
     /// than this many sessions. Eight covers a generous set of terminal tabs
     /// while leaving most of the global registry available to other origins.
     public static let defaultMaxSessionsPerOrigin = 8
+    /// How long a session that reports a Claude Desktop session id stays
+    /// fresh without a hook. Only hooks refresh activity, and the next hook of
+    /// a Desktop session left idle overnight is the UserPromptSubmit of the
+    /// very prompt being dictated, so the four-hour TTL made the first
+    /// dictation back always miss. The id names the web view the user is
+    /// looking at and joins only on exact equality, so keeping the record
+    /// longer cannot widen a join onto another session. Seven days covers a
+    /// weekend away.
+    public static let defaultDesktopSessionTTL: TimeInterval = 7 * 24 * 60 * 60
     /// How long a focus declaration stays credible. The opencode TUI half
     /// re-declares on every displayed-session change AND retracts explicitly
     /// (`FocusCleared`) when the pane leaves its session view, so this bound
@@ -64,6 +73,9 @@ public struct ClaudeRegistryLimits: Sendable, Equatable {
     /// die without firing SessionEnd (SIGKILL, a closed terminal), so TTL plus
     /// PID liveness — not SessionEnd alone — is what keeps the registry honest.
     public var sessionTTL: TimeInterval
+    /// `sessionTTL` for a session that reports a Claude Desktop session id.
+    /// Pid liveness still applies to a local one.
+    public var desktopSessionTTL: TimeInterval
     public var pidlessLocalSessionTTL: TimeInterval
     public var focusDeclarationTTL: TimeInterval
     public var maxFocusDeclarations: Int
@@ -72,6 +84,7 @@ public struct ClaudeRegistryLimits: Sendable, Equatable {
         maxSessions: Int = 32,
         maxSessionsPerOrigin: Int = Self.defaultMaxSessionsPerOrigin,
         sessionTTL: TimeInterval = 4 * 60 * 60,
+        desktopSessionTTL: TimeInterval = Self.defaultDesktopSessionTTL,
         pidlessLocalSessionTTL: TimeInterval = Self.defaultPIDLessLocalSessionTTL,
         focusDeclarationTTL: TimeInterval = Self.defaultFocusDeclarationTTL,
         maxFocusDeclarations: Int = Self.defaultMaxFocusDeclarations
@@ -79,6 +92,7 @@ public struct ClaudeRegistryLimits: Sendable, Equatable {
         self.maxSessions = maxSessions
         self.maxSessionsPerOrigin = maxSessionsPerOrigin
         self.sessionTTL = sessionTTL
+        self.desktopSessionTTL = desktopSessionTTL
         self.pidlessLocalSessionTTL = pidlessLocalSessionTTL
         self.focusDeclarationTTL = focusDeclarationTTL
         self.maxFocusDeclarations = maxFocusDeclarations
@@ -204,6 +218,7 @@ public final class ClaudeSessionRegistry: Sendable {
         record.sessionID = ClaudeAgentSessionScope.scopedSessionID(
             agent: record.agent, sessionID: record.sessionID
         )
+        var capEvictions = CapEvictions()
         let ingested = state.withLock { state -> ClaudeSessionSnapshot? in
             let before = state.sessions
             defer {
@@ -288,8 +303,13 @@ public final class ClaudeSessionRegistry: Sendable {
             }
 
             state.sessions[record.sessionID] = snapshot
-            enforceCapLocked(&state, keeping: record.sessionID)
+            capEvictions = enforceCapLocked(&state, keeping: record.sessionID)
             return snapshot
+        }
+        if capEvictions.count > 0 {
+            Log.claudeContext.notice(
+                "Claude session registry evicted \(capEvictions.count, privacy: .public) session(s) over the session cap (\(capEvictions.desktopCount, privacy: .public) reporting a Claude Desktop session id)"
+            )
         }
         // The record's own prompt, never the snapshot's: a submit without
         // one leaves the PREVIOUS prompt in the snapshot, and announcing that
@@ -480,7 +500,7 @@ public final class ClaudeSessionRegistry: Sendable {
     /// Exact equality, and zero or several matches abstain: two sessions
     /// reporting one bridge id means we cannot tell which the tab belongs to.
     public func resolve(bridgeSessionID: String) -> ClaudeSessionResolution {
-        resolveUnique(reporting: bridgeSessionID, via: \.bridgeSessionID)
+        resolveUnique(reporting: bridgeSessionID, via: \.bridgeSessionID, label: "bridge")
     }
 
     /// Look up by Claude Desktop Code-tab session id — the desktop window join.
@@ -490,18 +510,23 @@ public final class ClaudeSessionRegistry: Sendable {
     /// the address of the web view that displays the session, whichever
     /// machine runs it. Exact equality; zero or several matches abstain.
     public func resolve(desktopSessionID: String) -> ClaudeSessionResolution {
-        resolveUnique(reporting: desktopSessionID, via: \.desktopSessionID)
+        resolveUnique(reporting: desktopSessionID, via: \.desktopSessionID, label: "Claude Desktop")
     }
 
     /// The one fresh session whose `key` equals `value`, across both origins.
     /// Shared by the two globally-unique-id arms so they cannot drift apart on
     /// the stale/ambiguous rules.
+    ///
+    /// An ambiguous answer logs how many sessions report the id, split by
+    /// origin: two local reporters and a local plus a remote one have
+    /// different causes (a `claude -p` child, a restart without SessionEnd).
     private func resolveUnique(
         reporting value: String,
-        via key: KeyPath<ClaudeSessionSnapshot, String?>
+        via key: KeyPath<ClaudeSessionSnapshot, String?>,
+        label: String
     ) -> ClaudeSessionResolution {
         let timestamp = now()
-        return state.withLock { state in
+        let (resolution, localReporters, remoteReporters) = state.withLock { state in
             let matches = state.sessions.values.filter { snapshot in
                 snapshot[keyPath: key] == value && isFresh(snapshot, now: timestamp)
             }
@@ -510,13 +535,20 @@ public final class ClaudeSessionRegistry: Sendable {
                 let hadStale = state.sessions.values.contains {
                     $0[keyPath: key] == value
                 }
-                return hadStale ? .stale : .unknown
+                return (hadStale ? ClaudeSessionResolution.stale : .unknown, 0, 0)
             case 1:
-                return .resolved(matches[0])
+                return (.resolved(matches[0]), 0, 0)
             default:
-                return .ambiguous
+                let local = matches.filter(\.origin.isLocalAuthenticated).count
+                return (.ambiguous, local, matches.count - local)
             }
         }
+        if resolution == .ambiguous {
+            Log.claudeContext.info(
+                "\(label, privacy: .public) session id is reported by \(localReporters + remoteReporters, privacy: .public) live sessions (\(localReporters, privacy: .public) local, \(remoteReporters, privacy: .public) remote); abstaining"
+            )
+        }
+        return resolution
     }
 
     /// Look up by cmux surface id — the LOCAL half of the cmux focus join.
@@ -781,14 +813,21 @@ public final class ClaudeSessionRegistry: Sendable {
 
     // MARK: - Locked helpers
 
-    private func isFresh(_ snapshot: ClaudeSessionSnapshot, now: Date) -> Bool {
-        let ttl: TimeInterval
+    /// How long `snapshot` stays fresh without a hook. A pidless local record
+    /// keeps the short exposure bound whatever it reports: nothing can probe
+    /// it.
+    private func ttl(for snapshot: ClaudeSessionSnapshot) -> TimeInterval {
         if snapshot.origin.isLocalAuthenticated, snapshot.process?.claudePID == nil {
-            ttl = min(limits.sessionTTL, limits.pidlessLocalSessionTTL)
-        } else {
-            ttl = limits.sessionTTL
+            return min(limits.sessionTTL, limits.pidlessLocalSessionTTL)
         }
-        guard now.timeIntervalSince(snapshot.lastActivity) <= ttl else { return false }
+        if snapshot.desktopSessionID != nil {
+            return max(limits.sessionTTL, limits.desktopSessionTTL)
+        }
+        return limits.sessionTTL
+    }
+
+    private func isFresh(_ snapshot: ClaudeSessionSnapshot, now: Date) -> Bool {
+        guard now.timeIntervalSince(snapshot.lastActivity) <= ttl(for: snapshot) else { return false }
         // `claudePID`, never `hookPID`. The publisher exits the instant it has
         // written its line, so probing its own pid would report every local
         // session dead microseconds after it was created — the registry would
@@ -887,7 +926,18 @@ public final class ClaudeSessionRegistry: Sendable {
     /// otherwise select the record that triggered the enforcement — evicting
     /// the newest data is never the right answer, so it is pinned and the
     /// next-oldest tied sibling goes instead.
-    private func enforceCapLocked(_ state: inout State, keeping upserted: String? = nil) {
+    ///
+    /// Returns what it evicted, for the caller to log outside the lock.
+    @discardableResult
+    private func enforceCapLocked(
+        _ state: inout State, keeping upserted: String? = nil
+    ) -> CapEvictions {
+        var evictions = CapEvictions()
+        func evict(_ snapshot: ClaudeSessionSnapshot) {
+            removeLocked(&state, sessionID: snapshot.sessionID)
+            evictions.count += 1
+            if snapshot.desktopSessionID != nil { evictions.desktopCount += 1 }
+        }
         let grouped = Dictionary(grouping: state.sessions.values, by: \.origin)
         if grouped.count > 1 {
             // Always reserve at least one global slot for a competing origin,
@@ -903,17 +953,25 @@ public final class ClaudeSessionRegistry: Sendable {
                 let evictable = sessions.sorted(by: Self.evictionPrecedes)
                     .filter { $0.sessionID != upserted }
                     .prefix(sessions.count - quota)
-                for snapshot in evictable {
-                    removeLocked(&state, sessionID: snapshot.sessionID)
-                }
+                for snapshot in evictable { evict(snapshot) }
             }
         }
 
-        guard state.sessions.count > limits.maxSessions else { return }
+        guard state.sessions.count > limits.maxSessions else { return evictions }
+        // Pinned here too: with Desktop records sorted last, a new record
+        // without one would otherwise be the first to go once the cap is full
+        // of them.
         let ordered = state.sessions.values.sorted(by: Self.evictionPrecedes)
+            .filter { limits.maxSessions < 1 || $0.sessionID != upserted }
         for snapshot in ordered.prefix(state.sessions.count - limits.maxSessions) {
-            removeLocked(&state, sessionID: snapshot.sessionID)
+            evict(snapshot)
         }
+        return evictions
+    }
+
+    private struct CapEvictions {
+        var count = 0
+        var desktopCount = 0
     }
 
     private func schedulePersistenceLocked(_ state: State) {
@@ -1009,7 +1067,7 @@ public final class ClaudeSessionRegistry: Sendable {
             guard isFresh(snapshot, now: timestamp) else {
                 if snapshot.origin.isLocalAuthenticated,
                    snapshot.process?.claudePID != nil,
-                   timestamp.timeIntervalSince(snapshot.lastActivity) <= limits.sessionTTL {
+                   timestamp.timeIntervalSince(snapshot.lastActivity) <= ttl(for: snapshot) {
                     drop("dead local process")
                 } else {
                     drop("stale")
@@ -1157,12 +1215,19 @@ public final class ClaudeSessionRegistry: Sendable {
         }
     }
 
-    /// Stable tie-breaking keeps eviction reproducible when a burst lands in
-    /// one clock tick (common in tests and possible for batched hook records).
+    /// Least recently active first, but every record without a Claude Desktop
+    /// session id goes before any record with one: a Desktop session sits idle
+    /// between prompts while the user still has it open, and a host can run
+    /// many of them at once. Stable tie-breaking keeps eviction reproducible
+    /// when a burst lands in one clock tick (common in tests and possible for
+    /// batched hook records).
     private static func evictionPrecedes(
         _ lhs: ClaudeSessionSnapshot,
         _ rhs: ClaudeSessionSnapshot
     ) -> Bool {
+        let lhsDesktop = lhs.desktopSessionID != nil
+        let rhsDesktop = rhs.desktopSessionID != nil
+        if lhsDesktop != rhsDesktop { return rhsDesktop }
         if lhs.lastActivity != rhs.lastActivity {
             return lhs.lastActivity < rhs.lastActivity
         }
