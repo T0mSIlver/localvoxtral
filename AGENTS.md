@@ -85,8 +85,11 @@ then `gh project item-edit --project-id PVT_kwHOAhDp9c4BkXCa --id <item>
 after the add and overwrites an edit made sooner. Wait a minute, edit, then
 read the status back with `gh project item-list`. `gh issue create
 --project` fails here. Only the owner moves a
-PR's card to Done: on an open PR that is the OK to merge (#763), on a merged
-one it means checked. A failed check becomes a `bug` issue that links the PR.
+PR's card to Done; every session holds the owner's token, so only this rule stops
+you. On an open PR that move is the OK to merge: the scheduler's
+`scripts/board/merge-approved.sh` pass merges it, or moves it back with the
+failing output. On a merged PR it means checked. A failed check becomes a
+`bug` issue that links the PR.
 
 New issues get one area label (`asr`, `polish`, `ci`, `claude-join`,
 `mistral`, `session`) plus `bug` or `enhancement`. Group work with sub-issues
