@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 1,
+  "stratum": "github-references",
+  "description": "\"issue\", \"PR\" or \"pull request\" followed by a number becomes a GitHub reference (`PR #712`); the spoken word stays, only `#` and digits are added. Negatives: a number after one of those words that is not a reference, and numbers elsewhere that stay as spoken. Polish-only, agent profile: the input is what the recognizer writes, including the glued `PR349` it produces and number words.",
+  "pipeline": "polish-only",
+  "cases": [
+    {
+      "id": "k-en-pr-digits",
+      "lang": "en",
+      "spokenForm": "Can you check PR 712 and tell me why the Linux job failed?",
+      "intendedText": "Can you check PR #712 and tell me why the Linux job failed?",
+      "requiredTokens": ["PR #712"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Recognizer already wrote digits: only the # is missing."
+    },
+    {
+      "id": "k-en-pr-glued",
+      "lang": "en",
+      "spokenForm": "Rebase this branch on PR349 before you push.",
+      "intendedText": "Rebase this branch on PR #349 before you push.",
+      "requiredTokens": ["PR #349"],
+      "forbiddenSubstrings": ["PR349"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "The recognizer glues PR to the number (seen twice in the owner's history)."
+    },
+    {
+      "id": "k-en-issue-words",
+      "lang": "en",
+      "spokenForm": "look at issue five sixty three it has the repro steps for the crash",
+      "intendedText": "Look at issue #563, it has the repro steps for the crash.",
+      "requiredTokens": ["issue #563"],
+      "forbiddenSubstrings": ["sixty"],
+      "status": {"tokens": "known-hard"},
+      "notes": "Number spoken as words after \"issue\" becomes digits."
+    },
+    {
+      "id": "k-en-pull-request-words",
+      "lang": "en",
+      "spokenForm": "the fix is in pull request seven twelve so wait for it to merge before you start",
+      "intendedText": "The fix is in pull request #712, so wait for it to merge before you start.",
+      "requiredTokens": ["pull request #712"],
+      "forbiddenSubstrings": ["seven twelve"],
+      "status": {"tokens": "known-hard"},
+      "notes": "\"pull request\" keeps its spoken words; only the number becomes #712."
+    },
+    {
+      "id": "k-en-issue-oh",
+      "lang": "en",
+      "spokenForm": "this is a follow up to issue seven oh five so read that one first",
+      "intendedText": "This is a follow up to issue #705, so read that one first.",
+      "requiredTokens": ["issue #705"],
+      "forbiddenSubstrings": ["seven oh"],
+      "status": {"tokens": "known-hard"},
+      "notes": "\"oh\" read as zero inside a spoken number."
+    },
+    {
+      "id": "k-en-two-references",
+      "lang": "en",
+      "spokenForm": "Close issue 718 once the eval passes and link it from issue 386.",
+      "intendedText": "Close issue #718 once the eval passes and link it from issue #386.",
+      "requiredTokens": ["issue #718", "issue #386"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Two references in one sentence; both get the #."
+    },
+    {
+      "id": "k-en-other-numbers-stay",
+      "lang": "en",
+      "spokenForm": "wait five minutes then check PR 568 again and retry three times if it is still red",
+      "intendedText": "Wait five minutes, then check PR #568 again and retry three times if it is still red.",
+      "requiredTokens": ["five minutes", "PR #568", "three times"],
+      "status": {"tokens": "known-hard"},
+      "notes": "Only the number after PR changes; the other number words stay words."
+    },
+    {
+      "id": "k-en-neg-second-issue",
+      "lang": "en",
+      "spokenForm": "the second issue is that the timer never fires when the Mac sleeps",
+      "intendedText": "The second issue is that the timer never fires when the Mac sleeps.",
+      "requiredTokens": ["second issue is that"],
+      "forbiddenSubstrings": ["#"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Negative: an ordinal before \"issue\" is not a reference."
+    },
+    {
+      "id": "k-en-neg-pr-2-of-3",
+      "lang": "en",
+      "spokenForm": "This is PR 2 of 3 in the stack, so keep main as the base branch.",
+      "intendedText": "This is PR 2 of 3 in the stack, so keep main as the base branch.",
+      "requiredTokens": ["PR 2 of 3"],
+      "forbiddenSubstrings": ["#"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Negative: a position in a stack, not a PR number."
+    },
+    {
+      "id": "k-en-neg-two-issues",
+      "lang": "en",
+      "spokenForm": "I found two issues in the parser and one PR that fixes both of them",
+      "intendedText": "I found two issues in the parser and one PR that fixes both of them.",
+      "requiredTokens": ["two issues", "one PR"],
+      "forbiddenSubstrings": ["#"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Negative: counts before the word stay words and get no #."
+    },
+    {
+      "id": "k-fr-pr-digits",
+      "lang": "fr",
+      "spokenForm": "Regarde la PR 712 et dis-moi pourquoi le job Linux a échoué.",
+      "intendedText": "Regarde la PR #712 et dis-moi pourquoi le job Linux a échoué.",
+      "requiredTokens": ["PR #712"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French sentence, recognizer wrote digits."
+    },
+    {
+      "id": "k-fr-pr-glued",
+      "lang": "fr",
+      "spokenForm": "Rebase la branche sur la PR349 avant de pousser.",
+      "intendedText": "Rebase la branche sur la PR #349 avant de pousser.",
+      "requiredTokens": ["PR #349"],
+      "forbiddenSubstrings": ["PR349"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Glued PR number in French."
+    },
+    {
+      "id": "k-fr-issue-words",
+      "lang": "fr",
+      "spokenForm": "l'issue cinq cent soixante-trois décrit le crash et les étapes pour le reproduire",
+      "intendedText": "L'issue #563 décrit le crash et les étapes pour le reproduire.",
+      "requiredTokens": ["issue #563"],
+      "forbiddenSubstrings": ["soixante"],
+      "status": {"tokens": "known-hard"},
+      "notes": "French number words after \"issue\"."
+    },
+    {
+      "id": "k-fr-pull-request-words",
+      "lang": "fr",
+      "spokenForm": "la pull request sept cent douze corrige ça donc attends qu'elle soit mergée",
+      "intendedText": "La pull request #712 corrige ça, donc attends qu'elle soit mergée.",
+      "requiredTokens": ["pull request #712"],
+      "forbiddenSubstrings": ["sept cent"],
+      "status": {"tokens": "known-hard"},
+      "notes": "French number words after \"pull request\"."
+    },
+    {
+      "id": "k-fr-neg-pr-2-sur-3",
+      "lang": "fr",
+      "spokenForm": "C'est la PR 2 sur 3 de la pile, donc garde main comme branche de base.",
+      "intendedText": "C'est la PR 2 sur 3 de la pile, donc garde main comme branche de base.",
+      "requiredTokens": ["PR 2 sur 3"],
+      "forbiddenSubstrings": ["#"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Negative: a position in a stack, not a PR number."
+    },
+    {
+      "id": "k-fr-neg-deux-issues",
+      "lang": "fr",
+      "spokenForm": "j'ai trouvé deux issues dans le parser et une PR qui corrige les deux",
+      "intendedText": "J'ai trouvé deux issues dans le parser et une PR qui corrige les deux.",
+      "requiredTokens": ["deux issues", "une PR"],
+      "forbiddenSubstrings": ["#"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Negative: counts before the word stay words and get no #."
+    }
+  ]
+}
