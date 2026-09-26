@@ -20,7 +20,8 @@ final class ClaudePluginVersionHistoryTests: XCTestCase {
         "localvoxtral-remote": [
             "1.11.0": "b60ad882518a1daac7a1c5f527fc0d856fa836d2358c687f011bbd12a3ca9834",
             "1.12.0": "0d209db3fd83c2742f0d70bb3abd109d05ec2ca7ffff1bd9551d01ce98d1dcc6",
-            "1.14.0": "ba87f7f4451fdfdc253770390da9a1942eb1b7aece72160106f76a64f9621676",
+            "1.13.0": "8b0c083a2abd8c4ae78c122d9a7118ad0789eb0c5ed7e3ed7018a33715ed92c1",
+            "1.14.0": "c1f13481db51a478c348ce7404f95c63ba02b47932b71a2f473e69fdca0900ef",
         ],
     ]
 
