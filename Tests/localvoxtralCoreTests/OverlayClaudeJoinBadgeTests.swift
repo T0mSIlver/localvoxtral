@@ -2,7 +2,7 @@ import ClaudeContextWire
 import Foundation
 import Synchronization
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// The overlay's join badge: what it says, when it says nothing, and what it
 /// refuses to render.
@@ -120,7 +120,7 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
     }
 
     // The state the feature exists for: sessions are live, none attached.
-    func testNoJoinWithLiveSessionsIsUnjoined() {
+    func testNoJoinWithLiveSessionsIsUnjoined() async {
         XCTAssertEqual(
             OverlayClaudeJoinBadge.resolve(
                 attempt: .resolved(ClaudeJoinResolution(join: nil)),
@@ -134,7 +134,7 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
 
     // A Mac that is not running Claude Code must not wear a permanent
     // complaint about a join that was never attempted.
-    func testNoJoinAndNoSessionsIsSilent() {
+    func testNoJoinAndNoSessionsIsSilent() async {
         XCTAssertEqual(
             OverlayClaudeJoinBadge.resolve(
                 attempt: .resolved(ClaudeJoinResolution(join: nil)),
@@ -149,7 +149,7 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
     // Claude Desktop gates are the point (#658): with only the screen setting
     // on, every dictation into either used to say "No Claude session", with
     // no hint that session context was what was off.
-    func testGatesThatRuleOutAnyUseOfAJoinHideTheBadge() {
+    func testGatesThatRuleOutAnyUseOfAJoinHideTheBadge() async {
         for gate in [
             ClaudeJoinGate.noPolishingEndpoint, .contextSettingsOff,
             .browserWithoutSessionContext, .desktopWithoutSessionContext,
@@ -164,7 +164,7 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
 
     // The other gates stop a join the user DID ask for, so with sessions live
     // they still say none attached.
-    func testGatesTheUserDidNotChooseStillReportUnjoined() {
+    func testGatesTheUserDidNotChooseStillReportUnjoined() async {
         for gate in [
             ClaudeJoinGate.noResolver, .endpointNotPermitted,
             .accessibilityNotTrusted, .noFrontmostTarget,
@@ -180,7 +180,7 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
     // Focus inside a Claude Desktop session view that nothing joined is worth
     // the pill with an EMPTY registry: that is what a dead hook tunnel looks
     // like, and it was exactly the case the badge hid (#658).
-    func testAnUnmatchedFocusedSessionIsUnjoinedWithNoLiveSessions() {
+    func testAnUnmatchedFocusedSessionIsUnjoinedWithNoLiveSessions() async {
         XCTAssertEqual(
             OverlayClaudeJoinBadge.resolve(
                 attempt: .resolved(ClaudeJoinResolution(join: nil, focusedSessionUnmatched: true)),
@@ -207,7 +207,7 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
 
     // The settings gate sits in front of the registry read too: a user with
     // both features off pays nothing.
-    func testTheRegistryIsNotConsultedWhenFeaturesAreOff() {
+    func testTheRegistryIsNotConsultedWhenFeaturesAreOff() async {
         let asked = Mutex(0)
         _ = OverlayClaudeJoinBadge.resolve(
             attempt: .gated(.contextSettingsOff),
@@ -225,7 +225,7 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
     // macOS path component forbids only `/` and NUL. The panel is measured from
     // the body text alone, so a label carrying a line break would draw outside
     // the height the panel was sized for.
-    func testControlCharactersAreStrippedFromTheLabel() {
+    func testControlCharactersAreStrippedFromTheLabel() async {
         XCTAssertEqual(
             OverlayClaudeJoinBadge.displayLabel(forWorkspaceName: "repo\nname\tx"),
             "repo name x"
@@ -235,7 +235,7 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
     // RIGHT-TO-LEFT OVERRIDE is category Cf, which `controlCharacters` covers —
     // a header that reorders around a directory name is not a display this
     // badge may produce.
-    func testBidiOverridesAreStrippedFromTheLabel() {
+    func testBidiOverridesAreStrippedFromTheLabel() async {
         XCTAssertEqual(
             OverlayClaudeJoinBadge.displayLabel(forWorkspaceName: "repo\u{202E}drowssap"),
             "repodrowssap"
@@ -247,7 +247,7 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
     // survive to the whitespace collapse. They break lines like a newline does,
     // so this is the assertion that stops a future "collapse ASCII whitespace"
     // refactor from silently letting one through into a single-line header.
-    func testUnicodeLineAndParagraphSeparatorsCollapseToASpace() {
+    func testUnicodeLineAndParagraphSeparatorsCollapseToASpace() async {
         XCTAssertEqual(
             OverlayClaudeJoinBadge.displayLabel(forWorkspaceName: "repo\u{2028}x"),
             "repo x"
@@ -258,14 +258,14 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
         )
     }
 
-    func testWhitespaceRunsCollapseSoALabelCannotPadThePill() {
+    func testWhitespaceRunsCollapseSoALabelCannotPadThePill() async {
         XCTAssertEqual(
             OverlayClaudeJoinBadge.displayLabel(forWorkspaceName: "  my    repo  "),
             "my repo"
         )
     }
 
-    func testAnOverlongLabelIsTruncatedWithAnEllipsis() throws {
+    func testAnOverlongLabelIsTruncatedWithAnEllipsis() async throws {
         let name = String(repeating: "a", count: 80)
         let label = try XCTUnwrap(OverlayClaudeJoinBadge.displayLabel(forWorkspaceName: name))
         XCTAssertEqual(label.count, OverlayClaudeJoinBadge.maximumLabelLength)
@@ -273,14 +273,14 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
         XCTAssertTrue(label.hasPrefix("aaa"))
     }
 
-    func testALabelAtTheLimitIsLeftAlone() throws {
+    func testALabelAtTheLimitIsLeftAlone() async throws {
         let name = String(repeating: "b", count: OverlayClaudeJoinBadge.maximumLabelLength)
         XCTAssertEqual(OverlayClaudeJoinBadge.displayLabel(forWorkspaceName: name), name)
     }
 
     // Nothing usable left is nil, which the resolver turns into the unnamed
     // fallback rather than an empty pill.
-    func testALabelOfNothingButControlCharactersIsRejected() {
+    func testALabelOfNothingButControlCharactersIsRejected() async {
         XCTAssertNil(OverlayClaudeJoinBadge.displayLabel(forWorkspaceName: "\n\t\u{202E}"))
         XCTAssertNil(OverlayClaudeJoinBadge.displayLabel(forWorkspaceName: "   "))
     }

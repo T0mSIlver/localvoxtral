@@ -20,7 +20,7 @@ import Foundation
 /// residual, documented where it is paid. Naming the joined workspace is what
 /// makes a wrong join recognizable at a glance, and a wrong join is worse than
 /// none.
-enum OverlayClaudeJoinBadge: Equatable, Sendable {
+package enum OverlayClaudeJoinBadge: Equatable, Sendable {
     /// Nothing to say, so nothing is shown: no context feature this surface
     /// can use is on, or the app knows of no session that could have joined. Silence is the
     /// honest answer rather than a reassuring one — a user who does not run
@@ -39,12 +39,12 @@ extension OverlayClaudeJoinBadge {
     /// Longest workspace label the header pill renders. The pill shares one
     /// header row with the phase title and the "Polished" badge, so the label
     /// is a name to recognize, not a path to read.
-    static let maximumLabelLength = 24
+    package static let maximumLabelLength = 24
 
     /// Shown when a join resolved for a session that never reported a cwd. The
     /// join is still real — it grounds the prompt — so the badge must not fall
     /// back to `.unjoined` and call a working setup broken.
-    static let unnamedWorkspaceLabel = "Claude session"
+    package static let unnamedWorkspaceLabel = "Claude session"
 
     /// Derives the badge from this dictation's join attempt.
     ///
@@ -54,7 +54,7 @@ extension OverlayClaudeJoinBadge {
     ///     A closure, and evaluated only on the path that needs it: a resolved
     ///     join already proves a session exists, and the registry is behind a
     ///     lock every dictation start is already contending for.
-    static func resolve(
+    package static func resolve(
         attempt: ClaudeJoinAttempt,
         liveSessionsExist: () -> Bool
     ) -> OverlayClaudeJoinBadge {
@@ -105,7 +105,7 @@ extension OverlayClaudeJoinBadge {
     /// Whitespace runs then collapse to a single space — which also covers the
     /// separator categories (U+2028/U+2029) — so no name can pad the pill wider
     /// than its own text.
-    static func displayLabel(forWorkspaceName name: String) -> String? {
+    package static func displayLabel(forWorkspaceName name: String) -> String? {
         let neutralized = String(
             String.UnicodeScalarView(
                 name.unicodeScalars.compactMap { scalar -> Unicode.Scalar? in
@@ -135,7 +135,7 @@ extension ClaudeJoinGate {
     /// Claude Desktop target with session context off (the screen setting
     /// alone never reads either). "No Claude session" there would blame a
     /// session for a feature the user did not turn on.
-    var silencesBadge: Bool {
+    package var silencesBadge: Bool {
         switch self {
         case .noPolishingEndpoint, .contextSettingsOff,
              .browserWithoutSessionContext, .desktopWithoutSessionContext:
