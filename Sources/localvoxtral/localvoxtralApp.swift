@@ -525,9 +525,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.claudeContext.error("Claude context broker not started: no socket path (HOME unset)")
             return
         }
+        // The `localvoxtral` command's requests arrive on the same socket
+        // (#721) and are answered from the app's own stores.
+        let agentCLI = AgentCLIService(source: AgentCLIAppDataSource(viewModel: viewModel))
         let broker = ClaudeContextBroker(
             socketPath: socketPath,
-            registry: claudeSessionRegistry
+            registry: claudeSessionRegistry,
+            agentCLI: { await agentCLI.respond(to: $0) }
         )
         do {
             try broker.start()

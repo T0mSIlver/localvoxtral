@@ -30,7 +30,7 @@ final class AgentCLIServiceTests: XCTestCase {
             rawText: raw,
             finalText: final ?? raw,
             inserted: inserted,
-            status: inserted ? "completed" : "sttCompleted"
+            status: inserted ? "completed" : "stt_completed"
         )
     }
 
@@ -117,7 +117,7 @@ final class AgentCLIServiceTests: XCTestCase {
         let response = await service(fixture()).respond(to: AgentCLIRequest(command: .historyLast))
         XCTAssertEqual(
             try json(response),
-            #"{"cli":1,"history":{"dictations":[{"agent":"claude","finalText":"never reached the app","finishedAt":"2026-09-21T14:13:25Z","id":"e","inserted":false,"project":{"key":"\/work\/quillmark","name":"quillmark"},"rawText":"never reached the app","startedAt":"2026-09-21T14:13:20Z","status":"sttCompleted","targetApp":"com.mitchellh.ghostty"}],"historyKept":true},"ok":true}"#
+            #"{"cli":1,"history":{"dictations":[{"agent":"claude","finalText":"never reached the app","finishedAt":"2026-09-21T14:13:25Z","id":"e","inserted":false,"project":{"key":"\/work\/quillmark","name":"quillmark"},"rawText":"never reached the app","startedAt":"2026-09-21T14:13:20Z","status":"stt_completed","targetApp":"com.mitchellh.ghostty"}],"historyKept":true},"ok":true}"#
         )
     }
 

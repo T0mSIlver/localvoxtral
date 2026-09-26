@@ -281,3 +281,28 @@ package struct AgentCLIService: Sendable {
         return .success(ProjectFilter(key: project.key, name: nil, resolveLocalProject: resolveLocalProject))
     }
 }
+
+extension AgentCLIJoin {
+    /// What `status` reports about a join. The project is the session's own
+    /// directory or remote label, as the history records it; nothing is read
+    /// from disk.
+    package init(_ join: ClaudeSessionJoin) {
+        self.init(
+            agent: join.snapshot.agent.rawValue,
+            project: AgentCLIProject(joinedWorkspace: join.snapshot.learnedTermWorkspace),
+            mechanism: ClaudeSessionJoinSummary.armName(join.mechanism),
+            remote: !join.snapshot.origin.isLocalAuthenticated
+        )
+    }
+}
+
+extension AgentCLIProject {
+    /// The joined session's directory, or its remote label. Nil without a
+    /// workspace.
+    package init?(joinedWorkspace workspace: ClaudeWorkspaceReference?) {
+        guard let identity = LearnedTermProjectResolver.resolve(repositoryRoot: .unknown, workspace: workspace) else {
+            return nil
+        }
+        self.init(key: identity.key, name: identity.name)
+    }
+}

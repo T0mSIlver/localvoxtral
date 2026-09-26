@@ -249,6 +249,17 @@ fi
 cp "$CLAUDE_HOOK_BINARY" "$APP_DIR/Contents/MacOS/localvoxtral-claude-hook"
 chmod +x "$APP_DIR/Contents/MacOS/localvoxtral-claude-hook"
 
+# The `localvoxtral` command (#721). Settings links /usr/local/bin/localvoxtral
+# to this copy, so it must keep this name and place (`AgentCLIInstallState`).
+swift build --build-system native -c "$CONFIGURATION" --product localvoxtral-cli -Xswiftc -g
+AGENT_CLI_BINARY="$(find "$ROOT_DIR/.build" -type f -path "*/${CONFIGURATION}/localvoxtral-cli" | head -n 1)"
+if [[ -z "$AGENT_CLI_BINARY" ]]; then
+  echo "Unable to find built localvoxtral-cli binary under .build."
+  exit 1
+fi
+cp "$AGENT_CLI_BINARY" "$APP_DIR/Contents/MacOS/localvoxtral-cli"
+chmod +x "$APP_DIR/Contents/MacOS/localvoxtral-cli"
+
 # The marketplace is copied whole from the repo — it is NOT a SwiftPM resource
 # (SwiftPM cannot declare a resource outside its target directory, and a
 # duplicated tree would give us two sources of truth for a user-installable

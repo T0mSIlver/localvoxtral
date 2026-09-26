@@ -88,6 +88,19 @@ final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
         snapshot().confirmedTerms(projectKey: projectKey, minimumDictations: minimumDictations)
     }
 
+    /// The terms once the launch load has landed: answered on the write
+    /// queue, behind the load and every write already queued. For the
+    /// `localvoxtral` command (#721), which is off the main actor and may be
+    /// the first thing to ask after launch.
+    func loadedSnapshot() async -> LearnedTerms {
+        await withCheckedContinuation { continuation in
+            writeQueue.async { [self] in
+                let fallback = state.withLock { $0.terms } ?? loadFromDisk()
+                continuation.resume(returning: state.withLock { $0.terms } ?? fallback)
+            }
+        }
+    }
+
     /// Terms, then projects — what the Settings row states.
     func summary() -> (terms: Int, projects: Int) {
         let terms = snapshot()
@@ -158,6 +171,28 @@ final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
             Log.polishing.info(
                 "Learned terms: \(added, privacy: .public) proposed by \(agent.rawValue, privacy: .public) kept for a new project"
             )
+        }
+    }
+
+    /// Terms an agent proposed through `localvoxtral terms propose`
+    /// (`LearnedTerms.recordCommandProposal`, #721). Returns the terms added
+    /// once the write queue has folded them in.
+    func recordCommandProposal(
+        _ terms: [String],
+        proposer: String,
+        project: LearnedTermProjectIdentity,
+        excluding: [String]
+    ) async -> [String] {
+        let moment = now()
+        return await withCheckedContinuation { continuation in
+            mutate { memory in
+                let added = memory.recordCommandProposal(
+                    terms, proposer: proposer, project: project, excluding: excluding, now: moment)
+                Log.polishing.info(
+                    "Learned terms: \(added.count, privacy: .public) proposed by \(proposer, privacy: .public) through the command"
+                )
+                continuation.resume(returning: added)
+            }
         }
     }
 

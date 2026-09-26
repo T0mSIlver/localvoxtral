@@ -233,3 +233,78 @@ final class AgentCLIBrokerTests: XCTestCase {
         XCTAssertEqual(history.stderr, "localvoxtral: localvoxtral is not running\n")
     }
 }
+
+/// What Settings finds at the command's path, and the commands it runs to
+/// change it (#721).
+final class AgentCLIInstallStateTests: XCTestCase {
+    private var directory: URL!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lvx-cli-install-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: directory)
+        try super.tearDownWithError()
+    }
+
+    private var link: String { directory.appendingPathComponent("localvoxtral").path }
+    private let bundled = "/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-cli"
+
+    private func state() -> AgentCLIInstallState {
+        AgentCLIInstallState.read(linkPath: link, bundledBinary: bundled)
+    }
+
+    func testTheLinkIsReadWithoutFollowingIt() throws {
+        XCTAssertEqual(state(), .notInstalled)
+
+        // Dangling, like every link below: the check never needs the target.
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: bundled)
+        XCTAssertEqual(state(), .installed)
+
+        try FileManager.default.removeItem(atPath: link)
+        try FileManager.default.createSymbolicLink(
+            atPath: link, withDestinationPath: "/Users/me/Downloads/localvoxtral.app/Contents/MacOS/localvoxtral-cli")
+        XCTAssertEqual(state(), .otherCopy)
+
+        try FileManager.default.removeItem(atPath: link)
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: "/opt/homebrew/bin/localvoxtral")
+        XCTAssertEqual(state(), .foreign)
+
+        try FileManager.default.removeItem(atPath: link)
+        try Data("#!/bin/sh\n".utf8).write(to: URL(fileURLWithPath: link))
+        XCTAssertEqual(state(), .foreign)
+    }
+
+    func testCommandsQuoteAPathWithSpacesAndQuotes() {
+        let path = "/Users/me/My Apps/Tom's localvoxtral.app/Contents/MacOS/localvoxtral-cli"
+        let install = AgentCLIInstallState.installCommand(bundledBinary: path)
+        XCTAssertEqual(
+            install,
+            #"mkdir -p '/usr/local/bin' && ln -sfn '/Users/me/My Apps/Tom'\''s localvoxtral.app/Contents/MacOS/localvoxtral-cli' '/usr/local/bin/localvoxtral'"#
+        )
+        XCTAssertEqual(AgentCLIInstallState.removeCommand(), "rm -f '/usr/local/bin/localvoxtral'")
+        XCTAssertEqual(
+            AgentCLIInstallState.privilegedAppleScript(#"echo "a\b""#),
+            #"do shell script "echo \"a\\b\"" with administrator privileges"#
+        )
+    }
+
+    /// The command really runs in `sh`: the quoted path arrives as one
+    /// argument, quote included.
+    func testTheInstallCommandMakesTheLinkInAShell() throws {
+        let target = directory.appendingPathComponent("It's here/localvoxtral-cli").path
+        let linkPath = directory.appendingPathComponent("bin/localvoxtral").path
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", AgentCLIInstallState.installCommand(bundledBinary: target, linkPath: linkPath)]
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: linkPath), target)
+        XCTAssertEqual(AgentCLIInstallState.read(linkPath: linkPath, bundledBinary: target), .installed)
+    }
+}
