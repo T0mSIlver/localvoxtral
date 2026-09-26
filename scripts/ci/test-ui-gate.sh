@@ -2097,8 +2097,8 @@ echo "== 21. app — the passthrough to the dogfood control socket =="
 
 # The verb exists because two things about the join are invisible from outside
 # the app's process: a dictation has no deterministic trigger, and the session
-# registry is per-process, so `--probe-surface` can only ever resolve against
-# an empty one. What is proved here is that the passthrough stayed a
+# registry is per-process, so `--probe-surface` sees only the app's last saved
+# copy. What is proved here is that the passthrough stayed a
 # passthrough — one fixed socket, five known shapes, a dogfood-only gate.
 
 DOGFOOD_APP_ENV=(

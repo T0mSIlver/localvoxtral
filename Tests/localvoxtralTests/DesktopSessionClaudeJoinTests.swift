@@ -141,16 +141,17 @@ final class DesktopSessionClaudeJoinTests: XCTestCase {
             "https://claude.ai/chat/0b7c4f1e-aaaa-bbbb-cccc-000000000000",
             "file:///Applications/Claude.app/Contents/Resources/app.asar/.vite/renderer/main_window/index.html",
         ] {
-            let join = await resolver(registry: registry, address: address).resolve(target: desktop)
-            XCTAssertNil(join, address)
+            // Not a session view, so nothing for the badge to call unjoined.
+            let resolution = await resolver(registry: registry, address: address).resolution(target: desktop)
+            XCTAssertEqual(resolution, ClaudeJoinResolution(join: nil), address)
         }
     }
 
     func testReadFailureAbstains() async {
         let registry = makeRegistry()
         XCTAssertNotNil(registry.ingest(record(), origin: local))
-        let join = await resolver(registry: registry, address: nil).resolve(target: desktop)
-        XCTAssertNil(join)
+        let resolution = await resolver(registry: registry, address: nil).resolution(target: desktop)
+        XCTAssertEqual(resolution, ClaudeJoinResolution(join: nil))
     }
 
     // The desktop shows a session whose hooks never reach us (no plugin on that
@@ -158,8 +159,10 @@ final class DesktopSessionClaudeJoinTests: XCTestCase {
     func testSessionNobodyReportsDoesNotJoin() async {
         let registry = makeRegistry()
         XCTAssertNotNil(registry.ingest(record(desktopSessionID: "local_other"), origin: local))
-        let join = await resolver(registry: registry, address: sessionAddress).resolve(target: desktop)
-        XCTAssertNil(join)
+        // Focus IS in a session view: the badge says it did not join (#658).
+        let resolution = await resolver(registry: registry, address: sessionAddress)
+            .resolution(target: desktop)
+        XCTAssertEqual(resolution, ClaudeJoinResolution(join: nil, focusedSessionUnmatched: true))
     }
 
     func testTwoSessionsReportingOneDesktopIDAbstain() async {
@@ -170,8 +173,10 @@ final class DesktopSessionClaudeJoinTests: XCTestCase {
                 record(session: "s2", claudePID: nil), origin: remote, environment: remoteEnvironment()
             )
         )
-        let join = await resolver(registry: registry, address: sessionAddress).resolve(target: desktop)
-        XCTAssertNil(join)
+        // Focus IS in a session view: the badge says it did not join (#658).
+        let resolution = await resolver(registry: registry, address: sessionAddress)
+            .resolution(target: desktop)
+        XCTAssertEqual(resolution, ClaudeJoinResolution(join: nil, focusedSessionUnmatched: true))
     }
 
     func testStaleSessionDoesNotJoin() async {
@@ -179,8 +184,10 @@ final class DesktopSessionClaudeJoinTests: XCTestCase {
         let registry = makeRegistry(clock: clock)
         XCTAssertNotNil(registry.ingest(record(), origin: local))
         clock.advance(ClaudeRegistryLimits.default.sessionTTL + 1)
-        let join = await resolver(registry: registry, address: sessionAddress).resolve(target: desktop)
-        XCTAssertNil(join)
+        // Focus IS in a session view: the badge says it did not join (#658).
+        let resolution = await resolver(registry: registry, address: sessionAddress)
+            .resolution(target: desktop)
+        XCTAssertEqual(resolution, ClaudeJoinResolution(join: nil, focusedSessionUnmatched: true))
     }
 
     // A Remote Control id and a desktop id are different keys: a browser tab

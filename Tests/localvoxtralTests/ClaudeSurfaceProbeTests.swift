@@ -131,6 +131,10 @@ final class ClaudeSurfaceProbeTests: XCTestCase {
             .run(ClaudeSurfaceProbe.Options(json: true)),
             "flag order is not part of the contract"
         )
+        XCTAssertEqual(
+            ClaudeSurfaceProbe.invocation(arguments: ["localvoxtral", "--probe-surface", "--desktop", "--json"]),
+            .run(ClaudeSurfaceProbe.Options(json: true, desktop: true))
+        )
     }
 
     func testUnrecognizedOptionIsAUsageErrorRatherThanASilentDefault() {
@@ -189,6 +193,22 @@ final class ClaudeSurfaceProbeTests: XCTestCase {
         XCTAssertEqual(
             summary.abstentionReason,
             ClaudeSurfaceProbe.ProbeAbstention.noFrontmostApplication.rawValue
+        )
+    }
+
+    // `--desktop` names Claude Desktop as the surface, so its absence is its
+    // own reason rather than "no frontmost application".
+    func testAMissingDesktopTargetIsNamedByTheCallersReason() async {
+        let summary = await ClaudeSurfaceProbe.summarize(
+            accessibilityTrusted: true,
+            frontmostTarget: nil,
+            targetUnavailable: .claudeDesktopNotRunning,
+            hasLiveSessions: { true },
+            resolve: { _ in XCTFail("nothing to resolve"); return nil }
+        )
+        XCTAssertEqual(
+            summary.abstentionReason,
+            ClaudeSurfaceProbe.ProbeAbstention.claudeDesktopNotRunning.rawValue
         )
     }
 

@@ -5,9 +5,9 @@ import Synchronization
 /// The resolver reduces every abstention to a log line and returns `nil`, so by
 /// the time an answer comes back the reason it took that answer is gone. A
 /// dogfood build already taps that (`DogfoodCaptureTap`), but that tap does not
-/// exist in a shipping build — and `--probe-surface` has to run in a shipping
-/// build, because a diagnostic that requires a special binary cannot diagnose
-/// the binary the user is actually running.
+/// exist in a shipping build — and both `--probe-surface` and the dictation's
+/// persisted join line have to work in one, because a diagnostic that requires
+/// a special binary cannot diagnose the binary the user is actually running.
 ///
 /// Disarmed by default and therefore inert in normal operation: `note` takes an
 /// uncontended lock, sees no collector, and returns. Nothing accumulates when
@@ -55,8 +55,11 @@ package enum ClaudeJoinAbstentionTap {
     /// Runs `body` with the tap armed and returns its value alongside every
     /// cause noted while it ran, oldest first.
     ///
-    /// Not reentrant, and it does not need to be: the only caller is the probe
-    /// verb, which resolves exactly once per process.
+    /// Not reentrant, and it does not need to be. Its callers are the probe
+    /// verb, which resolves once per process, and the dictation start
+    /// (`SessionContextResolver.captureAtStart`), which resolves once per
+    /// dictation; inside the app the dogfood control socket refuses a probe
+    /// while a dictation resolves and the other way round.
     ///
     /// `isolation` inherits the caller's actor so a `@MainActor` resolve can be
     /// passed in directly — without it the closure would have to cross an

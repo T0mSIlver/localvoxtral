@@ -696,7 +696,7 @@ final class RepoVocabularyIndexerEndToEndTests: XCTestCase {
         let terms = outcome?.entries.map(\.replaceWith) ?? []
         XCTAssertTrue(terms.contains("Voxtral Realtime"), "entries: \(terms)")
         XCTAssertFalse(terms.contains("Parakeet Stream"), "entries: \(terms)")
-        guard case .root(let reported) = root.value else {
+        guard case .root(let reported, _) = root.value else {
             return XCTFail("the joined workspace's repo was not reported: \(root.value)")
         }
         XCTAssertEqual(

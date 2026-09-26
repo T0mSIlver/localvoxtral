@@ -1007,8 +1007,8 @@ Two things about that are invisible from outside the app's process: a dictation
 has no deterministic trigger (which is what `dictate` works around, at the cost
 of synthesising a gesture), and `ClaudeSessionRegistry` is in-memory and
 per-process — so `localvoxtral --probe-surface`, a separate one-shot process,
-always resolves against an **empty registry** and can never report a real join
-arm.
+sees only the sessions the app last **saved to disk**, never the live
+registry.
 
 A dogfood build answers both, over a local AF_UNIX socket it binds only when
 `debug.dogfood_control_socket_enabled` is armed

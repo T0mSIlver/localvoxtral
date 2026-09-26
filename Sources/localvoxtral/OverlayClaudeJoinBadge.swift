@@ -21,16 +21,17 @@ import Foundation
 /// makes a wrong join recognizable at a glance, and a wrong join is worse than
 /// none.
 enum OverlayClaudeJoinBadge: Equatable, Sendable {
-    /// Nothing to say, so nothing is shown: neither context feature is on, or
-    /// the app knows of no session that could have joined. Silence is the
+    /// Nothing to say, so nothing is shown: no context feature this surface
+    /// can use is on, or the app knows of no session that could have joined. Silence is the
     /// honest answer rather than a reassuring one — a user who does not run
     /// Claude Code must not be told about a join that was never attempted.
     case hidden
     /// This dictation is grounded in the named workspace's session.
     case joined(label: String)
-    /// Live sessions exist and none of them attached. The state the whole badge
-    /// is for: today this is indistinguishable from a working setup until you
-    /// read the committed text.
+    /// Live sessions exist, or the focused Claude Desktop view is a session,
+    /// and nothing attached. The state the whole badge is for: without it this
+    /// is indistinguishable from a working setup until you read the committed
+    /// text.
     case unjoined
 }
 
@@ -45,29 +46,36 @@ extension OverlayClaudeJoinBadge {
     /// back to `.unjoined` and call a working setup broken.
     static let unnamedWorkspaceLabel = "Claude session"
 
-    /// Derives the badge from this dictation's resolved join.
+    /// Derives the badge from this dictation's join attempt.
     ///
     /// - Parameters:
-    ///   - join: the resolved join, or nil when no arm attached.
-    ///   - contextFeatureEnabled: whether either context feature is on — the
-    ///     SAME condition `resolveClaudeSessionJoin` gates on. Gating the badge
-    ///     on the repo setting alone would hide a real join resolved for screen
-    ///     attachment, which is a join the user cares about just as much.
+    ///   - attempt: the gate that stopped the join, or the resolver's answer.
     ///   - liveSessionsExist: whether the registry currently holds any session.
     ///     A closure, and evaluated only on the path that needs it: a resolved
     ///     join already proves a session exists, and the registry is behind a
     ///     lock every dictation start is already contending for.
     static func resolve(
-        join: ClaudeSessionJoin?,
-        contextFeatureEnabled: Bool,
+        attempt: ClaudeJoinAttempt,
         liveSessionsExist: () -> Bool
     ) -> OverlayClaudeJoinBadge {
-        guard contextFeatureEnabled else { return .hidden }
-        if let join {
+        let resolution: ClaudeJoinResolution?
+        switch attempt {
+        case .gated(let gate) where gate.silencesBadge:
+            return .hidden
+        case .gated:
+            resolution = nil
+        case .resolved(let resolved):
+            resolution = resolved
+        }
+        if let join = resolution?.join {
             let name = join.snapshot.workspace?.displayName
             let label = name.flatMap(displayLabel(forWorkspaceName:)) ?? unnamedWorkspaceLabel
             return .joined(label: label)
         }
+        // The surface itself named a Claude Code session and nothing joined
+        // it. That is worth a pill even when the registry is empty: an empty
+        // registry is exactly what a dead hook tunnel looks like.
+        if resolution?.focusedSessionUnmatched == true { return .unjoined }
         // No join AND no session anywhere is the ordinary state of a Mac that
         // is not running Claude Code. Only a session that COULD have attached
         // makes "nothing attached" worth a pill.
@@ -118,5 +126,22 @@ extension OverlayClaudeJoinBadge {
         // identifying ones, and the ellipsis says the rest was cut rather than
         // letting a long name read as a different, shorter one.
         return String(collapsed.prefix(maximumLabelLength - 1)) + "…"
+    }
+}
+
+extension ClaudeJoinGate {
+    /// The gates that mean nothing on this surface could have used a join:
+    /// no polishing endpoint, both context settings off, or a browser or
+    /// Claude Desktop target with session context off (the screen setting
+    /// alone never reads either). "No Claude session" there would blame a
+    /// session for a feature the user did not turn on.
+    var silencesBadge: Bool {
+        switch self {
+        case .noPolishingEndpoint, .contextSettingsOff,
+             .browserWithoutSessionContext, .desktopWithoutSessionContext:
+            return true
+        case .noResolver, .endpointNotPermitted, .accessibilityNotTrusted, .noFrontmostTarget:
+            return false
+        }
     }
 }
