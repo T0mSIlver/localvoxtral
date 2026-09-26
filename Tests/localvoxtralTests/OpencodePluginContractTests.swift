@@ -79,6 +79,7 @@ final class OpencodePluginContractTests: XCTestCase {
     globalThis.Buffer = {
       byteLength: (value) => __utf8Bytes(value).length,
       from: (value) => __wrapBytes(__utf8Bytes(value)),
+      concat: (parts) => __wrapBytes(parts.reduce((all, part) => all.concat(Array.from(part)), [])),
     };
 
     globalThis.process = {

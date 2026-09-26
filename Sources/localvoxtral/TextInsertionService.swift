@@ -406,11 +406,18 @@ final class TextInsertionService {
     /// Live text the relay did not take is typed, as it would have been
     /// without one. Where it lands cannot be tied to where the relay's text
     /// went, so a nil landing blocks a keyboard Return for the rest of the
-    /// dictation. Already prepared, so it goes to the keyboard as-is.
+    /// dictation. It joins the pending text the keyboard path drains in
+    /// order, so a refused text that cannot be typed yet is never overtaken
+    /// by a later one.
     private func typeLiveTextThePromptRelayRefused(_ text: String) {
         liveInsertionTargetPIDs.append(nil)
-        if insertTextPrioritizingKeyboard(text).isSuccess { return }
-        pendingHoldBackReleasedText += text
+        if liveHoldBackStream != nil {
+            // Released text: retried as-is, never re-ingested.
+            pendingHoldBackReleasedText += text
+        } else {
+            pendingRealtimeInsertionText += text
+        }
+        flushPendingRealtimeInsertion()
     }
 
     func enqueueRealtimeInsertion(_ text: String) {

@@ -116,7 +116,8 @@ package final class OpencodePromptRelaySink {
     package let relay: OpencodePromptRelay
     private let poster: any OpencodePromptRelayPosting
     private let fallback: @MainActor (String) -> Void
-    private var queue: [OpencodePromptRelayCall] = []
+    /// Each call with the fallback its text goes to if it is refused.
+    private var queue: [(call: OpencodePromptRelayCall, fallback: (@MainActor (String) -> Void)?)] = []
     private var draining = false
     private var idleWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -133,13 +134,16 @@ package final class OpencodePromptRelaySink {
         self.fallback = fallback
     }
 
-    package func append(_ text: String) {
+    /// `fallback`, when given, replaces the sink's own for this text: a
+    /// caller that knows where refused text must go (the overlay's commit
+    /// target) says so at hand-off, not when the refusal arrives.
+    package func append(_ text: String, fallback: (@MainActor (String) -> Void)? = nil) {
         guard !text.isEmpty else { return }
         guard isHealthy else {
-            fallback(text)
+            (fallback ?? self.fallback)(text)
             return
         }
-        enqueue(.append(text))
+        enqueue(.append(text), fallback: fallback)
     }
 
     /// Submits once every append made before it has landed.
@@ -148,7 +152,7 @@ package final class OpencodePromptRelaySink {
             Log.backends.notice("opencode prompt relay: route failed earlier; submit dropped")
             return
         }
-        enqueue(.submit)
+        enqueue(.submit, fallback: nil)
     }
 
     /// Returns once nothing is queued or in flight.
@@ -157,16 +161,16 @@ package final class OpencodePromptRelaySink {
         await withCheckedContinuation { idleWaiters.append($0) }
     }
 
-    private func enqueue(_ call: OpencodePromptRelayCall) {
-        queue.append(call)
+    private func enqueue(_ call: OpencodePromptRelayCall, fallback: (@MainActor (String) -> Void)?) {
+        queue.append((call, fallback))
         guard !draining else { return }
         draining = true
         Task { await drain() }
     }
 
     private func drain() async {
-        while let call = queue.first {
-            let delivered = await poster.post(call, to: relay)
+        while let next = queue.first {
+            let delivered = await poster.post(next.call, to: relay)
             if delivered {
                 queue.removeFirst()
                 continue
@@ -174,15 +178,15 @@ package final class OpencodePromptRelaySink {
             isHealthy = false
             let pending = queue
             queue.removeAll()
-            let texts = pending.compactMap { call -> String? in
-                if case .append(let text) = call { return text }
+            let refused = pending.compactMap { entry -> (String, (@MainActor (String) -> Void)?)? in
+                if case .append(let text) = entry.call { return (text, entry.fallback) }
                 return nil
             }
-            let droppedSubmits = pending.count - texts.count
+            let droppedSubmits = pending.count - refused.count
             Log.backends.notice(
-                "opencode prompt relay: route failed; \(texts.count, privacy: .public) appends go by keystrokes, \(droppedSubmits, privacy: .public) submits dropped"
+                "opencode prompt relay: route failed; \(refused.count, privacy: .public) appends go by keystrokes, \(droppedSubmits, privacy: .public) submits dropped"
             )
-            for text in texts { fallback(text) }
+            for (text, callFallback) in refused { (callFallback ?? fallback)(text) }
         }
         draining = false
         let waiters = idleWaiters

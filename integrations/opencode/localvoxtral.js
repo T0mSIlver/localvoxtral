@@ -484,18 +484,20 @@ function startPromptRelay(api, displayedSession, onListening) {
         if (request.method !== "POST" || !route) return reply(404);
         if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) return reply(401);
         if (request.headers.host !== "127.0.0.1:" + port) return reply(403);
-        let body = "";
+        // Bytes, decoded once at the end: a chunk can split a UTF-8 sequence.
+        const chunks = [];
         let bytes = 0;
         request.on("data", (chunk) => {
-          bytes += chunk.length;
+          const data = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+          bytes += data.length;
           if (bytes > MAX_RELAY_BODY_BYTES) {
             reply(413);
             request.destroy();
-          } else body += chunk;
+          } else chunks.push(data);
         });
         request.on("end", () => {
           try {
-            const call = JSON.parse(body);
+            const call = JSON.parse(Buffer.concat(chunks).toString("utf8"));
             if (!call || call.session_id !== displayedSession()) return reply(409);
             if (route === "append" && (typeof call.text !== "string" || !call.text)) return reply(400);
             const sent = route === "append" ? tui.appendPrompt({ text: call.text }) : tui.submitPrompt({});

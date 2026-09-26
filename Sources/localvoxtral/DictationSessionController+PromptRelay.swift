@@ -12,14 +12,7 @@ extension DictationSessionController {
     /// Connect time, once per dictation: hands the relay resolved at start to
     /// the insertion service, or disarms the previous one.
     func armPromptRelayForSession() {
-        let relay = context.opencodePromptRelay
-        if isOverlayBufferModeEnabled {
-            textInsertion.beginPromptRelay(relay) { [weak self] text in
-                self?.commitOverlayTextThePromptRelayRefused(text)
-            }
-        } else {
-            textInsertion.beginPromptRelay(relay)
-        }
+        textInsertion.beginPromptRelay(context.opencodePromptRelay)
     }
 
     /// What the overlay commit inserts through: the relay while it is
@@ -28,20 +21,37 @@ extension DictationSessionController {
         guard textInsertion.promptRelayIsHealthy, let sink = textInsertion.promptRelaySink else {
             return textInsertion
         }
-        return PromptRelayOverlayCommitter(sink: sink)
+        return PromptRelayOverlayCommitter(sink: sink) { [weak self] text, pid in
+            self?.commitOverlayTextThePromptRelayRefused(text, preferredAppPID: pid)
+        }
     }
 
     /// The overlay's text the relay did not take, committed the way the
-    /// overlay commits without one: keys, then Cmd+V, to the commit target.
-    private func commitOverlayTextThePromptRelayRefused(_ text: String) {
-        let pid = overlayBufferCoordinator.commitTargetAppPID
-        if textInsertion.insertTextPrioritizingKeyboard(text, preferredAppPID: pid).isSuccess
+    /// overlay commits without one: keys, then Cmd+V, to the target the
+    /// commit named when it handed the text off (the overlay may have reset
+    /// since). Under Secure Keyboard Entry, or when no key lands, the text
+    /// goes on the clipboard: the panel is gone, and it may exist nowhere
+    /// else.
+    private func commitOverlayTextThePromptRelayRefused(_ text: String, preferredAppPID pid: pid_t?) {
+        if !TerminalTargetDetector.isSecureKeyboardEntryEnabled(),
+           textInsertion.insertTextPrioritizingKeyboard(text, preferredAppPID: pid).isSuccess
             || textInsertion.pasteUsingCommandV(text, preferredAppPID: pid) {
             Log.overlay.notice("overlay commit: relay refused; text inserted by keyboard")
             return
         }
-        Log.overlay.error("overlay commit: relay refused and keyboard insertion failed")
-        lastError = "Unable to insert buffered text into the focused app."
+        Log.overlay.error("overlay commit: relay refused and keyboard insertion unavailable; text copied")
+        #if DEBUG
+        // A test must never write the host's clipboard.
+        if TerminalTargetDetector.isRunningUnderXCTest {
+            lastError = StatusStrings.overlayCopiedToClipboard
+            return
+        }
+        #endif
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        lastError = pasteboard.setString(text, forType: .string)
+            ? StatusStrings.overlayCopiedToClipboard
+            : "Unable to insert buffered text into the focused app."
     }
 }
 
@@ -52,16 +62,19 @@ extension DictationSessionController {
 @MainActor
 final class PromptRelayOverlayCommitter: OverlayTextCommitting {
     private let sink: OpencodePromptRelaySink
+    private let refused: @MainActor (String, pid_t?) -> Void
 
-    init(sink: OpencodePromptRelaySink) {
+    init(sink: OpencodePromptRelaySink, refused: @escaping @MainActor (String, pid_t?) -> Void) {
         self.sink = sink
+        self.refused = refused
     }
 
     var isAccessibilityTrusted: Bool { true }
     var postsNoKeys: Bool { true }
 
-    func insertTextPrioritizingKeyboard(_ text: String, preferredAppPID _: pid_t?) -> TextInsertResult {
-        sink.append(text)
+    func insertTextPrioritizingKeyboard(_ text: String, preferredAppPID: pid_t?) -> TextInsertResult {
+        let refused = self.refused
+        sink.append(text) { refused($0, preferredAppPID) }
         return .insertedByAccessibility
     }
 

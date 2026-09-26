@@ -200,4 +200,20 @@ final class OpencodePromptRelayTests: XCTestCase {
         XCTAssertEqual(fellBack, ["hello ", "world"])
         XCTAssertFalse(sink.isHealthy)
     }
+
+    @MainActor
+    func testARefusedTextGoesToTheFallbackNamedWhenItWasHandedOff() async throws {
+        let server = try FakeOpencodePromptRelay { _ in 502 }
+        addTeardownBlock { server.stop() }
+        var sinkFallback: [String] = []
+        var overlayTarget: [String] = []
+        let sink = OpencodePromptRelaySink(relay: server.relay(sessionID: "ses_a")) { sinkFallback.append($0) }
+
+        sink.append("committed text") { overlayTarget.append($0) }
+        sink.append("later")
+        await sink.waitUntilIdle()
+
+        XCTAssertEqual(overlayTarget, ["committed text"])
+        XCTAssertEqual(sinkFallback, ["later"])
+    }
 }
