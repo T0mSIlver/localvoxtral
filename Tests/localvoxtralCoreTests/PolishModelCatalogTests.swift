@@ -10,9 +10,18 @@ final class PolishModelCatalogTests: XCTestCase {
         XCTAssertEqual(defaultOption.repoID, "mlx-community/Qwen3.5-4B-OptiQ-4bit")
         XCTAssertEqual(PolishModelCatalog.option(forRepoID: defaultOption.repoID), defaultOption)
         XCTAssertNil(PolishModelCatalog.option(forRepoID: "unknown/model"))
-        // nil sampling defaults = the engine's deterministic temp-0.3 default
-        // (proven better than Qwen's recommended sampling on the eval, #97).
+        // The 9B decodes greedily (#563); the 4B and 0.8B lost cases at 0 and
+        // keep the 0.3 request default. Only the temperature is set: Qwen's
+        // recommended sampling lost to 0.3 on the eval (#97).
         XCTAssertNil(defaultOption.samplingDefaults)
+        XCTAssertEqual(
+            PolishModelCatalog.option(forRepoID: "mlx-community/Qwen3.5-9B-OptiQ-4bit")?
+                .samplingDefaults,
+            PolishSamplingDefaults(temperature: 0)
+        )
+        XCTAssertNil(
+            PolishModelCatalog.option(forRepoID: "mlx-community/Qwen3.5-0.8B-8bit")?.samplingDefaults
+        )
         XCTAssertEqual(defaultOption.chatTemplateArguments, ["enable_thinking": false])
         // The 0.8B stays selectable with its legacy request shape (nil kwargs).
         XCTAssertNil(

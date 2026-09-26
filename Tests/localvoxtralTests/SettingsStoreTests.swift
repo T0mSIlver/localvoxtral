@@ -488,6 +488,47 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(configuration?.chatTemplateArguments, ["enable_thinking": false])
     }
 
+    /// The bundled helper's 9B decodes greedily (#563). The 4B and 0.8B lost
+    /// eval cases at 0, and nothing measured Mistral or External URL at 0, so
+    /// they keep the 0.3 default.
+    func testPolishRequestTemperature_helperGreedy_mistralAndExternalKeepDefault() throws {
+        let request = LLMPolishingRequest(
+            inputText: "hello", systemPrompt: "system", userPrompts: ["hello"])
+        func temperature(_ configuration: LLMPolishingConfiguration?) throws -> Double? {
+            let body = try LLMPolishingService.requestBody(
+                request: request, configuration: XCTUnwrap(configuration))
+            let json = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: body) as? [String: Any])
+            return json["temperature"] as? Double
+        }
+
+        let store = makeStore()
+        store.llmPolishingEnabled = true
+        let expected: [String: Double] = [
+            "mlx-community/Qwen3.5-0.8B-8bit": 0.3,
+            "mlx-community/Qwen3.5-4B-OptiQ-4bit": 0.3,
+            "mlx-community/Qwen3.5-9B-OptiQ-4bit": 0,
+        ]
+        XCTAssertEqual(Set(expected.keys), Set(PolishModelCatalog.options.map(\.repoID)))
+        for (repoID, value) in expected {
+            store.managedLLMPolishingModel = repoID
+            XCTAssertEqual(try temperature(store.llmPolishingConfiguration), value, repoID)
+        }
+        // A custom managed repo is not in the catalog, so nothing measured it.
+        store.managedLLMPolishingModel = "mlx-community/custom-polisher"
+        XCTAssertEqual(try temperature(store.llmPolishingConfiguration), 0.3)
+
+        store.polishingBackendMode = .mistralAPI
+        store.mistralAPIKey = "mk-mistral"
+        XCTAssertEqual(try temperature(store.llmPolishingConfiguration), 0.3)
+
+        store.polishingBackendMode = .externalURL
+        store.llmPolishingEndpointURL = "https://api.openai.com/v1/chat/completions"
+        store.llmPolishingAPIKey = "sk-test"
+        store.llmPolishingModel = "gpt-4o-mini"
+        XCTAssertEqual(try temperature(store.llmPolishingConfiguration), 0.3)
+    }
+
     func testLLMPolishingConfiguration_managedLocal_usesManagedModelSelection() {
         let store = makeStore()
         store.llmPolishingEnabled = true
