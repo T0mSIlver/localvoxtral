@@ -57,7 +57,8 @@ it rather than word by word, and saying the same "… send it" phrase twice in a
 row sends it once. Neither mode presses Return in any other app, while
 Secure Keyboard Entry is on, or when the text could not be inserted into that
 app. A terminal is recognized only if it is a known one or listed in Settings
-→ Terminals. In Live Auto-Paste, once any text of a
+→ Terminals. Claude Desktop is recognized on its own; listing it there would
+make localvoxtral treat its prompt box as a terminal. In Live Auto-Paste, once any text of a
 dictation lands in another app, "send it" does nothing until the dictation
 ends.
 
