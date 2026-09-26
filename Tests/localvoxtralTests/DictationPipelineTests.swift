@@ -465,6 +465,29 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(typed.text, "")
     }
 
+    /// Polishing off, so no context join (#759): the route finds the local
+    /// herdr's focused pane itself, and the words still go through the socket.
+    func testLiveAutoPasteIntoAHerdrPaneWithPolishingOffSendsThroughItsSocket() async throws {
+        let herdr = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2") { [(9001, "claude")] })
+        addTeardownBlock { herdr.stop() }
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        joinHerdrPane(pipeline, herdr: herdr)
+        pipeline.viewModel.settings.llmPolishingEnabled = false
+        let typed = recordTypedText(pipeline)
+
+        await startAndSpeak(pipeline)
+        XCTAssertNil(pipeline.viewModel.context.claudeSessionJoin, "precondition: no context join")
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline)
+        let phrase = Self.phrase
+        let sentAll = await herdr.waitUntil { requests in
+            requests.filter { $0.method == "pane.send_text" }.compactMap(\.text).joined() == phrase
+        }
+        XCTAssertTrue(sentAll, "sent: \(herdr.sentText.debugDescription)")
+        XCTAssertFalse(herdr.requests.contains { $0.method == "pane.read" }, "nothing is read without the join")
+        XCTAssertEqual(typed.text, "")
+    }
+
     /// herdr refuses the write while its pane is in front: the dictation
     /// types, as it would with no route, and nothing is lost or doubled.
     func testLiveAutoPasteFallsBackToKeystrokesWhenHerdrRefusesTheWrite() async throws {

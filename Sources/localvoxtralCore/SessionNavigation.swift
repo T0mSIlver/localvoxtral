@@ -37,6 +37,33 @@ package enum GoToSessionCommandParser {
         let name = nameWords.joined(separator: " ")
         return SessionNameMatching.key(name).isEmpty ? nil : name
     }
+
+    /// What a Live Auto-Paste segment heard so far can still become (#747).
+    package enum SegmentPrefix: Equatable, Sendable {
+        /// "g", "Go", "go t": it may yet read "go to".
+        case undecided
+        /// It opens with "go to" (or "goto") and no more name words than a
+        /// command takes: only its final can say.
+        case possibleCommand
+        /// No go-to phrase can come of it.
+        case ordinary
+    }
+
+    /// Case and edge punctuation do not count, as in `spokenName(in:)`.
+    package static func segmentPrefix(_ text: String) -> SegmentPrefix {
+        let words = text
+            .split(whereSeparator: \.isWhitespace)
+            .map { String($0).trimmingCharacters(in: edgePunctuation).caseFoldedForMatching }
+            .filter { !$0.isEmpty }
+        let endsInSpace = text.last?.isWhitespace == true
+        var heard = words.joined(separator: " ")
+        if endsInSpace, !heard.isEmpty { heard += " " }
+        let openings = ["go to ", "goto "]
+        if openings.contains(where: { $0.hasPrefix(heard) }) { return .undecided }
+        guard let opening = openings.first(where: { heard.hasPrefix($0) }) else { return .ordinary }
+        let nameWords = words.count - opening.split(separator: " ").count
+        return nameWords > maxNameWords ? .ordinary : .possibleCommand
+    }
 }
 
 package enum SessionNameMatching {
@@ -249,6 +276,12 @@ package final class SessionNavigator {
         self.repositoryRoot = repositoryRoot
         self.focuser = focuser
         self.sleep = sleep
+    }
+
+    /// Whether any session is live: with none, no dictation can be a go-to,
+    /// and Live Auto-Paste holds nothing back.
+    package var hasLiveSessions: Bool {
+        !liveSessions().isEmpty
     }
 
     package func resolve(spokenName: String) async -> SessionNameResolution {
