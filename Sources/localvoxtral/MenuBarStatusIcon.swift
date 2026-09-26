@@ -29,6 +29,27 @@ enum MenuBarStatusIcon {
         return image
     }
 
+    /// The mic in the menu bar's text color with an orange dot at its top
+    /// right: an agent needs you (#717). Drawn per appearance, like the
+    /// others.
+    static func withAttentionDot(template: NSImage) -> NSImage {
+        let size = template.size
+        let image = NSImage(size: size, flipped: false) { rect in
+            template.draw(in: rect)
+            NSColor.labelColor.set()
+            rect.fill(using: .sourceAtop)
+            let diameter = min(rect.width, rect.height) * 0.45
+            let dot = NSRect(
+                x: rect.maxX - diameter, y: rect.maxY - diameter, width: diameter, height: diameter
+            )
+            NSColor.systemOrange.setFill()
+            NSBezierPath(ovalIn: dot).fill()
+            return true
+        }
+        image.isTemplate = false
+        return image
+    }
+
     /// The colored pixels alone: the colored icon with the template's mic cut
     /// out of it.
     private static func accentOnly(colored: NSImage, template: NSImage, size: NSSize) -> NSImage {

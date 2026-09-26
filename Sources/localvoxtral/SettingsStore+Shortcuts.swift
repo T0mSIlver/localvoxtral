@@ -172,4 +172,34 @@ extension SettingsStore {
         copyLastDictationShortcutCarbonModifierFlags = normalizedShortcut.carbonModifierFlags
         copyLastDictationShortcutEnabled = true
     }
+
+    // MARK: - Answer the agent that needs you (#717)
+
+    /// The global shortcut that goes to the agent session that needs you,
+    /// nil when none is set. Nil also turns the needs-you cue off.
+    var answerAgentShortcut: DictationShortcut? {
+        guard answerAgentShortcutEnabled else { return nil }
+        let candidate = DictationShortcut(
+            keyCode: answerAgentShortcutKeyCode,
+            carbonModifierFlags: answerAgentShortcutCarbonModifierFlags
+        ).normalized
+        if DictationShortcutValidation.persistenceErrorMessage(for: candidate) != nil {
+            return nil
+        }
+        return candidate
+    }
+
+    func setAnswerAgentShortcut(_ shortcut: DictationShortcut?) {
+        guard let shortcut else {
+            answerAgentShortcutEnabled = false
+            return
+        }
+        let normalizedShortcut = shortcut.normalized
+        guard DictationShortcutValidation.persistenceErrorMessage(for: normalizedShortcut) == nil else {
+            return
+        }
+        answerAgentShortcutKeyCode = normalizedShortcut.keyCode
+        answerAgentShortcutCarbonModifierFlags = normalizedShortcut.carbonModifierFlags
+        answerAgentShortcutEnabled = true
+    }
 }
