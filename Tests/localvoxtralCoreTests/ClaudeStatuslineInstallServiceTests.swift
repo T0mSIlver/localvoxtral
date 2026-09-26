@@ -1,7 +1,8 @@
 import Foundation
 import XCTest
 
-@testable import localvoxtral
+@testable import localvoxtralCore
+import localvoxtralTestSupport
 
 /// Installer tests for the Claude Code status line
 /// (`ClaudeStatuslineInstallService`): create, idempotent re-apply, removal,
