@@ -224,8 +224,9 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertTrue(pipeline.viewModel.isDictating, "appended before the stop, not by it")
 
         await stopAndFinalize(pipeline)
+        let phrase = Self.phrase
         let appendedAll = await relay.waitUntil { calls in
-            calls.compactMap(\.text).joined() == Self.phrase
+            calls.compactMap(\.text).joined() == phrase
         }
         XCTAssertTrue(appendedAll, "appended: \(relay.appendedText.debugDescription)")
         XCTAssertEqual(Set(relay.calls.map(\.path)), ["/tui/append-prompt"])
@@ -356,11 +357,11 @@ final class DictationPipelineTests: XCTestCase {
             modifierStateReader: { false },
             accessibilityInserter: { _, _ in false },
             returnKeyPoster: returnKeyPoster ?? { _ in false },
+            frontmostPIDReader: { 4343 },
             commandVPaster: { text in
                 typed.append(text)
                 return true
-            },
-            frontmostPIDReader: { 4343 }
+            }
         )
         return typed
     }
