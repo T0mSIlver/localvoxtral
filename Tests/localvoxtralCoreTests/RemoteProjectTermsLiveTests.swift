@@ -279,6 +279,11 @@ final class RemoteProjectTermsLiveTests: XCTestCase {
         XCTAssertTrue(terms.allSatisfy { $0.sources == ["agent:vibe"] && $0.isUnconfirmedProposal })
         XCTAssertEqual(markerLines(marker), 1, "only the user's session may fire the post_agent hook")
         XCTAssertEqual(shared.seen.withLock(\.count), 1, "the run published a session of its own")
-        XCTAssertTrue(fm.fileExists(atPath: remote + "/vibe-home/config.toml"), "the run used its own Vibe home")
+        let runHomes = (try? fm.contentsOfDirectory(atPath: remote + "/vibe-home")) ?? []
+        XCTAssertEqual(runHomes.count, 1, "one Vibe home per project run")
+        XCTAssertTrue(
+            runHomes.allSatisfy { fm.fileExists(atPath: remote + "/vibe-home/\($0)/config.toml") },
+            "the run used a Vibe home of its own"
+        )
     }
 }
