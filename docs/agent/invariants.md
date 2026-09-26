@@ -1364,26 +1364,33 @@ there is not.
     an ssh host the desktop app runs it on) joins from the FOCUSED WEB VIEW of
     the desktop app (`ClaudeDesktopAllowlist`, exactly
     `com.anthropic.claudefordesktop`, a third list disjoint from the terminal
-    and browser ones). MEASURED on Claude Desktop 2.2553.1 (2026-09-18):
-    each session is shown in a web view whose `AXURL` is
+    and browser ones). MEASURED on Claude Desktop 2.2553.1 (2026-09-18) and
+    again on 2.9939.2 (2026-09-26): the session web view's `AXURL` is
     `https://claude.ai/epitaxy/local_<uuid>`, and the desktop app exports the
     same `local_<uuid>` as `CLAUDE_CODE_HOST_SESSION_ID` into the session's
     Claude Code process, so every hook carries it — local publisher field
     `desktop_session_id`, remote header `X-Lvx-Env-Desktop-Session-Id`
-    (remote plugin ≥ 1.11.0). `AXClaudeDesktopSessionURLReader` walks UP from
-    the app's focused element to the NEAREST `AXWebArea` and reads only that
-    one's address; `ClaudeDesktopSessionURL` parses it through the same strict
-    checks as the bridge URL (`ClaudeSessionPageURL`), path exactly
-    `/epitaxy/local_[A-Za-z0-9_-]+`; the registry match is exact equality with
-    one fresh reporter (`resolve(desktopSessionID:)`, shared rules with the
-    bridge lookup). Walking up from focus is the rule rather than searching the
-    window because the desktop app can show sessions side by side, and focus
-    outside every session web view (sidebar, chat tab) is correctly no join —
-    the dictation is not going to a session. Everything else follows the
-    browser arm: both origins join (the id is desktop-allocated and names the
-    view the user is looking at), a `.desktopSession` join authorizes NO screen
-    read and carries no window identity, commit-time liveness re-resolves the
-    bound id (the id never disappears while the session runs, so it adds no
+    (remote plugin ≥ 1.11.0). On 2.9939.2 the whole window is ONE such web
+    area: the sidebar and every pane of a split view sit inside it, and its
+    address always names the session in the pane classed
+    `dframe-pane-primary`, whichever pane holds focus (after real clicks in
+    either pane and after "Move split view left" alike); no attribute names
+    the other pane's session. So `AXClaudeDesktopSessionURLReader` walks UP
+    from the app's focused element to the NEAREST `AXWebArea` and reads its
+    address ONLY when the walk passed an `epitaxy-chat-panel` element and
+    then a first `dframe-pane` element that is also `dframe-pane-primary`
+    (exact class tokens). Focus in the secondary pane would otherwise join
+    the primary pane's session; focus in a terminal, files or changes panel,
+    or in the sidebar, is no join because the dictation is not going to a
+    session. Each refusal logs its reason. `ClaudeDesktopSessionURL` parses
+    the address through the same strict checks as the bridge URL
+    (`ClaudeSessionPageURL`), path exactly `/epitaxy/local_[A-Za-z0-9_-]+`;
+    the registry match is exact equality with one fresh reporter
+    (`resolve(desktopSessionID:)`, shared rules with the bridge lookup).
+    Everything else follows the browser arm: both origins join (the id is
+    desktop-allocated and names the view the user is looking at), a
+    `.desktopSession` join authorizes NO screen read and carries no window
+    identity, commit-time liveness re-resolves the bound id (the id never disappears while the session runs, so it adds no
     disconnect signal of its own), and the read happens ONLY under
     `claudeRepoContextEnabled`. It is an Accessibility read, not an Apple
     event: no Automation consent, and nothing to pre-warm. It sets Electron's
@@ -1391,9 +1398,12 @@ there is not.
     builds its web accessibility tree only for a client that asks — the switch
     VoiceOver flips), and when the walk finds no web area at all it waits
     250 ms once and reads again, so the first dictation after the desktop app
-    launches can still join. Both identifiers are UNDOCUMENTED: a desktop
-    update that renames either stops the arm joining, and cannot make it join
-    the wrong session. `--probe-surface` reads it only under `--desktop`.
+    launches can still join. The address, the id and the three classes are
+    UNDOCUMENTED: a desktop update that renames any of them stops the arm
+    joining; only a new layout that keeps the classes but moves the address
+    to another pane's session could make it join the wrong one, which is why
+    a desktop update gets this measurement again. `--probe-surface` reads it
+    only under `--desktop`.
     **A Desktop session must stay in the registry while its window is open,
     and exactly one process may report its id** (#657). Four things lost it,
     each measured on an ssh host with 18 Desktop sessions live at once, and

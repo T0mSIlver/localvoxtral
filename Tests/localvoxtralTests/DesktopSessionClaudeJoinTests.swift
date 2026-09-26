@@ -518,6 +518,7 @@ final class ClaudeDesktopSessionReaderTests: XCTestCase {
         return AXClaudeDesktopSessionURLReader.nearestWebArea(
             from: start,
             role: { nodes[$0].failsRole ? .failure(Failure()) : .success(nodes[$0].role) },
+            classes: { nodes[$0].failsClasses ? .failure(Failure()) : .success(nodes[$0].classes) },
             url: { .success(nodes[$0].url) },
             parent: { nodes[$0].failsParent ? .failure(Failure()) : .success(nodes[$0].parent) },
             maxHops: maxHops
@@ -556,17 +557,46 @@ final class ClaudeDesktopSessionReaderTests: XCTestCase {
         ]
     }
 
+    func testFocusInThePrimaryPanesPromptReadsTheAddress() {
+        XCTAssertEqual(walk(Split.nodes, from: Split.primaryPrompt), .webArea(url: Split.primaryAddress))
+    }
+
     // #662: in split view both panes share one web area, and its address
     // names the primary pane's session. Focus in the secondary pane read it
     // and joined the wrong session.
     func testFocusInTheSecondaryPaneDoesNotReadThePrimarysAddress() {
         let lookup = walk(Split.nodes, from: Split.secondaryPrompt)
         XCTAssertNotEqual(lookup, .webArea(url: Split.primaryAddress))
+        XCTAssertEqual(lookup, .outsidePrimaryChat(.secondaryPane))
     }
 
-    // The measured shape: button → … → session web area → shell web area →
-    // window. The NEAREST web area wins; the shell's is never consulted.
-    func testTheNearestWebAreaWins() {
+    // The terminal, files and changes panels sit in the pane beside its chat
+    // panel: the dictation goes to a shell, not to the session.
+    func testFocusInThePrimaryPanesTerminalDoesNotJoin() {
+        XCTAssertEqual(walk(Split.nodes, from: Split.primaryTerminal), .outsidePrimaryChat(.primaryPaneOutsideChat))
+    }
+
+    // The sidebar is inside the session web area on 2.9939.2, but outside
+    // every pane.
+    func testFocusInTheSidebarDoesNotJoin() {
+        XCTAssertEqual(walk(Split.nodes, from: Split.sidebarRow), .outsidePrimaryChat(.outsidePanes))
+    }
+
+    // A class token counts only when it matches exactly: `dframe-pane-col`
+    // and `epitaxy-chat-panel-body` are neither a pane nor a chat panel.
+    func testClassTokensMatchExactly() {
+        let nodes = [
+            Node(role: "AXTextArea", parent: 1),
+            Node(role: "AXGroup", classes: ["epitaxy-chat-panel-body"], parent: 2),
+            Node(role: "AXGroup", classes: ["dframe-pane-col", "dframe-pane-primary"], parent: 3),
+            Node(role: "AXWebArea", url: Split.primaryAddress, parent: nil),
+        ]
+        XCTAssertEqual(walk(nodes), .outsidePrimaryChat(.outsidePanes))
+    }
+
+    // The measured 2.2553.1 shape, a web area per session with neither class,
+    // is refused: it no longer ships, and the rule cannot vouch for it.
+    func testALayoutWithoutPanesDoesNotJoin() {
         let nodes = [
             Node(role: "AXButton", parent: 1),
             Node(role: "AXGroup", parent: 2),
@@ -574,18 +604,7 @@ final class ClaudeDesktopSessionReaderTests: XCTestCase {
             Node(role: "AXWebArea", url: "file:///shell/index.html", parent: 4),
             Node(role: "AXWindow", parent: nil),
         ]
-        XCTAssertEqual(walk(nodes), .webArea(url: "https://claude.ai/epitaxy/local_a"))
-    }
-
-    // Focus in the shell (sidebar): its nearest web area is the shell's, which
-    // the parser then refuses — never a session further down another branch.
-    func testFocusInTheShellReportsTheShell() {
-        let nodes = [
-            Node(role: "AXButton", parent: 1),
-            Node(role: "AXWebArea", url: "file:///shell/index.html", parent: 2),
-            Node(role: "AXWindow", parent: nil),
-        ]
-        XCTAssertEqual(walk(nodes), .webArea(url: "file:///shell/index.html"))
+        XCTAssertEqual(walk(nodes), .outsidePrimaryChat(.outsidePanes))
     }
 
     func testNoWebAreaUpToTheTop() {
@@ -596,6 +615,7 @@ final class ClaudeDesktopSessionReaderTests: XCTestCase {
     func testAnAXErrorEndsTheWalk() {
         XCTAssertEqual(walk([Node(role: "AXButton", parent: 1, failsParent: true), Node(role: "AXWebArea")]), .unavailable)
         XCTAssertEqual(walk([Node(role: "AXButton", parent: 1), Node(failsRole: true)]), .unavailable)
+        XCTAssertEqual(walk([Node(role: "AXGroup", parent: 1, failsClasses: true), Node(role: "AXWebArea")]), .unavailable)
     }
 
     // A cyclic tree cannot hold the main actor.
@@ -615,6 +635,7 @@ final class ClaudeDesktopSessionReaderTests: XCTestCase {
         let lookup = AXClaudeDesktopSessionURLReader.nearestWebArea(
             from: 0,
             role: { roleReads += 1; return .success(nodes[$0].role) },
+            classes: { _ in .success([]) },
             url: { _ in .success(nil) },
             parent: { .success(nodes[$0].parent) },
             outOfTime: { budgetChecks += 1; return budgetChecks > 3 }
@@ -668,6 +689,19 @@ final class ClaudeDesktopSessionReaderTests: XCTestCase {
         let address = await reader([.noWebArea], calls: calls).focusedSessionURL(applicationPID: 1)
         XCTAssertNil(address)
         XCTAssertEqual(calls.reads, 2)
+    }
+
+    // Focus outside the primary pane's chat panel is a finished answer, not
+    // a tree still being built.
+    func testFocusOutsideThePrimaryChatIsNotRetried() async {
+        for place: ClaudeDesktopFocusPlace in [.secondaryPane, .primaryPaneOutsideChat, .outsidePanes] {
+            let calls = Calls()
+            let address = await reader([.outsidePrimaryChat(place)], calls: calls)
+                .focusedSessionURL(applicationPID: 1)
+            XCTAssertNil(address)
+            XCTAssertEqual(calls.reads, 1)
+            XCTAssertEqual(calls.sleeps, [])
+        }
     }
 
     // Nothing focused, or an AX error: no retry, no address.

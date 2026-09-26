@@ -11,7 +11,7 @@ import Foundation
 /// mechanism outright, and keeping the lists apart means adding the app here
 /// can never hand it a screen capability.
 package enum ClaudeDesktopAllowlist {
-    /// Claude Desktop's shipped bundle identifier (measured on 2.2553.1).
+    /// Claude Desktop's shipped bundle identifier (measured on 2.2553.1 and 2.9939.2).
     package static let bundleID = "com.anthropic.claudefordesktop"
 
     /// Exact match only.
