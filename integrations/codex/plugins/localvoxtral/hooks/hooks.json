@@ -45,6 +45,17 @@
         ]
       }
     ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$PLUGIN_ROOT/hooks/publish.sh\" 2>/dev/null || :",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [

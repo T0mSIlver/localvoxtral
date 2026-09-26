@@ -45,6 +45,7 @@ update changes it, Codex asks again at its next start.
 | `UserPromptSubmit` | the prompt you submitted |
 | `PostToolUse` on `apply_patch` | the paths the patch adds, updates or moves to |
 | `Stop` | the end of the turn |
+| `PermissionRequest` | the session waits for your approval (nothing about the tool call) |
 | `SessionEnd` | the end of the session |
 
 Each record also names the Codex process, its terminal and, inside herdr or

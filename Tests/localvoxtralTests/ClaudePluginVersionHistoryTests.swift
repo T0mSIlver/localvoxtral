@@ -16,6 +16,7 @@ final class ClaudePluginVersionHistoryTests: XCTestCase {
     static let knownContentHashes: [String: [String: String]] = [
         "localvoxtral": [
             "1.1.0": "ae24b8495881e48dd5f5b684b2c8a24a98ee0e2f9c901644a83998e3b91a9eef",
+            "1.2.0": "0ccb162898e10564bbb1403064e6459891dcd09d8cc598b660087e78eb311d60",
         ],
         "localvoxtral-remote": [
             "1.11.0": "b60ad882518a1daac7a1c5f527fc0d856fa836d2358c687f011bbd12a3ca9834",
@@ -23,6 +24,7 @@ final class ClaudePluginVersionHistoryTests: XCTestCase {
             "1.13.0": "8b0c083a2abd8c4ae78c122d9a7118ad0789eb0c5ed7e3ed7018a33715ed92c1",
             "1.14.0": "c1f13481db51a478c348ce7404f95c63ba02b47932b71a2f473e69fdca0900ef",
             "1.15.0": "b7d619c3ee88baf334e3803cbed2108473dd5e9b59892c1ce635ec7822ded568",
+            "1.16.0": "e236c46904c8fb36886b649a380762afe4cbaceb87e9bbedae280012f226571b",
         ],
     ]
 

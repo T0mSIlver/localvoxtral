@@ -108,6 +108,31 @@ case "$SESSION_ID" in
 *) [ "${#SESSION_ID}" -le 64 ] || SESSION_ID="" ;;
 esac
 
+# --- Notification: the type and nothing else (#717) ---------------------------
+# A Notification's `message` and `title` quote tool names and command text, so
+# its body is REBUILT here instead of posted as-is: the session id checked
+# above and a `notification_type` from a closed set, nothing more. A payload
+# missing either posts nothing.
+if [ "$EVENT" = "Notification" ]; then
+  NOTIFICATION_TYPE="$(LC_ALL=C awk '
+    match($0, /"notification_type"[[:space:]]*:[[:space:]]*"[^"]*"/) {
+      value = substr($0, RSTART, RLENGTH)
+      sub(/^"notification_type"[[:space:]]*:[[:space:]]*"/, "", value)
+      sub(/"$/, "", value)
+      print value
+      exit
+    }
+  ' "$WORK/event" 2>/dev/null)" || NOTIFICATION_TYPE=""
+  case "$NOTIFICATION_TYPE" in
+  permission_prompt | elicitation_dialog | elicitation_url_dialog | agent_needs_input) ;;
+  *) exit 0 ;;
+  esac
+  [ -n "$SESSION_ID" ] || exit 0
+  cat 2>/dev/null >"$WORK/event" <<EOF || exit 0
+{"hook_event_name":"Notification","session_id":"$SESSION_ID","notification_type":"$NOTIFICATION_TYPE"}
+EOF
+fi
+
 SESSION_STAMP_DIR="$STAMP_DIR/sessions"
 if [ "$EVENT" = "SessionEnd" ] && [ -n "$STAMP_DIR" ] && [ -n "$SESSION_ID" ]; then
   rm -f "$SESSION_STAMP_DIR/$SESSION_ID" 2>/dev/null || :
@@ -215,7 +240,7 @@ fi
 # the app validates the shape and trusts nothing else about it.
 cat 2>/dev/null >"$WORK/header" <<EOF || fail_open
 Authorization: Bearer $TOKEN
-X-Lvx-Plugin-Version: 1.15.0
+X-Lvx-Plugin-Version: 1.16.0
 EOF
 
 # --- Allowlisted environment enrichment --------------------------------------

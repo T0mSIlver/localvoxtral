@@ -113,6 +113,11 @@ the instructions file opencode reads: `~/.config/opencode/AGENTS.md`, or
   known top-level sessions. A child (task-tool) session, or any session whose
   parent the plugin never saw, therefore never passes for the session you are
   typing into.
+- **A wait crosses as its kind, nothing more.** `permission.asked` and
+  `question.asked` go out as a `Notification` record naming
+  `permission_prompt` or `elicitation_dialog`, so localvoxtral can tell you
+  the session needs you. The command, patterns and question text stay in
+  opencode.
 - **herdr panes keep working.** The plugin forwards the herdr pane identity
   it inherited from the environment, so localvoxtral's existing herdr join
   applies to opencode panes unchanged.
