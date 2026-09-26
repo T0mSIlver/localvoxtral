@@ -26,9 +26,8 @@ package final class FakeOpencodePromptRelay: @unchecked Sendable {
 
     private let listener: Int32
     private let status: @Sendable (Call) -> Int
-    private let state = Mutex<(calls: [Call], watches: [(count: Int, wait: BoundedWait)], stopped: Bool)>(
-        ([], [], false)
-    )
+    private typealias Watch = (reached: @Sendable ([Call]) -> Bool, wait: BoundedWait)
+    private let state = Mutex<(calls: [Call], watches: [Watch], stopped: Bool)>(([], [], false))
 
     package init(status: @escaping @Sendable (Call) -> Int = { _ in 200 }) throws {
         self.status = status
@@ -70,19 +69,33 @@ package final class FakeOpencodePromptRelay: @unchecked Sendable {
 
     package var calls: [Call] { state.withLock { $0.calls } }
 
+    /// The text every append carried, joined in arrival order.
+    package var appendedText: String {
+        calls.filter { $0.path == "/tui/append-prompt" }.compactMap(\.text).joined()
+    }
+
     /// True once `count` calls arrived; false if they did not within
     /// `failAfter` seconds of wall time.
     package func waitForCalls(
         _ count: Int, failAfter: TimeInterval = 10,
         isolation: isolated (any Actor)? = #isolation
     ) async -> Bool {
+        await waitUntil(failAfter: failAfter) { $0.count >= count }
+    }
+
+    /// True once the calls so far satisfy `reached`.
+    package func waitUntil(
+        failAfter: TimeInterval = 10,
+        isolation: isolated (any Actor)? = #isolation,
+        _ reached: @escaping @Sendable ([Call]) -> Bool
+    ) async -> Bool {
         let wait = BoundedWait()
-        let reached = state.withLock { state -> Bool in
-            if state.calls.count >= count { return true }
-            state.watches.append((count, wait))
+        let already = state.withLock { state -> Bool in
+            if reached(state.calls) { return true }
+            state.watches.append((reached, wait))
             return false
         }
-        if reached { return true }
+        if already { return true }
         return await wait.value(failAfter: failAfter)
     }
 
@@ -158,8 +171,9 @@ package final class FakeOpencodePromptRelay: @unchecked Sendable {
         }
         let ready = state.withLock { state -> [BoundedWait] in
             state.calls.append(call)
-            let reached = state.watches.filter { $0.count <= state.calls.count }.map(\.wait)
-            state.watches.removeAll { $0.count <= state.calls.count }
+            let calls = state.calls
+            let reached = state.watches.filter { $0.reached(calls) }.map(\.wait)
+            state.watches.removeAll { $0.reached(calls) }
             return reached
         }
         for wait in ready { wait.resolve() }
