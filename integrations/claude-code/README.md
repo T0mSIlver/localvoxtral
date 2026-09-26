@@ -120,6 +120,15 @@ render Claude Code's status line, so the status-line indicator never appears
 there; the overlay badge and the log's `Claude join outcome` line are what say
 whether a dictation joined.
 
+Every process inside a desktop session inherits that variable, so a
+`claude -p` started from one used to report the same id and make the join
+abstain. On a Linux host, `localvoxtral-remote` ≥ 1.14.0 sends the id only
+from a Claude process whose parent is Claude Desktop's daemon
+(`~/.claude/remote/srv/<hash>/server`). A host without `/proc` still sends it
+from every hook. A session that reports the id stays joinable for seven days
+without a hook, not four hours, because it sits idle while its window stays
+open.
+
 Supported browsers are **Google Chrome, Brave, and Safari**, and each one needs
 its OWN Automation grant the first time it is used (System Settings → Privacy &
 Security → Automation → localvoxtral). The grant is requested only while
@@ -595,11 +604,15 @@ take `LogLevel QUIET`, which also hides host-key warnings — not a trade this
 plugin will make for you.
 
 So the shim stops dialing instead: after a transport-level failure, every hook
-except `UserPromptSubmit` skips the tunnel for the next 5 minutes.
+except `UserPromptSubmit`, `SessionStart` and `SessionEnd` skips the tunnel for
+the next 5 minutes.
 `UserPromptSubmit` still dials every time — one line per submitted prompt while
 the app is down is the honest signal that context is off, and it means your
 first prompt after the app comes back is grounded immediately; that completed
 exchange (any HTTP status, even a 401) clears the backoff for everything else.
+`SessionStart` and `SessionEnd` dial every time too: they fire once per
+session, and the backoff is shared by every session on the host, so skipping
+them hid sessions started in those 5 minutes and kept ended ones joinable.
 
 ## Set it up
 

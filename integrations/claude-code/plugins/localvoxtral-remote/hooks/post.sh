@@ -176,12 +176,22 @@ esac
 # the first prompt after the app comes back is grounded immediately — and its
 # completed exchange clears the backoff for every other event.
 #
+# SessionStart and SessionEnd always dial too: they fire once per session, so
+# they cannot storm either, and the stamp is shared by every session on this
+# host. Backing them off let one failure in any session hide every session
+# started in the next five minutes until its first prompt, and keep every
+# session ended in them joinable until the Mac's TTL.
+#
 # State is one epoch-seconds stamp in the private per-user dir derived above.
 # Anything odd — no usable dir, no epoch from date, garbage content, a clock
 # that jumped backwards — disables the backoff and the shim simply dials:
 # exactly the pre-backoff behavior, fail-open as ever.
 BACKOFF_SECONDS=300
-if [ -n "$STAMP_DIR" ] && [ -n "$NOW" ] && [ "$EVENT" != "UserPromptSubmit" ] \
+case "$EVENT" in
+UserPromptSubmit | SessionStart | SessionEnd) BACKOFF_APPLIES=0 ;;
+*) BACKOFF_APPLIES=1 ;;
+esac
+if [ -n "$STAMP_DIR" ] && [ -n "$NOW" ] && [ "$BACKOFF_APPLIES" = 1 ] \
   && [ -r "$STAMP" ]; then
   LAST="$(cat "$STAMP" 2>/dev/null)" || LAST=""
   case "$LAST" in
@@ -205,7 +215,7 @@ fi
 # the app validates the shape and trusts nothing else about it.
 cat 2>/dev/null >"$WORK/header" <<EOF || fail_open
 Authorization: Bearer $TOKEN
-X-Lvx-Plugin-Version: 1.13.0
+X-Lvx-Plugin-Version: 1.14.0
 EOF
 
 # --- Allowlisted environment enrichment --------------------------------------
@@ -310,6 +320,58 @@ lvx_project() {
 }
 LVX_PROJECT="$(lvx_project 2>/dev/null)" || LVX_PROJECT=""
 
+# --- Claude Desktop session id ------------------------------------------------
+# Claude Desktop runs each Code-tab session it opens on this host as a direct
+# child of its daemon, ~/.claude/remote/srv/<hash>/server, and exports
+# CLAUDE_CODE_HOST_SESSION_ID=local_<uuid> into it. Every process under that
+# session inherits the variable, so a `claude -p` started from inside it
+# reported the same id under its own session id, and the Mac, seeing two
+# reporters for the view the user is looking at, abstained. The id is sent only
+# when the Claude process running this hook is a direct child of the daemon.
+#
+# Measured on Linux (Claude Code 2.1.283): Claude Code runs a hook through
+# `sh -c`, so $PPID is that shell and Claude is its parent. The walk skips at
+# most three shells to reach the first ancestor that is not one, takes it as
+# the Claude process, and checks its parent's executable. Anything unreadable
+# drops the id. A host without /proc (macOS) sends it as before: Desktop's
+# layout there is unmeasured, and dropping it would cost the join there.
+lvx_ppid() {
+  while IFS=' 	' read -r _lvx_key _lvx_val _lvx_rest; do
+    if [ "$_lvx_key" = "PPid:" ]; then
+      case "$_lvx_val" in "" | *[!0-9]*) return 1 ;; esac
+      echo "$_lvx_val"
+      return 0
+    fi
+  done <"/proc/$1/status"
+  return 1
+}
+
+lvx_claude_is_desktop_session() {
+  [ -d /proc/self ] || return 0
+  [ -n "${HOME:-}" ] || return 1
+  _lvx_pid="${PPID:-}"
+  _lvx_shells=0
+  while :; do
+    case "$_lvx_pid" in "" | *[!0-9]*) return 1 ;; esac
+    _lvx_exe="$(readlink "/proc/$_lvx_pid/exe")" || return 1
+    case "${_lvx_exe##*/}" in
+    sh | dash | bash | zsh | ash | ksh | mksh | busybox) ;;
+    *) break ;;
+    esac
+    _lvx_shells=$((_lvx_shells + 1))
+    [ "$_lvx_shells" -le 3 ] || return 1
+    _lvx_pid="$(lvx_ppid "$_lvx_pid")" || return 1
+  done
+  _lvx_parent="$(lvx_ppid "$_lvx_pid")" || return 1
+  _lvx_parent_exe="$(readlink "/proc/$_lvx_parent/exe")" || return 1
+  # `(deleted)`: the daemon keeps running its sessions after an update
+  # replaces its binary.
+  case "$_lvx_parent_exe" in
+  "$HOME/.claude/remote/srv/"*/server | "$HOME/.claude/remote/srv/"*"/server (deleted)") return 0 ;;
+  esac
+  return 1
+}
+
 (
   LC_ALL=C
   export LC_ALL
@@ -321,8 +383,10 @@ LVX_PROJECT="$(lvx_project 2>/dev/null)" || LVX_PROJECT=""
   lvx_env_header 'X-Lvx-Env-Bridge-Session-Id' "${CLAUDE_CODE_BRIDGE_SESSION_ID:-}"
   # Claude Desktop's local_<uuid> handle for a Code-tab session it runs on this
   # host over its own ssh. The Mac matches it against the session the desktop
-  # window shows.
-  lvx_env_header 'X-Lvx-Env-Desktop-Session-Id' "${CLAUDE_CODE_HOST_SESSION_ID:-}"
+  # window shows. Only from the session itself (see above).
+  if [ -n "${CLAUDE_CODE_HOST_SESSION_ID:-}" ] && lvx_claude_is_desktop_session; then
+    lvx_env_header 'X-Lvx-Env-Desktop-Session-Id' "${CLAUDE_CODE_HOST_SESSION_ID:-}"
+  fi
   lvx_env_header 'X-Lvx-Env-Tmux' "${TMUX:-}"
   lvx_env_header 'X-Lvx-Env-Tmux-Pane' "${TMUX_PANE:-}"
   # GNU screen and zellij, for the same reason as TMUX: both are multiplexer

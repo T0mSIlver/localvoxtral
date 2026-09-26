@@ -12,6 +12,13 @@ private struct ConcurrentShimRuns<Input, Output>: @unchecked Sendable {
     let body: (Input) throws -> Output
 }
 
+/// What runs the shim, when a test needs a process tree above it. The default
+/// is `/bin/sh <shim> <event>` straight from the test runner.
+private struct ShimLauncher {
+    let executable: URL
+    let arguments: [String]
+}
+
 /// Validates the `localvoxtral-remote` plugin as an artifact.
 ///
 /// The manifest plus one POSIX-sh curl shim are the entire remote-side install,
@@ -934,15 +941,21 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         event: String = "Stop",
         environment: [String: String],
         workingDirectory: URL? = nil,
-        payload: Data = Data("{}".utf8)
+        payload: Data = Data("{}".utf8),
+        launcher: ShimLauncher? = nil
     ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
         let isolatedState = FileManager.default.temporaryDirectory
             .appendingPathComponent("shim-state-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: isolatedState, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: isolatedState) }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = [shimURL.path, event]
+        if let launcher {
+            process.executableURL = launcher.executable
+            process.arguments = launcher.arguments
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = [shimURL.path, event]
+        }
         var processEnvironment = ProcessInfo.processInfo.environment
         processEnvironment.removeValue(forKey: "CLAUDE_PLUGIN_OPTION_TOKEN")
         // The enrichment allowlist is cleared unless a test sets it: a runner
@@ -1070,7 +1083,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         responseHeaders: String = "",
         extraEnvironment: [String: String] = [:],
         workingDirectory: URL? = nil,
-        payload: Data = Data(#"{"session_id":"s1"}"#.utf8)
+        payload: Data = Data(#"{"session_id":"s1"}"#.utf8),
+        launcher: ShimLauncher? = nil
     ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
         // The stub itself is shared (see `stubCurlDirectory`); the body fixture
         // is the part that differs per call and keeps its own directory, so no
@@ -1096,7 +1110,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             event: event,
             environment: environment,
             workingDirectory: workingDirectory,
-            payload: payload
+            payload: payload,
+            launcher: launcher
         )
     }
 
@@ -1142,7 +1157,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     private func runShimCapturingHeaders(
         environment: [String: String],
         event: String = "Stop",
-        workingDirectory: URL? = nil
+        workingDirectory: URL? = nil,
+        launcher: ShimLauncher? = nil
     ) throws -> (result: (exitCode: Int32, stdout: String, stderr: String), headers: String) {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("shim-headers-\(UUID().uuidString)")
@@ -1156,7 +1172,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             status: "200",
             body: ClaudeRemoteHTTPCodec.hookResponseBody,
             extraEnvironment: extra,
-            workingDirectory: workingDirectory
+            workingDirectory: workingDirectory,
+            launcher: launcher
         )
         return (result, (try? String(contentsOf: dump, encoding: .utf8)) ?? "")
     }
@@ -1172,17 +1189,18 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         return try ClaudeRemoteHTTPCodec.parseRequestHead(Data(head.utf8)).request
     }
 
-    /// The two fields the generic round trip below cannot cover, and why:
-    /// `$PPID` is the shell's own (nothing can inject it), and
+    /// The fields the generic round trip below cannot cover, and why:
+    /// `$PPID` is the shell's own (nothing can inject it),
     /// `$SSH_CONNECTION` is the one value the shim TRANSFORMS — its four
     /// space-separated fields are re-joined with commas, so an opaque
     /// `value-…` fixture would be correctly dropped. Each has a test of its
     /// own below. `$LVX_PROJECT` is not read from the environment at all: the
     /// shim computes it with git from its cwd (#652), and
     /// `scripts/ci/test-remote-shim-project.sh` runs both shims in real
-    /// repositories for it.
+    /// repositories for it. `$CLAUDE_CODE_HOST_SESSION_ID` is sent only from a
+    /// process tree the test runner is not, and has tests of its own (#657).
     private static let shimTransformedOrIntrinsicFields: Set<ClaudeRemoteEnvironmentField> =
-        [.hookParentPID, .sshConnection, .project]
+        [.hookParentPID, .sshConnection, .project, .desktopSessionID]
 
     func testShimSendsEveryAllowlistedEnvValueUnderTheHeaderTheListenerReads() throws {
         // One distinct value per variable, so a copy-pasted header name shows
@@ -1627,6 +1645,131 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         )
     }
 
+    // MARK: Claude Desktop session id (#657)
+    //
+    // Claude Desktop runs each Code-tab session as a direct child of its
+    // daemon, `~/.claude/remote/srv/<hash>/server`, and every process under the
+    // session inherits CLAUDE_CODE_HOST_SESSION_ID. These tests build that tree
+    // from copies of /bin/sh named `server` and `claude`, so `/proc/<pid>/exe`
+    // names them exactly as it names the real ones, and run the shim at the
+    // bottom of it the way Claude Code does: through `sh -c`.
+
+    private let desktopID = "local_fb53459c-6a7b-43b1-a326-52258b970501"
+
+    #if os(Linux)
+    /// The fake daemon, a fake Claude under it, and a `HOME` that holds the
+    /// daemon. With `nested`, the hook's Claude is a `claude -p` started from
+    /// a shell inside the session instead: daemon → claude → sh → claude.
+    private func desktopTreeLauncher(nested: Bool, event: String) throws -> (
+        launcher: ShimLauncher, environment: [String: String], root: URL
+    ) {
+        // Resolved: the daemon check compares against the kernel's path.
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("desktop-tree-\(UUID().uuidString)")
+        let home = root.appendingPathComponent("home")
+        let daemonDirectory = home.appendingPathComponent(".claude/remote/srv/0123abcd")
+        let binDirectory = root.appendingPathComponent("bin")
+        for directory in [daemonDirectory, binDirectory] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let shell = URL(fileURLWithPath: "/bin/sh").resolvingSymlinksInPath()
+        let daemon = daemonDirectory.appendingPathComponent("server")
+        let claude = binDirectory.appendingPathComponent("claude")
+        try FileManager.default.copyItem(at: shell, to: daemon)
+        try FileManager.default.copyItem(at: shell, to: claude)
+
+        // Each `; :` keeps its shell alive as the parent of what it ran,
+        // instead of letting it exec the last command.
+        let hook = #"/bin/sh "$LVX_SHIM" "$LVX_EVENT""#
+        let claudeBody = #"/bin/sh -c "$LVX_HOOK"; :"#
+        let sessionBody = nested
+            ? #"/bin/sh -c '"$LVX_FAKE_CLAUDE" -c "$LVX_CLAUDE_BODY"; :'; :"#
+            : claudeBody
+        let environment = [
+            "HOME": home.path,
+            "CLAUDE_CODE_HOST_SESSION_ID": desktopID,
+            "LVX_SHIM": shimURL.path,
+            "LVX_EVENT": event,
+            "LVX_FAKE_CLAUDE": claude.path,
+            "LVX_HOOK": hook,
+            "LVX_CLAUDE_BODY": claudeBody,
+            "LVX_SESSION_BODY": sessionBody,
+        ]
+        let launcher = ShimLauncher(
+            executable: daemon,
+            arguments: ["-c", #""$LVX_FAKE_CLAUDE" -c "$LVX_SESSION_BODY"; :"#]
+        )
+        return (launcher, environment, root)
+    }
+
+    private func desktopHeaders(nested: Bool) throws -> ClaudeRemoteSessionEnvironment? {
+        let tree = try desktopTreeLauncher(nested: nested, event: "SessionStart")
+        defer { try? FileManager.default.removeItem(at: tree.root) }
+        let run = try runShimCapturingHeaders(
+            environment: tree.environment, event: "SessionStart", launcher: tree.launcher
+        )
+        assertEnrichmentRunWasQuiet(run.result)
+        XCTAssertTrue(run.headers.contains("Authorization: Bearer"), "the shim must have dialed")
+        return ClaudeRemoteEnvironmentCodec.environment(
+            in: try parseCapturedHeaders(run.headers).headers
+        )
+    }
+
+    func testTheDesktopSessionItselfSendsItsDesktopID() throws {
+        XCTAssertEqual(try desktopHeaders(nested: false)?.desktopSessionID, desktopID)
+    }
+
+    /// A `claude -p` started from a Desktop session inherits the session's
+    /// id. Reported under its own session id, it made the view ambiguous and
+    /// the dictation abstained.
+    func testAClaudeStartedInsideADesktopSessionSendsNoDesktopID() throws {
+        let child = try desktopHeaders(nested: true)
+        XCTAssertNil(child?.desktopSessionID)
+
+        let channel = ClaudeRemoteSessionScope.channel(hostID: "h1")
+        let registry = ClaudeSessionRegistry(now: { Date(timeIntervalSince1970: 2_000_000) })
+        for (session, environment) in [
+            ("desktop", ClaudeRemoteSessionEnvironment(desktopSessionID: desktopID)),
+            ("child", child ?? ClaudeRemoteSessionEnvironment()),
+        ] {
+            XCTAssertNotNil(registry.ingest(
+                ClaudeHookRecord(
+                    event: .sessionStart,
+                    sessionID: ClaudeRemoteSessionScope.scopedSessionID(hostID: "h1", sessionID: session),
+                    timestamp: 0,
+                    rawCwd: "/srv/repo"
+                ),
+                origin: .remote(channel: channel),
+                environment: environment
+            ))
+        }
+        guard case .resolved(let joined) = registry.resolve(desktopSessionID: desktopID) else {
+            return XCTFail("the session's own view must still resolve beside its child")
+        }
+        XCTAssertTrue(joined.sessionID.hasSuffix(":desktop"))
+    }
+
+    func testAHookOutsideAnyDesktopDaemonSendsNoDesktopID() throws {
+        let captured = try capturedRequestHeaders(environment: [
+            "CLAUDE_CODE_HOST_SESSION_ID": desktopID,
+        ])
+        XCTAssertFalse(captured.contains("X-Lvx-Env-Desktop-Session-Id"))
+    }
+    #else
+    /// Desktop's process layout on a host without /proc is unmeasured, so
+    /// such a host keeps sending the id rather than losing the join.
+    func testAHostWithoutProcStillSendsTheDesktopID() throws {
+        let captured = try capturedRequestHeaders(environment: [
+            "CLAUDE_CODE_HOST_SESSION_ID": desktopID,
+        ])
+        let request = try parseCapturedHeaders(captured)
+        XCTAssertEqual(
+            ClaudeRemoteEnvironmentCodec.environment(in: request.headers)?.desktopSessionID,
+            desktopID
+        )
+    }
+    #endif
+
     // MARK: Shim port selection (issue #215)
     //
     // The port arrives from plugin config on a machine we cannot see, and it is
@@ -1827,6 +1970,28 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             FileManager.default.fileExists(atPath: log.path),
             "Stop must dial again once the backoff is cleared"
         )
+    }
+
+    /// The stamp is shared by every session on the host, so a backed-off
+    /// SessionStart left a session started in the window unknown until its
+    /// first prompt, and a backed-off SessionEnd left an ended one joinable.
+    func testSessionStartAndSessionEndDialThroughAnArmedBackoff() throws {
+        for event in ["SessionStart", "SessionEnd"] {
+            let state = try makeBackoffState()
+            defer { try? FileManager.default.removeItem(at: state.dir) }
+            try writeStamp(freshEpochStamp(), at: state.stamp)
+            let log = state.dir.appendingPathComponent("curl.log")
+            let run = try runShimWithStubCurl(
+                event: event, status: "200", body: ClaudeRemoteHTTPCodec.hookResponseBody,
+                extraEnvironment: state.environment.merging(["FAKE_CURL_LOG": log.path]) { _, new in new }
+            )
+            XCTAssertEqual(run.exitCode, 0)
+            XCTAssertEqual(run.stderr, "")
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: log.path),
+                "\(event) must dial through an armed backoff"
+            )
+        }
     }
 
     func testEvenA401ClearsTheBackoffBecauseTheExchangeCompleted() throws {

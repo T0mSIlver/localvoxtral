@@ -205,7 +205,7 @@ Key subsystems:
     second — always; stopping is the mirror. After a
     transport-level failure the shim backs off for 5 minutes (epoch stamp
     under `$XDG_RUNTIME_DIR`/`~/.cache`) for every event except
-    `UserPromptSubmit`: each dial against a live forward with no app behind
+    `UserPromptSubmit`, `SessionStart` and `SessionEnd`: each dial against a live forward with no app behind
     it makes the Mac-side ssh client print `connect_to …: failed.` onto the
     user's terminal — stderr the remote side can never redirect — and any
     completed HTTP exchange (even a 401) clears the backoff. It was
