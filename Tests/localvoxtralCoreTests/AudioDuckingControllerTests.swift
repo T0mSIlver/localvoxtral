@@ -2,7 +2,8 @@ import Foundation
 import Synchronization
 import XCTest
 
-@testable import localvoxtral
+import localvoxtralTestSupport
+@testable import localvoxtralCore
 
 /// The fade runs entirely on injected time: `sleepFor` advances the clock the
 /// fade reads, so every assertion here is about shape, not about how long a
@@ -344,35 +345,6 @@ final class AudioDuckingControllerTests: XCTestCase {
         XCTAssertNil(harness.pendingRestore())
     }
 
-    // MARK: - The real control
-
-    func testTheRealControlReadsThisMacWithoutMovingAnything() {
-        // Read-only on purpose: this runs on the owner's build host and on
-        // CI's Mac, and a test that wrote would move their volume. What it
-        // pins is that the CoreAudio property sequence executes against real
-        // hardware and answers in range — the half of the path unit fakes
-        // cannot cover.
-        let control = CoreAudioSystemOutputVolumeControl()
-
-        let first = control.readDefaultOutput()
-        let second = control.readDefaultOutput()
-
-        XCTAssertEqual(
-            first, second, "reading the output volume is not allowed to change it")
-        guard let first else {
-            // A headless runner with no output device: nil is the documented
-            // answer, and it is what makes ducking stand aside there.
-            return
-        }
-        XCTAssertFalse(first.deviceUID.isEmpty, "a reading names the device it came from")
-        XCTAssertTrue(
-            (0...1).contains(first.volume),
-            "CoreAudio reported \(first.volume), which is not a scalar volume")
-        XCTAssertEqual(
-            control.volume(forDeviceUID: first.deviceUID), first.volume,
-            "the by-UID read a fade uses reaches the same device the default read named")
-    }
-
     // MARK: - Harness
 
     private func assertEqual(
@@ -463,83 +435,5 @@ extension Duration {
         let components = self.components
         return TimeInterval(components.seconds)
             + TimeInterval(components.attoseconds) / 1_000_000_000_000_000_000
-    }
-}
-
-/// Records what the ducking fade writes, per device, and can refuse writes or
-/// make a device vanish the way an unplugged one does.
-final class FakeOutputVolumeControl: SystemOutputVolumeControlling, @unchecked Sendable {
-    private struct State {
-        var defaultDeviceUID: String
-        var volumes: [String: Float]
-        var writes: [Float] = []
-        var attemptedWrites = 0
-        var refuseWrites = false
-    }
-
-    private let state: Mutex<State>
-
-    /// A device whose volume the Mac does not own is simply absent from
-    /// `volumes`, which is how the real control reports it.
-    init(defaultDeviceUID: String = "device-a", volume: Float?) {
-        state = Mutex(
-            State(
-                defaultDeviceUID: defaultDeviceUID,
-                volumes: volume.map { [defaultDeviceUID: $0] } ?? [:]
-            ))
-    }
-
-    var writes: [Float] { state.withLock { $0.writes } }
-    var attemptedWrites: Int { state.withLock { $0.attemptedWrites } }
-
-    var refuseWrites: Bool {
-        get { state.withLock { $0.refuseWrites } }
-        set { state.withLock { $0.refuseWrites = newValue } }
-    }
-
-    func clearWrites() {
-        state.withLock {
-            $0.writes.removeAll()
-            $0.attemptedWrites = 0
-        }
-    }
-
-    /// The user switched outputs, or plugged in headphones.
-    func switchDefault(to deviceUID: String, volume: Float) {
-        state.withLock {
-            $0.defaultDeviceUID = deviceUID
-            $0.volumes[deviceUID] = volume
-        }
-    }
-
-    /// The device was unplugged: it answers nothing and takes no writes.
-    func disconnect(_ deviceUID: String) {
-        state.withLock { $0.volumes[deviceUID] = nil }
-    }
-
-    func volume(of deviceUID: String) -> Float? {
-        state.withLock { $0.volumes[deviceUID] }
-    }
-
-    func readDefaultOutput() -> OutputVolumeReading? {
-        state.withLock {
-            guard let volume = $0.volumes[$0.defaultDeviceUID] else { return nil }
-            return OutputVolumeReading(deviceUID: $0.defaultDeviceUID, volume: volume)
-        }
-    }
-
-    func volume(forDeviceUID deviceUID: String) -> Float? {
-        state.withLock { $0.volumes[deviceUID] }
-    }
-
-    @discardableResult
-    func setVolume(_ volume: Float, forDeviceUID deviceUID: String) -> Bool {
-        state.withLock {
-            $0.attemptedWrites += 1
-            guard !$0.refuseWrites, $0.volumes[deviceUID] != nil else { return false }
-            $0.volumes[deviceUID] = volume
-            $0.writes.append(volume)
-            return true
-        }
     }
 }

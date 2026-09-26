@@ -67,6 +67,9 @@ AppKit:
   hashes with `PortableSHA256` instead of CryptoKit
 - the live replacement rewriters (`LiveReplacementCorrector`,
   `LiveHoldBackReplacementStream`)
+- the ducking fade (`AudioDuckingController`) and the
+  `SystemOutputVolumeControlling` protocol it writes through; the CoreAudio
+  control stays in the app
 - quick capture routing (`QuickCapture/`, #725): the project descriptions a
   classifier reads, the Jev client, the polishing model's routing mode as
   its fallback, and the rule that sends a low or tied answer to the
