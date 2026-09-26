@@ -181,3 +181,66 @@ final class ClaudeRemotePathIsolationTests: XCTestCase {
         XCTAssertNil(workspace.descendant(relativePath: "a\0b"))
     }
 }
+
+// MARK: - Remote project label for learned terms (#652)
+
+final class ClaudeRemoteProjectLabelTests: XCTestCase {
+    private let remote = ClaudeTransportOrigin.remote(channel: "ssh")
+
+    private func snapshot(
+        cwd: String, origin: ClaudeTransportOrigin, project: String?
+    ) -> ClaudeSessionSnapshot {
+        var snapshot = ClaudeSessionSnapshot(
+            sessionID: "s1", origin: origin, firstSeen: Date(timeIntervalSince1970: 0)
+        )
+        snapshot.workspace = ClaudeWorkspaceReference.make(rawCwd: cwd, origin: origin)
+        snapshot.remoteEnvironment = project.map { ClaudeRemoteSessionEnvironment(project: $0) }
+        return snapshot
+    }
+
+    /// Two worktrees and a subdirectory of one remote repository key one
+    /// project when the host names it.
+    func testTheHostsProjectNameReplacesTheCwdLabel() {
+        for cwd in [
+            "/home/dev/work/localvoxtral/.claude/worktrees/bold-bose-fac585",
+            "/home/dev/work/localvoxtral/.claude/worktrees/sharp-dirac-167891/Sources",
+        ] {
+            XCTAssertEqual(
+                snapshot(cwd: cwd, origin: remote, project: "localvoxtral").learnedTermWorkspace,
+                .remoteOpaque(label: "localvoxtral"),
+                cwd
+            )
+        }
+        // Everything else keeps showing the session's own cwd label.
+        XCTAssertEqual(
+            snapshot(cwd: "/srv/wt/bold-bose", origin: remote, project: "localvoxtral").workspace,
+            .remoteOpaque(label: "bold-bose")
+        )
+    }
+
+    /// No header, or one that is not already a label, falls back to the cwd's
+    /// last component. A value is refused, never reshaped into a label.
+    func testAMissingOrNonLabelProjectFallsBackToTheCwd() {
+        for project in [nil, "", "a/b", "..", ".hidden", "has space", String(repeating: "x", count: 65)] {
+            XCTAssertEqual(
+                snapshot(cwd: "/srv/api", origin: remote, project: project).learnedTermWorkspace,
+                .remoteOpaque(label: "api"),
+                String(describing: project)
+            )
+        }
+    }
+
+    /// A remote header never renames a local path.
+    func testALocalSessionIgnoresTheHeader() {
+        let local = snapshot(
+            cwd: "/Users/t/work/api", origin: .localAuthenticated(peerUID: 501), project: "other"
+        )
+        XCTAssertEqual(local.learnedTermWorkspace, local.workspace)
+        XCTAssertEqual(
+            ClaudeWorkspaceReference.make(rawCwd: "/Users/t/api", origin: .localAuthenticated(peerUID: 501))?
+                .preferringRemoteProject("other")
+                .localPath?.path,
+            "/Users/t/api"
+        )
+    }
+}

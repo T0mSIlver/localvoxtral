@@ -286,6 +286,43 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(host.text("captured-header")).contains("Authorization: Bearer \(Self.token)\n"))
     }
 
+    /// The project label is computed by the one part of the shim that runs
+    /// only inside a repository, so it is run inside one, under the Mac's own
+    /// /bin/sh: bash 3.2, which ended the first version with a syntax error
+    /// that dash never raised (#652).
+    func testTheInstalledShimNamesTheRepositoryItRunsIn() throws {
+        let host = try VibeFakeHost()
+        _ = try setUp(host)
+        try host.linkSharedStub("capture-curl", at: "stub/curl")
+        try host.write(
+            #"{"session_id":"s1","transcript_path":null,"cwd":"/srv","parent_session_id":null,"hook_event_name":"post_agent"}"#,
+            to: "payload.json"
+        )
+        let repo = host.home.appendingPathComponent("work/api")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        let gitInit = Process()
+        gitInit.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        gitInit.arguments = ["init", "-q", repo.path]
+        try gitInit.runUntilExit()
+        XCTAssertEqual(gitInit.terminationStatus, 0)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [host.path(".vibe/localvoxtral/remote/post.sh")]
+        process.currentDirectoryURL = repo
+        process.environment = [
+            "HOME": host.home.path, "PATH": "\(host.path("stub")):\(VibeTestPython.directory.path):/usr/bin:/bin",
+            "LOCALVOXTRAL_VIBE_WATCHER": "off",
+        ]
+        process.standardInput = try FileHandle(forReadingFrom: URL(fileURLWithPath: host.path("payload.json")))
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.runUntilExit()
+
+        XCTAssertEqual(process.terminationStatus, 0)
+        XCTAssertTrue(try XCTUnwrap(host.text("captured-header")).contains("X-Lvx-Env-Project: api\n"))
+    }
+
     // MARK: - Refusals
 
     func testNoVibeOnTheHostIsAnOutcomeAndWritesNothing() throws {
@@ -336,7 +373,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
         host.beforeScript[3] = {
             let path = host.path(".vibe/localvoxtral/remote/post.sh")
             let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
-            try? text.replacingOccurrences(of: "Hooks-Version: 1.0.1", with: "Hooks-Version: 6.6.6")
+            try? text.replacingOccurrences(of: "Hooks-Version: 1.1.0", with: "Hooks-Version: 6.6.6")
                 .write(toFile: path, atomically: true, encoding: .utf8)
         }
         let failure = try XCTUnwrap(failure { _ = try self.setUp(host) })
@@ -374,7 +411,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
 
     func testTheShippedFilesCarryOneVersionAndTheRemoteBlock() throws {
         let files = try shippedFiles()
-        XCTAssertEqual(files.version, "1.0.1")
+        XCTAssertEqual(files.version, "1.1.0")
         XCTAssertNotNil(VibeHooksBlockEditor.remote.snippet(fromBundled: files.hooksBlock))
         let names = files.hooksBlock.split(separator: "\n").filter { $0.hasPrefix("name = ") }
             .map { String($0.dropFirst("name = \"".count).dropLast()) }

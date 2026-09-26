@@ -13,12 +13,16 @@ import Foundation
 /// the commit path would put an unbounded `stat` on a possibly unresponsive
 /// mount in front of the user's text (review, 2026-09-20).
 ///
+/// A linked worktree is not a project of its own: the pipeline hands over the
+/// main checkout beside the root (`RepoIndexing.mainCheckout`), and that is the
+/// key, so every worktree of one repository learns into one bucket (#652).
+///
 /// Known limit, accepted: two spellings of one checkout — through a symlink,
 /// or differing only in case on a case-insensitive volume — are two projects.
 /// Resolving that needs the filesystem, which is the one thing this must not
 /// touch; the cost is a split bucket that both halves fill, not a wrong
 /// correction.
-enum LearnedTermProjectResolver {
+package enum LearnedTermProjectResolver {
     /// A project's stable key and the name a human would recognize.
     ///
     /// The key is a local directory, `remote:<label>` for a session whose
@@ -26,22 +30,22 @@ enum LearnedTermProjectResolver {
     /// project at all. Those three shapes cannot collide: a local key always
     /// starts with `/`, and a remote label is stripped to alphanumerics, `-`,
     /// `_` and `.` before it gets here (`ClaudeWorkspaceReference.opaqueLabel`).
-    typealias Identity = LearnedTermProjectIdentity
+    package typealias Identity = LearnedTermProjectIdentity
 
     /// Where a dictation that belongs to no project remembers what it learned.
     /// Not a fallback for a project we failed to resolve — from the app's side
     /// those are the same thing, and keeping one bucket for both is what lets
     /// dictation outside a repo (a browser, a note) learn at all.
-    static let shared = Identity(key: "shared", name: "No project")
+    package static let shared = Identity(key: "shared", name: "No project")
 
-    static let remoteKeyPrefix = "remote:"
+    package static let remoteKeyPrefix = "remote:"
 
     /// What the vocabulary pipeline was able to say about this dictation's
     /// repository. The distinction between "there is no repo here" and "no one
     /// looked" is the whole point: only the first is a project of its own, and
     /// treating the second as one files a repo's terms in the bucket that
     /// grounds every project-less dictation (review, 2026-09-20).
-    enum RepositoryRoot: Equatable, Sendable {
+    package enum RepositoryRoot: Equatable, Sendable {
         /// The pipeline did not run, or was abandoned before it resolved:
         /// the setting is off, the endpoint is not permitted, a previous
         /// pipeline still holds the single-flight gate, or the deadline
@@ -49,7 +53,16 @@ enum LearnedTermProjectResolver {
         case unknown
         /// It ran, and the focused terminal is not in a repository.
         case noRepository
-        case root(String)
+        /// The git root the pipeline walked up to, and the main checkout of
+        /// its repository: the same directory unless the root is a linked
+        /// worktree. The root decides whether a joined session is inside it;
+        /// the main checkout is the key.
+        case root(String, mainCheckout: String)
+
+        /// A root that is its own main checkout: a plain clone or a submodule.
+        package static func root(_ path: String) -> RepositoryRoot {
+            .root(path, mainCheckout: path)
+        }
     }
 
     /// - Parameters:
@@ -68,20 +81,20 @@ enum LearnedTermProjectResolver {
     /// the speaker is talking about and it is stable whatever the pipeline
     /// did. The repository root is what widens it: a session running in a
     /// subdirectory teaches the repo, not the subdirectory, so every session
-    /// in one checkout shares one vocabulary. A root that does NOT contain the
-    /// session's directory describes a different tab and is ignored.
-    static func resolve(
+    /// in one checkout shares one vocabulary, and a session in a worktree
+    /// teaches the main checkout. A root that does NOT contain the session's
+    /// directory describes a different tab and is ignored.
+    package static func resolve(
         repositoryRoot: RepositoryRoot,
         workspace: ClaudeWorkspaceReference?
     ) -> Identity? {
         switch workspace {
         case .local(let path):
             let directory = normalize(path.path)
-            if case .root(let root) = repositoryRoot {
-                let normalizedRoot = normalize(root)
-                if contains(root: normalizedRoot, directory: directory) {
-                    return identity(forDirectory: normalizedRoot)
-                }
+            if case .root(let root, let mainCheckout) = repositoryRoot,
+               contains(root: normalize(root), directory: directory)
+            {
+                return identity(forDirectory: normalize(mainCheckout))
             }
             return identity(forDirectory: directory)
         case .remoteOpaque(let label):
@@ -92,7 +105,7 @@ enum LearnedTermProjectResolver {
             return Identity(key: remoteKeyPrefix + label, name: label)
         case .none:
             switch repositoryRoot {
-            case .root(let root): return identity(forDirectory: normalize(root))
+            case .root(_, let mainCheckout): return identity(forDirectory: normalize(mainCheckout))
             case .noRepository: return shared
             case .unknown: return nil
             }

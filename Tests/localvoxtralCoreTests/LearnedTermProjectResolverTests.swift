@@ -1,6 +1,6 @@
 import ClaudeContextWire
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// Which project a dictation is attributed to. Getting this wrong is not a
 /// missed hint — it teaches one repo's vocabulary to another.
@@ -104,6 +104,45 @@ final class LearnedTermProjectResolverTests: XCTestCase {
                 repositoryRoot: .unknown, workspace: workspace("/Users/t/work/localvoxtral")
             )?.key,
             "/Users/t/work/localvoxtral"
+        )
+    }
+
+    /// Every worktree of one repository learns into its main checkout (#652),
+    /// whether the worktree sits inside that checkout or elsewhere.
+    func testSessionInALinkedWorktreeKeysByTheMainCheckout() {
+        let main = "/Users/t/work/localvoxtral"
+        for worktree in ["\(main)/.claude/worktrees/bold-bose", "/Users/t/wt/localvoxtral-fix"] {
+            let identity = LearnedTermProjectResolver.resolve(
+                repositoryRoot: .root(worktree, mainCheckout: main),
+                workspace: workspace(worktree + "/Sources")
+            )
+
+            XCTAssertEqual(
+                identity, LearnedTermProjectResolver.Identity(key: main, name: "localvoxtral"),
+                worktree
+            )
+            XCTAssertEqual(
+                LearnedTermProjectResolver.resolve(
+                    repositoryRoot: .root(worktree, mainCheckout: main), workspace: nil
+                ),
+                identity,
+                "an unjoined dictation in \(worktree)"
+            )
+        }
+    }
+
+    /// The main checkout is the key, never the test for containment: a
+    /// worktree root that does not contain the session still describes
+    /// another tab, even when its main checkout does.
+    func testWorktreeRootThatDoesNotContainTheSessionIsIgnored() {
+        XCTAssertEqual(
+            LearnedTermProjectResolver.resolve(
+                repositoryRoot: .root(
+                    "/Users/t/wt/localvoxtral-fix", mainCheckout: "/Users/t/work/localvoxtral"
+                ),
+                workspace: workspace("/Users/t/work/herdr")
+            )?.key,
+            "/Users/t/work/herdr"
         )
     }
 

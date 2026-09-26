@@ -184,4 +184,85 @@ final class LearnedTermsExportTests: XCTestCase {
         XCTAssertEqual(refusal(#"{"format":"something-else","version":1,"projects":[]}"#), .unreadable)
         XCTAssertEqual(refusal("not json"), .unreadable)
     }
+
+    // MARK: Worktree buckets fold into the main checkout (#652)
+
+    /// Two worktrees that each saw a spelling three times saw it three times,
+    /// not six: the fold takes the import rule, max and never the sum.
+    func testFoldTakesTheMaxOfCountsAndDropsTheOldKeys() throws {
+        var terms = LearnedTerms(projects: [
+            project("/w/repo", "repo", [term("speechd", dictations: 2)]),
+            project("/w/repo/.claude/worktrees/a", "a", [
+                term("speechd", dictations: 3, sources: ["claude"]),
+                term("polishd", dictations: 1),
+            ]),
+            project("/tmp/repo-b", "repo-b", [term("speechd", dictations: 3, correction: true)]),
+            project("remote:a", "a", [term("herdr", dictations: 3)]),
+        ])
+        let main = LearnedTermProjectIdentity(key: "/w/repo", name: "repo")
+        let destination: (LearnedTermProject) -> LearnedTermProjectIdentity? = {
+            ["/w/repo/.claude/worktrees/a", "/tmp/repo-b"].contains($0.key) ? main : nil
+        }
+
+        XCTAssertEqual(terms.fold(into: destination, now: now), 2)
+
+        XCTAssertEqual(terms.projects.map(\.key).sorted(), ["/w/repo", "remote:a"])
+        let repo = try XCTUnwrap(terms.projects.first { $0.key == "/w/repo" })
+        let speechd = try XCTUnwrap(repo.terms.first { $0.term == "speechd" })
+        XCTAssertEqual(speechd.dictations, 3)
+        XCTAssertTrue(speechd.isConfirmedByCorrection)
+        XCTAssertEqual(speechd.sources, ["repo", "claude"])
+        XCTAssertEqual(repo.terms.map(\.term).sorted(), ["polishd", "speechd"])
+
+        let once = terms
+        XCTAssertEqual(terms.fold(into: destination, now: now), 0)
+        XCTAssertEqual(terms, once)
+    }
+
+    /// A worktree whose main checkout had learned nothing yet becomes that
+    /// project, under the main checkout's name.
+    func testFoldCreatesTheMainCheckoutsProject() {
+        var terms = LearnedTerms(projects: [
+            project("/w/repo/.claude/worktrees/a", "a", [term("speechd", dictations: 3)]),
+        ])
+        terms.fold(into: { _ in LearnedTermProjectIdentity(key: "/w/repo", name: "repo") }, now: now)
+
+        XCTAssertEqual(terms.projects.map(\.key), ["/w/repo"])
+        XCTAssertEqual(terms.projects.first?.name, "repo")
+        XCTAssertEqual(terms.confirmedTerms(projectKey: "/w/repo"), ["speechd"])
+    }
+
+    /// The filesystem half, on the layout `git worktree add` writes: the
+    /// worktree's key folds, the main checkout's, a plain directory's and a
+    /// remote label stay.
+    func testFoldWorktreesReadsTheWorktreesGitFile() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("learned-fold-\(UUID().uuidString)").standardizedFileURL
+        addTeardownBlock { try? FileManager.default.removeItem(at: base) }
+        let main = base.appendingPathComponent("repo")
+        let gitDir = main.appendingPathComponent(".git/worktrees/a")
+        let worktree = base.appendingPathComponent("repo-a")
+        let plain = base.appendingPathComponent("notes")
+        for directory in [gitDir, worktree, plain] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        try "../..\n".write(to: gitDir.appendingPathComponent("commondir"), atomically: true, encoding: .utf8)
+        try "gitdir: \(gitDir.path)\n".write(
+            to: worktree.appendingPathComponent(".git"), atomically: true, encoding: .utf8
+        )
+
+        var terms = LearnedTerms(projects: [
+            project(worktree.path, "repo-a", [term("speechd", dictations: 3)]),
+            project(main.path, "repo", [term("speechd", dictations: 1)]),
+            project(plain.path, "notes", [term("herdr", dictations: 3)]),
+            project("remote:repo-a", "repo-a", [term("polishd", dictations: 3)]),
+        ])
+
+        XCTAssertEqual(terms.foldWorktreesIntoMainCheckouts(now: now), 1)
+        XCTAssertEqual(
+            terms.projects.map(\.key).sorted(), [main.path, plain.path, "remote:repo-a"].sorted()
+        )
+        XCTAssertEqual(terms.confirmedTerms(projectKey: main.path), ["speechd"])
+        XCTAssertEqual(terms.foldWorktreesIntoMainCheckouts(now: now), 0)
+    }
 }

@@ -123,6 +123,71 @@ extension LearnedTerms {
         return LearnedTermsExport.ImportSummary(terms: kept.count, projects: keptProjects.count)
     }
 
+    /// Folds each project that `destination` sends to another key into that
+    /// key's project, then drops the old key (#652: a worktree's bucket goes
+    /// to its main checkout). Terms fold with the import rule, `merged`: two
+    /// worktrees that each confirmed a spelling confirm it once, never twice.
+    /// A project whose destination is nil or its own key stays. Running it
+    /// again changes nothing. Returns how many projects were folded away.
+    @discardableResult
+    package mutating func fold(
+        into destination: (LearnedTermProject) -> LearnedTermProjectIdentity?,
+        now: Date
+    ) -> Int {
+        let moves: [(key: String, to: LearnedTermProjectIdentity)] = projects.compactMap { project in
+            guard let target = destination(project), target.key != project.key else { return nil }
+            return (project.key, target)
+        }
+        guard !moves.isEmpty else { return 0 }
+        for move in moves {
+            guard let sourceIndex = projects.firstIndex(where: { $0.key == move.key }) else { continue }
+            let source = projects.remove(at: sourceIndex)
+            let index: Int
+            if let existing = projects.firstIndex(where: { $0.key == move.to.key }) {
+                index = existing
+                projects[index].lastSeen = max(projects[index].lastSeen, source.lastSeen)
+            } else {
+                projects.append(LearnedTermProject(
+                    key: move.to.key, name: move.to.name, terms: [], lastSeen: source.lastSeen
+                ))
+                index = projects.count - 1
+            }
+            for term in source.terms {
+                let match = term.term.caseFoldedForMatching
+                if let existing = projects[index].terms.firstIndex(where: {
+                    $0.term.caseFoldedForMatching == match
+                }) {
+                    projects[index].terms[existing] = LearnedTerms.merged(
+                        projects[index].terms[existing], term
+                    )
+                } else {
+                    projects[index].terms.append(term)
+                }
+            }
+        }
+        prune(now: now)
+        return moves.count
+    }
+
+    /// Moves what worktrees learned under their own key, before #652 or
+    /// through a hand fix keyed by the joined session's directory, into their
+    /// main checkout's project. Reads each local key's `.git` entry, so it
+    /// runs where the store loads its file, never on the commit path. Remote
+    /// and shared keys are not paths and stay: a remote worktree's label says
+    /// nothing about which repository it belongs to.
+    @discardableResult
+    package mutating func foldWorktreesIntoMainCheckouts(
+        fileManager: FileManager = .default,
+        now: Date
+    ) -> Int {
+        fold(into: { project in
+            guard project.key.hasPrefix("/") else { return nil }
+            let main = RepoIndexing.mainCheckout(ofRoot: project.key, fileManager: fileManager)
+            guard main != project.key else { return nil }
+            return LearnedTermProjectResolver.resolve(repositoryRoot: .root(main), workspace: nil)
+        }, now: now)
+    }
+
     /// The same key; else the one local project with the same name — the
     /// same checkout at another path on the new machine; else a new project
     /// under the file's key.

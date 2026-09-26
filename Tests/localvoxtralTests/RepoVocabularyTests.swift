@@ -625,7 +625,7 @@ final class RepoVocabularyIndexerEndToEndTests: XCTestCase {
             cache: RepoVocabularyCache(),
             rootSink: { root in reportedRoot.report(root) }
         )
-        guard case .root(let reported) = reportedRoot.value else {
+        guard case .root(let reported, _) = reportedRoot.value else {
             return XCTFail("the pipeline resolved a repo but reported \(reportedRoot.value)")
         }
         XCTAssertEqual(

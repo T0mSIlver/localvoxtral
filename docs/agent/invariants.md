@@ -192,11 +192,17 @@ there is not.
 
 - **Learned terms leave the Mac whatever the context toggles say now.**
   A spelling the cross-source merge pre-applied is recorded per project
-  (`LearnedTerms`, `LearnedTermProjectResolver` — the project key is the git
-  root the vocabulary pipeline already resolved off the main actor, widened
-  to contain a joined session's directory; the commit path never walks the
-  filesystem for it, and it inherits that pipeline's title parsing, ssh
-  titles included), and once three separate
+  (`LearnedTerms`, `LearnedTermProjectResolver` — the project key is the
+  main checkout of the git root the vocabulary pipeline already resolved off
+  the main actor, widened to contain a joined session's directory; a linked
+  worktree is not a project of its own (#652), and its main checkout is read
+  from its `.git` file in that same pipeline (`RepoIndexing.mainCheckout`);
+  the commit path never walks the filesystem for it, and it inherits that
+  pipeline's title parsing, ssh titles included. A remote session's key is
+  the basename of its repository's main checkout when its host's shim sends
+  `X-Lvx-Env-Project`, else its cwd label, so two repositories with one
+  basename on one host share a bucket: the price of never holding a remote
+  path), and once three separate
   dictations have resolved it, it grounds later ones and rides in the prompt
   under its own header — with no endpoint check and no re-check of the
   setting that first produced it. Owner ruling, 2026-09-20: a name the
@@ -268,7 +274,11 @@ there is not.
   joined session's own directory, not the repository the vocabulary
   pipeline would widen it to, so a session in a subdirectory learns into
   a separate bucket; resolving the root would walk the filesystem on the
-  commit path, which `LearnedTermProjectResolver` forbids.
+  commit path, which `LearnedTermProjectResolver` forbids. A hand fix in a
+  worktree's root reaches the main checkout at the next launch: the store
+  folds worktree keys into their main checkout each time it loads its file
+  (`LearnedTerms.foldWorktreesIntoMainCheckouts`, max of counts, never the
+  sum).
 
 - **"About you" is the only place the model is told to infer a misheard name.**
   `LLMPromptTemplates.withSpeakerProfile` appends the user's own text to the
@@ -1481,7 +1491,11 @@ there is not.
   client actually dials is the LOCAL end our own child created. And
   `hookParentPID` is a String on purpose: a pid in another host's namespace is
   not a number this process may probe, only a label to compare against another
-  label.
+  label. `X-Lvx-Env-Project` (#652) is the host's basename for the session's
+  repository; it replaces the cwd label only as the learned-terms key
+  (`ClaudeSessionSnapshot.learnedTermWorkspace`), and only when it is already
+  a label under `ClaudeWorkspaceReference.opaqueLabel`'s rule: a value that
+  would need reshaping is refused, never reshaped.
 - **A remote request names its agent in a header, and the header buys nothing
   but a namespace.** A remote host runs no publisher of ours, so the agent
   cannot ride inside the record the way it does locally: the Vibe shim
