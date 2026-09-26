@@ -1255,12 +1255,6 @@ public final class ClaudeSessionRegistry: Sendable {
         }
     }
 
-    /// Least recently active first, but every record without a Claude Desktop
-    /// session id goes before any record with one: a Desktop session sits idle
-    /// between prompts while the user still has it open, and a host can run
-    /// many of them at once. Stable tie-breaking keeps eviction reproducible
-    /// when a burst lands in one clock tick (common in tests and possible for
-    /// batched hook records).
     /// Which origin loses a session to the global cap: the one holding the
     /// most, then a remote one before the local one, then by channel name.
     private static func originEvictionPrecedes(
@@ -1280,6 +1274,12 @@ public final class ClaudeSessionRegistry: Sendable {
         }
     }
 
+    /// Least recently active first, but every record without a Claude Desktop
+    /// session id goes before any record with one: a Desktop session sits idle
+    /// between prompts while the user still has it open, and a host can run
+    /// many of them at once. Stable tie-breaking keeps eviction reproducible
+    /// when a burst lands in one clock tick (common in tests and possible for
+    /// batched hook records).
     private static func evictionPrecedes(
         _ lhs: ClaudeSessionSnapshot,
         _ rhs: ClaudeSessionSnapshot
