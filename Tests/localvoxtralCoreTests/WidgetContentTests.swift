@@ -123,6 +123,24 @@ final class WidgetContentTests: XCTestCase {
         }
     }
 
+    /// Beside a stopped engine, the other row keeps what it says: "Off", or
+    /// its mode and spend.
+    func testTheRowBesideAStoppedEngineKeepsItsText() {
+        let cases: [(WidgetSnapshot.Engines, WidgetSize, Row)] = [
+            (engines(speech: voxtral(.failed, memory: nil), polish: qwen(), polishEnabled: false), .small,
+             Row(role: .polish, title: "Polish", status: "Off")),
+            (engines(speech: voxtral(.failed, memory: nil), polish: mistral), .medium,
+             Row(role: .polish, title: "Polish", status: "Mistral API · 23 polishes today · €0.01")),
+            (engines(speech: voxtral(.failed, memory: nil), polish: mistral), .small,
+             Row(role: .polish, title: "Polish", status: "Mistral API · €0.01 today")),
+        ]
+        for (engines, size, expected) in cases {
+            guard case let .stopped(_, _, other) = EnginesWidgetContent(engines, size: size, locale: locale).layout
+            else { return XCTFail("not stopped") }
+            XCTAssertEqual(other, expected)
+        }
+    }
+
     /// A managed engine that is not loaded yet is waiting for a dictation,
     /// not broken.
     func testAnIdleEngineIsARowNotAStoppedEngine() {
@@ -247,6 +265,12 @@ final class WidgetContentTests: XCTestCase {
             weeklyShares: Array(shares.suffix(8)), firstShare: "71%",
             countLine: "412 terms · +8 this week", total: "412 total",
             newTerms: Array(terms.prefix(6)), moreTerms: "+2 more")))
+    }
+
+    func testOneTermIsSingular() {
+        let content = VocabularyWidgetContent(WidgetSnapshot.Vocabulary(weeklyShares: [1], termCount: 1, termsLearnedThisWeek: ["herdr"]), locale: locale)
+        guard case let .trend(trend) = content.layout else { return XCTFail("\(content.layout)") }
+        XCTAssertEqual(trend.countLine, "1 term · +1 this week")
     }
 
     func testAWeekTooQuietToMeasureDoesNotClaimThisWeek() {

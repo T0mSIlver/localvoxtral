@@ -76,7 +76,7 @@ package struct VocabularyWidgetContent: Equatable, Sendable {
                 : "learned terms spelled right in the last measured week",
             weeklyShares: shares,
             firstShare: WidgetFormat.percent(first),
-            countLine: "\(total) terms · +\(WidgetFormat.count(learned, locale: locale)) this week",
+            countLine: "\(total) \(vocabulary.termCount == 1 ? "term" : "terms") · +\(WidgetFormat.count(learned, locale: locale)) this week",
             total: "\(total) total",
             newTerms: shown,
             moreTerms: learned > shown.count ? "+\(WidgetFormat.count(learned - shown.count, locale: locale)) more" : nil

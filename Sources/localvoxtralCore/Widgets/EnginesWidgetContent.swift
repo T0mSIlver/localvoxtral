@@ -122,7 +122,7 @@ package struct EnginesWidgetContent: Equatable, Sendable {
         }
 
         func content() -> EnginesWidgetContent {
-            let turnOff = !isSmall && engines.polishEnabled && engines.appRunning
+            let turnOff = size == .medium && engines.polishEnabled && engines.appRunning
 
             if !engines.appRunning {
                 return EnginesWidgetContent(
@@ -253,17 +253,12 @@ package struct EnginesWidgetContent: Equatable, Sendable {
             }
         }
 
-        /// "Polish · Ready · 2.9 GB", beside a stopped engine.
+        /// "Polish · Ready · 2.9 GB", beside a stopped engine: the row's
+        /// first and second lines folded into one, so nothing it says is lost.
         func compactRow(_ role: WidgetSnapshot.EngineRole) -> Row {
-            var full = row(role)
-            if let trailing = full.trailing, let status = full.status {
-                full.status = "\(status) · \(trailing)"
-                full.trailing = nil
-            }
-            full.model = nil
-            full.detail = nil
-            full.detailTrailing = nil
-            return full
+            let full = row(role)
+            let parts = [full.status ?? full.model, full.trailing ?? full.detail].compactMap { $0 }
+            return Row(role: role, title: full.title, status: parts.isEmpty ? nil : parts.joined(separator: " · "))
         }
 
         func footer() -> Footer {
