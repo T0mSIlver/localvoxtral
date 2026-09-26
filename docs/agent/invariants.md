@@ -136,6 +136,32 @@ there is not.
   list (the AX probe reads the element focused NOW, which need not be the
   commit target's), and the Return follows only a commit that reported
   `.succeeded`.
+- **The Mistral second pass holds the text back, never the world** (#317).
+  An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
+  endpoint on stop (`DictationSessionController+StopCommit.swift`,
+  `StopSecondPass`), and the commit waits up to the deadline for it. What
+  the polish is grounded in is sampled at the stop itself, before that wait
+  (`OverlayStopSample`): the screen re-read compares against the start
+  capture, and seconds of agent output scrolling past would drop it as
+  mutated. The target, the record's fields and the join go with it. Only
+  what depends on the text runs after: the spoken send cut, the dictionary,
+  the payload macro and the polish. The macro's clipboard read therefore
+  comes up to the deadline after the grounding read, so a copy made in that
+  window reaches one and not the other; accepted, since nobody copies while
+  waiting on their own dictation. Three more rules hold it:
+  (1) the pass dials the key and host the realtime socket latched at start,
+  never a fresh read of Settings;
+  (2) the audio lives in memory for the pass, and reaches the disk only
+  through the audio-store latch taken at start (`sessionStoresAudio`);
+  (3) the batch text replaces the realtime text whole when it answers in
+  time, and is never merged with it: the two segment and punctuate
+  differently, and a merge would repeat or drop words at every seam. A blank answer, a failure or a missed
+  deadline keeps the realtime text and is only logged.
+  The term list leaves the Mac. The user's own words go to any endpoint, as
+  they do in the polish prompt; learned terms come from screen, session and
+  repository context, so they go only with the trusted-endpoint opt-in.
+  Live context terms are not sent yet (#647). A new dictation that cancels
+  the pass saves the realtime text as not inserted, as it does for a polish.
 - **The overlay panel's click-through is insertion machinery, not window
   chrome.** `NonActivatingPanel` refuses key and main and swallows every click
   on its body, because the panel is on screen exactly while the app it is

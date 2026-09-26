@@ -61,15 +61,62 @@ extension DictationSessionController {
         let audio: Data?
     }
 
-    /// An Overlay Buffer session that was not cancelled: polished and
-    /// committed by a task when polishing has a configuration, committed
-    /// as-is otherwise.
+    /// What an Overlay Buffer commit samples at the stop itself, before a
+    /// second pass (#317) can hold the text back for seconds: the record's
+    /// fields, and with a polishing configuration the world the polish is
+    /// grounded in. The screen re-read compares against the start capture,
+    /// and seconds of agent output scrolling past would drop it as mutated.
+    private struct OverlayStopSample {
+        let record: StoppedSessionRecordFields
+        let polishingConfig: LLMPolishingConfiguration?
+        let capture: StopCommitCoordinator.Capture?
+    }
+
+    /// An Overlay Buffer session that was not cancelled: transcribed again
+    /// first when the session has a second pass, then committed.
     private func commitOverlayBufferSession(sessionMode: DictationOutputMode) {
+        let sessionAudio = audio.sessionRecording.finish()
+        let polishingConfig = settings.llmPolishingConfiguration
+        let sample = OverlayStopSample(
+            record: StoppedSessionRecordFields(
+                startedAt: sessionStartedAt ?? Date(),
+                provider: sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue,
+                model: sessionModelName ?? settings.effectiveModelName,
+                outputMode: sessionMode.rawValue,
+                targetAppBundleID: resolveTargetAppBundleID(),
+                audio: sessionStoresAudio ? sessionAudio : nil
+            ),
+            polishingConfig: polishingConfig,
+            // The world as it was at stop: clipboard, screen, join and
+            // pane, sampled together before any await.
+            capture: polishingConfig.map {
+                StopCommitCoordinator.capture(
+                    endpointURL: $0.endpointURL,
+                    settings: settings,
+                    context: context,
+                    pasteboardReader: dependencies.pasteboardReader
+                )
+            }
+        )
+        if let secondPass = stopSecondPassRequest(audio: sessionAudio) {
+            startStopSecondPass(secondPass, sessionMode: sessionMode, sample: sample)
+            return
+        }
+        commitOverlayBufferText(sessionMode: sessionMode, sample: sample)
+    }
+
+    /// Polished and committed by a task when polishing has a configuration,
+    /// committed as-is otherwise.
+    private func commitOverlayBufferText(
+        sessionMode: DictationOutputMode,
+        sample: OverlayStopSample
+    ) {
         // Before the dictionary and the polisher: the trigger is a command,
         // not text, so neither may see it.
         let spokenSendPID = stripOverlaySpokenSendTrigger()
         let preparation = StopCommitCoordinator.prepare(
             originalText: transcript.currentDictationEventText,
+            polishingConfig: sample.polishingConfig,
             latchedReplacementDictionary: sessionReplacementDictionary,
             settings: settings,
             appConfigStore: appConfigStore,
@@ -91,13 +138,15 @@ extension DictationSessionController {
         }
         refreshOverlayBufferSession()
 
-        let capturedSessionStartedAt = sessionStartedAt ?? Date()
-        let capturedProvider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
-        let capturedModel = sessionModelName ?? settings.effectiveModelName
-        let capturedOutputMode = sessionMode.rawValue
-        let capturedTargetBundleID = resolveTargetAppBundleID()
-        let capturedAudio = audio.sessionRecording.finish()
-        if let polishingConfig = preparation.polishingConfig {
+        let capturedSessionStartedAt = sample.record.startedAt
+        let capturedProvider = sample.record.provider
+        let capturedModel = sample.record.model
+        let capturedOutputMode = sample.record.outputMode
+        let capturedTargetBundleID = sample.record.targetAppBundleID
+        let capturedAudio = sample.record.audio
+        // The capture exists exactly when the configuration does: both were
+        // taken together at stop.
+        if let polishingConfig = preparation.polishingConfig, let capture = sample.capture {
             let polishProfile = StopCommitCoordinator.polishProfile(
                 forTargetBundleID: capturedTargetBundleID,
                 settings: settings
@@ -115,14 +164,6 @@ extension DictationSessionController {
             statusText = StatusStrings.polishing
             debugLog("LLM polishing started for \(workingText.count) chars")
 
-            // The world as it was at stop: clipboard, screen, join and
-            // pane, sampled together before the task's awaits.
-            let capture = StopCommitCoordinator.capture(
-                endpointURL: polishingConfig.endpointURL,
-                settings: settings,
-                context: context,
-                pasteboardReader: dependencies.pasteboardReader
-            )
 
             saveInterruptedPolishCommit = { [weak self] in
                 self?.saveSessionRecord(
@@ -426,7 +467,8 @@ extension DictationSessionController {
         let capturedProvider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
         let capturedModel = sessionModelName ?? settings.effectiveModelName
         let capturedOutputMode = sessionMode.rawValue
-        let capturedAudio = audio.sessionRecording.finish()
+        let sessionAudio = audio.sessionRecording.finish()
+        let capturedAudio = sessionStoresAudio ? sessionAudio : nil
         textInsertion.flushFinalLiveReplacementCorrections()
         // Read before the cleanup below discards the join.
         if liveDictationCanTeachACorrection {
@@ -683,5 +725,144 @@ extension DictationSessionController {
         )
         sessionReplacementDictionary = dictionary
         return dictionary
+    }
+}
+
+// MARK: - Second pass (#317)
+
+/// An Overlay Buffer dictation in Mistral API mode is transcribed a second
+/// time on stop, whole, by Mistral's batch model with the user's vocabulary.
+/// Its text replaces the realtime text only when it answers before a
+/// deadline; the commit then goes on exactly as it would have.
+extension DictationSessionController {
+    struct StopSecondPassRequest {
+        let wav: Data
+        let audioSeconds: Double
+        let apiKey: String
+        let endpoint: URL
+        let contextBias: [String]
+    }
+
+    /// Nil when this stop gets no second pass; every reason but "not this
+    /// kind of session" is logged.
+    func stopSecondPassRequest(audio sessionAudio: Data?) -> StopSecondPassRequest? {
+        guard sessionHasStopSecondPass else { return nil }
+        guard !transcript.currentDictationEventText
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            Log.backends.info("second pass skipped: the realtime transcript is empty")
+            return nil
+        }
+        guard let pcm = sessionAudio, !pcm.isEmpty else {
+            Log.backends.notice(
+                "second pass skipped: no audio kept (over \(DictationAudioRecording.maxSeconds / 60, privacy: .public) min, or dropped)"
+            )
+            return nil
+        }
+        // The key and host the session dialed, never a fresh read of Settings.
+        guard let configuration = sessionRealtimeConfiguration,
+            !configuration.apiKey.isEmpty,
+            let endpoint = MistralBatchTranscription.endpoint(
+                forRealtimeEndpoint: configuration.endpoint)
+        else {
+            Log.backends.notice("second pass skipped: the session's endpoint has no batch route")
+            return nil
+        }
+        let contextBias = StopSecondPass.vocabulary(
+            userTerms: settings.polishSpeakerTerms,
+            dictionarySpellings: sessionReplacementDictionary?.entries.map(\.replaceWith) ?? [],
+            learnedTerms: learnedTermStore?.snapshot().confirmedEverywhere().map(\.term) ?? [],
+            contextTrusted: PolishContextClipboardReader.isPermittedContextEndpoint(
+                endpoint,
+                trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
+            )
+        )
+        return StopSecondPassRequest(
+            wav: DictationAudioRecording.wav(fromPCM16: pcm),
+            audioSeconds: Double(pcm.count) / Double(AudioChunkBuffer.bytesPerSecond),
+            apiKey: configuration.apiKey,
+            endpoint: endpoint,
+            contextBias: contextBias
+        )
+    }
+
+    /// Runs the second pass as the commit's task, then commits. A new
+    /// dictation that cancels it saves the realtime text as not inserted,
+    /// as it does for a polish.
+    private func startStopSecondPass(
+        _ request: StopSecondPassRequest,
+        sessionMode: DictationOutputMode,
+        sample: OverlayStopSample
+    ) {
+        statusText = StatusStrings.transcribingAgain
+        let realtimeText = transcript.currentDictationEventText
+        saveInterruptedPolishCommit = { [weak self] in
+            self?.saveSessionRecord(
+                startedAt: sample.record.startedAt,
+                rawText: realtimeText,
+                polishedText: nil,
+                polishingDuration: nil,
+                provider: sample.record.provider,
+                model: sample.record.model,
+                outputMode: sample.record.outputMode,
+                targetAppBundleID: sample.record.targetAppBundleID,
+                status: .sttCompleted,
+                commitSucceeded: false,
+                audio: sample.record.audio
+            )
+        }
+        let deadline = StopSecondPass.deadline(audioSeconds: request.audioSeconds)
+        let transcriber = dependencies.batchTranscriber
+        let sleep = dependencies.clock.sleep
+        let usageRecorder = secondPassUsageRecorder
+        Log.backends.info(
+            "second pass: sending \(String(format: "%.1f", request.audioSeconds), privacy: .public)s of audio with \(request.contextBias.count, privacy: .public) terms, deadline \(String(describing: deadline), privacy: .public)"
+        )
+        polishAndCommitTask = Task { @MainActor [weak self] in
+            let outcome = await StopSecondPass.run(deadline: deadline, sleep: sleep) {
+                try await transcriber.transcribe(
+                    wav: request.wav,
+                    language: nil,
+                    contextBias: request.contextBias,
+                    apiKey: request.apiKey,
+                    endpoint: request.endpoint
+                ).text
+            }
+            // Recorded whatever the outcome: a request the deadline cut off
+            // may still have been billed.
+            usageRecorder?.record(MistralUsageEntry(
+                date: Date(),
+                kind: .retranscription,
+                model: MistralBatchTranscription.model,
+                audioSeconds: request.audioSeconds,
+                costEUR: MistralPricing.dictationCost(
+                    model: MistralBatchTranscription.model, audioSeconds: request.audioSeconds)
+            ))
+            guard let self, outcome != .cancelled, !Task.isCancelled else { return }
+            self.applyStopSecondPass(outcome)
+            self.commitOverlayBufferText(sessionMode: sessionMode, sample: sample)
+            // The commit may hand off to a polish task; this one ends with it,
+            // so whoever awaits the commit awaits all of it.
+            await self.polishAndCommitTask?.value
+        }
+    }
+
+    private func applyStopSecondPass(_ outcome: StopSecondPass.Outcome) {
+        switch outcome {
+        case .replaced(let text):
+            Log.backends.info(
+                "second pass replaced the realtime text (\(self.transcript.currentDictationEventText.count, privacy: .public) -> \(text.count, privacy: .public) chars)"
+            )
+            transcript.currentDictationEventText = text
+            refreshOverlayBufferSession()
+        case .empty:
+            Log.backends.notice("second pass answered with no text; realtime text kept")
+        case .deadlinePassed:
+            Log.backends.notice("second pass missed its deadline; realtime text kept")
+        case .failed(let reason):
+            Log.backends.error("second pass failed; realtime text kept: \(reason, privacy: .public)")
+        case .cancelled:
+            break
+        }
     }
 }

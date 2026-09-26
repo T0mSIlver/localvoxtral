@@ -102,6 +102,7 @@ final class DictationViewModel {
         static let connectingRealtimeBackend = "Connecting to realtime backend..."
         static let finalizingPreviousDictation = "Finalizing previous dictation..."
         static let polishing = "Polishing..."
+        static let transcribingAgain = "Transcribing again..."
         static let awaitingMicrophonePermission = "Awaiting microphone permission..."
         static let requestingMicrophonePermission = "Requesting microphone permission..."
         static let waitingForAccessibilityPermission = "Waiting for Accessibility permission."
@@ -321,6 +322,9 @@ final class DictationViewModel {
         /// The time every session timer runs on. A test passes a clock it
         /// advances by hand.
         var clock: SessionClock
+        /// Mistral's batch endpoint, for the second pass an Overlay Buffer
+        /// dictation gets on stop in Mistral API mode (#317).
+        var batchTranscriber: any MistralBatchTranscribing
 
         init(
             microphone: (() -> any MicrophoneCapturing)? = nil,
@@ -336,7 +340,8 @@ final class DictationViewModel {
             onSessionRecord: ((DictationSessionRecord) -> Void)? = nil,
             repoVocabularyGrounding: (any RepoVocabularyGrounding)? = nil,
             onRealtimeDeltaLogRecord: ((DebugRealtimeDeltaLogRecord) -> Void)? = nil,
-            clock: SessionClock = .live
+            clock: SessionClock = .live,
+            batchTranscriber: any MistralBatchTranscribing = MistralBatchTranscriptionClient()
         ) {
             self.microphone = microphone
             self.pasteboardReader = pasteboardReader
@@ -349,6 +354,7 @@ final class DictationViewModel {
             self.repoVocabularyGrounding = repoVocabularyGrounding
             self.onRealtimeDeltaLogRecord = onRealtimeDeltaLogRecord
             self.clock = clock
+            self.batchTranscriber = batchTranscriber
         }
     }
     /// Warms the managed polishing helper's prompt-prefix cache on every
@@ -669,6 +675,7 @@ final class DictationViewModel {
     func installMistralUsageLedger(_ ledger: MistralUsageLedger) {
         engines.installUsageLedger(ledger)
         session.mistralRealtimeClient.setUsageRecorder(ledger)
+        session.secondPassUsageRecorder = ledger
         llmPolishingService = LLMPolishingService(usageRecorder: ledger)
     }
 
