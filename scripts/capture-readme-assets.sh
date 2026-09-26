@@ -54,7 +54,7 @@ ASSETS_DIR="assets"
 # section (Claude Code, opencode, Mistral Vibe, herdr, Remote hosts) and the Terminals
 # section (one pane per terminal) replaced the single Integrations pane
 # (2026-09-07 owner decision).
-TAB_NAMES=("General" "Dictation" "Engines" "Text Processing" "Context" "Claude Code" "opencode" "Mistral Vibe" "herdr" "Remote hosts" "Ghostty" "iTerm2" "Terminal.app" "cmux" "Warp" "WezTerm" "kitty" "Alacritty" "Hyper" "Tabby" "Rio")
+TAB_NAMES=("General" "Dictation" "Engines" "Text Processing" "Context" "Claude Code" "opencode" "Mistral Vibe" "Codex" "herdr" "Remote hosts" "Ghostty" "iTerm2" "Terminal.app" "cmux" "Warp" "WezTerm" "kitty" "Alacritty" "Hyper" "Tabby" "Rio")
 # SettingsTab raw values — the sidebar rows carry them as AXIdentifiers
 # (settings.tab.<raw>). SettingsTabTests pins both the raw values and the
 # identifier scheme.
