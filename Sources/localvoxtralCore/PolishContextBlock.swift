@@ -34,6 +34,12 @@ package struct PolishContextBlock: Equatable {
     /// Count-only provenance for logs and the session record. Never content.
     package let summary: String
 
+    package init(instruction: String, excerpt: String, summary: String) {
+        self.instruction = instruction
+        self.excerpt = excerpt
+        self.summary = summary
+    }
+
     /// The instruction followed by the excerpt fenced between `---` lines —
     /// the shape both existing context sources already use.
     package var rendered: String {

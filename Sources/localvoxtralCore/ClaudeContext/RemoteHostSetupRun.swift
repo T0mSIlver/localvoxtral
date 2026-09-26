@@ -39,6 +39,11 @@ public struct RemoteHostSetupRun: Sendable, Equatable {
         public var step: Step
         public var state: State
         public var id: Int { step.rawValue }
+
+        package init(step: Step, state: State) {
+            self.step = step
+            self.state = state
+        }
     }
 
     public var hostID: String

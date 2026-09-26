@@ -147,6 +147,11 @@ package struct TerminalScreenTarget: Equatable, Sendable {
     /// session can hand the same number to a different app, and a bare PID
     /// match would then reconcile two unrelated processes.
     package let bundleID: String
+
+    package init(pid: pid_t, bundleID: String) {
+        self.pid = pid
+        self.bundleID = bundleID
+    }
 }
 
 /// One sample of a terminal's visible screen, tagged with its target.

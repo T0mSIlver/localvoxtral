@@ -33,6 +33,12 @@ package struct CmuxFocusedSurface: Sendable, Equatable {
     /// it takes a second method to see it. Nil is not "local" — it is "cmux did
     /// not answer", which the resolver treats as refusing every remote claim.
     package var workspaceIsRemote: Bool?
+
+    package init(surfaceID: String, tty: String? = nil, workspaceIsRemote: Bool? = nil) {
+        self.surfaceID = surfaceID
+        self.tty = tty
+        self.workspaceIsRemote = workspaceIsRemote
+    }
 }
 
 /// One socket answer. Three cases rather than an optional because exactly one

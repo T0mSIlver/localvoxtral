@@ -22,6 +22,13 @@ package enum RepoGitRunner {
         package let exitCode: Int32
         package let timedOut: Bool
         package let capped: Bool
+
+        package init(data: Data, exitCode: Int32, timedOut: Bool, capped: Bool) {
+            self.data = data
+            self.exitCode = exitCode
+            self.timedOut = timedOut
+            self.capped = capped
+        }
     }
 
     /// Async wrapper: hops to a background queue so the blocking Process run
