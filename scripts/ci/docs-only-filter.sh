@@ -215,7 +215,9 @@ first_reader() {
       printf '%s\n' "${test_file#"$ROOT_DIR/"}"
       return 0
     fi
-  done < <(find "$ROOT_DIR/Tests" -name '*.swift' -type f | sort)
+  # Only files holding the string can name it; one grep finds them, so the
+  # per-file scan forks for a handful of files, not every test file.
+  done < <(grep -rlF --include='*.swift' -- "$1" "$ROOT_DIR/Tests" | sort || true)
   printf 'Tests/\n'
 }
 

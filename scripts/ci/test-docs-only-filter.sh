@@ -175,7 +175,9 @@ undeclared_reads() {
       awk -v f="$test_file" -v t="$token" '$1 == f && $2 == t { found = 1 } END { exit !found }' \
         "$table" || printf '%s %s\n' "$test_file" "$token"
     done
-  done < <(cd "$root" && find Tests -name '*.swift' -type f | sort)
+  # One grep narrows to the files that name an anchor at all; the loop then
+  # drops those that name one only in a comment.
+  done < <(cd "$root" && grep -rlE --include='*.swift' "$ROOT_ANCHORS" Tests | sort || true)
 
   local line
   while read -r test_file token line; do
