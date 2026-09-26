@@ -168,6 +168,8 @@ final class TextInsertionService {
     @ObservationIgnored
     private var debugShiftReturnPoster: (() -> Bool)?
     @ObservationIgnored
+    private var debugCommandVPaster: ((String) -> Bool)?
+    @ObservationIgnored
     private var debugFrontmostPIDReader: (() -> pid_t?)?
 #endif
 
@@ -245,7 +247,21 @@ final class TextInsertionService {
         if !ensurePasteTargetIsActive(preferredAppPID: preferredAppPID) {
             return false
         }
+        return postCommandVPaste(text)
+    }
 
+    /// Puts `text` on the clipboard and presses Cmd+V in the frontmost app.
+    /// The clipboard is restored 150 ms later unless someone changed it.
+    private func postCommandVPaste(_ text: String) -> Bool {
+#if DEBUG
+        if let debugCommandVPaster {
+            return debugCommandVPaster(text)
+        }
+        // A test that did not pin the hook must never paste into whatever
+        // the host has focused.
+        if TerminalTargetDetector.isRunningUnderXCTest { return false }
+#endif
+        // 9 is kVK_ANSI_V, which is V on the ANSI and AZERTY layouts alike.
         guard let eventSource = CGEventSource(stateID: .combinedSessionState),
               let keyDown = CGEvent(keyboardEventSource: eventSource, virtualKey: 9, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: eventSource, virtualKey: 9, keyDown: false)
@@ -1029,7 +1045,8 @@ extension TextInsertionService {
         accessibilityInserter: ((String, pid_t?) -> Bool)? = nil,
         returnKeyPoster: ((pid_t) -> Bool)? = nil,
         frontmostPIDReader: (() -> pid_t?)? = nil,
-        shiftReturnPoster: (() -> Bool)? = nil
+        shiftReturnPoster: (() -> Bool)? = nil,
+        commandVPaster: ((String) -> Bool)? = nil
     ) {
         debugUnicodePoster = unicodePoster
         debugModifierStateReader = modifierStateReader
@@ -1037,6 +1054,7 @@ extension TextInsertionService {
         debugReturnKeyPoster = returnKeyPoster
         debugFrontmostPIDReader = frontmostPIDReader
         debugShiftReturnPoster = shiftReturnPoster
+        debugCommandVPaster = commandVPaster
     }
 
     func debugInsertionSnapshot() -> DebugInsertionSnapshot {
