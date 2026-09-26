@@ -22,7 +22,9 @@ package enum EarlyPolishPlan {
         minimumWords: Int = minimumPieceWords
     ) -> (piece: String, consumedPrefix: String)? {
         guard settledText.hasPrefix(consumedPrefix) else { return nil }
-        let rest = settledText[consumedPrefix.endIndex...]
+        // An index of `settledText`, not of `consumedPrefix`: indices are
+        // only valid in the string they came from.
+        let rest = settledText[settledText.index(settledText.startIndex, offsetBy: consumedPrefix.count)...]
         var words = 0
         var inWord = false
         var index = rest.startIndex
@@ -51,7 +53,7 @@ package enum EarlyPolishPlan {
     /// send cut changed it), and the whole text must be polished instead.
     package static func tail(workingText: String, consumedPrefix: String) -> String? {
         guard !consumedPrefix.isEmpty, workingText.hasPrefix(consumedPrefix) else { return nil }
-        let rest = workingText[consumedPrefix.endIndex...]
+        let rest = workingText[workingText.index(workingText.startIndex, offsetBy: consumedPrefix.count)...]
         // A piece ends on a sentence end, so what follows starts a new word.
         // Text glued onto that end would mean the prefix split a word.
         if let first = rest.first, !first.isWhitespace { return nil }
