@@ -555,11 +555,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         let announcer = AgentAttentionAnnouncer()
         viewModel.agentAttention = AgentAttentionModel(tracker: tracker, announcer: announcer)
-        // The registry calls this on the ingesting socket thread. The main
-        // queue keeps the order it accepted the records in.
-        registry.setTurnObserver { event, session in
+        // The registry calls this on whichever socket thread ingested; the
+        // sequence it stamps under its lock puts a session's events back in
+        // order.
+        registry.setTurnObserver { event, session, sequence in
             DispatchQueue.main.async {
-                MainActor.assumeIsolated { _ = tracker.receive(event, session: session) }
+                MainActor.assumeIsolated { _ = tracker.receive(event, session: session, sequence: sequence) }
             }
         }
     }
