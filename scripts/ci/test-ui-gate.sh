@@ -27,7 +27,23 @@ LOCK_PROBE_SRC="$ROOT_DIR/scripts/ci/screen-lock-state.sh"
 # on macOS /tmp is a symlink to /private/tmp, so an unresolved fixture path
 # would never equal the path the gate records and passes to `open`.
 TMP_DIR="$(cd "$(mktemp -d "/tmp/lv-ui-gate-test.XXXXXX")" && pwd -P)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+# Every long-lived stand-in this suite starts appends its pid to SPAWNED_PIDS,
+# the `open` stub's launcher included. Some cases hand that process to the
+# gate and expect it killed; others (a reused Terminal instance) expect it
+# left alone, so without this it outlived the suite by five minutes (#714).
+SPAWNED_PIDS="$TMP_DIR/open.log.spawned"
+reap_spawned() {
+  local pid
+  [[ -f "$SPAWNED_PIDS" ]] || return 0
+  # Most of these died long ago, and macOS recycles pids within minutes on a
+  # busy runner: signal a pid only while it still runs the command we started.
+  while read -r pid; do
+    [[ "$(ps -o command= -p "$pid" 2>/dev/null)" == "/bin/sleep 300" ]] \
+      && kill "$pid" 2>/dev/null
+  done <"$SPAWNED_PIDS"
+  return 0
+}
+trap 'reap_spawned; rm -rf "$TMP_DIR"' EXIT
 
 FAKE_HOME="$TMP_DIR/home"
 STUB_BIN="$TMP_DIR/stubbin"
@@ -125,6 +141,7 @@ case "${STUB_OPEN_SPAWN:-}" in
     launcher=""
     for launcher in "$@"; do :; done
     /bin/sh -c 'printf "%s" "$$" > "$1"; exec /bin/sleep 300' _ "${launcher%.command}.pid" &
+    printf '%s\n' "$!" >>"$STUB_OPEN_LOG.spawned"
     # The pid file has to exist before this returns, or the gate races it.
     for _ in 1 2 3 4 5 6 7 8 9 10; do
       [[ -s "${launcher%.command}.pid" ]] && break
@@ -1242,6 +1259,7 @@ rm -f "$TMP_DIR/open.log.opened"
 INSTANCE_A=$!
 /bin/sh -c 'exec /bin/sleep 300' &
 INSTANCE_B=$!
+printf '%s\n%s\n' "$INSTANCE_A" "$INSTANCE_B" >>"$SPAWNED_PIDS"
 run_gate 'term open ghostty lv-attach pane-7' \
   STUB_PGREP_PID="$$" STUB_PGREP_PID_AFTER="$$ $INSTANCE_A $INSTANCE_B" \
   STUB_TERMNEW=ambiguous STUB_OPEN_SPAWN=1
