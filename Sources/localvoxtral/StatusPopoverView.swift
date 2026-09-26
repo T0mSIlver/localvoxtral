@@ -152,6 +152,14 @@ struct StatusPopoverView: View {
                     .frame(width: Self.contentWidth, alignment: .leading)
             }
 
+            // One sentence naming the session that needs you (#717).
+            if let agentAttentionLine = viewModel.agentAttentionLine {
+                Text(agentAttentionLine)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(width: Self.contentWidth, alignment: .leading)
+            }
+
             Text(viewModel.statusText)
                 .foregroundStyle(.secondary)
                 .lineLimit(nil)
@@ -173,6 +181,7 @@ struct StatusPopoverView: View {
             }
         }
         .onAppear {
+            viewModel.agentAttention?.tracker.prune()
             viewModel.refreshMicrophoneInputs()
             viewModel.permissions.refreshAccessibilityTrustState()
         }
