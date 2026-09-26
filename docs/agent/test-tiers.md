@@ -4,9 +4,9 @@
 |---|---|---|---|
 | 0 | Unit suite (3,900+ tests, one xctest process per core, each running whole test classes: `scripts/lib/unit-test-shards.sh`, the same shape `remote-build.sh test` drives over ssh) + shell gate suites (run in parallel by `scripts/ci/run-shell-suites.sh`; a new suite is one more argument there, and `test-ui-gate.sh` runs on a PR only when `scripts/ci/ui-gate-suite-filter.sh` says the diff touches a file it reads) + format lint + coverage (the unit suite skips `PolishContextPreparationTests`, the row below) | every non-fast-path PR/push, in CI's `build-test` job on **GitHub-hosted macOS** (owner decision 2026-09-05 — same-repo PRs too, not just forks; the Mac is the queue bottleneck and hosted runners are free for public repos) | ~4 min hosted, ~0 s queue |
 | 0 | `PolishContextPreparationTests`: the cost budgets of clipboard-context preparation — how much work grounding, excerpt selection and the containment sweep do on a realistic code-heavy buffer | every non-fast-path PR/push, in its own required step of `build-test` right after the unit suite (same `--enable-code-coverage`, so it reuses that binary). It is out of the unit suite because its assertions ARE about cost, so it cannot be made fast without deleting them (#430). Locally: `remote-build.sh test-cost-budgets` | ~6 s |
-| 0 | Packaging + launch smoke of the **signed** bundle, and the installable artifact | every non-fast-path dispatch and same-repo PR that is NOT a draft (pushes to main skip `mac-lanes`; a draft builds no bundle unless its body carries `[mac-lanes]`), in CI's `mac-lanes` job on the self-hosted Mac — the `localvoxtral-dev` identity is what keeps the owner's TCC grant valid across `try-pr.sh` installs. Fork PRs get an ad-hoc-signed equivalent inside `build-test` instead, since `mac-lanes` never runs for them | ~1 min |
-| 0 | PolishHelper / SpeechHelper unit suites (Metal-free: router, cache locator, watchdog; codec/delta contract) | self-hosted lanes only, and path-gated per helper — a PR runs a helper's suite only when the diff touches that helper's directory or the shared CI plumbing; `workflow_dispatch` runs both (`scripts/ci/helper-lane-filter.sh`, no marker; pushes to main skip `mac-lanes`). Locally: `remote-build.sh test --package-path PolishHelper` / `SpeechHelper` | 11 s + 20 s |
-| 1 | `RealtimeAPIVLLMIntegrationTests` vs the live local speechd STT test service: real inference through the production websocket client, word-accuracy asserted | conditional in CI (self-hosted): a PR runs it when the diff touches what the lane can see (the realtime client family, its scorer and fixture, the package pins, the CI plumbing: `scripts/ci/stt-lane-filter.sh`) or opts in with `[run-stt-integration]`; every dispatch and the nightly release run it. The service it talks to is the helper installed on the build host, not the PR's build, so a SpeechHelper diff is the next row's business; locally via `remote-build.sh integration` | ~50 s |
+| 0 | Packaging + launch smoke of the **signed** bundle, and the installable artifact | every non-fast-path dispatch, and every same-repo PR that is NOT a draft and whose diff reaches the bundle (pushes to main skip `mac-lanes`; a draft builds no bundle unless its body carries `[mac-lanes]`; a PR of tests, docs, CI scripts or other workflows builds none unless a lane that reads the bundle runs: `scripts/ci/mac-package-filter.sh`), in CI's `mac-lanes` job on the self-hosted Mac — the `localvoxtral-dev` identity is what keeps the owner's TCC grant valid across `try-pr.sh` installs. Fork PRs get an ad-hoc-signed equivalent inside `build-test` instead, since `mac-lanes` never runs for them | ~1 min |
+| 0 | PolishHelper / SpeechHelper unit suites (Metal-free: router, cache locator, watchdog; codec/delta contract) | self-hosted lanes only, and path-gated per helper — a PR runs a helper's suite only when the diff touches that helper's directory or the shared CI plumbing (a `ci.yml` edit counts only inside the `mac-lanes` job); `workflow_dispatch` runs both (`scripts/ci/helper-lane-filter.sh`, no marker; pushes to main skip `mac-lanes`). Locally: `remote-build.sh test --package-path PolishHelper` / `SpeechHelper` | 11 s + 20 s |
+| 1 | `RealtimeAPIVLLMIntegrationTests` vs the live local speechd STT test service: real inference through the production websocket client, word-accuracy asserted | conditional in CI (self-hosted): a PR runs it when the diff touches what the lane can see (the realtime client family, its scorer and fixture, the package pins, the CI plumbing: `scripts/ci/stt-lane-filter.sh`; a `Package.swift` edit counts only when it changes a dependency, pin, platform or build-setting line, and a `ci.yml` edit only inside the `mac-lanes` job, both read by `scripts/ci/lane-diff-facts.sh`) or opts in with `[run-stt-integration]`; every dispatch and the nightly release run it. The service it talks to is the helper installed on the build host, not the PR's build, so a SpeechHelper diff is the next row's business; locally via `remote-build.sh integration` | ~50 s |
 | 1 | `PolishHelperIntegrationTests`: the packaged polishing helper vs the real pinned model — production request path, shared eval baseline, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches LLM-relevant paths or the PR opts in with `[run-llm-eval]` — see "When must the LLM lanes run?"; locally via `remote-build.sh integration-polishd` | minutes (4B weights + live inference) |
 | 1 | `SpeechHelperIntegrationTests`: packaged speechd vs real spoken audio/model through the production realtime client — word accuracy, append-only delta/done parity, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches speechd-relevant paths or the PR opts in with `[run-speechd-integration]`; locally via `remote-build.sh integration-speechd` | minutes (4B weights + live inference) |
 | 1 | `HerdrIntegrationTests`: the remote-herdr join machinery vs a LIVE `herdr` server over a REAL `ssh -L` forward — real socket client, real forward coordinator, real `ssh -G` canonicalization, real herdr `config.toml` patch (the fixture server's own, beside any herdr the account runs); the only fixture is the focused surface (a real herdr client on a pty) | conditional in CI (self-hosted): only when the diff touches herdr-relevant paths or the PR opts in with `[run-herdr-integration]`; locally via `remote-build.sh integration-herdr [ssh-destination]` | ~1 min (no model weights) |
@@ -112,9 +112,13 @@ scoreboard, or a one-line justification for skipping. If the path filter
 misses a change that belongs above, add `[run-llm-eval]` AND extend the
 filter list in the same PR.
 
-The filter matches by name, so it also catches changes that cannot alter what
-reaches the model: a test file or a Foundation-only type moved between targets
-(the #545 series), a rename with no content change. For those, put
+The filter matches sources by name, so it also catches changes that cannot
+alter what reaches the model: a Foundation-only type moved between targets
+(the #545 series), a rename with no content change. A file under a `Tests/`
+directory runs the lane only when it is the lane's own suite or the eval
+harness (`LANE_TEST_PATTERNS` in the filter), so a unit test named after a
+polish type, or a test target named after a hook type, no longer does. For
+the rest, put
 `[skip-llm-eval: <reason>]` in the PR body or head commit message, under the
 same run-creation rule as the opt-in marker, and the lane skips even though the
 path matched. Use it only when the change cannot affect the prompt, model pins
@@ -178,10 +182,15 @@ REMOTE dependencies — no `path:` dependency, no `..` reference, no symlink out
 of the directory, no source shared with the root package. A helper suite's only
 inputs are therefore its own directory (`Package.swift` and `Package.resolved`
 included — that is the dependency-pin surface), the Xcode toolchain (not a
-diff), and the CI plumbing that invokes it.
+diff), and the CI plumbing that invokes it and prepares its workspace.
 
 So: `PolishHelper/**` → the polish suite; `SpeechHelper/**` → the speech suite;
-`.github/workflows/ci.yml`, `scripts/ci/**` or `scripts/package_app.sh` → BOTH;
+`.github/workflows/ci.yml`, `scripts/package_app.sh`, or one of the
+`scripts/ci/` files the job runs to decide the suites or to prepare the
+workspace before them (the filter lists them) → BOTH, except a `ci.yml` edit
+outside the `mac-lanes` job and the file's head (`scripts/ci/lane-diff-facts.sh`),
+which cannot change how the suites run. Another lane's filter or a shell test
+runs neither;
 `workflow_dispatch` → BOTH; a push to main → BOTH (main is the parity
 reference and is never gated; `mac-lanes` itself skips main pushes, so this
 rule applies only if that changes); an uncomputable diff or an unrecognized event →

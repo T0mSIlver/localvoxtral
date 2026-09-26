@@ -113,6 +113,21 @@ PATTERNS=(
   '*EvalCorpus/*'                                    # standalone eval corpora
 )
 
+# A test file cannot change what reaches the model, so a path under a Tests/
+# directory runs the lane only when it is the lane's own suite or the eval
+# harness it shares (docs/agent/test-tiers.md: the lanes are "NOT required for
+# ... test-only changes"). Without this, the name globs above bought live 4B
+# inference for unit-test edits and test-target moves (#545), since bash `case`
+# lets `*` cross `/` and a test named after its subject matches the subject's
+# pattern. Sources stay matched by name, whatever target they move to.
+LANE_TEST_PATTERNS=(
+  '*LLMPolishEvalSupport*'
+  '*PolishHelperIntegrationTests*'
+  '*AgentDictationE2EEval*'
+  '*AgentDictationEvalCorpus*'
+  '*EvalSpeechStage*'
+)
+
 if [[ $# -lt 1 || $# -gt 2 ]]; then
   echo "usage: $0 <changed-files-file> [marker-text-file]" >&2
   exit 2
@@ -245,10 +260,22 @@ is_exempt() {
   return 1
 }
 
+is_test_path() {
+  case "$1" in
+    Tests/* | */Tests/*) return 0 ;;
+  esac
+  return 1
+}
+
 while IFS= read -r file; do
   [[ -z "$file" ]] && continue
   is_exempt "$file" && continue
-  for pattern in "${PATTERNS[@]}"; do
+  if is_test_path "$file"; then
+    candidates=("${LANE_TEST_PATTERNS[@]}")
+  else
+    candidates=("${PATTERNS[@]}")
+  fi
+  for pattern in "${candidates[@]}"; do
     # shellcheck disable=SC2254
     case "$file" in
       $pattern)

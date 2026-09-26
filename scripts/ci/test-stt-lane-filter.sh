@@ -13,21 +13,23 @@ fail() {
   exit 1
 }
 
-# expect <true|false> <description> [--event <name>] [--marker <text>] <changed-path>...
+# expect <true|false> <description> [--event <name>] [--marker <text>] [--env NAME=VALUE] <changed-path>...
 expect() {
   local expected="$1" description="$2"
   shift 2
   local changed="$TMP_DIR/changed" marker_file="" event="pull_request"
+  local -a env_args=()
   : >"$changed"
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --env) env_args+=("$2"); shift 2 ;;
       --marker) marker_file="$TMP_DIR/marker"; printf '%s\n' "$2" >"$marker_file"; shift 2 ;;
       --event) event="$2"; shift 2 ;;
       *) printf '%s\n' "$1" >>"$changed"; shift ;;
     esac
   done
   local output run reason
-  output="$("$FILTER" "$changed" "$event" "$marker_file")" || fail "$description: filter exited non-zero"
+  output="$(env ${env_args[@]+"${env_args[@]}"} "$FILTER" "$changed" "$event" "$marker_file")" || fail "$description: filter exited non-zero"
   run="$(sed -n 's/^run=//p' <<<"$output")"
   reason="$(sed -n 's/^reason=//p' <<<"$output")"
   [[ "$run" == "$expected" ]] || fail "$description: expected run=$expected, got run=$run ($reason)"
@@ -55,6 +57,27 @@ expect true "the suite itself runs the lane" \
   Tests/localvoxtralTests/RealtimeAPIVLLMIntegrationTests.swift
 expect true "a dependency pin runs the lane" Package.resolved
 expect true "the workflow that invokes it runs the lane" .github/workflows/ci.yml
+
+# The manifest and the workflow narrow only on a fact from lane-diff-facts.sh,
+# and only on the literal "false": a missing or garbled fact keeps the match.
+expect true "a manifest edit runs the lane when no fact was read" Package.swift
+expect true "a manifest edit that changes a pin runs the lane" \
+  --env LANE_PACKAGE_DEPS_CHANGED=true Package.swift
+expect false "a target-only manifest edit does not" \
+  --env LANE_PACKAGE_DEPS_CHANGED=false Package.swift
+expect true "a garbled manifest fact fails open" \
+  --env LANE_PACKAGE_DEPS_CHANGED=no Package.swift
+expect true "the lockfile runs the lane whatever the manifest fact says" \
+  --env LANE_PACKAGE_DEPS_CHANGED=false Package.swift Package.resolved
+expect false "a ci.yml edit outside the mac-lanes job does not" \
+  --env LANE_MAC_LANES_JOB_CHANGED=false .github/workflows/ci.yml
+expect true "a ci.yml edit inside the mac-lanes job runs the lane" \
+  --env LANE_MAC_LANES_JOB_CHANGED=true .github/workflows/ci.yml
+expect true "a narrowed path does not hide a real match beside it" \
+  --env LANE_MAC_LANES_JOB_CHANGED=false --env LANE_PACKAGE_DEPS_CHANGED=false \
+  .github/workflows/ci.yml Package.swift Sources/localvoxtral/RealtimeClient.swift
+expect true "this filter's own edit runs the lane" \
+  --env LANE_MAC_LANES_JOB_CHANGED=false .github/workflows/ci.yml scripts/ci/stt-lane-filter.sh
 
 expect false "a settings pane change does not" Sources/localvoxtral/SettingsView.swift
 expect false "an enrollment change does not" \

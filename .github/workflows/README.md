@@ -32,7 +32,7 @@ launch-smoking the bundle signed with the stable `localvoxtral-dev` identity
 `scripts/try-pr.sh` install), the installable `localvoxtral-app` artifact and
 `localvoxtral-dsym` (30-day retention) for symbolicating field crashes, the
 live STT-service integration (path-gated on PRs by `scripts/ci/stt-lane-filter.sh`,
-always on main), the conditional polishd/speechd/herdr live-model
+always on dispatches and in the nightly release), the conditional polishd/speechd/herdr live-model
 lanes, the two MLX helper unit suites (kept here for the warm Cmlx build), the
 opt-in dogfood packaging, the UI-gate install, and the process leak
 check. It keeps `clean: false` — the persistent warm `.build` that makes those
@@ -129,6 +129,24 @@ The two helper unit suites are additionally path-gated per helper
 diff touches that helper's directory or the shared CI plumbing, while
 dispatches run both. Pushes to main skip `mac-lanes` altogether; the nightly
 release covers main.
+
+Packaging, the uploads and the launch smoke (about 95 s of the Mac) are
+path-gated on PRs too (`scripts/ci/mac-package-filter.sh`). A PR whose every
+changed path stays out of the bundle (tests, docs, `scripts/` other than
+`package_app.sh` and `clean-stale-outputs.sh`, workflows other than
+`ci.yml`'s `mac-lanes` job, eval data) builds no bundle, unless a lane that
+reads it runs (polishd, speechd, the dogfood pass) or its body carries
+`[mac-lanes]`. An unclassified path packages. Such a PR has no
+`localvoxtral-app` artifact for `try-pr.sh`, which says so; its bundle would
+have been main's.
+
+`scripts/ci/lane-diff-facts.sh` reads two facts a file list cannot carry:
+whether a `ci.yml` edit touched the `mac-lanes` job or the file's head
+(triggers, concurrency, env), and whether a `Package.swift` edit touched a
+dependency, pin, platform or build-setting line. An edit to `build-test`,
+`linux` or `dogfood` then runs neither the live STT lane, the helper unit
+suites nor packaging, and moving files between targets does not run the STT
+lane. A fact the script cannot read counts as changed.
 
 One tier-0 guard deliberately survives the fast path: `AGENTS.md` and the deep
 guides are `*.md`, so a diff that touches only them is `docs_only=true` and the
