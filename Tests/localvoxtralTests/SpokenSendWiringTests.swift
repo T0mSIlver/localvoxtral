@@ -12,6 +12,7 @@ final class SpokenSendWiringTests: XCTestCase {
     private static let ghostty = "com.mitchellh.ghostty"
     private static let editor = "com.example.editor"
     private static let editorPID: pid_t = 555
+    private static let claudeDesktop = "com.anthropic.claudefordesktop"
 
     override func tearDown() async throws {
         TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
@@ -51,6 +52,16 @@ final class SpokenSendWiringTests: XCTestCase {
 
         XCTAssertEqual(harness.overlay.committedTexts, ["run the tests send it"])
         XCTAssertEqual(harness.events.value, ["commit:run the tests send it"])
+    }
+
+    /// #660: Claude Desktop's prompt box sends on Return, but the app is not
+    /// a terminal. The trigger was typed as words there.
+    func testOverlayClaudeDesktopTargetGetsTheReturn() {
+        let harness = makeOverlayHarness(text: "run the tests, send it.", targetBundleID: Self.claudeDesktop)
+
+        harness.stop()
+
+        XCTAssertEqual(harness.events.value, ["commit:run the tests", "return:\(Self.terminalPID)"])
     }
 
     func testOverlayTriggerAlonePressesOnlyReturn() {
@@ -400,6 +411,21 @@ final class SpokenSendWiringTests: XCTestCase {
         XCTAssertFalse(harness.events.value.contains { $0.hasPrefix("return:") })
     }
 
+    /// #660: the same withholding and Return as in a terminal, while the
+    /// session stays a text-field session.
+    func testLiveClaudeDesktopTargetGetsTheReturn() {
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .noFocusedElement }
+        let harness = makeLiveHarness(appBundleID: Self.claudeDesktop)
+        XCTAssertFalse(harness.viewModel.session.sessionTargetIsTerminalLike)
+
+        harness.viewModel.session.handle(event: .partialTranscript("run the tests, send"))
+        XCTAssertEqual(harness.typedText, "", "nothing is typed before the final")
+
+        harness.viewModel.session.handle(event: .finalTranscript("run the tests, send it."))
+
+        XCTAssertEqual(harness.events.value, ["type:run the tests", "return:\(Self.terminalPID)"])
+    }
+
     func testLiveNonTerminalTargetTypesLiveEvenWithTheOptionOn() {
         TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
         let harness = makeLiveHarness(
@@ -497,9 +523,12 @@ final class SpokenSendWiringTests: XCTestCase {
         return Harness(viewModel: viewModel, overlay: overlay, events: events)
     }
 
+    /// `appBundleID` is the bundle of `terminalPID`; with the default
+    /// `frontmostBundleID` it is also the app frontmost at session start.
     private func makeLiveHarness(
         enabled: Bool = true,
-        frontmostBundleID: String = SpokenSendWiringTests.ghostty,
+        appBundleID: String = SpokenSendWiringTests.ghostty,
+        frontmostBundleID: String? = nil,
         frontmostPID: pid_t = SpokenSendWiringTests.terminalPID,
         commitTargetPID: pid_t = SpokenSendWiringTests.terminalPID
     ) -> Harness {
@@ -517,7 +546,7 @@ final class SpokenSendWiringTests: XCTestCase {
         viewModel.appConfigStore = MockAppConfigStore()
         retainForTestProcessLifetime(viewModel)
         viewModel.dependencies.bundleIdentifier = { pid in
-            pid == Self.terminalPID ? Self.ghostty : Self.editor
+            pid == Self.terminalPID ? appBundleID : Self.editor
         }
 
         let events = Box<[String]>([])
@@ -538,6 +567,7 @@ final class SpokenSendWiringTests: XCTestCase {
             frontmostPIDReader: { frontmost.value }
         )
 
+        let frontmostBundleID = frontmostBundleID ?? appBundleID
         TerminalTargetDetector.debugFrontmostBundleIDOverride = { frontmostBundleID }
         TerminalTargetDetector.debugSecureEventInputOverride = { false }
         viewModel.session.captureSessionTargetVerdict()

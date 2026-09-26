@@ -3,8 +3,8 @@ import os
 
 /// The spoken send trigger (#318): dictation that ends in "send it" or
 /// "send now" is inserted without those words, then Return is pressed in the
-/// app the text went to. Opt-in per output mode, terminals only (by bundle
-/// ID), never under Secure Keyboard Entry. Logs say what was decided and
+/// app the text went to. Opt-in per output mode, only in an app on
+/// `ReturnSubmitsAppList` (by bundle ID), never under Secure Keyboard Entry. Logs say what was decided and
 /// never what was said.
 extension DictationSessionController {
     // MARK: - Overlay Buffer
@@ -29,8 +29,8 @@ extension DictationSessionController {
             Log.dictation.notice("spoken send: no target app; trigger kept as text")
             return nil
         }
-        guard isOnTerminalList(pid: pid) else {
-            Log.dictation.notice("spoken send: target is not on the terminal list; trigger kept as text")
+        guard returnSubmitsPrompt(inPID: pid) else {
+            Log.dictation.notice("spoken send: Return does not submit in the target app; trigger kept as text")
             return nil
         }
         guard !TerminalTargetDetector.isSecureKeyboardEntryEnabled() else {
@@ -47,7 +47,7 @@ extension DictationSessionController {
 
     /// After the overlay commit: Return only when the text landed. A
     /// clipboard fallback or a failed insert means the prompt is not in the
-    /// terminal, and a Return would submit whatever is.
+    /// target app, and a Return would submit whatever is.
     func pressOverlaySpokenSendReturnIfNeeded(
         pid: pid_t?,
         commit: StopCommitCoordinator.CommitResult
@@ -64,10 +64,10 @@ extension DictationSessionController {
     //
     // Every decision is taken when it is needed, from the app frontmost at
     // that moment: nothing captured at session start or connect time takes
-    // part. A segment's partials are withheld only while a terminal is
-    // frontmost; only a non-empty backend final can trigger; the Return goes
-    // to the frontmost terminal, and only when every live insertion since the
-    // last Return sent (or the session start) landed in that same app.
+    // part. A segment's partials are withheld only while an app where Return
+    // submits is frontmost; only a non-empty backend final can trigger; the
+    // Return goes to that frontmost app, and only when every live insertion
+    // since the last Return sent (or the session start) landed in it.
 
     /// Session start: nothing carries over from the previous dictation.
     func resetLiveSpokenSendForSession() {
@@ -86,7 +86,7 @@ extension DictationSessionController {
     /// must be typed whole at its final.
     func liveSpokenSendWithholdsSegment() -> Bool {
         if liveSpokenSendSegmentMode == .undecided {
-            let withholds = settings.liveSpokenSendEnabled && frontmostTerminalPID() != nil
+            let withholds = settings.liveSpokenSendEnabled && frontmostReturnSubmitsPID() != nil
             liveSpokenSendSegmentMode = withholds ? .withheld : .typedLive
         }
         return liveSpokenSendSegmentMode == .withheld
@@ -183,19 +183,19 @@ extension DictationSessionController {
         }
     }
 
-    /// The frontmost terminal a Return may go to right now, or nil.
+    /// The frontmost app a Return may go to right now, or nil.
     private func liveSpokenSendReturnTarget() -> pid_t? {
         guard !TerminalTargetDetector.isSecureKeyboardEntryEnabled() else {
             Log.dictation.notice("spoken send: Secure Keyboard Entry is on; no Return")
             return nil
         }
-        guard let pid = frontmostTerminalPID() else {
-            Log.dictation.notice("spoken send: frontmost app is not on the terminal list; no Return")
+        guard let pid = frontmostReturnSubmitsPID() else {
+            Log.dictation.notice("spoken send: Return does not submit in the frontmost app; no Return")
             return nil
         }
         // The record is cleared only by a Return sent, never by a refusal:
         // once text has landed elsewhere (or under Secure Keyboard Entry), no
-        // later trigger can submit the terminal's own prompt in its place.
+        // later trigger can submit the app's own prompt in its place.
         guard textInsertion.liveInsertionTargetPIDs.allSatisfy({ $0 == pid }) else {
             if !liveSpokenSendBlockLogged {
                 liveSpokenSendBlockLogged = true
@@ -225,21 +225,20 @@ extension DictationSessionController {
         liveSpokenSendTypedWord = ""
     }
 
-    /// The frontmost app's PID when its bundle ID is on the built-in or the
-    /// Settings > Terminals list. Nil when it is not, or cannot be read.
-    private func frontmostTerminalPID() -> pid_t? {
+    /// The frontmost app's PID when it is on `ReturnSubmitsAppList`. Nil
+    /// when it is not, or cannot be read.
+    private func frontmostReturnSubmitsPID() -> pid_t? {
         guard let pid = textInsertion.frontmostApplicationPID(),
-              isOnTerminalList(pid: pid)
+              returnSubmitsPrompt(inPID: pid)
         else { return nil }
         return pid
     }
 
-    /// Terminal by bundle ID only. The AX probe reads the element focused
-    /// now, which need not belong to `pid`.
-    private func isOnTerminalList(pid: pid_t) -> Bool {
-        let bundleID = dependencies.bundleIdentifier(pid)
-        return TerminalTargetDetector.isTerminalLikeBundleID(bundleID)
-            || bundleID.map(settings.userTerminalAppBundleIDs.contains) == true
+    private func returnSubmitsPrompt(inPID pid: pid_t) -> Bool {
+        ReturnSubmitsAppList.contains(
+            dependencies.bundleIdentifier(pid),
+            userTerminalBundleIDs: settings.userTerminalAppBundleIDs
+        )
     }
 
     // MARK: - Shared
