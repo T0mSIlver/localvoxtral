@@ -2,15 +2,15 @@ import Foundation
 
 /// The managed downloads the onboarding wizard can kick off. Each maps to one
 /// managed backend + its model weights.
-enum OnboardingItemID: String, CaseIterable, Identifiable, Sendable {
+package enum OnboardingItemID: String, CaseIterable, Identifiable, Sendable {
     /// Bundled speechd + the Voxtral realtime dictation model.
     case dictation
     /// The bundled polishing engine's LLM model.
     case polishing
 
-    var id: String { rawValue }
+    package var id: String { rawValue }
 
-    var title: String {
+    package var title: String {
         switch self {
         case .dictation:
             return "Dictation engine"
@@ -25,7 +25,7 @@ enum OnboardingItemID: String, CaseIterable, Identifiable, Sendable {
 /// from `ManagedBackendStatus` so the wizard compiles against today's backend
 /// API and the mapping (see `OnboardingItemState.init(managedStatus:)`) is the
 /// single place that absorbs backend-status changes (e.g. PR #62).
-enum OnboardingItemState: Equatable, Sendable {
+package enum OnboardingItemState: Equatable, Sendable {
     case pending
     /// In progress. `fraction` drives a determinate bar when non-nil, otherwise
     /// the UI shows an indeterminate spinner alongside `detail`.
@@ -39,7 +39,7 @@ enum OnboardingItemState: Equatable, Sendable {
 /// the wizard changing. `LiveOnboardingBootstrapDriver` wraps `BackendManager`;
 /// tests use `FakeOnboardingBootstrapDriver`.
 @MainActor
-protocol OnboardingBootstrapDriving: AnyObject {
+package protocol OnboardingBootstrapDriving: AnyObject {
     /// Observable per-item state. Empty until `start` is called.
     var itemStates: [OnboardingItemID: OnboardingItemState] { get }
 
@@ -54,7 +54,7 @@ protocol OnboardingBootstrapDriving: AnyObject {
 extension OnboardingItemState {
     /// Map a live `ManagedBackendStatus` into the wizard's item state. This is
     /// the single seam that absorbs backend-status shape changes.
-    init(managedStatus status: ManagedBackendStatus) {
+    package init(managedStatus status: ManagedBackendStatus) {
         switch status {
         case .stopped:
             self = .pending
