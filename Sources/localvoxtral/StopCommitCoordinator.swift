@@ -486,7 +486,8 @@ enum StopCommitCoordinator {
             repoRenderBudget: material.repoRenderBudget,
             screenRenderBudget: material.screenRenderBudget,
             claudeRenderBudget: material.claudeRenderBudget,
-            clipboardRenderBudget: material.clipboardRenderBudget
+            clipboardRenderBudget: material.clipboardRenderBudget,
+            learnedProposals: material.learnedProposals
         ))
 
         guard !workingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

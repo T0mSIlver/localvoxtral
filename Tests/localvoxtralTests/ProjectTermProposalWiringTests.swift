@@ -39,15 +39,17 @@ final class ProjectTermProposalWiringTests: XCTestCase {
         let overlay: MockOverlayCoordinator
         let runner: FakeRunner
         let store: LearnedTermStore
+        let service: FakePolishingService
     }
 
-    private func makeHarness(polish: Bool = true, enabled: Bool = true) -> Harness {
+    private func makeHarness(polish: Bool = true, enabled: Bool = true, repoVocabulary: Bool = false) -> Harness {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = polish
         settings.agentPolishProfileEnabled = false
         settings.polishingBackendMode = .externalURL
         settings.llmPolishingEndpointURL = "http://127.0.0.1:8472/v1/chat/completions"
         settings.projectTermProposalsEnabled = enabled
+        settings.repoVocabularyEnabled = repoVocabulary
 
         let template = LLMPromptTemplates(
             systemContent: "system",
@@ -62,7 +64,8 @@ final class ProjectTermProposalWiringTests: XCTestCase {
         let clock = ManualSessionClock()
         viewModel.dependencies.clock = clock.clock
         viewModel.appConfigStore = MockAppConfigStore(promptTemplates: template, agentPromptTemplates: template)
-        viewModel.llmPolishingService = FakePolishingService()
+        let service = FakePolishingService()
+        viewModel.llmPolishingService = service
         viewModel.stubCommitTarget { "com.apple.Terminal" }
         viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding(outcome: nil)
         let store = LearnedTermStore(fileURL: nil, now: clock.clock.now)
@@ -75,7 +78,7 @@ final class ProjectTermProposalWiringTests: XCTestCase {
             trackedFiles: { _ in ["README.md"] }
         )
         retainForTestProcessLifetime(viewModel)
-        return Harness(viewModel: viewModel, overlay: overlay, runner: runner, store: store)
+        return Harness(viewModel: viewModel, overlay: overlay, runner: runner, store: store, service: service)
     }
 
     private func join(
@@ -164,5 +167,47 @@ final class ProjectTermProposalWiringTests: XCTestCase {
         harness.overlay.commitOutcome = .failed(message: "Insert failed.")
         await dictate(harness, join: join())
         XCTAssertEqual(harness.runner.all, [])
+    }
+
+    // MARK: Matching
+
+    private func seedProposal(_ harness: Harness) {
+        harness.store.recordProposal(
+            ["PageComposer"],
+            agent: .claude,
+            project: LearnedTermProjectIdentity(key: Self.projectDirectory, name: "quillmark"),
+            excluding: []
+        )
+        harness.store.waitForPendingWrites()
+    }
+
+    /// Under the repo-vocabulary gate a proposal is pre-applied and counts a
+    /// dictation, but the prompt never lists it as the speaker's own.
+    func testAProposalIsPreAppliedButNotListedAsLearned() async throws {
+        let harness = makeHarness(repoVocabulary: true)
+        seedProposal(harness)
+        await dictate(harness, join: join())
+
+        let request = try XCTUnwrap(await harness.service.lastRequest)
+        XCTAssertEqual(request.inputText, "rename the PageComposer struct")
+        XCTAssertFalse(
+            (request.userPrompts + [request.systemPrompt]).contains {
+                $0.contains(RepoVocabularyMatcher.learnedVocabularyHeader + "\n")
+            },
+            "a proposal is not the speaker's vocabulary"
+        )
+        let term = harness.store.snapshot().projects.first?.terms.first
+        XCTAssertEqual(term?.dictations, 1)
+        XCTAssertEqual(term?.isUnconfirmedProposal, true)
+    }
+
+    func testWithoutRepoVocabularyAProposalIsNotUsed() async throws {
+        let harness = makeHarness(repoVocabulary: false)
+        seedProposal(harness)
+        await dictate(harness, join: join())
+
+        let request = try XCTUnwrap(await harness.service.lastRequest)
+        XCTAssertEqual(request.inputText, "rename the page composer struct")
+        XCTAssertEqual(harness.store.snapshot().projects.first?.terms.first?.dictations, 0)
     }
 }

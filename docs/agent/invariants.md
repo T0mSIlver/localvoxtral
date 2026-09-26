@@ -291,8 +291,10 @@ there is not.
   dictations with source `agent:<name>`. Until three dictations or a pin
   confirm it, it matches only in the `.learned` exact tier, only where repo
   vocabulary may go (setting on, loopback or trusted endpoint), is never a
-  sound-alike nomination or verification pair, and is not in
-  `confirmedTerms`; it is evicted first and decays like any unpinned term.
+  sound-alike nomination or verification pair, is pre-applied but never
+  listed under `[Learned vocabulary]` (which tells the model the speaker has
+  used the spelling), and is not in `confirmedTerms`; it is evicted first
+  and decays like any unpinned term.
   One stamp per project key (main checkout, #652), whichever agent answers
   first; a failure stamps only an attempt time and retries after 24 h.
 
