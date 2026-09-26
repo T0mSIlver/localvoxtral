@@ -142,7 +142,7 @@ final class OpencodePromptRelayTests: XCTestCase {
         let server = try FakeOpencodePromptRelay()
         addTeardownBlock { server.stop() }
         var fellBack: [String] = []
-        let sink = OpencodePromptRelaySink(relay: server.relay(sessionID: "ses_a")) { fellBack.append($0) }
+        let sink = AgentPromptSink(route: OpencodePromptRoute(relay: server.relay(sessionID: "ses_a"))) { fellBack.append($0) }
 
         sink.append("run the ")
         sink.append("tests")
@@ -166,7 +166,7 @@ final class OpencodePromptRelayTests: XCTestCase {
         let server = try FakeOpencodePromptRelay { call in call.text == "second " ? 409 : 200 }
         addTeardownBlock { server.stop() }
         var fellBack: [String] = []
-        let sink = OpencodePromptRelaySink(relay: server.relay(sessionID: "ses_a")) { fellBack.append($0) }
+        let sink = AgentPromptSink(route: OpencodePromptRoute(relay: server.relay(sessionID: "ses_a"))) { fellBack.append($0) }
 
         sink.append("first ")
         sink.append("second ")
@@ -190,7 +190,7 @@ final class OpencodePromptRelayTests: XCTestCase {
             opencodeSessionID: "ses_a"
         )
         var fellBack: [String] = []
-        let sink = OpencodePromptRelaySink(relay: relay) { fellBack.append($0) }
+        let sink = AgentPromptSink(route: OpencodePromptRoute(relay: relay)) { fellBack.append($0) }
 
         sink.append("hello ")
         sink.append("world")
@@ -207,7 +207,7 @@ final class OpencodePromptRelayTests: XCTestCase {
         addTeardownBlock { server.stop() }
         var sinkFallback: [String] = []
         var overlayTarget: [String] = []
-        let sink = OpencodePromptRelaySink(relay: server.relay(sessionID: "ses_a")) { sinkFallback.append($0) }
+        let sink = AgentPromptSink(route: OpencodePromptRoute(relay: server.relay(sessionID: "ses_a"))) { sinkFallback.append($0) }
 
         sink.append("committed text") { overlayTarget.append($0) }
         sink.append("later")

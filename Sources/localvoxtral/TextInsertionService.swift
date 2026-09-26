@@ -160,12 +160,12 @@ final class TextInsertionService {
     /// it went to the terminal the Return is for.
     @ObservationIgnored
     private(set) var liveInsertionTargetPIDs: [pid_t?] = []
-    /// This dictation's opencode prompt relay (#719), when the focused pane
-    /// declared one at start. While it is healthy, live text goes to it and
-    /// not to the keyboard, and records no landing PID: it lands in that
-    /// pane's prompt wherever focus is.
+    /// This dictation's route into the joined agent's prompt, when one
+    /// resolved at start. While it is healthy, live text goes to it and not
+    /// to the keyboard, and records no landing PID: it lands in that
+    /// agent's prompt wherever focus is.
     @ObservationIgnored
-    private(set) var promptRelaySink: OpencodePromptRelaySink?
+    private(set) var promptRelaySink: AgentPromptSink?
 
 #if DEBUG
     @ObservationIgnored
@@ -364,28 +364,27 @@ final class TextInsertionService {
         return NSWorkspace.shared.frontmostApplication?.processIdentifier
     }
 
-    // MARK: - opencode prompt relay (#719)
+    // MARK: - Agent prompt route (#719)
 
-    /// Arms the relay for the dictation starting now, or disarms it with nil.
-    /// `fallback` receives, in order, text the relay did not take; Live
+    /// Arms the route for the dictation starting now, or disarms it with nil.
+    /// `fallback` receives, in order, text the route did not take; Live
     /// Auto-Paste passes nil to type it here.
     func beginPromptRelay(
-        _ relay: OpencodePromptRelay?,
-        poster: any OpencodePromptRelayPosting = OpencodePromptRelayClient.shared,
+        _ route: (any AgentPromptRoute)?,
         fallback: (@MainActor (String) -> Void)? = nil
     ) {
-        guard let relay else {
+        guard let route else {
             promptRelaySink = nil
             return
         }
-        promptRelaySink = OpencodePromptRelaySink(relay: relay, poster: poster) { [weak self] text in
+        promptRelaySink = AgentPromptSink(route: route) { [weak self] text in
             if let fallback {
                 fallback(text)
             } else {
                 self?.typeLiveTextThePromptRelayRefused(text)
             }
         }
-        Log.insertion.notice("opencode prompt relay armed for this dictation")
+        Log.insertion.notice("\(route.name, privacy: .public) armed for this dictation")
     }
 
     func endPromptRelay() {

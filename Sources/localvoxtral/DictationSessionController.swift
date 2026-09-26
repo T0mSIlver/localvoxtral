@@ -978,6 +978,6 @@ extension DictationSessionController {
         dogfoodEditSignalWatcher.supersede()
         #endif
         sessionClaudeJoinBadge = await context.captureAtStart()
-        await context.resolveOpencodePromptRelay()
+        await context.resolveAgentPromptRoute()
     }
 }
