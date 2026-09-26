@@ -1,7 +1,9 @@
+import ClaudeContextWire
 import Foundation
 import XCTest
 @testable import localvoxtralCore
 import localvoxtralTestSupport
+import Synchronization
 
 final class StopSecondPassTests: XCTestCase {
     func testTheDeadlineGrowsWithTheAudio() {
@@ -99,6 +101,83 @@ final class StopSecondPassTests: XCTestCase {
         let outcome = await task.value
         XCTAssertEqual(outcome, .cancelled)
         XCTAssertEqual(answer.cancelledCount, 1)
+    }
+
+    // MARK: - Repository root (#705)
+
+    func testALookupStuckPastTheBoundIsUnknownAndHoldsOnlyItsOwnGate() async {
+        let clock = ManualSessionClock()
+        let gate = RepoVocabularyFlightGate()
+        let started = BoundedWait()
+        let unstick = BoundedWait()
+        let lookup = Task {
+            await StopSecondPass.repositoryRoot(sleep: clock.clock.sleep, gate: gate) {
+                started.resolve()
+                _ = await unstick.value(failAfter: 10)
+                return .root("/work/quillmark")
+            }
+        }
+        _ = await started.value(failAfter: 10)
+        await clock.waitForSleepers(1)
+        clock.advance(by: 0.249)
+        XCTAssertEqual(clock.pendingSleepers, 1, "not before the bound")
+        clock.advance(by: 0.001)
+        let root = await lookup.value
+        XCTAssertEqual(root, .unknown)
+
+        let calls = Mutex(0)
+        let next = await StopSecondPass.repositoryRoot(sleep: clock.clock.sleep, gate: gate) {
+            calls.withLock { $0 += 1 }
+            return .noRepository
+        }
+        XCTAssertEqual(next, .unknown, "the stuck lookup still holds the gate")
+        XCTAssertEqual(calls.withLock { $0 }, 0, "and no second one starts behind it")
+        XCTAssertTrue(RepoVocabularyFlightGate().acquire(), "the polish's gate is another")
+        unstick.resolve()
+    }
+
+    func testAnAnswerWithinTheBoundIsTheRoot() async {
+        let clock = ManualSessionClock()
+        let root = await StopSecondPass.repositoryRoot(
+            sleep: clock.clock.sleep, gate: RepoVocabularyFlightGate()
+        ) { .root("/work/quillmark-wt", mainCheckout: "/work/quillmark") }
+        XCTAssertEqual(root, .root("/work/quillmark-wt", mainCheckout: "/work/quillmark"))
+    }
+
+    /// The case #705 fixes for a joined session: its directory is a
+    /// subdirectory of a linked worktree, and the project's proposals are
+    /// filed under the main checkout (#652). Without the root the key is the
+    /// session's own directory, which holds none of them.
+    func testASessionInAWorktreeSubdirectoryKeysOnTheMainCheckout() async throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("second-pass-root-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: base) }
+        let main = base.appendingPathComponent("quillmark")
+        let worktreeGitDir = main.appendingPathComponent(".git/worktrees/wt")
+        let worktree = base.appendingPathComponent("quillmark-wt")
+        let session = worktree.appendingPathComponent("Sources/Quill")
+        try FileManager.default.createDirectory(at: worktreeGitDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+        try "../..\n".write(
+            to: worktreeGitDir.appendingPathComponent("commondir"), atomically: true, encoding: .utf8)
+        try "gitdir: \(worktreeGitDir.path)\n".write(
+            to: worktree.appendingPathComponent(".git"), atomically: true, encoding: .utf8)
+        let workspace = try XCTUnwrap(ClaudeWorkspaceReference.make(
+            rawCwd: session.path, origin: .localAuthenticated(peerUID: 501)))
+
+        let root = await StopSecondPass.repositoryRoot(
+            sleep: ManualSessionClock().clock.sleep, gate: RepoVocabularyFlightGate()
+        ) {
+            RepoIndexing.repositoryRoot(
+                gitRoot: RepoIndexing.findGitRoot(startingAt: session.path))
+        }
+
+        XCTAssertEqual(
+            LearnedTermProjectResolver.resolve(repositoryRoot: root, workspace: workspace)?.key,
+            main.path)
+        XCTAssertEqual(
+            LearnedTermProjectResolver.resolve(repositoryRoot: .unknown, workspace: workspace)?.key,
+            session.path, "what #647 keyed on")
     }
 }
 

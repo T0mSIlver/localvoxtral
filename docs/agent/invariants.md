@@ -166,7 +166,12 @@ there is not.
   joined session's text (live join, session context on) and the start
   screen the stop sample reconciled. They are read from what the stop
   holds; the repository pipeline is not run for the pass, since it can take
-  3 s and nominates only what the realtime text nearly spells. The screen
+  3 s and nominates only what the realtime text nearly spells. The project
+  (its proposals, and its confirmed terms first) needs the git root for an
+  unjoined terminal or a session in a worktree (#705): the pass resolves it
+  the way the pipeline does, without the index, under its own single-flight
+  gate so the polish never skips its vocabulary, and sends without the
+  project after 250 ms. The screen
   goes last against the 100-term cap: a listed term nobody says is
   sometimes written anyway. A new dictation that cancels
   the pass saves the realtime text as not inserted, as it does for a polish.

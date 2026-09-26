@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// The second transcription an Overlay Buffer dictation gets on stop (#317):
 /// the session's audio sent whole to a model that takes a vocabulary. Its
@@ -24,7 +25,8 @@ package enum StopSecondPass {
     // MARK: - Vocabulary
 
     /// Terms this dictation's own context offers (#647), read at the stop
-    /// from what was already in hand: nothing here waits on a subprocess or
+    /// from what was already in hand. Only the project waits, on a git root
+    /// bounded by `repositoryRootBound` (#705); nothing runs a subprocess or
     /// re-reads the screen.
     package struct ContextTerms: Equatable, Sendable {
         /// Code-like terms from the joined coding-agent session's text.
@@ -119,6 +121,90 @@ package enum StopSecondPass {
             term.contains(where: \.isLetter)
         else { return nil }
         return term
+    }
+
+    // MARK: - Repository root (#705)
+
+    /// How long the stop waits for the git root before sending the pass
+    /// without the project's terms. The lookup is a few `stat`s up from one
+    /// directory, or a process-table walk under a terminal, and answers in
+    /// milliseconds; the bound is there for a `stat` parked on a dead mount.
+    package static let repositoryRootBound: Duration = .milliseconds(250)
+
+    /// The git root `resolve` finds, or `.unknown` when `bound` passes on
+    /// `sleep` first or an earlier lookup still holds `gate`.
+    ///
+    /// `resolve` runs detached and is never cancelled, since a blocked
+    /// syscall would not notice. Its task holds `gate` until it returns, so a
+    /// wedged lookup costs one thread however many stops follow. The gate is
+    /// the second pass's own: the repository pipeline the polish runs has
+    /// another, and a lookup still in flight never makes it skip.
+    package static func repositoryRoot(
+        bound: Duration = repositoryRootBound,
+        sleep: @escaping @Sendable (Duration) async -> Void,
+        gate: RepoVocabularyFlightGate,
+        resolve: @escaping @Sendable () async -> LearnedTermProjectResolver.RepositoryRoot
+    ) async -> LearnedTermProjectResolver.RepositoryRoot {
+        guard gate.acquire() else { return .unknown }
+        // A continuation, not a task group: a group awaits every child, and
+        // the wedged `resolve` this bound exists for would never let it end.
+        // The bound's sleep is cancelled by an answer, so it leaves no timer
+        // behind, and by the caller's cancellation, which ends the wait.
+        let timer = BoundTimer()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let answer = ResumeOnce(continuation)
+                let sleeper = Task.detached(priority: .userInitiated) {
+                    await sleep(bound)
+                    answer.resume(.unknown)
+                }
+                timer.set(sleeper)
+                Task.detached(priority: .userInitiated) {
+                    let root = await resolve()
+                    gate.release()
+                    answer.resume(root)
+                    sleeper.cancel()
+                }
+            }
+        } onCancel: {
+            timer.cancel()
+        }
+    }
+
+    /// The bound's sleep, cancellable before it exists: a cancellation that
+    /// lands first cancels it as it is set.
+    private final class BoundTimer: Sendable {
+        private let state = Mutex<(task: Task<Void, Never>?, cancelled: Bool)>((nil, false))
+
+        func set(_ task: Task<Void, Never>) {
+            let cancelled = state.withLock { state in
+                state.task = task
+                return state.cancelled
+            }
+            if cancelled { task.cancel() }
+        }
+
+        func cancel() {
+            state.withLock { state in
+                state.cancelled = true
+                return state.task
+            }?.cancel()
+        }
+    }
+
+    private final class ResumeOnce: Sendable {
+        private let continuation: Mutex<CheckedContinuation<LearnedTermProjectResolver.RepositoryRoot, Never>?>
+
+        init(_ continuation: CheckedContinuation<LearnedTermProjectResolver.RepositoryRoot, Never>) {
+            self.continuation = Mutex(continuation)
+        }
+
+        func resume(_ root: LearnedTermProjectResolver.RepositoryRoot) {
+            continuation.withLock { pending in
+                pending?.resume(returning: root)
+                pending = nil
+            }
+        }
     }
 
     // MARK: - Race

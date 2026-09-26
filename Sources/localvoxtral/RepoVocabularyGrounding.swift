@@ -19,6 +19,17 @@ protocol RepoVocabularyGrounding: AnyObject {
         joinedWorkspace: LocalWorkspacePath?,
         repositoryRoot: RepoVocabularyRootBox?
     ) async -> RepoVocabularyMatcher.GroundingOutcome?
+
+    /// The git root alone, for the second pass on stop (#705): the same
+    /// directory resolution, with no index read and no match, given up after
+    /// `StopSecondPass.repositoryRootBound` on `sleep`. It never holds the
+    /// gate `grounding` takes, so the polish after it still gets its
+    /// vocabulary. The same consent gates sit above it, in the caller.
+    @MainActor
+    func repositoryRoot(
+        joinedWorkspace: LocalWorkspacePath?,
+        sleep: @escaping @Sendable (Duration) async -> Void
+    ) async -> LearnedTermProjectResolver.RepositoryRoot
 }
 
 /// The production pipeline, with the two points a test holds still: the
@@ -42,12 +53,18 @@ final class RepoVocabularyPipeline: RepoVocabularyGrounding {
     /// `RepoVocabularyFlightGate`): while a prior pipeline is still in flight,
     /// commits fast-skip vocabulary instead of stacking more blocked threads.
     let inFlight = RepoVocabularyFlightGate()
+    /// The second pass's root lookup has a gate of its own (#705), so a
+    /// lookup still in flight never makes the polish skip its vocabulary.
+    let rootLookupInFlight = RepoVocabularyFlightGate()
     private let commitTargetAppPID: () -> pid_t?
     private let targetBundleID: () -> String?
     /// Replaces only the DETACHED body (AX title / process cwd + git index +
     /// match) while keeping the deadline race in play, so a test can inject a
     /// never-completing pipeline and prove the commit still proceeds.
     var pipeline: (@Sendable (String) async -> RepoVocabularyMatcher.GroundingOutcome?)?
+    /// Replaces only the detached body of `repositoryRoot`, keeping its bound
+    /// in play.
+    var rootLookup: (@Sendable () async -> LearnedTermProjectResolver.RepositoryRoot)?
     /// The deadline clock of the race; an immediately-returning closure makes
     /// the deadline expire at once.
     var deadlineSleep: @Sendable () async -> Void = {
@@ -206,19 +223,7 @@ final class RepoVocabularyPipeline: RepoVocabularyGrounding {
         let title = TerminalWorkingDirectoryResolver.windowTitle(
             forApplicationPID: terminalApplicationPID
         )
-        let targetBundleID = targetBundleID()
-        let processFallbackPID: pid_t?
-        if let targetBundleID,
-            TerminalTargetDetector.isTerminalLikeBundleID(targetBundleID)
-                || settings.userTerminalAppBundleIDs.contains(targetBundleID)
-        {
-            processFallbackPID = terminalApplicationPID
-        } else {
-            // Descendant CWDs only have the intended meaning for terminal
-            // emulators. Other apps (IDEs especially) may own build helpers in
-            // unrelated repos; never treat those as a focused-terminal signal.
-            processFallbackPID = nil
-        }
+        let processFallbackPID = processFallbackPID(terminalApplicationPID)
         return Self.detachedRepoVocabularyPipeline {
             await RepoVocabularyService.entries(
                 forWindowTitle: title,
@@ -227,6 +232,61 @@ final class RepoVocabularyPipeline: RepoVocabularyGrounding {
                 cache: cache,
                 rootSink: { root in repositoryRoot?.report(root) }
             )
+        }
+    }
+
+    /// `pid` when the commit target is a terminal emulator. Descendant CWDs
+    /// only have the intended meaning for terminal emulators. Other apps (IDEs
+    /// especially) may own build helpers in unrelated repos; never treat those
+    /// as a focused-terminal signal.
+    private func processFallbackPID(_ pid: pid_t) -> pid_t? {
+        guard let targetBundleID = targetBundleID(),
+            TerminalTargetDetector.isTerminalLikeBundleID(targetBundleID)
+                || settings.userTerminalAppBundleIDs.contains(targetBundleID)
+        else { return nil }
+        return pid
+    }
+
+    func repositoryRoot(
+        joinedWorkspace: LocalWorkspacePath?,
+        sleep: @escaping @Sendable (Duration) async -> Void
+    ) async -> LearnedTermProjectResolver.RepositoryRoot {
+        let resolve: @Sendable () async -> LearnedTermProjectResolver.RepositoryRoot
+        if let rootLookup {
+            resolve = rootLookup
+        } else if let joinedWorkspace {
+            let directory = joinedWorkspace.path
+            resolve = {
+                Self.projectRoot(from: RepoVocabularyService.gitRoot(
+                    forWindowTitle: nil, terminalApplicationPID: nil,
+                    joinedWorkspaceDirectory: directory))
+            }
+        } else {
+            guard let terminalApplicationPID = commitTargetAppPID() else { return .unknown }
+            // On the main actor, as for `grounding`: an AX read capped at
+            // 0.5 s per element, milliseconds from a responsive terminal.
+            let title = TerminalWorkingDirectoryResolver.windowTitle(
+                forApplicationPID: terminalApplicationPID)
+            let processFallbackPID = processFallbackPID(terminalApplicationPID)
+            resolve = {
+                Self.projectRoot(from: RepoVocabularyService.gitRoot(
+                    forWindowTitle: title, terminalApplicationPID: processFallbackPID,
+                    joinedWorkspaceDirectory: nil))
+            }
+        }
+        return await StopSecondPass.repositoryRoot(
+            sleep: sleep, gate: rootLookupInFlight, resolve: resolve)
+    }
+
+    /// Several repositories under one terminal, or one that cannot be told,
+    /// is not "no repository": the project stays unknown.
+    private nonisolated static func projectRoot(
+        from lookup: RepoVocabularyService.GitRootLookup
+    ) -> LearnedTermProjectResolver.RepositoryRoot {
+        switch lookup {
+        case .found(let root, _): RepoIndexing.repositoryRoot(gitRoot: root)
+        case .notARepository: .noRepository
+        case .ambiguous, .indeterminate: .unknown
         }
     }
 
@@ -274,9 +334,7 @@ final class RepoVocabularyRootBox: @unchecked Sendable {
     /// `.git` file for its main checkout happens here, off the main actor and
     /// under the pipeline's deadline, never on the commit path.
     func report(_ root: String?, fileManager: FileManager = .default) {
-        let resolved: LearnedTermProjectResolver.RepositoryRoot = root.map {
-            .root($0, mainCheckout: RepoIndexing.mainCheckout(ofRoot: $0, fileManager: fileManager))
-        } ?? .noRepository
+        let resolved = RepoIndexing.repositoryRoot(gitRoot: root, fileManager: fileManager)
         outcome.withLock { $0 = resolved }
     }
 }
