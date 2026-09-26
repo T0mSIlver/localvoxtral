@@ -62,8 +62,9 @@ supervises two inference engines for you — no terminal required:
   by default (a lighter 0.8B and a larger 9B are one click away in
   Settings). The 4B and 9B decode greedily (temperature 0), so the same
   dictation always polishes the same way; the 0.8B, Mistral API and
-  External URL polishing send temperature 0.3. A warm prompt cache keeps polish latency
-  low, and turning polishing off frees its memory immediately. The helper builds against an
+  External URL polishing send temperature 0.3. A warm prompt cache keeps
+  polish latency low, and turning polishing off frees its memory
+  immediately. The helper builds against an
   mlx-swift-lm `main` commit from 2026-09-22 (`ee673d6`), not a release:
   no release yet loads OptiQ checkpoints correctly, because they ship
   extra weight files next to the model's.
