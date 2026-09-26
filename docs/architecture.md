@@ -67,6 +67,10 @@ AppKit:
   hashes with `PortableSHA256` instead of CryptoKit
 - the live replacement rewriters (`LiveReplacementCorrector`,
   `LiveHoldBackReplacementStream`)
+- quick capture routing (`QuickCapture/`, #725): the project descriptions a
+  classifier reads, the Jev client, the polishing model's routing mode as
+  its fallback, and the rule that sends a low or tied answer to the
+  catch-all
 - the Claude socket guard (`ClaudeSocketGuard`: `getpeereid` and
   `LOCAL_PEERPID` on Darwin, `SO_PEERCRED` on Linux), with the SHA-256 and
   HMAC helpers the Claude code hashes through
