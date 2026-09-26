@@ -161,8 +161,8 @@ final class StopSecondPassPipelineTests: XCTestCase {
 
     // MARK: - Unjoined terminal (#705)
 
-    private static let unjoinedRepository = "/nonexistent-705/quillmark"
-    private static let repositoryEntry = ReplacementEntry(
+    private nonisolated static let unjoinedRepository = "/nonexistent-705/quillmark"
+    private nonisolated static let repositoryEntry = ReplacementEntry(
         replaceWith: "PageComposer.swift", matches: ["page composer dot swift"])
 
     /// An unjoined terminal in a repository whose agent proposed `inkwell`,
