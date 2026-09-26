@@ -963,13 +963,20 @@ there is not.
     diagnostic must not raise that prompt), `focusedBrowserTabURL` (a tab URL
     is a page the user is looking at), and `readFocusedGrid` (screen text; only
     the panel-nonce match ever needed it, and that match cannot happen here).
+    One reader is wired only on request: `--desktop` probes the running Claude
+    Desktop instead of the frontmost app and hands the resolver the Desktop
+    arm's Accessibility read, which switches Electron's accessibility tree on
+    and is therefore never a default.
     What the verb PRINTS is bounded by `ClaudeSessionJoinSummary`, the single
     mapper the dogfood record also uses: an arm name, the resolver's own
     content-free abstention categories, an origin CLASS, a terminal NAME, and
     two Bools — never a session id, pane id, socket path, host, nonce, or
-    workspace path. The registry is per-process and therefore empty in that
-    process; the verb says so as its first cause rather than letting the arms'
-    resulting declines read as a surface failure.
+    workspace path. The live registry is in the app, so the verb restores the
+    copy the app saves (`ClaudeSessionFileStore`), through the app's own
+    restore checks and a store that never writes: a restore that drops a row
+    rewrites the file, and the file belongs to the app. It is only as fresh as
+    the app's last save, and an empty one is the verb's first cause rather
+    than letting the arms' resulting declines read as a surface failure.
   - Screen capture is split by ROUTE (`TerminalScreenAllowlist`): raw AX grid
     capture remains Ghostty-only (its single-`AXTextArea` grid is verified;
     iTerm2's AX tree is ambiguous across splits, Terminal.app's unverified).
@@ -1360,8 +1367,7 @@ there is not.
     250 ms once and reads again, so the first dictation after the desktop app
     launches can still join. Both identifiers are UNDOCUMENTED: a desktop
     update that renames either stops the arm joining, and cannot make it join
-    the wrong session. `--probe-surface` withholds this reader like the
-    browser one.
+    the wrong session. `--probe-surface` reads it only under `--desktop`.
   - The overlay's join badge (`OverlayClaudeJoinBadge`) DESCRIBES the resolved
     join; it never resolves one. It reads `claudeSessionJoin` after the single
     start-time resolution and nothing else — a badge that asked again could name
@@ -1369,6 +1375,16 @@ there is not.
     failure the once-per-dictation rule exists to prevent. Its one extra read is
     `registry.hasLiveSessions()`, which touches no title, TTY, socket, or process
     table and only chooses between "nothing attached" and showing nothing at all.
+    Two exceptions to "nothing attached" (#658), both taken from the same
+    start-time resolution. A gate that means nothing on this surface could
+    use a join (no polishing endpoint, both context settings off, or a browser
+    or Claude Desktop target without session context, which the screen
+    setting alone never reads) hides the badge whatever the registry holds:
+    "No Claude session" there blames a session for a setting. And focus
+    inside a Claude Desktop session view whose id resolved to no single live
+    session (`ClaudeJoinResolution.focusedSessionUnmatched`) shows it even
+    with an EMPTY registry, because an empty registry is what a dead hook
+    tunnel looks like.
     What it renders is a length-capped workspace `displayName` with control
     characters neutralized: a LOCAL name is the last component of a real
     directory, where a newline is legal and the panel is measured from the body
@@ -1383,6 +1399,17 @@ there is not.
     and one pushed after depended on an order nothing enforced. It is always
     already known there — the join resolves before the realtime socket connects,
     and the panel opens after it.
+  - Every dictation writes ONE persisted line saying how its join ended
+    (`SessionContextResolver.noteJoinOutcome`, `Log.claudeContext` at
+    `.notice`, `Claude join outcome: arm=… origin=… causes=…`): the arm that
+    joined, or the gate that stopped it before the resolver ran, or the
+    abstention chain the resolver noted. The arms keep logging at `.info`,
+    which the unified log does not persist, so without this line a join
+    could not be questioned after the fact (field, 2026-09-26: three hours of
+    Claude Desktop dictations left only target verdicts). The line is
+    `ClaudeSessionJoinSummary.noticeText`: categories, an origin class and
+    counts only, never an id, path, host or address, because
+    `mac-crashlog.yml` publishes what it reads.
   - Lookups abstain rather than guess: no match, unknown, stale, or ambiguous
     means no context. There is deliberately no sole-session or cwd heuristic —
     it is wrong precisely when it matters.
@@ -1757,8 +1784,8 @@ there is not.
   starts dictations and reports what the context pipeline resolved
   (`DogfoodControlSocket`), because two things are unobservable from outside
   the process: a dictation has no deterministic trigger, and
-  `ClaudeSessionRegistry` is per-process, so `--probe-surface` can only ever
-  resolve against an empty registry. What makes that acceptable is a set of
+  `ClaudeSessionRegistry` is per-process, so `--probe-surface` sees only the
+  sessions the app last saved to disk. What makes that acceptable is a set of
   bounds, each of which is the whole argument for the one above it:
   - **`#if LOCALVOXTRAL_DOGFOOD` and nothing else.** A shipped build compiles
     none of it — no listener, no path, no code that could create one, and no

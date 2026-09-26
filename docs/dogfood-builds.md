@@ -116,9 +116,9 @@ joined and why
 ([`DogfoodControlSocket.swift`](../Sources/localvoxtral/Dogfood/DogfoodControlSocket.swift)).
 It exists because two things cannot be observed from outside the process: a
 dictation has no deterministic trigger (the real one is a modifier *gesture*),
-and `ClaudeSessionRegistry` is per-process with no persistence — so
-`localvoxtral --probe-surface` always resolves against an empty registry and
-can never report a real join arm.
+and `ClaudeSessionRegistry` lives in the app — so
+`localvoxtral --probe-surface` resolves only against the sessions the app last
+saved to disk, never the live registry.
 
 **Two gates, both required**, and the second is NOT the capture's:
 

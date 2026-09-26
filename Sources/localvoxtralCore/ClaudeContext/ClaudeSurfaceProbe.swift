@@ -1,7 +1,8 @@
 import Foundation
 
-/// `localvoxtral --probe-surface [--json]`: resolve the Claude Code join for
-/// whatever surface is frontmost right now, print the answer, exit.
+/// `localvoxtral --probe-surface [--json] [--desktop]`: resolve the Claude Code
+/// join for whatever surface is frontmost right now (or, with `--desktop`, for
+/// the session focused in Claude Desktop), print the answer, exit.
 ///
 /// The verb exists because the join is otherwise unobservable. In the field the
 /// only symptom of a join that will not resolve is context that never arrives,
@@ -28,21 +29,25 @@ import Foundation
 ///
 /// Everything else the probe wires is a read: the AppleScript focused-pane tty,
 /// the herdr process-table binding, `pane.current`/`pane.process_info` on a
-/// local herdr socket, the AX focused-window identity. Nothing is written,
+/// local herdr socket, the AX focused-window identity, the app's saved session
+/// registry, and, only under `--desktop`, the address of Claude Desktop's
+/// focused web view (a read that switches Electron's accessibility tree on,
+/// which is why it waits for the flag). Nothing is written,
 /// nothing outlives the process, and the printed summary carries no token,
 /// nonce, host, pane id, session id, or path (see
 /// `ClaudeSessionJoinSummary`).
 ///
-/// ## What this process cannot know
+/// ## Which sessions it resolves against
 ///
-/// The session registry is per-process and lives only in the running app: it is
-/// built from hook records the app's broker received. A separate one-shot
-/// process therefore starts with an EMPTY registry, so `arm` reports what a
-/// resolve against no known sessions concludes, and the diagnostic value is in
-/// `abstentionReason` — which arms ran, how far each got, and where the surface
-/// stopped being identifiable. `probe: no live Claude sessions in this process`
-/// is noted first whenever that is the case, so the chain can never be misread
-/// as "the surface failed". See `docs/agent/field-debugging.md`.
+/// The live registry is in the running app, built from hook records its broker
+/// received. The probe restores the copy the app saves to disk, through the
+/// app's own restore checks and a store that never writes back, so it sees the
+/// sessions the app last saved rather than an empty registry. The diagnostic
+/// value is still in `abstentionReason` — which arms ran, how far each got, and
+/// where the surface stopped being identifiable. `probe: no live Claude
+/// sessions in the registry` is noted first whenever the restored registry is
+/// empty, so the chain can never be misread as "the surface failed". See
+/// `docs/agent/field-debugging.md`.
 @MainActor
 package enum ClaudeSurfaceProbe {
     package static let verb = "--probe-surface"
@@ -50,9 +55,13 @@ package enum ClaudeSurfaceProbe {
     package struct Options: Equatable {
         /// One line of JSON on stdout instead of the aligned human form.
         package var json = false
+        /// Probe the running Claude Desktop instead of the frontmost app, with
+        /// the Desktop arm's Accessibility reader wired in.
+        package var desktop = false
 
-        package init(json: Bool = false) {
+        package init(json: Bool = false, desktop: Bool = false) {
             self.json = json
+            self.desktop = desktop
         }
     }
 
@@ -74,18 +83,20 @@ package enum ClaudeSurfaceProbe {
         case accessibilityNotGranted = "probe: accessibility permission not granted"
         case noFrontmostApplication = "probe: no frontmost application"
         case unsupportedSurface = "probe: frontmost application is not a joinable surface"
-        case noLiveSessions = "probe: no live Claude sessions in this process"
+        case noLiveSessions = "probe: no live Claude sessions in the registry"
+        case claudeDesktopNotRunning = "probe: Claude Desktop is not running"
         case timedOut = "probe: resolver did not answer within the probe deadline"
     }
 
     package static let usageText = """
-    usage: localvoxtral --probe-surface [--json]
+    usage: localvoxtral --probe-surface [--json] [--desktop]
 
     Resolves the Claude Code session join for the frontmost surface once and
     exits. Run it from the terminal you would dictate into: that terminal is
     the frontmost surface, which is the one being probed.
 
-      --json   one line of JSON instead of the aligned human form
+      --json      one line of JSON instead of the aligned human form
+      --desktop   probe the session focused in Claude Desktop instead
 
     Exit status: 0 an arm joined, 1 no arm joined, 2 usage error.
     """
@@ -98,6 +109,7 @@ package enum ClaudeSurfaceProbe {
             switch argument {
             case verb: continue
             case "--json": options.json = true
+            case "--desktop": options.desktop = true
             default:
                 return .usageError("unrecognized option for \(verb): \(argument)")
             }
@@ -113,6 +125,7 @@ package enum ClaudeSurfaceProbe {
     package static func summarize(
         accessibilityTrusted: Bool,
         frontmostTarget: TerminalScreenTarget?,
+        targetUnavailable: ProbeAbstention = .noFrontmostApplication,
         hasLiveSessions: () -> Bool,
         resolve: (TerminalScreenTarget) async -> ClaudeSessionJoin?
     ) async -> ClaudeSessionJoinSummary {
@@ -124,7 +137,7 @@ package enum ClaudeSurfaceProbe {
             return abstained(.accessibilityNotGranted)
         }
         guard let target = frontmostTarget else {
-            return abstained(.noFrontmostApplication)
+            return abstained(targetUnavailable)
         }
         guard TerminalScreenAllowlist.isSupported(target.bundleID)
             || BrowserTabAllowlist.isSupported(target.bundleID)

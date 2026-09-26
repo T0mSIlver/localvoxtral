@@ -53,6 +53,12 @@ final class SessionContextResolver {
     /// tests drive the whole commit path against an in-memory tree.
     var claudeRepoCollector: any ClaudeRepoCollecting = ClaudeRepoCollector()
 
+    /// Where the per-dictation join line goes. A stored property so tests read
+    /// the line without the unified log.
+    var joinOutcomeLog: @MainActor (String) -> Void = { line in
+        Log.claudeContext.notice("Claude join outcome: \(line, privacy: .public)")
+    }
+
     init(settings: SettingsStore, textInsertion: TextInsertionService) {
         self.settings = settings
         self.textInsertion = textInsertion
@@ -86,12 +92,7 @@ final class SessionContextResolver {
             // there is no grounding to report on either way. Saying "no Claude
             // session" here would be true and useless — nothing would have used
             // one.
-            #if LOCALVOXTRAL_DOGFOOD
-            // Recorded even though no arm ran: `join report` answering with the
-            // PREVIOUS dictation's join would be the worst possible answer here
-            // — a stale arm name for a dictation that never resolved one.
-            dogfoodNoteResolvedJoin(nil, extraCause: "gate: no polishing endpoint")
-            #endif
+            noteJoinOutcome(.gated(.noPolishingEndpoint), causes: [])
             return .hidden
         }
         terminalScreenStartCapture = TerminalScreenContextSource.captureAtStart(
@@ -100,14 +101,14 @@ final class SessionContextResolver {
             isAccessibilityTrusted: textInsertion.isAccessibilityTrusted,
             trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
         )
-        claudeSessionJoin = await resolveClaudeSessionJoin(endpointURL: endpointURL)
-        #if LOCALVOXTRAL_DOGFOOD
-        // Snapshotted HERE, at the single resolution, because the commit path
-        // consumes both the join and the tap's abstention causes — by the time
-        // anything could ask afterwards, neither exists. Same summary type as
-        // the capture record and `--probe-surface`.
-        dogfoodNoteResolvedJoin(claudeSessionJoin, extraCause: nil)
-        #endif
+        // The resolver's abstention causes are collected HERE, around the one
+        // resolution, because it reduces each of them to a log line and a nil;
+        // after it returns, nothing else can say why.
+        let (attempt, causes) = await ClaudeJoinAbstentionTap.collecting {
+            await resolveClaudeSessionJoin(endpointURL: endpointURL)
+        }
+        claudeSessionJoin = attempt.join
+        noteJoinOutcome(attempt, causes: causes)
         // Ownership of the join's `ssh -L` is taken HERE, at the one place a
         // join is ever assigned, and never given back to whoever happens to
         // hold the join later. The commit path CONSUMES the join, so an owner
@@ -119,9 +120,7 @@ final class SessionContextResolver {
         // a description of `claudeSessionJoin`, so it cannot disagree with the
         // context that actually ships.
         let badge = OverlayClaudeJoinBadge.resolve(
-            join: claudeSessionJoin,
-            contextFeatureEnabled: settings.terminalScreenContextEnabled
-                || settings.claudeRepoContextEnabled,
+            attempt: attempt,
             liveSessionsExist: { [claudeSessionJoinResolver] in
                 claudeSessionJoinResolver?.hasLiveSessions() ?? false
             }
@@ -158,15 +157,15 @@ final class SessionContextResolver {
     /// open an `ssh -L`. (It reads no window title — no join has since #250.)
     /// An opted-out user, a remote endpoint, or a revoked Accessibility grant
     /// means none of that happens.
-    private func resolveClaudeSessionJoin(endpointURL: URL) async -> ClaudeSessionJoin? {
+    private func resolveClaudeSessionJoin(endpointURL: URL) async -> ClaudeJoinAttempt {
         guard let resolver = claudeSessionJoinResolver else {
-            return dogfoodUnresolvedJoin(cause: "gate: no resolver installed")
+            return .gated(.noResolver)
         }
         // Either context feature can want a join: the screen needs it to
         // authorize a raw excerpt, the repo/session blocks ARE the join's
         // content. Neither being enabled means there is nothing to resolve for.
         guard settings.terminalScreenContextEnabled || settings.claudeRepoContextEnabled else {
-            return dogfoodUnresolvedJoin(cause: "gate: both context settings off")
+            return .gated(.contextSettingsOff)
         }
         // Permitted endpoints only (loopback, or any endpoint under the
         // explicit trusted-endpoint opt-in). Repository contents and a prior
@@ -178,13 +177,13 @@ final class SessionContextResolver {
             endpointURL,
             trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
         ) else {
-            return dogfoodUnresolvedJoin(cause: "gate: endpoint not permitted")
+            return .gated(.endpointNotPermitted)
         }
         guard textInsertion.isAccessibilityTrusted else {
-            return dogfoodUnresolvedJoin(cause: "gate: accessibility not trusted")
+            return .gated(.accessibilityNotTrusted)
         }
         guard let target = TerminalScreenContextSource.frontmostTarget() else {
-            return dogfoodUnresolvedJoin(cause: "gate: no frontmost supported terminal")
+            return .gated(.noFrontmostTarget)
         }
         // The browser entry path. `frontmostTarget()` answers for ANY app and
         // the resolver owns the allowlists, so a browser reaches the resolver
@@ -195,27 +194,43 @@ final class SessionContextResolver {
         // user's browser, nor raise its Automation consent sheet.
         if BrowserTabAllowlist.isSupported(target.bundleID),
            !settings.claudeRepoContextEnabled {
-            return dogfoodUnresolvedJoin(cause: "gate: browser target without session context")
+            return .gated(.browserWithoutSessionContext)
         }
         // Claude Desktop, on the same terms: its join authorizes no screen
         // either, so the screen setting alone must not read another app's
         // accessibility tree (or switch Electron's tree on to do it).
         if ClaudeDesktopAllowlist.isSupported(target.bundleID),
            !settings.claudeRepoContextEnabled {
-            return dogfoodUnresolvedJoin(cause: "gate: Claude Desktop target without session context")
+            return .gated(.desktopWithoutSessionContext)
         }
-        return await resolver.resolve(target: target)
+        return .resolved(await resolver.resolution(target: target))
     }
 
-    /// Notes WHY the join never reached the resolver, so a dogfood record can
-    /// distinguish "gate refused" from "resolver abstained" — and always
-    /// returns nil, keeping the guard sites one-liners. Compiled to a bare nil
-    /// in a shipping build.
-    private func dogfoodUnresolvedJoin(cause: String) -> ClaudeSessionJoin? {
+    /// Writes this dictation's ONE persisted join line: the arm that joined,
+    /// or the gate or abstention chain that stopped it. `.notice`, because
+    /// the unified log keeps no `.info` line past the moment, and a join is
+    /// only ever questioned after the dictation. Categories only — the same
+    /// `ClaudeSessionJoinSummary` a dogfood record and `--probe-surface`
+    /// print, which carries no id, path, host or address.
+    private func noteJoinOutcome(_ attempt: ClaudeJoinAttempt, causes: [String]) {
+        var causes = causes
+        if case .gated(let gate) = attempt {
+            causes.append(gate.rawValue)
+            #if LOCALVOXTRAL_DOGFOOD
+            DogfoodCaptureTap.shared.noteJoinAbstention(gate.rawValue)
+            #endif
+        }
+        let summary = ClaudeSessionJoinSummary.summarize(join: attempt.join, abstentions: causes)
+        joinOutcomeLog(summary.noticeText)
         #if LOCALVOXTRAL_DOGFOOD
-        DogfoodCaptureTap.shared.noteJoinAbstention(cause)
+        // Snapshotted HERE, at the single resolution, because the commit path
+        // consumes both the join and the tap's abstention causes — by the time
+        // anything could ask afterwards, neither exists. Recorded for a gated
+        // dictation too: `join report` answering with the PREVIOUS dictation's
+        // join would be the worst possible answer — a stale arm name for a
+        // dictation that never resolved one.
+        dogfoodNoteResolvedJoin(attempt.join)
         #endif
-        return nil
     }
 
     /// Drops any retained screen capture. Idempotent, and safe to call on a
@@ -411,17 +426,40 @@ final class SessionContextResolver {
 #if LOCALVOXTRAL_DOGFOOD
 extension SessionContextResolver {
     /// Snapshot the resolved join for `join report`, with the abstention chain
-    /// as it stands at resolution time.
-    ///
-    /// `extraCause` names a refusal that happened BEFORE any arm ran, which the
-    /// resolver's own vocabulary has no way to express — it never saw the
-    /// dictation.
-    func dogfoodNoteResolvedJoin(_ join: ClaudeSessionJoin?, extraCause: String?) {
-        var causes = DogfoodCaptureTap.shared.peekJoinAbstentions()
-        if let extraCause { causes.append(extraCause) }
+    /// as it stands at resolution time, gate included.
+    func dogfoodNoteResolvedJoin(_ join: ClaudeSessionJoin?) {
         DogfoodCaptureTap.shared.noteResolvedJoin(
-            ClaudeSessionJoinSummary.summarize(join: join, abstentions: causes)
+            ClaudeSessionJoinSummary.summarize(
+                join: join,
+                abstentions: DogfoodCaptureTap.shared.peekJoinAbstentions()
+            )
         )
     }
 }
 #endif
+
+/// Why a dictation's join never reached the resolver. The raw value is the
+/// cause the outcome line and the dogfood record carry: a category, never a
+/// path, host, address or id.
+enum ClaudeJoinGate: String, Equatable, Sendable {
+    case noPolishingEndpoint = "gate: no polishing endpoint"
+    case noResolver = "gate: no resolver installed"
+    case contextSettingsOff = "gate: both context settings off"
+    case endpointNotPermitted = "gate: endpoint not permitted"
+    case accessibilityNotTrusted = "gate: accessibility not trusted"
+    case noFrontmostTarget = "gate: no frontmost supported terminal"
+    case browserWithoutSessionContext = "gate: browser target without session context"
+    case desktopWithoutSessionContext = "gate: Claude Desktop target without session context"
+}
+
+/// How far one dictation's join got: stopped by a gate before the resolver
+/// was asked, or answered by it.
+enum ClaudeJoinAttempt: Equatable, Sendable {
+    case gated(ClaudeJoinGate)
+    case resolved(ClaudeJoinResolution)
+
+    var join: ClaudeSessionJoin? {
+        guard case .resolved(let resolution) = self else { return nil }
+        return resolution.join
+    }
+}

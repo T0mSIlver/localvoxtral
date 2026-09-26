@@ -84,8 +84,7 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
         XCTAssertNotNil(join, "positive control: the badge cases below mean nothing without a join")
         XCTAssertEqual(
             OverlayClaudeJoinBadge.resolve(
-                join: join,
-                contextFeatureEnabled: true,
+                attempt: .resolved(ClaudeJoinResolution(join: join)),
                 liveSessionsExist: { true }
             ),
             .joined(label: "localvoxtral")
@@ -99,8 +98,7 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
         XCTAssertNotNil(join, "positive control: the label below means nothing without a join")
         XCTAssertEqual(
             OverlayClaudeJoinBadge.resolve(
-                join: join,
-                contextFeatureEnabled: true,
+                attempt: .resolved(ClaudeJoinResolution(join: join)),
                 liveSessionsExist: { true }
             ),
             .joined(label: "api-gateway")
@@ -114,8 +112,7 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
         let join = await join(cwd: nil)
         XCTAssertEqual(
             OverlayClaudeJoinBadge.resolve(
-                join: join,
-                contextFeatureEnabled: true,
+                attempt: .resolved(ClaudeJoinResolution(join: join)),
                 liveSessionsExist: { true }
             ),
             .joined(label: OverlayClaudeJoinBadge.unnamedWorkspaceLabel)
@@ -126,8 +123,7 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
     func testNoJoinWithLiveSessionsIsUnjoined() {
         XCTAssertEqual(
             OverlayClaudeJoinBadge.resolve(
-                join: nil,
-                contextFeatureEnabled: true,
+                attempt: .resolved(ClaudeJoinResolution(join: nil)),
                 liveSessionsExist: { true }
             ),
             .unjoined
@@ -141,26 +137,56 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
     func testNoJoinAndNoSessionsIsSilent() {
         XCTAssertEqual(
             OverlayClaudeJoinBadge.resolve(
-                join: nil,
-                contextFeatureEnabled: true,
+                attempt: .resolved(ClaudeJoinResolution(join: nil)),
                 liveSessionsExist: { false }
             ),
             .hidden
         )
     }
 
-    // Both context features off means nothing downstream would have used a
-    // join, so there is nothing to report — even when one resolved before the
-    // settings changed.
-    func testFeaturesOffHideTheBadgeEvenWithAJoin() async {
-        let join = await join(cwd: "/repo")
+    // A gate that means nothing on this surface could have used a join has
+    // nothing to report, however many sessions are live. The browser and
+    // Claude Desktop gates are the point (#658): with only the screen setting
+    // on, every dictation into either used to say "No Claude session", with
+    // no hint that session context was what was off.
+    func testGatesThatRuleOutAnyUseOfAJoinHideTheBadge() {
+        for gate in [
+            ClaudeJoinGate.noPolishingEndpoint, .contextSettingsOff,
+            .browserWithoutSessionContext, .desktopWithoutSessionContext,
+        ] {
+            XCTAssertEqual(
+                OverlayClaudeJoinBadge.resolve(attempt: .gated(gate), liveSessionsExist: { true }),
+                .hidden,
+                gate.rawValue
+            )
+        }
+    }
+
+    // The other gates stop a join the user DID ask for, so with sessions live
+    // they still say none attached.
+    func testGatesTheUserDidNotChooseStillReportUnjoined() {
+        for gate in [
+            ClaudeJoinGate.noResolver, .endpointNotPermitted,
+            .accessibilityNotTrusted, .noFrontmostTarget,
+        ] {
+            XCTAssertEqual(
+                OverlayClaudeJoinBadge.resolve(attempt: .gated(gate), liveSessionsExist: { true }),
+                .unjoined,
+                gate.rawValue
+            )
+        }
+    }
+
+    // Focus inside a Claude Desktop session view that nothing joined is worth
+    // the pill with an EMPTY registry: that is what a dead hook tunnel looks
+    // like, and it was exactly the case the badge hid (#658).
+    func testAnUnmatchedFocusedSessionIsUnjoinedWithNoLiveSessions() {
         XCTAssertEqual(
             OverlayClaudeJoinBadge.resolve(
-                join: join,
-                contextFeatureEnabled: false,
-                liveSessionsExist: { true }
+                attempt: .resolved(ClaudeJoinResolution(join: nil, focusedSessionUnmatched: true)),
+                liveSessionsExist: { false }
             ),
-            .hidden
+            .unjoined
         )
     }
 
@@ -170,8 +196,7 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
         let join = await join(cwd: "/repo")
         let asked = Mutex(0)
         _ = OverlayClaudeJoinBadge.resolve(
-            join: join,
-            contextFeatureEnabled: true,
+            attempt: .resolved(ClaudeJoinResolution(join: join)),
             liveSessionsExist: {
                 asked.withLock { $0 += 1 }
                 return true
@@ -185,8 +210,7 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
     func testTheRegistryIsNotConsultedWhenFeaturesAreOff() {
         let asked = Mutex(0)
         _ = OverlayClaudeJoinBadge.resolve(
-            join: nil,
-            contextFeatureEnabled: false,
+            attempt: .gated(.contextSettingsOff),
             liveSessionsExist: {
                 asked.withLock { $0 += 1 }
                 return true

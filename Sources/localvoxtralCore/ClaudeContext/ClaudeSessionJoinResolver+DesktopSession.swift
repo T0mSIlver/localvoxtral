@@ -21,16 +21,20 @@ extension ClaudeSessionJoinResolver {
     /// user is typing into wins, and focus outside any session (the sidebar,
     /// the chat tab) is no join.
     ///
-    /// Everything abstains rather than guesses, as in the browser arm.
-    package func resolveViaDesktopSession(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {
+    /// Everything abstains rather than guesses, as in the browser arm. An
+    /// abstention AFTER focus was found inside a session's web view says so
+    /// (`focusedSessionUnmatched`): the user is looking at a Claude Code
+    /// session that did not join, which the overlay badge reports even when
+    /// the registry holds no live session at all — the dead-tunnel case.
+    package func resolveViaDesktopSession(target: TerminalScreenTarget) async -> ClaudeJoinResolution {
         guard let address = await focusedDesktopSessionURL(target.pid) else {
             Self.abstainedDesktopSessionJoin(outcome: "focused web view address unavailable")
-            return nil
+            return ClaudeJoinResolution(join: nil)
         }
         guard let desktopSessionID = ClaudeDesktopSessionURL.sessionID(inWebAreaURL: address) else {
             // Never the address itself: it names what the user is looking at.
             Self.abstainedDesktopSessionJoin(outcome: "focus is not in a Claude Code session")
-            return nil
+            return ClaudeJoinResolution(join: nil)
         }
 
         switch registry.resolve(desktopSessionID: desktopSessionID) {
@@ -38,7 +42,7 @@ extension ClaudeSessionJoinResolver {
             Log.claudeContext.info(
                 "Claude Desktop joined to a live Claude session via its desktop session id"
             )
-            return ClaudeSessionJoin(
+            return ClaudeJoinResolution(join: ClaudeSessionJoin(
                 target: target,
                 snapshot: snapshot,
                 // Nil for the browser arm's reason: a window identity pairs a
@@ -46,17 +50,15 @@ extension ClaudeSessionJoinResolver {
                 windowID: nil,
                 mechanism: .desktopSession,
                 desktopSession: ClaudeDesktopSessionBinding(desktopSessionID: desktopSessionID)
-            )
+            ))
         case .unknown:
             Self.abstainedDesktopSessionJoin(outcome: "no live session reports this desktop session")
-            return nil
         case .stale:
             Self.abstainedDesktopSessionJoin(outcome: "stale")
-            return nil
         case .ambiguous:
             Self.abstainedDesktopSessionJoin(outcome: "ambiguous")
-            return nil
         }
+        return ClaudeJoinResolution(join: nil, focusedSessionUnmatched: true)
     }
 
     /// Outcome only. The desktop session id is a live handle to a session's

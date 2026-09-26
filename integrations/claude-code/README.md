@@ -115,7 +115,10 @@ keyboard focus over Accessibility and matches the id against what the
 session's hooks reported. Sessions the desktop app runs on this Mac join
 through this plugin; sessions it runs on an ssh host join through
 `localvoxtral-remote` (≥ 1.11.0) on that host. Like the browser join, it reads
-no screen and runs only with Claude repo context on.
+no screen and runs only with Claude repo context on. The Code tab does not
+render Claude Code's status line, so the status-line indicator never appears
+there; the overlay badge and the log's `Claude join outcome` line are what say
+whether a dictation joined.
 
 Supported browsers are **Google Chrome, Brave, and Safari**, and each one needs
 its OWN Automation grant the first time it is used (System Settings → Privacy &
@@ -562,7 +565,9 @@ only and never injects plugin userConfig options there, so an http hook would
 always authenticate as an empty `Bearer` and be refused.)
 The app answers every hook with the same fixed body, `{"suppressOutput":true}`.
 An `X-Lvx-Session` response header says `joined` or `unknown`; `post.sh` stores
-that verdict for the session's status line. The shim still prints only the
+that verdict for the session's status line. `joined` means the app recorded
+the hook for that session, not that a dictation will join it: that also takes
+an arm that recognizes the window you dictate into. The shim still prints only the
 fixed body. Each post also sends an `X-Lvx-Plugin-Version` header — the
 plugin's own version, as a constant baked into `post.sh`. The app validates it
 to a strict numeric shape, records it for that host only once the request is
