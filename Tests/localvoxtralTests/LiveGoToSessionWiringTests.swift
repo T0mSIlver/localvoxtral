@@ -74,7 +74,9 @@ final class LiveGoToSessionWiringTests: XCTestCase {
         harness.final("Good morning")
         harness.stop()
 
-        XCTAssertEqual(harness.typedText, "Good morning")
+        // The stop releases the space the terminal hold-back kept, as it
+        // does for any live text.
+        XCTAssertEqual(harness.typedText, "Good morning ")
     }
 
     func testNothingIsHeldWhileNoSessionIsLive() {
@@ -100,7 +102,11 @@ final class LiveGoToSessionWiringTests: XCTestCase {
         await harness.settle()
 
         XCTAssertEqual(harness.focuser.focusedSessionIDs, ["pay"])
-        XCTAssertEqual(harness.typedText(in: Self.terminalPID), "first part")
+        XCTAssertEqual(
+            harness.typedText(in: Self.terminalPID),
+            "first part ",
+            "what the terminal hold-back kept goes to the pane it was dictated into"
+        )
         XCTAssertEqual(harness.typedText(in: Self.otherTerminalPID), "fix the build")
     }
 
