@@ -27,6 +27,9 @@ package struct QuickCaptureDraftProcessRunner: QuickCaptureDraftRunning {
 
     package func run(_ invocation: ProjectTermProposal.Invocation, openIssues: [Int]) async -> QuickCaptureDraft.Outcome {
         let agent = invocation.agent
+        // Drafting speaks Claude Code's and Vibe's output; opencode's is a
+        // follow-up, so it reads as not installed and the next agent runs.
+        guard agent != .opencode else { return .failed(.agentNotFound) }
         guard let executable = ProjectTermProposalProcessRunner.locate(
             agent, environment: environment, isExecutable: isExecutable
         ) else {
@@ -55,6 +58,7 @@ package struct QuickCaptureDraftProcessRunner: QuickCaptureDraftRunning {
         switch agent {
         case .claude: return QuickCaptureDraft.parseClaude(stdout: output.data, exitCode: output.exitCode, openIssues: openIssues)
         case .vibe: return QuickCaptureDraft.parseVibe(stdout: output.data, exitCode: output.exitCode, openIssues: openIssues)
+        case .opencode: return .failed(.agentNotFound)
         }
     }
 }
