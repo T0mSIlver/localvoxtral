@@ -67,9 +67,6 @@ AppKit:
   hashes with `PortableSHA256` instead of CryptoKit
 - the live replacement rewriters (`LiveReplacementCorrector`,
   `LiveHoldBackReplacementStream`)
-- the ducking fade (`AudioDuckingController`) and the
-  `SystemOutputVolumeControlling` protocol it writes through; the CoreAudio
-  control stays in the app
 - quick capture routing (`QuickCapture/`, #725): the project descriptions a
   classifier reads, the Jev client, the polishing model's routing mode as
   its fallback, and the rule that sends a low or tied answer to the
@@ -77,6 +74,9 @@ AppKit:
 - the Claude socket guard (`ClaudeSocketGuard`: `getpeereid` and
   `LOCAL_PEERPID` on Darwin, `SO_PEERCRED` on Linux), with the SHA-256 and
   HMAC helpers the Claude code hashes through
+- the ducking fade (`AudioDuckingController`) and the
+  `SystemOutputVolumeControlling` protocol it writes through; the CoreAudio
+  control stays in the app
 - the realtime clients: the `RealtimeClient` protocol, its event types and
   both websocket clients (#637). On Linux they speak through
   `FoundationNetworking`, whose upgrade and cancel differ from Apple's; the
