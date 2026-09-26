@@ -18,6 +18,7 @@ The text goes to `say -f`, so no case text passes through a shell.
 import hashlib
 import io
 import json
+import re
 import sys
 import tarfile
 from pathlib import Path
@@ -30,6 +31,10 @@ def load_cases(path):
     data = json.loads(Path(path).read_text())
     if data.get("schemaVersion") != 2:
         sys.exit(f"{path}: schemaVersion must be 2; re-harvest")
+    for case in data["cases"]:
+        # The id names a file and goes into gen.sh unquoted.
+        if not re.fullmatch(r"tr-(en|fr)-[0-9a-f]{10}", case["id"]):
+            sys.exit(f"{path}: unexpected case id {case['id']!r}")
     return data["cases"]
 
 
@@ -70,6 +75,8 @@ def manifest(cases, wav_dir):
             "file": wav.name,
             "sha256": hashlib.sha256(wav.read_bytes()).hexdigest(),
         })
+    if not recordings:
+        sys.exit(f"{wav_dir}: no <case id>.wav files")
     (wav_dir / "manifest.json").write_text(json.dumps({
         "schemaVersion": 1,
         "dataFormat": "pcm_s16le@16000Hz-mono",

@@ -650,9 +650,8 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                 )
             }
         }
-        let setName = standardized.lastPathComponent
         return LoadedRecordings(
-            audioLabel: manifest.source.map { "\($0)/\(setName)" } ?? "human-recorded/\(setName)",
+            audioLabel: manifest.audioLabel(setName: standardized.lastPathComponent, human: "human-recorded"),
             isSubset: allowSubset,
             pcmByCaseID: pcmByCaseID
         )

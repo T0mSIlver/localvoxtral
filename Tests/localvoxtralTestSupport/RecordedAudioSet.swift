@@ -33,10 +33,10 @@ package enum RecordedAudioSet {
             self.source = source
         }
 
-        /// How a run names its audio: `<source>/<set>`, `human/<set>` when
-        /// the manifest names no source.
-        package func audioLabel(setName: String) -> String {
-            "\(source ?? "human")/\(setName)"
+        /// How a run names its audio: `<source>/<set>`, or `<human>/<set>`
+        /// when the manifest names no source.
+        package func audioLabel(setName: String, human: String = "human") -> String {
+            "\(source.flatMap { $0.isEmpty ? nil : $0 } ?? human)/\(setName)"
         }
     }
 

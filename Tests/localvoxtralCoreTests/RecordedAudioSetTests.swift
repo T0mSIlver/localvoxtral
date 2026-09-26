@@ -21,4 +21,13 @@ final class RecordedAudioSetTests: XCTestCase {
             "say/say-samantha-thomas"
         )
     }
+
+    func testAgentDictationKeepsItsHumanLabel() throws {
+        XCTAssertEqual(
+            try manifest("").audioLabel(setName: "owner", human: "human-recorded"), "human-recorded/owner"
+        )
+        XCTAssertEqual(
+            try manifest(#""source":"say","#).audioLabel(setName: "tts", human: "human-recorded"), "say/tts"
+        )
+    }
 }
