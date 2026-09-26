@@ -319,13 +319,19 @@ public enum ClaudeRemoteHTTPCodec {
         return name
     }
 
+    /// The reply header that asks a host to run its agent for the session's
+    /// project terms, and its one value (`RemoteProjectTermRequests`).
+    public static let termsHeaderName = "X-Lvx-Terms"
+    public static let termsHeaderValue = "wanted"
+
     /// Serialize a response. Always `Connection: close` — one request per
     /// connection means a peer can never keep a slot alive by going quiet
     /// between requests.
     public static func response(
         status: Int,
         body: Data? = nil,
-        sessionStatus: ClaudeRemoteSessionStatus? = nil
+        sessionStatus: ClaudeRemoteSessionStatus? = nil,
+        termsWanted: Bool = false
     ) -> Data {
         var head = "HTTP/1.1 \(status) \(reasonPhrase(for: status))\r\n"
         head += "Connection: close\r\n"
@@ -334,6 +340,12 @@ public enum ClaudeRemoteHTTPCodec {
         if status == 401 { head += "WWW-Authenticate: Bearer\r\n" }
         if status == 200, let sessionStatus {
             head += "X-Lvx-Session: \(sessionStatus.rawValue)\r\n"
+        }
+        // The Mac asks this session's host for its project's terms (#641).
+        // Fixed bytes like the line above: the host shim matches them
+        // exactly, and they never reach its stdout.
+        if status == 200, termsWanted {
+            head += "\(termsHeaderName): \(termsHeaderValue)\r\n"
         }
         head += "\r\n"
         var data = Data(head.utf8)
@@ -365,6 +377,7 @@ public enum ClaudeRemoteHTTPCodec {
         case 404: return "Not Found"
         case 405: return "Method Not Allowed"
         case 411: return "Length Required"
+        case 409: return "Conflict"
         case 413: return "Payload Too Large"
         case 431: return "Request Header Fields Too Large"
         default: return "Error"

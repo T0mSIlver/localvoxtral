@@ -311,7 +311,14 @@ What a run costs and sends:
   default model prices, in 10–25 s.
 
 Either way, the agent sends the files it reads to its provider, as it does in
-your own sessions. The app does not ask remote sessions yet.
+your own sessions.
+
+A session on an enrolled ssh host is asked too, once its host runs
+`localvoxtral-remote` 1.15.0 or the Vibe hooks 1.2.0 (**Update Host…**). The
+run happens on that host, in the session's repository, with the same limits,
+and bills the host's own Claude Code login or Mistral key. The Mac only asks,
+on the session's next hook, and files the answer under the session's project.
+Details: [Terms from the coding agent on a host](remote-claude-context.md#terms-from-the-coding-agent-on-a-host).
 
 The config folder at `~/Library/Application Support/localvoxtral/config`
 holds `replacement_dictionary.toml` for both output modes and the standard

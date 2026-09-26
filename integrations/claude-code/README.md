@@ -19,6 +19,9 @@ agent for each new project's terms** on, the app runs its own read-only
 `claude -p` once per project, never in your session. That costs about
 $0.03–0.12, or the same share of a Claude.ai plan's quota (see
 [Terms from your coding agent](../../docs/dictation.md#terms-from-your-coding-agent)).
+On an enrolled host, `localvoxtral-remote` runs that `claude -p` on the host
+instead, when the Mac asks for a session's project
+([Terms from the coding agent on a host](../../docs/remote-claude-context.md#terms-from-the-coding-agent-on-a-host)).
 
 On each hook event, Claude Code runs `hooks/publish.sh`. It finds the
 `localvoxtral-claude-hook` publisher and runs it as a **child process**, not

@@ -121,14 +121,15 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         }
     }
 
-    func testPluginShipsExactlyTwoExecutablesBothPOSIXSh() throws {
+    func testPluginShipsExactlyThreeExecutablesAllPOSIXSh() throws {
         // The premise, updated for the command-hook shape: nothing to install
-        // on the remote but the manifests and TWO POSIX-sh scripts — the curl
-        // shim every hook runs, and the status-line renderer the user may
-        // point their own `statusLine` setting at. No Python, no jq, no nc,
+        // on the remote but the manifests and THREE POSIX-sh scripts — the curl
+        // shim every hook runs, the status-line renderer the user may point
+        // their own `statusLine` setting at, and the project-terms runner the
+        // shim starts when the Mac asks (#641). No Python, no jq, no nc,
         // no Node, no publisher binary. If any other runnable file ever
         // appears here, the premise is gone.
-        let shellScripts: Set<String> = ["hooks/post.sh", "hooks/statusline.sh"]
+        let shellScripts: Set<String> = ["hooks/post.sh", "hooks/statusline.sh", "hooks/terms.sh"]
         let contents = try FileManager.default.subpathsOfDirectory(atPath: pluginRoot.path)
         for path in contents {
             let full = pluginRoot.appendingPathComponent(path)
@@ -152,11 +153,11 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             }
             XCTAssertFalse(
                 FileManager.default.isExecutableFile(atPath: full.path),
-                "the remote plugin must ship no executable but its two sh scripts, found \(path)"
+                "the remote plugin must ship no executable but its three sh scripts, found \(path)"
             )
             XCTAssertTrue(
                 path.hasSuffix(".json"),
-                "the remote plugin must ship JSON manifests and its two sh scripts only, found \(path)"
+                "the remote plugin must ship JSON manifests and its three sh scripts only, found \(path)"
             )
         }
         for script in shellScripts {

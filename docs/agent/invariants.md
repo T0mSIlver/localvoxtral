@@ -321,7 +321,8 @@ there is not.
   `config.toml` and `.env` (Vibe has no flag to skip hooks, and under the
   user's home our `post_agent` hook would publish a phantom session). The
   working directory comes only from `localWorkspacePath` via the git root,
-  so a remote label can never become one (#641 covers remote hosts). The
+  so a remote label can never become one (a remote project is run on its
+  host: "The Mac asks a host to spend", below). The
   answer is untrusted text repo contents can steer: only term-shaped strings
   are kept (`DictationTermsFile.accepted`, no control characters, 40 at most),
   terms already known or refused are dropped, and a proposal starts at zero
@@ -1947,6 +1948,31 @@ there is not.
   malicious process running as the user on the REMOTE host can still read
   `~/.claude/` and therefore the plugin's token no matter what we do. Say so
   rather than implying the token bounds it.
+- **The Mac asks a host to spend, and the host's answer is a label source**
+  (#641). A remote project's terms come from a run on the host, because the
+  Mac holds only a label for the repository and a label never becomes a path,
+  a cwd or an ssh argument. The ask is one fixed reply header,
+  `X-Lvx-Terms: wanted`, of the same kind as `X-Lvx-Session`: it never
+  reaches the shim's stdout, and the body stays the constant. It goes only to
+  a session a dictation joined, once per mark (`RemoteProjectTermRequests`,
+  10 minutes), only when THIS request's shim version reads it, and a mark is
+  made only for a host that reported such a version and a project with no
+  stamp. A squatter on the port can send it too; the host's per-project stamp
+  (atomic `mkdir`, attempt time, `done` after a 200) bounds that to one run per
+  project per 24 hours, under the #609 caps. The shim starts `terms.sh`
+  detached under `env -i HOME PATH LANG USER LOGNAME` (macOS finds a Claude
+  Code keychain login only with `USER`) with every descriptor on `/dev/null`:
+  a run started from a hook inherits the session's `CLAUDE_CODE_*` ids and the
+  plugin's `CLAUDE_PLUGIN_OPTION_TOKEN`, and the token reaches the runner only
+  on stdin, then a header file for curl, never an argv or an environment.
+  `POST /v1/terms` authenticates like a hook, scopes the session id under
+  the host that authenticated it, and accepts one answer per ask, for a live
+  session of the asked agent; the project key is the one the Mac recorded at
+  the ask, never anything the host sends. The body is untrusted text that repo
+  contents can steer: 8 KiB at most, `{"terms": [...]}` only, through the #609
+  term filter, stored only as unconfirmed proposals. A refusal logs its reason,
+  never a byte of the body. What stays as it was: the stdout gate, the hook's
+  fail-open exit, the forward, and what is sent to herdr.
 - **The SendEnv probe uses a random value that is never logged and never
   interpreted beyond equality.** `probeRemoteEnvironment` mints a fresh nonce
   per call (a UUID by default, injected in tests), exports it into that one

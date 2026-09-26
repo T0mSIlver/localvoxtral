@@ -182,7 +182,7 @@ write_header() {
   cat 2>/dev/null >"$1" <<HEADERS
 Authorization: Bearer $2
 X-Lvx-Agent: vibe
-X-Lvx-Vibe-Hooks-Version: 1.1.0
+X-Lvx-Vibe-Hooks-Version: 1.2.0
 HEADERS
 }
 write_header "$WORK/header" "$TOKEN" || exit 0
@@ -290,6 +290,77 @@ LVX_PROJECT="$(lvx_project 2>/dev/null)" || LVX_PROJECT=""
   lvx_env_header 'X-Lvx-Env-Project' "${LVX_PROJECT:-}"
 ) 2>/dev/null || :
 
+# --- Project terms (#641) ----------------------------------------------------
+# `X-Lvx-Terms: wanted` on a 200 reply is the Mac asking for this session's
+# project terms, once, after a dictation joined the session. The Mac cannot
+# run the agent itself: the repository is here, and it never holds a path on
+# this host. So this starts terms.sh, next to this file, DETACHED: its own
+# session (setsid, or an ignored HUP where there is none), every descriptor on
+# /dev/null, `env -i HOME PATH LANG USER LOGNAME` so no CLAUDE_* or plugin
+# option reaches the agent (macOS finds a Claude Code login in the keychain
+# only with the user's name set), and the token on stdin, never in an argv or the environment. The
+# hook's own exit, output and timing do not change.
+#
+# One run per project per 24 hours whatever asks, a squatter on the port
+# included: a per-project stamp directory, taken by an atomic mkdir, holds the
+# attempt time, and terms.sh writes `done` there after the Mac accepts the
+# answer. The project is the git toplevel of this hook's cwd, or the cwd
+# outside git; its stamp is named by the cksum of that path.
+lvx_terms_start() {
+  _lvx_agent="$1"
+  _lvx_session="$2"
+  _lvx_runner="$3"
+  _lvx_vibe="${4:-}"
+  [ -n "$STAMP_DIR" ] && [ -n "$NOW" ] && [ -n "$_lvx_session" ] && [ -n "${HOME:-}" ] || return 0
+  [ -r "$_lvx_runner" ] || return 0
+  _lvx_dir="$(git rev-parse --show-toplevel 2>/dev/null)" || _lvx_dir=""
+  case "$_lvx_dir" in /*) ;; *) _lvx_dir="$(pwd -P 2>/dev/null)" || return 0 ;; esac
+  case "$_lvx_dir" in /*) ;; *) return 0 ;; esac
+  _lvx_sum="$(echo "$_lvx_dir" | cksum 2>/dev/null)" || return 0
+  _lvx_crc="${_lvx_sum%% *}"
+  _lvx_len="${_lvx_sum##* }"
+  case "$_lvx_crc$_lvx_len" in "" | *[!0-9]*) return 0 ;; esac
+  _lvx_terms="$STAMP_DIR/terms"
+  { mkdir -p "$_lvx_terms" && chmod 700 "$STAMP_DIR" "$_lvx_terms"; } 2>/dev/null || return 0
+  _lvx_stamp="$_lvx_terms/$_lvx_crc-$_lvx_len"
+  if ! mkdir "$_lvx_stamp" 2>/dev/null; then
+    [ ! -e "$_lvx_stamp/done" ] || return 0
+    _lvx_last="$(cat "$_lvx_stamp/attempt" 2>/dev/null)" || _lvx_last=""
+    case "$_lvx_last" in
+    "" | *[!0-9]* | ?????????????*)
+      # No attempt time yet: another hook holds a fresh claim and is about
+      # to write it. Only a directory a day old is a claim that died.
+      [ -z "$(find "$_lvx_stamp" -prune -mmin +1440 2>/dev/null)" ] && return 0
+      _lvx_last=0
+      ;;
+    esac
+    if [ "$_lvx_last" -gt "$NOW" ] || [ $((NOW - _lvx_last)) -lt 86400 ]; then
+      return 0
+    fi
+    # A stale attempt: rename(2) lets exactly one hook take it over.
+    mv "$_lvx_stamp" "$_lvx_stamp.$$" 2>/dev/null || return 0
+    rm -rf "$_lvx_stamp.$$" 2>/dev/null
+    mkdir "$_lvx_stamp" 2>/dev/null || return 0
+  fi
+  echo "$NOW" >"$_lvx_stamp/attempt" 2>/dev/null || return 0
+  if command -v setsid >/dev/null 2>&1; then
+    setsid env -i HOME="$HOME" PATH="${PATH:-}" LANG="${LANG:-}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" sh "$_lvx_runner" \
+      "$_lvx_agent" "$PORT" "$_lvx_session" "$_lvx_dir" "$_lvx_stamp" "$_lvx_vibe" \
+      >/dev/null 2>&1 <<TERMS &
+$TOKEN
+TERMS
+  else
+    (
+      trap '' HUP
+      exec env -i HOME="$HOME" PATH="${PATH:-}" LANG="${LANG:-}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" sh "$_lvx_runner" \
+        "$_lvx_agent" "$PORT" "$_lvx_session" "$_lvx_dir" "$_lvx_stamp" "$_lvx_vibe"
+    ) >/dev/null 2>&1 <<TERMS &
+$TOKEN
+TERMS
+  fi
+  return 0
+}
+
 # --- Send --------------------------------------------------------------------
 # One request per plan line, in order: the prompt before the event that ends or
 # continues the turn. The event name is matched against the three this shim can
@@ -300,6 +371,7 @@ while IFS=' ' read -r INDEX NAME; do
   case "$NAME" in UserPromptSubmit | PostToolUse | Stop) ;; *) break ;; esac
   [ -r "$WORK/event-$INDEX.json" ] || break
   STATUS="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+    --dump-header "$WORK/response-headers-$INDEX" \
     --max-time 1 --request POST \
     --header 'Content-Type: application/json' \
     --header @"$WORK/header" \
@@ -315,8 +387,27 @@ while IFS=' ' read -r INDEX NAME; do
     break
   fi
   [ -z "$STAMP_DIR" ] || rm -f "$STAMP" 2>/dev/null || :
-  [ "$STATUS" = "200" ] && DELIVERED=1
+  if [ "$STATUS" = "200" ]; then
+    DELIVERED=1
+    # The Mac's ask for this project's terms: the header lines only, matched
+    # exactly, and never printed (lvx_terms_start above).
+    [ -z "$(LC_ALL=C sed -n \
+        's/\r$//; /^[Xx]-[Ll][Vv][Xx]-[Tt][Ee][Rr][Mm][Ss]: wanted$/p' \
+      "$WORK/response-headers-$INDEX" 2>/dev/null)" ] || TERMS_WANTED=1
+  fi
 done <"$WORK/plan"
+
+SESSION_ID=""
+if [ -r "$WORK/session-id" ]; then
+  IFS= read -r SESSION_ID <"$WORK/session-id" 2>/dev/null || :
+fi
+case "$SESSION_ID" in
+"" | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-]*) SESSION_ID="" ;;
+esac
+[ "${#SESSION_ID}" -le 64 ] || SESSION_ID=""
+if [ -n "${TERMS_WANTED:-}" ]; then
+  lvx_terms_start vibe "$SESSION_ID" "$DIR/terms.sh" "${VIBE_HOME:-$HOME/.vibe}"
+fi
 
 # --- Exit watcher ------------------------------------------------------------
 # Vibe has no session-end hook, and the Mac cannot probe a pid on this machine.
@@ -333,15 +424,7 @@ done <"$WORK/plan"
 # `LOCALVOXTRAL_VIBE_WATCHER=off` in Vibe's environment turns it off, for
 # anyone who does not want a background process; sessions then end by TTL.
 [ "${LOCALVOXTRAL_VIBE_WATCHER:-on}" != "off" ] || exit 0
-[ -n "${DELIVERED:-}" ] && [ -n "$STAMP_DIR" ] && [ -n "$AGENT_PID" ] || exit 0
-SESSION_ID=""
-if [ -r "$WORK/session-id" ]; then
-  IFS= read -r SESSION_ID <"$WORK/session-id" 2>/dev/null || :
-fi
-case "$SESSION_ID" in
-"" | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-]*) exit 0 ;;
-esac
-[ "${#SESSION_ID}" -le 64 ] || exit 0
+[ -n "${DELIVERED:-}" ] && [ -n "$STAMP_DIR" ] && [ -n "$AGENT_PID" ] && [ -n "$SESSION_ID" ] || exit 0
 
 WATCH_DIR="$STAMP_DIR/vibe-watch"
 LOCK="$WATCH_DIR/$SESSION_ID"
