@@ -159,7 +159,9 @@ extension DictationSessionController {
 
         transcript.appendPartial(processedDelta)
         noteTranscriptTextForSilenceAutoStop()
-        if isLiveAutoPasteModeEnabled, liveSpokenSendWithholdsSegment() {
+        if isLiveAutoPasteModeEnabled, liveGoToHoldsPartial(processedDelta) {
+            // Held while it may still read "go to" (#747).
+        } else if isLiveAutoPasteModeEnabled, liveSpokenSendWithholdsSegment() {
             // Typed at the final, once it is known whether it ends in the
             // trigger: typed text cannot be taken back.
         } else if isLiveAutoPasteModeEnabled {
@@ -188,7 +190,15 @@ extension DictationSessionController {
         noteFinalTextForSilenceAutoStop(overlayTextBefore: overlayTextBeforeFinal)
         statusText = activeStatusText
 
-        if isLiveAutoPasteModeEnabled, liveSpokenSendWithholdsSegment() {
+        if isLiveAutoPasteModeEnabled,
+           liveGoToHandlesFinal(
+               processedText,
+               merged: finalized.text,
+               startsMidWord: finalized.startsMidWord
+           )
+        {
+            // A go-to, or a segment the go-to hold-back kept: delivered there.
+        } else if isLiveAutoPasteModeEnabled, liveSpokenSendWithholdsSegment() {
             // No partial of this segment was typed, so the whole segment is.
             deliverLiveSpokenSendFinal(
                 processedText,
@@ -271,7 +281,9 @@ extension DictationSessionController {
 
         // Withheld partials are typed nowhere else: a promotion (stop,
         // dropped socket) stands in for the final they never got.
-        if isLiveAutoPasteModeEnabled {
+        if isLiveAutoPasteModeEnabled,
+           !liveGoToHandlesPromotion(pendingSegment, startsMidWord: startsMidWord)
+        {
             deliverPromotedLiveSpokenSendSegment(pendingSegment, startsMidWord: startsMidWord)
         }
 

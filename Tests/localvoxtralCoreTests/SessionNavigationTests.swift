@@ -31,6 +31,33 @@ final class SessionNavigationTests: XCTestCase {
         }
     }
 
+    /// #747: Live Auto-Paste holds a segment only while it may read "go to".
+    func testALiveSegmentIsHeldOnlyWhileItMayReadGoTo() {
+        let cases: [(String, GoToSessionCommandParser.SegmentPrefix)] = [
+            ("", .undecided),
+            (" G", .undecided),
+            (" Go", .undecided),
+            ("Go ", .undecided),
+            ("go t", .undecided),
+            ("Go to", .undecided),
+            ("Got", .undecided),
+            ("Go to p", .possibleCommand),
+            ("go to local voxtral", .possibleCommand),
+            ("Goto pay", .possibleCommand),
+            ("go to cool roentgen twenty one", .possibleCommand),
+            // Five name words: a sentence, typed from here on.
+            ("go to the tests folder and f", .ordinary),
+            ("Good", .ordinary),
+            ("Go ahead", .ordinary),
+            ("Gotta", .ordinary),
+            ("run the tests", .ordinary),
+            ("please go to payments", .ordinary),
+        ]
+        for (text, expected) in cases {
+            XCTAssertEqual(GoToSessionCommandParser.segmentPrefix(text), expected, text)
+        }
+    }
+
     // MARK: - Default names
 
     func testALinkedWorktreeAnswersToItsOwnNameAndItsRepositorys() {

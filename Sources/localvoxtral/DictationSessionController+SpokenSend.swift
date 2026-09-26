@@ -189,7 +189,7 @@ extension DictationSessionController {
         }
     }
 
-    private func typeLiveSpokenSendText(_ text: String, startsMidWord: Bool) {
+    func typeLiveSpokenSendText(_ text: String, startsMidWord: Bool) {
         var text = text
         guard !text.isEmpty else { return }
         // A space only after text in the same app: the last recorded landing
