@@ -23,6 +23,15 @@ there is not.
   `testPrePopulatedFieldTextCannotRescueTheTrailingSpace`). Single-component
   tokens naming an EXISTING absolute path (`/tmp `) abstain via a
   filesystem-existence seam; non-existing ones (`/compact`) stay commands.
+- **An Overlay Buffer commit starts with a space only when it continues
+  the unsent prompt** (#802, owner ruling). The commit text is trimmed and
+  the app cannot read the field, so the evidence is the join: the previous
+  commit went to the same app pid and joined session, and that session's
+  submit count (`ClaudeSessionSnapshot.promptsSubmitted`, every
+  `UserPromptSubmit` with or without text) has not moved since. A failed
+  commit, one the spoken trigger sent, one with no join, or a Live Auto-Paste
+  dictation clears it. Anything looser puts a space in front of `/compact`
+  in a fresh prompt. No trailing space after a commit.
 - **A mid-dictation reconnect resumes the session; it never replays it.**
   When the realtime socket drops without the user asking
   (`DictationSessionController+Reconnect.swift`, #380), the mic keeps recording and the

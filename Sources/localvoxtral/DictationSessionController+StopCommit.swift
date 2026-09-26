@@ -226,10 +226,16 @@ extension DictationSessionController {
         // Read before the cleanup below discards the join; a capture taken
         // for a polish that could not run holds it instead.
         let historyJoin = (sample.capture?.claudeJoin ?? context.claudeSessionJoin).map(AgentCLIJoin.init)
+        let commitJoin = context.claudeSessionJoin
+        let commitTargetPID = overlayBufferCoordinator.commitTargetAppPID
         let overlayCommit = StopCommitCoordinator.commit(
             overlay: overlayBufferCoordinator,
-            textInsertion: overlayTextCommitter,
+            textInsertion: overlayCommitter(join: commitJoin, targetPID: commitTargetPID),
             autoCopyEnabled: settings.autoCopyEnabled
+        )
+        noteOverlayCommit(
+            overlayCommit, committedText: displayWorkingText,
+            join: commitJoin, targetPID: commitTargetPID, spokenSend: spokenSend
         )
         if let failureMessage = overlayCommit.failureMessage {
             lastError = failureMessage
@@ -357,10 +363,15 @@ extension DictationSessionController {
         self.saveInterruptedPolishCommit = nil
 
         let insertedText = self.transcript.currentDictationEventText
+        let commitTargetPID = self.overlayBufferCoordinator.commitTargetAppPID
         let overlayCommit = StopCommitCoordinator.commit(
             overlay: self.overlayBufferCoordinator,
-            textInsertion: self.overlayTextCommitter,
+            textInsertion: self.overlayCommitter(join: capture.claudeJoin, targetPID: commitTargetPID),
             autoCopyEnabled: self.settings.autoCopyEnabled
+        )
+        self.noteOverlayCommit(
+            overlayCommit, committedText: insertedText,
+            join: capture.claudeJoin, targetPID: commitTargetPID, spokenSend: spokenSend
         )
         if let failureMessage = overlayCommit.failureMessage {
             self.lastError = failureMessage
@@ -497,6 +508,8 @@ extension DictationSessionController {
         let sessionAudio = finishedAudio ?? audio.sessionRecording.finish()
         let capturedAudio = sessionStoresAudio ? sessionAudio : nil
         textInsertion.flushFinalLiveReplacementCorrections()
+        // Typed text may sit after the last commit, ending in a space.
+        lastOverlayCommitLanding = nil
         let historyJoin = context.claudeSessionJoin.map(AgentCLIJoin.init)
         // Read before the cleanup below discards the join.
         if liveDictationCanTeachACorrection {
