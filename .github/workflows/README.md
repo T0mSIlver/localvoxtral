@@ -251,7 +251,8 @@ builds the styled DMG, verifies it with `hdiutil`, and uploads it for eyeballing
 ## `ui-smoke.yml`
 
 Two jobs. Both run on manual dispatch and on same-repo PRs when the owner adds
-the `needs-ui-smoke` label (re-add it to rerun after new pushes). Agents
+the `needs-ui-smoke` label (re-add it to rerun after new pushes); a dispatch
+with `-f drill_only=true` runs `ax-drill` alone and leaves the Mac free. Agents
 dispatch through `scripts/ui-smoke-dispatch.sh`, which refuses a run the diff
 does not need, a second run on one commit and a run within an hour of the last
 (rules in `docs/agent/test-tiers.md`, "Proving a change with the e2e dictation
@@ -263,7 +264,9 @@ release commit has its `E2E dictation scored` step green (#574).
 fork PRs included. It packages the app ad-hoc signed and without the MLX
 helpers, copies the bundle out of the workspace and hides `.build` (the #87
 launch check), then launches a fresh menu bar instance, verifies the status
-item, checks that launch in External URL mode spawns no managed backend,
+item, checks that launch in External URL mode neither logs a managed warmup
+request (`log stream`, started before the launch) nor spawns a managed
+backend,
 opens Settings from the status menu, asserts every settings pane, and
 verifies a clean quit. The drill starts no dictation and has polishing off,
 so it reaches no server and needs no microphone; about 30 % of hosted runners
