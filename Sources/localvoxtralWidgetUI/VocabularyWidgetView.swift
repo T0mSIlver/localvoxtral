@@ -161,7 +161,15 @@ struct FlowLayout: Layout {
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         var y = bounds.minY
-        for row in arrange(subviews, width: bounds.width) {
+        let rows = arrange(subviews, width: bounds.width)
+        // A chip that does not fit on the two lines is moved out of the
+        // widget, where its container clips it, instead of drawing over the
+        // others.
+        let placed = Set(rows.flatMap(\.indices))
+        for index in subviews.indices where !placed.contains(index) {
+            subviews[index].place(at: CGPoint(x: bounds.maxX + 10_000, y: bounds.minY), proposal: .zero)
+        }
+        for row in rows {
             var x = bounds.minX
             for index in row.indices {
                 let size = subviews[index].sizeThatFits(.unspecified)

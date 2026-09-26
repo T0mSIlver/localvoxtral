@@ -55,7 +55,9 @@ package struct EnginesWidgetView<TurnOffPolish: View>: View {
                             Text(row.trailing ?? row.detailTrailing ?? "")
                                 .foregroundStyle(.secondary)
                         }
-                        .font(.system(size: 12, weight: .medium))
+                        // A spend line carries two amounts in the same width.
+                        .font(.system(size: row.detail == nil ? 12 : 11, weight: .medium))
+                        .minimumScaleFactor(0.8)
                         .monospacedDigit()
                     }
                     .lineLimit(1)
@@ -101,6 +103,7 @@ package struct EnginesWidgetView<TurnOffPolish: View>: View {
                             }
                             if let line = row.model ?? row.detail {
                                 Text(line).font(.system(size: 11)).foregroundStyle(.secondary)
+                                    .minimumScaleFactor(0.8)
                             }
                         }
                         Spacer(minLength: 4)
