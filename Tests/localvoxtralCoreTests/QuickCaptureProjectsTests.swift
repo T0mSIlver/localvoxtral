@@ -4,7 +4,7 @@ import XCTest
 @testable import localvoxtralCore
 
 final class QuickCaptureProjectsTests: XCTestCase {
-    func testTheFirstParagraphSkipsWhatIsNotProse() {
+    func testTheSummaryIsTheFirstTwoProseParagraphs() {
         let cases: [(String, String?)] = [
             (
                 """
@@ -23,14 +23,15 @@ final class QuickCaptureProjectsTests: XCTestCase {
 
                 Second paragraph.
                 """,
-                "A native macOS menu bar app for realtime dictation with Voxtral, speechd and polish."
+                "A native macOS menu bar app for realtime dictation with Voxtral, speechd and polish. Second paragraph."
             ),
             ("# Title\n\n```sh\nmake\n```\n\nBuilds it.", "Builds it."),
+            ("One.\n\nTwo.\n\nThree.", "One. Two."),
             ("# Title\n\n- a list\n- only\n\n| a | b |", nil),
-            ("Plain first line\nwraps here\n\nnext", "Plain first line wraps here"),
+            ("Plain first line\nwraps here\n\nnext", "Plain first line wraps here next"),
         ]
         for (readme, expected) in cases {
-            XCTAssertEqual(QuickCaptureProjects.firstParagraph(ofReadme: readme), expected, readme)
+            XCTAssertEqual(QuickCaptureProjects.summary(ofReadme: readme), expected, readme)
         }
     }
 
