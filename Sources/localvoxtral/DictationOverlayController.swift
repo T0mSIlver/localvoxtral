@@ -165,9 +165,10 @@ final class DictationOverlayController {
     private let screensProvider: @MainActor () -> [OverlayScreenSnapshot]
     private var metricsLock = OverlaySessionMetricsLock()
     /// Writes the buffer's line breaks itself so streamed text never re-wraps
-    /// (`OverlayStableLineWrapper`). Built from the session's locked metrics on
-    /// first render — the wrapper's widths assume the panel width that lock
-    /// guarantees — and dropped on hide, along with the breaks it remembers.
+    /// (`OverlayStableLineWrapper`), when the user turned `OverlayWordHold`
+    /// on. Built from the session's locked metrics on first render — the
+    /// wrapper's widths assume the panel width that lock guarantees — and
+    /// dropped on hide, along with the breaks it remembers.
     private var lineWrapper: OverlayStableLineWrapper?
 
     /// Locked placement state for the current session. Set on first render,
@@ -312,9 +313,11 @@ final class DictationOverlayController {
         }
 
         let metrics = metricsLock.metrics(current: metricsProvider)
-        var wrapper = lineWrapper ?? metrics.makeStableLineWrapper()
-        let bufferText = wrapper.wrapped(snapshot.bufferText)
-        lineWrapper = wrapper
+        var bufferText = snapshot.bufferText
+        if var wrapper = lineWrapper ?? metrics.makeStableLineWrapper() {
+            bufferText = wrapper.wrapped(bufferText)
+            lineWrapper = wrapper
+        }
 
         hostingView.rootView = DictationOverlayView(
             phase: snapshot.phase,

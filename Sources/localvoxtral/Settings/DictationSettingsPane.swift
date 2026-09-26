@@ -11,6 +11,11 @@ struct DictationSettingsPane: View {
     private static let shortcutsDocsURL = URL(
         string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/dictation.md#shortcuts"
     )!
+    /// The Overlay Buffer group's Learn more: what keeping words on their
+    /// line trades for.
+    private static let overlayWordHoldDocsURL = URL(
+        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/dictation.md#keeping-words-on-their-line"
+    )!
 
     private var dictationOutputModeBinding: Binding<DictationOutputMode> {
         Binding(
@@ -315,7 +320,7 @@ struct DictationSettingsPane: View {
                 }
             }
 
-            SettingsGroup(title: "Overlay Buffer") {
+            SettingsGroup(title: "Overlay Buffer", learnMoreURL: Self.overlayWordHoldDocsURL) {
                 SettingsFieldRow(
                     title: "Font size"
                 ) {
@@ -350,6 +355,16 @@ struct DictationSettingsPane: View {
                             .foregroundStyle(.secondary)
                             .frame(width: 44, alignment: .trailing)
                     }
+                }
+
+                SettingsFieldRow(title: "Keep words from jumping to the next line") {
+                    Picker("", selection: $settings.overlayBufferWordHold) {
+                        ForEach(OverlayWordHold.allCases) { choice in
+                            Text(choice.displayName).tag(choice)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
                 }
 
                 SettingsFieldRow(title: "Stop dictating after silence") {

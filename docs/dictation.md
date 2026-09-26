@@ -61,6 +61,17 @@ one or listed in Settings → Terminals. In Live Auto-Paste, once any text of a
 dictation lands in another app, "send it" does nothing until the dictation
 ends.
 
+### Keeping words on their line
+
+Words reach the overlay a few letters at a time, so a word that starts near
+the end of a line can move down to the next one once it no longer fits. By
+default the overlay lets that happen and fills every line to the edge.
+**Keep words from jumping to the next line** (Settings → Dictation → Overlay
+Buffer) stops it for words up to 6, 10 or 14 letters: a word that starts
+without that much room goes straight to the next line, and stays there for the
+rest of the dictation. The cost is empty space at the end of lines, up to the
+width of that many letters. The finished text commits the same either way.
+
 ## The menu bar popover
 
 localvoxtral lives in the menu bar: the popover shows dictation status at a
@@ -169,7 +180,8 @@ History; the panes sit under the sidebar's Settings header:
   per-mode keyboard shortcuts), the menu-bar mode, copy on stop, the **Copy
   last dictation** shortcut, ducking other
   audio, the spoken "send it" trigger for each mode, and the overlay's font
-  size and how many lines it shows before scrolling. **Lower other audio while dictating**, on unless you turn it off,
+  size, how many lines it shows before scrolling, and whether it
+  [keeps words on their line](#keeping-words-on-their-line). **Lower other audio while dictating**, on unless you turn it off,
   drops music and calls to a fifth of your volume for as long as a session
   runs, in both output modes, and fades back when it ends; **Fade** sets how
   long each fade takes. It moves the volume of

@@ -259,6 +259,45 @@ final class OverlayLayoutMetricsTests: XCTestCase {
         }
     }
 
+    // MARK: - Keeping words on their line (#640)
+
+    /// Off, the default, leaves wrapping to SwiftUI at the full width: the
+    /// overlay writes no line breaks of its own, so no room is held back.
+    func testWordHoldOffBuildsNoLineWrapper() {
+        XCTAssertEqual(baseMetrics.wordHold, .off)
+        XCTAssertNil(baseMetrics.makeStableLineWrapper())
+    }
+
+    /// The chosen length sets how much room a line keeps for the word being
+    /// dictated. A line with room for a 6-letter word but not a 14-letter
+    /// one keeps the new word at 6 and moves it down at 14.
+    func testWordHoldLengthSetsRoomKeptAtLineEnd() throws {
+        let metrics = OverlayLayoutMetrics(
+            bodyFontSize: OverlayLayoutMetrics.defaultBodyFontSize)
+        let lineWidth = metrics.bodyTextWrapWidth - 4  // the wrapper's safety margin
+        let room6 = metrics.liveWordReserveWidth(letters: 6)
+        let room14 = metrics.liveWordReserveWidth(letters: 14)
+
+        var prefix = "a"
+        while lineWidth - metrics.bodyTextWidth(of: prefix + " ") >= room14 {
+            prefix += " a"
+        }
+        let roomLeft = lineWidth - metrics.bodyTextWidth(of: prefix + " ")
+        XCTAssertLessThan(roomLeft, room14)
+        XCTAssertGreaterThan(roomLeft, room6)
+
+        // "b" is a word still being streamed: the text ends inside it.
+        let streamed = prefix + " b"
+        var hold6 = try XCTUnwrap(
+            OverlayLayoutMetrics(bodyFontSize: OverlayLayoutMetrics.defaultBodyFontSize, wordHold: .upTo6Letters)
+                .makeStableLineWrapper())
+        var hold14 = try XCTUnwrap(
+            OverlayLayoutMetrics(bodyFontSize: OverlayLayoutMetrics.defaultBodyFontSize, wordHold: .upTo14Letters)
+                .makeStableLineWrapper())
+        XCTAssertEqual(hold6.wrapped(streamed), streamed)
+        XCTAssertEqual(hold14.wrapped(streamed), prefix + "\nb")
+    }
+
     // MARK: - Self-wrapped lines must survive the text engine
 
     /// `OverlayStableLineWrapper` sums word widths measured by AppKit, while
@@ -266,7 +305,7 @@ final class OverlayLayoutMetricsTests: XCTestCase {
     /// allows, SwiftUI would wrap it again and move the word this whole
     /// mechanism exists to hold still — so every line it emits must render as
     /// exactly one line, at every supported font size.
-    func testSelfWrappedLinesRenderAsOneLineEach() {
+    func testSelfWrappedLinesRenderAsOneLineEach() throws {
         let transcript = String(
             repeating:
                 "the overlay buffer holds a wrapped transcript of whatever was just dictated ",
@@ -277,8 +316,8 @@ final class OverlayLayoutMetricsTests: XCTestCase {
             OverlayLayoutMetrics.defaultBodyFontSize,
             OverlayLayoutMetrics.maximumBodyFontSize,
         ] {
-            let metrics = OverlayLayoutMetrics(bodyFontSize: fontSize)
-            var wrapper = metrics.makeStableLineWrapper()
+            let metrics = OverlayLayoutMetrics(bodyFontSize: fontSize, wordHold: .upTo10Letters)
+            var wrapper = try XCTUnwrap(metrics.makeStableLineWrapper())
             let wrapped = wrapper.wrapped(transcript)
             let lineCount = wrapped.split(separator: "\n").count
             XCTAssertGreaterThan(lineCount, 1, "the sample must actually wrap at \(fontSize)pt")
@@ -297,7 +336,7 @@ final class OverlayLayoutMetricsTests: XCTestCase {
     /// takes a scroller's width off its content while scrolling, so a line
     /// broken for the full width got wrapped again. The same wrapped text must
     /// render one line per line inside the real overlay while it scrolls.
-    func testSelfWrappedLinesRenderAsOneLineEachWhileScrolling() {
+    func testSelfWrappedLinesRenderAsOneLineEachWhileScrolling() throws {
         let transcript = String(
             repeating:
                 "censé marcher, ouais, en vrai, l'avantage, c'est que c'est super rapide, quoi ça apparaît vraiment instantanément, ça apparaît douze mots à la fois carrément ",
@@ -309,8 +348,8 @@ final class OverlayLayoutMetricsTests: XCTestCase {
             16,  // the reported screenshot's size
             OverlayLayoutMetrics.maximumBodyFontSize,
         ] {
-            let metrics = OverlayLayoutMetrics(bodyFontSize: fontSize)
-            var wrapper = metrics.makeStableLineWrapper()
+            let metrics = OverlayLayoutMetrics(bodyFontSize: fontSize, wordHold: .upTo10Letters)
+            var wrapper = try XCTUnwrap(metrics.makeStableLineWrapper())
             let wrapped = wrapper.wrapped(transcript)
             let lineCount = wrapped.split(separator: "\n").count
             XCTAssertGreaterThan(

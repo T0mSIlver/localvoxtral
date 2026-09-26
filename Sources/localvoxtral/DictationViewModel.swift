@@ -467,7 +467,8 @@ final class DictationViewModel {
                     metricsProvider: {
                         OverlayLayoutMetrics(
                             bodyFontSize: settings.overlayBufferFontSize,
-                            visibleLines: settings.overlayBufferVisibleLines)
+                            visibleLines: settings.overlayBufferVisibleLines,
+                            wordHold: settings.overlayBufferWordHold)
                     },
                     storedPlacementProvider: { settings.overlayBufferPlacement },
                     placementWriter: { settings.overlayBufferPlacement = $0 }
