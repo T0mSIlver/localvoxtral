@@ -1,11 +1,8 @@
-/// Accumulates 16 kHz audio and yields fixed-cadence batches for streaming inference.
+/// Accumulates 16 kHz audio and yields fixed-cadence batches for `speechd-bench`.
 ///
-/// The realtime client normally appends 100 ms chunks; batching to a fixed step cadence
-/// avoids rerunning the model front end for every network append without changing the
-/// audio presented to the stream session. The production default is 100 ms (owner decision
-/// 2026-07-17: snappiest appearance, bench-proven to fit at 74-80 ms/step); larger values
-/// such as 480 ms (the model's native transcription delay) trade appearance latency for
-/// per-step compute headroom.
+/// The bench steps at a fixed cadence, which is what the server's `CoalescingStepFeed`
+/// does on a Mac that keeps up with its minimum step. A larger cadence shows what
+/// bigger steps cost and delay.
 public struct StepBatcher: Sendable {
     public let samplesPerStep: Int
     private var bufferedSamples: [Float] = []

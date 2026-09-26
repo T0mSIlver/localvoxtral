@@ -97,9 +97,6 @@ final class BackendManager: ManagedBackendManaging {
     /// Megabytes for the speechd `--cache-limit-mb` flag, or nil to omit it and
     /// let the helper apply its built-in default.
     typealias SpeechdCacheLimitProvider = @MainActor () -> Int?
-    /// Milliseconds for the speechd `--step-ms` flag, or nil to omit it and
-    /// let the helper apply its built-in default.
-    typealias SpeechdStepCadenceProvider = @MainActor () -> Int?
 
     private(set) var speechdStatus: ManagedBackendStatus
     private(set) var polishdStatus: ManagedBackendStatus
@@ -110,7 +107,6 @@ final class BackendManager: ManagedBackendManaging {
     @ObservationIgnored private let polishingModelProvider: PolishingModelProvider
     @ObservationIgnored private let speechModelProvider: SpeechModelProvider
     @ObservationIgnored private let speechdCacheLimitProvider: SpeechdCacheLimitProvider
-    @ObservationIgnored private let speechdStepCadenceProvider: SpeechdStepCadenceProvider
     @ObservationIgnored private var speechdSupervisor: (any ManagedBackendSupervising)?
     /// The catalog entry the RUNNING speechd was launched with. A supervisor
     /// captures its argv at creation, so a selection change while the helper is
@@ -150,7 +146,6 @@ final class BackendManager: ManagedBackendManaging {
             SpeechModelCatalog.defaultOption
         },
         speechdCacheLimitProvider: @escaping SpeechdCacheLimitProvider = { nil },
-        speechdStepCadenceProvider: @escaping SpeechdStepCadenceProvider = { nil },
         supervisorFactory: @escaping SupervisorFactory = { configuration in
             BackendProcessSupervisor(configuration: configuration)
         }
@@ -160,7 +155,6 @@ final class BackendManager: ManagedBackendManaging {
         self.polishingModelProvider = polishingModelProvider
         self.speechModelProvider = speechModelProvider
         self.speechdCacheLimitProvider = speechdCacheLimitProvider
-        self.speechdStepCadenceProvider = speechdStepCadenceProvider
         self.supervisorFactory = supervisorFactory
         self.speechdStatus = .stopped
         self.polishdStatus = .stopped
@@ -632,10 +626,6 @@ final class BackendManager: ManagedBackendManaging {
             // Auto (nil) omits the flag so the helper's built-in default applies.
             if let cacheLimitMB = speechdCacheLimitProvider() {
                 arguments.append(contentsOf: ["--cache-limit-mb", "\(cacheLimitMB)"])
-            }
-            // Same Auto contract as the cache limit.
-            if let stepMilliseconds = speechdStepCadenceProvider() {
-                arguments.append(contentsOf: ["--step-ms", "\(stepMilliseconds)"])
             }
             return arguments
         case BackendCatalog.polishd.id:
