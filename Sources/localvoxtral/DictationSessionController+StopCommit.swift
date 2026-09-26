@@ -750,9 +750,23 @@ extension DictationSessionController {
         let audioSeconds: Double
         let apiKey: String
         let endpoint: URL
+        let userTerms: [String]
+        let dictionarySpellings: [String]
+        let contextTrusted: Bool
+        /// The session's and the screen's, read at stop. The repository's
+        /// wait for the project, which may need the git root.
+        let context: StopSecondPass.ContextTerms
+        /// The joined session's workspace, the project's first word.
+        let workspace: ClaudeWorkspaceReference?
+        /// Whether the project's agent proposals may go, and so whether the
+        /// git root is looked up: repo vocabulary on, and `contextTrusted`.
+        let repositoryTermsPermitted: Bool
+    }
+
+    /// The list the pass is biased with, and the terms before
+    /// `contextBias` joined their phrases, to put the spaces back.
+    struct StopSecondPassTerms {
         let contextBias: [String]
-        /// The terms before `contextBias` joined their phrases, to put the
-        /// spaces back in the answer.
         let candidates: [String]
     }
 
@@ -791,58 +805,108 @@ extension DictationSessionController {
             endpoint,
             trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
         )
-        let contextTerms = contextTrusted
-            ? stopSecondPassContextTerms(capture: capture, endpoint: endpoint)
-            : .none
-        let candidates = StopSecondPass.candidates(
-            userTerms: settings.polishSpeakerTerms,
-            dictionarySpellings: sessionReplacementDictionary?.entries.map(\.replaceWith) ?? [],
-            learnedTerms: learnedTermStore?.snapshot().confirmedEverywhere().map(\.term) ?? [],
-            context: contextTerms,
-            contextTrusted: contextTrusted
-        )
-        let contextBias = MistralBatchTranscription.contextBias(from: candidates)
-        // Counts only: the terms are screen, session and repository content.
-        Log.backends.info(
-            "second pass terms: context \(contextTrusted ? "trusted" : "not sent", privacy: .public), repository \(contextTerms.repository.count, privacy: .public), session \(contextTerms.session.count, privacy: .public), screen \(contextTerms.screen.count, privacy: .public), sent \(contextBias.count, privacy: .public)"
-        )
+        // The join is the capture's, or with no polishing the one still on
+        // the context.
+        let join = capture?.claudeJoin ?? context.claudeSessionJoin
         return StopSecondPassRequest(
             wav: DictationAudioRecording.wav(fromPCM16: pcm),
             audioSeconds: Double(pcm.count) / Double(AudioChunkBuffer.bytesPerSecond),
             apiKey: configuration.apiKey,
             endpoint: endpoint,
-            contextBias: contextBias,
-            candidates: candidates
+            userTerms: settings.polishSpeakerTerms,
+            dictionarySpellings: sessionReplacementDictionary?.entries.map(\.replaceWith) ?? [],
+            contextTrusted: contextTrusted,
+            context: contextTrusted
+                ? stopSecondPassContextTerms(join: join, capture: capture, endpoint: endpoint)
+                : .none,
+            workspace: contextTrusted ? join?.snapshot.learnedTermWorkspace : nil,
+            // An agent's unconfirmed proposals go only where repo vocabulary
+            // may (#609): until use confirms them they are the repo's words.
+            repositoryTermsPermitted: contextTrusted && settings.repoVocabularyEnabled
         )
     }
 
-    /// This dictation's context terms, from what the stop already holds: the
-    /// joined session (the capture's, or with no polishing the one still on
-    /// the context) and the start screen the capture reconciled. Each source
-    /// passes the gate it passes for the polish, asked about `endpoint`.
+    /// The joined session's and the start screen's terms, from what the
+    /// stop already holds. Each source passes the gate it passes for the
+    /// polish, asked about `endpoint`.
     private func stopSecondPassContextTerms(
+        join: ClaudeSessionJoin?,
         capture: StopCommitCoordinator.Capture?,
         endpoint: URL
     ) -> StopSecondPass.ContextTerms {
-        let join = capture?.claudeJoin ?? context.claudeSessionJoin
         var terms = StopSecondPass.ContextTerms()
         terms.session = StopSecondPass.speakableTerms(
             in: context.claudeSessionTextIfEnabled(join: join, endpointURL: endpoint))
-        // An agent's unconfirmed proposals go only where repo vocabulary may
-        // (#609): until use confirms them they are the repo's words. The
-        // repository pipeline itself is not run: it can take 3 s, and it
-        // returns only terms the realtime text already nearly spells.
-        if settings.repoVocabularyEnabled,
-            let project = LearnedTermProjectResolver.resolve(
-                repositoryRoot: .unknown, workspace: join?.snapshot.learnedTermWorkspace)
-        {
-            terms.repository = learnedTermStore?.snapshot()
-                .unconfirmedProposals(projectKey: project.key) ?? []
-        }
         if let screen = capture?.screenDecision.vocabularyGroundingText {
             terms.screen = StopSecondPass.speakableTerms(in: screen, newestFirst: true)
         }
         return terms
+    }
+
+    /// The pass's terms, once the project is known. The project is the
+    /// joined session's, widened to its repository by the git root (#652),
+    /// or the focused terminal's repository with no join (#705). The root is
+    /// looked up only when the project's proposals may go, and the stop
+    /// waits for it at most `StopSecondPass.repositoryRootBound`; without
+    /// it, a joined session keys on its own directory and an unjoined
+    /// terminal has no project. The repository pipeline itself is not run:
+    /// it can take 3 s, and it nominates only what the realtime text nearly
+    /// spells.
+    func stopSecondPassTerms(for request: StopSecondPassRequest) async -> StopSecondPassTerms {
+        var context = request.context
+        var learnedTerms: [String] = []
+        if request.contextTrusted {
+            var repositoryRoot = LearnedTermProjectResolver.RepositoryRoot.unknown
+            if request.repositoryTermsPermitted, needsRepositoryRoot(request.workspace) {
+                let started = ContinuousClock.now
+                repositoryRoot = await repoVocabularyGrounding.repositoryRoot(
+                    joinedWorkspace: request.workspace?.localPath,
+                    sleep: dependencies.clock.sleep
+                )
+                Log.backends.info(
+                    "second pass git root: \(Self.describe(repositoryRoot), privacy: .public) after \(String(format: "%.0f", (ContinuousClock.now - started) / .milliseconds(1)), privacy: .public) ms"
+                )
+            }
+            let memory = learnedTermStore?.snapshot() ?? LearnedTerms()
+            let project = LearnedTermProjectResolver.resolve(
+                repositoryRoot: repositoryRoot, workspace: request.workspace)
+            if let project {
+                learnedTerms = memory.confirmedTerms(projectKey: project.key)
+                if request.repositoryTermsPermitted {
+                    context.repository = memory.unconfirmedProposals(projectKey: project.key)
+                }
+            }
+            learnedTerms += memory.confirmedEverywhere().map(\.term)
+        }
+        let candidates = StopSecondPass.candidates(
+            userTerms: request.userTerms,
+            dictionarySpellings: request.dictionarySpellings,
+            learnedTerms: learnedTerms,
+            context: context,
+            contextTrusted: request.contextTrusted
+        )
+        let contextBias = MistralBatchTranscription.contextBias(from: candidates)
+        // Counts only: the terms are screen, session and repository content.
+        Log.backends.info(
+            "second pass terms: context \(request.contextTrusted ? "trusted" : "not sent", privacy: .public), repository \(context.repository.count, privacy: .public), session \(context.session.count, privacy: .public), screen \(context.screen.count, privacy: .public), sent \(contextBias.count, privacy: .public)"
+        )
+        return StopSecondPassTerms(contextBias: contextBias, candidates: candidates)
+    }
+
+    /// A remote session's project is its label, whatever this Mac's
+    /// terminal sits in.
+    private func needsRepositoryRoot(_ workspace: ClaudeWorkspaceReference?) -> Bool {
+        if case .remoteOpaque = workspace { return false }
+        return true
+    }
+
+    /// For the log: whether a root was found, never the path.
+    private static func describe(_ root: LearnedTermProjectResolver.RepositoryRoot) -> String {
+        switch root {
+        case .unknown: "unknown"
+        case .noRepository: "no repository"
+        case .root(let path, let mainCheckout): path == mainCheckout ? "found" : "found, a linked worktree"
+        }
     }
 
     /// Runs the second pass as the commit's task, then commits. A new
@@ -874,10 +938,12 @@ extension DictationSessionController {
         let transcriber = dependencies.batchTranscriber
         let sleep = dependencies.clock.sleep
         let usageRecorder = secondPassUsageRecorder
-        Log.backends.info(
-            "second pass: sending \(String(format: "%.1f", request.audioSeconds), privacy: .public)s of audio with \(request.contextBias.count, privacy: .public) terms, deadline \(String(describing: deadline), privacy: .public)"
-        )
         polishAndCommitTask = Task { @MainActor [weak self] in
+            guard let terms = await self?.stopSecondPassTerms(for: request), !Task.isCancelled
+            else { return }
+            Log.backends.info(
+                "second pass: sending \(String(format: "%.1f", request.audioSeconds), privacy: .public)s of audio with \(terms.contextBias.count, privacy: .public) terms, deadline \(String(describing: deadline), privacy: .public)"
+            )
             let outcome = await StopSecondPass.run(deadline: deadline, sleep: sleep) {
                 // Here, off the main actor: the ledger appends to its file
                 // synchronously. Recorded as the request goes out, whatever
@@ -893,12 +959,12 @@ extension DictationSessionController {
                 let text = try await transcriber.transcribe(
                     wav: request.wav,
                     language: nil,
-                    contextBias: request.contextBias,
+                    contextBias: terms.contextBias,
                     apiKey: request.apiKey,
                     endpoint: request.endpoint
                 ).text
                 return MistralBatchTranscription.restoringPhrases(
-                    in: text, candidates: request.candidates)
+                    in: text, candidates: terms.candidates)
             }
             guard let self, outcome != .cancelled, !Task.isCancelled else { return }
             self.applyStopSecondPass(outcome)

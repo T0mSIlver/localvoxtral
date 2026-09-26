@@ -1,5 +1,6 @@
 import ClaudeContextWire
 import Foundation
+import Synchronization
 import XCTest
 @testable import localvoxtral
 
@@ -111,22 +112,9 @@ final class StopSecondPassPipelineTests: XCTestCase {
         let settings = harness.viewModel.settings
         settings.polishContextTrustedEndpointEnabled = trusted
         settings.repoVocabularyEnabled = true
-        let store = LearnedTermStore(fileURL: nil, now: harness.clock.clock.now)
-        let project = LearnedTermProjectIdentity(key: Self.projectDirectory, name: "quillmark")
-        store.recordProposal(["inkwell"], agent: .claude, project: project, excluding: [])
-        store.waitForPendingWrites()
-        harness.viewModel.learnedTermStore = store
+        harness.viewModel.learnedTermStore = storeProposing("inkwell", in: Self.projectDirectory)
         harness.viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding(outcome: nil)
-        let origin = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
-        var snapshot = ClaudeSessionSnapshot(
-            sessionID: "s1", origin: origin, agent: .claude, firstSeen: Date(timeIntervalSince1970: 0))
-        snapshot.workspace = ClaudeWorkspaceReference.make(rawCwd: Self.projectDirectory, origin: origin)
-        harness.viewModel.session.context.claudeSessionJoin = ClaudeSessionJoin(
-            target: TerminalScreenTarget(pid: 4242, bundleID: "com.apple.Terminal"),
-            snapshot: snapshot,
-            windowID: 101,
-            mechanism: .ttyDevice
-        )
+        join(harness, cwd: Self.projectDirectory)
 
         harness.stop()
         await awaitStoppedSessionCommit(harness.viewModel)
@@ -150,6 +138,125 @@ final class StopSecondPassPipelineTests: XCTestCase {
         XCTAssertEqual(trusted, ["localvoxtral", "Claude_Code", "inkwell"])
     }
 
+    /// A joined session in a subdirectory of a linked worktree (#705): the
+    /// proposals are filed under the main checkout (#652), which only the git
+    /// root names. The lookup starts from the session's own directory.
+    func testASessionInAWorktreeGetsTheMainCheckoutsProposals() async {
+        let transcriber = FakeBatchTranscriber(.text(Self.batchText))
+        let harness = makeHarness(transcriber: transcriber)
+        harness.viewModel.settings.polishContextTrustedEndpointEnabled = true
+        harness.viewModel.settings.repoVocabularyEnabled = true
+        harness.viewModel.learnedTermStore = storeProposing("inkwell", in: Self.projectDirectory)
+        let grounding = FakeRepoVocabularyGrounding(outcome: nil)
+        grounding.secondPassRoot = .root("/nonexistent-647/quillmark-wt", mainCheckout: Self.projectDirectory)
+        harness.viewModel.dependencies.repoVocabularyGrounding = grounding
+        join(harness, cwd: "/nonexistent-647/quillmark-wt/Sources/Quill")
+
+        harness.stop()
+        await awaitStoppedSessionCommit(harness.viewModel)
+
+        XCTAssertEqual(grounding.rootLookups, ["/nonexistent-647/quillmark-wt/Sources/Quill"])
+        XCTAssertEqual(transcriber.calls.first?.contextBias, ["localvoxtral", "Claude_Code", "inkwell"])
+    }
+
+    // MARK: - Unjoined terminal (#705)
+
+    private nonisolated static let unjoinedRepository = "/nonexistent-705/quillmark"
+    private nonisolated static let repositoryEntry = ReplacementEntry(
+        replaceWith: "PageComposer.swift", matches: ["page composer dot swift"])
+
+    /// An unjoined terminal in a repository whose agent proposed `inkwell`,
+    /// through the production pipeline with only its detached bodies
+    /// replaced: the second pass's root lookup answers `lookup`, and the
+    /// polish's harvest offers `PageComposer.swift`.
+    private func unjoinedTerminal(
+        trusted: Bool,
+        lookup: @escaping @Sendable () async -> LearnedTermProjectResolver.RepositoryRoot
+    ) -> (Harness, FakeBatchTranscriber, FakePolishingService) {
+        let transcriber = FakeBatchTranscriber(.text("Ask Claude_Code about page composer dot swift."))
+        let polisher = FakePolishingService()
+        let harness = makeHarness(transcriber: transcriber, polisher: polisher)
+        let viewModel = harness.viewModel
+        viewModel.settings.polishContextTrustedEndpointEnabled = trusted
+        viewModel.settings.repoVocabularyEnabled = true
+        let template = LLMPromptTemplates(
+            systemContent: "system", userContent: "{{replacement_dictionary}}\n{{input_text}}")
+        viewModel.appConfigStore = MockAppConfigStore(
+            promptTemplates: template, agentPromptTemplates: template)
+        viewModel.learnedTermStore = storeProposing("inkwell", in: Self.unjoinedRepository)
+        let pipeline = viewModel.session.repoVocabularyPipeline
+        pipeline.rootLookup = lookup
+        pipeline.pipeline = { _ in
+            RepoVocabularyMatcher.GroundingOutcome(entries: [Self.repositoryEntry], isFallbackOnly: false)
+        }
+        return (harness, transcriber, polisher)
+    }
+
+    private func polishHadRepositoryVocabulary(_ polisher: FakePolishingService) async -> Bool {
+        let request = await polisher.lastRequest
+        return request?.userPrompts.contains {
+            $0.contains(RepoVocabularyMatcher.repositoryVocabularyHeader)
+        } ?? false
+    }
+
+    func testAnUnjoinedTerminalInARepositorySendsItsProposal() async {
+        let lookups = Mutex(0)
+        let (harness, transcriber, polisher) = unjoinedTerminal(trusted: true) {
+            lookups.withLock { $0 += 1 }
+            return .root(Self.unjoinedRepository)
+        }
+
+        harness.stop()
+        await awaitStoppedSessionCommit(harness.viewModel)
+
+        XCTAssertEqual(transcriber.calls.first?.contextBias, ["localvoxtral", "Claude_Code", "inkwell"])
+        XCTAssertEqual(lookups.withLock { $0 }, 1)
+        let polishHadVocabulary = await polishHadRepositoryVocabulary(polisher)
+        XCTAssertTrue(polishHadVocabulary, "the lookup left the polish's gate free")
+    }
+
+    func testWithoutTrustTheRootIsNotLookedUp() async {
+        let lookups = Mutex(0)
+        let (harness, transcriber, _) = unjoinedTerminal(trusted: false) {
+            lookups.withLock { $0 += 1 }
+            return .root(Self.unjoinedRepository)
+        }
+
+        harness.stop()
+        await awaitStoppedSessionCommit(harness.viewModel)
+
+        XCTAssertEqual(transcriber.calls.first?.contextBias, ["localvoxtral", "Claude_Code"])
+        XCTAssertEqual(lookups.withLock { $0 }, 0)
+    }
+
+    /// A lookup parked in a `stat` on a dead mount: the pass leaves without
+    /// the project's terms once the bound passes, and the polish, which has
+    /// its own gate, still gets its vocabulary.
+    func testAStuckRootLookupCostsTheBoundAndNotThePolishsVocabulary() async {
+        let started = BoundedWait()
+        let unstick = BoundedWait()
+        let (harness, transcriber, polisher) = unjoinedTerminal(trusted: true) {
+            started.resolve()
+            _ = await unstick.value(failAfter: 10)
+            return .root(Self.unjoinedRepository)
+        }
+        defer { unstick.resolve() }
+
+        harness.stop()
+        let commit = harness.viewModel.session.polishAndCommitTask
+        _ = await started.value(failAfter: 10)
+        await harness.clock.waitForSleepers(1)
+        XCTAssertTrue(transcriber.calls.isEmpty, "the pass waits for the root")
+        harness.clock.advance(by: 0.25)
+        await commit?.value
+
+        XCTAssertEqual(transcriber.calls.first?.contextBias, ["localvoxtral", "Claude_Code"])
+        let polishHadVocabulary = await polishHadRepositoryVocabulary(polisher)
+        XCTAssertTrue(polishHadVocabulary)
+        XCTAssertEqual(harness.overlay.committedTexts.count, 1)
+    }
+
+    // MARK: - Latch
     // MARK: - Latch
 
     func testOnlyAnOverlayDictationInMistralModeKeepsItsAudioForTheSecondPass() {
@@ -181,6 +288,29 @@ final class StopSecondPassPipelineTests: XCTestCase {
     }
 
     // MARK: - Harness
+
+    private func storeProposing(_ term: String, in projectKey: String) -> LearnedTermStore {
+        let store = LearnedTermStore(fileURL: nil, now: { Date(timeIntervalSince1970: 0) })
+        let project = LearnedTermProjectIdentity(
+            key: projectKey, name: (projectKey as NSString).lastPathComponent)
+        store.recordProposal([term], agent: .claude, project: project, excluding: [])
+        store.waitForPendingWrites()
+        return store
+    }
+
+    /// Joins the dictation to a local Claude Code session running in `cwd`.
+    private func join(_ harness: Harness, cwd: String) {
+        let origin = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
+        var snapshot = ClaudeSessionSnapshot(
+            sessionID: "s1", origin: origin, agent: .claude, firstSeen: Date(timeIntervalSince1970: 0))
+        snapshot.workspace = ClaudeWorkspaceReference.make(rawCwd: cwd, origin: origin)
+        harness.viewModel.session.context.claudeSessionJoin = ClaudeSessionJoin(
+            target: TerminalScreenTarget(pid: 4242, bundleID: "com.apple.Terminal"),
+            snapshot: snapshot,
+            windowID: 101,
+            mechanism: .ttyDevice
+        )
+    }
 
     private struct Harness {
         let viewModel: DictationViewModel

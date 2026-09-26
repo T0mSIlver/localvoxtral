@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 // MARK: - 2. Repo indexing
 
@@ -214,6 +215,17 @@ package enum RepoIndexing {
             : common.path
     }
 
+    /// What a resolution that walked to `root` says about the project: the
+    /// root and its main checkout, or, for nil, no repository. Reads a
+    /// worktree's `.git` file, so it belongs off the main actor.
+    package static func repositoryRoot(
+        gitRoot root: String?,
+        fileManager: FileManager = .default
+    ) -> LearnedTermProjectResolver.RepositoryRoot {
+        guard let root else { return .noRepository }
+        return .root(root, mainCheckout: mainCheckout(ofRoot: root, fileManager: fileManager))
+    }
+
     /// The HEAD file inside the resolved git directory.
     package static func headFileURL(root: String, fileManager: FileManager = .default) -> URL? {
         guard let gitDir = resolveGitDirectory(root: root, fileManager: fileManager) else {
@@ -309,5 +321,36 @@ package enum RepoIndexing {
         let hasInternalUppercase = term.dropFirst().contains(where: \.isUppercase)
         let hasLowercase = term.contains(where: \.isLowercase)
         return hasInternalUppercase && hasLowercase
+    }
+}
+
+// MARK: - Single-flight gate
+
+/// Single-flight gate for the detached vocabulary pipeline. An abandoned
+/// (deadline-expired) pipeline can stay parked in a blocking syscall, pinning
+/// one cooperative-pool thread; without this gate every subsequent commit
+/// against the same wedged mount would stack another blocked thread until the
+/// pool — and the deadline mechanism itself — starves. A class holding the
+/// `Mutex` (per repo conventions) so the detached pipeline wrapper can release
+/// it from off-main on eventual completion. The second pass's git-root
+/// lookup on stop (#705) holds a gate of its own, so it never makes the
+/// polish skip its repository vocabulary.
+package final class RepoVocabularyFlightGate: Sendable {
+    private let inFlight = Mutex(false)
+
+    package init() {}
+
+    /// True when the caller acquired the gate; false when a prior pipeline is
+    /// still in flight and the caller must fast-skip.
+    package func acquire() -> Bool {
+        inFlight.withLock { alreadyInFlight in
+            if alreadyInFlight { return false }
+            alreadyInFlight = true
+            return true
+        }
+    }
+
+    package func release() {
+        inFlight.withLock { $0 = false }
     }
 }

@@ -348,33 +348,6 @@ enum TerminalDescendantProcessResolver {
     }
 }
 
-// MARK: - Single-flight gate
-
-/// Single-flight gate for the detached vocabulary pipeline. An abandoned
-/// (deadline-expired) pipeline can stay parked in a blocking syscall, pinning
-/// one cooperative-pool thread; without this gate every subsequent commit
-/// against the same wedged mount would stack another blocked thread until the
-/// pool — and the deadline mechanism itself — starves. A class holding the
-/// `Mutex` (per repo conventions) so the detached pipeline wrapper can release
-/// it from off-main on eventual completion.
-final class RepoVocabularyFlightGate: Sendable {
-    private let inFlight = Mutex(false)
-
-    /// True when the caller acquired the gate; false when a prior pipeline is
-    /// still in flight and the caller must fast-skip.
-    func acquire() -> Bool {
-        inFlight.withLock { alreadyInFlight in
-            if alreadyInFlight { return false }
-            alreadyInFlight = true
-            return true
-        }
-    }
-
-    func release() {
-        inFlight.withLock { $0 = false }
-    }
-}
-
 // MARK: - TTL cache
 
 /// Root-keyed cache of harvested vocabularies. TTL-bounded and invalidated when
@@ -504,6 +477,69 @@ enum RepoVocabularyService {
         return vocabulary
     }
 
+    /// What the cwd resolution found, before any index is read.
+    enum GitRootLookup: Equatable, Sendable {
+        enum Source: Equatable, Sendable {
+            case joinedWorkspace, windowTitle, terminalDescendants
+        }
+
+        case found(String, from: Source)
+        /// The resolution ran and the directory is in no repository.
+        case notARepository
+        /// Terminal descendants sit in more than one repository.
+        case ambiguous
+        /// A descendant's cwd is unreadable or outside any repository, so
+        /// the focused tab's repository cannot be told.
+        case indeterminate
+    }
+
+    /// The git root of the dictation's directory, tier by tier as `entries`
+    /// describes: a joined local session's workspace alone, else the focused
+    /// title, else terminal descendants that all agree. May block on `stat`
+    /// and the process table: call it off the main actor, under a deadline.
+    static func gitRoot(
+        forWindowTitle title: String?,
+        terminalApplicationPID: pid_t?,
+        joinedWorkspaceDirectory: String?,
+        fileManager: FileManager = .default,
+        processSnapshot: @Sendable () -> [TerminalDescendantProcessResolver.ProcessRecord] = {
+            TerminalDescendantProcessResolver.liveProcessSnapshot()
+        },
+        workingDirectoryForPID: @Sendable (pid_t) -> String? = {
+            TerminalDescendantProcessResolver.liveWorkingDirectory(forPID: $0)
+        }
+    ) -> GitRootLookup {
+        if let joinedWorkspaceDirectory {
+            return RepoIndexing.findGitRoot(startingAt: joinedWorkspaceDirectory, fileManager: fileManager)
+                .map { .found($0, from: .joinedWorkspace) } ?? .notARepository
+        }
+        if let title,
+           let titleDirectory = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
+               fromWindowTitle: title,
+               isDirectory: { path in
+                   var isDirectory: ObjCBool = false
+                   return fileManager.fileExists(atPath: path, isDirectory: &isDirectory)
+                       && isDirectory.boolValue
+               }
+           ),
+           let root = RepoIndexing.findGitRoot(startingAt: titleDirectory, fileManager: fileManager)
+        {
+            return .found(root, from: .windowTitle)
+        }
+        guard let terminalApplicationPID else { return .notARepository }
+        switch TerminalDescendantProcessResolver.resolveGitRoot(
+            terminalApplicationPID: terminalApplicationPID,
+            fileManager: fileManager,
+            processSnapshot: processSnapshot,
+            workingDirectoryForPID: workingDirectoryForPID
+        ) {
+        case .unique(let root): return .found(root, from: .terminalDescendants)
+        case .ambiguous: return .ambiguous
+        case .indeterminate: return .indeterminate
+        case .none: return .notARepository
+        }
+    }
+
     /// The full focused-title/terminal-PID -> git root -> vocabulary -> matched
     /// entries pipeline for one commit. A joined local session's workspace,
     /// when there is one, decides alone: the join named the session the user
@@ -530,46 +566,33 @@ enum RepoVocabularyService {
         },
         rootSink: (@Sendable (String?) -> Void)? = nil
     ) async -> RepoVocabularyMatcher.GroundingOutcome? {
-        var gitRoot: String?
-        if let joinedWorkspaceDirectory {
-            gitRoot = RepoIndexing.findGitRoot(
-                startingAt: joinedWorkspaceDirectory, fileManager: fileManager
-            )
-            if gitRoot != nil {
+        let gitRoot: String?
+        switch Self.gitRoot(
+            forWindowTitle: title,
+            terminalApplicationPID: terminalApplicationPID,
+            joinedWorkspaceDirectory: joinedWorkspaceDirectory,
+            fileManager: fileManager,
+            processSnapshot: processSnapshot,
+            workingDirectoryForPID: workingDirectoryForPID
+        ) {
+        case .found(let root, let source):
+            gitRoot = root
+            switch source {
+            case .joinedWorkspace:
                 Log.polishing.info("Repo vocabulary: resolved git root from the joined session's workspace")
-            }
-        } else if let title,
-           let titleDirectory = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
-               fromWindowTitle: title,
-               isDirectory: { path in
-                   var isDirectory: ObjCBool = false
-                   return fileManager.fileExists(atPath: path, isDirectory: &isDirectory)
-                       && isDirectory.boolValue
-               }
-           )
-        {
-            gitRoot = RepoIndexing.findGitRoot(startingAt: titleDirectory, fileManager: fileManager)
-        }
-
-        if gitRoot == nil, joinedWorkspaceDirectory == nil, let terminalApplicationPID {
-            switch TerminalDescendantProcessResolver.resolveGitRoot(
-                terminalApplicationPID: terminalApplicationPID,
-                fileManager: fileManager,
-                processSnapshot: processSnapshot,
-                workingDirectoryForPID: workingDirectoryForPID
-            ) {
-            case .unique(let root):
-                gitRoot = root
+            case .terminalDescendants:
                 Log.polishing.info("Repo vocabulary: resolved git root from terminal descendants")
-            case .ambiguous:
-                Log.polishing.info("Repo vocabulary skipped: terminal descendants span multiple repos")
-                return nil
-            case .indeterminate:
-                Log.polishing.info("Repo vocabulary skipped: terminal descendant cwds do not establish one repo")
-                return nil
-            case .none:
+            case .windowTitle:
                 break
             }
+        case .notARepository:
+            gitRoot = nil
+        case .ambiguous:
+            Log.polishing.info("Repo vocabulary skipped: terminal descendants span multiple repos")
+            return nil
+        case .indeterminate:
+            Log.polishing.info("Repo vocabulary skipped: terminal descendant cwds do not establish one repo")
+            return nil
         }
 
         // Reported before the index and the match, and whatever they return:
