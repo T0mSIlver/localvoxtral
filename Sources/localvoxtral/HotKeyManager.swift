@@ -80,22 +80,18 @@ final class HotKeyManager {
 
     private static let overlayHotKeyID: UInt32 = 1
     private static let livePasteHotKeyID: UInt32 = 2
-    private static let copyLastDictationHotKeyID: UInt32 = 3
-    private static let quickCaptureHotKeyID: UInt32 = 4
+    private static let copyLastDictationHotKeyID = ActionHotKey.copyLastDictation.rawValue
+    private static let quickCaptureHotKeyID = ActionHotKey.quickCapture.rawValue
 
     /// A hotkey that fires one action on press. These live apart from the
     /// dictation triggers: re-registering or switching the triggers, the
     /// single-modifier gesture included, leaves them alone.
-    enum ActionHotKey: CaseIterable {
-        case copyLastDictation
-        case quickCapture
+    /// The raw value is the Carbon hotkey ID.
+    enum ActionHotKey: UInt32, CaseIterable {
+        case copyLastDictation = 3
+        case quickCapture = 4
 
-        fileprivate var id: UInt32 {
-            switch self {
-            case .copyLastDictation: HotKeyManager.copyLastDictationHotKeyID
-            case .quickCapture: HotKeyManager.quickCaptureHotKeyID
-            }
-        }
+        fileprivate var id: UInt32 { rawValue }
 
         fileprivate var failure: RegistrationFailure {
             switch self {

@@ -1,3 +1,8 @@
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Foundation
 
 /// One quick capture on its way to an issue (#732): the user's words, where
@@ -36,6 +41,8 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
     /// Why there is no draft, in one short sentence.
     package var note: String?
     package var filedURL: String?
+    /// When File succeeded; what the Inbox's 7-day listing counts from.
+    package var filedAt: Date?
 
     package init(id: UUID = UUID(), capturedAt: Date, text: String, historyRecordID: UUID? = nil) {
         self.id = id
@@ -140,10 +147,10 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
         }
     }
 
-    /// Drops filed captures older than `keepFiledDays`.
+    /// Drops captures filed more than `keepFiledDays` ago.
     package mutating func prune(now: Date) {
         let cutoff = now.addingTimeInterval(-Double(Self.keepFiledDays) * 86_400)
-        items.removeAll { $0.state == .filed && $0.capturedAt < cutoff }
+        items.removeAll { $0.state == .filed && ($0.filedAt ?? $0.capturedAt) < cutoff }
     }
 
     /// `owner/name`, GitHub's charset.
@@ -195,15 +202,36 @@ package enum QuickCaptureInboxFile {
         return result
     }
 
-    /// Atomic, 0600: the file holds dictated words.
+    /// The file holds dictated words, so it is never readable by anyone
+    /// else, not even for a moment: a 0600 temporary file renamed over it.
     package static func save(_ inbox: QuickCaptureInbox, to url: URL) throws {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
-        )
-        try encoder.encode(inbox).write(to: url, options: [.atomic])
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        let fileManager = FileManager.default
+        let directory = url.deletingLastPathComponent()
+        if !fileManager.fileExists(atPath: directory.path) {
+            try fileManager.createDirectory(
+                at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
+            )
+        }
+        let temporary = directory.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString)")
+        guard fileManager.createFile(
+            atPath: temporary.path, contents: nil, attributes: [.posixPermissions: 0o600]
+        ) else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        do {
+            let handle = try FileHandle(forWritingTo: temporary)
+            try handle.write(contentsOf: encoder.encode(inbox))
+            try handle.close()
+            // rename(2) replaces the old file in one step, on both platforms.
+            guard rename(temporary.path, url.path) == 0 else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+        } catch {
+            try? fileManager.removeItem(at: temporary)
+            throw error
+        }
     }
 }

@@ -119,6 +119,7 @@ final class QuickCaptureInboxTests: XCTestCase {
         ]])
         XCTAssertEqual(model.items.first?.state, .filed)
         XCTAssertEqual(model.items.first?.filedURL, "https://github.com/o/reach/issues/9")
+        XCTAssertEqual(model.items.first?.filedAt, Date(timeIntervalSince1970: 1_000_000))
         XCTAssertEqual(routed.last, "Filed in o/reach")
         XCTAssertNil(model.file(id), "a filed capture is not filed again")
     }
@@ -147,6 +148,19 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(loaded.items.first?.note, "Interrupted before a draft.")
         let mode = try FileManager.default.attributesOfItem(atPath: fileURL.path)[.posixPermissions] as? NSNumber
         XCTAssertEqual(mode?.intValue, 0o600)
+    }
+
+    func testAFiledCaptureStaysAWeekFromItsFilingNotItsCapture() {
+        let now = Date(timeIntervalSince1970: 10_000_000)
+        var old = QuickCaptureItem(capturedAt: now.addingTimeInterval(-30 * 86_400), text: "old")
+        old.state = .filed
+        old.filedAt = now.addingTimeInterval(-86_400)
+        var gone = QuickCaptureItem(capturedAt: now.addingTimeInterval(-30 * 86_400), text: "gone")
+        gone.state = .filed
+        gone.filedAt = now.addingTimeInterval(-8 * 86_400)
+        var inbox = QuickCaptureInbox(items: [old, gone])
+        inbox.prune(now: now)
+        XCTAssertEqual(inbox.items.map(\.text), ["old"])
     }
 
     func testTheIssueURLIsTheLastURLGhPrints() {
