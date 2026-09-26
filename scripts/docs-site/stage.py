@@ -38,6 +38,7 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
 MD_LINK = re.compile(r"(\]\()([^)\s]+)((?:\s+\"[^\"]*\")?\))")
 REF_LINK = re.compile(r"^(\s*\[[^\]]+\]:\s+)(\S+)", re.M)
 HTML_ATTR = re.compile(r"""((?:src|href)=")([^"]+)(")""")
+SRCSET = re.compile(r"""(srcset=")([^"\s,]+)(")""")
 ALERT = re.compile(r"^> \[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*\n((?:>.*\n?)*)", re.M)
 VIDEO = re.compile(r"^(https://github\.com/user-attachments/assets/[0-9a-f-]+)\s*$", re.M)
 ALERT_KIND = {
@@ -71,6 +72,12 @@ def rewrite_target(target: str, page: Path, pages: set[Path], assets: set[Path])
     return f"{GITHUB}/{kind}/main/{rel.as_posix()}" + (f"#{anchor}" if anchor else "")
 
 
+def climb_relative(target: str, climb: str) -> str:
+    if re.match(r"^[a-z][a-z0-9+.-]*:", target, re.I) or target.startswith(("#", "/")):
+        return target
+    return climb + target
+
+
 def convert_alerts(text: str) -> str:
     def repl(m: re.Match) -> str:
         body = [re.sub(r"^> ?", "", line) for line in m.group(2).splitlines()]
@@ -93,6 +100,10 @@ def stage(out: Path) -> None:
         text = MD_LINK.sub(lambda m: m[1] + rewrite_target(m[2], page, pages, assets) + m[3], text)
         text = REF_LINK.sub(lambda m: m[1] + rewrite_target(m[2], page, pages, assets), text)
         text = HTML_ATTR.sub(lambda m: m[1] + rewrite_target(m[2], page, pages, assets) + m[3], text)
+        # Zensical rebases src and href for a page served at docs/x/ but not
+        # srcset, so a srcset on a page that isn't a README climbs one more level.
+        climb = "" if page.name == "README.md" else "../"
+        text = SRCSET.sub(lambda m: m[1] + climb_relative(rewrite_target(m[2], page, pages, assets), climb) + m[3], text)
         text = convert_alerts(text)
         text = VIDEO.sub(r'<video src="\1" controls muted playsinline preload="metadata" style="width: 100%"></video>', text)
         dest = out / page
