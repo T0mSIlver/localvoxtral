@@ -80,9 +80,11 @@ the owner. The scheduler adds an open PR when it asks for the owner's OK to
 merge; whoever merges a `needs-human-review` PR adds it right after the
 merge. Add with `gh project item-add 1 --owner T0mSIlver --url <pr-url>`,
 then `gh project item-edit --project-id PVT_kwHOAhDp9c4BkXCa --id <item>
---field-id PVTSSF_lAHOAhDp9c4BkXCazhjH4TM --single-select-option-id <id>`,
-the option's id from `gh project field-list 1 --owner T0mSIlver --format
-json`; `gh issue create --project` fails here. Only the owner moves a
+--field-id PVTSSF_lAHOAhDp9c4BkXCazhjH4TM --single-select-option-id
+404d76ac`. On a merged PR, the board's own workflow sets Done a few seconds
+after the add and overwrites an edit made sooner. Wait a minute, edit, then
+read the status back with `gh project item-list`. `gh issue create
+--project` fails here. Only the owner moves a
 PR's card to Done: on an open PR that is the OK to merge (#763), on a merged
 one it means checked. A failed check becomes a `bug` issue that links the PR.
 
