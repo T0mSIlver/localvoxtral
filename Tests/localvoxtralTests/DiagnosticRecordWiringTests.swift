@@ -1,20 +1,22 @@
-#if DEBUG || LOCALVOXTRAL_E2E_HARNESS
-
 import AppKit
 import Foundation
 import XCTest
 @testable import localvoxtral
 
-/// The wiring that turns one polished dictation into one on-disk capture
+/// The wiring that turns one polished dictation into one on-disk diagnostic
 /// record. Drives the REAL `finishStoppedSession` polish/commit path (the same
 /// harness as the polish-failure diagnostics suite) and reads the record back.
 @MainActor
-final class DogfoodCaptureWiringTests: XCTestCase {
-    /// Armed build + armed runtime flag: a polished overlay commit writes
-    /// exactly one record whose text stages, session facts, join abstention,
-    /// and screen decision describe the dictation that just committed.
+final class DiagnosticRecordWiringTests: XCTestCase {
+    /// Switch on (the default): a polished overlay commit writes exactly one
+    /// record whose text stages, session facts, join abstention, and screen
+    /// decision describe the dictation that just committed.
     func testPolishedCommitWritesOneAttributableRecord() async throws {
-        let harness = try makeHarness(dogfoodArmed: true)
+        let harness = try makeHarness(recordsEnabled: true)
+        XCTAssertTrue(
+            makeSettings().diagnosticRecordsEnabled,
+            "records are on until the user turns them off"
+        )
 
         harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await harness.viewModel.session.polishAndCommitTask?.value
@@ -23,8 +25,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         XCTAssertEqual(records.count, 1, "one dictation writes exactly one record")
         let record = records[0]
 
-        XCTAssertEqual(record.schemaVersion, DogfoodCaptureRecord.currentSchemaVersion)
-        XCTAssertFalse(record.flagged)
+        XCTAssertEqual(record.schemaVersion, DiagnosticRecord.currentSchemaVersion)
 
         // Text stages, in pipeline order.
         XCTAssertEqual(record.text.rawTranscript, "polish this text")
@@ -64,25 +65,96 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         XCTAssertNotNil(record.timings.captureMilliseconds)
     }
 
-    /// The compile flag alone must not collect: with the runtime opt-in off,
-    /// the same commit writes nothing.
-    func testDisarmedRuntimeFlagWritesNothing() async throws {
-        let harness = try makeHarness(dogfoodArmed: false)
+    /// With the switch off, the same commit writes nothing.
+    func testSwitchOffWritesNothing() async throws {
+        let harness = try makeHarness(recordsEnabled: false)
 
         harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await harness.viewModel.session.polishAndCommitTask?.value
 
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: harness.captureDirectory.path),
-            "a disarmed build must not even create the capture directory"
+            "records off must not even create the directory"
         )
+    }
+
+    /// History "Don't keep" saves no entry, so there is nothing for a record
+    /// to belong to: none is written, whatever the switch says.
+    func testHistoryOffWritesNothing() async throws {
+        let harness = try makeHarness(recordsEnabled: true)
+        harness.viewModel.settings.dictationHistoryRetention = .off
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: harness.captureDirectory.path),
+            "History off must not even create the directory"
+        )
+    }
+
+    /// The record is named by, and carries, its History entry's id, so it
+    /// joins that entry and its audio.
+    func testRecordIDIsTheHistoryEntryID() async throws {
+        let harness = try makeHarness(recordsEnabled: true, withHistory: true)
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        let entries = await harness.history!.entries()
+        XCTAssertEqual(entries.count, 1)
+        let historyID = try XCTUnwrap(entries.first?.id)
+        let records = try recordsOnDisk(in: harness.captureDirectory)
+        XCTAssertEqual(records.map(\.id), [historyID.uuidString])
+        let names = try FileManager.default.contentsOfDirectory(atPath: harness.captureDirectory.path)
+        XCTAssertEqual(names.compactMap { DiagnosticRecordFileName.parse($0)?.id }, [historyID])
+    }
+
+    /// A record goes wherever its dictation goes: turning the switch off
+    /// deletes every record and keeps the dictations; deleting an entry, or
+    /// turning History off, deletes its record.
+    func testRecordsAreDeletedWithTheSwitchAndWithTheirDictation() async throws {
+        let harness = try makeHarness(recordsEnabled: true, withHistory: true)
+        let history = try XCTUnwrap(harness.history)
+        func dictate() async {
+            harness.viewModel.isFinalizingStop = true
+            harness.viewModel.transcript.currentDictationEventText = "polish this text"
+            harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+            await harness.viewModel.session.polishAndCommitTask?.value
+        }
+
+        await dictate()
+        await dictate()
+        XCTAssertEqual(try recordsOnDisk(in: harness.captureDirectory).count, 2)
+
+        // Deleting one entry deletes its record only.
+        let first = try XCTUnwrap(await history.entries().first)
+        await history.delete(id: first.id).value
+        XCTAssertEqual(
+            try recordsOnDisk(in: harness.captureDirectory).map(\.id),
+            [try XCTUnwrap(await history.entries().first).id.uuidString]
+        )
+
+        // The switch turned off: records go, the dictation stays.
+        harness.viewModel.settings.diagnosticRecordsEnabled = false
+        await history.deleteAllDiagnosticRecords().value
+        XCTAssertEqual(try recordsOnDisk(in: harness.captureDirectory).count, 0)
+        XCTAssertEqual(await history.entries().count, 1)
+
+        // History turned off deletes the entries and whatever records remain.
+        harness.viewModel.settings.diagnosticRecordsEnabled = true
+        await dictate()
+        XCTAssertEqual(try recordsOnDisk(in: harness.captureDirectory).count, 1)
+        // What `applyDictationHistoryRetention` runs for "Don't keep".
+        await history.trim(olderThan: try XCTUnwrap(DictationHistoryRetention.off.cutoff(now: Date()))).value
+        XCTAssertEqual(try recordsOnDisk(in: harness.captureDirectory).count, 0)
     }
 
     /// A failing store must cost the record, never the commit: the dictation
     /// still commits and the session completes.
     func testCaptureWriteFailureDoesNotBreakTheCommit() async throws {
         // A file where the capture DIRECTORY should be: every write fails.
-        let harness = try makeHarness(dogfoodArmed: true, blockCaptureDirectory: true)
+        let harness = try makeHarness(recordsEnabled: true, blockCaptureDirectory: true)
 
         harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await harness.viewModel.session.polishAndCommitTask?.value
@@ -97,10 +169,10 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     /// A join abstention noted at (a would-be) session start is consumed into
     /// the record; a second dictation does not inherit it.
     func testJoinAbstentionRidesTheRecordOnceAndIsConsumed() async throws {
-        let harness = try makeHarness(dogfoodArmed: true)
-        DogfoodCaptureTap.shared.beginSession()
-        DogfoodCaptureTap.shared.noteJoinAbstention("tty: stale")
-        DogfoodCaptureTap.shared.noteJoinAbstention("marker: no marker in title")
+        let harness = try makeHarness(recordsEnabled: true)
+        DiagnosticCaptureTap.shared.beginSession()
+        DiagnosticCaptureTap.shared.noteJoinAbstention("tty: stale")
+        DiagnosticCaptureTap.shared.noteJoinAbstention("marker: no marker in title")
 
         harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await harness.viewModel.session.polishAndCommitTask?.value
@@ -112,7 +184,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         )
 
         // A second commit on a fresh session must not repeat the reason.
-        let second = try makeHarness(dogfoodArmed: true)
+        let second = try makeHarness(recordsEnabled: true)
         second.viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await second.viewModel.session.polishAndCommitTask?.value
         let records = try recordsOnDisk(in: second.captureDirectory)
@@ -127,7 +199,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     /// the tap→record path, which the builder unit tests alone cannot see
     /// (review, 2026-07-25).
     func testPopulatedSourcesProduceAllocationAndSourceRows() async throws {
-        let harness = try makeHarness(dogfoodArmed: true)
+        let harness = try makeHarness(recordsEnabled: true)
         harness.viewModel.settings.polishClipboardContextEnabled = true
         harness.viewModel.settings.repoVocabularyEnabled = true
         harness.viewModel.dependencies.pasteboardReader = {
@@ -139,8 +211,8 @@ final class DogfoodCaptureWiringTests: XCTestCase {
                 isFallbackOnly: false
             )
         }
-        DogfoodCaptureTap.shared.beginSession()
-        DogfoodCaptureTap.shared.noteRepoVocabularyHarvest(["herdr", "pane.read"])
+        DiagnosticCaptureTap.shared.beginSession()
+        DiagnosticCaptureTap.shared.noteRepoVocabularyHarvest(["herdr", "pane.read"])
         harness.viewModel.transcript.currentDictationEventText = "join the herder pane"
 
         harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -183,12 +255,12 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     /// harvest into the next session's slot. Notes carry the generation they
     /// were created under; a stale one is dropped.
     func testStaleGenerationHarvestNoteIsRejected() {
-        let tap = DogfoodCaptureTap.shared
+        let tap = DiagnosticCaptureTap.shared
         tap.beginSession()
         let staleGeneration = tap.currentGeneration
         tap.beginSession() // the next dictation began; the old pipeline is stale
 
-        DogfoodCaptureTap.$noteGeneration.withValue(staleGeneration) {
+        DiagnosticCaptureTap.$noteGeneration.withValue(staleGeneration) {
             tap.noteRepoVocabularyHarvest(["previous-session-term"])
         }
         XCTAssertNil(
@@ -196,7 +268,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
             "a stale pipeline's harvest must not survive into the new session"
         )
 
-        DogfoodCaptureTap.$noteGeneration.withValue(tap.currentGeneration) {
+        DiagnosticCaptureTap.$noteGeneration.withValue(tap.currentGeneration) {
             tap.noteRepoVocabularyHarvest(["current-session-term"])
         }
         XCTAssertEqual(tap.consumeRepoVocabularyHarvest(), ["current-session-term"])
@@ -209,17 +281,17 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     /// `withValue` binding would not fail this test — the next one exists for
     /// that (verification review, 2026-07-25).
     func testPipelineNotedHarvestRidesTheBindingIntoTheRecord() async throws {
-        let harness = try makeHarness(dogfoodArmed: true)
+        let harness = try makeHarness(recordsEnabled: true)
         harness.viewModel.settings.polishClipboardContextEnabled = true
         harness.viewModel.settings.repoVocabularyEnabled = true
         harness.viewModel.dependencies.pasteboardReader = {
             WiringPasteboardStub(text: "clipboard text")
         }
         harness.viewModel.session.repoVocabularyPipeline.pipeline = { _ in
-            DogfoodCaptureTap.shared.noteRepoVocabularyHarvest(["pipeline-term"])
+            DiagnosticCaptureTap.shared.noteRepoVocabularyHarvest(["pipeline-term"])
             return .empty
         }
-        DogfoodCaptureTap.shared.beginSession()
+        DiagnosticCaptureTap.shared.beginSession()
 
         harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await harness.viewModel.session.polishAndCommitTask?.value
@@ -236,7 +308,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     /// removed from `detachedRepoVocabularyPipeline`: an unbound note fails
     /// open and the stale harvest would land in the record.
     func testAbandonedPipelineHarvestIsRejectedByTheBinding() async throws {
-        let harness = try makeHarness(dogfoodArmed: true)
+        let harness = try makeHarness(recordsEnabled: true)
         harness.viewModel.settings.polishClipboardContextEnabled = true
         harness.viewModel.settings.repoVocabularyEnabled = true
         harness.viewModel.dependencies.pasteboardReader = {
@@ -244,12 +316,12 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         }
         harness.viewModel.session.repoVocabularyPipeline.pipeline = { _ in
             // The next dictation begins while this pipeline is still running…
-            DogfoodCaptureTap.shared.beginSession()
+            DiagnosticCaptureTap.shared.beginSession()
             // …so its late note is stale and must be dropped.
-            DogfoodCaptureTap.shared.noteRepoVocabularyHarvest(["stale-term"])
+            DiagnosticCaptureTap.shared.noteRepoVocabularyHarvest(["stale-term"])
             return .empty
         }
-        DogfoodCaptureTap.shared.beginSession()
+        DiagnosticCaptureTap.shared.beginSession()
 
         harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await harness.viewModel.session.polishAndCommitTask?.value
@@ -264,7 +336,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     /// A stopped-with-no-speech session writes nothing: there was no polish
     /// call and there is nothing to attribute.
     func testEmptyDictationWritesNoRecord() async throws {
-        let harness = try makeHarness(dogfoodArmed: true)
+        let harness = try makeHarness(recordsEnabled: true)
         harness.viewModel.transcript.currentDictationEventText = "   "
 
         harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -279,7 +351,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     /// Backspace inside the window patches THAT record, in place.
     func testCommitArmsTheEditWatchAndPatchesItsOwnRecord() async throws {
         let signals = EditSignalHarness()
-        let harness = try makeHarness(dogfoodArmed: true, editSignal: signals)
+        let harness = try makeHarness(recordsEnabled: true, editSignal: signals)
 
         harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await harness.viewModel.session.polishAndCommitTask?.value
@@ -311,7 +383,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     /// outcome is the denominator an edit rate needs.
     func testUneventfulWindowPatchesTheCleanOutcome() async throws {
         let signals = EditSignalHarness()
-        let harness = try makeHarness(dogfoodArmed: true, editSignal: signals)
+        let harness = try makeHarness(recordsEnabled: true, editSignal: signals)
 
         harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await harness.viewModel.session.polishAndCommitTask?.value
@@ -331,7 +403,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     /// off, no observer is ever installed.
     func testDisarmedRuntimeFlagNeverInstallsAnObserver() async throws {
         let signals = EditSignalHarness()
-        let harness = try makeHarness(dogfoodArmed: false, editSignal: signals)
+        let harness = try makeHarness(recordsEnabled: false, editSignal: signals)
 
         harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await harness.viewModel.session.polishAndCommitTask?.value
@@ -345,7 +417,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     /// watch — the guard that skips the record skips the observer too.
     func testEmptyDictationNeverInstallsAnObserver() async throws {
         let signals = EditSignalHarness()
-        let harness = try makeHarness(dogfoodArmed: true, editSignal: signals)
+        let harness = try makeHarness(recordsEnabled: true, editSignal: signals)
         harness.viewModel.transcript.currentDictationEventText = "   "
 
         harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -362,7 +434,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     func testFailedCommitNeverArmsTheWatch() async throws {
         let signals = EditSignalHarness()
         let harness = try makeHarness(
-            dogfoodArmed: true,
+            recordsEnabled: true,
             editSignal: signals,
             commitOutcome: .failed(message: "insertion failed")
         )
@@ -381,7 +453,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     func testClipboardFallbackCommitNeverArmsTheWatch() async throws {
         let signals = EditSignalHarness()
         let harness = try makeHarness(
-            dogfoodArmed: true,
+            recordsEnabled: true,
             editSignal: signals,
             commitOutcome: .copiedToClipboard(message: "Copied to clipboard")
         )
@@ -403,7 +475,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     /// the bucket it implies) may reflect it.
     func testClipboardPayloadWindowScalesWithTheInsertedPayload() async throws {
         let signals = EditSignalHarness()
-        let harness = try makeHarness(dogfoodArmed: true, editSignal: signals)
+        let harness = try makeHarness(recordsEnabled: true, editSignal: signals)
         harness.viewModel.settings.clipboardPayloadMacroEnabled = true
         let payload = (0..<100).map { "word\($0)" }.joined(separator: " ")
         harness.viewModel.dependencies.pasteboardReader = {
@@ -447,7 +519,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     func testWillTerminateNotificationFlushesTheOpenWatchInline() async throws {
         let signals = EditSignalHarness()
         let center = NotificationCenter()
-        let harness = try makeHarness(dogfoodArmed: true, editSignal: signals, lifecycleCenter: center)
+        let harness = try makeHarness(recordsEnabled: true, editSignal: signals, lifecycleCenter: center)
 
         harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await harness.viewModel.session.polishAndCommitTask?.value
@@ -479,21 +551,21 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         ]
         for (url, expected) in cases {
             XCTAssertEqual(
-                DogfoodCaptureBuilder.endpointClass(of: URL(string: url)!),
+                DiagnosticRecordBuilder.endpointClass(of: URL(string: url)!),
                 expected, url
             )
         }
     }
 
     func testJoinBuilderMapsResolvedAndAbstainedJoins() {
-        let unresolved = DogfoodCaptureBuilder.join(
+        let unresolved = DiagnosticRecordBuilder.join(
             from: nil, abstentions: ["gate: accessibility not trusted"]
         )
         XCTAssertEqual(unresolved.arm, "none")
         XCTAssertEqual(unresolved.abstentionReason, "gate: accessibility not trusted")
         XCTAssertNil(unresolved.origin)
 
-        let empty = DogfoodCaptureBuilder.join(from: nil, abstentions: [])
+        let empty = DiagnosticRecordBuilder.join(from: nil, abstentions: [])
         XCTAssertEqual(empty.arm, "none")
         XCTAssertNil(empty.abstentionReason)
 
@@ -504,7 +576,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
             origin: .localAuthenticated(peerUID: 501),
             firstSeen: Date(timeIntervalSince1970: 1_000_000)
         )
-        let cmuxJoin = DogfoodCaptureBuilder.join(
+        let cmuxJoin = DiagnosticRecordBuilder.join(
             from: ClaudeSessionJoin(
                 target: TerminalScreenTarget(
                     pid: 4242, bundleID: TerminalScreenAllowlist.cmuxBundleID
@@ -531,7 +603,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     }
 
     func testScreenBuilderRouteAndCause() {
-        let vocabOnly = DogfoodCaptureBuilder.screen(
+        let vocabOnly = DiagnosticRecordBuilder.screen(
             from: .vocabularyOnly(
                 startText: "screen text",
                 cause: .screenChanged(stopLength: 10, differingLines: 3, firstDifferingLine: 0)
@@ -545,7 +617,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         XCTAssertEqual(vocabOnly.sanitizedText, "screen text")
         XCTAssertEqual(vocabOnly.sanitizedCharacterCount, "screen text".count)
 
-        let appleScript = DogfoodCaptureBuilder.screen(
+        let appleScript = DiagnosticRecordBuilder.screen(
             from: .render(excerpt: "e", startText: "s", elidedChurnLines: 0),
             targetBundleID: TerminalScreenAllowlist.iterm2BundleID,
             socketPaneSwapApplied: false
@@ -553,7 +625,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         XCTAssertEqual(appleScript.route, "appleScriptContents")
         XCTAssertEqual(appleScript.decision, "render")
 
-        let herdr = DogfoodCaptureBuilder.screen(
+        let herdr = DiagnosticRecordBuilder.screen(
             from: .render(excerpt: "pane", startText: "pane", elidedChurnLines: 0),
             targetBundleID: TerminalScreenAllowlist.ghosttyBundleID,
             socketPaneSwapApplied: true
@@ -562,14 +634,14 @@ final class DogfoodCaptureWiringTests: XCTestCase {
 
         // Same swap flag, different app: the record must name WHICH socket
         // answered, or a cmux surface read reads back as a herdr pane read.
-        let cmux = DogfoodCaptureBuilder.screen(
+        let cmux = DiagnosticRecordBuilder.screen(
             from: .render(excerpt: "surface", startText: "surface", elidedChurnLines: 0),
             targetBundleID: TerminalScreenAllowlist.cmuxBundleID,
             socketPaneSwapApplied: true
         )
         XCTAssertEqual(cmux.route, "cmuxSurfaceRead")
 
-        let dropped = DogfoodCaptureBuilder.screen(
+        let dropped = DiagnosticRecordBuilder.screen(
             from: .drop(reason: .targetChanged),
             targetBundleID: nil,
             socketPaneSwapApplied: false
@@ -581,7 +653,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     }
 
     func testAllocationsKeepZeroGrantsAndDropZeroDemands() {
-        let rows = DogfoodCaptureBuilder.allocations(
+        let rows = DiagnosticRecordBuilder.allocations(
             demands: [.repository: 9000, .terminal: 0, .clipboard: 200],
             grants: [.repository: 0, .clipboard: 200],
             rendered: [.clipboard: 180]
@@ -604,25 +676,25 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     }
 
     func testHarvestListIsCappedInTheRecordOnly() {
-        let harvest = (0..<(DogfoodCaptureBuilder.harvestTermCap + 7)).map { "term\($0)" }
-        let row = DogfoodCaptureBuilder.source(DogfoodCaptureBuilder.SourceInputs(
+        let harvest = (0..<(DiagnosticRecordBuilder.harvestTermCap + 7)).map { "term\($0)" }
+        let row = DiagnosticRecordBuilder.source(DiagnosticRecordBuilder.SourceInputs(
             source: .clipboard,
             harvest: harvest,
             outcome: .empty,
             renderedExcerpt: nil
         ))
-        XCTAssertEqual(row.harvest.count, DogfoodCaptureBuilder.harvestTermCap)
+        XCTAssertEqual(row.harvest.count, DiagnosticRecordBuilder.harvestTermCap)
         XCTAssertEqual(row.harvestCount, harvest.count, "the true pool size survives the cap")
         XCTAssertTrue(row.harvestTruncated)
     }
 
     func testTapBeginSessionClearsBothSlots() {
-        DogfoodCaptureTap.shared.beginSession()
-        DogfoodCaptureTap.shared.noteJoinAbstention("tty: stale")
-        DogfoodCaptureTap.shared.noteRepoVocabularyHarvest(["Term"])
-        DogfoodCaptureTap.shared.beginSession()
-        XCTAssertEqual(DogfoodCaptureTap.shared.consumeJoinAbstentions(), [])
-        XCTAssertNil(DogfoodCaptureTap.shared.consumeRepoVocabularyHarvest())
+        DiagnosticCaptureTap.shared.beginSession()
+        DiagnosticCaptureTap.shared.noteJoinAbstention("tty: stale")
+        DiagnosticCaptureTap.shared.noteRepoVocabularyHarvest(["Term"])
+        DiagnosticCaptureTap.shared.beginSession()
+        XCTAssertEqual(DiagnosticCaptureTap.shared.consumeJoinAbstentions(), [])
+        XCTAssertNil(DiagnosticCaptureTap.shared.consumeRepoVocabularyHarvest())
     }
 
     // MARK: - Harness (mirrors the polish-failure diagnostics suite)
@@ -630,22 +702,24 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     private struct Harness {
         let viewModel: DictationViewModel
         let captureDirectory: URL
+        /// An in-memory History holding the records' store, when asked for.
+        let history: DictationSessionStore?
     }
 
     /// The injected seams of the post-commit edit watch, bundled so a test can
     /// drive the window without wall-clock.
     @MainActor
     private struct EditSignalHarness {
-        let monitor = DogfoodEditSignalTestMonitor()
-        let sleeper = DogfoodManualSleeper()
-        let clock = DogfoodTestClock()
-        let watcher: DogfoodEditSignalWatcher
+        let monitor = EditSignalTestMonitor()
+        let sleeper = EditSignalManualSleeper()
+        let clock = EditSignalTestClock()
+        let watcher: EditSignalWatcher
 
         init() {
             let monitor = self.monitor
             let sleeper = self.sleeper
             let clock = self.clock
-            watcher = DogfoodEditSignalWatcher(
+            watcher = EditSignalWatcher(
                 monitor: monitor,
                 now: { clock.now() },
                 sleepFor: { await sleeper.sleep($0) }
@@ -654,7 +728,8 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     }
 
     private func makeHarness(
-        dogfoodArmed: Bool,
+        recordsEnabled: Bool,
+        withHistory: Bool = false,
         blockCaptureDirectory: Bool = false,
         editSignal: EditSignalHarness? = nil,
         commitOutcome: OverlayBufferCommitOutcome = .succeeded,
@@ -663,10 +738,10 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = true
         settings.polishingBackendMode = .managedLocal
-        settings.dogfoodCaptureEnabled = dogfoodArmed
+        settings.diagnosticRecordsEnabled = recordsEnabled
 
         let base = FileManager.default.temporaryDirectory
-            .appendingPathComponent("dogfood-wiring-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("diagnostic-wiring-\(UUID().uuidString)", isDirectory: true)
         let captureDirectory = base.appendingPathComponent("captures", isDirectory: true)
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         if blockCaptureDirectory {
@@ -689,12 +764,19 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         )
         viewModel.appConfigStore = MockAppConfigStore()
         viewModel.llmPolishingService = FakePolishingService(returning: "polished output text", durationSeconds: 0.25)
-        viewModel.session.dogfoodCaptureStore = DogfoodCaptureStore(directoryURL: captureDirectory)
+        let recordStore = DiagnosticRecordStore(directoryURL: captureDirectory)
+        viewModel.session.diagnosticRecordStore = recordStore
+        var history: DictationSessionStore?
+        if withHistory {
+            history = try XCTUnwrap(DictationSessionStore(inMemory: true))
+            history?.diagnosticRecordStore = recordStore
+            viewModel.sessionStore = history
+        }
         // Always injected, even for the tests that ignore it: the production
         // watcher would arm a REAL 2 s timer on a process-retained view model,
         // and this suite does not add wall-clock timers (AGENTS.md).
         let signals = editSignal ?? EditSignalHarness()
-        viewModel.session.dogfoodEditSignalWatcher = signals.watcher
+        viewModel.session.editSignalWatcher = signals.watcher
         let sleeper = signals.sleeper
         addTeardownBlock {
             // Release a window the test never closed, so no continuation is
@@ -707,11 +789,11 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.isFinalizingStop = true
         viewModel.transcript.currentDictationEventText = "polish this text"
-        return Harness(viewModel: viewModel, captureDirectory: captureDirectory)
+        return Harness(viewModel: viewModel, captureDirectory: captureDirectory, history: history)
     }
 
     /// Decoded records, oldest first.
-    private func recordsOnDisk(in directory: URL) throws -> [DogfoodCaptureRecord] {
+    private func recordsOnDisk(in directory: URL) throws -> [DiagnosticRecord] {
         guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
         let names = try FileManager.default
             .contentsOfDirectory(atPath: directory.path).sorted()
@@ -719,7 +801,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         decoder.dateDecodingStrategy = .iso8601
         return try names.map { name in
             let data = try Data(contentsOf: directory.appendingPathComponent(name))
-            return try decoder.decode(DogfoodCaptureRecord.self, from: data)
+            return try decoder.decode(DiagnosticRecord.self, from: data)
         }
     }
 
@@ -733,4 +815,3 @@ private final class WiringPasteboardStub: PasteboardReading {
     func string() -> String? { text }
 }
 
-#endif

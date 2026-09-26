@@ -32,7 +32,7 @@ nav = [
     { "All docs" = "docs/README.md" },
     { "Building from source" = "docs/building.md" },
     { "Architecture" = "docs/architecture.md" },
-    { "Dogfood builds" = "docs/dogfood-builds.md" },
+    { "Test harness" = "docs/test-harness.md" },
   ] },
   { "Release notes" = [
     { "v0.9.0" = "docs/release-notes/v0.9.0.md" },

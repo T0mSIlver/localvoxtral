@@ -32,7 +32,7 @@ extension DictationSessionController {
         // Until the name resolves this is still a dictation: one a new
         // dictation interrupts goes to History as not inserted.
         saveInterruptedPolishCommit = { [weak self] in
-            self?.saveSessionRecord(
+            _ = self?.saveSessionRecord(
                 startedAt: sample.record.startedAt,
                 rawText: text,
                 polishedText: nil,

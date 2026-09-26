@@ -11,6 +11,10 @@ opt-in and only ever talk to a loopback polishing endpoint. A non-local
 endpoint receives context only if you also enable the explicit
 trusted-endpoint opt-in (default off).
 
+What the app keeps on this Mac (your dictations, optionally their audio, and
+diagnostic records of how each was polished) is described under
+[History](dictation.md#history), where each can be turned off and deleted.
+
 If you point localvoxtral at your own External URL server or at the Mistral
 API instead, your audio and transcripts go where you send them. Neither is a
 local endpoint, so the context features stay behind the trusted-endpoint

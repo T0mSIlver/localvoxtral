@@ -1012,7 +1012,7 @@ registry.
 
 A dogfood build answers both, over a local AF_UNIX socket it binds only when
 `debug.dogfood_control_socket_enabled` is armed
-(`docs/dogfood-builds.md`). `app` forwards one line to it:
+(`docs/test-harness.md`). `app` forwards one line to it:
 
 ```bash
 ssh lv-ui 'app registry list'         # is the registry empty, or the surface unidentified?

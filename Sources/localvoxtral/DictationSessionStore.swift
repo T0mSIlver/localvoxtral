@@ -141,6 +141,9 @@ final class DictationSessionStore {
     /// Where each dictation's audio goes when the user keeps it. Set once, at
     /// launch; nil keeps no audio and deletes none.
     var audioStore: DictationAudioStore?
+    /// Where each dictation's diagnostic record goes. Deleted with its
+    /// dictation, like the audio; nil keeps none and deletes none.
+    var diagnosticRecordStore: DiagnosticRecordStore?
 
     convenience init?() {
         self.init(inMemory: false)
@@ -206,6 +209,7 @@ final class DictationSessionStore {
     @discardableResult
     func delete(id: UUID) -> Task<Void, Never> {
         let audioStore = audioStore
+        let diagnosticRecordStore = diagnosticRecordStore
         // The record goes first: a save that fails keeps the dictation with its
         // audio, and a file that will not go is retried by the next sweep.
         return enqueueWrite("delete dictation \(id)") { context in
@@ -213,6 +217,7 @@ final class DictationSessionStore {
                 matching: #Predicate<DictationSessionRecord> { $0.id == id }, in: context)
             try context.save()
             audioStore?.remove([id])
+            diagnosticRecordStore?.remove([id])
             return deleted
         }
     }
@@ -220,44 +225,73 @@ final class DictationSessionStore {
     @discardableResult
     func deleteAll() -> Task<Void, Never> {
         let audioStore = audioStore
+        let diagnosticRecordStore = diagnosticRecordStore
         return enqueueWrite("delete all dictations") { context in
             let deleted = try Self.deleteRecords(matching: nil, in: context)
             try context.save()
             audioStore?.removeAll()
+            diagnosticRecordStore?.removeAll()
             return deleted
         }
     }
 
     /// Deletes every dictation that started before `cutoff`
-    /// (`DictationHistoryRetention.cutoff(now:)`), and the audio of every
-    /// dictation no longer in the store.
+    /// (`DictationHistoryRetention.cutoff(now:)`), and the audio and
+    /// diagnostic record of every dictation no longer in the store.
     @discardableResult
     func trim(olderThan cutoff: Date) -> Task<Void, Never> {
         let audioStore = audioStore
+        let diagnosticRecordStore = diagnosticRecordStore
         return enqueueWrite("trim dictations") { context in
             let deleted = try Self.deleteRecords(
                 matching: #Predicate<DictationSessionRecord> { $0.startedAt < cutoff },
                 in: context)
-            if let audioStore {
+            if audioStore != nil || diagnosticRecordStore != nil {
                 if deleted > 0 { try context.save() }
+            }
+            if let audioStore {
                 try Self.removeOrphanedAudio(audioStore, context: context)
+            }
+            if let diagnosticRecordStore {
+                try Self.removeOrphanedDiagnosticRecords(diagnosticRecordStore, context: context)
             }
             return deleted
         }
     }
 
-    /// Deletes the recordings whose dictation is gone. Run at launch, where
-    /// Forever retention never trims: it is what retries a delete that failed
-    /// and clears a file a crash left behind.
+    /// Deletes the recordings and diagnostic records whose dictation is
+    /// gone, and records past their own limit. Run at launch, where Forever
+    /// retention never trims: it is what retries a delete that failed and
+    /// clears a file a crash left behind.
     @discardableResult
     func removeOrphanedAudio() -> Task<Void, Never> {
         let audioStore = audioStore
+        let diagnosticRecordStore = diagnosticRecordStore
         return enqueueWrite("sweep dictation audio") { context in
             if let audioStore {
                 audioStore.removeStrayFiles()
                 try Self.removeOrphanedAudio(audioStore, context: context)
             }
+            if let diagnosticRecordStore {
+                diagnosticRecordStore.prune()
+                try Self.removeOrphanedDiagnosticRecords(diagnosticRecordStore, context: context)
+            }
             return 0
+        }
+    }
+
+    private nonisolated static func removeOrphanedDiagnosticRecords(
+        _ diagnosticRecordStore: DiagnosticRecordStore, context: ModelContext
+    ) throws {
+        let stored = Array(diagnosticRecordStore.storedIDs())
+        guard !stored.isEmpty else { return }
+        let kept = try Set(context.fetch(FetchDescriptor<DictationSessionRecord>(
+            predicate: #Predicate { stored.contains($0.id) })).map(\.id))
+        let removed = diagnosticRecordStore.removeAll(except: kept)
+        if removed > 0 {
+            Log.persistence.info(
+                "History: deleted \(removed, privacy: .public) diagnostic record(s) whose dictation is gone"
+            )
         }
     }
 
@@ -286,6 +320,18 @@ final class DictationSessionStore {
         return enqueueWrite("delete all dictation audio") { _ in
             let removed = audioStore?.removeAll() ?? 0
             Log.persistence.info("History: deleted \(removed, privacy: .public) recording(s)")
+            return 0
+        }
+    }
+
+    /// Deletes every diagnostic record and keeps the dictations: the
+    /// diagnostic records setting turned off.
+    @discardableResult
+    func deleteAllDiagnosticRecords() -> Task<Void, Never> {
+        let diagnosticRecordStore = diagnosticRecordStore
+        return enqueueWrite("delete all diagnostic records") { _ in
+            let removed = diagnosticRecordStore?.removeAll() ?? 0
+            Log.persistence.info("History: deleted \(removed, privacy: .public) diagnostic record(s)")
             return 0
         }
     }
@@ -375,6 +421,14 @@ final class DictationSessionStore {
     }
 
     /// Recordings on disk and their size, for the Settings row.
+    func diagnosticRecordSummary() async -> (records: Int, bytes: Int) {
+        guard let diagnosticRecordStore else { return (0, 0) }
+        return await read("summarize diagnostic records") { _ in
+            diagnosticRecordStore.summary()
+        } ?? (0, 0)
+    }
+
+
     func audioSummary() async -> (recordings: Int, bytes: Int) {
         guard let audioStore else { return (0, 0) }
         return await read("summarize dictation audio") { _ in

@@ -1,9 +1,7 @@
-#if DEBUG || LOCALVOXTRAL_E2E_HARNESS
-
 import Foundation
 
-/// One dictation's complete context-pipeline record, written locally by an
-/// opt-in dogfooding build so a retrieval miss can be attributed after the fact.
+/// One dictation's complete context-pipeline record, kept on this Mac beside
+/// its History entry so a retrieval miss can be attributed after the fact.
 ///
 /// The app deliberately logs context COUNTS only (`Log.polishing` /
 /// `Log.claudeContext`): repository contents, screen text, clipboard text, and
@@ -12,12 +10,12 @@ import Foundation
 /// out wrong is unattributable today — by commit time every intermediate the
 /// answer depends on has been reduced to an integer.
 ///
-/// This type is the deliberate, gated exception. It exists only in a debug or
-/// instrumented build (see `Package.swift`), and within such a build it is
-/// populated only while the runtime opt-in is armed. Records are
-/// written to a 0700 directory as 0600 files and are never transmitted
-/// anywhere — there is no uploader, and adding one would defeat the point of
-/// the compile gate.
+/// This type is the deliberate exception, and it stays on disk: records are
+/// 0600 files in a 0700 directory, never logged and never sent anywhere.
+/// History > Storage > "Keep diagnostic records on this Mac" turns them off
+/// (on by default), and History "Don't keep" writes none. Secret-shaped runs
+/// are redacted and the prompt last sent to the agent is withheld
+/// (`DiagnosticRecordRedaction`); the clipboard payload never enters.
 ///
 /// ## What it is for
 ///
@@ -35,20 +33,15 @@ import Foundation
 ///
 /// Every field below exists to make that four-way question answerable from the
 /// record alone, without re-running the dictation.
-struct DogfoodCaptureRecord: Codable, Equatable, Sendable {
+struct DiagnosticRecord: Codable, Equatable, Sendable {
     /// Bumped whenever a field changes meaning. The reviewer and the corpus
     /// converter both refuse records they were not written for rather than
     /// silently misreading an older shape.
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
-    var schemaVersion: Int = DogfoodCaptureRecord.currentSchemaVersion
+    var schemaVersion: Int = DiagnosticRecord.currentSchemaVersion
     var id: String
     var capturedAt: Date
-
-    /// Set by the "flag last dictation" affordance. Flagged records are the
-    /// review queue and the corpus-conversion candidates, and retention treats
-    /// them differently — see `DogfoodCaptureStore`.
-    var flagged: Bool = false
 
     var session: Session
     var join: Join?
@@ -59,7 +52,7 @@ struct DogfoodCaptureRecord: Codable, Equatable, Sendable {
     var timings: Timings
 
     /// What the user DID with the insertion, patched in after the commit — see
-    /// `Behavior` and `DogfoodEditSignalWatcher`. Absent on records written
+    /// `Behavior` and `EditSignalWatcher`. Absent on records written
     /// before the field existed, on a dictation whose watch could not install a
     /// monitor, and on one whose patch write failed; in none of those is it safe
     /// to read the absence as "the user kept the text".
@@ -208,9 +201,9 @@ struct DogfoodCaptureRecord: Codable, Equatable, Sendable {
     struct Behavior: Codable, Equatable, Sendable {
         /// `edited`, `clean`, or `superseded`. `clean` is recorded on purpose —
         /// without the negative there is no denominator for an edit rate.
-        var outcome: DogfoodEditSignalOutcome
+        var outcome: EditSignalOutcome
         /// Which gesture ended the window. Nil unless `outcome == .edited`.
-        var signal: DogfoodEditSignal?
+        var signal: EditSignal?
         /// Bucketed delay from commit to gesture (`0-1`, `1-2`, `2-5`, `5-15`).
         /// Nil unless `outcome == .edited`.
         var secondsSinceCommitBucket: String?
@@ -228,9 +221,8 @@ struct DogfoodCaptureRecord: Codable, Equatable, Sendable {
     struct Timings: Codable, Equatable, Sendable {
         var polishSeconds: Double?
         /// Wall time the capture itself added to the commit path. Recorded so a
-        /// dogfooding build cannot quietly change the latency it is measuring.
+        /// record cannot quietly change the latency it is measuring.
         var captureMilliseconds: Double?
     }
 }
 
-#endif

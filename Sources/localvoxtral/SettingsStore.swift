@@ -90,6 +90,7 @@ final class SettingsStore {
         static let termSuggestionRetryAt = "settings.term_suggestion_retry_at"
         static let dictationHistoryRetention = "settings.dictation_history_retention"
         static let dictationAudioEnabled = "settings.dictation_audio_enabled"
+        static let diagnosticRecordsEnabled = "settings.diagnostic_records_enabled"
         static let clipboardPayloadMacroEnabled = "settings.clipboard_payload_macro_enabled"
         static let terminalScreenContextEnabled = "settings.terminal_screen_context_enabled"
         static let repoVocabularyEnabled = "settings.repo_vocabulary_enabled"
@@ -109,10 +110,6 @@ final class SettingsStore {
         /// user-facing preference and must never surface in the settings UI.
         static let debugLogRealtimeDeltas = "debug.log_realtime_deltas"
         #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
-        /// The runtime half of the dogfooding gate. `debug.` prefixed like the
-        /// flag above: it exists only in an instrumented build and is not a
-        /// product preference.
-        static let dogfoodCaptureEnabled = "debug.dogfood_capture_enabled"
         /// The runtime half of the control-socket gate, kept SEPARATE from the
         /// capture one: writing records and opening a socket that can start
         /// dictations are different consents, and an owner running an
@@ -483,6 +480,15 @@ final class SettingsStore {
         didSet { defaults.set(dictationAudioEnabled, forKey: Keys.dictationAudioEnabled) }
     }
 
+    /// Keeps a diagnostic record of each polished dictation beside its History
+    /// entry, and watches the seconds after its insertion for an erase
+    /// (`DiagnosticRecord`, `EditSignalWatcher`). On by default; History >
+    /// Storage turns it off, which deletes the records. Nothing is kept while
+    /// History is "Don't keep", whatever this says.
+    var diagnosticRecordsEnabled: Bool {
+        didSet { defaults.set(diagnosticRecordsEnabled, forKey: Keys.diagnosticRecordsEnabled) }
+    }
+
     func dismissTermSuggestion(_ term: String) {
         let key = SpeakerTermSuggestions.key(term)
         guard !key.isEmpty,
@@ -706,32 +712,12 @@ final class SettingsStore {
     }
 
     #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
-    /// Arms the dogfooding context capture. Default false, and it exists at all
-    /// only in a debug or instrumented build (see `Package.swift` for why that
-    /// gate is a compile flag rather than this toggle alone).
-    ///
-    /// While armed, every polished dictation writes a record containing the raw
-    /// transcript, the harvested context, the rendered prompts, and the model's
-    /// reply to `~/Library/Application Support/localvoxtral/dogfood`. That is
-    /// content the shipped app deliberately never writes anywhere, which is why
-    /// arming it is a deliberate act rather than a side effect of running an
-    /// instrumented build.
-    ///
-    /// No UI yet — like `debugLogRealtimeDeltas`, and toggled the same way:
-    ///   `defaults write com.localvoxtral.app debug.dogfood_capture_enabled -bool true`
-    /// A Settings row and a status-item indicator belong with the flag-this-
-    /// dictation affordance; until they exist, an armed build is only
-    /// discoverable from this default and the capture directory.
-    var dogfoodCaptureEnabled: Bool {
-        didSet { defaults.set(dogfoodCaptureEnabled, forKey: Keys.dogfoodCaptureEnabled) }
-    }
-
     /// Whether this instrumented build opens its local control socket
     /// (`DogfoodControlSocket`), which can start and stop dictations and report
     /// what the context pipeline resolved.
     ///
-    /// Off by default, and separate from `dogfoodCaptureEnabled` on purpose: a
-    /// capture writes a file, a socket accepts commands, and consenting to the
+    /// Off by default, and separate from `diagnosticRecordsEnabled` on purpose: a
+    /// record is a file, a socket accepts commands, and consenting to the
     /// first is not consenting to the second. Toggled the same way:
     ///   `defaults write com.localvoxtral.app debug.dogfood_control_socket_enabled -bool true`
     /// Read once at launch — the socket binds in `applicationDidFinishLaunching`
@@ -1082,9 +1068,9 @@ final class SettingsStore {
             defaults: defaults, key: Keys.polishContextTrustedEndpointEnabled, fallback: false)
         debugLogRealtimeDeltas = Self.loadBool(
             defaults: defaults, key: Keys.debugLogRealtimeDeltas, fallback: false)
+        diagnosticRecordsEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.diagnosticRecordsEnabled, fallback: true)
         #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
-        dogfoodCaptureEnabled = Self.loadBool(
-            defaults: defaults, key: Keys.dogfoodCaptureEnabled, fallback: false)
         dogfoodControlSocketEnabled = Self.loadBool(
             defaults: defaults, key: Keys.dogfoodControlSocketEnabled, fallback: false)
         #endif

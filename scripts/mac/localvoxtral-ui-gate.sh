@@ -76,7 +76,7 @@ set -euo pipefail
 #     exists in a dogfood build, so the verb refuses unless `launch --dogfood`
 #     recorded one, and the forwarded line must be one of the five shapes the
 #     socket's own grammar accepts. The socket answers in a closed vocabulary
-#     of bools, counts and enum names (docs/dogfood-builds.md).
+#     of bools, counts and enum names (docs/test-harness.md).
 #   - `log` reads the unified log for localvoxtral's OWN subsystem only, over a
 #     clamped window, with a line cap and token-shaped runs masked. It is not a
 #     general system-log reader; every other application's activity on this
@@ -2718,7 +2718,7 @@ run_app() {
 }
 
 # Masks maximal runs of exactly 43 base64url characters — the remote-enrollment
-# token's shape. Deliberately the SAME rule as DogfoodCaptureRedaction (and the
+# token's shape. Deliberately the SAME rule as DiagnosticRecordRedaction (and the
 # same trade: it over-matches an isolated 43-character identifier, and misses a
 # token glued into a longer run), so a reviewer reading a `<redacted>` here and
 # one in a capture record is reading the same decision.

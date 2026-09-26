@@ -15,6 +15,8 @@ struct HistorySettingsPane: View {
     @State private var isConfirmingDeleteAll = false
     /// The yes that turning audio off waits for.
     @State private var isConfirmingAudioOff = false
+    /// The yes that turning diagnostic records off waits for.
+    @State private var isConfirmingRecordsOff = false
 
     /// Bumped by every pick in the retention menu. A count that comes back
     /// for an older pick is dropped: two quick picks must end on the second.
@@ -66,7 +68,7 @@ struct HistorySettingsPane: View {
             await model.reload()
         }
         .task(id: viewModel.dictationHistoryRevision) {
-            await model.reloadAudioSummary()
+            await model.reloadStorageSummary()
         }
     }
 
@@ -104,8 +106,10 @@ struct HistorySettingsPane: View {
         )
     }
 
+    static let storageDocsURL = DocsLink.page("docs/dictation/#diagnostic-records")
+
     private var storageGroup: some View {
-        SettingsGroup(title: "Storage") {
+        SettingsGroup(title: "Storage", learnMoreURL: Self.storageDocsURL) {
             SettingsFieldRow(
                 title: "Keep dictations",
                 status: storageStatus,
@@ -139,6 +143,26 @@ struct HistorySettingsPane: View {
                     .disabled(!settings.dictationHistoryRetention.savesDictations)
                     .accessibilityIdentifier("history.storage.audio")
             }
+            SettingsFieldRow(
+                title: "Keep diagnostic records on this Mac",
+                status: recordsStatus
+            ) {
+                Toggle("", isOn: recordsBinding)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .disabled(!settings.dictationHistoryRetention.savesDictations)
+                    .accessibilityIdentifier("history.storage.diagnosticRecords")
+            }
+        }
+        .confirmationDialog(
+            model.diagnosticRecordSummary.records == 1
+                ? "Delete 1 diagnostic record?"
+                : "Delete \(model.diagnosticRecordSummary.records.formatted()) diagnostic records?",
+            isPresented: $isConfirmingRecordsOff
+        ) {
+            Button("Delete Records", role: .destructive) { turnRecordsOff() }
+        } message: {
+            Text("The dictations stay. This can't be undone.")
         }
         .confirmationDialog(
             model.audioSummary.recordings == 1
@@ -207,6 +231,42 @@ struct HistorySettingsPane: View {
         )
     }
 
+    /// Nil when there is nothing kept, like the audio row's.
+    private var recordsStatus: String? {
+        let summary = model.diagnosticRecordSummary
+        guard summary.records > 0 else { return nil }
+        let size = ByteCountFormatter.string(fromByteCount: Int64(summary.bytes), countStyle: .file)
+        return summary.records == 1
+            ? "1 record, \(size)."
+            : "\(summary.records.formatted()) records, \(size)."
+    }
+
+    private var recordsBinding: Binding<Bool> {
+        Binding(
+            get: {
+                settings.diagnosticRecordsEnabled && settings.dictationHistoryRetention.savesDictations
+            },
+            set: { keep in
+                if keep {
+                    settings.diagnosticRecordsEnabled = true
+                } else if model.diagnosticRecordSummary.records > 0 {
+                    isConfirmingRecordsOff = true
+                } else {
+                    turnRecordsOff()
+                }
+            }
+        )
+    }
+
+    private func turnRecordsOff() {
+        settings.diagnosticRecordsEnabled = false
+        let deleting = viewModel.sessionStore?.deleteAllDiagnosticRecords()
+        Task {
+            await deleting?.value
+            await model.reloadStorageSummary()
+        }
+    }
+
     private func turnAudioOff() {
         settings.dictationAudioEnabled = false
         // A dictation in progress keeps nothing either, even if the switch
@@ -215,7 +275,7 @@ struct HistorySettingsPane: View {
         let deleting = viewModel.sessionStore?.deleteAllAudio()
         Task {
             await deleting?.value
-            await model.reloadAudioSummary()
+            await model.reloadStorageSummary()
         }
     }
 
