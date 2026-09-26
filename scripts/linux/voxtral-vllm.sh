@@ -112,33 +112,46 @@ start_reaper() {
   echo $! >"$REAPER_PID_FILE"
 }
 
-cmd_up() {
+# Every lifecycle change runs under this lock on fd 9, so up, down and the
+# reaper never act on a half-started or half-stopped server.
+take_lock() {
   mkdir -p "$RUN_DIR"
   exec 9>"$RUN_DIR/up.lock"
   flock 9
+}
+
+cmd_up() {
+  take_lock
   touch "$STAMP"
+  local started=$SECONDS
   if ! alive "$PID_FILE"; then
     healthy && die "port $PORT answers but no server of ours runs; stop that one first"
-    local started=$SECONDS
     start_server
-    until healthy; do
-      if ! alive "$PID_FILE"; then
-        tail -n 30 "$LOG" >&2
-        die "server exited during startup; full log: $LOG"
-      fi
-      if ((SECONDS - started > UP_TIMEOUT_SECONDS)); then
-        cmd_down >/dev/null
-        die "not healthy after ${UP_TIMEOUT_SECONDS}s, stopped it; log: $LOG"
-      fi
-      sleep 0.5
-    done
-    echo "started in $((SECONDS - started))s"
   fi
+  # Before the health wait: an up interrupted during startup still leaves a
+  # reaper to stop the server.
   start_reaper
+  until healthy; do
+    if ! alive "$PID_FILE"; then
+      tail -n 30 "$LOG" >&2
+      die "server exited during startup; full log: $LOG"
+    fi
+    if ((SECONDS - started > UP_TIMEOUT_SECONDS)); then
+      stop_server >/dev/null
+      die "not healthy after ${UP_TIMEOUT_SECONDS}s, stopped it; log: $LOG"
+    fi
+    sleep 0.5
+  done
+  ((SECONDS > started)) && echo "healthy after $((SECONDS - started))s"
   echo "ready: ws://127.0.0.1:$PORT/v1/realtime model=$MODEL (idle stop after ${IDLE_SECONDS}s)"
 }
 
 cmd_down() {
+  take_lock
+  stop_server
+}
+
+stop_server() {
   if alive "$PID_FILE"; then
     local pid
     pid="$(cat "$PID_FILE")"
@@ -157,27 +170,39 @@ cmd_down() {
 
 # Sum of the token counters plus running requests: it moves whenever a
 # realtime session decodes. Realtime sessions never reach request_success_total.
+# Fails when the scrape fails, so a flapping endpoint never counts as activity.
 activity_counter() {
-  curl -sf --max-time 5 "http://127.0.0.1:$PORT/metrics" \
-    | awk '/^vllm:(prompt_tokens_total|generation_tokens_total|num_requests_running)\{/ { s += $NF } END { printf "%d", s }'
+  local metrics
+  metrics="$(curl -sf --max-time 5 "http://127.0.0.1:$PORT/metrics")" || return 1
+  awk '/^vllm:(prompt_tokens_total|generation_tokens_total|num_requests_running)\{/ { s += $NF } END { printf "%d", s }' <<<"$metrics"
+}
+
+# Seconds since the later of the last decode and the last `up`.
+idle_for() {
+  local stamp latest=$last_active
+  stamp="$(stat -c %Y "$STAMP" 2>/dev/null || echo 0)"
+  ((stamp > latest)) && latest=$stamp
+  echo $(($(date +%s) - latest))
 }
 
 cmd_reap() {
-  local last_counter="" last_active counter now stamp
+  local last_counter="" last_active counter idle
   last_active="$(date +%s)"
   while alive "$PID_FILE"; do
-    now="$(date +%s)"
-    counter="$(activity_counter || true)"
-    if [[ -n "$counter" && "$counter" != "$last_counter" ]]; then
+    if counter="$(activity_counter)" && [[ "$counter" != "$last_counter" ]]; then
       last_counter="$counter"
-      last_active=$now
+      last_active="$(date +%s)"
     fi
-    stamp="$(stat -c %Y "$STAMP" 2>/dev/null || echo 0)"
-    ((stamp > last_active)) && last_active=$stamp
-    if ((now - last_active >= IDLE_SECONDS)); then
-      echo "$(date -Is) idle for $((now - last_active))s, stopping"
-      cmd_down
-      break
+    if (($(idle_for) >= IDLE_SECONDS)); then
+      # Decide again under the lock: an up may have just reset the clock.
+      take_lock
+      idle="$(idle_for)"
+      if ((idle >= IDLE_SECONDS)); then
+        echo "$(date -Is) idle for ${idle}s, stopping"
+        stop_server
+        break
+      fi
+      exec 9>&-
     fi
     sleep 30
   done
