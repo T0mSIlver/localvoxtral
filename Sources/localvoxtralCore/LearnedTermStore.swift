@@ -1,6 +1,8 @@
 import Foundation
 import Synchronization
+#if canImport(os)
 import os
+#endif
 
 /// The file around `LearnedTerms`: one small JSON document under Application
 /// Support, held in memory so that NOTHING on the dictation commit path or in
@@ -13,12 +15,12 @@ import os
 /// pipeline already resolved — a file name, a product, a model — and the
 /// counters beside it, which is exactly what `SpeakerTerms` keeps for the
 /// hand-written list.
-final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
+package final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
     private struct State {
         var terms: LearnedTerms?
     }
 
-    let fileURL: URL?
+    package let fileURL: URL?
     private let state = Mutex(State())
     private let writeQueue = DispatchQueue(label: "localvoxtral.learned-terms", qos: .utility)
     private let now: @Sendable () -> Date
@@ -27,7 +29,7 @@ final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
     /// `fileURL` nil keeps everything in memory (tests, previews). The file is
     /// read on the write queue right away, and every later read and write is
     /// ordered behind that, so nothing else ever has to load it.
-    init(
+    package init(
         fileURL: URL?,
         now: @escaping @Sendable () -> Date = { Date() },
         onChange: (@Sendable () -> Void)? = nil
@@ -59,7 +61,7 @@ final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
         }
     }
 
-    static func defaultFileURL() -> URL {
+    package static func defaultFileURL() -> URL {
         let applicationSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -76,12 +78,12 @@ final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
     /// volume (review, 2026-09-20). Before the launch load lands this answers
     /// empty, which costs the first dictation its remembered terms and nothing
     /// else.
-    func snapshot() -> LearnedTerms {
+    package func snapshot() -> LearnedTerms {
         state.withLock { $0.terms } ?? LearnedTerms()
     }
 
     /// The confirmed spellings for one project, strongest evidence first.
-    func confirmedTerms(
+    package func confirmedTerms(
         projectKey: String,
         minimumDictations: Int = LearnedTerms.confirmedDictations
     ) -> [String] {
@@ -92,7 +94,7 @@ final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
     /// queue, behind the load and every write already queued. For the
     /// `localvoxtral` command (#721), which is off the main actor and may be
     /// the first thing to ask after launch.
-    func loadedSnapshot() async -> LearnedTerms {
+    package func loadedSnapshot() async -> LearnedTerms {
         await withCheckedContinuation { continuation in
             writeQueue.async { [self] in
                 let fallback = state.withLock { $0.terms } ?? loadFromDisk()
@@ -102,7 +104,7 @@ final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
     }
 
     /// Terms, then projects — what the Settings row states.
-    func summary() -> (terms: Int, projects: Int) {
+    package func summary() -> (terms: Int, projects: Int) {
         let terms = snapshot()
         return (terms.termCount, terms.projects.count)
     }
@@ -119,7 +121,7 @@ final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
     /// and returns. That is what keeps a dictation off the disk, and it is
     /// also what makes the file's order the memory's order — two records can
     /// no longer hand the queue an older state after a newer one.
-    func record(
+    package func record(
         _ observations: [LearnedTermObservation],
         project: LearnedTermProjectResolver.Identity
     ) {
@@ -146,7 +148,7 @@ final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
     /// A spelling the user fixed a dictation to by hand, confirmed at once
     /// (`LearnedTerms.recordCorrection`). Ordered on the write queue like
     /// `record`.
-    func recordCorrection(_ term: String, project: LearnedTermProjectResolver.Identity) {
+    package func recordCorrection(_ term: String, project: LearnedTermProjectResolver.Identity) {
         let moment = now()
         mutate { terms in
             terms.recordCorrection(term, project: project, now: moment)
@@ -159,7 +161,7 @@ final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
     /// A project's coding agent answered its terms request
     /// (`LearnedTerms.recordProposal`, #609). Ordered on the write queue like
     /// `record`.
-    func recordProposal(
+    package func recordProposal(
         _ terms: [String],
         agent: ProjectTermProposal.Agent,
         project: LearnedTermProjectIdentity,
@@ -177,7 +179,7 @@ final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
     /// Terms an agent proposed through `localvoxtral terms propose`
     /// (`LearnedTerms.recordCommandProposal`, #721). Returns the terms added
     /// once the write queue has folded them in.
-    func recordCommandProposal(
+    package func recordCommandProposal(
         _ terms: [String],
         proposer: String,
         project: LearnedTermProjectIdentity,
@@ -197,7 +199,7 @@ final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
     }
 
     /// A terms request failed; the project is asked again after a day.
-    func recordProposalFailure(project: LearnedTermProjectIdentity) {
+    package func recordProposalFailure(project: LearnedTermProjectIdentity) {
         let moment = now()
         mutate { memory in
             memory.recordProposalFailure(project: project, now: moment)
@@ -205,7 +207,7 @@ final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
     }
 
     /// Drops one spelling from one project: Undo, or the user reverting it.
-    func forget(_ term: String, projectKey: String) {
+    package func forget(_ term: String, projectKey: String) {
         mutate { terms in
             terms.forget(term, projectKey: projectKey)
         }
@@ -213,7 +215,7 @@ final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
     }
 
     /// Settings' pin: keeps one spelling past decay and caps.
-    func setPinned(_ pinned: Bool, term: String, projectKey: String) {
+    package func setPinned(_ pinned: Bool, term: String, projectKey: String) {
         mutate { terms in
             terms.setPinned(pinned, term: term, projectKey: projectKey)
         }
@@ -222,7 +224,7 @@ final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
 
     /// Folds an imported file's projects in (`LearnedTerms.merge`), ordered
     /// on the write queue like every write. `completion` runs on that queue.
-    func importProjects(
+    package func importProjects(
         _ projects: [LearnedTermProject],
         completion: @escaping @Sendable (LearnedTermsExport.ImportSummary) -> Void
     ) {
@@ -259,7 +261,7 @@ final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
     /// Memory clears at once so the row reads zero under the click; the file is
     /// removed on the queue, ordered behind any record already in flight, so a
     /// dictation that was mid-fold cannot re-create the file afterwards.
-    func forgetAll() {
+    package func forgetAll() {
         state.withLock { state in state.terms = LearnedTerms() }
         Log.polishing.info("Learned terms forgotten")
         writeQueue.async { [self] in
@@ -274,7 +276,7 @@ final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
 
     /// Blocks until the queued writes have landed. For tests and for nothing
     /// else — the app never waits on this queue.
-    func waitForPendingWrites() {
+    package func waitForPendingWrites() {
         writeQueue.sync {}
     }
 
@@ -296,7 +298,7 @@ final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
     /// A file that does not decode — a torn write, a hand edit, a version this
     /// build predates — starts over empty. Losing what was learned costs a few
     /// dictations; refusing to start costs the feature.
-    static func terms(fromFileContents data: Data) -> LearnedTerms {
+    package static func terms(fromFileContents data: Data) -> LearnedTerms {
         guard let terms = try? decoder.decode(LearnedTerms.self, from: data),
               terms.version <= LearnedTerms.currentVersion
         else { return LearnedTerms() }
