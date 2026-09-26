@@ -145,6 +145,23 @@ final class LearnedTermStore: @unchecked Sendable {
         Log.polishing.info("Learned terms: one term \(pinned ? "pinned" : "unpinned", privacy: .public)")
     }
 
+    /// Folds an imported file's projects in (`LearnedTerms.merge`), ordered
+    /// on the write queue like every write. `completion` runs on that queue.
+    func importProjects(
+        _ projects: [LearnedTermProject],
+        completion: @escaping @Sendable (LearnedTermsExport.ImportSummary) -> Void
+    ) {
+        let moment = now()
+        mutate { terms in
+            let summary = terms.merge(importing: projects, now: moment)
+            let kept = terms.termCount
+            Log.polishing.info(
+                "Learned terms imported: \(summary.terms, privacy: .public) terms in \(summary.projects, privacy: .public) projects, \(kept, privacy: .public) kept"
+            )
+            completion(summary)
+        }
+    }
+
     /// Folds `change` in on the write queue, behind the launch load and every
     /// earlier write, so an Undo can never land before the term it undoes.
     private func mutate(_ change: @escaping @Sendable (inout LearnedTerms) -> Void) {

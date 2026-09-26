@@ -9,9 +9,9 @@ import Foundation
 /// harvested. That is the whole reason a remembered list stays small enough to
 /// be worth sending: it holds the terms the recognizer demonstrably gets
 /// wrong, not an index of everything in the repo.
-struct LearnedTerm: Codable, Equatable, Sendable {
+package struct LearnedTerm: Codable, Equatable, Sendable {
     /// The canonical spelling, exactly as it was pre-applied.
-    var term: String
+    package var term: String
     /// `PolishContextSource` raw values that have proposed this spelling, in
     /// first-seen order.
     ///
@@ -20,35 +20,57 @@ struct LearnedTerm: Codable, Equatable, Sendable {
     /// keeps saying a name, it is their vocabulary, the way a name typed into
     /// Names and terms is. The field is here so a future setting can drop
     /// what one source taught without dropping the rest.
-    var sources: [String]
+    package var sources: [String]
     /// Distinct dictations that resolved it. The confirmation counter.
-    var dictations: Int
-    var firstSeen: Date
-    var lastSeen: Date
+    package var dictations: Int
+    package var firstSeen: Date
+    package var lastSeen: Date
     /// The user fixed a dictation to this spelling themselves
     /// (`CorrectionLearning`). That is confirmation enough on its own: the
     /// three-dictation bar exists because polish can repeat a mistake, and a
     /// hand fix is not polish. Optional so files written before it decode;
     /// nil reads as false.
-    var confirmedByCorrection: Bool? = nil
+    package var confirmedByCorrection: Bool? = nil
     /// Dictations the memory itself rewrote with this spelling: the merged
     /// `.learned` entries, which exist only where no live source already
     /// had the term. What Settings shows to audit over-application (#522).
     /// Optional, like every field added after version 1; nil reads as 0.
-    var applied: Int? = nil
-    var lastApplied: Date? = nil
+    package var applied: Int? = nil
+    package var lastApplied: Date? = nil
     /// The user asked to keep it: confirmed whatever the count, never
     /// decayed, and the last thing a cap evicts. Nil reads as false.
-    var pinned: Bool? = nil
+    package var pinned: Bool? = nil
 
     /// The provenance a hand correction records in `sources`.
-    static let correctionSource = "correction"
+    package init(
+        term: String,
+        sources: [String],
+        dictations: Int,
+        firstSeen: Date,
+        lastSeen: Date,
+        confirmedByCorrection: Bool? = nil,
+        applied: Int? = nil,
+        lastApplied: Date? = nil,
+        pinned: Bool? = nil
+    ) {
+        self.term = term
+        self.sources = sources
+        self.dictations = dictations
+        self.firstSeen = firstSeen
+        self.lastSeen = lastSeen
+        self.confirmedByCorrection = confirmedByCorrection
+        self.applied = applied
+        self.lastApplied = lastApplied
+        self.pinned = pinned
+    }
 
-    var isConfirmedByCorrection: Bool { confirmedByCorrection == true }
-    var isPinned: Bool { pinned == true }
-    var appliedCount: Int { applied ?? 0 }
+    package static let correctionSource = "correction"
 
-    func isConfirmed(minimumDictations: Int) -> Bool {
+    package var isConfirmedByCorrection: Bool { confirmedByCorrection == true }
+    package var isPinned: Bool { pinned == true }
+    package var appliedCount: Int { applied ?? 0 }
+
+    package func isConfirmed(minimumDictations: Int) -> Bool {
         isPinned || isConfirmedByCorrection || dictations >= minimumDictations
     }
 }
@@ -56,79 +78,103 @@ struct LearnedTerm: Codable, Equatable, Sendable {
 /// One project's remembered terms. A project is a git root, a remote session's
 /// workspace label, or the shared bucket for dictations that belong to no
 /// project at all (`LearnedTermProjectResolver`).
-struct LearnedTermProject: Codable, Equatable, Sendable {
+package struct LearnedTermProject: Codable, Equatable, Sendable {
     /// Stable identity — see `LearnedTermProjectResolver.Identity`.
-    var key: String
+    package var key: String
     /// What the speaker would call it: a directory name, never a full path.
-    var name: String
-    var terms: [LearnedTerm]
+    package var name: String
+    package var terms: [LearnedTerm]
     /// Last dictation attributed to this project; the eviction order.
-    var lastSeen: Date
+    package var lastSeen: Date
+
+    package init(key: String, name: String, terms: [LearnedTerm], lastSeen: Date) {
+        self.key = key
+        self.name = name
+        self.terms = terms
+        self.lastSeen = lastSeen
+    }
+}
+
+/// A project's stable key and the name a human would recognize
+/// (`LearnedTermProjectResolver.Identity`).
+package struct LearnedTermProjectIdentity: Equatable, Sendable {
+    package let key: String
+    package let name: String
+
+    package init(key: String, name: String) {
+        self.key = key
+        self.name = name
+    }
 }
 
 /// One term a dictation resolved, as the commit path observed it.
-struct LearnedTermObservation: Equatable, Sendable {
-    let term: String
-    let source: PolishContextSource
+package struct LearnedTermObservation: Equatable, Sendable {
+    package let term: String
+    package let source: PolishContextSource
+
+    package init(term: String, source: PolishContextSource) {
+        self.term = term
+        self.source = source
+    }
 }
 
 /// Everything remembered, as a value. Every rule — merging an observation,
 /// the caps, the decay — lives here and nowhere else, so the tests exercise
 /// them without a disk (`LearnedTermStore` is only the file around this).
-struct LearnedTerms: Codable, Equatable, Sendable {
+package struct LearnedTerms: Codable, Equatable, Sendable {
     /// Bumped only for a change old builds cannot read. A file from the
     /// future is discarded rather than guessed at.
-    static let currentVersion = 1
+    package static let currentVersion = 1
 
     /// Dictations a term must have been resolved in before it grounds a later
     /// one. Three is the same bar the hosted suggestion pass asks its model
     /// for ("at least 3 different texts"): twice can be one mistake repeated,
     /// three times is a habit.
-    static let confirmedDictations = 3
+    package static let confirmedDictations = 3
 
     /// A project keeps this many terms. Far above the 80 of the hand-written
     /// list because this one is not read by a human — it is the pool the
     /// matcher indexes — and far below a repo index, which is what makes the
     /// remembered list worth having at all.
-    static let maxTermsPerProject = 200
+    package static let maxTermsPerProject = 200
 
     /// Projects kept, least-recently-dictated evicted first. Forty is more
     /// repos than anyone touches in a decay window; the cap exists so an
     /// agent walking a tree of checkouts cannot grow the file without bound.
-    static let maxProjects = 40
+    package static let maxProjects = 40
 
     /// A term not resolved again within this many days is forgotten. Speech
     /// vocabulary follows the work: a name from a project finished last
     /// quarter should stop competing with the current one's.
-    static let staleAfterDays = 90
+    package static let staleAfterDays = 90
 
     /// Longest spelling remembered. Matches `SpeakerTerms.maxTermCharacters`,
     /// since both feed the same prompt slot.
-    static let maxTermCharacters = 60
+    package static let maxTermCharacters = 60
 
-    var version: Int = LearnedTerms.currentVersion
-    var projects: [LearnedTermProject] = []
+    package var version: Int = LearnedTerms.currentVersion
+    package var projects: [LearnedTermProject] = []
 
-    init(version: Int = LearnedTerms.currentVersion, projects: [LearnedTermProject] = []) {
+    package init(version: Int = LearnedTerms.currentVersion, projects: [LearnedTermProject] = []) {
         self.version = version
         self.projects = projects
     }
 
     // MARK: Reading
 
-    var termCount: Int { projects.reduce(0) { $0 + $1.terms.count } }
+    package var termCount: Int { projects.reduce(0) { $0 + $1.terms.count } }
 
     /// The confirmed spellings for one project, most-confirmed first. Ordering
     /// is what the caller's own cap cuts against, so it is total and
     /// deterministic: dictations, then recency, then the term itself.
-    func confirmedTerms(
+    package func confirmedTerms(
         projectKey: String,
         minimumDictations: Int = LearnedTerms.confirmedDictations
     ) -> [String] {
         confirmed(projectKey: projectKey, minimumDictations: minimumDictations).map(\.term)
     }
 
-    func confirmed(
+    package func confirmed(
         projectKey: String,
         minimumDictations: Int = LearnedTerms.confirmedDictations
     ) -> [LearnedTerm] {
@@ -140,7 +186,7 @@ struct LearnedTerms: Codable, Equatable, Sendable {
 
     /// Strongest evidence first across EVERY project: what the Settings pane
     /// offers for the hand-written list, which is global.
-    func confirmedEverywhere(
+    package func confirmedEverywhere(
         minimumDictations: Int = LearnedTerms.confirmedDictations
     ) -> [LearnedTerm] {
         var strongest: [String: LearnedTerm] = [:]
@@ -181,9 +227,9 @@ struct LearnedTerms: Codable, Equatable, Sendable {
     /// three sources in the same sentence is one confirmation, not three — the
     /// counter has to mean "distinct dictations" for `confirmedDictations` to
     /// mean what it says.
-    mutating func record(
+    package mutating func record(
         _ observations: [LearnedTermObservation],
-        project: LearnedTermProjectResolver.Identity,
+        project: LearnedTermProjectIdentity,
         now: Date
     ) {
         let folded = LearnedTerms.folded(observations)
@@ -236,9 +282,9 @@ struct LearnedTerms: Codable, Equatable, Sendable {
     /// there was nothing new to tell the user: the spelling was already
     /// confirmed by an earlier correction, or it sanitizes to nothing.
     @discardableResult
-    mutating func recordCorrection(
+    package mutating func recordCorrection(
         _ raw: String,
-        project: LearnedTermProjectResolver.Identity,
+        project: LearnedTermProjectIdentity,
         now: Date
     ) -> Bool {
         let term = LearnedTerms.sanitized(raw)
@@ -276,7 +322,7 @@ struct LearnedTerms: Codable, Equatable, Sendable {
     /// Pins or unpins one spelling in one project. Returns false when the
     /// project does not hold it.
     @discardableResult
-    mutating func setPinned(_ pinned: Bool, term raw: String, projectKey: String) -> Bool {
+    package mutating func setPinned(_ pinned: Bool, term raw: String, projectKey: String) -> Bool {
         let key = LearnedTerms.sanitized(raw).caseFoldedForMatching
         guard !key.isEmpty,
               let index = projects.firstIndex(where: { $0.key == projectKey }),
@@ -292,7 +338,7 @@ struct LearnedTerms: Codable, Equatable, Sendable {
     /// revert both come here: the constraint is that the term is gone, not
     /// kept at a lower count where three more dictations would bring it back
     /// unnoticed.
-    mutating func forget(_ raw: String, projectKey: String) {
+    package mutating func forget(_ raw: String, projectKey: String) {
         let key = LearnedTerms.sanitized(raw).caseFoldedForMatching
         guard !key.isEmpty,
               let index = projects.firstIndex(where: { $0.key == projectKey })
@@ -302,7 +348,7 @@ struct LearnedTerms: Codable, Equatable, Sendable {
     }
 
     private mutating func projectIndex(
-        for project: LearnedTermProjectResolver.Identity,
+        for project: LearnedTermProjectIdentity,
         now: Date
     ) -> Int {
         if let index = projects.firstIndex(where: { $0.key == project.key }) {
@@ -319,7 +365,7 @@ struct LearnedTerms: Codable, Equatable, Sendable {
     /// Decay and caps, applied after every write and after every load: a file
     /// that has sat on disk for a season must not come back larger than the
     /// caps allow just because nothing has been dictated since.
-    mutating func prune(now: Date) {
+    package mutating func prune(now: Date) {
         let cutoff = now.addingTimeInterval(-Double(LearnedTerms.staleAfterDays) * 86_400)
         for index in projects.indices {
             projects[index].terms.removeAll { !$0.isPinned && $0.lastSeen < cutoff }
@@ -355,7 +401,7 @@ struct LearnedTerms: Codable, Equatable, Sendable {
     /// then confirmations, then recency, then the spelling. Nothing here may
     /// depend on dictionary iteration order — the same memory must always
     /// render the same list.
-    static func isStrongerEvidence(_ lhs: LearnedTerm, _ rhs: LearnedTerm) -> Bool {
+    package static func isStrongerEvidence(_ lhs: LearnedTerm, _ rhs: LearnedTerm) -> Bool {
         if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
         if lhs.isConfirmedByCorrection != rhs.isConfirmedByCorrection {
             return lhs.isConfirmedByCorrection
@@ -369,7 +415,7 @@ struct LearnedTerms: Codable, Equatable, Sendable {
     /// whether the memory itself applied it. A spelling that survives
     /// sanitizing to nothing is dropped here rather than stored as an empty
     /// term.
-    static func folded(
+    package static func folded(
         _ observations: [LearnedTermObservation]
     ) -> [(term: String, sources: [String], fromMemory: Bool)] {
         var order: [String] = []
@@ -401,7 +447,7 @@ struct LearnedTerms: Codable, Equatable, Sendable {
 
     /// The same shape `SpeakerTerms` stores: one line, no quotes, no control
     /// characters, and short enough to belong in a prompt.
-    static func sanitized(_ raw: String) -> String {
+    package static func sanitized(_ raw: String) -> String {
         let term = RepoVocabularyMatcher.sanitizedTerm(raw)
             .collapsingInternalWhitespace
             .trimmed
@@ -409,7 +455,7 @@ struct LearnedTerms: Codable, Equatable, Sendable {
         return term
     }
 
-    static func merging(_ existing: [String], _ incoming: [String]) -> [String] {
+    package static func merging(_ existing: [String], _ incoming: [String]) -> [String] {
         var result = existing
         for source in incoming where !result.contains(source) {
             result.append(source)

@@ -66,6 +66,34 @@ final class ViewSnapshotTests: XCTestCase {
             width: Self.settingsSize.width, height: Self.settingsSize.height, growToFit: true)
     }
 
+    /// Advanced → Terms learned from polishing → Show: empty, which is where
+    /// a new machine imports (#523), and with terms, where Export… shows.
+    func testLearnedTermsSheet() throws {
+        let frozen = Date(timeIntervalSince1970: 1_790_000_000)
+        for filled in [false, true] {
+            let (_, viewModel) = makeViewModel()
+            let store = LearnedTermStore(fileURL: nil, now: { frozen })
+            if filled {
+                store.importProjects([
+                    LearnedTermProject(key: "/work/demo", name: "demo", terms: [
+                        LearnedTerm(
+                            term: "speechd", sources: ["repo"], dictations: 4,
+                            firstSeen: frozen, lastSeen: frozen),
+                        LearnedTerm(
+                            term: "Voxtral", sources: ["repo"], dictations: 2,
+                            firstSeen: frozen, lastSeen: frozen),
+                    ], lastSeen: frozen),
+                ]) { _ in }
+                store.waitForPendingWrites()
+            }
+            viewModel.learnedTermStore = store
+            try record(
+                LearnedTermsSheet(viewModel: viewModel, onDone: {}),
+                name: "learned-terms-\(filled ? "filled" : "empty")",
+                width: 520, height: 440, growToFit: false)
+        }
+    }
+
     // MARK: - Status popover
 
     /// The menu bar item's content. The app shows it as an `NSMenu`

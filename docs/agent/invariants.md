@@ -206,7 +206,9 @@ there is not.
   enforced by a gate: each term keeps the sources that proposed it, so a
   later setting can drop what one source taught; nothing below the
   three-dictation bar is ever sent unless the user pinned it or fixed it by
-  hand; a remembered term never outranks a live
+  hand, and an import (`LearnedTerms.merge`, #523) confirms nothing the
+  file does not record as earned, taking the max of the counts, never the
+  sum; a remembered term never outranks a live
   source (`.learned` is LAST in `PolishContextSource`, so a contested span
   abstains); unpinned terms decay at 90 days; and Text processing →
   Advanced → Terms learned from polishing → Forget drops the file (Show forgets one). Verification candidates are never
