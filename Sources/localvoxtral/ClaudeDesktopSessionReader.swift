@@ -61,7 +61,11 @@ enum ClaudeDesktopFocusPlace: Equatable {
 /// `dframe-pane-primary`. Focus in the secondary pane, in a pane's terminal,
 /// files or changes panel, or in the sidebar is no join: either the address
 /// names a different session, or the dictation is not going to a session.
-/// The focused prompt box sits 22–24 parents below the web area.
+/// The rule rests on the panes being siblings, each holding its own chat
+/// panel, and on a single-session window being one pane classed
+/// `dframe-pane dframe-pane-primary` (both measured); a layout that nests one
+/// pane inside another gets measured again before it can be trusted. The
+/// focused prompt box sits 22–24 parents below the web area.
 /// (Claude Desktop 2.2553.1, 2026-09-18, had a web area per session; the
 /// class rule refuses that layout, which no longer ships.)
 ///
@@ -73,7 +77,7 @@ enum ClaudeDesktopFocusPlace: Equatable {
 ///   `attemptBudgetSeconds` checked before every hop. The hop cap alone was
 ///   not a bound (codex review, PR #333): an app answering each message just
 ///   under the timeout would have held the main actor ~13 s per attempt. With
-///   the budget, two attempts plus the wait stay under ~1 s worst case.
+///   the budget, two attempts plus the wait stay under ~1.4 s worst case.
 /// - **Electron's tree is opt-in.** Chromium builds its web accessibility tree
 ///   only for a client that asks, and `AXManualAccessibility` is how an
 ///   assistive client asks. The reader sets it before every read — idempotent,
@@ -92,8 +96,9 @@ struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
     static let treeBuildWaitSeconds: Double = 0.25
 
     /// Total time one walk may take. A healthy walk measured 7–39 ms; past
-    /// this the attempt is abandoned as `.unavailable`. The last message in
-    /// flight can still overrun by one messaging timeout.
+    /// this the attempt is abandoned as `.unavailable`. The hop in flight can
+    /// still overrun it by its messages (role, classes, parent: up to three
+    /// messaging timeouts).
     static let attemptBudgetSeconds: Double = 0.25
 
     typealias SleepFor = @Sendable (Double) async -> Void

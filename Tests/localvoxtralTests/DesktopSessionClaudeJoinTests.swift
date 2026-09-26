@@ -561,6 +561,19 @@ final class ClaudeDesktopSessionReaderTests: XCTestCase {
         XCTAssertEqual(walk(Split.nodes, from: Split.primaryPrompt), .webArea(url: Split.primaryAddress))
     }
 
+    // Without a split the one pane is still the primary one (measured on
+    // 2.9939.2), so the common layout joins.
+    func testFocusInASingleSessionWindowReadsTheAddress() {
+        let nodes = [
+            Node(role: "AXTextArea", parent: 1),
+            Node(role: "AXGroup", classes: ["relative", "isolate", "min-w-0", "epitaxy-chat-panel"], parent: 2),
+            Node(role: "AXGroup", classes: ["dframe-pane", "dframe-pane-primary", "min-w-0"], parent: 3),
+            Node(role: "AXWebArea", url: "https://claude.ai/epitaxy/local_a", parent: 4),
+            Node(role: "AXWebArea", url: "file:///shell/index.html", parent: nil),
+        ]
+        XCTAssertEqual(walk(nodes), .webArea(url: "https://claude.ai/epitaxy/local_a"))
+    }
+
     // #662: in split view both panes share one web area, and its address
     // names the primary pane's session. Focus in the secondary pane read it
     // and joined the wrong session.

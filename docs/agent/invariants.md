@@ -1379,10 +1379,12 @@ there is not.
     from the app's focused element to the NEAREST `AXWebArea` and reads its
     address ONLY when the walk passed an `epitaxy-chat-panel` element and
     then a first `dframe-pane` element that is also `dframe-pane-primary`
-    (exact class tokens). Focus in the secondary pane would otherwise join
-    the primary pane's session; focus in a terminal, files or changes panel,
-    or in the sidebar, is no join because the dictation is not going to a
-    session. Each refusal logs its reason. `ClaudeDesktopSessionURL` parses
+    (exact class tokens). A single-session window is one such primary pane;
+    the rule assumes panes are siblings, never nested, which is what a
+    desktop update must re-check. Focus in the secondary pane would
+    otherwise join the primary pane's session; focus in a terminal, files or
+    changes panel, or in the sidebar, is no join because the dictation is
+    not going to a session. Each refusal logs its reason. `ClaudeDesktopSessionURL` parses
     the address through the same strict checks as the bridge URL
     (`ClaudeSessionPageURL`), path exactly `/epitaxy/local_[A-Za-z0-9_-]+`;
     the registry match is exact equality with one fresh reporter
