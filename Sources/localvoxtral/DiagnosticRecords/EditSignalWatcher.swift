@@ -487,16 +487,22 @@ final class EditSignalWatcher {
             watchWindowSeconds: watch.windowSeconds,
             outputMode: watch.outputMode
         )
-        if let id = DiagnosticRecordFileName.parse(url.lastPathComponent)?.id {
-            onOutcome?(id, result.outcome)
-        }
-
+        // History hears the verdict only once the record holds it: a record
+        // deleted meanwhile (its dictation, or records turned off) must not
+        // leave a verdict behind in History.
+        let id = DiagnosticRecordFileName.parse(url.lastPathComponent)?.id
+        let outcome = result.outcome
         guard !inline else {
-            DiagnosticRecordWriter.attachSynchronously(behavior, toRecordAt: url, store: store)
+            if DiagnosticRecordWriter.attachSynchronously(behavior, toRecordAt: url, store: store),
+               let id {
+                onOutcome?(id, outcome)
+            }
             return
         }
         flushTask = Task {
-            await DiagnosticRecordWriter.attach(behavior, toRecordAt: url, store: store)
+            if await DiagnosticRecordWriter.attach(behavior, toRecordAt: url, store: store), let id {
+                onOutcome?(id, outcome)
+            }
         }
     }
 }

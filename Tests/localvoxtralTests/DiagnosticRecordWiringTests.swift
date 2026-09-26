@@ -146,6 +146,27 @@ final class DiagnosticRecordWiringTests: XCTestCase {
         XCTAssertEqual(entries.map(\.editOutcome), [EditSignalOutcome.edited.rawValue])
     }
 
+    /// Records turned off while the window is open: the record is gone, so
+    /// History gets no verdict either.
+    func testNoVerdictReachesHistoryOnceTheRecordIsDeleted() async throws {
+        let signals = EditSignalHarness()
+        let harness = try makeHarness(recordsEnabled: true, withHistory: true, editSignal: signals)
+        let history = try XCTUnwrap(harness.history)
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+        await signals.sleeper.waitForSleepRequest()
+        harness.viewModel.settings.diagnosticRecordsEnabled = false
+        await history.deleteAllDiagnosticRecords().value
+        signals.monitor.send(.backspace)
+        await signals.watcher.flushTask?.value
+        await history.removeOrphanedAudio().value
+
+        let entries = await history.entries()
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertNil(entries.first?.editOutcome)
+    }
+
     /// A record goes wherever its dictation goes: turning the switch off
     /// deletes every record and keeps the dictations; deleting an entry, or
     /// turning History off, deletes its record.
