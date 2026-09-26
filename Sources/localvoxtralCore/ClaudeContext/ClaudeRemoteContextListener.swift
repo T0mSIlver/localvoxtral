@@ -128,6 +128,14 @@ public final class ClaudeRemoteContextListener: Sendable {
     public func debugConfigurePostAuthenticationHook(_ hook: (@Sendable () -> Void)?) {
         debugPostAuthenticationHook.withLock { $0 = hook }
     }
+
+    /// Fires on a connection's thread before anything is done with it, so a
+    /// test can let the peer leave first.
+    private let debugServeHook = Mutex<(@Sendable () -> Void)?>(nil)
+
+    public func debugConfigureServeHook(_ hook: (@Sendable () -> Void)?) {
+        debugServeHook.withLock { $0 = hook }
+    }
     #endif
 
     public enum StartFailure: Error, Equatable {
@@ -399,8 +407,18 @@ public final class ClaudeRemoteContextListener: Sendable {
     /// about and no second request to re-authenticate.
     private func serve(connectionFD fd: Int32) {
         defer { close(fd) }
+        #if DEBUG
+        debugServeHook.withLock { $0 }?()
+        #endif
 
-        POSIXSocket.suppressSIGPIPE(onSocket: fd)
+        // A response to a peer that already left raises SIGPIPE, which kills
+        // the app, unless the socket has SO_NOSIGPIPE; Darwin refuses that
+        // option once the peer has reset the connection (#791). Nobody is left
+        // to answer then.
+        guard POSIXSocket.suppressSIGPIPE(onSocket: fd) else {
+            Log.claudeContext.error("Dropping Claude remote connection: the peer left before it was served")
+            return
+        }
         // Monotonic, not wall clock. See `init(uptimeNanos:)`.
         let deadline = uptimeNanos() &+ UInt64(limits.connectionTimeout * 1_000_000_000)
 

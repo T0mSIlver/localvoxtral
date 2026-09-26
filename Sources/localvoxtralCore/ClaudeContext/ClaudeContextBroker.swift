@@ -104,6 +104,14 @@ public final class ClaudeContextBroker: Sendable {
         debugReadHook.withLock { $0 = hook }
     }
 
+    /// Test seam: fires on a connection's thread before anything is done with
+    /// it, so a test can let the peer leave first.
+    private let debugServeHook = Mutex<(@Sendable () -> Void)?>(nil)
+
+    public func debugConfigureServeHook(_ hook: (@Sendable () -> Void)?) {
+        debugServeHook.withLock { $0 = hook }
+    }
+
     private func debugNotify(_ result: Result<ClaudeHookRecord, ClaudeHookWireError>) {
         let hook = debugIngestHook.withLock { $0 }
         hook?(result)
@@ -476,6 +484,17 @@ public final class ClaudeContextBroker: Sendable {
 
     private func serve(connectionFD fd: Int32) {
         defer { close(fd) }
+        #if DEBUG
+        debugServeHook.withLock { $0 }?()
+        #endif
+
+        // A reply to a peer that already left raises SIGPIPE, which kills the
+        // app, unless the socket has SO_NOSIGPIPE; Darwin refuses that option
+        // once the peer has closed (#791). Nobody is left to answer then.
+        guard POSIXSocket.suppressSIGPIPE(onSocket: fd) else {
+            Log.claudeContext.error("Dropping Claude broker connection: the peer left before it was served")
+            return
+        }
 
         // Authenticate BEFORE reading a single byte.
         guard let peerUID = ClaudeSocketGuard.peerUID(ofDescriptor: fd) else {
@@ -492,7 +511,6 @@ public final class ClaudeContextBroker: Sendable {
         // why it applies to opencode records and cannot apply to Claude's.
         let peerPID = ClaudeSocketGuard.peerPID(ofDescriptor: fd)
 
-        POSIXSocket.suppressSIGPIPE(onSocket: fd)
         let deadline = uptimeNanos() &+ UInt64(max(0, limits.readTimeout) * 1_000_000_000)
 
         var pending = Data()

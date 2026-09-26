@@ -669,6 +669,55 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         XCTAssertTrue(broker.isRunning, "one abusive peer must not stop the broker")
     }
 
+    /// A publisher that sends its record and exits before the broker serves
+    /// the connection. Darwin refuses SO_NOSIGPIPE on that socket, and a reply
+    /// written to it raises SIGPIPE, which kills the app (#791).
+    func testAPeerThatLeavesBeforeItIsServedDoesNotKillTheApp() throws {
+        let peerLeft = DispatchSemaphore(value: 0)
+        let served = Mutex(0)
+        broker.debugConfigureServeHook {
+            let call = served.withLock { count -> Int in
+                count += 1
+                return count
+            }
+            if call == 1 { _ = peerLeft.wait(timeout: .now() + 5) }
+        }
+        try broker.start()
+
+        let fd = socket(AF_UNIX, POSIXSocket.stream, 0)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        POSIXSocket.setLength(of: &address)
+        let pathBytes = Array(socketPath.utf8)
+        withUnsafeMutableBytes(of: &address.sun_path) { raw in
+            raw.copyBytes(from: pathBytes)
+            raw[pathBytes.count] = 0
+        }
+        let connected = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                LibC.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        XCTAssertEqual(connected, 0)
+        let record = ClaudeHookRecord(
+            event: .sessionStart, sessionID: "gone", timestamp: 1, rawCwd: "/repo"
+        )
+        let line = Array(try XCTUnwrap(ClaudeHookWireCodec.encodeLine(record)))
+        XCTAssertEqual(LibC.send(fd, line, line.count, POSIXSocket.sendFlags), line.count)
+        close(fd)
+        peerLeft.signal()
+
+        // One connection per thread, so this does not wait on the first one;
+        // it fails if the reply to the departed peer took the process down.
+        let result = UnixSocketPublisher(timeout: 2.0)
+            .publishAndReadReply(line: Data("{not json}\n".utf8), to: socketPath)
+        guard case .success(let reply) = result else {
+            return XCTFail("publish failed: \(result)")
+        }
+        XCTAssertNotNil(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
+    }
+
     func testTricklingPeerIsCutOffAtTheAbsoluteDeadline() throws {
         let base: UInt64 = 1_000_000_000
         let expired = Mutex(false)
