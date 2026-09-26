@@ -338,6 +338,10 @@ final class DogfoodControlSocketTests: XCTestCase {
 
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         XCTAssertGreaterThanOrEqual(fd, 0)
+        // A rejected peer is closed before it is read, so the client's own
+        // write can meet a closed socket; SIGPIPE would end the xctest
+        // process (#743).
+        POSIXSocket.suppressSIGPIPE(onSocket: fd)
         let connected = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
                 connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
