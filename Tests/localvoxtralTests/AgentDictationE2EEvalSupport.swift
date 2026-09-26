@@ -310,24 +310,6 @@ enum AgentDictationE2EEvalSupport {
 
     // MARK: - Pipeline routing
 
-    struct StagePlan: Equatable {
-        /// Recorded speech or TTS(spokenForm) -> websocket ASR.
-        let runsSpeechRecognition: Bool
-        /// The polish stop-commit path.
-        let runsPolish: Bool
-    }
-
-    static func stagePlan(for pipeline: AgentDictationEvalCorpus.Pipeline) -> StagePlan {
-        switch pipeline {
-        case .full:
-            return StagePlan(runsSpeechRecognition: true, runsPolish: true)
-        case .asrOnly:
-            return StagePlan(runsSpeechRecognition: true, runsPolish: false)
-        case .polishOnly:
-            return StagePlan(runsSpeechRecognition: false, runsPolish: true)
-        }
-    }
-
     /// A partial human recording set limits only speech-driven rows. Cases
     /// that do not need audio (notably all polish-only required checks) still
     /// run, so an exploratory subset cannot report green by omitting them.
@@ -339,7 +321,7 @@ enum AgentDictationE2EEvalSupport {
         guard isSubset else { return nil }
         var selected = recordedCaseIDs
         for loaded in strata
-        where !stagePlan(for: loaded.stratum.resolvedPipeline).runsSpeechRecognition
+        where !AgentDictationEvalCorpus.stagePlan(for: loaded.stratum.resolvedPipeline).runsSpeechRecognition
         {
             selected.formUnion(loaded.stratum.cases.map(\.id))
         }
@@ -371,35 +353,6 @@ enum AgentDictationE2EEvalSupport {
 
     // MARK: - Scoring (corpus contract)
 
-    /// `tokens` metric: every `requiredTokens` entry present (byte-exact after
-    /// spacing normalization; case-sensitive unless the case sets
-    /// `caseInsensitive`) AND no `forbiddenSubstrings` entry present (always
-    /// case-insensitive). Returns human-readable failure descriptions; empty
-    /// means pass.
-    static func tokensFailures(
-        output: String,
-        evalCase: AgentDictationEvalCorpus.Case
-    ) -> [String] {
-        let normalized = LLMPolishEvalSupport.normalizedSpacing(output)
-        let requiredHaystack = evalCase.isCaseInsensitive ? normalized.lowercased() : normalized
-        var failures: [String] = []
-        for token in evalCase.requiredTokens {
-            var needle = LLMPolishEvalSupport.normalizedSpacing(token)
-            if evalCase.isCaseInsensitive { needle = needle.lowercased() }
-            if !requiredHaystack.contains(needle) {
-                failures.append("missing \"\(token)\"")
-            }
-        }
-        let forbiddenHaystack = normalized.lowercased()
-        for needle in evalCase.forbidden {
-            let normalizedNeedle = LLMPolishEvalSupport.normalizedSpacing(needle).lowercased()
-            if forbiddenHaystack.contains(normalizedNeedle) {
-                failures.append("contains forbidden \"\(needle)\"")
-            }
-        }
-        return failures
-    }
-
     /// `exactText` metric: normalized whole-output equality with
     /// `intendedText` (spacing normalization; lowercased when the case is
     /// `caseInsensitive` — the migrated punctuation cases keep the old
@@ -408,8 +361,8 @@ enum AgentDictationE2EEvalSupport {
         output: String,
         evalCase: AgentDictationEvalCorpus.Case
     ) -> String? {
-        var actual = LLMPolishEvalSupport.normalizedSpacing(output)
-        var expected = LLMPolishEvalSupport.normalizedSpacing(evalCase.intendedText)
+        var actual = AgentDictationEvalCorpus.normalizedSpacing(output)
+        var expected = AgentDictationEvalCorpus.normalizedSpacing(evalCase.intendedText)
         if evalCase.isCaseInsensitive {
             actual = actual.lowercased()
             expected = expected.lowercased()

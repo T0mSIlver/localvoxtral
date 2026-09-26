@@ -189,15 +189,22 @@ package enum EvalSpeechStage {
     /// concept and ignores the non-final commit, and its `.finalTranscript`
     /// carries the whole utterance in one event, which the join handles as
     /// the one-element case it already is.
+    ///
+    /// An empty transcript is a failure unless `allowsEmptyTranscript`: then
+    /// the final commit's completion (`.transcriptionFinalized`) with no text
+    /// returns "", a result the ASR-only eval scores. The end-to-end eval
+    /// keeps the failure, since polish has nothing to work on.
     package static func transcribe(
         pcm: Data,
         client: any RealtimeClient,
         endpoint: Endpoint,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        allowsEmptyTranscript: Bool = false
     ) async throws -> String {
         let chunks = IntegrationTestSupport.splitPCM16IntoChunks(pcm, chunkSizeBytes: 3_200)
         let finals = SpeechStageStrings()
         let socketErrors = SpeechStageStrings()
+        let finalized = SpeechStageStrings()
         let firstFinal = XCTestExpectation(description: "final transcript")
         firstFinal.assertForOverFulfill = false
 
@@ -215,6 +222,9 @@ package enum EvalSpeechStage {
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return }
                 finals.append(trimmed)
+                firstFinal.fulfill()
+            case .transcriptionFinalized where allowsEmptyTranscript:
+                finalized.append("")
                 firstFinal.fulfill()
             case .error(let message):
                 socketErrors.append(message)
@@ -243,6 +253,9 @@ package enum EvalSpeechStage {
         let errors = socketErrors.snapshot()
         if !errors.isEmpty {
             throw Failure("realtime socket error: \(errors.joined(separator: " | "))")
+        }
+        if allowsEmptyTranscript, !finalized.snapshot().isEmpty {
+            return ""
         }
         if outcome != .completed {
             throw Failure("no final transcript within \(Int(timeout))s from \(endpoint.url)")

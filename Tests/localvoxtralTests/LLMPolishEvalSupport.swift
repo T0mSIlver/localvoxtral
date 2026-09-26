@@ -502,15 +502,8 @@ enum LLMPolishEvalSupport {
     /// (U+202F narrow no-break, U+00A0 no-break) with a plain space,
     /// collapses runs, and lowercases, so assertions accept any of them.
     static func normalized(_ text: String) -> String {
-        normalizedSpacing(text)
+        AgentDictationEvalCorpus.normalizedSpacing(text)
             .lowercased()
-    }
-
-    static func normalizedSpacing(_ text: String) -> String {
-        text
-            .replacingOccurrences(of: "\u{202F}", with: " ")
-            .replacingOccurrences(of: "\u{00A0}", with: " ")
-            .replacingOccurrences(of: " +", with: " ", options: .regularExpression)
     }
 
     static func runCase(
@@ -534,7 +527,7 @@ enum LLMPolishEvalSupport {
             let result = try await service.polish(request: request, configuration: configuration)
             outputForLog = result.polishedText
             let output = evalCase.caseSensitive
-                ? normalizedSpacing(result.polishedText)
+                ? AgentDictationEvalCorpus.normalizedSpacing(result.polishedText)
                 : normalized(result.polishedText)
 
             if let expectedText = evalCase.expectedText {
@@ -542,7 +535,7 @@ enum LLMPolishEvalSupport {
                 // outputs with prepended labels ("Corrected: …") or trailing
                 // commentary that the prompt forbids.
                 let expected = evalCase.caseSensitive
-                    ? normalizedSpacing(expectedText)
+                    ? AgentDictationEvalCorpus.normalizedSpacing(expectedText)
                     : normalized(expectedText)
                 if output != expected {
                     let expectedForLog = expectedText.replacingOccurrences(of: "\n", with: "\\n")
@@ -551,13 +544,13 @@ enum LLMPolishEvalSupport {
             } else {
                 for needle in evalCase.mustContain
                 where !output.contains(
-                    evalCase.caseSensitive ? normalizedSpacing(needle) : normalized(needle)
+                    evalCase.caseSensitive ? AgentDictationEvalCorpus.normalizedSpacing(needle) : normalized(needle)
                 ) {
                     caseFailures.append("missing \"\(needle)\"")
                 }
                 for needle in evalCase.mustNotContain
                 where output.contains(
-                    evalCase.caseSensitive ? normalizedSpacing(needle) : normalized(needle)
+                    evalCase.caseSensitive ? AgentDictationEvalCorpus.normalizedSpacing(needle) : normalized(needle)
                 ) {
                     caseFailures.append("still contains \"\(needle)\"")
                 }

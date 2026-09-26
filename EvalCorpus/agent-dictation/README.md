@@ -207,6 +207,37 @@ are never committed. Delete a local set when it is
 no longer needed. Running either eval launcher without a recording argument
 retains the repeatable `say`-based nightly baseline.
 
+## ASR-only runs on Linux
+
+`AgentDictationASREvalTests` runs the speech stage alone: each of the 146
+speech-running cases from a recording set, through the production realtime
+client, with no polish. It is in the core suite, so the dev box runs it
+against vLLM (`scripts/linux/README.md`). vLLM serves BF16 Voxtral, not the
+shipped 4-bit model, so its numbers point in a direction and the Mac's
+`eval-e2e` stays the proof.
+
+Write `.agent-eval-asr-enable.json` at the checkout root (the set can be a
+symlink to a directory outside the checkout), run the suite, then delete the
+marker:
+
+```json
+{"label":"vllm-bf16-owner","asr":"vllm-voxtral-bf16",
+ "endpoint":"ws://127.0.0.1:8000/v1/realtime",
+ "asrModel":"mistralai/Voxtral-Mini-4B-Realtime-2602",
+ "recordingDirectory":"EvalRecordings/agent-dictation/owner"}
+```
+
+```bash
+scripts/linux/voxtral-vllm.sh up
+scripts/core-tests-linux.sh --filter AgentDictationASREvalTests
+```
+
+`"subset": true` runs a partial set, and `"caseIDs": [...]` picks cases. The
+scoreboard gives word accuracy against `spokenForm` and against
+`intendedText`, and the `tokens` metric for the `asr-only` stratum, whose
+required cases assert as in `eval-e2e`. The transcripts go to
+`EvalRecordings/agent-dictation/asr-runs/<label>.jsonl` and never to the log.
+
 ## Stratum file schema (schemaVersion 1)
 
 ```jsonc
