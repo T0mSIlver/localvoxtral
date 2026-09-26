@@ -1,7 +1,8 @@
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// The term-recall eval (#315): does the speech engine spell the owner's
 /// technical terms right, and does it write listed terms nobody said. No
@@ -12,7 +13,9 @@ import XCTest
 /// tree. Three modes:
 ///
 /// - `audio`: each case's text spoken by `say` (or a human recording), sent
-///   through the production realtime client to one speech test service.
+///   through the production realtime client to one speech test service. On
+///   Linux, where there is no `say`, only a recording set, and the service is
+///   the dev box's vLLM (`scripts/linux/voxtral-vllm.sh`).
 /// - `hypotheses`: text from a JSONL file of `{"id", "text"}` rows, e.g. a
 ///   second-pass transcript or a polished one (#524).
 /// - `compare`: two earlier run files, paired per case.
@@ -108,8 +111,9 @@ final class TermRecallEvalTests: XCTestCase {
         print(TermRecallReport.scoreboard(run))
         // XCTest writes assertion diagnostics to the same descriptor; flush
         // the run file first, or a failure below lands inside a JSON line
-        // (as in the agent-dictation eval).
-        fflush(stdout)
+        // (as in the agent-dictation eval). `nil` flushes every stream: Glibc's
+        // `stdout` is a mutable global that strict concurrency refuses.
+        fflush(nil)
 
         XCTAssertEqual(
             run.header.unscoredCases, 0,
@@ -142,6 +146,7 @@ final class TermRecallEvalTests: XCTestCase {
         // English falls back to the system voice, as in the agent-dictation
         // eval; French has no fallback, since an English voice reading French
         // would measure the voice.
+        #if os(macOS)
         var englishVoice: String?
         var frenchVoice: String?
         if recordings == nil {
@@ -153,6 +158,11 @@ final class TermRecallEvalTests: XCTestCase {
             )
             progress("term-recall: voices en=\(englishVoice ?? "default") fr=\(frenchVoice ?? "none")")
         }
+        #else
+        guard recordings != nil else {
+            throw EvalSpeechStage.Failure("audio mode needs recordingDirectory here: `say` is macOS-only")
+        }
+        #endif
 
         let endpoint = EvalSpeechStage.Endpoint(url: endpointURL, apiKey: "", model: model)
         var scores: [TermRecallCaseScore] = []
@@ -168,15 +178,19 @@ final class TermRecallEvalTests: XCTestCase {
                     }
                     pcm = recorded
                 } else {
+                    #if os(macOS)
                     let voice = evalCase.language == "fr" ? frenchVoice : englishVoice
                     if evalCase.language == "fr", voice == nil {
                         throw EvalSpeechStage.Failure("no French voice installed (say -v ?)")
                     }
                     pcm = try EvalSpeechStage.synthesizedPCM16(text: evalCase.text, voice: voice)
+                    #else
+                    throw EvalSpeechStage.Failure("`say` is macOS-only")
+                    #endif
                 }
                 hypothesis = try await EvalSpeechStage.transcribe(
                     pcm: pcm,
-                    client: AgentDictationE2EEvalSupport.makeRealtimeClient(for: .speechd),
+                    client: RealtimeAPIWebSocketClient(),
                     endpoint: endpoint,
                     timeout: Self.asrTimeout
                 )
@@ -253,7 +267,7 @@ final class TermRecallEvalTests: XCTestCase {
     /// A progress line, flushed so a long run shows where it is.
     private func progress(_ line: String) {
         print(line)
-        fflush(stdout)
+        fflush(nil)
     }
 
     // MARK: - Inputs
@@ -276,13 +290,12 @@ final class TermRecallEvalTests: XCTestCase {
     /// format. A partial set is allowed; its missing cases are skipped, never
     /// filled with `say`.
     private func loadRecordings(_ directory: String, cases: [TermRecallCase]) throws -> [String: Data] {
-        typealias Support = AgentDictationE2EEvalSupport
         let directoryURL = repoRoot.appendingPathComponent(directory, isDirectory: true)
-        let manifest = try Support.parseRecordingManifest(
-            Data(contentsOf: directoryURL.appendingPathComponent(Support.recordingManifestFileName))
+        let manifest = try RecordedAudioSet.parseManifest(
+            Data(contentsOf: directoryURL.appendingPathComponent(RecordedAudioSet.manifestFileName))
         )
-        let expected = try cases.map { evalCase -> Support.RecordingExpectation in
-            guard let lang = AgentDictationEvalCorpus.Language(rawValue: evalCase.language) else {
+        let expected = try cases.map { evalCase -> RecordedAudioSet.Expectation in
+            guard let lang = RecordedAudioSet.Language(rawValue: evalCase.language) else {
                 throw EvalSpeechStage.Failure("case \(evalCase.id) has language \(evalCase.language)")
             }
             return .init(id: evalCase.id, lang: lang, spokenForm: evalCase.text)
@@ -290,7 +303,7 @@ final class TermRecallEvalTests: XCTestCase {
         // Recordings of cases outside this run (a --limit, a --case) are not
         // stale, just unselected.
         let selected = Set(cases.map(\.id))
-        let recordings = try Support.validateRecordingManifest(
+        let recordings = try RecordedAudioSet.validateManifest(
             .init(
                 schemaVersion: manifest.schemaVersion,
                 dataFormat: manifest.dataFormat,
@@ -302,10 +315,10 @@ final class TermRecallEvalTests: XCTestCase {
         var pcmByID: [String: Data] = [:]
         for (id, recording) in recordings {
             let wav = try Data(contentsOf: directoryURL.appendingPathComponent(recording.file))
-            guard Support.sha256Hex(wav) == recording.sha256 else {
+            guard PortableSHA256.hex(of: wav) == recording.sha256 else {
                 throw EvalSpeechStage.Failure("recording \(id) does not match its manifest hash")
             }
-            pcmByID[id] = try Support.recordedPCM16(fromWAVData: wav)
+            pcmByID[id] = try RecordedAudioSet.pcm16(fromWAVData: wav)
         }
         return pcmByID
     }

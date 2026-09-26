@@ -265,7 +265,9 @@ expect true "the e2e eval harness runs the lane" \
 expect true "the e2e corpus loader runs the lane" \
   Tests/localvoxtralTests/AgentDictationEvalCorpus.swift
 expect true "the harness's TTS and ASR stage runs the lane" \
-  Tests/localvoxtralTests/TestSupport/EvalSpeechStage.swift
+  Tests/localvoxtralTestSupport/EvalSpeechStage.swift
+expect true "the harness's recording reader runs the lane" \
+  Tests/localvoxtralTestSupport/RecordedAudioSet.swift
 expect true "the source a test covers still runs the lane" \
   Tests/localvoxtralTests/PolishTokenGuardTests.swift \
   Sources/localvoxtralCore/PolishTokenGuard.swift

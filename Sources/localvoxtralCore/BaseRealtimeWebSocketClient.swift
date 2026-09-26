@@ -1,6 +1,8 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import Synchronization
-import os
 
 /// Shared base for WebSocket-based realtime clients.
 ///
@@ -9,8 +11,7 @@ import os
 ///  - `handle(json:from:)` — protocol-specific event dispatch
 ///  - `didOpenConnection(on:)` — post-connect setup (timers, config flush)
 ///  - `handleTerminalSocketError(for:errorMessage:)` — full state cleanup on socket failure
-///  - `logger` — os.Logger instance for debug output
-class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSessionTaskDelegate,
+package class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSessionTaskDelegate,
     @unchecked Sendable
 {
     // MARK: - Shared base state
@@ -53,9 +54,6 @@ class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSes
     func didOpenConnection(on task: URLSessionWebSocketTask) {
         fatalError("Subclasses must override didOpenConnection(on:)")
     }
-
-    /// The os.Logger instance to use for debug output.
-    var logger: Logger { Log.realtime }
 
     // MARK: - Must be provided by subclass for state access
 
@@ -105,7 +103,7 @@ class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSes
 
     func debugLog(_ message: String) {
         guard debugLoggingEnabled else { return }
-        logger.debug("\(message)")
+        Log.realtime.debug("\(message)")
     }
 
     func describeSocketError(_ error: Error) -> String {
@@ -154,6 +152,23 @@ class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSes
     /// Tears down the base socket fields. Subclasses call this from their own
     /// `closeSocketLocked` after cleaning up subclass-specific state.
     func closeBaseStateLocked(_ s: inout BaseState, cancelTask: Bool) {
+        #if canImport(FoundationNetworking)
+        // swift-corelibs-foundation cancels synchronously on the task's work
+        // queue, which is where `listenForMessages` callbacks run, and they
+        // wait for the lock this is called under: a deadlock. So cancel after
+        // the lock is released. Stale callbacks from the cancelled task are
+        // refused like any other retired socket's.
+        let task = cancelTask ? s.webSocketTask : nil
+        let session = s.urlSession
+        s.webSocketTask = nil
+        s.urlSession = nil
+        s.socketState = .disconnected
+        s.isUserInitiatedDisconnect = false
+        DispatchQueue.global().async {
+            task?.cancel(with: .normalClosure, reason: nil)
+            session?.invalidateAndCancel()
+        }
+        #else
         if cancelTask {
             s.webSocketTask?.cancel(with: .normalClosure, reason: nil)
         }
@@ -162,6 +177,7 @@ class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSes
         s.urlSession = nil
         s.socketState = .disconnected
         s.isUserInitiatedDisconnect = false
+        #endif
     }
 
     func listenForMessages(on task: URLSessionWebSocketTask) {
@@ -230,14 +246,14 @@ class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSes
     /// client currently holds. Production never reaches `handle(json:from:)`
     /// this way: `listenForMessages` stamps the socket the frame was actually
     /// read from, which is the whole point of the stamp.
-    func debugHandleFrameForTesting(json: [String: Any]) {
+    package func debugHandleFrameForTesting(json: [String: Any]) {
         handle(json: json, from: currentConnectionGeneration)
     }
 
     /// Drive one parsed frame as if a socket that is no longer current had been
     /// read for it — the delayed-handler case a live swap cannot be made to
     /// reproduce on demand.
-    func debugHandleFrameForTesting(
+    package func debugHandleFrameForTesting(
         json: [String: Any], from generation: RealtimeConnectionGeneration
     ) {
         handle(json: json, from: generation)
@@ -264,19 +280,29 @@ class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSes
         request: URLRequest, delegate: URLSessionDelegate
     ) -> (URLSession, URLSessionWebSocketTask) {
         let sessionConfiguration = URLSessionConfiguration.default
+        #if !canImport(FoundationNetworking)
+        // Get-only on Linux, where swift-corelibs-foundation never waits.
         sessionConfiguration.waitsForConnectivity = true
+        #endif
         sessionConfiguration.timeoutIntervalForRequest = 30
         sessionConfiguration.timeoutIntervalForResource = 7 * 24 * 60 * 60
 
         let session = URLSession(
             configuration: sessionConfiguration, delegate: delegate, delegateQueue: nil)
+        #if canImport(FoundationNetworking)
+        // swift-corelibs-foundation sends the upgrade with `Connection:
+        // keep-alive`, and a server that checks for `Upgrade` (uvicorn, so
+        // vLLM) answers it as plain HTTP: 404. Measured with Swift 6.2.
+        var request = request
+        request.setValue("Upgrade", forHTTPHeaderField: "Connection")
+        #endif
         let task = session.webSocketTask(with: request)
         return (session, task)
     }
 
     // MARK: - URLSessionWebSocketDelegate
 
-    func urlSession(
+    package func urlSession(
         _: URLSession,
         webSocketTask: URLSessionWebSocketTask,
         didOpenWithProtocol _: String?
@@ -294,7 +320,7 @@ class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSes
         listenForMessages(on: webSocketTask)
     }
 
-    func urlSession(
+    package func urlSession(
         _: URLSession,
         webSocketTask: URLSessionWebSocketTask,
         didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
@@ -324,7 +350,7 @@ class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSes
         )
     }
 
-    func urlSession(_: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+    package func urlSession(_: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let webSocketTask = task as? URLSessionWebSocketTask else { return }
 
         guard let error else {

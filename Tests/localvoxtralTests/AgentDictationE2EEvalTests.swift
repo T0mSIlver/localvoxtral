@@ -348,7 +348,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         configStore: AppConfigStore,
         fixtureRepos: [String: URL],
         vocabularyCache: RepoVocabularyCache,
-        recordedAudio: RecordedAudioSet?,
+        recordedAudio: LoadedRecordings?,
         enVoice: String?,
         frVoice: String?
     ) async -> (result: Support.CaseResult, capture: Support.CaseCapture) {
@@ -579,7 +579,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
     // MARK: - TTS (cached)
 
-    private struct RecordedAudioSet {
+    private struct LoadedRecordings {
         let name: String
         let isSubset: Bool
         /// Exact manifest-verified bytes retained after preflight. Keeping
@@ -592,7 +592,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         _ requestedPath: String?,
         strata: [AgentDictationEvalCorpus.LoadedStratum],
         allowSubset: Bool
-    ) throws -> RecordedAudioSet? {
+    ) throws -> LoadedRecordings? {
         guard let requestedPath else { return nil }
         let directory: URL
         if requestedPath.hasPrefix("/") {
@@ -601,24 +601,24 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             directory = repoRoot.appendingPathComponent(requestedPath, isDirectory: true)
         }
         let standardized = directory.standardizedFileURL
-        let manifestURL = standardized.appendingPathComponent(Support.recordingManifestFileName)
-        let manifest: Support.RecordingManifest
+        let manifestURL = standardized.appendingPathComponent(RecordedAudioSet.manifestFileName)
+        let manifest: RecordedAudioSet.Manifest
         do {
-            manifest = try Support.parseRecordingManifest(Data(contentsOf: manifestURL))
+            manifest = try RecordedAudioSet.parseManifest(Data(contentsOf: manifestURL))
         } catch {
-            throw Support.RecordingSetError(
+            throw RecordedAudioSet.SetError(
                 message: "cannot read human recording manifest at \(manifestURL.path): \(error)"
             )
         }
 
-        let allExpected = strata.flatMap { loaded -> [Support.RecordingExpectation] in
+        let allExpected = strata.flatMap { loaded -> [RecordedAudioSet.Expectation] in
             guard Support.stagePlan(for: loaded.stratum.resolvedPipeline).runsSpeechRecognition
             else { return [] }
             return loaded.stratum.cases.map {
-                Support.RecordingExpectation(id: $0.id, lang: $0.lang, spokenForm: $0.spokenForm)
+                RecordedAudioSet.Expectation(id: $0.id, lang: $0.lang, spokenForm: $0.spokenForm)
             }
         }
-        let recordings = try Support.validateRecordingManifest(
+        let recordings = try RecordedAudioSet.validateManifest(
             manifest, expected: allExpected, allowSubset: allowSubset
         )
         let expected = allExpected.filter { recordings[$0.id] != nil }
@@ -632,24 +632,24 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             do {
                 wav = try Data(contentsOf: wavURL)
             } catch {
-                throw Support.RecordingSetError(
+                throw RecordedAudioSet.SetError(
                     message: "cannot read recording \(recording.id): \(error)"
                 )
             }
-            guard Support.sha256Hex(wav) == recording.sha256 else {
-                throw Support.RecordingSetError(
+            guard PortableSHA256.hex(of: wav) == recording.sha256 else {
+                throw RecordedAudioSet.SetError(
                     message: "recording \(recording.id) does not match its manifest SHA-256"
                 )
             }
             do {
-                pcmByCaseID[item.id] = try Support.recordedPCM16(fromWAVData: wav)
+                pcmByCaseID[item.id] = try RecordedAudioSet.pcm16(fromWAVData: wav)
             } catch {
-                throw Support.RecordingSetError(
+                throw RecordedAudioSet.SetError(
                     message: "recording \(recording.id) is invalid: \(error.localizedDescription)"
                 )
             }
         }
-        return RecordedAudioSet(
+        return LoadedRecordings(
             name: standardized.lastPathComponent,
             isSubset: allowSubset,
             pcmByCaseID: pcmByCaseID
@@ -658,10 +658,10 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
     private func recordedPCM16(
         for evalCase: AgentDictationEvalCorpus.Case,
-        in set: RecordedAudioSet
+        in set: LoadedRecordings
     ) throws -> Data {
         guard let pcm = set.pcmByCaseID[evalCase.id] else {
-            throw Support.RecordingSetError(message: "missing recording: \(evalCase.id)")
+            throw RecordedAudioSet.SetError(message: "missing recording: \(evalCase.id)")
         }
         return pcm
     }

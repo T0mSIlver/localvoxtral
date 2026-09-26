@@ -67,7 +67,7 @@ extension AgentDictationE2EEvalTests {
         for (index, entry) in entries.enumerated() {
             do {
                 let wav = try Data(contentsOf: audioStore.fileURL(for: entry.id))
-                let pcm = try AgentDictationE2EEvalSupport.recordedPCM16(fromWAVData: wav)
+                let pcm = try RecordedAudioSet.pcm16(fromWAVData: wav)
                 seconds += pcm.count / AudioChunkBuffer.bytesPerSecond
                 let transcript = try await transcribe(pcm: pcm, enablement: enablement)
                 let dayZero = try await replayPolish(

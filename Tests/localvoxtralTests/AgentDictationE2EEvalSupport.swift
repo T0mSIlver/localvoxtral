@@ -1,13 +1,13 @@
-import CryptoKit
 import Foundation
 
 @testable import localvoxtral
 
 /// Pure helpers for the agent-dictation end-to-end eval harness
-/// (`AgentDictationE2EEvalTests`): enablement/marker resolution, WAV-cache key
-/// derivation, per-pipeline stage routing, per-stratum polish-profile routing,
-/// corpus-contract scoring, `say -v ?` voice picking, and scoreboard
-/// rendering. Everything here is deterministic and unit-tested in the plain
+/// (`AgentDictationE2EEvalTests`): enablement/marker resolution, per-pipeline
+/// stage routing, per-stratum polish-profile routing, corpus-contract scoring,
+/// and scoreboard rendering. The WAV-cache key and voice picking are in
+/// `EvalSpeechStage`, the recorded-set reader in `RecordedAudioSet`, both in
+/// the shared test support. Everything here is deterministic and unit-tested in the plain
 /// tier-0 suite (`AgentDictationE2EEvalSupportTests`) — the live suite only
 /// adds recorded-or-TTS audio, ASR, and polish I/O around these functions.
 enum AgentDictationE2EEvalSupport {
@@ -308,212 +308,6 @@ enum AgentDictationE2EEvalSupport {
         return settings.llmPolishingConfiguration
     }
 
-    // MARK: - WAV cache
-
-    static let ttsDataFormat = "LEI16@16000"
-
-    /// Cache key for a synthesized utterance: SHA-256 over the exact
-    /// text + voice + data format, so any change to what `say` would produce
-    /// changes the key and a rerun over an unchanged corpus is a pure cache
-    /// hit (TTS is the slow step across ~150 cases x reruns). `voice == nil`
-    /// (the system default voice) keys as "default". Each field is
-    /// length-prefixed before hashing — a plain separator join is ambiguous
-    /// (text "a|B" + voice nil collides with text "a" + voice "B|default";
-    /// caught by the tier-0 collision test).
-    static func wavCacheKey(
-        text: String,
-        voice: String?,
-        dataFormat: String = ttsDataFormat
-    ) -> String {
-        var hasher = SHA256()
-        for field in [text, voice ?? "default", dataFormat] {
-            let bytes = Data(field.utf8)
-            withUnsafeBytes(of: UInt64(bytes.count).littleEndian) {
-                hasher.update(bufferPointer: $0)
-            }
-            hasher.update(data: bytes)
-        }
-        return hasher.finalize()
-            .map { String(format: "%02x", $0) }
-            .joined()
-    }
-
-    // MARK: - Human recording sets
-
-    static let recordingManifestFileName = "manifest.json"
-    static let recordingSchemaVersion = 1
-    static let recordingDataFormat = "pcm_s16le@16000Hz-mono"
-
-    struct RecordingManifest: Codable, Equatable {
-        let schemaVersion: Int
-        let dataFormat: String
-        let recordings: [Recording]
-    }
-
-    struct Recording: Codable, Equatable {
-        let id: String
-        let lang: AgentDictationEvalCorpus.Language
-        let spokenForm: String
-        let file: String
-        let sha256: String
-    }
-
-    struct RecordingExpectation: Equatable {
-        let id: String
-        let lang: AgentDictationEvalCorpus.Language
-        let spokenForm: String
-    }
-
-    struct RecordingSetError: Error, LocalizedError, Equatable {
-        let message: String
-        var errorDescription: String? { message }
-    }
-
-    static func parseRecordingManifest(_ data: Data) throws -> RecordingManifest {
-        try JSONDecoder().decode(RecordingManifest.self, from: data)
-    }
-
-    /// Validates the manifest against the exact speech-running corpus before
-    /// model load. Recorded mode is deliberately all-or-nothing by default:
-    /// partial sets, corpus drift, duplicate IDs, unsafe filenames, and stale
-    /// extras fail loudly rather than producing a TTS/human hybrid baseline.
-    /// `allowSubset` is an explicit exploratory mode that validates and runs
-    /// only known recorded IDs; it never fills missing cases with TTS.
-    static func validateRecordingManifest(
-        _ manifest: RecordingManifest,
-        expected: [RecordingExpectation],
-        allowSubset: Bool = false
-    ) throws -> [String: Recording] {
-        guard manifest.schemaVersion == recordingSchemaVersion else {
-            throw RecordingSetError(message: "recording manifest schemaVersion must be \(recordingSchemaVersion)")
-        }
-        guard manifest.dataFormat == recordingDataFormat else {
-            throw RecordingSetError(message: "recording manifest dataFormat must be \(recordingDataFormat)")
-        }
-
-        var byID: [String: Recording] = [:]
-        for recording in manifest.recordings {
-            guard byID[recording.id] == nil else {
-                throw RecordingSetError(message: "duplicate recording id: \(recording.id)")
-            }
-            guard recording.file == "\(recording.id).wav",
-                  !recording.file.contains("/"), !recording.file.contains("..")
-            else {
-                throw RecordingSetError(message: "unsafe recording filename for \(recording.id)")
-            }
-            guard recording.sha256.count == 64,
-                  recording.sha256.allSatisfy({ $0.isHexDigit && !$0.isUppercase })
-            else {
-                throw RecordingSetError(message: "invalid SHA-256 for recording \(recording.id)")
-            }
-            byID[recording.id] = recording
-        }
-
-        let actualIDs = Set(byID.keys)
-        let expectedForRun: [RecordingExpectation]
-        if allowSubset {
-            guard !actualIDs.isEmpty else {
-                throw RecordingSetError(message: "recording subset is empty")
-            }
-            expectedForRun = expected.filter { actualIDs.contains($0.id) }
-        } else {
-            expectedForRun = expected
-        }
-        let expectedIDs = Set(expectedForRun.map(\.id))
-        let missing = expectedIDs.subtracting(actualIDs).sorted()
-        let extra = actualIDs.subtracting(expectedIDs).sorted()
-        guard missing.isEmpty else {
-            throw RecordingSetError(message: "recording set is incomplete; missing: \(missing.joined(separator: ", "))")
-        }
-        guard extra.isEmpty else {
-            throw RecordingSetError(message: "recording set has stale/unknown cases: \(extra.joined(separator: ", "))")
-        }
-        for item in expectedForRun {
-            guard let recording = byID[item.id] else { continue }
-            guard recording.lang == item.lang, recording.spokenForm == item.spokenForm else {
-                throw RecordingSetError(
-                    message: "recording \(item.id) is stale; language or spokenForm changed"
-                )
-            }
-        }
-        return byID
-    }
-
-    static func sha256Hex(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    }
-
-    /// Validates the exact format the websocket client expects and returns the
-    /// data chunk. The recorder command writes this format directly, avoiding
-    /// an implicit resample during eval.
-    static func recordedPCM16(fromWAVData wav: Data) throws -> Data {
-        guard wav.count >= 44,
-              String(data: wav[0..<4], encoding: .ascii) == "RIFF",
-              String(data: wav[8..<12], encoding: .ascii) == "WAVE"
-        else { throw RecordingSetError(message: "recording is not a RIFF/WAVE file") }
-
-        var format: (code: UInt16, channels: UInt16, rate: UInt32, bits: UInt16)?
-        var pcm: Data?
-        var index = 12
-        while index + 8 <= wav.count {
-            let chunkID = String(data: wav[index..<(index + 4)], encoding: .ascii) ?? ""
-            let size = Int(readLEUInt32(wav, at: index + 4))
-            let start = index + 8
-            let end = start + size
-            guard end <= wav.count else {
-                throw RecordingSetError(message: "recording has a truncated WAV chunk")
-            }
-            if chunkID == "fmt ", size >= 16 {
-                format = (
-                    readLEUInt16(wav, at: start),
-                    readLEUInt16(wav, at: start + 2),
-                    readLEUInt32(wav, at: start + 4),
-                    readLEUInt16(wav, at: start + 14)
-                )
-            } else if chunkID == "data" {
-                pcm = wav.subdata(in: start..<end)
-            }
-            index = end + (size % 2)
-        }
-        guard let format else {
-            throw RecordingSetError(message: "recording has no WAV fmt chunk")
-        }
-        guard format.code == 1, format.channels == 1,
-              format.rate == 16_000, format.bits == 16
-        else {
-            throw RecordingSetError(
-                message: "recording must be mono 16-bit PCM at 16000 Hz"
-            )
-        }
-        guard let pcm, pcm.count >= 8_000, pcm.count.isMultiple(of: 2) else {
-            throw RecordingSetError(message: "recording is missing or shorter than 0.25 seconds")
-        }
-        var containsSignal = false
-        var sampleOffset = 0
-        while sampleOffset < pcm.count {
-            if readLEUInt16(pcm, at: sampleOffset) != 0 {
-                containsSignal = true
-                break
-            }
-            sampleOffset += 2
-        }
-        guard containsSignal else {
-            throw RecordingSetError(message: "recording is digitally silent")
-        }
-        return pcm
-    }
-
-    private static func readLEUInt16(_ data: Data, at offset: Int) -> UInt16 {
-        UInt16(data[offset]) | UInt16(data[offset + 1]) << 8
-    }
-
-    private static func readLEUInt32(_ data: Data, at offset: Int) -> UInt32 {
-        UInt32(data[offset])
-            | UInt32(data[offset + 1]) << 8
-            | UInt32(data[offset + 2]) << 16
-            | UInt32(data[offset + 3]) << 24
-    }
-
     // MARK: - Pipeline routing
 
     struct StagePlan: Equatable {
@@ -573,43 +367,6 @@ enum AgentDictationE2EEvalSupport {
         stratum == "punctuation-spacing-migration"
             ? textFieldTargetBundleID
             : terminalTargetBundleID
-    }
-
-    // MARK: - Voice picking
-
-    /// Picks a TTS voice from `say -v ?` output: the first `preferred` name
-    /// present wins, else the first voice whose locale starts with
-    /// `languagePrefix` ("en"/"fr"), else nil. Voice names may contain spaces
-    /// ("Bad News"), so lines parse as name + 2+ spaces + locale.
-    static func pickVoice(
-        fromSayVoicesOutput output: String,
-        languagePrefix: String,
-        preferred: [String]
-    ) -> String? {
-        var candidates: [String] = []
-        for line in output.split(separator: "\n") {
-            guard let (name, locale) = parseVoiceLine(String(line)) else { continue }
-            let normalizedLocale = locale.replacingOccurrences(of: "-", with: "_").lowercased()
-            guard normalizedLocale.hasPrefix(languagePrefix.lowercased()) else { continue }
-            candidates.append(name)
-        }
-        for name in preferred where candidates.contains(name) {
-            return name
-        }
-        return candidates.first
-    }
-
-    private static func parseVoiceLine(_ line: String) -> (name: String, locale: String)? {
-        // "Thomas              fr_FR    # Bonjour! ..." — name up to the first
-        // run of 2+ spaces, locale is the next token.
-        guard let separator = line.range(of: "  ") else { return nil }
-        let name = String(line[..<separator.lowerBound]).trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty else { return nil }
-        let rest = line[separator.upperBound...].trimmingCharacters(in: .whitespaces)
-        guard let locale = rest.split(whereSeparator: \.isWhitespace).first else { return nil }
-        // Locale tokens look like en_US / fr-FR / fr_CA.
-        guard locale.contains("_") || locale.contains("-") else { return nil }
-        return (name, String(locale))
     }
 
     // MARK: - Scoring (corpus contract)

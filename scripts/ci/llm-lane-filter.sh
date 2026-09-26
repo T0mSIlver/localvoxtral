@@ -92,6 +92,7 @@ PATTERNS=(
   '*AgentDictationE2EEval*'                          # agent-dictation E2E eval harness (suite + support + its unit tests)
   '*AgentDictationEvalCorpus*'                       # the E2E corpus loader/schema
   '*EvalSpeechStage*'                                # the E2E harness's TTS and ASR stage, shared with term recall
+  '*RecordedAudioSet*'                               # the E2E harness's human-recording reader, shared with term recall
   '*EvalCorpus/*'                                    # standalone eval corpora
 )
 
@@ -108,6 +109,7 @@ LANE_TEST_PATTERNS=(
   '*AgentDictationE2EEval*'
   '*AgentDictationEvalCorpus*'
   '*EvalSpeechStage*'
+  '*RecordedAudioSet*'
 )
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then

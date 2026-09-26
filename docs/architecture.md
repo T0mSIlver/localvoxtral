@@ -65,7 +65,12 @@ the app hands it the resource bundle, and on Linux it hashes with
 (`LiveReplacementCorrector`, `LiveHoldBackReplacementStream`), and the Claude
 socket guard (`ClaudeSocketGuard`: `getpeereid` and `LOCAL_PEERPID` on Darwin,
 `SO_PEERCRED` on Linux), with the SHA-256 and HMAC helpers the Claude code
-hashes through, and the `RealtimeClient` protocol and its event types.
+hashes through, and the realtime clients: the `RealtimeClient` protocol, its
+event types and both websocket clients (#637). On Linux they speak through
+`FoundationNetworking`, whose upgrade and cancel differ from Apple's; the base
+client's comments say how. The Mistral client reports usage through
+`MistralRealtimeUsageRecording`, so the ledger and its price table stay in the
+app.
 `Sources/localvoxtralCore/ClaudeContext` holds the part of the Claude context
 path that needs no AppKit (#591): the join resolver and its arms, the session
 registry and store, the broker and the remote listener, the herdr and cmux

@@ -293,20 +293,20 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
     // MARK: - WAV cache key
 
     func testWavCacheKeyIsDeterministicHex() {
-        let first = Support.wavCacheKey(text: "open the dot env file", voice: "Samantha")
-        let second = Support.wavCacheKey(text: "open the dot env file", voice: "Samantha")
+        let first = EvalSpeechStage.wavCacheKey(text: "open the dot env file", voice: "Samantha")
+        let second = EvalSpeechStage.wavCacheKey(text: "open the dot env file", voice: "Samantha")
         XCTAssertEqual(first, second)
         XCTAssertEqual(first.count, 64)
         XCTAssertTrue(first.allSatisfy { $0.isHexDigit && !$0.isUppercase })
     }
 
     func testWavCacheKeyChangesWithEachInput() {
-        let base = Support.wavCacheKey(text: "hello", voice: "Samantha")
-        XCTAssertNotEqual(base, Support.wavCacheKey(text: "hello there", voice: "Samantha"))
-        XCTAssertNotEqual(base, Support.wavCacheKey(text: "hello", voice: "Thomas"))
-        XCTAssertNotEqual(base, Support.wavCacheKey(text: "hello", voice: nil))
+        let base = EvalSpeechStage.wavCacheKey(text: "hello", voice: "Samantha")
+        XCTAssertNotEqual(base, EvalSpeechStage.wavCacheKey(text: "hello there", voice: "Samantha"))
+        XCTAssertNotEqual(base, EvalSpeechStage.wavCacheKey(text: "hello", voice: "Thomas"))
+        XCTAssertNotEqual(base, EvalSpeechStage.wavCacheKey(text: "hello", voice: nil))
         XCTAssertNotEqual(
-            base, Support.wavCacheKey(text: "hello", voice: "Samantha", dataFormat: "LEI16@22050")
+            base, EvalSpeechStage.wavCacheKey(text: "hello", voice: "Samantha", dataFormat: "LEI16@22050")
         )
     }
 
@@ -316,15 +316,15 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
     /// length-prefixed now.)
     func testWavCacheKeyFieldBoundariesDoNotCollide() {
         XCTAssertNotEqual(
-            Support.wavCacheKey(text: "a|Samantha", voice: nil),
-            Support.wavCacheKey(text: "a", voice: "Samantha|default")
+            EvalSpeechStage.wavCacheKey(text: "a|Samantha", voice: nil),
+            EvalSpeechStage.wavCacheKey(text: "a", voice: "Samantha|default")
         )
     }
 
     // MARK: - Human recording manifests + WAV validation
 
-    private var recordingExpectation: Support.RecordingExpectation {
-        Support.RecordingExpectation(
+    private var recordingExpectation: RecordedAudioSet.Expectation {
+        RecordedAudioSet.Expectation(
             id: "b-en-flag-force", lang: .en,
             spokenForm: "run it with dash dash force"
         )
@@ -335,8 +335,8 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         spokenForm: String = "run it with dash dash force",
         file: String? = nil,
         sha256: String = String(repeating: "a", count: 64)
-    ) -> Support.Recording {
-        Support.Recording(
+    ) -> RecordedAudioSet.Recording {
+        RecordedAudioSet.Recording(
             id: id,
             lang: .en,
             spokenForm: spokenForm,
@@ -346,13 +346,13 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
     }
 
     func testRecordingManifestAcceptsExactCompleteCorpusBinding() throws {
-        let manifest = Support.RecordingManifest(
-            schemaVersion: Support.recordingSchemaVersion,
-            dataFormat: Support.recordingDataFormat,
+        let manifest = RecordedAudioSet.Manifest(
+            schemaVersion: RecordedAudioSet.schemaVersion,
+            dataFormat: RecordedAudioSet.dataFormat,
             recordings: [recording()]
         )
         XCTAssertEqual(
-            try Support.validateRecordingManifest(
+            try RecordedAudioSet.validateManifest(
                 manifest, expected: [recordingExpectation]
             )[recordingExpectation.id],
             recording()
@@ -360,22 +360,22 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
     }
 
     func testRecordingManifestSubsetIsExplicitAndNeverFallsBackToTTS() throws {
-        let second = Support.RecordingExpectation(
+        let second = RecordedAudioSet.Expectation(
             id: "a-en-websocket-timeout", lang: .en,
             spokenForm: "the websocket client times out"
         )
-        let partial = Support.RecordingManifest(
-            schemaVersion: Support.recordingSchemaVersion,
-            dataFormat: Support.recordingDataFormat,
+        let partial = RecordedAudioSet.Manifest(
+            schemaVersion: RecordedAudioSet.schemaVersion,
+            dataFormat: RecordedAudioSet.dataFormat,
             recordings: [recording()]
         )
         XCTAssertThrowsError(
-            try Support.validateRecordingManifest(
+            try RecordedAudioSet.validateManifest(
                 partial, expected: [recordingExpectation, second]
             )
         ) { XCTAssertTrue($0.localizedDescription.contains("incomplete")) }
         XCTAssertEqual(
-            try Support.validateRecordingManifest(
+            try RecordedAudioSet.validateManifest(
                 partial,
                 expected: [recordingExpectation, second],
                 allowSubset: true
@@ -383,13 +383,13 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
             [recordingExpectation.id: recording()]
         )
 
-        let unknown = Support.RecordingManifest(
-            schemaVersion: Support.recordingSchemaVersion,
-            dataFormat: Support.recordingDataFormat,
+        let unknown = RecordedAudioSet.Manifest(
+            schemaVersion: RecordedAudioSet.schemaVersion,
+            dataFormat: RecordedAudioSet.dataFormat,
             recordings: [recording(id: "unknown-case")]
         )
         XCTAssertThrowsError(
-            try Support.validateRecordingManifest(
+            try RecordedAudioSet.validateManifest(
                 unknown,
                 expected: [recordingExpectation, second],
                 allowSubset: true
@@ -398,77 +398,77 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
     }
 
     func testRecordingManifestRejectsPartialStaleAndDuplicateSets() {
-        let empty = Support.RecordingManifest(
+        let empty = RecordedAudioSet.Manifest(
             schemaVersion: 1,
-            dataFormat: Support.recordingDataFormat,
+            dataFormat: RecordedAudioSet.dataFormat,
             recordings: []
         )
         XCTAssertThrowsError(
-            try Support.validateRecordingManifest(empty, expected: [recordingExpectation])
+            try RecordedAudioSet.validateManifest(empty, expected: [recordingExpectation])
         ) { XCTAssertTrue($0.localizedDescription.contains("incomplete")) }
 
-        let stale = Support.RecordingManifest(
+        let stale = RecordedAudioSet.Manifest(
             schemaVersion: 1,
-            dataFormat: Support.recordingDataFormat,
+            dataFormat: RecordedAudioSet.dataFormat,
             recordings: [recording(spokenForm: "old phrase")]
         )
         XCTAssertThrowsError(
-            try Support.validateRecordingManifest(stale, expected: [recordingExpectation])
+            try RecordedAudioSet.validateManifest(stale, expected: [recordingExpectation])
         ) { XCTAssertTrue($0.localizedDescription.contains("stale")) }
 
-        let duplicate = Support.RecordingManifest(
+        let duplicate = RecordedAudioSet.Manifest(
             schemaVersion: 1,
-            dataFormat: Support.recordingDataFormat,
+            dataFormat: RecordedAudioSet.dataFormat,
             recordings: [recording(), recording()]
         )
         XCTAssertThrowsError(
-            try Support.validateRecordingManifest(duplicate, expected: [recordingExpectation])
+            try RecordedAudioSet.validateManifest(duplicate, expected: [recordingExpectation])
         ) { XCTAssertTrue($0.localizedDescription.contains("duplicate")) }
     }
 
     func testRecordingManifestRejectsSchemaFormatExtraUnsafeAndMalformedHash() {
         let expected = [recordingExpectation]
-        let wrongSchema = Support.RecordingManifest(
-            schemaVersion: 2, dataFormat: Support.recordingDataFormat,
+        let wrongSchema = RecordedAudioSet.Manifest(
+            schemaVersion: 2, dataFormat: RecordedAudioSet.dataFormat,
             recordings: [recording()]
         )
-        XCTAssertThrowsError(try Support.validateRecordingManifest(wrongSchema, expected: expected)) {
+        XCTAssertThrowsError(try RecordedAudioSet.validateManifest(wrongSchema, expected: expected)) {
             XCTAssertTrue($0.localizedDescription.contains("schemaVersion"))
         }
-        let wrongFormat = Support.RecordingManifest(
+        let wrongFormat = RecordedAudioSet.Manifest(
             schemaVersion: 1, dataFormat: "pcm_s16le@44100Hz-stereo",
             recordings: [recording()]
         )
-        XCTAssertThrowsError(try Support.validateRecordingManifest(wrongFormat, expected: expected)) {
+        XCTAssertThrowsError(try RecordedAudioSet.validateManifest(wrongFormat, expected: expected)) {
             XCTAssertTrue($0.localizedDescription.contains("dataFormat"))
         }
-        let extra = Support.RecordingManifest(
-            schemaVersion: 1, dataFormat: Support.recordingDataFormat,
+        let extra = RecordedAudioSet.Manifest(
+            schemaVersion: 1, dataFormat: RecordedAudioSet.dataFormat,
             recordings: [recording(), recording(id: "unknown-case")]
         )
-        XCTAssertThrowsError(try Support.validateRecordingManifest(extra, expected: expected)) {
+        XCTAssertThrowsError(try RecordedAudioSet.validateManifest(extra, expected: expected)) {
             XCTAssertTrue($0.localizedDescription.contains("stale/unknown"))
         }
-        let unsafe = Support.RecordingManifest(
-            schemaVersion: 1, dataFormat: Support.recordingDataFormat,
+        let unsafe = RecordedAudioSet.Manifest(
+            schemaVersion: 1, dataFormat: RecordedAudioSet.dataFormat,
             recordings: [recording(file: "../take.wav")]
         )
-        XCTAssertThrowsError(try Support.validateRecordingManifest(unsafe, expected: expected)) {
+        XCTAssertThrowsError(try RecordedAudioSet.validateManifest(unsafe, expected: expected)) {
             XCTAssertTrue($0.localizedDescription.contains("unsafe"))
         }
-        let malformedHash = Support.RecordingManifest(
-            schemaVersion: 1, dataFormat: Support.recordingDataFormat,
+        let malformedHash = RecordedAudioSet.Manifest(
+            schemaVersion: 1, dataFormat: RecordedAudioSet.dataFormat,
             recordings: [recording(sha256: "NOT-A-HASH")]
         )
         XCTAssertThrowsError(
-            try Support.validateRecordingManifest(malformedHash, expected: expected)
+            try RecordedAudioSet.validateManifest(malformedHash, expected: expected)
         ) { XCTAssertTrue($0.localizedDescription.contains("SHA-256")) }
     }
 
     func testRecordedWAVValidationAcceptsExactProductionFormat() throws {
         let wav = makeWAV(sampleRate: 16_000, channels: 1, bits: 16, pcmBytes: 8_000)
-        XCTAssertEqual(try Support.recordedPCM16(fromWAVData: wav).count, 8_000)
-        XCTAssertEqual(Support.sha256Hex(wav).count, 64)
+        XCTAssertEqual(try RecordedAudioSet.pcm16(fromWAVData: wav).count, 8_000)
+        XCTAssertEqual(PortableSHA256.hex(of: wav).count, 64)
     }
 
     /// ffmpeg's WAV muxer writes metadata chunks (normally LIST/INFO) that
@@ -480,26 +480,26 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
             chunksBeforeData: [("LIST", Data("abc".utf8))],
             chunksAfterData: [("JUNK", Data([1, 2, 3, 4]))]
         )
-        XCTAssertEqual(try Support.recordedPCM16(fromWAVData: wav).count, 8_000)
+        XCTAssertEqual(try RecordedAudioSet.pcm16(fromWAVData: wav).count, 8_000)
     }
 
     func testRecordedWAVValidationRejectsWrongRateAndShortAudio() {
         XCTAssertThrowsError(
-            try Support.recordedPCM16(
+            try RecordedAudioSet.pcm16(
                 fromWAVData: makeWAV(
                     sampleRate: 44_100, channels: 1, bits: 16, pcmBytes: 8_000
                 )
             )
         ) { XCTAssertTrue($0.localizedDescription.contains("16000")) }
         XCTAssertThrowsError(
-            try Support.recordedPCM16(
+            try RecordedAudioSet.pcm16(
                 fromWAVData: makeWAV(
                     sampleRate: 16_000, channels: 1, bits: 16, pcmBytes: 2_000
                 )
             )
         ) { XCTAssertTrue($0.localizedDescription.contains("0.25")) }
         XCTAssertThrowsError(
-            try Support.recordedPCM16(
+            try RecordedAudioSet.pcm16(
                 fromWAVData: makeWAV(
                     sampleRate: 16_000, channels: 1, bits: 16,
                     pcmBytes: 8_000, containsSignal: false
@@ -529,8 +529,8 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         )
         XCTAssertTrue(
             run.output.contains(
-                "Manifest: schema \(Support.recordingSchemaVersion), "
-                    + "format \(Support.recordingDataFormat)"
+                "Manifest: schema \(RecordedAudioSet.schemaVersion), "
+                    + "format \(RecordedAudioSet.dataFormat)"
             ),
             run.output
         )
@@ -568,14 +568,14 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
             + "and add a regression test before changing anything else."
         let wav = makeWAV(sampleRate: 16_000, channels: 1, bits: 16, pcmBytes: 8_000)
         try wav.write(to: outputDirectory.appendingPathComponent("\(id).wav"))
-        let recording = Support.Recording(
+        let recording = RecordedAudioSet.Recording(
             id: id, lang: .en, spokenForm: spokenForm,
-            file: "\(id).wav", sha256: Support.sha256Hex(wav)
+            file: "\(id).wav", sha256: PortableSHA256.hex(of: wav)
         )
         let manifestURL = outputDirectory.appendingPathComponent("manifest.json")
-        let manifest = Support.RecordingManifest(
-            schemaVersion: Support.recordingSchemaVersion,
-            dataFormat: Support.recordingDataFormat,
+        let manifest = RecordedAudioSet.Manifest(
+            schemaVersion: RecordedAudioSet.schemaVersion,
+            dataFormat: RecordedAudioSet.dataFormat,
             recordings: [recording]
         )
         try JSONEncoder().encode(manifest).write(to: manifestURL)
@@ -597,7 +597,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertTrue(recovered.output.contains("DONE \(id)"), recovered.output)
         XCTAssertTrue(recovered.output.contains("1 accepted take(s) protected"), recovered.output)
         XCTAssertEqual(
-            try Support.parseRecordingManifest(Data(contentsOf: manifestURL)).recordings,
+            try RecordedAudioSet.parseManifest(Data(contentsOf: manifestURL)).recordings,
             [recording]
         )
 
@@ -605,9 +605,9 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         // normalized WAV was written, but before the atomic rename occurred.
         var replacementWAV = wav
         replacementWAV[44] = 2
-        let replacement = Support.Recording(
+        let replacement = RecordedAudioSet.Recording(
             id: id, lang: .en, spokenForm: spokenForm,
-            file: "\(id).wav", sha256: Support.sha256Hex(replacementWAV)
+            file: "\(id).wav", sha256: PortableSHA256.hex(of: replacementWAV)
         )
         var journal = try Data(contentsOf: journalURL)
         journal.append(try JSONEncoder().encode(replacement))
@@ -631,7 +631,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
             replacementWAV
         )
         XCTAssertEqual(
-            try Support.parseRecordingManifest(Data(contentsOf: manifestURL)).recordings,
+            try RecordedAudioSet.parseManifest(Data(contentsOf: manifestURL)).recordings,
             [replacement]
         )
     }
@@ -1425,14 +1425,14 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
 
     func testPickVoicePrefersNamedVoice() {
         XCTAssertEqual(
-            Support.pickVoice(
+            EvalSpeechStage.pickVoice(
                 fromSayVoicesOutput: sampleVoices, languagePrefix: "fr",
                 preferred: ["Thomas", "Amélie"]
             ),
             "Thomas"
         )
         XCTAssertEqual(
-            Support.pickVoice(
+            EvalSpeechStage.pickVoice(
                 fromSayVoicesOutput: sampleVoices, languagePrefix: "en",
                 preferred: ["Samantha"]
             ),
@@ -1442,7 +1442,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
 
     func testPickVoiceFallsBackToFirstLanguageMatch() {
         XCTAssertEqual(
-            Support.pickVoice(
+            EvalSpeechStage.pickVoice(
                 fromSayVoicesOutput: sampleVoices, languagePrefix: "fr",
                 preferred: ["Nonexistent"]
             ),
@@ -1452,7 +1452,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
 
     func testPickVoiceReturnsNilWhenLanguageAbsent() {
         XCTAssertNil(
-            Support.pickVoice(
+            EvalSpeechStage.pickVoice(
                 fromSayVoicesOutput: sampleVoices, languagePrefix: "de", preferred: ["Anna"]
             )
         )
@@ -1466,13 +1466,13 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
             Jacques             fr-FR    # ...
             """
         XCTAssertEqual(
-            Support.pickVoice(
+            EvalSpeechStage.pickVoice(
                 fromSayVoicesOutput: output, languagePrefix: "en", preferred: ["Bad News"]
             ),
             "Bad News"
         )
         XCTAssertEqual(
-            Support.pickVoice(
+            EvalSpeechStage.pickVoice(
                 fromSayVoicesOutput: output, languagePrefix: "fr", preferred: []
             ),
             "Jacques"

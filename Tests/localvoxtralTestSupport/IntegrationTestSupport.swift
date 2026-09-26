@@ -1,11 +1,11 @@
 import Foundation
 import XCTest
-@testable import localvoxtral
+import localvoxtralCore
 
-enum IntegrationTestSupport {
+package enum IntegrationTestSupport {
     private static let tokenRegex = try! NSRegularExpression(pattern: "[\\p{L}\\p{N}]+")
 
-    static func extractPCMDataFromWAV(at url: URL) throws -> Data {
+    package static func extractPCMDataFromWAV(at url: URL) throws -> Data {
         let wavData = try Data(contentsOf: url)
         guard wavData.count >= 44 else {
             throw XCTSkip("Generated WAV audio is unexpectedly short.")
@@ -34,12 +34,13 @@ enum IntegrationTestSupport {
         throw XCTSkip("WAV audio does not contain a valid data chunk.")
     }
 
+    #if os(macOS)
     /// Synthesizes a spoken phrase with the system TTS and returns its raw
     /// 16 kHz mono PCM16 samples — the same synthetic-speech source every live
     /// realtime lane uses, so accuracy bars stay comparable across providers.
     /// Skips (never fails) when `say` is unavailable or errors: that is an
     /// environment problem, not a client regression.
-    static func makeSpokenPCM16Data(phrase: String) throws -> Data {
+    package static func makeSpokenPCM16Data(phrase: String) throws -> Data {
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("svxt-tts-\(UUID().uuidString)")
             .appendingPathExtension("wav")
@@ -70,8 +71,9 @@ enum IntegrationTestSupport {
 
         return try extractPCMDataFromWAV(at: tempURL)
     }
+    #endif
 
-    static func splitPCM16IntoChunks(_ pcm: Data, chunkSizeBytes: Int) -> [Data] {
+    package static func splitPCM16IntoChunks(_ pcm: Data, chunkSizeBytes: Int) -> [Data] {
         guard chunkSizeBytes > 0, !pcm.isEmpty else { return pcm.isEmpty ? [] : [pcm] }
 
         var chunks: [Data] = []
@@ -87,7 +89,7 @@ enum IntegrationTestSupport {
         return chunks
     }
 
-    static func wordAccuracy(expected: String, actual: String) -> Double {
+    package static func wordAccuracy(expected: String, actual: String) -> Double {
         let expectedTokens = tokenizedWords(from: expected)
         let actualTokens = tokenizedWords(from: actual)
 
