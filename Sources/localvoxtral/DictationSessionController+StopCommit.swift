@@ -266,7 +266,7 @@ extension DictationSessionController {
                     audio: capturedAudio,
                     joined: historyJoin
                 )
-                if let llmConfigurationFailure {
+                if let llmConfigurationFailure, !addressed.superseded {
                     self.handleLLMPolishingConnectionFailure(
                         message: llmConfigurationFailure.message,
                         technicalDetails: llmConfigurationFailure.technicalDetails
@@ -439,7 +439,7 @@ extension DictationSessionController {
                 audio: record.audio,
                 joined: capture.claudeJoin.map(AgentCLIJoin.init)
             )
-            if let llmConnectionFailure {
+            if let llmConnectionFailure, !addressed.superseded {
                 self.handleLLMPolishingConnectionFailure(
                     title: llmConnectionFailure.title,
                     message: llmConnectionFailure.message,

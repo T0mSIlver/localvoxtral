@@ -24,6 +24,10 @@ extension DictationSessionController {
         var inserted: Bool
         /// The popover's one sentence; nil when the text was sent.
         var status: String?
+        /// A new dictation cancelled the commit after the text was handed
+        /// over: the record is still saved, but the stop's cleanup and
+        /// status belong to the new dictation now.
+        var superseded = false
 
         static func notSent(_ status: String) -> AddressedCommit {
             AddressedCommit(outcome: nil, inserted: false, status: status)
@@ -103,8 +107,9 @@ extension DictationSessionController {
     }
 
     /// Commits the overlay's text into `session` and submits it. Nil when a
-    /// new dictation cancelled it; until the text is handed over, the
-    /// canceller saves it to History. The text never goes to the focused
+    /// new dictation cancelled it before the text was handed over: the
+    /// canceller saves it to History. Cancelled after, it is `superseded`,
+    /// and its record is saved here. The text never goes to the focused
     /// app: a route that refuses keeps it in History, and a pane that is not
     /// the session's gets no key.
     func commitOverlayAddressed(to session: ClaudeSessionSnapshot) async -> AddressedCommit? {
@@ -129,6 +134,7 @@ extension DictationSessionController {
     /// Correction learning and term proposals are skipped: they key on the
     /// join of the pane the dictation started in, not the named session.
     func finishAddressedCommit(_ addressed: AddressedCommit, sessionMode: DictationOutputMode) {
+        guard !addressed.superseded else { return }
         if case .failed(let message)? = addressed.outcome {
             lastError = message
         }
@@ -162,7 +168,8 @@ extension DictationSessionController {
         return AddressedCommit(
             outcome: commit.outcome,
             inserted: delivered,
-            status: delivered ? nil : AddressedSendStatus.notSent
+            status: delivered ? nil : AddressedSendStatus.notSent,
+            superseded: Task.isCancelled
         )
     }
 
@@ -204,8 +211,16 @@ extension DictationSessionController {
         }
         let stillThere = await navigator.focuser.focusedPaneShows(session, bundleID: bundleID)
         // A new dictation took over during the read-back: its target is not
-        // this pane.
-        guard !Task.isCancelled else { return nil }
+        // this pane. The typed text is still recorded.
+        guard !Task.isCancelled else {
+            Log.dictation.notice("send to session: a new dictation started before the Return; no Return")
+            return AddressedCommit(
+                outcome: commit.outcome,
+                inserted: true,
+                status: AddressedSendStatus.typedNotSubmitted,
+                superseded: true
+            )
+        }
         guard stillThere, returnSubmitsPrompt(inPID: pid), pressSpokenSendReturn(pid: pid) else {
             Log.dictation.notice("send to session: the pane changed after typing; no Return")
             return AddressedCommit(

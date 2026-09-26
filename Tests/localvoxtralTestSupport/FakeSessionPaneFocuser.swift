@@ -24,7 +24,7 @@ package final class FakeSessionPaneFocuser: SessionPaneFocusing {
     /// The answer to the read-back before a Return; `onReadBack` runs first.
     package var paneStillShowsSession = true
     package private(set) var readBackSessionIDs: [String] = []
-    package var onReadBack: ((String) -> Void)?
+    package var onReadBack: (@MainActor (String) -> Void)?
 
     package func focusedPaneShows(_ session: ClaudeSessionSnapshot, bundleID _: String) async -> Bool {
         readBackSessionIDs.append(session.sessionID)

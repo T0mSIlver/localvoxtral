@@ -116,6 +116,28 @@ final class AddressedSendWiringTests: XCTestCase {
         )
     }
 
+    /// A new dictation that starts between the typing and the Return: no
+    /// Return, the typed text is still in History, and the new dictation's
+    /// state is not cleaned up a second time.
+    func testANewDictationDuringTheReadBackStopsTheReturnButKeepsTheRecord() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments")]
+        )
+        let viewModel = harness.viewModel
+        harness.focuser.onReadBack = { _ in
+            viewModel.session.cancelPolishingForNewSessionIfNeeded()
+            viewModel.statusText = "Listening"
+        }
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.inserted.value.map(\.text), ["Run the tests"])
+        XCTAssertEqual(harness.returns.value, [])
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [true])
+        XCTAssertEqual(viewModel.statusText, "Listening", "the new dictation's status stands")
+    }
+
     func testAnotherAppFrontmostAfterTheFocusGetsNoKey() async {
         let harness = makeHarness(
             text: "Run the tests, send that to payments.",
