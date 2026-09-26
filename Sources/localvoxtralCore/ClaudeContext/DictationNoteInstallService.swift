@@ -62,7 +62,8 @@ public struct DictationNoteInstallService: Sendable {
         I dictate most prompts with a speech-to-text app, so they can hold \
         transcription errors: misheard names, homophones, a word split or merged. \
         Correct an obvious one yourself. When a likely error changes what I am \
-        asking, ask me before acting.
+        asking, ask me before acting. When you create or rename something I will \
+        say aloud, run `localvoxtral terms propose` with its name.
         \(block.markerEnd)
         """
 

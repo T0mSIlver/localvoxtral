@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import LocalvoxtralCLICore
 import localvoxtralTestSupport
 
 @testable import localvoxtralCore
@@ -208,6 +209,21 @@ final class DictationNoteInstallServiceTests: XCTestCase {
     /// agent pays for these bytes on every turn.
     func testTheNoteStaysShort() {
         XCTAssertLessThan(Self.snippet.utf8.count, 512)
+    }
+
+    /// The note names the command as the CLI ships it (#740): a name
+    /// appended to it parses as a proposal, not a usage error.
+    func testTheNotesProposeCommandIsOneTheCLIRuns() throws {
+        let quoted = try XCTUnwrap(Self.snippet.firstMatch(of: /`(localvoxtral [^`]*)`/)?.1)
+        let words = quoted.split(separator: " ").dropFirst().map(String.init) + ["QuillDoc"]
+        let parser = AgentCLIArguments(
+            now: Date(timeIntervalSince1970: 0), timeZone: .gmt, workingDirectory: "/work/quillmark", environment: [:])
+
+        guard case .run(let invocation) = parser.parse(words) else {
+            return XCTFail("`\(quoted)` does not parse: \(parser.parse(words))")
+        }
+        XCTAssertEqual(invocation.request.knownCommand, .termsPropose)
+        XCTAssertEqual(invocation.request.terms, ["QuillDoc"])
     }
 }
 
