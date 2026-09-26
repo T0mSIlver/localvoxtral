@@ -124,7 +124,10 @@ package enum DictationTermsFile {
         return head.trimmingCharacters(in: CharacterSet(charactersIn: " .,;:"))
     }
 
-    private static func accepted(_ candidate: String) -> String? {
+    /// The term-shape filter: 2 to 64 characters with a letter, at most four
+    /// words, no Markdown link or URL. `ProjectTermProposal` applies it to an
+    /// agent's answer too.
+    package static func accepted(_ candidate: String) -> String? {
         let term = candidate.trimmingCharacters(in: .whitespaces)
         guard term.count >= 2, term.count <= maximumTermLength,
               term.contains(where: \.isLetter),

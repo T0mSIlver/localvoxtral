@@ -1,19 +1,23 @@
 import Foundation
 
-/// A spelling the polish pipeline has already resolved out of this speaker's
-/// own words, kept so a later dictation in the same project gets it right even
-/// when nothing on screen mentions it that time.
+/// A spelling kept for one project, so a later dictation there gets it right
+/// even when nothing on screen mentions it that time.
 ///
-/// Only spellings that CORRECTED a heard span are remembered — the entries
-/// `PolishContextGrounding` pre-applied, never the terms a source merely
-/// harvested. That is the whole reason a remembered list stays small enough to
-/// be worth sending: it holds the terms the recognizer demonstrably gets
-/// wrong, not an index of everything in the repo.
+/// Three things add one. The polish pipeline, when a spelling CORRECTED a
+/// heard span: the entries `PolishContextGrounding` pre-applied, never the
+/// terms a source merely harvested. The user, fixing a dictation by hand
+/// (`recordCorrection`). And the project's coding agent, which proposes the
+/// project's names once (`recordProposal`, #609): a proposal starts at zero
+/// dictations and is a suggestion until use or a pin confirms it. The list
+/// stays small enough to be worth sending because nothing below the bar is
+/// sent: it holds the terms the recognizer demonstrably gets wrong, not an
+/// index of everything in the repo.
 package struct LearnedTerm: Codable, Equatable, Sendable {
     /// The canonical spelling, exactly as it was pre-applied.
     package var term: String
-    /// `PolishContextSource` raw values that have proposed this spelling, in
-    /// first-seen order.
+    /// What taught this spelling, in first-seen order: `PolishContextSource`
+    /// raw values, `correction`, or `agent:<name>` for a coding agent's
+    /// proposal.
     ///
     /// Provenance only. A remembered term stays in the vocabulary whatever the
     /// context toggles say later (owner ruling, 2026-09-20): once the speaker
@@ -65,6 +69,9 @@ package struct LearnedTerm: Codable, Equatable, Sendable {
     }
 
     package static let correctionSource = "correction"
+    /// `agent:claude`, `agent:vibe`: the coding agent that proposed the term
+    /// (`ProjectTermProposal.Agent.source`).
+    package static let agentSourcePrefix = "agent:"
 
     package var isConfirmedByCorrection: Bool { confirmedByCorrection == true }
     package var isPinned: Bool { pinned == true }
@@ -72,6 +79,19 @@ package struct LearnedTerm: Codable, Equatable, Sendable {
 
     package func isConfirmed(minimumDictations: Int) -> Bool {
         isPinned || isConfirmedByCorrection || dictations >= minimumDictations
+    }
+
+    /// The agent that proposed this term, if one did.
+    package var proposingAgent: ProjectTermProposal.Agent? {
+        sources.lazy.compactMap { source -> ProjectTermProposal.Agent? in
+            guard source.hasPrefix(LearnedTerm.agentSourcePrefix) else { return nil }
+            return ProjectTermProposal.Agent(rawValue: String(source.dropFirst(LearnedTerm.agentSourcePrefix.count)))
+        }.first
+    }
+
+    /// An agent proposed it and neither use nor a pin has confirmed it yet.
+    package var isUnconfirmedProposal: Bool {
+        proposingAgent != nil && !isConfirmed(minimumDictations: LearnedTerms.confirmedDictations)
     }
 }
 
@@ -86,13 +106,34 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
     package var terms: [LearnedTerm]
     /// Last dictation attributed to this project; the eviction order.
     package var lastSeen: Date
+    /// When the project's coding agent answered the terms request (#609).
+    /// Set, the project is never asked again, even when the answer was empty.
+    /// Optional like every field added after version 1.
+    package var proposedAt: Date? = nil
+    /// When a terms request last failed (timeout, not logged in, budget). The
+    /// next joined dictation asks again once `ProjectTermProposal.retryAfter`
+    /// has passed.
+    package var proposalAttemptedAt: Date? = nil
 
-    package init(key: String, name: String, terms: [LearnedTerm], lastSeen: Date) {
+    package init(
+        key: String,
+        name: String,
+        terms: [LearnedTerm],
+        lastSeen: Date,
+        proposedAt: Date? = nil,
+        proposalAttemptedAt: Date? = nil
+    ) {
         self.key = key
         self.name = name
         self.terms = terms
         self.lastSeen = lastSeen
+        self.proposedAt = proposedAt
+        self.proposalAttemptedAt = proposalAttemptedAt
     }
+
+    /// A project kept for its stamp alone: an agent answered with nothing
+    /// new, or failed, and emptying it would ask again.
+    package var hasProposalStamp: Bool { proposedAt != nil || proposalAttemptedAt != nil }
 }
 
 /// A project's stable key and the name a human would recognize
@@ -182,6 +223,27 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         return project.terms
             .filter { $0.isConfirmed(minimumDictations: minimumDictations) }
             .sorted(by: LearnedTerms.isStrongerEvidence)
+    }
+
+    /// The project's agent proposals no use has confirmed yet, strongest
+    /// evidence first. They take part in matching only where repo vocabulary
+    /// may (`LearnedTermGrounding`), and never in `confirmed`.
+    package func unconfirmedProposals(projectKey: String) -> [String] {
+        guard let project = projects.first(where: { $0.key == projectKey }) else { return [] }
+        return project.terms
+            .filter(\.isUnconfirmedProposal)
+            .sorted(by: LearnedTerms.isStrongerEvidence)
+            .map(\.term)
+    }
+
+    /// Whether a joined dictation in this project should ask its agent for
+    /// terms: never asked, or the last attempt failed at least
+    /// `ProjectTermProposal.retryAfter` ago.
+    package func needsProposal(projectKey: String, now: Date) -> Bool {
+        guard let project = projects.first(where: { $0.key == projectKey }) else { return true }
+        if project.proposedAt != nil { return false }
+        guard let attempted = project.proposalAttemptedAt else { return true }
+        return now.timeIntervalSince(attempted) >= ProjectTermProposal.retryAfter
     }
 
     /// Strongest evidence first across EVERY project: what the Settings pane
@@ -319,6 +381,46 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         return isNew
     }
 
+    /// The project's agent answered (#609). Its term-shaped answers join the
+    /// project unconfirmed, with the agent as their source and zero
+    /// dictations: they sort below every term use has earned, so a cap
+    /// evicts them first, and they decay like any unpinned term. A term the
+    /// project already holds, in any state, or one in `excluding` (the
+    /// user's own list and the suggestions they refused) is dropped. The
+    /// project is stamped even when nothing is added, so it is not asked
+    /// again. Returns how many terms were added.
+    @discardableResult
+    package mutating func recordProposal(
+        _ raw: [String],
+        agent: ProjectTermProposal.Agent,
+        project: LearnedTermProjectIdentity,
+        excluding: [String] = [],
+        now: Date
+    ) -> Int {
+        let index = projectIndex(for: project, now: now)
+        var known = Set(projects[index].terms.map(\.term.caseFoldedForMatching))
+        known.formUnion(excluding.map(\.caseFoldedForMatching))
+        var added = 0
+        for term in ProjectTermProposal.acceptedTerms(raw) where known.insert(term.caseFoldedForMatching).inserted {
+            projects[index].terms.append(
+                LearnedTerm(term: term, sources: [agent.source], dictations: 0, firstSeen: now, lastSeen: now)
+            )
+            added += 1
+        }
+        projects[index].proposedAt = now
+        projects[index].proposalAttemptedAt = nil
+        prune(now: now)
+        return added
+    }
+
+    /// A terms request for this project failed; the next joined dictation
+    /// after `ProjectTermProposal.retryAfter` asks again.
+    package mutating func recordProposalFailure(project: LearnedTermProjectIdentity, now: Date) {
+        let index = projectIndex(for: project, now: now)
+        projects[index].proposalAttemptedAt = now
+        prune(now: now)
+    }
+
     /// Pins or unpins one spelling in one project. Returns false when the
     /// project does not hold it.
     @discardableResult
@@ -344,7 +446,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
               let index = projects.firstIndex(where: { $0.key == projectKey })
         else { return }
         projects[index].terms.removeAll { $0.term.caseFoldedForMatching == key }
-        projects.removeAll { $0.terms.isEmpty }
+        projects.removeAll { $0.terms.isEmpty && !$0.hasProposalStamp }
     }
 
     private mutating func projectIndex(
@@ -377,7 +479,9 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
                 )
             }
         }
-        projects.removeAll { $0.terms.isEmpty }
+        // A stamped project stays with no terms: dropping it would ask its
+        // agent again at the next dictation.
+        projects.removeAll { $0.terms.isEmpty && !$0.hasProposalStamp }
         if projects.count > LearnedTerms.maxProjects {
             // A project holding a pinned term is evicted last.
             projects = Array(
