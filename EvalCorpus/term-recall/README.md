@@ -69,7 +69,9 @@ scripts/linux/voxtral-vllm.sh up
 scripts/core-tests-linux.sh --filter TermRecallEvalTests
 ```
 
-The set can be a symlink to a directory outside the checkout. `hypotheses` and
+The set can be a symlink to a directory outside the checkout. A set that a
+TTS engine spoke names it in the manifest (`"source": "say"`), and the run
+header then says `say/<set>` instead of `human/<set>`. `hypotheses` and
 `compare` markers take the same fields as on the Mac.
 
 ## Cases

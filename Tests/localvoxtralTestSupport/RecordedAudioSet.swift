@@ -4,7 +4,8 @@ import localvoxtralCore
 /// A recorded audio set: WAVs in one directory with a `manifest.json` that
 /// binds each file to a case id, its language, the words spoken and a
 /// SHA-256. The agent-dictation eval and the term-recall eval read the same
-/// format; the owner's sets live outside any checkout.
+/// format; the owner's sets live outside any checkout. A set is the owner's
+/// voice unless its manifest names the engine that spoke it in `source`.
 package enum RecordedAudioSet {
     package enum Language: String, Codable, Sendable {
         case en
@@ -19,11 +20,23 @@ package enum RecordedAudioSet {
         package let schemaVersion: Int
         package let dataFormat: String
         package let recordings: [Recording]
+        /// The TTS engine that spoke the set, e.g. `say`; absent for human
+        /// recordings.
+        package let source: String?
 
-        package init(schemaVersion: Int, dataFormat: String, recordings: [Recording]) {
+        package init(
+            schemaVersion: Int, dataFormat: String, recordings: [Recording], source: String? = nil
+        ) {
             self.schemaVersion = schemaVersion
             self.dataFormat = dataFormat
             self.recordings = recordings
+            self.source = source
+        }
+
+        /// How a run names its audio: `<source>/<set>`, `human/<set>` when
+        /// the manifest names no source.
+        package func audioLabel(setName: String) -> String {
+            "\(source ?? "human")/\(setName)"
         }
     }
 

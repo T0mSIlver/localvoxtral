@@ -214,7 +214,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             : nil
         if let recordedAudio {
             print(
-                "agent-e2e: audio=human-recorded set=\(recordedAudio.name) "
+                "agent-e2e: audio=\(recordedAudio.audioLabel) "
                     + "cases=\(recordedAudio.pcmByCaseID.count)"
                     + (recordedAudio.isSubset ? " subset=true" : "")
             )
@@ -297,7 +297,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             results: results,
             header: "polish model: \(polishConfiguration.model), "
                 + "asr: \(asrConfiguration.model) @ \(asrConfiguration.endpoint), "
-                + "audio: \(recordedAudio.map { "human-recorded/\($0.name)" } ?? "macOS say"), "
+                + "audio: \(recordedAudio.map(\.audioLabel) ?? "macOS say"), "
                 + "polish backend: \(polishBackend)"
         )
         print(board.text)
@@ -310,7 +310,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                 header: Support.ReportHeader(
                     polishModel: enablement.polishModel,
                     asrModel: enablement.asrModel,
-                    audioSource: recordedAudio.map { "human-recorded/\($0.name)" } ?? "macOS say",
+                    audioSource: recordedAudio.map(\.audioLabel) ?? "macOS say",
                     systemPrompts: reportSystemPrompts
                 ),
                 records: reports
@@ -580,7 +580,8 @@ final class AgentDictationE2EEvalTests: XCTestCase {
     // MARK: - TTS (cached)
 
     private struct LoadedRecordings {
-        let name: String
+        /// `human-recorded/<set>`, or `<source>/<set>` for a TTS set.
+        let audioLabel: String
         let isSubset: Bool
         /// Exact manifest-verified bytes retained after preflight. Keeping
         /// them in memory prevents a long eval from observing a take changed
@@ -649,8 +650,9 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                 )
             }
         }
+        let setName = standardized.lastPathComponent
         return LoadedRecordings(
-            name: standardized.lastPathComponent,
+            audioLabel: manifest.source.map { "\($0)/\(setName)" } ?? "human-recorded/\(setName)",
             isSubset: allowSubset,
             pcmByCaseID: pcmByCaseID
         )
