@@ -42,3 +42,5 @@ expect "waits:mac-llm waits:mac-voxtral" "both lane markers earn both labels" \
   main "[run-llm-eval] [run-speechd-integration]" docs/install.md
 expect "waits:stack" "a base other than main is a stack" \
   t/717-wire-notification-type "" docs/install.md
+expect "" "a skip-llm-eval waiver with a reason drops the LLM label" \
+  main "[skip-llm-eval: a move into the core, nothing reaches the model]" PolishHelper/Sources/PolishHelper/main.swift
