@@ -39,18 +39,30 @@ struct SettingsView: View {
     /// of the picker.
     @State private var addAppMessage: String?
 
+    /// What History and Insights show. The app hands over the pair it keeps
+    /// for its lifetime; without them the view builds its own.
+    @State private var historyModel: DictationHistoryModel
+    @State private var insightsModel: DictationInsightsModel
+
     init(
         settings: SettingsStore,
         viewModel: DictationViewModel,
         backendManager: BackendManager,
         navigator: SettingsNavigator,
-        loginItem: LoginItemController
+        loginItem: LoginItemController,
+        historyModel: DictationHistoryModel? = nil,
+        insightsModel: DictationInsightsModel? = nil
     ) {
         self.settings = settings
         self.viewModel = viewModel
         self.backendManager = backendManager
         self.navigator = navigator
         self.loginItem = loginItem
+        _historyModel = State(
+            initialValue: historyModel
+                ?? DictationHistoryModel(store: { [weak viewModel] in viewModel?.sessionStore }))
+        _insightsModel = State(
+            initialValue: insightsModel ?? DictationInsightsModel(viewModel: viewModel))
         _terminalAppsModel = State(
             initialValue: TerminalAppsSettingsModel(
                 settings: settings,
@@ -143,6 +155,16 @@ struct SettingsView: View {
             terminalAppsModel.refreshInstalledState()
             if let claude = viewModel.claudeIntegrationSettings {
                 Task { await claude.refreshIntegrationsStatuses() }
+            }
+            // History and Insights lead the sidebar: read both now, so the
+            // first click on either draws a result, not "Loading…" and a page
+            // that grows under the scroll bar. The pane on screen reads for
+            // itself.
+            if navigator.selectedTab != .history {
+                Task { await historyModel.reload() }
+            }
+            if navigator.selectedTab != .insights {
+                Task { await insightsModel.reload() }
             }
         }
         .modifier(ClaudeIntegrationPresentations(model: viewModel.claudeIntegrationSettings))
@@ -283,9 +305,12 @@ struct SettingsView: View {
             case .about:
                 AboutSettingsPane(settings: settings, viewModel: viewModel)
             case .history:
-                HistorySettingsPane(settings: settings, viewModel: viewModel, navigator: navigator)
+                HistorySettingsPane(
+                    settings: settings, viewModel: viewModel, model: historyModel,
+                    navigator: navigator)
             case .insights:
-                InsightsSettingsPane(viewModel: viewModel, navigator: navigator)
+                InsightsSettingsPane(
+                    viewModel: viewModel, model: insightsModel, navigator: navigator)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

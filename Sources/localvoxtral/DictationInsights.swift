@@ -200,15 +200,16 @@ struct DictationInsights: Equatable, Sendable {
     /// The word without the punctuation around it; what is inside stays
     /// (`localvoxtral.js`, `--dry-run`'s hyphen between letters).
     static func bare(_ word: Substring) -> String {
-        let edge = CharacterSet.punctuationCharacters.union(.symbols)
         func isEdge(_ character: Character) -> Bool {
-            character.unicodeScalars.allSatisfy(edge.contains)
+            character.unicodeScalars.allSatisfy(wordEdge.contains)
         }
         var trimmed = word
         while let first = trimmed.first, isEdge(first) { trimmed = trimmed.dropFirst() }
         while let last = trimmed.last, isEdge(last) { trimmed = trimmed.dropLast() }
         return String(trimmed)
     }
+
+    private static let wordEdge = CharacterSet.punctuationCharacters.union(.symbols)
 
     private static func startsSentence(_ word: Range<String.Index>, in text: String) -> Bool {
         let before = text[..<word.lowerBound]
