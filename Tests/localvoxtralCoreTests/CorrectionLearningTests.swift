@@ -1,5 +1,5 @@
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 @MainActor
 private final class RecordingPresenter: CorrectionLearningPresenting {
@@ -35,7 +35,7 @@ final class CorrectionLearningTests: XCTestCase {
         return (learner, store, presenter)
     }
 
-    func testFixInTheSubmittedPromptIsLearnedAndShownOnce() {
+    func testFixInTheSubmittedPromptIsLearnedAndShownOnce() async {
         let (learner, store, presenter) = makeLearner()
         learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project)
         clock += 20
@@ -54,7 +54,7 @@ final class CorrectionLearningTests: XCTestCase {
         XCTAssertEqual(store.snapshot().projects.first?.terms.first?.dictations, 2)
     }
 
-    func testUndoForgetsTheTerm() {
+    func testUndoForgetsTheTerm() async {
         let (learner, store, presenter) = makeLearner()
         learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project)
         learner.promptSubmitted(sessionID: "s1", prompt: "please fix the Qwen tokenizer")
@@ -65,7 +65,7 @@ final class CorrectionLearningTests: XCTestCase {
         XCTAssertEqual(store.summary().terms, 0)
     }
 
-    func testPromptAfterTheWindowTeachesNothing() {
+    func testPromptAfterTheWindowTeachesNothing() async {
         let (learner, store, presenter) = makeLearner()
         learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project)
         clock += CorrectionLearning.window + 1
@@ -78,7 +78,7 @@ final class CorrectionLearningTests: XCTestCase {
 
     /// Another session's prompt is not this dictation's fix, and does not use
     /// up the wait for the session the dictation went into.
-    func testAnotherSessionsPromptIsNotCompared() {
+    func testAnotherSessionsPromptIsNotCompared() async {
         let (learner, store, _) = makeLearner()
         learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project)
         learner.promptSubmitted(sessionID: "s2", prompt: "please fix the Qwen tokenizer")
@@ -91,7 +91,7 @@ final class CorrectionLearningTests: XCTestCase {
     }
 
     /// Two dictations before one send land in one prompt.
-    func testTwoDictationsBeforeOneSendAreComparedTogether() {
+    func testTwoDictationsBeforeOneSendAreComparedTogether() async {
         let (learner, store, _) = makeLearner()
         learner.expect(inserted: "the kwen tokenizer", sessionID: "s1", project: project)
         clock += 30
@@ -102,7 +102,7 @@ final class CorrectionLearningTests: XCTestCase {
         XCTAssertEqual(store.confirmedTerms(projectKey: project.key), ["Qwen"])
     }
 
-    func testRewordedPromptTeachesNothing() {
+    func testRewordedPromptTeachesNothing() async {
         let (learner, store, presenter) = makeLearner()
         learner.expect(inserted: "fix the bug in the parser", sessionID: "s1", project: project)
         learner.promptSubmitted(sessionID: "s1", prompt: "fix the issue in the parser")
@@ -113,7 +113,7 @@ final class CorrectionLearningTests: XCTestCase {
     }
 
     /// Turning a remembered spelling back into what was said forgets it.
-    func testRevertingALearnedSpellingForgetsIt() {
+    func testRevertingALearnedSpellingForgetsIt() async {
         let (learner, store, presenter) = makeLearner()
         store.recordCorrection("SessionStart", project: project)
         store.waitForPendingWrites()
@@ -127,7 +127,7 @@ final class CorrectionLearningTests: XCTestCase {
     }
 
     /// A spelling already in Names and terms is the user's everywhere.
-    func testListedTermIsNotRememberedAgain() {
+    func testListedTermIsNotRememberedAgain() async {
         speakerTerms = ["Qwen"]
         let (learner, store, presenter) = makeLearner()
         learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project)
@@ -139,7 +139,7 @@ final class CorrectionLearningTests: XCTestCase {
     }
 
     /// Enter pressed as the last word appears can beat the stop's commit.
-    func testPromptArrivingJustBeforeTheCommitIsStillCompared() {
+    func testPromptArrivingJustBeforeTheCommitIsStillCompared() async {
         let (learner, store, _) = makeLearner()
         learner.promptSubmitted(sessionID: "s1", prompt: "please fix the Qwen tokenizer")
         clock += CorrectionLearning.earlyPromptGrace - 1
@@ -151,7 +151,7 @@ final class CorrectionLearningTests: XCTestCase {
         XCTAssertTrue(learner.earlyPrompts.isEmpty)
     }
 
-    func testAnEarlierPromptPastTheGraceIsNotCompared() {
+    func testAnEarlierPromptPastTheGraceIsNotCompared() async {
         let (learner, store, _) = makeLearner()
         learner.promptSubmitted(sessionID: "s1", prompt: "please fix the Qwen tokenizer")
         clock += CorrectionLearning.earlyPromptGrace + 1
@@ -163,7 +163,7 @@ final class CorrectionLearningTests: XCTestCase {
     }
 
     /// The store keeps no spelling past 60 characters, so none is announced.
-    func testAFixTooLongToRememberIsNotAnnounced() {
+    func testAFixTooLongToRememberIsNotAnnounced() async {
         let (learner, store, presenter) = makeLearner()
         let long = "Aaaaaaaaaaaaaaa.Bbbbbbbbbbbbbbb.Cccccccccccccccc.Dddddddddddddddd.ts"
         learner.expect(
@@ -178,7 +178,7 @@ final class CorrectionLearningTests: XCTestCase {
         XCTAssertEqual(presenter.shown, [])
     }
 
-    func testPendingSessionsAreCapped() {
+    func testPendingSessionsAreCapped() async {
         let (learner, _, _) = makeLearner()
         for index in 0...CorrectionLearning.maxPending {
             clock += 1
