@@ -128,6 +128,7 @@ final class SettingsStore {
         static let overlayBufferFontSize = "settings.overlay_buffer_font_size"
         static let overlayBufferVisibleLines = "settings.overlay_buffer_visible_lines"
         static let overlayBufferSilenceAutoStop = "settings.overlay_buffer_silence_auto_stop"
+        static let overlayBufferWordHold = "settings.overlay_buffer_word_hold"
         static let overlayBufferPositionScreenID = "settings.overlay_buffer_position_screen_id"
         static let overlayBufferPositionOffsetX = "settings.overlay_buffer_position_offset_x"
         static let overlayBufferPositionOffsetY = "settings.overlay_buffer_position_offset_y"
@@ -773,6 +774,12 @@ final class SettingsStore {
         didSet { defaults.set(overlayBufferVisibleLines, forKey: Keys.overlayBufferVisibleLines) }
     }
 
+    /// Whether the Overlay Buffer keeps a word still being dictated on its
+    /// line, and up to what length (see `OverlayWordHold`).
+    var overlayBufferWordHold: OverlayWordHold {
+        didSet { defaults.set(overlayBufferWordHold.rawValue, forKey: Keys.overlayBufferWordHold) }
+    }
+
     /// Stop an Overlay Buffer tap session after this long without new text.
     var overlayBufferSilenceAutoStop: SilenceAutoStop {
         didSet { defaults.set(overlayBufferSilenceAutoStop.rawValue, forKey: Keys.overlayBufferSilenceAutoStop) }
@@ -1090,6 +1097,9 @@ final class SettingsStore {
             ? defaults.integer(forKey: Keys.overlayBufferVisibleLines)
             : OverlayLayoutMetrics.defaultVisibleLines
         overlayBufferVisibleLines = OverlayLayoutMetrics.clampedVisibleLines(storedOverlayVisibleLines)
+        overlayBufferWordHold =
+            (defaults.object(forKey: Keys.overlayBufferWordHold) as? Int)
+            .flatMap(OverlayWordHold.init(rawValue:)) ?? .off
         overlayBufferSilenceAutoStop =
             (defaults.object(forKey: Keys.overlayBufferSilenceAutoStop) as? Int)
             .flatMap(SilenceAutoStop.init(rawValue:)) ?? .off

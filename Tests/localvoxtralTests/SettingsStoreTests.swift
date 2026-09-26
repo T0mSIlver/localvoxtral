@@ -257,6 +257,23 @@ final class SettingsStoreTests: XCTestCase {
             makeStore().overlayBufferVisibleLines, OverlayLayoutMetrics.minimumVisibleLines)
     }
 
+    // MARK: - Overlay Buffer word hold
+
+    func testOverlayBufferWordHold_defaultsToOff() {
+        XCTAssertEqual(makeStore().overlayBufferWordHold, .off)
+    }
+
+    func testOverlayBufferWordHold_persistsAcrossStores() {
+        let store = makeStore()
+        store.overlayBufferWordHold = .upTo10Letters
+        XCTAssertEqual(makeStore().overlayBufferWordHold, .upTo10Letters)
+    }
+
+    func testOverlayBufferWordHold_unknownStoredValueFallsBackToOff() {
+        defaults.set(7, forKey: "settings.overlay_buffer_word_hold")
+        XCTAssertEqual(makeStore().overlayBufferWordHold, .off)
+    }
+
     // MARK: - resolvedWebSocketURL
 
     func testResolvedURL() {
