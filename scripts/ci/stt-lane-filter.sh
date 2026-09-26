@@ -13,6 +13,14 @@
 #   [marker-text-file]    optional free text (PR body + head commit message);
 #                         the literal [run-stt-integration] runs the lane
 #
+# Two env vars, set from scripts/ci/lane-diff-facts.sh, narrow two paths that
+# the file list alone cannot judge. Only the literal "false" narrows; unset
+# or anything else keeps the path matching:
+#   LANE_PACKAGE_DEPS_CHANGED=false   Package.swift changed, but no dependency,
+#                                     pin, platform or build-setting line
+#   LANE_MAC_LANES_JOB_CHANGED=false  ci.yml changed, but not the mac-lanes
+#                                     job or the file's head
+#
 # stdout is $GITHUB_OUTPUT-shaped:
 #   run=true|false
 #   reason=<one line, safe for a step summary>
@@ -27,8 +35,10 @@
 # SpeechHelper change cannot move this lane (SpeechHelperIntegrationTests and
 # speechd-lane-filter.sh cover that). The lane can only see a change to the
 # client family, to the scorer and TTS fixture it uses, to the package pins,
-# or to how CI invokes it. A compile break anywhere else is build-test's to
-# catch, and the nightly e2e dictation (scripts/e2e-dictation.sh) drives the
+# or to how CI invokes it. A target-only manifest edit (a file or test moved
+# between targets) changes no pin, and a ci.yml edit outside the mac-lanes job
+# changes nothing this lane runs. A compile break anywhere else is
+# build-test's to catch, and the nightly e2e dictation (scripts/e2e-dictation.sh) drives the
 # same client through the whole packaged app.
 #
 set -euo pipefail
@@ -52,9 +62,9 @@ PATTERNS=(
   'Sources/localvoxtralCore/TextMergingAlgorithms.swift'  # the scorer normalizes through it
   'Tests/localvoxtralTests/RealtimeAPIVLLMIntegrationTests.swift'
   'Tests/localvoxtralTests/IntegrationTestSupport.swift'
-  'Package.swift'
+  'Package.swift'                                   # unless LANE_PACKAGE_DEPS_CHANGED=false
   'Package.resolved'
-  '.github/workflows/ci.yml'
+  '.github/workflows/ci.yml'                        # unless LANE_MAC_LANES_JOB_CHANGED=false
   'scripts/ci/stt-lane-filter.sh'
   'scripts/mac/lv-test-servers.sh'                  # how the service is warmed
 )
@@ -100,8 +110,18 @@ if [[ -n "$MARKER_TEXT_FILE" && -f "$MARKER_TEXT_FILE" ]] \
   exit 0
 fi
 
+# A plain string, not an array: an empty array under set -u aborts bash 3.2.
+NARROWED=""
 while IFS= read -r file; do
   [[ -z "$file" ]] && continue
+  if [[ "$file" == "Package.swift" && "${LANE_PACKAGE_DEPS_CHANGED:-}" == "false" ]]; then
+    NARROWED+="; Package.swift changed no dependency or pin line"
+    continue
+  fi
+  if [[ "$file" == ".github/workflows/ci.yml" && "${LANE_MAC_LANES_JOB_CHANGED:-}" == "false" ]]; then
+    NARROWED+="; ci.yml left the mac-lanes job unchanged"
+    continue
+  fi
   for pattern in "${PATTERNS[@]}"; do
     # shellcheck disable=SC2254
     case "$file" in
@@ -115,4 +135,4 @@ while IFS= read -r file; do
 done <"$CHANGED_FILES_FILE"
 
 echo "run=false"
-echo "reason=no change the live STT lane can see; add $MARKER to the PR body or commit message and push to opt in"
+echo "reason=no change the live STT lane can see${NARROWED}; add $MARKER to the PR body or commit message and push to opt in"

@@ -252,6 +252,8 @@ jobs:
             ./scripts/ci/test-helper-lane-filter.sh \
             ./scripts/ci/test-dogfood-filter.sh \
             ./scripts/ci/test-stt-lane-filter.sh \
+            ./scripts/ci/test-mac-package-filter.sh \
+            ./scripts/ci/test-lane-diff-facts.sh \
             ./scripts/ci/test-herdr-fixture-recovery.sh \
             ./scripts/ci/test-clean-stale-outputs.sh \
             ./scripts/ci/test-workflow-step-names.sh \
@@ -796,6 +798,30 @@ jobs:
             echo "CI fast path: full run ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Read lane diff facts (ci.yml job, manifest pins)
+        # Two facts a changed-file list cannot carry: whether a ci.yml edit
+        # touched the mac-lanes job (most touch only build-test or linux),
+        # and whether a Package.swift edit touched a dependency, pin or build
+        # setting (a file moved between targets touches none). The STT,
+        # helper-unit and packaging decisions below read them through env;
+        # an empty output, from a failed or skipped step, narrows nothing.
+        # Only a pull request is gated, so only a pull request reads them.
+        id: diff_facts
+        if: steps.ci_scope.outputs.docs_only != 'true' && github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -uo pipefail
+          BASE="$(git merge-base "origin/$BASE_REF" HEAD 2>/dev/null || true)"
+          if [[ -z "$BASE" ]]; then
+            echo "Lane diff facts: no merge base — the filters treat ci.yml and Package.swift as changed" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          FACTS="$(./scripts/ci/lane-diff-facts.sh "$BASE" HEAD)" || FACTS=""
+          echo "$FACTS" >> "$GITHUB_OUTPUT"
+          echo "Lane diff facts: $(tr '\n' ' ' <<<"$FACTS")" | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Clean stale outputs (keep build caches)
         # clean: false above skips git clean entirely, so outputs a previous
         # run generated must be removed by hand — but NOT the build caches.
@@ -1091,6 +1117,8 @@ jobs:
         id: helper_lanes
         if: steps.ci_scope.outputs.docs_only != 'true'
         env:
+          LANE_MAC_LANES_JOB_CHANGED: ${{ steps.diff_facts.outputs.mac_lanes_job_changed }}
+          LANE_PACKAGE_DEPS_CHANGED: ${{ steps.diff_facts.outputs.package_deps_changed }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           BASE_REF: ${{ github.base_ref }}
           # env indirection, not inline ${{ }} in the script body: PR bodies
@@ -1155,6 +1183,52 @@ jobs:
             echo "Live STT lane: RUNNING ($stt_reason)" | tee -a "$GITHUB_STEP_SUMMARY"
           else
             echo "Live STT lane: SKIPPED ($stt_reason)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Decide packaging (path filter)
+        # Packaging, the uploads and the launch smoke take about 95 s of this
+        # Mac, and a diff of tests, docs, CI scripts or other workflows builds
+        # the same bundle main has. scripts/ci/mac-package-filter.sh lists
+        # what may skip; anything unclassified packages. A lane below that
+        # reads the bundle (polishd, speechd, the dogfood pass) packages
+        # whatever the diff. A dispatch always packages, so try-pr.sh can
+        # still build any branch; a missing decision packages too, because
+        # the steps below skip only on the literal 'false'.
+        id: package_scope
+        if: steps.ci_scope.outputs.docs_only != 'true'
+        env:
+          LANE_MAC_LANES_JOB_CHANGED: ${{ steps.diff_facts.outputs.mac_lanes_job_changed }}
+          LLM_RUN: ${{ steps.llm_lane.outputs.run }}
+          SPEECHD_RUN: ${{ steps.speechd_lane.outputs.run }}
+          DOGFOOD_RUN: ${{ steps.dogfood_lane.outputs.run }}
+          # env indirection: PR bodies are attacker-shaped strings.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          FILES="$RUNNER_TEMP/helper-lane-changed-files.txt"
+          [[ -f "$FILES" ]] || : >"$FILES"
+          MARKER_TEXT="$RUNNER_TEMP/package-marker-text.txt"
+          printf '%s\n' "$PR_BODY" > "$MARKER_TEXT"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" && -n "$PR_HEAD_SHA" ]]; then
+            git log -1 --format=%B "$PR_HEAD_SHA" >> "$MARKER_TEXT" 2>/dev/null || true
+          fi
+          LANE_NEEDS_BUNDLE=""
+          [[ "$LLM_RUN" == "true" ]] && LANE_NEEDS_BUNDLE+=" polishd"
+          [[ "$SPEECHD_RUN" == "true" ]] && LANE_NEEDS_BUNDLE+=" speechd"
+          [[ "$DOGFOOD_RUN" == "true" ]] && LANE_NEEDS_BUNDLE+=" dogfood"
+          export LANE_NEEDS_BUNDLE
+          if ! DECISION="$(./scripts/ci/mac-package-filter.sh "$FILES" "$GITHUB_EVENT_NAME" "$MARKER_TEXT")"; then
+            DECISION=$'run=true\nreason=packaging filter failed — failing open'
+          fi
+          RUN="$(sed -n 's/^run=//p' <<<"$DECISION")"
+          REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
+          [[ "$RUN" == "false" ]] || RUN=true
+          echo "run=$RUN" >> "$GITHUB_OUTPUT"
+          if [[ "$RUN" == "true" ]]; then
+            echo "Packaging + launch smoke: RUNNING ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Packaging + launch smoke: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
       # No "Setup Swift" step here on purpose. A prior `swift-actions/setup-swift@v2`
@@ -1244,7 +1318,7 @@ jobs:
         # (`xcrun --find metal` succeeds even when the component is missing)
         # and self-provision loudly; the asset is cached system-wide, so a
         # re-activation here is quick.
-        if: steps.ci_scope.outputs.docs_only != 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.package_scope.outputs.run != 'false'
         run: |
           if ! xcrun metal --version >/dev/null 2>&1; then
             echo "Metal toolchain not active for $(whoami); installing component..."
@@ -1264,7 +1338,7 @@ jobs:
         # the owner's Accessibility (TCC) grant valid across try-pr.sh installs.
         # An ad-hoc signature would break it on every build. Both bundled MLX
         # helpers are built here for real (Metal kernels via xcodebuild).
-        if: steps.ci_scope.outputs.docs_only != 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.package_scope.outputs.run != 'false'
         env:
           LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
           LOCALVOXTRAL_SKIP_POLISHD: "0"
@@ -1281,11 +1355,11 @@ jobs:
       - name: Zip app for artifact upload
         # upload-artifact mangles symlinks/exec bits in .app bundles; ditto-zip
         # first so the downloaded app keeps a valid signature.
-        if: steps.ci_scope.outputs.docs_only != 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.package_scope.outputs.run != 'false'
         run: ditto -c -k --sequesterRsrc --keepParent dist/localvoxtral.app dist/localvoxtral-app.zip
 
       - name: Upload app artifact
-        if: steps.ci_scope.outputs.docs_only != 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.package_scope.outputs.run != 'false'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: localvoxtral-app
@@ -1296,7 +1370,7 @@ jobs:
         # Includes helper dSYMs when present (self-hosted lanes) — helper
         # crashes (MLX C++/Metal) are the likeliest field
         # crashes, and a dSYM that never leaves the runner symbolizes nothing.
-        if: steps.ci_scope.outputs.docs_only != 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.package_scope.outputs.run != 'false'
         run: |
           ditto -c -k --keepParent dist/localvoxtral.dSYM dist/localvoxtral-dSYM.zip
           if [[ -d dist/localvoxtral-polishd.dSYM ]]; then
@@ -1309,7 +1383,7 @@ jobs:
       - name: Upload dSYM artifact
         # Longer retention than the app: field crashes surface days after the
         # try-pr build that produced them.
-        if: steps.ci_scope.outputs.docs_only != 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.package_scope.outputs.run != 'false'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: localvoxtral-dsym
@@ -1320,7 +1394,7 @@ jobs:
           retention-days: 30
 
       - name: Smoke test packaged app launch (end-user simulation)
-        if: steps.ci_scope.outputs.docs_only != 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.package_scope.outputs.run != 'false'
         env:
           # TCC attributes the launched app's permission checks to the
           # runner's bundled node (the service's responsible process). A

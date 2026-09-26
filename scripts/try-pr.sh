@@ -193,7 +193,8 @@ if (( ! DOGFOOD )) && ! run_has_artifact "$RUN_ID"; then
   else
     echo "No green CI run for '$TARGET' carries the $ARTIFACT artifact." >&2
     echo "A draft PR skips mac-lanes, the job that builds it: gh pr ready $TARGET, or put [mac-lanes] in its body and push." >&2
-    echo "A docs-only diff builds no bundle either; [mac-lanes] in the body forces the full run." >&2
+    echo "Nor does a diff that changes nothing in the bundle (docs, tests, CI scripts; scripts/ci/mac-package-filter.sh);" >&2
+    echo "[mac-lanes] in the body and a push forces it." >&2
     exit 1
   fi
 fi

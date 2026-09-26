@@ -7,7 +7,8 @@
 #   - the event rules (dispatch / push-to-main / unknown all fail open to run)
 #   - each helper's own directory, INCLUDING its Package.resolved, which is
 #     the dependency-pin surface and the thing most likely to be forgotten
-#   - the shared CI-plumbing list (ci.yml, scripts/ci/*, package_app.sh),
+#   - the shared CI-plumbing list (ci.yml, the scripts/ci/ files the job runs
+#     before the suites, package_app.sh),
 #     which is the whole reason this can be gated safely
 #   - independence: a PolishHelper diff must NOT run the SpeechHelper suite,
 #     and vice versa — the bug this gate would introduce if the two pattern
@@ -108,12 +109,34 @@ expect speech true "SpeechHelper/DEPENDENCY.md is inside the helper and counts" 
 
 for helper in polish speech; do
   expect "$helper" true "ci.yml runs both lanes" .github/workflows/ci.yml
-  expect "$helper" true "any scripts/ci/ change runs both lanes" \
-    scripts/ci/run-supervised-command.sh
   expect "$helper" true "this filter's own edits prove both lanes first" \
     scripts/ci/helper-lane-filter.sh
+  for script in lane-diff-facts docs-only-filter clean-stale-outputs cleanup-stale-test-processes; do
+    [[ -e "$ROOT_DIR/scripts/ci/$script.sh" ]] || fail "listed script is gone: scripts/ci/$script.sh"
+    expect "$helper" true "$script.sh, which the job runs before the suites, runs both lanes" \
+      "scripts/ci/$script.sh"
+  done
+  expect "$helper" false "another lane's filter does not run the lane" \
+    scripts/ci/stt-lane-filter.sh scripts/ci/test-stt-lane-filter.sh
+  expect "$helper" false "a CI script the job never runs does not run the lane" \
+    scripts/ci/run-supervised-command.sh
   expect "$helper" true "package_app.sh builds both helpers" scripts/package_app.sh
 done
+
+# ci.yml narrows only on the literal "false" from lane-diff-facts.sh: an edit
+# to build-test, linux or dogfood cannot change how these suites run.
+export LANE_MAC_LANES_JOB_CHANGED=false
+for helper in polish speech; do
+  expect "$helper" false "a ci.yml edit outside the mac-lanes job runs neither lane" \
+    .github/workflows/ci.yml
+  expect "$helper" true "a narrowed ci.yml does not hide the filter's own edit" \
+    .github/workflows/ci.yml scripts/ci/helper-lane-filter.sh
+done
+export LANE_MAC_LANES_JOB_CHANGED=true
+expect polish true "a ci.yml edit inside the mac-lanes job runs the lane" .github/workflows/ci.yml
+export LANE_MAC_LANES_JOB_CHANGED=unknown
+expect speech true "a garbled fact fails open" .github/workflows/ci.yml
+unset LANE_MAC_LANES_JOB_CHANGED
 
 # --- Independence: one helper never drags in the other ---------------------
 

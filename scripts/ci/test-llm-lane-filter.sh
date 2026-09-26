@@ -236,6 +236,48 @@ expect true "the bridge session URL parser in the core target runs the lane" \
   Sources/localvoxtralCore/ClaudeBridgeSessionURL.swift
 expect true "the desktop session URL parser in the core target runs the lane" \
   Sources/localvoxtralCore/ClaudeDesktopSessionURL.swift
+# Test files run the lane only when they are its own suite or the eval harness
+# (#545: test-target moves bought live inference through the name globs).
+expect false "a unit test named after a polish type does not run the lane" \
+  Tests/localvoxtralTests/PolishTokenGuardTests.swift \
+  Tests/localvoxtralCoreTests/RepoVocabularyMatcherTests.swift
+expect false "a test moved into a folder named after a hook type does not run the lane" \
+  Tests/localvoxtralTests/ClaudeHookPublisherTests.swift \
+  Tests/ClaudeHookPublisherCoreTests/ClaudeHookPublisherTests.swift
+expect false "a helper package's unit test does not run the lane" \
+  PolishHelper/Tests/PolishHelperCoreTests/PolishdRouterTests.swift
+expect true "the lane's own suite runs the lane" \
+  Tests/localvoxtralTests/PolishHelperIntegrationTests.swift
+expect true "the shared eval scorer runs the lane" \
+  Tests/localvoxtralTests/LLMPolishEvalSupport.swift
+expect true "the e2e eval harness runs the lane" \
+  Tests/localvoxtralTests/AgentDictationE2EEvalSupport.swift
+expect true "the e2e corpus loader runs the lane" \
+  Tests/localvoxtralTests/AgentDictationEvalCorpus.swift
+expect true "the harness's TTS and ASR stage runs the lane" \
+  Tests/localvoxtralTests/TestSupport/EvalSpeechStage.swift
+expect true "the source a test covers still runs the lane" \
+  Tests/localvoxtralTests/PolishTokenGuardTests.swift \
+  Sources/localvoxtralCore/PolishTokenGuard.swift
+expect true "a helper package's sources still run the lane" \
+  PolishHelper/Sources/PolishHelperCore/PolishdRouter.swift
+# Every lane-owned test pattern must still name a file, or a rename would drop
+# the lane's own suite from its trigger without a word.
+lane_test_patterns="$(sed -n "/^LANE_TEST_PATTERNS=(/,/^)/p" "$FILTER_SOURCE" | sed -n "s/^  '\([^']*\)'.*/\1/p")"
+[[ -n "$lane_test_patterns" ]] || fail "could not parse LANE_TEST_PATTERNS"
+tracked_tests="$(cd "$ROOT_DIR" && git ls-files 'Tests/*' 2>/dev/null || true)"
+if [[ -n "$tracked_tests" ]]; then
+  while IFS= read -r pattern; do
+    found=""
+    while IFS= read -r path; do
+      # shellcheck disable=SC2254
+      case "$path" in $pattern) found=1; break ;; esac
+    done <<<"$tracked_tests"
+    [[ -n "$found" ]] || fail "LANE_TEST_PATTERNS entry matches no tracked test file: $pattern"
+  done <<<"$lane_test_patterns"
+  echo "PASS: every lane-owned test pattern names a tracked file"
+fi
+
 expect false "empty changed-file list decides run=false (caller owns fail-open)" \
   ""
 
