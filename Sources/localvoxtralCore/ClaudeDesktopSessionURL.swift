@@ -3,14 +3,16 @@ import Foundation
 /// Parses the Claude Desktop Code-tab session id out of the address of the web
 /// view the desktop app shows that session in.
 ///
-/// Claude Desktop hosts each Code-tab session in a web view whose address is
+/// Claude Desktop shows Code-tab sessions in a web view whose address is
 /// `https://claude.ai/epitaxy/local_<uuid>`, and it exports the same
 /// `local_<uuid>` into the session's environment as
 /// `CLAUDE_CODE_HOST_SESSION_ID` — so every hook the session runs carries it,
 /// on this Mac or on an ssh host the desktop app runs the session on. Both
-/// were MEASURED on Claude Desktop 2.2553.1 (2026-09-18): the web area's
-/// `AXURL` named the focused session, and the session's hook environment named
-/// the same id. Neither is documented, so a desktop update that renames either
+/// were MEASURED on Claude Desktop 2.2553.1 (2026-09-18) and again on
+/// 2.9939.2 (2026-09-26), where the address names the session in the
+/// window's primary pane (`AXClaudeDesktopSessionURLReader` says which focus
+/// may use it) and that session's Claude Code process, on an ssh host, had
+/// the same id in its environment. Neither is documented, so a desktop update that renames either
 /// stops this arm from joining; it cannot make it join the wrong session.
 ///
 /// Strict for the reason `ClaudeBridgeSessionURL` is — a false positive is a

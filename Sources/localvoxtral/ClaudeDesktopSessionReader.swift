@@ -15,10 +15,14 @@ protocol FocusedClaudeDesktopSessionURLReading {
 
 /// What one walk up from the focused element found.
 enum ClaudeDesktopWebAreaLookup: Equatable {
-    /// The NEAREST web area above the focused element, and its address (nil
-    /// when it reported none). Only this web area is ever consulted: an outer
-    /// one is the desktop shell, never a session.
+    /// Focus is in the primary pane's chat panel, and this is the address of
+    /// the NEAREST web area above it (nil when it reported none). Only this
+    /// web area is ever consulted: an outer one is the desktop shell, never a
+    /// session.
     case webArea(url: String?)
+    /// The nearest web area was reached from somewhere its address does not
+    /// name, so it was not read.
+    case outsidePrimaryChat(ClaudeDesktopFocusPlace)
     /// No web area above the focused element. On Electron this is what a
     /// not-yet-built accessibility tree looks like.
     case noWebArea
@@ -27,17 +31,43 @@ enum ClaudeDesktopWebAreaLookup: Equatable {
     case unavailable
 }
 
+/// Where focus sat when the walk refused the web area's address.
+enum ClaudeDesktopFocusPlace: Equatable {
+    /// In the second pane of a split view. The address names the primary
+    /// pane's session, never this one.
+    case secondaryPane
+    /// In the primary pane but outside its chat panel: the terminal, files
+    /// or changes panel. The dictation is not going to the session.
+    case primaryPaneOutsideChat
+    /// Outside every pane: the sidebar, or the shell around the session view.
+    case outsidePanes
+}
+
 /// The live reader: one walk up the AX parent chain from the focused element of
 /// the Claude Desktop process, to the nearest `AXWebArea`, then its `AXURL`.
 ///
-/// MEASURED on Claude Desktop 2.2553.1 (2026-09-18): the focused element sits
-/// ~25 parents below an `AXWebArea` whose `AXURL` is
-/// `https://claude.ai/epitaxy/local_<uuid>` — the focused session — and the
-/// whole walk took 7–30 ms. Walking UP from focus is the rule, not searching
-/// the window: Claude Desktop can show several sessions side by side, and the
-/// one the user is typing into is the one that holds focus. Focus outside any
-/// session's web view (the sidebar, the chat tab) is correctly no join — the
-/// dictation is not going to a session.
+/// MEASURED on Claude Desktop 2.9939.2 (2026-09-26): the whole window is
+/// ONE `AXWebArea` whose `AXURL` is `https://claude.ai/epitaxy/local_<uuid>`,
+/// nested in the shell's `file://` web area. It holds the sidebar and the
+/// panes; a split view adds a second pane inside the same web area, and the
+/// address always names the session shown in the pane marked
+/// `dframe-pane-primary` ("Primary pane"), whichever pane holds focus, after
+/// real clicks in either one, and after "Move split view left" (the pane on
+/// the left is then the primary one). No attribute anywhere in the tree names
+/// the other pane's session. So the address counts only when the walk from
+/// focus passes, in order, an element with the class `epitaxy-chat-panel`
+/// (the session's transcript and prompt box) and then the first element
+/// with the class `dframe-pane`, which must also carry
+/// `dframe-pane-primary`. Focus in the secondary pane, in a pane's terminal,
+/// files or changes panel, or in the sidebar is no join: either the address
+/// names a different session, or the dictation is not going to a session.
+/// The rule rests on the panes being siblings, each holding its own chat
+/// panel, and on a single-session window being one pane classed
+/// `dframe-pane dframe-pane-primary` (both measured); a layout that nests one
+/// pane inside another gets measured again before it can be trusted. The
+/// focused prompt box sits 22–24 parents below the web area.
+/// (Claude Desktop 2.2553.1, 2026-09-18, had a web area per session; the
+/// class rule refuses that layout, which no longer ships.)
 ///
 /// - **PID-pinned.** Reached from `AXUIElementCreateApplication(pid)` and the
 ///   focused element's own pid is re-verified.
@@ -47,7 +77,7 @@ enum ClaudeDesktopWebAreaLookup: Equatable {
 ///   `attemptBudgetSeconds` checked before every hop. The hop cap alone was
 ///   not a bound (codex review, PR #333): an app answering each message just
 ///   under the timeout would have held the main actor ~13 s per attempt. With
-///   the budget, two attempts plus the wait stay under ~1 s worst case.
+///   the budget, two attempts plus the wait stay under ~1.4 s worst case.
 /// - **Electron's tree is opt-in.** Chromium builds its web accessibility tree
 ///   only for a client that asks, and `AXManualAccessibility` is how an
 ///   assistive client asks. The reader sets it before every read — idempotent,
@@ -57,7 +87,7 @@ enum ClaudeDesktopWebAreaLookup: Equatable {
 ///   memory of that tree while it runs; it is the same switch VoiceOver flips.
 @MainActor
 struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
-    /// Parent hops before the walk gives up. The measured chain is 25; this
+    /// Parent hops before the walk gives up. The measured chain is 24; this
     /// leaves room for layout changes without letting a cyclic or runaway tree
     /// hold the main actor.
     static let maxHops = 64
@@ -66,8 +96,9 @@ struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
     static let treeBuildWaitSeconds: Double = 0.25
 
     /// Total time one walk may take. A healthy walk measured 7–39 ms; past
-    /// this the attempt is abandoned as `.unavailable`. The last message in
-    /// flight can still overrun by one messaging timeout.
+    /// this the attempt is abandoned as `.unavailable`. The hop in flight can
+    /// still overrun it by its messages (role, classes, parent: up to three
+    /// messaging timeouts).
     static let attemptBudgetSeconds: Double = 0.25
 
     typealias SleepFor = @Sendable (Double) async -> Void
@@ -98,6 +129,22 @@ struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
             // Shape-only, the browser reader's rule: an address is content, so
             // it is neither logged nor interpreted here.
             return AppleScriptFocusedBrowserTabURLReader.validatedURL(url)
+        case .outsidePrimaryChat(let place):
+            switch place {
+            case .secondaryPane:
+                Log.claudeContext.notice(
+                    "Claude Desktop focus is in the second pane of a split view, whose session the web view's address does not name: no join"
+                )
+            case .primaryPaneOutsideChat:
+                Log.claudeContext.notice(
+                    "Claude Desktop focus is in a session's terminal, files or changes panel, not its prompt: no join"
+                )
+            case .outsidePanes:
+                Log.claudeContext.notice(
+                    "Claude Desktop focus is outside every session pane (sidebar?): no join"
+                )
+            }
+            return nil
         case .noWebArea:
             Log.claudeContext.info(
                 "Claude Desktop focus is not inside a web view (accessibility tree not built yet?)"
@@ -108,29 +155,62 @@ struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
         }
     }
 
+    /// The class of the element that holds a session's transcript and prompt
+    /// box, one per pane.
+    static let chatPanelClass = "epitaxy-chat-panel"
+    /// The class every pane carries.
+    static let paneClass = "dframe-pane"
+    /// The class of the pane whose session the web area's address names.
+    static let primaryPaneClass = "dframe-pane-primary"
+
     /// Walks from `start` up through `parent` to the nearest element whose
-    /// `role` is `AXWebArea`, and reports its `url`.
+    /// `role` is `AXWebArea`, and reports its `url` only when the walk passed
+    /// the primary pane's chat panel on the way.
     ///
-    /// Generic so the rule is testable without AX. `role`, `url` and `parent`
-    /// return `.failure` for an AX error, which ends the walk as
+    /// Generic so the rule is testable without AX. `role`, `classes`, `url`
+    /// and `parent` return `.failure` for an AX error, which ends the walk as
     /// `.unavailable`; a missing parent (`.success(nil)`) is the top of the
-    /// tree. `outOfTime` is asked before every hop, and a `true` ends the walk
-    /// as `.unavailable`.
+    /// tree. `classes` is asked only of `AXGroup` elements below the first
+    /// pane, since both markers are groups and nothing above that pane can
+    /// change the answer. `outOfTime` is asked before every hop, and a `true`
+    /// ends the walk as `.unavailable`.
     static func nearestWebArea<Element>(
         from start: Element,
         role: (Element) -> Result<String?, AXLookupError>,
+        classes: (Element) -> Result<[String], AXLookupError>,
         url: (Element) -> Result<String?, AXLookupError>,
         parent: (Element) -> Result<Element?, AXLookupError>,
         outOfTime: () -> Bool = { false },
         maxHops: Int = AXClaudeDesktopSessionURLReader.maxHops
     ) -> ClaudeDesktopWebAreaLookup {
         var current = start
+        var passedChatPanel = false
+        // Decided at the first pane on the way up; nil below it.
+        var verdict: PaneVerdict?
         for _ in 0...maxHops {
             guard !outOfTime() else { return .unavailable }
             guard case .success(let currentRole) = role(current) else { return .unavailable }
             if currentRole == "AXWebArea" {
-                guard case .success(let address) = url(current) else { return .unavailable }
-                return .webArea(url: address)
+                switch verdict {
+                case .primaryChat?:
+                    guard case .success(let address) = url(current) else { return .unavailable }
+                    return .webArea(url: address)
+                case .refused(let place)?:
+                    return .outsidePrimaryChat(place)
+                case nil:
+                    return .outsidePrimaryChat(.outsidePanes)
+                }
+            }
+            if verdict == nil, currentRole == "AXGroup" {
+                guard case .success(let tokens) = classes(current) else { return .unavailable }
+                if tokens.contains(chatPanelClass) { passedChatPanel = true }
+                if tokens.contains(paneClass) {
+                    if !tokens.contains(primaryPaneClass) {
+                        verdict = .refused(.secondaryPane)
+                    } else {
+                        verdict = passedChatPanel ? .primaryChat : .refused(.primaryPaneOutsideChat)
+                    }
+                }
             }
             switch parent(current) {
             case .failure:
@@ -142,6 +222,11 @@ struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
             }
         }
         return .unavailable
+    }
+
+    private enum PaneVerdict: Equatable {
+        case primaryChat
+        case refused(ClaudeDesktopFocusPlace)
     }
 
     /// An AX read that failed with something other than "no such value".
@@ -170,6 +255,7 @@ struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
         return nearestWebArea(
             from: focused,
             role: { string($0, kAXRoleAttribute) },
+            classes: { classList($0) },
             url: { address($0) },
             parent: { element($0, kAXParentAttribute) },
             outOfTime: { clock.now >= deadline }
@@ -198,6 +284,12 @@ struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
             guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
             return unsafeDowncast(value, to: AXUIElement.self)
         }
+    }
+
+    /// Chromium's `AXDOMClassList`: the element's class tokens, empty when it
+    /// has none.
+    private static func classList(_ element: AXUIElement) -> Result<[String], AXLookupError> {
+        copy(element, "AXDOMClassList").map { ($0 as? [String]) ?? [] }
     }
 
     /// `AXURL` arrives as a CFURL from Chromium; a string is accepted too.
