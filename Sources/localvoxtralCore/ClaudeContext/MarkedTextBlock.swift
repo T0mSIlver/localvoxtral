@@ -52,9 +52,13 @@ public struct MarkedTextBlock: Sendable, Equatable {
 
     /// Split on LF and strip a trailing CR, so a CRLF file's lines compare and
     /// rejoin like any other.
+    ///
+    /// Split by scalar: `"\r\n"` is one `Character`, and swift-foundation's
+    /// `components(separatedBy: "\n")` (Linux) never finds an LF inside it.
+    /// NSString's (Darwin) searches UTF-16 units, which this matches.
     package func splitLines(_ text: String) -> [String] {
-        text.components(separatedBy: "\n").map { line in
-            line.hasSuffix("\r") ? String(line.dropLast()) : line
+        text.unicodeScalars.split(separator: "\n", omittingEmptySubsequences: false).map { line in
+            String(line.last == "\r" ? line.dropLast() : line)
         }
     }
 

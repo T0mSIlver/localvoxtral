@@ -1,9 +1,15 @@
 import ClaudeContextWire
-import Darwin
 import Foundation
 import XCTest
 
-@testable import localvoxtral
+@testable import localvoxtralCore
+import localvoxtralTestSupport
+
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 /// `python3` for these tests: a link, under the name the shim's fallback looks
 /// for, to the interpreter `/usr/bin/python3` itself runs. On macOS that path
@@ -161,7 +167,6 @@ final class VibeRemoteShimTests: XCTestCase {
         let input = root.appendingPathComponent("stdin-\(UUID().uuidString)")
         let output = root.appendingPathComponent("out-\(UUID().uuidString)")
         try payload.write(to: input)
-        FileManager.default.createFile(atPath: output.path, contents: nil)
         var environment = [
             "HOME": root.path,
             "PATH": "\(stubDir.path):\(VibeTestPython.directory.path):/usr/bin:/bin",
@@ -174,17 +179,16 @@ final class VibeRemoteShimTests: XCTestCase {
         ]
         environment.merge(extra) { $1 }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = [remoteDir.appendingPathComponent("post.sh").path]
-        process.environment = environment
-        process.standardInput = try FileHandle(forReadingFrom: input)
-        let sink = try FileHandle(forWritingTo: output)
-        process.standardOutput = sink
-        process.standardError = sink
-        try process.runUntilExit()
-        try sink.close()
-        return Run(exitCode: process.terminationStatus, output: try Data(contentsOf: output))
+        // Not `Process`: on Linux it would also wait for the exit watcher the
+        // shim leaves running (`SpawnAndWait`).
+        let exitCode = try SpawnAndWait.run(
+            "/bin/sh",
+            arguments: [remoteDir.appendingPathComponent("post.sh").path],
+            environment: environment,
+            standardInput: input.path,
+            output: output.path
+        )
+        return Run(exitCode: exitCode, output: try Data(contentsOf: output))
     }
 
     private var dialCount: Int {

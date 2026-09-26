@@ -1,7 +1,7 @@
 import Foundation
 import Synchronization
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// In-memory store, so the registry's contract is testable without a disk — and
 /// so a test can inspect the exact bytes that WOULD be written, which is how the
