@@ -603,8 +603,7 @@ final class DictationSessionController {
         guard audio.selectMicrophoneInput(id: id) else { return }
 
         guard isDictating else { return }
-        stopDictation(reason: "input device changed by user", finalizeRemainingAudio: false)
-        startDictation()
+        restartOnNewInput(reason: "input device changed by user")
     }
 
     var selectedInputDeviceChannelCount: UInt32 { audio.selectedInputDeviceChannelCount }
@@ -615,8 +614,15 @@ final class DictationSessionController {
         guard audio.selectMicrophoneInputChannel(channel) else { return }
 
         guard isDictating else { return }
-        stopDictation(reason: "input channel changed by user", finalizeRemainingAudio: false)
-        startDictation()
+        restartOnNewInput(reason: "input channel changed by user")
+    }
+
+    /// Stops the running session and starts the same kind again: a quick
+    /// capture restarts as a capture, never as a dictation into the app.
+    private func restartOnNewInput(reason: String) {
+        let quickCapture = sessionIsQuickCapture
+        stopDictation(reason: reason, finalizeRemainingAudio: false)
+        startDictation(outputMode: quickCapture ? .overlayBuffer : nil, quickCapture: quickCapture)
     }
 
     func startDictation(outputMode: DictationOutputMode? = nil) {
@@ -640,7 +646,6 @@ final class DictationSessionController {
 
     func startDictation(outputMode: DictationOutputMode?, quickCapture: Bool) {
         guard !isDictating else { return }
-        requestedQuickCapture = quickCapture
         onDictationStartRequested?()
         guard !isConnectingRealtimeSession else {
             statusText = StatusStrings.connectingRealtimeBackend
@@ -682,6 +687,9 @@ final class DictationSessionController {
 
         switch currentMicrophoneAuthorizationStatus() {
         case .authorized:
+            // Set only where the start goes ahead: a start refused above must
+            // leave nothing for the next one (#732 review).
+            requestedQuickCapture = quickCapture
             beginDictationAfterManagedBackendIfNeeded(outputMode: outputMode)
         case .notDetermined:
             isAwaitingMicrophonePermission = true
@@ -703,6 +711,9 @@ final class DictationSessionController {
                         self.shortcuts.clearPushToTalkShortcutSessionAttempt()
                         return
                     }
+                    // This start's kind, not whatever a press made of the
+                    // flag while the prompt was up.
+                    self.requestedQuickCapture = quickCapture
                     self.beginDictationAfterManagedBackendIfNeeded(outputMode: outputMode)
                     // The grant may land long after the initiating tap ended
                     // (toggle taps have no release event). If secure input

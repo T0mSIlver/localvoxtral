@@ -121,10 +121,14 @@ extension SettingsStore {
         }
     }
 
-    /// Every key, for the places that display or report all three: the Settings
-    /// window and the diagnostics export.
+    /// Every key, for the places that display or report them all: the Settings
+    /// window and the diagnostics export. The Jev key only once quick capture
+    /// routing is on: a feature the user never turned on must not cost them
+    /// a Keychain prompt.
     func ensureAllSecretsLoaded() {
-        ensureSecretsLoaded(Set(SecretKey.allCases))
+        var keys = Set(SecretKey.allCases)
+        if !quickCaptureJevEnabled { keys.remove(.jevAPIKey) }
+        ensureSecretsLoaded(keys)
     }
 
     /// The secrets the current configuration can actually use. Managed local
