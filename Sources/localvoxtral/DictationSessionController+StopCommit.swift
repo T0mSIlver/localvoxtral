@@ -76,6 +76,10 @@ extension DictationSessionController {
     /// An Overlay Buffer session that was not cancelled: transcribed again
     /// first when the session has a second pass, then committed.
     private func commitOverlayBufferSession(sessionMode: DictationOutputMode) {
+        if sessionIsQuickCapture {
+            commitQuickCapture(sessionMode: sessionMode)
+            return
+        }
         let sessionAudio = audio.sessionRecording.finish()
         let polishingConfig = settings.llmPolishingConfiguration
         let sample = OverlayStopSample(
@@ -662,7 +666,44 @@ extension DictationSessionController {
     }
 
 
+    /// A quick capture's stop (#725): the words are saved in History first,
+    /// then handed to the Inbox; nothing is inserted, polished or sampled
+    /// from the screen or the clipboard. The overlay closes as a cancelled
+    /// one does.
+    private func commitQuickCapture(sessionMode: DictationOutputMode) {
+        let sessionAudio = audio.sessionRecording.finish()
+        let text = transcript.currentDictationEventText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let recordID = UUID()
+        let keptInHistory = !text.isEmpty && settings.dictationHistoryRetention.savesDictations && sessionStore != nil
+        saveSessionRecord(
+            id: recordID,
+            startedAt: sessionStartedAt ?? Date(),
+            rawText: text,
+            polishedText: nil,
+            polishingDuration: nil,
+            provider: sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue,
+            model: sessionModelName ?? settings.effectiveModelName,
+            outputMode: DictationSessionRecord.quickCaptureOutputMode,
+            targetAppBundleID: nil,
+            status: .sttCompleted,
+            commitSucceeded: true,
+            quickCaptureDestination: "Inbox",
+            audio: sessionStoresAudio ? sessionAudio : nil,
+            joined: nil
+        )
+        overlayBufferCoordinator.reset()
+        completeStoppedSessionCleanup(sessionMode: sessionMode, overlayCommitOutcome: nil, shouldCommitOverlay: true)
+        guard !text.isEmpty else {
+            Log.dictation.info("quick capture: nothing was said")
+            return
+        }
+        Log.dictation.info("quick capture: \(text.count, privacy: .public) chars to the inbox")
+        statusText = StatusStrings.quickCaptureSaved
+        onQuickCapture?(text, keptInHistory ? recordID : nil)
+    }
+
     func saveSessionRecord(
+        id: UUID = UUID(),
         startedAt: Date,
         rawText: String,
         polishedText: String?,
@@ -676,6 +717,7 @@ extension DictationSessionController {
         polishProfile: String? = nil,
         polishContextSummary: String? = nil,
         clipboardPayload: String? = nil,
+        quickCaptureDestination: String? = nil,
         audio: Data? = nil,
         joined: AgentCLIJoin?
     ) {
@@ -686,6 +728,7 @@ extension DictationSessionController {
             return
         }
         let record = DictationSessionRecord(
+            id: id,
             startedAt: startedAt,
             finishedAt: Date(),
             rawText: rawText,
@@ -698,7 +741,8 @@ extension DictationSessionController {
             status: status,
             commitSucceeded: commitSucceeded,
             polishProfile: polishProfile,
-            polishContextSummary: polishContextSummary
+            polishContextSummary: polishContextSummary,
+            quickCaptureDestination: quickCaptureDestination
         )
         // What `localvoxtral history` and `status` report (#721): the
         // session's own directory or remote label, nothing read from disk.

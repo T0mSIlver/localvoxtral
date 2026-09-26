@@ -17,6 +17,8 @@ extension SettingsStore {
         case .realtimeAPIKey: return Keys.apiKey
         case .llmPolishingAPIKey: return Keys.llmPolishingAPIKey
         case .mistralAPIKey: return Keys.mistralAPIKey
+        // Never stored in UserDefaults; the name only has to be unused.
+        case .jevAPIKey: return Keys.jevAPIKeyNeverStored
         }
     }
 
@@ -188,6 +190,7 @@ extension SettingsStore {
         case .realtimeAPIKey: apiKey = stored
         case .llmPolishingAPIKey: llmPolishingAPIKey = stored
         case .mistralAPIKey: mistralAPIKey = stored
+        case .jevAPIKey: jevAPIKey = stored
         }
     }
 

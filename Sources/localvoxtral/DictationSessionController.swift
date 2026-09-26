@@ -379,6 +379,19 @@ final class DictationSessionController {
     /// then an Overlay Buffer dictation is never a command.
     @ObservationIgnored
     var sessionNavigator: SessionNavigator?
+    /// Asked for by the start that is under way; latched into
+    /// `sessionIsQuickCapture` with the output mode, so a start that never
+    /// got that far leaves nothing for the next dictation.
+    @ObservationIgnored
+    var requestedQuickCapture = false
+    /// This session is a quick capture (#725): its words go to the Inbox,
+    /// never into the focused app.
+    @ObservationIgnored
+    var sessionIsQuickCapture = false
+    /// Where a stopped quick capture's words go, with its History record's
+    /// id when History kept it. The view model points it at the Inbox.
+    @ObservationIgnored
+    var onQuickCapture: (@MainActor (_ text: String, _ historyRecordID: UUID?) -> Void)?
     @ObservationIgnored
     var polishAndCommitTask: Task<Void, Never>?
     /// Saves the dictation `polishAndCommitTask` is polishing, as not
@@ -607,7 +620,27 @@ final class DictationSessionController {
     }
 
     func startDictation(outputMode: DictationOutputMode? = nil) {
+        startDictation(outputMode: outputMode, quickCapture: false)
+    }
+
+    /// The quick capture shortcut: an Overlay Buffer capture, or the stop of
+    /// the one running. A press during an ordinary dictation does nothing,
+    /// so it can never turn that dictation into a capture.
+    func toggleQuickCapture() {
+        if isDictating {
+            guard sessionIsQuickCapture else {
+                Log.dictation.info("quick capture: pressed during a dictation; ignored")
+                return
+            }
+            stopDictation(reason: "quick capture toggle")
+            return
+        }
+        startDictation(outputMode: .overlayBuffer, quickCapture: true)
+    }
+
+    func startDictation(outputMode: DictationOutputMode?, quickCapture: Bool) {
         guard !isDictating else { return }
+        requestedQuickCapture = quickCapture
         onDictationStartRequested?()
         guard !isConnectingRealtimeSession else {
             statusText = StatusStrings.connectingRealtimeBackend

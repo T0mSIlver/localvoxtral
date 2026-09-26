@@ -79,6 +79,31 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, true)
     }
 
+    /// Quick capture (#725): the shortcut's dictation runs as Overlay Buffer,
+    /// but its stop commits nothing to the focused app. The History record
+    /// is written first, then the words go to the Inbox.
+    func testAQuickCaptureGoesToTheInboxNeverIntoTheFocusedApp() async throws {
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        let captured = QuickCaptures()
+        pipeline.viewModel.session.onQuickCapture = { text, _ in
+            captured.all.append((text, pipeline.records.all.count))
+        }
+
+        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
+        XCTAssertEqual(pipeline.overlay.startSessionAnchors.count, 1, "a capture opens the overlay whatever the menu bar mode")
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved)
+
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reaches the focused app")
+        XCTAssertEqual(captured.all.map(\.text), [Self.phrase])
+        XCTAssertEqual(captured.all.first?.recordsWritten, 1, "saved in History before the Inbox gets it")
+        let record = try XCTUnwrap(pipeline.records.all.first)
+        XCTAssertEqual(record.outputMode, DictationSessionRecord.quickCaptureOutputMode)
+        XCTAssertEqual(record.quickCaptureDestination, "Inbox")
+        XCTAssertNil(record.polishedText)
+        XCTAssertFalse(pipeline.viewModel.session.sessionIsQuickCapture, "the next dictation is an ordinary one")
+    }
+
     /// Claude Desktop (#660): a text field whose prompt sends on Return. The
     /// dictation starts before Electron has built its accessibility tree, so
     /// the AX probe finds nothing focused, which alone reads as a terminal.
@@ -557,9 +582,11 @@ final class DictationPipelineTests: XCTestCase {
     /// Start, connect, open the microphone, and get one captured chunk to the
     /// server through the chunk buffer and the send loop.
     private func startAndSpeak(
-        _ pipeline: Pipeline, file: StaticString = #filePath, line: UInt = #line
+        _ pipeline: Pipeline,
+        start: ((DictationViewModel) -> Void)? = nil,
+        file: StaticString = #filePath, line: UInt = #line
     ) async {
-        pipeline.viewModel.startDictation()
+        if let start { start(pipeline.viewModel) } else { pipeline.viewModel.startDictation() }
         await pipeline.microphone.waitUntilCapturing(file: file, line: line)
         XCTAssertTrue(pipeline.viewModel.isDictating, file: file, line: line)
         XCTAssertEqual(pipeline.viewModel.statusText, "Listening...", file: file, line: line)
@@ -593,6 +620,7 @@ final class DictationPipelineTests: XCTestCase {
     /// the client closes, and the session commits and records.
     private func stopAndFinalize(
         _ pipeline: Pipeline, finalText: String = DictationPipelineTests.phrase,
+        finalStatus: String = DictationViewModel.StatusStrings.ready,
         file: StaticString = #filePath, line: UInt = #line
     ) async {
         let viewModel = pipeline.viewModel
@@ -624,7 +652,7 @@ final class DictationPipelineTests: XCTestCase {
 
         XCTAssertFalse(viewModel.isFinalizingStop, file: file, line: line)
         XCTAssertFalse(viewModel.isDictating, file: file, line: line)
-        XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready, file: file, line: line)
+        XCTAssertEqual(viewModel.statusText, finalStatus, file: file, line: line)
         XCTAssertNil(viewModel.lastError, file: file, line: line)
         XCTAssertTrue(pipeline.presenter.presented.isEmpty, file: file, line: line)
     }
@@ -725,6 +753,11 @@ private final class TypedText {
 
 /// Every record a session wrote; `written` resolves on the first.
 @MainActor
+@MainActor
+private final class QuickCaptures {
+    var all: [(text: String, recordsWritten: Int)] = []
+}
+
 private final class SessionRecords {
     private(set) var all: [DictationSessionRecord] = []
     let written = BoundedWait()
