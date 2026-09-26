@@ -79,15 +79,28 @@ struct OnboardingWizardView: View {
 // MARK: - Header
 
 private struct OnboardingHeader: View {
-    let systemImage: String
+    enum Icon {
+        case symbol(String)
+        /// The bundle's dock icon, `AppIcon.icns` in a packaged build.
+        case app
+    }
+
+    let icon: Icon
     let title: String
     let subtitle: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Image(systemName: systemImage)
-                .font(.system(size: 34, weight: .regular))
-                .foregroundStyle(.tint)
+            switch icon {
+            case .symbol(let name):
+                Image(systemName: name)
+                    .font(.system(size: 34, weight: .regular))
+                    .foregroundStyle(.tint)
+            case .app:
+                Image(nsImage: NSApplication.shared.applicationIconImage)
+                    .resizable()
+                    .frame(width: 64, height: 64)
+            }
 
             Text(title)
                 .font(.system(size: 22, weight: .semibold))
@@ -107,7 +120,7 @@ private struct WelcomePage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             OnboardingHeader(
-                systemImage: "waveform.circle",
+                icon: .app,
                 title: "Welcome to localvoxtral",
                 subtitle: "Dictate into any app from the menu bar."
             )
@@ -123,7 +136,7 @@ private struct PermissionsPage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             OnboardingHeader(
-                systemImage: "hand.raised.circle",
+                icon: .symbol("hand.raised.circle"),
                 title: "Grant permissions",
                 subtitle: "Allow microphone recording and typing into other apps."
             )
@@ -148,7 +161,7 @@ private struct EnginePage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             OnboardingHeader(
-                systemImage: "cpu",
+                icon: .symbol("cpu"),
                 title: "Choose your engine",
                 subtitle: "Where dictation and polishing run. You can change this later in Settings."
             )
@@ -246,7 +259,7 @@ private struct DownloadsPage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             OnboardingHeader(
-                systemImage: "arrow.down.circle",
+                icon: .symbol("arrow.down.circle"),
                 title: "Set up the local engine",
                 subtitle: "Start the model download when you are ready."
             )
@@ -360,7 +373,7 @@ private struct FinishPage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             OnboardingHeader(
-                systemImage: "checkmark.circle",
+                icon: .symbol("checkmark.circle"),
                 title: "You're all set",
                 subtitle: "Try your dictation trigger in any text field."
             )
