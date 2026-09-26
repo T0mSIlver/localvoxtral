@@ -518,6 +518,7 @@ extension DictationSessionController {
                 textInsertion.stopInsertionRetryTask()
             }
             armSilenceAutoStopIfEnabled()
+            armPromptRelayForSession()
             if isOverlayBufferModeEnabled {
                 startOverlayBufferSession()
             } else {
@@ -695,6 +696,7 @@ extension DictationSessionController {
         realtimeFinalizationLastActivityAt = nil
         firstChunkPreprocessor.reset()
         textInsertion.endLiveReplacementSession()
+        textInsertion.endPromptRelay()
         overlayBufferCoordinator.reset()
         if disconnectSocket {
             activeRealtimeClient.disconnect()

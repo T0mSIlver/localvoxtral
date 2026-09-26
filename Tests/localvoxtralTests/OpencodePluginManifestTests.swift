@@ -37,7 +37,8 @@ final class OpencodePluginManifestTests: XCTestCase {
         XCTAssertGreaterThan(bytes, 0)
         // One dependency-free file is the premise; a bundle would mean the
         // premise is gone.
-        XCTAssertLessThan(bytes, 24 * 1024, "the plugin must stay one small auditable file")
+        // 32 KiB since the prompt relay (#719), the plugin's second job.
+        XCTAssertLessThan(bytes, 32 * 1024, "the plugin must stay one small auditable file")
     }
 
     func testNoAwaitAnywhereSoNoHookCanStallTheUsersTurn() throws {

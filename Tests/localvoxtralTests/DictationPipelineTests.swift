@@ -1,4 +1,6 @@
+import ClaudeContextWire
 import Foundation
+import localvoxtralTestSupport
 import XCTest
 @testable import localvoxtral
 
@@ -201,6 +203,167 @@ final class DictationPipelineTests: XCTestCase {
 
         XCTAssertEqual(pasted, [text])
         XCTAssertEqual(typed.text, "", "nothing is typed key by key")
+    }
+
+    // MARK: - opencode prompt relay (#719)
+
+    /// Live Auto-Paste into an opencode pane that declared a prompt relay:
+    /// the words are appended to its prompt while the dictation runs, and
+    /// not one key is typed.
+    func testLiveAutoPasteIntoAnOpencodePaneAppendsThroughItsRelay() async throws {
+        let relay = try FakeOpencodePromptRelay()
+        addTeardownBlock { relay.stop() }
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        joinOpencodePane(pipeline, relay: relay.relay(sessionID: "ses_a").address)
+        let typed = recordTypedText(pipeline)
+
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+        let appendedWhileDictating = await relay.waitForCalls(1)
+        XCTAssertTrue(appendedWhileDictating)
+        XCTAssertTrue(pipeline.viewModel.isDictating, "appended before the stop, not by it")
+
+        await stopAndFinalize(pipeline)
+        let phrase = Self.phrase
+        let appendedAll = await relay.waitUntil { calls in
+            calls.compactMap(\.text).joined() == phrase
+        }
+        XCTAssertTrue(appendedAll, "appended: \(relay.appendedText.debugDescription)")
+        XCTAssertEqual(Set(relay.calls.map(\.path)), ["/tui/append-prompt"])
+        XCTAssertEqual(Set(relay.calls.map(\.sessionID)), ["ses_a"])
+        XCTAssertEqual(typed.text, "", "nothing is typed")
+    }
+
+    /// The spoken send trigger with the relay: focus moves to another app
+    /// after the dictation starts, and the text still lands in the pane's
+    /// prompt, submitted by the relay, with no Return pressed anywhere.
+    func testLiveAutoPasteSendTriggerSubmitsThroughTheRelayWhereverFocusWent() async throws {
+        let relay = try FakeOpencodePromptRelay()
+        addTeardownBlock { relay.stop() }
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        pipeline.viewModel.settings.liveSpokenSendEnabled = true
+        joinOpencodePane(pipeline, relay: relay.relay(sessionID: "ses_a").address)
+        var returns: [pid_t] = []
+        let typed = recordTypedText(pipeline, returnKeyPoster: { pid in
+            returns.append(pid)
+            return true
+        })
+
+        await startAndSpeak(pipeline)
+        // The user switches to a browser mid-dictation.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Safari" }
+        pipeline.server.send(["type": "transcription.delta", "delta": "run the tests, send"])
+        pipeline.server.send(["type": "transcription.done", "text": "run the tests, send it."])
+        let submitted = await relay.waitUntil { $0.last?.path == "/tui/submit-prompt" }
+        XCTAssertTrue(submitted, "calls: \(relay.calls)")
+        XCTAssertEqual(relay.appendedText, "run the tests")
+
+        await stopAndFinalize(pipeline, finalText: "run the tests, send it.")
+        XCTAssertEqual(relay.calls.filter { $0.path == "/tui/submit-prompt" }.count, 1)
+        XCTAssertEqual(returns, [], "no Return key")
+        XCTAssertEqual(typed.text, "")
+    }
+
+    /// Overlay Buffer with the relay: the committed text is appended once and
+    /// the spoken trigger submits it.
+    func testOverlayBufferCommitsOnceThroughTheRelayAndSubmits() async throws {
+        let relay = try FakeOpencodePromptRelay()
+        addTeardownBlock { relay.stop() }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        pipeline.overlay.insertsThroughCommitter = true
+        joinOpencodePane(pipeline, relay: relay.relay(sessionID: "ses_a").address)
+        let typed = recordTypedText(pipeline)
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.delta", "delta": "run the tests, send it."])
+        await stopAndFinalize(pipeline, finalText: "run the tests, send it.")
+
+        let submitted = await relay.waitUntil { $0.last?.path == "/tui/submit-prompt" }
+        XCTAssertTrue(submitted, "calls: \(relay.calls)")
+        XCTAssertEqual(relay.calls.map(\.path), ["/tui/append-prompt", "/tui/submit-prompt"])
+        XCTAssertEqual(relay.appendedText, "run the tests")
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 1)
+        XCTAssertEqual(typed.text, "")
+    }
+
+    /// A relay that refuses the connection: the dictation types, as it
+    /// would with no relay, and nothing is lost or doubled.
+    func testLiveAutoPasteFallsBackToKeystrokesWhenTheRelayRefusesTheConnection() async throws {
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        let closedPort = try unusedLoopbackPort()
+        joinOpencodePane(
+            pipeline,
+            relay: OpencodePromptRelayAddress(port: Int(closedPort), token: String(repeating: "5a", count: 32))
+        )
+        let typed = recordTypedText(pipeline)
+
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline)
+
+        let typedAll = await typed.waitFor(Self.phrase)
+        XCTAssertTrue(typedAll, "typed: \(typed.text.debugDescription)")
+        XCTAssertFalse(pipeline.viewModel.textInsertion.promptRelayIsHealthy)
+    }
+
+    /// Joins the dictation to an opencode pane: a Ghostty pane whose TTY a
+    /// fresh focus declaration names, with `relay` on it, in a registry the
+    /// session's resolver reads.
+    private func joinOpencodePane(_ pipeline: Pipeline, relay: OpencodePromptRelayAddress) {
+        let tty = "/dev/ttys042"
+        let opencodePID: Int32 = 4242
+        let epoch = Date(timeIntervalSince1970: 3_000_000)
+        let registry = ClaudeSessionRegistry(now: { epoch }, isProcessAlive: { _ in true })
+        let origin = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
+        let process = ClaudeHookProcessInfo(hookPID: opencodePID, claudePID: opencodePID, tty: tty)
+        registry.ingest(
+            ClaudeHookRecord(event: .sessionStart, agent: .opencode, sessionID: "ses_a", timestamp: 0,
+                             process: ClaudeHookProcessInfo(hookPID: opencodePID, claudePID: opencodePID)),
+            origin: origin
+        )
+        XCTAssertNotNil(registry.ingest(
+            ClaudeHookRecord(event: .focusChanged, agent: .opencode, sessionID: "ses_a", timestamp: 0,
+                             process: process, promptRelay: relay),
+            origin: origin
+        ))
+        pipeline.viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
+            registry: registry, focusedTerminalTTY: { _ in tty }
+        )
+        let ghostty = TerminalScreenAllowlist.ghosttyBundleID
+        TerminalScreenContextSource.debugFrontmostTargetOverride = {
+            TerminalScreenTarget(pid: 4343, bundleID: ghostty)
+        }
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { ghostty }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { @MainActor in
+            TerminalScreenContextSource.debugFrontmostTargetOverride = nil
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+            TerminalTargetDetector.debugSecureEventInputOverride = nil
+        }
+    }
+
+    /// Records every key the dictation would type.
+    private func recordTypedText(
+        _ pipeline: Pipeline, returnKeyPoster: ((pid_t) -> Bool)? = nil
+    ) -> TypedText {
+        let typed = TypedText()
+        pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { chunk in
+                typed.append(chunk)
+                return true
+            },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false },
+            returnKeyPoster: returnKeyPoster ?? { _ in false },
+            frontmostPIDReader: { 4343 },
+            commandVPaster: { text in
+                typed.append(text)
+                return true
+            }
+        )
+        return typed
     }
 
     // MARK: - The two halves every scenario shares

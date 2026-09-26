@@ -24,6 +24,9 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     /// Runs inside `commitIfNeeded`, for tests that order the commit against
     /// what follows it.
     var onCommit: (() -> Void)?
+    /// When set, `commitIfNeeded` hands the buffer to the committer it is
+    /// given, as the real overlay does, for tests of where the text went.
+    var insertsThroughCommitter = false
     /// Runs after each `refresh` is recorded, for tests that wait for the
     /// buffer to show a text.
     var onRefresh: ((BufferCall) -> Void)?
@@ -61,11 +64,15 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
 
     @discardableResult
     func commitIfNeeded(
-        using _: OverlayTextCommitting,
+        using textCommitter: OverlayTextCommitting,
         autoCopyEnabled _: Bool
     ) -> OverlayBufferCommitOutcome {
         commitCallCount += 1
         committedTexts.append(commitBufferText)
+        if insertsThroughCommitter,
+           !textCommitter.insertTextPrioritizingKeyboard(commitBufferText, preferredAppPID: commitTargetAppPID).isSuccess {
+            return .failed(message: "insert failed")
+        }
         onCommit?()
         return commitOutcome
     }
