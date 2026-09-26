@@ -77,13 +77,15 @@ extension DictationSessionController {
         record.timings.captureMilliseconds =
             Double(elapsed.seconds) * 1000 + Double(elapsed.attoseconds) / 1e15
         // Asked again: the switch or History may have gone off during the
-        // assembly, and that deleted the folder this would write into.
+        // assembly, and that deleted the folder this would write into. The
+        // epoch covers a delete that lands between here and the write.
         guard diagnosticRecordsWanted else { return }
+        let epoch = store.deletionEpoch()
         // The watch is already open; this only tells it which record to patch.
         // A failed write leaves it open until its window closes, where it finds
         // no record and flushes nothing — the signal costs the record, never
         // the other way around.
-        let url = await DiagnosticRecordWriter.write(record, store: store)
+        let url = await DiagnosticRecordWriter.write(record, store: store, unlessDeletedSince: epoch)
         // The History pane's count and size include this record now.
         if url != nil { sessionStore?.onChange?() }
         if let url, let watchToken {

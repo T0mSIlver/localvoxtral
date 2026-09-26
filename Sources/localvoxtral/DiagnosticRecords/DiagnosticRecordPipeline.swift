@@ -485,14 +485,18 @@ enum DiagnosticRecordWriter {
     @discardableResult
     nonisolated static func write(
         _ record: DiagnosticRecord,
-        store: DiagnosticRecordStore
+        store: DiagnosticRecordStore,
+        unlessDeletedSince epoch: UInt64? = nil
     ) async -> URL? {
         do {
-            let url = try store.write(record)
+            let url = try store.write(record, unlessDeletedSince: epoch)
             Log.backends.info(
                 "Diagnostic record written: \(url.lastPathComponent, privacy: .public)"
             )
             return url
+        } catch DiagnosticRecordStore.StoreError.deletedSinceDecision {
+            Log.backends.info("Diagnostic record dropped: records were deleted while it was built")
+            return nil
         } catch {
             // Loud by convention (AGENTS.md): a silent failure path here means
             // the records quietly stop.

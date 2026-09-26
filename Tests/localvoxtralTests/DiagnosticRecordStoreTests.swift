@@ -230,6 +230,20 @@ final class DiagnosticRecordStoreTests: XCTestCase {
         XCTAssertEqual(store.summary().records, 0)
     }
 
+    /// A write decided before the user turned records off must not land
+    /// after the delete.
+    func testAWriteDecidedBeforeADeleteAllIsRefused() throws {
+        let store = makeStore()
+        let epoch = store.deletionEpoch()
+        store.removeAll()
+
+        XCTAssertThrowsError(try store.write(makeRecord(), unlessDeletedSince: epoch)) {
+            XCTAssertEqual($0 as? DiagnosticRecordStore.StoreError, .deletedSinceDecision)
+        }
+        XCTAssertEqual(io.fileNames, [])
+        XCTAssertNoThrow(try store.write(makeRecord(), unlessDeletedSince: store.deletionEpoch()))
+    }
+
     func testFileNameParsingRejectsForeignNames() {
         XCTAssertNil(DiagnosticRecordFileName.parse("notes.txt"))
         XCTAssertNil(DiagnosticRecordFileName.parse("dictation-garbage.json"))

@@ -750,6 +750,9 @@ extension DictationSessionController {
             // A pass already reading the history would send it to the hosted
             // model after the user said not to keep it.
             termSuggestions.stop()
+            // The trim below sweeps them too; this one also stops a record
+            // already on its way to disk.
+            sessionStore?.deleteAllDiagnosticRecords()
         }
         guard let cutoff = retention.cutoff(now: now) else { return }
         sessionStore?.trim(olderThan: cutoff)

@@ -68,6 +68,8 @@ struct DiagnosticRecordStore: Sendable {
 
     enum StoreError: Error, Equatable {
         case encodingFailed
+        /// Every record was deleted after the writer decided to write.
+        case deletedSinceDecision
         /// The id is not a History entry's id.
         case invalidID(String)
         /// The record exists but could not be read back or decoded.
@@ -80,6 +82,13 @@ struct DiagnosticRecordStore: Sendable {
     /// that matters is the directory. Never held across an `await`, and never
     /// re-entered: the locked paths call the private unlocked bodies.
     private static let recordMutationLock = Mutex(0)
+
+    /// Bumped by `removeAll()`, per folder. A write that started before the
+    /// user turned records off must not land after the delete: the writer
+    /// reads the epoch when it last checked the switch, and `write` refuses
+    /// once it has moved. Only a delete-everything bumps it; the orphan sweep
+    /// after every trim must not cost the record being written.
+    private static let deletionEpochs = Mutex<[String: UInt64]>([:])
 
     private let directoryURL: URL
     private let io: ClaudeRemoteHostStoreIO
@@ -118,10 +127,20 @@ struct DiagnosticRecordStore: Sendable {
 
     // MARK: - Writing
 
+    /// The folder's deletion epoch now. See `deletionEpochs`.
+    func deletionEpoch() -> UInt64 {
+        Self.deletionEpochs.withLock { $0[directoryURL.path] ?? 0 }
+    }
+
     /// Redacts `record`, writes it, and prunes. Returns the file it wrote.
+    /// With `epoch`, refuses when every record was deleted since the caller
+    /// read it.
     @discardableResult
-    func write(_ record: DiagnosticRecord) throws -> URL {
-        try Self.recordMutationLock.withLock { _ in try writeLocked(record) }
+    func write(_ record: DiagnosticRecord, unlessDeletedSince epoch: UInt64? = nil) throws -> URL {
+        try Self.recordMutationLock.withLock { _ in
+            if let epoch, epoch != deletionEpoch() { throw StoreError.deletedSinceDecision }
+            return try writeLocked(record)
+        }
     }
 
     private func writeLocked(_ record: DiagnosticRecord) throws -> URL {
@@ -247,6 +266,7 @@ struct DiagnosticRecordStore: Sendable {
     @discardableResult
     func removeAll() -> Int {
         Self.recordMutationLock.withLock { _ in
+            Self.deletionEpochs.withLock { $0[directoryURL.path, default: 0] += 1 }
             let names = ((try? directoryIO.contents(of: directoryURL)) ?? nil) ?? []
             var removed = 0
             for name in names {
