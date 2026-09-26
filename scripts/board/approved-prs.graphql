@@ -8,7 +8,8 @@ query($owner: String!, $number: Int!) {
       field(name: "Status") {
         ... on ProjectV2SingleSelectField { id options { id name } }
       }
-      items(first: 20, query: "is:pr is:open status:Done") {
+      items(first: 50, query: "is:pr is:open status:Done") {
+        pageInfo { hasNextPage }
         nodes {
           id
           content {

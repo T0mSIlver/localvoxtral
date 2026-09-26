@@ -192,18 +192,17 @@ premerge() {
     return
   fi
   # CI tested the merge with main as it was when the run was created. That
-  # still holds unless what landed since touches the PR's code or changes a
-  # check the PR never ran.
+  # still holds unless what landed since touches a file the PR changes or
+  # changes a check the PR never ran.
   landed="$(git log --since="$created" --format= --name-only "$main" | sed '/^$/d' | sort -u)"
   shared="$(
     {
       grep -E '^(\.github/|scripts/ci/)' <<<"$landed" || true
-      comm -12 <(echo "$landed") <(git diff --name-only "$(git merge-base "$main" "$pr")" "$pr" | sort -u) \
-        | grep -E '^(Sources/|Tests/|scripts/|\.github/|Package\.(swift|resolved)$)' || true
+      comm -12 <(echo "$landed") <(git diff --name-only "$(git merge-base "$main" "$pr")" "$pr" | sort -u)
     } | sort -u | head -5 | tr '\n' ' '
   )"
   if [[ -n "$shared" ]]; then
-    echo "wait main changed ${shared% } since the CI run: run the combined check (orchestrate-sessions), then merge by hand"
+    echo "wait main changed ${shared% } since the CI run: run the combined check (a hosted combo PR, orchestrate-sessions), then merge by hand"
     return
   fi
   echo merge
@@ -238,15 +237,18 @@ merge_pr() {
     -f commit_title="$title (#$n)" >/dev/null || return 1
   echo "#$n merged"
   # Deleting a PR's base branch closes that PR: retarget first.
-  stacked="$(gh api "repos/$REPO/pulls?state=open&base=$branch" --jq '.[].number')" || stacked=""
+  if ! stacked="$(gh api --paginate "repos/$REPO/pulls?state=open&base=$branch&per_page=100" --jq '.[].number')"; then
+    echo "#$n merged, but listing PRs stacked on it failed; $branch kept" >&2
+    return 2
+  fi
   for s in $stacked; do
     gh api -X PATCH "repos/$REPO/pulls/$s" -f base=main >/dev/null \
-      || { echo "#$n merged, but retargeting #$s failed; $branch kept" >&2; return 0; }
+      || { echo "#$n merged, but retargeting #$s failed; $branch kept" >&2; return 2; }
     gh api -X DELETE "repos/$REPO/issues/$s/labels/waits:stack" >/dev/null 2>&1 || true
     echo "#$s retargeted to main"
   done
   gh api -X DELETE "repos/$REPO/git/refs/heads/$branch" >/dev/null 2>&1 \
-    || echo "#$n merged, but deleting $branch failed" >&2
+    || { echo "#$n merged, but deleting $branch failed" >&2; return 2; }
 }
 
 REPLY="$TMP_DIR/reply.json"
@@ -292,14 +294,18 @@ while read -r decision <&3; do
 
   case "$verdict" in
     merge)
-      if merge_pr "$decision"; then
-        if [[ "$(jq -r .hand_check <<<"$decision")" == true ]]; then
-          mkdir -p "$STATE_DIR"
-          echo "$(jq -r .item <<<"$decision") $n" >>"$AFTER_MERGE"
-        fi
-      else
+      # 0 merged, 1 not merged, 2 merged but the branch cleanup stopped.
+      merged=0
+      merge_pr "$decision" || merged=$?
+      if [[ "$merged" == 1 ]]; then
         echo "#$n merge failed" >&2
         STATUS=1
+        continue
+      fi
+      [[ "$merged" == 0 ]] || STATUS=1
+      if [[ "$(jq -r .hand_check <<<"$decision")" == true ]]; then
+        mkdir -p "$STATE_DIR"
+        echo "$(jq -r .item <<<"$decision") $n" >>"$AFTER_MERGE"
       fi
       ;;
     back)
@@ -317,5 +323,10 @@ while read -r decision <&3; do
       ;;
   esac
 done 3< <(decide <"$REPLY")
+
+if [[ "$(jq -r '.data.user.projectV2.items.pageInfo.hasNextPage' "$REPLY")" == true ]]; then
+  echo "more than 50 open PRs in Done: this pass saw the first 50" >&2
+  STATUS=1
+fi
 
 exit "$STATUS"

@@ -256,16 +256,18 @@ mergeability and checks. For each PR it prints one line:
 
 | Verdict | When | What the pass does |
 |---|---|---|
-| `wait` | stacked, a `waits:` label, a draft, a check still running, or `build-test`, `linux` or `mac-lanes` not green yet; also a head that moved since the query, or main changed the PR's code or a check since its CI run | nothing; the card stays in Done because the OK still holds |
+| `wait` | stacked, a `waits:` label, a draft, a check still running, or `build-test`, `linux` or `mac-lanes` not green yet; also a head that moved since the query, or main changed a file the PR changes, or a check, since its CI run | nothing; the card stays in Done because the OK still holds |
 | `back` | a failed or cancelled check (the newest run of each counts), a conflict with main, a fork PR, a dependency pinned to a fork | moves the card to Needs human review, then comments the reason and the failed job's log tail |
-| `merge` | everything else | squash-merges at the checked sha, retargets PRs stacked on it to main, deletes the branch |
+| `merge` | everything else | squash-merges at the checked sha, retargets PRs stacked on it to main, then deletes the branch |
 
 A `waits:` label holds a PR even with a red check: someone is on it. The
 pre-merge check is the one in the orchestrate-sessions skill, in git: CI
 tested the merge with main as it was when the run was created, so only what
-landed since counts. When that touches the PR's code or `.github/` or
-`scripts/ci/`, the line says so and the scheduler runs the combined check and
-merges by hand. A merged PR with a hand check (the `needs-human-review` label
+landed since counts. When that touches a file the PR changes, `.github/` or
+`scripts/ci/`, the line says so, and the scheduler runs the combined check (a
+hosted combo PR) and merges by hand. Deleting a merged branch would close
+the PRs based on it, so when listing or retargeting them fails, the branch
+stays and the pass exits 1. A merged PR with a hand check (the `needs-human-review` label
 and Hand check steps in its body) goes back to Needs human review on the next
 pass, once GitHub's "Pull request merged" workflow has set it to Done.
 

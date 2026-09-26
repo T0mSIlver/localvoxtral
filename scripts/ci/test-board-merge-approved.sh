@@ -160,7 +160,8 @@ for arg in "$@"; do
 done
 case "$*" in
   "run view"*) printf 'linux\tRun core tests\t2026-09-27T09:01:00Z error: testThing failed\n' ;;
-  *"pulls?state=open&base=t/pr2"*) echo 8 ;; # #8 is stacked on #2
+  *"pulls?state=open&base=t/pr2&"*) echo 8 ;; # #8 is stacked on #2
+  *"pulls?state=open&base=t/pr1&"*) [[ -z "${STUB_LIST_FAILS:-}" ]] || exit 1 ;;
   *"pulls?state=open&base="*) ;;
   *) echo '{}' ;;
 esac
@@ -181,7 +182,7 @@ expected="#1 merge: checks green
 #2 merge: checks green
 #2 merged
 #8 retargeted to main
-#3 wait: main changed Sources/c.txt since the CI run: run the combined check (orchestrate-sessions), then merge by hand
+#3 wait: main changed Sources/c.txt since the CI run: run the combined check (a hosted combo PR, orchestrate-sessions), then merge by hand
 #4 back: conflicts with main
 #4 moved back to Needs human review
 #5 back: pins a dependency to a fork: https://github.com/someone/shortcutrecorder
@@ -225,5 +226,17 @@ got="$(run_pass "$TMP_DIR/empty.json")"
 grep -q 'item=ITEM1 .*option=404d76ac' "$TMP_DIR/calls" || fail "#1's card not moved on the next pass"
 [[ ! -s "$TMP_DIR/state/after-merge" ]] || fail "#1 still queued after its move"
 pass "a merged PR with a hand check goes to Needs human review on the next pass"
+
+# The stacked-PR lookup for #1's branch fails: the merge stands, the branch
+# stays so nothing based on it closes, and the pass exits 1.
+jq '.data.user.projectV2.items.nodes |= map(select(.content.number == 1))' \
+  "$TMP_DIR/pass-reply.json" >"$TMP_DIR/one-pr.json"
+: >"$TMP_DIR/calls"
+status=0
+got="$(STUB_LIST_FAILS=1 run_pass "$TMP_DIR/one-pr.json" 2>&1)" || status=$?
+[[ "$status" == 1 ]] || fail "failed lookup: exit $status, want 1"
+grep -q 'listing PRs stacked on it failed; t/pr1 kept' <<<"$got" || fail "failed lookup not reported: $got"
+! grep -q 'git/refs/heads/t/pr1' "$TMP_DIR/calls" || fail "t/pr1 deleted after a failed lookup"
+pass "a failed stacked-PR lookup keeps the branch and fails the pass"
 
 echo "All merge-approved tests passed."

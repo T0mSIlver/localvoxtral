@@ -1,8 +1,8 @@
 {
   "data": {
     "rateLimit": {
-      "cost": 1,
-      "remaining": 1682
+      "cost": 2,
+      "remaining": 4725
     },
     "user": {
       "projectV2": {
@@ -37,6 +37,9 @@
           ]
         },
         "items": {
+          "pageInfo": {
+            "hasNextPage": false
+          },
           "nodes": [
             {
               "id": "PVTI_item795",
