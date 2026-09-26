@@ -228,6 +228,14 @@ final class BackendProcessSupervisorTests: XCTestCase {
         XCTAssertEqual(summary, "test-backend exited 3 consecutive times.")
         let detail = try XCTUnwrap(optionalDetail)
         XCTAssertTrue(detail.contains("fatal backend failure"), detail)
+        // The backend writes count before it exits and .failed follows the
+        // third exit, so a missing file means something removed it or the
+        // write failed; the failure says which (#753).
+        guard FileManager.default.fileExists(atPath: countFile.path) else {
+            let left = (try? FileManager.default.contentsOfDirectory(atPath: directory.path))
+                .map { "left in the directory: \($0)" } ?? "the directory is gone"
+            return XCTFail("count is missing after 3 exits; \(left); backend output: \(supervisor.recentOutput)")
+        }
         XCTAssertEqual(try readCount(from: countFile), 3)
         XCTAssertEqual(
             sleeps.recordedDurations.filter { $0 >= .milliseconds(500) },

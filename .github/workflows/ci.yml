@@ -376,6 +376,34 @@ jobs:
             HerdrIntegrationTests \
             PolishContextPreparationTests
 
+      - name: PROOF ONLY (#753), removed before review
+        if: ${{ steps.ci_scope.outputs.docs_only != 'true' }}
+        run: |
+          # The unit shards run in a loop as load while one test runs 50 times.
+          stop="$RUNNER_TEMP/stop-753-load"
+          rm -f "$stop"
+          ( while [ ! -e "$stop" ]; do
+              ./scripts/ci/run-unit-shards.sh --coverage "$(sysctl -n hw.ncpu)" \
+                RealtimeAPIVLLMIntegrationTests SpeechHelperIntegrationTests \
+                AgentDictationE2EEvalTests HerdrIntegrationTests PolishContextPreparationTests \
+                >"$RUNNER_TEMP/load-753.log" 2>&1 || true
+            done ) &
+          load=$!
+          pass=0 failed=0
+          for i in $(seq 1 50); do
+            if swift test --build-system native --skip-build --ignore-lock \
+                --filter 'BackendProcessSupervisorTests/testMaxFailuresFailsWithStderrTail' \
+                >"$RUNNER_TEMP/one-753.log" 2>&1; then
+              pass=$((pass + 1))
+            else
+              failed=$((failed + 1))
+              grep -E 'error:|failed' "$RUNNER_TEMP/one-753.log" || tail -20 "$RUNNER_TEMP/one-753.log"
+            fi
+          done
+          touch "$stop"
+          wait "$load"
+          echo "PROOF testMaxFailuresFailsWithStderrTail under shard load: $pass passed, $failed failed of 50"
+
       - name: Upload complete unit-test log
         if: ${{ always() && steps.ci_scope.outputs.docs_only != 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
