@@ -21,13 +21,9 @@ struct IntegrationsContextSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
 
-    /// Where the group's Learn more link lands. Repo pages, not relative
-    /// links: Settings is a shipped app, not a doc site.
+    /// Where the group's Learn more link lands.
     private enum LearnMore {
-        static let polishContext = URL(
-            string:
-                "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/coding-agents.md#polish-context-what-each-toggle-sends"
-        )!
+        static let polishContext = DocsLink.page("docs/coding-agents/#polish-context-what-each-toggle-sends")
     }
 
     /// Same gate as the Text Processing polishing rows: context is only ever
@@ -99,9 +95,7 @@ struct IntegrationsContextSettingsPane: View {
 struct ClaudeCodeSettingsPane: View {
     let viewModel: DictationViewModel
 
-    private static let learnMoreURL = URL(
-        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/claude-code/README.md"
-    )!
+    private static let learnMoreURL = DocsLink.page("integrations/claude-code/")
 
     var body: some View {
         SettingsPage(tab: .integrationsClaude) {
@@ -121,9 +115,7 @@ struct ClaudeCodeSettingsPane: View {
 struct OpencodeSettingsPane: View {
     let viewModel: DictationViewModel
 
-    private static let learnMoreURL = URL(
-        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/opencode/README.md"
-    )!
+    private static let learnMoreURL = DocsLink.page("integrations/opencode/")
 
     var body: some View {
         SettingsPage(tab: .integrationsOpencode) {
@@ -139,9 +131,7 @@ struct OpencodeSettingsPane: View {
 struct VibeSettingsPane: View {
     let viewModel: DictationViewModel
 
-    private static let learnMoreURL = URL(
-        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/integrations/vibe/README.md"
-    )!
+    private static let learnMoreURL = DocsLink.page("integrations/vibe/")
 
     var body: some View {
         SettingsPage(tab: .integrationsVibe) {
@@ -161,9 +151,7 @@ struct VibeSettingsPane: View {
 struct HerdrSettingsPane: View {
     let viewModel: DictationViewModel
 
-    private static let savedMachinesURL = URL(
-        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/remote-claude-context.md#federated-herdr-machines"
-    )!
+    private static let savedMachinesURL = DocsLink.page("docs/remote-claude-context/#federated-herdr-machines")
 
     var body: some View {
         SettingsPage(tab: .integrationsHerdr) {
@@ -222,9 +210,7 @@ struct HerdrSettingsPane: View {
 struct RemoteHostsSettingsPane: View {
     let viewModel: DictationViewModel
 
-    private static let learnMoreURL = URL(
-        string: "https://github.com/T0mSIlver/localvoxtral/blob/main/docs/remote-claude-context.md"
-    )!
+    private static let learnMoreURL = DocsLink.page("docs/remote-claude-context/")
 
     /// Read ONCE, when the pane is constructed — like every other `debug.`
     /// default, this is a screenshot affordance, not a preference that may

@@ -1,0 +1,57 @@
+name: Docs Site
+
+# Builds the user docs into the site at t0msilver.github.io/localvoxtral and
+# checks every docs link the app's Settings open (scripts/docs-site/). A PR
+# gets the build and the check, and the site as an artifact; a push to main
+# deploys it. Hosted Ubuntu only.
+
+on:
+  pull_request:
+    paths: &site-paths
+      - README.md
+      - docs/**
+      - integrations/*/README.md
+      - assets/**
+      - Sources/**
+      - scripts/docs-site/**
+      - .github/workflows/docs-site.yml
+  push:
+    branches: [main]
+    paths: *site-paths
+  workflow_dispatch:
+
+concurrency:
+  group: docs-site-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      # Zensical is pre-1.0; bump the pin on purpose, and look at the site.
+      - run: pip install zensical==0.0.65
+      - run: scripts/docs-site/build.sh "$RUNNER_TEMP/docs-site"
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: ${{ runner.temp }}/docs-site/site
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
