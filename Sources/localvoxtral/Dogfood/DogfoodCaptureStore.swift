@@ -1,4 +1,4 @@
-#if LOCALVOXTRAL_DOGFOOD
+#if DEBUG || LOCALVOXTRAL_E2E_HARNESS
 
 import Foundation
 import Synchronization
@@ -32,7 +32,7 @@ struct DogfoodCaptureFileDirectoryIO: DogfoodCaptureDirectoryIO {
 
 /// Writes and prunes `DogfoodCaptureRecord`s on disk.
 ///
-/// Compiled only into a `LOCALVOXTRAL_DOGFOOD` build. Within one, records are
+/// Compiled only into a debug or instrumented build. Within one, records are
 /// still written only while the runtime opt-in is armed — the compile gate keeps
 /// the code out of shipped builds, and the setting keeps it off until the owner
 /// deliberately turns it on.

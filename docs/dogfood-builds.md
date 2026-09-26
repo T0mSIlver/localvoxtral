@@ -20,11 +20,14 @@ one of those four stages
 
 ## Two gates, both required
 
-1. **Compile flag** `LOCALVOXTRAL_DOGFOOD`
-   ([`Package.swift`](../Package.swift)). Ordinary builds don't compile the
-   capture code. Set the flag with the env var, or with the gitignored
-   `.dogfood-capture-enable` marker file. The marker exists because the Mac
-   build gate can't pass env vars; `remote-build.sh` writes and removes it.
+1. **Compile flag.** The capture code is gated
+   `#if DEBUG || LOCALVOXTRAL_E2E_HARNESS`
+   ([`Package.swift`](../Package.swift)): debug builds and the unit tests
+   compile it, release builds don't. `LOCALVOXTRAL_DOGFOOD` packages a release
+   build that carries it. Set that flag with the env var, or with the
+   gitignored `.dogfood-capture-enable` marker file. The marker exists because
+   the Mac build gate can't pass env vars; `remote-build.sh` writes and
+   removes it.
 2. **Runtime opt-in.** Even an instrumented binary records nothing until
    armed:
 
@@ -115,7 +118,8 @@ installed only while a window is open and removed the instant it closes.
 
 ## The control socket
 
-An instrumented build can also expose a local AF_UNIX control socket, so an
+A debug, dogfood or e2e-harness build (`LOCALVOXTRAL_E2E_HARNESS=1`, set only
+by the UI smoke workflow) can also expose a local AF_UNIX control socket, so an
 operator on the same machine can run a dictation and ask the app what it
 joined and why
 ([`DogfoodControlSocket.swift`](../Sources/localvoxtral/Dogfood/DogfoodControlSocket.swift)).
@@ -195,7 +199,7 @@ Limits to know before changing it:
 
 ## Dictating from a file
 
-An instrumented build launched with `LOCALVOXTRAL_DOGFOOD_AUDIO_FILE` set to an
+A build with the control socket, launched with `LOCALVOXTRAL_DOGFOOD_AUDIO_FILE` set to an
 absolute path dictates from that WAV in place of the microphone
 ([`DogfoodAudioFileSource.swift`](../Sources/localvoxtral/Dogfood/DogfoodAudioFileSource.swift)).
 An end-to-end check needs the same words on every run with nobody at the
@@ -232,8 +236,7 @@ end of the file.
 
 ## What it deliberately does not do
 
-- **No uploader, ever.** Records are local files; adding an uploader would
-  defeat the point of the compile gate.
+- **No uploader, ever.** Records are local files.
 - **Never breaks a dictation.** Capture runs after the text is committed. A
   write failure costs the record, loudly, never the commit.
 - **Not a keylogger.** See the two-gesture allowlist above.

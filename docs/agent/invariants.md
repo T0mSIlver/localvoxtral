@@ -2163,20 +2163,24 @@ there is not.
   refused it. Do not "improve" the diagnosis by quoting what came back: the
   echo is remote output, and remote output never travels.
 - **The dogfood control socket is an accepted tradeoff, and the acceptance was
-  bounded.** An instrumented build can expose a local AF_UNIX socket that
-  starts dictations and reports what the context pipeline resolved
+  bounded.** A debug or e2e-harness build can expose a local AF_UNIX socket
+  that starts dictations and reports what the context pipeline resolved
   (`DogfoodControlSocket`), because two things are unobservable from outside
   the process: a dictation has no deterministic trigger, and
   `ClaudeSessionRegistry` is per-process, so `--probe-surface` sees only the
   sessions the app last saved to disk. What makes that acceptable is a set of
   bounds, each of which is the whole argument for the one above it:
-  - **`#if LOCALVOXTRAL_DOGFOOD` and nothing else.** A shipped build compiles
-    none of it — no listener, no path, no code that could create one, and no
-    setting or argument that turns it on.
-    `DogfoodControlBuildBoundaryTests` runs in BOTH configurations (it is
-    deliberately not itself gated) and fails when any reference escapes the
-    flag; that is the only kind of test that can notice this leaking into a
-    release. Within an instrumented build there is a SECOND runtime gate,
+  - **`#if DEBUG || LOCALVOXTRAL_E2E_HARNESS` and nothing else**, for the
+    socket and for the WAV file that stands in for the microphone
+    (`DogfoodAudioFileSource`). A release build compiles none of it: no
+    listener, no path, no code that could create one, and no setting or
+    argument that turns it on. Only the UI smoke workflow's package sets
+    `LOCALVOXTRAL_E2E_HARNESS=1` (a dogfood package implies it, until the
+    dogfood build is removed in #792). `package_app.sh` searches every
+    bundle's binary for the harness types
+    (`scripts/packaging/check-harness-symbols.sh`): a release build fails if
+    one is there, a harness build fails if one is missing. Within a build that
+    has the socket there is a SECOND runtime gate,
     `debug.dogfood_control_socket_enabled`, kept separate from the capture's:
     writing records and accepting commands are different consents.
   - **0700 directory, 0600 socket, and `getpeereid` before the first read.**

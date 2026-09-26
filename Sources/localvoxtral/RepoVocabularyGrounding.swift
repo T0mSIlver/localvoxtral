@@ -302,7 +302,7 @@ final class RepoVocabularyPipeline: RepoVocabularyGrounding {
     private static func detachedRepoVocabularyPipeline(
         _ body: @escaping @Sendable () async -> RepoVocabularyMatcher.GroundingOutcome?
     ) -> Task<RepoVocabularyMatcher.GroundingOutcome?, Never> {
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         let dogfoodGeneration = DogfoodCaptureTap.shared.currentGeneration
         return Task.detached(priority: .utility) {
             await DogfoodCaptureTap.$noteGeneration.withValue(dogfoodGeneration) {

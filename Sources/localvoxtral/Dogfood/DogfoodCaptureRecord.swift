@@ -1,4 +1,4 @@
-#if LOCALVOXTRAL_DOGFOOD
+#if DEBUG || LOCALVOXTRAL_E2E_HARNESS
 
 import Foundation
 
@@ -12,9 +12,9 @@ import Foundation
 /// out wrong is unattributable today — by commit time every intermediate the
 /// answer depends on has been reduced to an integer.
 ///
-/// This type is the deliberate, gated exception. It exists only in a build
-/// compiled with `LOCALVOXTRAL_DOGFOOD` (see `Package.swift`), and within such a
-/// build it is populated only while the runtime opt-in is armed. Records are
+/// This type is the deliberate, gated exception. It exists only in a debug or
+/// instrumented build (see `Package.swift`), and within such a build it is
+/// populated only while the runtime opt-in is armed. Records are
 /// written to a 0700 directory as 0600 files and are never transmitted
 /// anywhere — there is no uploader, and adding one would defeat the point of
 /// the compile gate.

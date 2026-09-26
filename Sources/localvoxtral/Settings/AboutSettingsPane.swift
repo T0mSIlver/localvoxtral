@@ -15,7 +15,7 @@ struct AboutSettingsPane: View {
     /// `defaults write` while the app runs takes effect on relaunch, and the
     /// row must describe what THIS process is doing.
     private var dogfoodCaptureArmed: Bool {
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         settings.dogfoodCaptureEnabled
         #else
         false

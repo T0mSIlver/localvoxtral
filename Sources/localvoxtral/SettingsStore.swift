@@ -108,7 +108,7 @@ final class SettingsStore {
         /// Note the `debug.` prefix (not `settings.`): this is not a
         /// user-facing preference and must never surface in the settings UI.
         static let debugLogRealtimeDeltas = "debug.log_realtime_deltas"
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         /// The runtime half of the dogfooding gate. `debug.` prefixed like the
         /// flag above: it exists only in an instrumented build and is not a
         /// product preference.
@@ -705,10 +705,10 @@ final class SettingsStore {
         didSet { defaults.set(debugLogRealtimeDeltas, forKey: Keys.debugLogRealtimeDeltas) }
     }
 
-    #if LOCALVOXTRAL_DOGFOOD
+    #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
     /// Arms the dogfooding context capture. Default false, and it exists at all
-    /// only in a build compiled with `LOCALVOXTRAL_DOGFOOD` (see `Package.swift`
-    /// for why that gate is a compile flag rather than this toggle alone).
+    /// only in a debug or instrumented build (see `Package.swift` for why that
+    /// gate is a compile flag rather than this toggle alone).
     ///
     /// While armed, every polished dictation writes a record containing the raw
     /// transcript, the harvested context, the rendered prompts, and the model's
@@ -1082,7 +1082,7 @@ final class SettingsStore {
             defaults: defaults, key: Keys.polishContextTrustedEndpointEnabled, fallback: false)
         debugLogRealtimeDeltas = Self.loadBool(
             defaults: defaults, key: Keys.debugLogRealtimeDeltas, fallback: false)
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         dogfoodCaptureEnabled = Self.loadBool(
             defaults: defaults, key: Keys.dogfoodCaptureEnabled, fallback: false)
         dogfoodControlSocketEnabled = Self.loadBool(

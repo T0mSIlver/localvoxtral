@@ -86,7 +86,7 @@ final class SessionContextResolver {
     /// means the screen is never read. A nil polishing configuration also means
     /// no read: with no endpoint there is nothing to ground for.
     func captureAtStart() async -> OverlayClaudeJoinBadge {
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         // A fresh dictation gets fresh tap slots: an abandoned pipeline's late
         // note from the PREVIOUS session must not describe this one. (The
         // owner supersedes its post-commit edit watch before calling here.)
@@ -277,13 +277,13 @@ final class SessionContextResolver {
         var causes = causes
         if case .gated(let gate) = attempt {
             causes.append(gate.rawValue)
-            #if LOCALVOXTRAL_DOGFOOD
+            #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
             DogfoodCaptureTap.shared.noteJoinAbstention(gate.rawValue)
             #endif
         }
         let summary = ClaudeSessionJoinSummary.summarize(join: attempt.join, abstentions: causes)
         joinOutcomeLog(summary.noticeText)
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         // Snapshotted HERE, at the single resolution, because the commit path
         // consumes both the join and the tap's abstention causes — by the time
         // anything could ask afterwards, neither exists. Recorded for a gated
@@ -485,7 +485,7 @@ final class SessionContextResolver {
     }
 }
 
-#if LOCALVOXTRAL_DOGFOOD
+#if DEBUG || LOCALVOXTRAL_E2E_HARNESS
 extension SessionContextResolver {
     /// Snapshot the resolved join for `join report`, with the abstention chain
     /// as it stands at resolution time, gate included.

@@ -30,7 +30,7 @@ package enum ClaudeJoinAbstentionTap {
 
     private static let state = Mutex(State())
 
-    #if LOCALVOXTRAL_DOGFOOD
+    #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
     /// Where a dogfood build's capture record also takes each cause. The app's
     /// `DogfoodCaptureTap` sets it when it is created; the core can't see that
     /// tap. A cause noted before then would have been cleared by the tap's

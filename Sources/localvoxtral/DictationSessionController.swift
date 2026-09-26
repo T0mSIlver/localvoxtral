@@ -210,7 +210,7 @@ final class DictationSessionController {
     var llmPolishingService: any LLMPolishingServicing = LLMPolishingService()
     @ObservationIgnored
     var appConfigStore: any AppConfigServing = AppConfigStore()
-    #if LOCALVOXTRAL_DOGFOOD
+    #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
     /// `var` for the same reason `llmPolishingService` is: tests point it at a
     /// temp directory. Production uses the Application Support default.
     @ObservationIgnored
@@ -993,7 +993,7 @@ extension DictationSessionController {
     /// describes the one resolved join, so the overlay cannot disagree with
     /// the context that ships.
     func captureTerminalScreenContextForSession() async {
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         // The previous dictation's post-commit edit watch closes here rather
         // than reading this session's keys. It still flushes its own record,
         // as `superseded`.

@@ -167,7 +167,9 @@ what it needs, not about cost:
   `localvoxtralTestSupport` (the doubles both test targets share) included.
   `build-test` runs the shell suites too, for the Mac's bash 3.2.
 - **`dogfood`, GitHub-hosted `macos-latest`, every event** — not required.
-  The dogfood capture suite, built with `LOCALVOXTRAL_DOGFOOD=1`.
+  The dogfood capture suite, built with `LOCALVOXTRAL_DOGFOOD=1`. The unit
+  suite builds the same code now (it is gated `DEBUG ||
+  LOCALVOXTRAL_E2E_HARNESS`); #792 removes this job.
 - **`mac-lanes`, the self-hosted Mac, same-repo PRs that are NOT drafts +
   pushes + dispatches** — a draft gets `build-test` only, and marking it ready
   (`gh pr ready <n>`) starts the run. The literal `[mac-lanes]` in a draft's PR
