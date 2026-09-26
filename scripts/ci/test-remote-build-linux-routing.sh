@@ -205,4 +205,20 @@ mac_tests | grep -q DoubleMetaphoneTests || fail "LV_TEST_ON_MAC=1 did not reach
 run LV_TEST_UNAME=Darwin "$REMOTE_BUILD" test --filter DoubleMetaphoneTests || true
 [[ -z "$(swift_tests)" ]] || fail "on a Mac the Linux routing must stay off"
 
+# #770: a membership check reads the whole class list. With `grep -q` it quit
+# at the first match, a writer still going died on SIGPIPE ("sed: couldn't
+# flush stdout"), and under pipefail a Linux-only filter went to the Mac.
+# The list here outlasts a pipe buffer after the match, so it fails every time.
+(
+  set -o pipefail
+  # shellcheck source=../lib/linux-suites.sh
+  . "$ROOT_DIR/scripts/lib/linux-suites.sh"
+  lots() { awk -v name="$1" 'BEGIN { for (i = 0; i < 100000; i++) print name }'; }
+  lv_linux_test_modules() { echo localvoxtralCoreTests; }
+  lv_linux_test_classes() { echo DoubleMetaphoneTests; lots FillerTests; }
+  lv_mac_only_test_classes() { lots AlphaTests; }
+  lv_filter_is_linux_only DoubleMetaphoneTests \
+    && lv_filter_is_linux_only localvoxtralCoreTests.DoubleMetaphoneTests/testSmith
+) || fail "a Linux class early in a long class list was sent to the Mac (#770)"
+
 printf 'PASS: remote-build runs the Linux suites here and the rest on the Mac\n'
