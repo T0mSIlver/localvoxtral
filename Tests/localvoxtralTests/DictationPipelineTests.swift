@@ -751,13 +751,13 @@ private final class TypedText {
     }
 }
 
-/// Every record a session wrote; `written` resolves on the first.
-@MainActor
-@MainActor
+/// What the quick capture sink received, with the records written by then.
 private final class QuickCaptures {
     var all: [(text: String, recordsWritten: Int)] = []
 }
 
+/// Every record a session wrote; `written` resolves on the first.
+@MainActor
 private final class SessionRecords {
     private(set) var all: [DictationSessionRecord] = []
     let written = BoundedWait()
