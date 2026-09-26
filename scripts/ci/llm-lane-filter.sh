@@ -42,7 +42,7 @@ SKIP_MARKER='skip-llm-eval'
 # blocks are framed, what screen text becomes the excerpt. The join (which
 # session, if any, the context comes from), the hook publishers and parsers,
 # the broker and registry, and the agent integrations are NOT here (owner call,
-# #621): the live lane replays a fixed corpus through LLMPolishingService and
+# #643): the live lane replays a fixed corpus through LLMPolishingService and
 # executes none of them, and PolishRequestGoldenTests pins what a join hands
 # the request (docs/agent/test-tiers.md, "When must the LLM lanes run?").
 PATTERNS=(
