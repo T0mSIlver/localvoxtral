@@ -1925,8 +1925,15 @@ grep -q "^label=pr-238 @ CI run 123$" "$ARTIFACT_ROOT/localvoxtral.app.source" \
   || fail "no gate-launch hint, or not the path the gate resolves: $INSTALL_STDERR"
 pass "a clean bundle installs into the default root, with provenance and no launch"
 
+# The removed dogfood build's slot goes with the first install after it: the
+# gate would launch the stale instrumented bundle in it as a clean one.
+mkdir -p "$ARTIFACT_ROOT/localvoxtral-dogfood.app/Contents/MacOS"
+: >"$ARTIFACT_ROOT/localvoxtral-dogfood.app.source"
 run_install "$SRC_CLEAN" --no-hint
 (( INSTALL_STATUS == 0 )) || fail "--no-hint install failed: $INSTALL_STDERR"
+[[ ! -e "$ARTIFACT_ROOT/localvoxtral-dogfood.app" && ! -e "$ARTIFACT_ROOT/localvoxtral-dogfood.app.source" ]] \
+  || fail "the retired dogfood slot survived an install"
+pass "an install deletes the retired dogfood slot"
 [[ "$INSTALL_STDERR" != *"gate launch"* ]] \
   || fail "--no-hint still printed a launch hint (try-pr.sh prints its own, later)"
 pass "--no-hint suppresses the duplicate launch hint"

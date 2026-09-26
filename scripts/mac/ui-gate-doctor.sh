@@ -346,7 +346,7 @@ if artifacts:
 else:
     fix("launchable builds",
         "no localvoxtral bundle under the artifact roots — `launch` has nothing to start",
-        "gh workflow run 'UI Smoke' --ref <branch>    # installs its harness build for the gate; takes the screen, ask the owner")
+        "./scripts/ui-smoke-dispatch.sh --override 'harness build for the UI gate' <branch>    # installs it for the gate; takes the screen, ask the owner")
 
 # 8. the app under test
 app = state.get("app", {})

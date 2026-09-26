@@ -193,6 +193,18 @@ fi
 mv "$STAGING" "$DEST" || die "could not move the new bundle into place: $DEST"
 rm -rf "$OUTGOING"
 
+# The slot the removed dogfood build installed into (#792). Nothing writes it
+# any more, and the gate would still launch the stale instrumented bundle in
+# it as a clean one, so the first install after the rename deletes it unless
+# it is running.
+LEGACY="$DEST_ROOT/localvoxtral-dogfood.app"
+if [[ -e "$LEGACY" ]] \
+  && ! { command -v pgrep >/dev/null 2>&1 \
+    && pgrep -f "^$LEGACY/Contents/MacOS/localvoxtral" >/dev/null 2>&1; }; then
+  rm -rf "$LEGACY" "$LEGACY.source"
+  say "Deleted the retired dogfood slot: $LEGACY"
+fi
+
 {
   printf 'installed=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   printf 'variant=%s\n' "$VARIANT_KEY"

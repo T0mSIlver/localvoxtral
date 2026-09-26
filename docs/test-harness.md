@@ -12,7 +12,7 @@ workflow packages its app with `LOCALVOXTRAL_E2E_HARNESS=1`
 tradeoff").
 
 For the owner's UI gate to drive a harness build, dispatch UI Smoke on the
-branch (`gh workflow run "UI Smoke" --ref <branch>`): its e2e-dictation job
+branch (`scripts/ui-smoke-dispatch.sh --override "harness build for the UI gate" <branch>`): its e2e-dictation job
 packages the harness build, installs it into the gate's artifact root, and
 prints the `launch --harness` command in the run summary. The run takes over
 the owner's screen for its e2e check, so it needs the owner's go. Diagnostic records

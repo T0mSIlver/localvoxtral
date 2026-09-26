@@ -17,7 +17,7 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   (`scripts/mac/install-ui-artifact.sh`, runbook `scripts/mac/README.md`).
   A build with the test harness (the gate's `app` verbs) comes from
   dispatching UI Smoke on the branch instead
-  (`gh workflow run "UI Smoke" --ref <branch>`): its e2e-dictation job
+  (`scripts/ui-smoke-dispatch.sh --override "harness build for the UI gate" <branch>`): its e2e-dictation job
   packages a harness build and installs it into the gate's artifact root
   itself, then prints the `launch --harness` command in the run summary
   (`docs/test-harness.md`). That run takes over the owner's screen, so ask
