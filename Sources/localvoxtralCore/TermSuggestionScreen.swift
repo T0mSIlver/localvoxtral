@@ -18,40 +18,63 @@ package enum TermSuggestionScreen {
         }
     }
 
-    /// Drops a candidate the recognizer wrote spelled exactly right in some
-    /// dictation and polishing never had to fix. Keeps one polishing fixed
-    /// (casing included, `mcp` → `MCP`), and one found in no raw text at all:
-    /// the model recovered it from misrecognitions, the most valuable kind.
-    /// The fixed ones come first, most fixes first; ties keep the model's order.
-    package static func screened(_ candidates: [String], dictations: [Dictation]) -> [String] {
-        let scored = candidates.compactMap { candidate -> (term: String, fixes: Int)? in
-            guard let exact = pattern(candidate, caseInsensitive: false),
-                  let loose = pattern(candidate, caseInsensitive: true)
-            else { return nil }
+    /// Drops a candidate the recognizer wrote with the right letters in some
+    /// dictation, when nothing shows it ever getting the letters wrong. Two
+    /// things do: polishing fixing it, or a wrong form the model quotes in
+    /// `heard` that really is in a transcript, which catches a mistake
+    /// polishing left in the final text too. Capitalization is not a mistake
+    /// here: polishing fixes "MAC" without a vocabulary entry, and the owner
+    /// ruled that Mac is not worth a chip (#612). A candidate in no raw text at
+    /// all stays: the model recovered it from misrecognitions, the most
+    /// valuable kind. Candidates are ranked by the dictations that show a
+    /// mistake; ties keep the model's order.
+    ///
+    /// `heard` maps a candidate to the wrong forms the model quoted; a form
+    /// found in no transcript counts for nothing.
+    package static func screened(
+        _ candidates: [String], dictations: [Dictation], heard: [String: [String]] = [:]
+    ) -> [String] {
+        let heardByKey = Dictionary(heard.map { (key($0.key), $0.value) }, uniquingKeysWith: +)
+        let scored = candidates.compactMap { candidate -> (term: String, misses: Int)? in
+            guard let term = pattern(candidate) else { return nil }
+            // "v l l m" and "vllm" are mistakes for vLLM; "VLLM" is not.
+            let wrongForms = (heardByKey[key(candidate)] ?? [])
+                .filter { $0.trimmed.caseFoldedForMatching != candidate.trimmed.caseFoldedForMatching }
+                .compactMap(pattern)
             var spelledRight = 0
-            var fixes = 0
+            var misses = 0
             for dictation in dictations {
-                if occurs(exact, in: dictation.raw) {
+                if occurs(term, in: dictation.raw) {
                     spelledRight += 1
-                } else if occurs(loose, in: dictation.final) {
-                    fixes += 1
+                } else if occurs(term, in: dictation.final)
+                    || wrongForms.contains(where: { occurs($0, in: dictation.raw) })
+                {
+                    misses += 1
                 }
             }
-            guard fixes > 0 || spelledRight == 0 else { return nil }
-            return (candidate, fixes)
+            guard misses > 0 || spelledRight == 0 else { return nil }
+            return (candidate, misses)
         }
         return scored.enumerated()
-            .sorted { ($0.element.fixes, -$0.offset) > ($1.element.fixes, -$1.offset) }
+            .sorted { ($0.element.misses, -$0.offset) > ($1.element.misses, -$1.offset) }
             .map(\.element.term)
     }
 
-    /// The term as a whole word: "Mac" is not found in "MacBook" or "iMac".
-    private static func pattern(_ term: String, caseInsensitive: Bool) -> NSRegularExpression? {
+    /// Case, spacing and punctuation ignored, as `SpeakerTermSuggestions.key`.
+    private static func key(_ term: String) -> String {
+        String(term.caseFoldedForMatching.unicodeScalars.filter {
+            CharacterSet.alphanumerics.contains($0)
+        })
+    }
+
+    /// The term as a whole word, any capitalization: "Mac" is found in "MAC",
+    /// not in "MacBook" or "iMac".
+    private static func pattern(_ term: String) -> NSRegularExpression? {
         let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return try? NSRegularExpression(
             pattern: "(?<![\\p{L}\\p{N}])\(NSRegularExpression.escapedPattern(for: trimmed))(?![\\p{L}\\p{N}])",
-            options: caseInsensitive ? [.caseInsensitive] : []
+            options: [.caseInsensitive]
         )
     }
 

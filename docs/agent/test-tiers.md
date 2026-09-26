@@ -562,3 +562,20 @@ shows as today moving closer to it than day 0 on the same audio.
 
 The log prints numbers only (`replay:` lines); paste those, never
 transcripts. Delete the set from the checkout and the Mac when done.
+
+## Proving a change to the term-suggestion prompt
+
+No lane sends the "Suggest terms" request (`SpeakerTermSuggestions`), and
+eval-e2e scores polishing only. A change to its instructions, request layout
+or reply parsing is proven with `scripts/eval-term-suggestions.py`. It replays
+the base ref's prompt and the working tree's against a frozen export of the
+owner's history on the hosted model the app uses, each arm twice, because GLM
+5.3 is not deterministic and the repeat is the noise floor. Its header has
+the export steps. Run `--self-check` first: it fails when the app's request
+layout moved and the script's copy did not.
+
+Per run it prints how many terms the model proposed, how many the
+recognizer already spells right (inference spent on nothing), and how many
+fall on the owner's accepted and refused lists. Paste those lines and the
+spend, never the terms: the export and the JSONL stay in `local-notes/` and
+are deleted when done.

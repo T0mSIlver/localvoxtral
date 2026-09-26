@@ -12,8 +12,8 @@ final class TermSuggestionScreenTests: XCTestCase {
         let dictations = [
             Dictation(raw: "IBM made the Mac", final: "IBM made the Mac"),
             Dictation(raw: "open it in Word on the Mac", final: "Open it in Word on the Mac."),
-            Dictation(raw: "the mcp server", final: "The MCP server."),
-            Dictation(raw: "coin 3.6 behind the mcp tools", final: "Qwen 3.6 behind the MCP tools."),
+            Dictation(raw: "the m c p server", final: "The MCP server."),
+            Dictation(raw: "coin 3.6 behind the m c p tools", final: "Qwen 3.6 behind the MCP tools."),
         ]
         XCTAssertEqual(
             TermSuggestionScreen.screened(["IBM", "Mac", "Word", "Qwen", "MCP", "Glossator"], dictations: dictations),
@@ -28,6 +28,35 @@ final class TermSuggestionScreenTests: XCTestCase {
             Dictation(raw: "v l l m again", final: "vLLM again."),
         ]
         XCTAssertEqual(TermSuggestionScreen.screened(["vLLM"], dictations: dictations), ["vLLM"])
+    }
+
+    /// A quoted wrong form counts only where a transcript really has it,
+    /// and never when it is the term itself.
+    func testHeardFormsCountOnlyWhenTheTranscriptHasThem() {
+        let dictations = [
+            Dictation(raw: "IBM and vLLM", final: "IBM and vLLM."),
+            Dictation(raw: "v l l m is down", final: "v l l m is down."),
+        ]
+        XCTAssertEqual(
+            TermSuggestionScreen.screened(
+                ["IBM", "vLLM"], dictations: dictations,
+                heard: ["IBM": ["eye bee em", "IBM"], "vLLM": ["v l l m"]]
+            ),
+            ["vLLM"]
+        )
+    }
+
+    /// Polishing fixes capitalization without a vocabulary entry: "MAC" for
+    /// Mac is not a mistake worth a chip, fixed or quoted (#612).
+    func testACapitalizationSlipIsNotAMistake() {
+        let dictations = [
+            Dictation(raw: "my Mac", final: "My Mac."),
+            Dictation(raw: "the MAC again", final: "The Mac again."),
+        ]
+        XCTAssertEqual(
+            TermSuggestionScreen.screened(["Mac"], dictations: dictations, heard: ["Mac": ["MAC"]]),
+            []
+        )
     }
 
     func testMatchesWholeWordsOnly() {
