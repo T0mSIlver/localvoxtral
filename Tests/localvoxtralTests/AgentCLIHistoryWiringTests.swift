@@ -9,7 +9,7 @@ import XCTest
 /// `AgentCLIServiceTests`' subject (Linux).
 @MainActor
 final class AgentCLIHistoryWiringTests: XCTestCase {
-    private static let projectDirectory = "/nonexistent-721/quillmark"
+    private nonisolated static let projectDirectory = "/nonexistent-721/quillmark"
 
     private func makeViewModel(
         polish: Bool,
