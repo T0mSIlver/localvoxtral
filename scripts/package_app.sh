@@ -631,6 +631,9 @@ rm -rf "$ROOT_DIR/dist/localvoxtral-speechd.dSYM"
 cp -R "$SPEECH_HELPER_DSYM_SOURCE" "$ROOT_DIR/dist/localvoxtral-speechd.dSYM"
 
 fi # LOCALVOXTRAL_SKIP_SPEECHD
+
+# --- Desktop widgets (WidgetKit extension, #630) ---------------------------
+"$ROOT_DIR/scripts/packaging/package-widgets.sh" build "$APP_DIR" "$CONFIGURATION" "$APP_VERSION" "$BUILD_NUMBER"
 # ---------------------------------------------------------------------------
 
 # Remove filesystem metadata from copied assets (e.g. FinderInfo/resource fork)
@@ -645,6 +648,8 @@ if ! codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP_DIR"; then
   echo "Failed to code-sign packaged app bundle."
   exit 1
 fi
+# --deep signed the widget extension without its sandbox entitlements.
+"$ROOT_DIR/scripts/packaging/package-widgets.sh" sign "$APP_DIR" "$CODESIGN_IDENTITY"
 if ! codesign --verify --deep --strict --verbose=2 "$APP_DIR"; then
   echo "Invalid code signature detected in packaged app bundle."
   exit 1

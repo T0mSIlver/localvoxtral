@@ -178,6 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     lazy var historyModel = DictationHistoryModel(
         store: { [weak viewModel] in viewModel?.sessionStore })
     lazy var insightsModel = DictationInsightsModel(viewModel: viewModel)
+    private var widgetSnapshotWriter: WidgetSnapshotWriter?
     /// "Open localvoxtral at login". Built here so the pane reads the login
     /// item once per launch rather than on every view update.
     let loginItemController = LoginItemController()
@@ -322,6 +323,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startDogfoodControlSocket()
         #endif
         reconcileBundledConfigDefaults()
+        widgetSnapshotWriter = WidgetSnapshotWriter(viewModel: viewModel)
+        widgetSnapshotWriter?.start()
         viewModel.engines.preflightConfiguredLocalNetworkEndpoints()
         switch LaunchWindowPolicy.decide(
             onboardingCompleted: settingsStore.onboardingCompleted,
@@ -337,6 +340,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        widgetSnapshotWriter?.writeAppQuit()
+        widgetSnapshotWriter = nil
         #if LOCALVOXTRAL_DOGFOOD
         // First: `stop()` does not return until the accept loop has unlinked
         // the socket, so nothing that follows can race a client connecting to

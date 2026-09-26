@@ -66,6 +66,11 @@ package enum Log {
     package static let backends = SilentLogger()
     #endif
     #if canImport(os)
+    package static let widgets = Logger(subsystem: subsystem, category: "Widgets")
+    #else
+    package static let widgets = SilentLogger()
+    #endif
+    #if canImport(os)
     package static let replacements = Logger(subsystem: subsystem, category: "Replacements")
     #else
     package static let replacements = SilentLogger()

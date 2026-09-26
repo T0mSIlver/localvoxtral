@@ -225,6 +225,19 @@ final class DictationViewModel {
     func applyDictationHistoryRetention(now: Date = Date()) { session.applyDictationHistoryRetention(now: now) }
     func prepareLLMPolishingPromptAccessIfNeeded() { session.prepareLLMPolishingPromptAccessIfNeeded() }
 
+    /// What the Settings toggle and the Engines widget's "Turn off polish"
+    /// both do. Turning polishing off stops the managed polishd process
+    /// (Managed local mode only); External URL mode owns no local process,
+    /// and re-enabling starts managed polishd eagerly.
+    func setLLMPolishingEnabled(_ enabled: Bool) {
+        let wasEnabled = settings.llmPolishingEnabled
+        settings.llmPolishingEnabled = enabled
+        if enabled, !wasEnabled {
+            prepareLLMPolishingPromptAccessIfNeeded()
+        }
+        engines.llmPolishingEnabledDidChange(enabled)
+    }
+
 
     /// Set by the app delegate so the General settings pane can re-present the
     /// onboarding wizard. Kept as a seam rather than a singleton reference.
