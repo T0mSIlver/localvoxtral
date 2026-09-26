@@ -88,13 +88,17 @@ start_wrapper() {
 }
 
 # expect_tree_exit <what>: fails unless every holder of fd 5 exits in time.
+# Not `read -t`: bash 3.2 returns 1 on a timeout, the status of end-of-file,
+# so a leak would pass.
 expect_tree_exit() {
-  local line status=0
-  read -r -t "$TREE_EXIT_DEADLINE_SECONDS" line <&6 || status=$?
+  local status=0
+  perl -e '$SIG{ALRM} = sub { exit 2 }; alarm shift;
+    1 while sysread STDIN, my $buf, 512; exit 0' \
+    "$TREE_EXIT_DEADLINE_SECONDS" <&6 || status=$?
   exec 6<&-
-  [[ "$status" == "1" ]] && return 0
+  [[ "$status" == "0" ]] && return 0
   fail "$1: payload process $fixture_pid or descendant $stubborn_pid" \
-    "survived gate teardown for ${TREE_EXIT_DEADLINE_SECONDS}s (read status $status)"
+    "survived gate teardown for ${TREE_EXIT_DEADLINE_SECONDS}s (reader status $status)"
 }
 
 start_wrapper signalled
