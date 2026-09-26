@@ -138,8 +138,8 @@ there is not.
   element focused NOW, which need not be the commit target's), and the Return
   follows only a commit that reported `.succeeded`.
 - **"Go to <name>" is a command only when the name resolves** (#723 step
-  1). An Overlay Buffer dictation that is only "go to" plus at most four
-  words is looked up against the live registry's default names (the git
+  1). An Overlay Buffer dictation (a Live Auto-Paste segment, #747) that
+  is only "go to" plus at most four words is looked up against the live registry's default names (the git
   root's directory name first, then the main checkout's) before the spoken
   send cut, the dictionary and the polisher. No match: it is ordinary text
   and commits as dictated, because "go to the tests" is a prompt too. A
@@ -152,8 +152,21 @@ there is not.
   digits. The result is read back with the join's focused-pane reader:
   `.focused` only when that tty is the session's. A Return after a focus
   (#723 step 3) or #717's answer hotkey must require `.focused`, never
-  `.unverified`. Live Auto-Paste has no go-to: its words are typed before the
-  phrase ends.
+  `.unverified`.
+- **Live Auto-Paste holds back only what may still read "go to"** (#747).
+  Typed words cannot be taken back, so while a session is live a segment is
+  held while its words so far may still become "go to" ("G", "Go", "go t"),
+  and one that opens with "go to" and at most four more words is held until
+  its final. Any other segment is released the moment a letter rules the
+  phrase out, then typed live; with no session live nothing is held. Only
+  the backend's non-empty final names a session, as only it can trigger a
+  send; a held segment that is not a command, or is promoted at a stop, is
+  typed whole, through the spoken send trigger when that withholds the
+  segment. A resolved name types nothing: the terminal hold-back's tail is
+  released into the old pane first, and a focus ends the prompt relay, whose
+  pane is the old one. Segments that end while the go-to resolves and
+  focuses wait and land after it, in order; a stop waits for them too.
+  History keeps the live dictation whole, the phrase included.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
   endpoint on stop (`DictationSessionController+StopCommit.swift`,

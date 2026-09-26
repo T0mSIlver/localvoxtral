@@ -439,6 +439,20 @@ final class DictationSessionController {
     /// The "text went to another app" line is logged once per dictation.
     @ObservationIgnored
     var liveSpokenSendBlockLogged = false
+    /// Live Auto-Paste "go to <name>" state
+    /// (`DictationSessionController+LiveGoToSession.swift`), reset per session.
+    @ObservationIgnored
+    var liveGoToSegmentMode = LiveGoToSegmentMode.undecided
+    /// The current segment's deltas the go-to hold-back has not typed.
+    @ObservationIgnored
+    var liveGoToHeldText = ""
+    /// Resolves a spoken name and brings its pane forward; later segments
+    /// wait for it.
+    @ObservationIgnored
+    var liveGoToTask: Task<Void, Never>?
+    /// Segments that ended while `liveGoToTask` ran, in order.
+    @ObservationIgnored
+    var liveGoToQueuedSegments: [LiveGoToQueuedSegment] = []
     @ObservationIgnored
     var firstChunkPreprocessor = FirstChunkPreprocessor()
 

@@ -47,6 +47,11 @@ extension DictationSessionController {
             return
         }
 
+        // A go-to still bringing a pane forward: the segments behind it land
+        // before the session ends.
+        guard !finishLiveAutoPasteSessionAfterGoTo(sessionMode: sessionMode, finish: { [weak self] sessionAudio in
+            self?.finishLiveAutoPasteSession(sessionMode: sessionMode, finishedAudio: sessionAudio)
+        }) else { return }
         finishLiveAutoPasteSession(sessionMode: sessionMode)
     }
 
@@ -477,13 +482,15 @@ extension DictationSessionController {
 
     /// A Live Auto-Paste session: the text is already typed, so what is left
     /// is the final flush and the record.
-    private func finishLiveAutoPasteSession(sessionMode: DictationOutputMode) {
+    /// - Parameter finishedAudio: the recording, when the stop already
+    ///   finished it.
+    private func finishLiveAutoPasteSession(sessionMode: DictationOutputMode, finishedAudio: Data?? = nil) {
         // Non-overlay path (live auto-paste)
         let capturedSessionStartedAt = sessionStartedAt ?? Date()
         let capturedProvider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
         let capturedModel = sessionModelName ?? settings.effectiveModelName
         let capturedOutputMode = sessionMode.rawValue
-        let sessionAudio = audio.sessionRecording.finish()
+        let sessionAudio = finishedAudio ?? audio.sessionRecording.finish()
         let capturedAudio = sessionStoresAudio ? sessionAudio : nil
         textInsertion.flushFinalLiveReplacementCorrections()
         let historyJoin = context.claudeSessionJoin.map(AgentCLIJoin.init)
@@ -518,6 +525,7 @@ extension DictationSessionController {
 
     func configureLiveAutoPasteReplacementCorrectorForSession() {
         resetLiveSpokenSendForSession()
+        resetLiveGoToForSession()
         // The verdict below is taken once; focus can reach a terminal later.
         textInsertion.setLiveLateTerminalProbe(
             isLiveAutoPasteModeEnabled && !sessionTargetIsTerminalLike
@@ -565,6 +573,7 @@ extension DictationSessionController {
         polishAndCommitTask = nil
         saveInterruptedPolishCommit = nil
         liveSpokenSendSegmentMode = .undecided
+        resetLiveGoToForSession()
         // Every stop funnels through here. The commit path has already
         // consumed the capture by now (it reconciles synchronously, before
         // spawning the polish Task), so this is a no-op there — it exists to
