@@ -379,7 +379,11 @@ there is not.
   verdict categories only. `CorrectionDiffClassifier` favours precision: one
   substitution of at most 4 words, few other changed words, a spelling that
   sounds like what it replaced, and a capital that is not a sentence start, a
-  digit or an inner joiner, unless the spelling is already a known term. A
+  digit or an inner joiner, unless the spelling is already a known term. An
+  edit that only moves the space after a sentence end (`doing. Usually` ↔
+  `doing.Usually`), or a span holding a sentence end, is never a term: two
+  Overlay Buffer dictations sent in one prompt arrive glued while the learner
+  joins them with a space (#801). A
   hand fix is confirmed at once (`confirmedByCorrection`), bypassing the
   three-dictation bar, because that bar guards against polish repeating
   itself and a hand fix is not polish. Undo, or a later fix that changes a
