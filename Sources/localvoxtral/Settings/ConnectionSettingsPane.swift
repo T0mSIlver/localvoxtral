@@ -47,17 +47,6 @@ struct ConnectionSettingsPane: View {
         )
     }
 
-    private var managedSpeechModelHelp: String {
-        let option = settings.resolvedManagedSpeechModel
-        return SpeechModelPickerSupport.helpText(
-            for: option,
-            isDownloaded: ManagedModelCache.isDownloaded(
-                repoID: option.repoID,
-                revision: option.revision
-            )
-        )
-    }
-
     private var speechdCacheLimitBinding: Binding<SpeechdCacheLimit> {
         Binding(
             get: { settings.speechdCacheLimit },
@@ -136,24 +125,6 @@ struct ConnectionSettingsPane: View {
         PolishModelPickerSupport.entries(storedRepoID: settings.resolvedManagedLLMPolishingModel)
     }
 
-    /// Nil when the stored repo is not one of the offered entries — the row then
-    /// renders without an explanation, exactly as it did before.
-    private var managedPolishingModelHelp: String? {
-        guard
-            let selectedEntry = managedPolishingModelEntries.first(
-                where: { $0.repoID == settings.resolvedManagedLLMPolishingModel }
-            )
-        else { return nil }
-
-        return PolishModelPickerSupport.helpText(
-            for: selectedEntry,
-            isDownloaded: ManagedModelCache.isDownloaded(
-                repoID: selectedEntry.repoID,
-                revision: selectedEntry.option?.revision
-            )
-        )
-    }
-
     var body: some View {
         SettingsPage(tab: .endpoints) {
             SettingsGroup(title: "Dictation") {
@@ -210,14 +181,13 @@ struct ConnectionSettingsPane: View {
                     SettingsFieldRow(title: "Model") {
                         Picker("", selection: managedSpeechModelBinding) {
                             ForEach(SpeechModelCatalog.options, id: \.repoID) { option in
-                                Text(option.displayName).tag(option.repoID)
+                                Text(SpeechModelPickerSupport.menuLabel(for: option))
+                                    .tag(option.repoID)
                             }
                         }
                         .pickerStyle(.menu)
                         .labelsHidden()
                         .accessibilityIdentifier("engines.dictation.managedModel")
-                    } footer: {
-                        SettingsHelpText(managedSpeechModelHelp)
                     }
 
                     if settings.resolvedManagedSpeechModel.showsMemoryLimit {
@@ -326,10 +296,6 @@ struct ConnectionSettingsPane: View {
                         }
                         .pickerStyle(.menu)
                         .labelsHidden()
-                    } footer: {
-                        if let managedPolishingModelHelp {
-                            SettingsHelpText(managedPolishingModelHelp)
-                        }
                     }
 
                     ManagedBackendStatusRow(
@@ -429,10 +395,6 @@ private struct MistralUsageRow: View {
             .labelsHidden()
             .fixedSize()
             .accessibilityIdentifier("engines.mistral.usage.period")
-        } footer: {
-            if let note = summary.unpricedNote {
-                SettingsHelpText(note)
-            }
         }
     }
 }

@@ -10,17 +10,25 @@
 #   <changed-files-file>  one changed path per line (git diff --name-only)
 #   [marker-text-file]    optional free text (PR body + head commit message);
 #                         if it contains the literal marker [run-llm-eval],
-#                         the lanes run regardless of the diff
+#                         the lanes run regardless of the diff. A
+#                         [skip-llm-eval: <reason>] marker waives a path match
+#                         instead; it needs a non-empty reason, and
+#                         [run-llm-eval] beside it wins.
 #
 # stdout is $GITHUB_OUTPUT-shaped:
 #   run=true|false
 #   reason=<one line, safe for a step summary>
+#   skip_marker=absent|waived|no-reason|overridden|unneeded
+#     what the skip marker did: skipped a matching diff (waived), was ignored
+#     for want of a reason (no-reason), lost to [run-llm-eval] (overridden),
+#     or met a diff that skipped anyway (unneeded)
 #
 # Exits 0 for both decisions; non-zero only on usage errors. The caller owns
 # fail-open behavior when it cannot produce a diff at all.
 set -euo pipefail
 
 MARKER='[run-llm-eval]'
+SKIP_MARKER='skip-llm-eval'
 
 # LLM-relevant paths. A path belongs here when changing it can alter what
 # reaches the model, how the model is run, or how its output is scored —
@@ -38,6 +46,7 @@ MARKER='[run-llm-eval]'
 PATTERNS=(
   'PolishHelper/*'                                   # helper engine, server, its own package
   'Sources/localvoxtral/Resources/Config/llm_*.toml' # bundled polish prompts
+  'Sources/localvoxtralCore/AppConfigStore.swift'    # loads, validates and renders those prompts
   '*PolishModelCatalog*'                             # model pins / catalog
   '*HFModelDownloader*'                              # which revision/files of the weights we fetch
   '*LLMPolishing*'                                   # polish client: request shape, sampling, kwargs
@@ -50,6 +59,7 @@ PATTERNS=(
   '*PolishContextPreparation*'                       # matching + selection over the retained buffer
   '*ClipboardPayloadMacro*'                          # spoken paste-clipboard macro placeholders
   '*RepoVocabulary*'                                 # repo vocabulary hints fed to the polisher
+  '*RepoGitRunner*'                                  # the git subprocess both repo vocabulary and repo context read through
   '*ClipboardVocabulary*'                            # clipboard identifiers matched like repo vocabulary
   'Sources/localvoxtralCore/StringExtensions.swift'  # the control-character sanitizer for context and prompt terms
   '*LearnedTerm*'                                    # what earlier dictations taught, fed back into the prompt
@@ -66,6 +76,7 @@ PATTERNS=(
   '*ClaudeTransportOrigin*'                          # workspace trust: whether a cwd can be read at all
   '*ClaudeBridgeSessionURL*'                         # strict parse of the Remote Control join URL (also core: ClaudeSessionPageURL)
   '*ClaudeDesktopSessionURL*'                        # strict parse of the Claude Desktop join URL
+  '*ClaudeSocketGuard*'                              # who may hand the broker a hook record at all
   'Sources/localvoxtral/ClaudeContext/*'             # every gate/collector/renderer feeding the Claude blocks
   '*ClaudeContextBroker*'                            # the socket that feeds the registry
   '*ClaudeHookWire*'                                 # the record shape the snapshot is reduced from
@@ -79,11 +90,14 @@ PATTERNS=(
   '*VibeHookPublisher*'                              # the Vibe pid/tty the joins key on
   '*ClaudeRemoteAgent*'                              # which agent a remote session is filed under
   '*TerminalScreenContext*'                          # screen context source/policy feeding the prompt
-  '*TerminalScreenAXReader*'                         # screen text sanitization/compaction: the excerpt's exact bytes
+  '*TerminalScreenAXReader*'                         # the AX screen read: which pane's text becomes the excerpt
+  '*TerminalScreenText*'                             # screen text sanitization/compaction: the excerpt's exact bytes
   '*TerminalScreenAppleScriptReader*'                # iTerm2/Terminal.app focused-pane contents: the excerpt's exact bytes
   '*TerminalFocusedTTYReader*'                       # per-terminal tty readers: which session the context comes from
   '*BrowserTabURLReader*'                            # per-browser focused-tab url reads: which session the context comes from
+  '*BrowserTabAllowlist*'                            # which browsers may be asked for that url at all
   '*ClaudeDesktopSessionReader*'                     # Claude Desktop focused web view address: which session the context comes from
+  '*ClaudeDesktopAllowlist*'                         # which app may be asked for that address at all
   '*SessionContextResolver*'                        # the context gates themselves (#432 step 4b)
   '*PolishRequestAssembler*'                        # sections, pre-application, prompts, blocks (#432 step 5)
   '*PolishOutcomeClassifier*'                       # placeholder integrity, failure copy (#432 step 5)
@@ -181,6 +195,7 @@ EXEMPT=(
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardPidLedger.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardPort.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardSupervisor.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardProcess.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteTokenRedaction.swift'      # log redaction
   'Sources/localvoxtral/ClaudeContext/ClaudeSurfaceProbeCommand.swift'       # the --probe-surface CLI wrapper
 )
@@ -190,10 +205,35 @@ if [[ ! -f "$CHANGED_FILES_FILE" ]]; then
   exit 2
 fi
 
+# The skip marker: [skip-llm-eval: <reason>]. A waiver is only as good as its
+# written reason, so a bare [skip-llm-eval] or a blank reason is found but
+# waives nothing. Several markers: the first one with a reason counts.
+# SKIP_STATE is absent, no-reason or present; SKIP_REASON holds the reason.
+SKIP_STATE=absent
+SKIP_REASON=""
+if [[ -n "$MARKER_TEXT_FILE" && -f "$MARKER_TEXT_FILE" ]]; then
+  while IFS= read -r found; do
+    [[ -z "$found" ]] && continue
+    candidate="$(sed -E 's/^\[skip-llm-eval:?//; s/\]$//; s/^[[:space:]]+//; s/[[:space:]]+$//' <<<"$found")"
+    if [[ -n "$candidate" ]]; then
+      SKIP_STATE=present
+      SKIP_REASON="$candidate"
+      break
+    fi
+    SKIP_STATE=no-reason
+  done < <(tr -d '\r' <"$MARKER_TEXT_FILE" | grep -oE '\[skip-llm-eval(:[^]]*)?\]' || true)
+fi
+
 if [[ -n "$MARKER_TEXT_FILE" && -f "$MARKER_TEXT_FILE" ]] \
     && grep -qF "$MARKER" "$MARKER_TEXT_FILE"; then
   echo "run=true"
-  echo "reason=explicit $MARKER marker"
+  if [[ "$SKIP_STATE" == "absent" ]]; then
+    echo "reason=explicit $MARKER marker"
+    echo "skip_marker=absent"
+  else
+    echo "reason=explicit $MARKER marker, which overrides the $SKIP_MARKER marker beside it"
+    echo "skip_marker=overridden"
+  fi
   exit 0
 fi
 
@@ -212,8 +252,23 @@ while IFS= read -r file; do
     # shellcheck disable=SC2254
     case "$file" in
       $pattern)
-        echo "run=true"
-        echo "reason=matched $file ($pattern)"
+        case "$SKIP_STATE" in
+          present)
+            echo "run=false"
+            echo "reason=waived by the $SKIP_MARKER marker: $SKIP_REASON (the diff matched $file ($pattern))"
+            echo "skip_marker=waived"
+            ;;
+          no-reason)
+            echo "run=true"
+            echo "reason=matched $file ($pattern); the $SKIP_MARKER marker was ignored because it gives no reason"
+            echo "skip_marker=no-reason"
+            ;;
+          *)
+            echo "run=true"
+            echo "reason=matched $file ($pattern)"
+            echo "skip_marker=absent"
+            ;;
+        esac
         exit 0
         ;;
     esac
@@ -225,3 +280,8 @@ echo "run=false"
 # time — editing the PR body after a skipped run creates no new run, and
 # reruns reuse the original payload, so a late-added marker needs a push.
 echo "reason=no LLM-relevant changes; add $MARKER to the PR body or commit message and push to opt in"
+case "$SKIP_STATE" in
+  present) echo "skip_marker=unneeded" ;;
+  no-reason) echo "skip_marker=no-reason" ;;
+  *) echo "skip_marker=absent" ;;
+esac

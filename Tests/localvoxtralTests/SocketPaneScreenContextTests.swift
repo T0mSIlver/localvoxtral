@@ -265,7 +265,7 @@ final class SocketPaneScreenContextTests: XCTestCase {
     // screen character budget.
     func testPaneTextIsControlStrippedAndCapped() async throws {
         let oversized = "bell\u{07} and escape\u{1B}[31m kept-text\n"
-            + String(repeating: "x", count: TerminalScreenAXReader.screenCharacterCap + 5_000)
+            + String(repeating: "x", count: TerminalScreenText.screenCharacterCap + 5_000)
         let panes = ScreenTestHerdrPanes(visibleTexts: [oversized])
         let resolver = makeResolver(panes: panes)
         let join = try await herdrJoin(resolver: resolver)
@@ -275,8 +275,8 @@ final class SocketPaneScreenContextTests: XCTestCase {
         XCTAssertFalse(text.contains("\u{07}"))
         XCTAssertFalse(text.contains("\u{1B}"))
         XCTAssertTrue(text.contains("kept-text"))
-        XCTAssertLessThanOrEqual(text.count, TerminalScreenAXReader.screenCharacterCap)
-        XCTAssertEqual(text, TerminalScreenAXReader.sanitizedScreenText(oversized))
+        XCTAssertLessThanOrEqual(text.count, TerminalScreenText.screenCharacterCap)
+        XCTAssertEqual(text, TerminalScreenText.sanitizedScreenText(oversized))
     }
 
     // MARK: - The shared truth table still applies
@@ -536,14 +536,14 @@ final class CmuxSurfaceScreenContextTests: XCTestCase {
 
     func testSurfaceTextIsControlStrippedAndCapped() async throws {
         let noisy = "\u{1B}[31mred\u{1B}[0m\u{07}\n"
-            + String(repeating: "x", count: TerminalScreenAXReader.screenCharacterCap + 500)
+            + String(repeating: "x", count: TerminalScreenText.screenCharacterCap + 500)
         let surfaces = ScreenTestCmuxSurfaces(texts: [.value(noisy)])
         let resolver = makeResolver(surfaces: surfaces)
         let join = try await cmuxJoin(resolver: resolver)
 
         let captured = await captureAtStart(join: join, resolver: resolver)
         let start = try XCTUnwrap(captured)
-        XCTAssertLessThanOrEqual(start.text.count, TerminalScreenAXReader.screenCharacterCap)
+        XCTAssertLessThanOrEqual(start.text.count, TerminalScreenText.screenCharacterCap)
         XCTAssertFalse(start.text.contains("\u{1B}"))
         XCTAssertFalse(start.text.contains("\u{07}"))
     }

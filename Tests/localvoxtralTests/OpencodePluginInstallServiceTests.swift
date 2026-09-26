@@ -17,12 +17,21 @@ final class OpencodePluginInstallServiceTests: XCTestCase {
     private func service(
         state: OpencodePluginState,
         bundled: Data? = bundledJS
-    ) -> (OpencodePluginInstallService, StubOpencodeFS) {
-        let fs = StubOpencodeFS(state: state)
+    ) -> (OpencodePluginInstallService, StubOpencodeFileSystem) {
+        let fs = StubOpencodeFileSystem(state: state)
         let service = OpencodePluginInstallService(
             bundledPluginData: { bundled }, fileSystem: fs
         )
         return (service, fs)
+    }
+
+    /// The consent sheet names the files it edits, never the commands it runs.
+    func testConsentSentenceNamesTheTwoFilesItEdits() {
+        XCTAssertEqual(
+            OpencodePluginInstallService.consentSentence,
+            "localvoxtral will edit ~/.config/opencode/plugins/localvoxtral.js and "
+                + "~/.config/opencode/tui.json on this Mac."
+        )
     }
 
     // MARK: - Status derivation
@@ -440,29 +449,4 @@ final class OpencodePluginInstallServiceTests: XCTestCase {
             XCTAssertEqual(error as? OpencodePluginInstallService.ServiceError, .isSymlink)
         }
     }
-}
-
-/// Fixture-driven test double for the opencode file system.
-private final class StubOpencodeFS: OpencodePluginFileSystem, @unchecked Sendable {
-    var state: OpencodePluginState
-    var writtenPlugin: (data: Data, permissions: UInt16)?
-    var writtenTUI: (data: Data, permissions: UInt16)?
-    var createdPluginsDir = false
-    var createdConfigDir = false
-    var deletedPlugin = false
-    var deletedTUI = false
-
-    init(state: OpencodePluginState) { self.state = state }
-
-    func readState() throws -> OpencodePluginState { state }
-    func createPluginsDirectory(permissions: UInt16) throws { createdPluginsDir = true }
-    func createConfigDirectory(permissions: UInt16) throws { createdConfigDir = true }
-    func atomicWritePlugin(_ data: Data, permissions: UInt16) throws {
-        writtenPlugin = (data, permissions)
-    }
-    func atomicWriteTUI(_ data: Data, permissions: UInt16) throws {
-        writtenTUI = (data, permissions)
-    }
-    func deletePlugin() throws { deletedPlugin = true }
-    func deleteTUI() throws { deletedTUI = true }
 }

@@ -263,7 +263,7 @@ enum TerminalScreenRawAttachmentPolicy {
 /// the start-of-dictation sample against a stop-time re-read.
 enum TerminalScreenContextDecision: Equatable, Sendable {
     /// The screen is identical — after the deterministic whitespace compaction
-    /// every read passes through (`TerminalScreenAXReader.sanitizedScreenText`)
+    /// every read passes through (`TerminalScreenText.sanitizedScreenText`)
     /// — to what the user was looking at when they started speaking. NOT
     /// byte-identical to the raw AX payload: a redraw that only changed row
     /// padding or blank-row runs intentionally still renders, because the
@@ -356,7 +356,7 @@ enum TerminalScreenContext {
     // `contextBlock(excerpt:renderBudget:)` at the call site. A per-source cap is
     // what let two sources each believe they had the whole budget.
     //
-    // The gap against `TerminalScreenAXReader.screenCharacterCap` (24k) remains
+    // The gap against `TerminalScreenText.screenCharacterCap` (24k) remains
     // intentional and is a different question: that bounds what one AX read may
     // return into memory for MATCHING, which is local and free. A rendered
     // excerpt is billed on every request and is an injection surface, so it

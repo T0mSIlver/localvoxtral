@@ -81,7 +81,7 @@ final class TerminalScreenContextTests: XCTestCase {
         // see the whitespace tests below.
         let raw = "$ swift build\u{0}\u{7}\n\tCompiling \u{1B}[32mlocalvoxtral\u{1B}[0m\n"
         XCTAssertEqual(
-            TerminalScreenAXReader.sanitizedScreenText(raw),
+            TerminalScreenText.sanitizedScreenText(raw),
             "$ swift build\n\tCompiling [32mlocalvoxtral[0m"
         )
     }
@@ -93,14 +93,14 @@ final class TerminalScreenContextTests: XCTestCase {
     func testGridWhitespaceCompaction() {
         let raw = "\n\n❯ hi   \n\n\n\n⏺ Hi! Test received.\t\n\n\n───\n\n\n"
         XCTAssertEqual(
-            TerminalScreenAXReader.sanitizedScreenText(raw),
+            TerminalScreenText.sanitizedScreenText(raw),
             "❯ hi\n\n⏺ Hi! Test received.\n\n───"
         )
     }
 
     func testCompactionPreservesInteriorSingleBlankLinesAndIndentation() {
         let raw = "func a() {\n    body\n}\n\nfunc b() {}"
-        XCTAssertEqual(TerminalScreenAXReader.sanitizedScreenText(raw), raw)
+        XCTAssertEqual(TerminalScreenText.sanitizedScreenText(raw), raw)
     }
 
     func testCompactionIsDeterministicSoIdenticalScreensStayIdentical() {
@@ -108,9 +108,9 @@ final class TerminalScreenContextTests: XCTestCase {
         // map equal inputs to equal outputs (and it is a pure function of the
         // input, so re-sanitizing the sanitized form changes nothing).
         let raw = "line   \n\n\nnext\n"
-        let once = TerminalScreenAXReader.sanitizedScreenText(raw)
-        XCTAssertEqual(once, TerminalScreenAXReader.sanitizedScreenText(raw))
-        XCTAssertEqual(once, once.flatMap { TerminalScreenAXReader.sanitizedScreenText($0) })
+        let once = TerminalScreenText.sanitizedScreenText(raw)
+        XCTAssertEqual(once, TerminalScreenText.sanitizedScreenText(raw))
+        XCTAssertEqual(once, once.flatMap { TerminalScreenText.sanitizedScreenText($0) })
     }
 
     // NBSP is grid padding too: terminals emit U+00A0 for non-wrapping pad
@@ -118,7 +118,7 @@ final class TerminalScreenContextTests: XCTestCase {
     func testCompactionTrimsTrailingNonBreakingSpaces() {
         let raw = "❯ swift build\u{00A0}\u{00A0}\u{00A0}\n\u{00A0}\u{00A0}\n\u{00A0}\t \nBuild complete! \u{00A0}\t"
         XCTAssertEqual(
-            TerminalScreenAXReader.sanitizedScreenText(raw),
+            TerminalScreenText.sanitizedScreenText(raw),
             "❯ swift build\n\nBuild complete!"
         )
     }
@@ -131,7 +131,7 @@ final class TerminalScreenContextTests: XCTestCase {
     func testCompactionTrimsTrailingWideUnicodeSpaces() {
         let raw = "❯ swift build\u{2000}\u{2000}\u{2003}\n\u{2000}\u{2000}\n\u{3000}\t \nBuild complete!\u{2009}\u{3000}"
         XCTAssertEqual(
-            TerminalScreenAXReader.sanitizedScreenText(raw),
+            TerminalScreenText.sanitizedScreenText(raw),
             "❯ swift build\n\nBuild complete!"
         )
     }
@@ -152,7 +152,7 @@ final class TerminalScreenContextTests: XCTestCase {
           \u{23F5}\u{23F5} auto mode on (shift+tab to cycle) \u{00B7} \u{2190} for agents
         """
         XCTAssertEqual(
-            TerminalScreenAXReader.sanitizedScreenText(raw),
+            TerminalScreenText.sanitizedScreenText(raw),
             "\u{23FA} The v4 gate is installed and verified."
         )
     }
@@ -162,10 +162,10 @@ final class TerminalScreenContextTests: XCTestCase {
     func testTypedInputFrameAndLoneSeparatorsAreKept() {
         let separator = String(repeating: "\u{2500}", count: 79)
         let typed = "\(separator)\n\u{276F} fix the login bug\n\(separator)"
-        XCTAssertEqual(TerminalScreenAXReader.sanitizedScreenText(typed), typed)
+        XCTAssertEqual(TerminalScreenText.sanitizedScreenText(typed), typed)
 
         let turnDivider = "earlier output\n\(separator)\nlater output"
-        XCTAssertEqual(TerminalScreenAXReader.sanitizedScreenText(turnDivider), turnDivider)
+        XCTAssertEqual(TerminalScreenText.sanitizedScreenText(turnDivider), turnDivider)
     }
 
     // The frame strips wherever it appears, and the blank run it leaves
@@ -175,7 +175,7 @@ final class TerminalScreenContextTests: XCTestCase {
         let separator = String(repeating: "\u{2500}", count: 79)
         let raw = "above\n\n\(separator)\n\u{276F}\n\(separator)\n\nbelow"
         XCTAssertEqual(
-            TerminalScreenAXReader.sanitizedScreenText(raw),
+            TerminalScreenText.sanitizedScreenText(raw),
             "above\n\nbelow"
         )
     }
@@ -194,11 +194,11 @@ final class TerminalScreenContextTests: XCTestCase {
         lines.append("NeedleTailTerm.swift".padding(toLength: 1_000, withPad: " ", startingAt: 0))
         let raw = lines.joined(separator: "\n")
         XCTAssertGreaterThan(
-            raw.count, TerminalScreenAXReader.screenCharacterCap,
+            raw.count, TerminalScreenText.screenCharacterCap,
             "precondition: the raw grid alone would blow the cap"
         )
-        let sanitized = try XCTUnwrap(TerminalScreenAXReader.sanitizedScreenText(raw))
-        XCTAssertLessThanOrEqual(sanitized.count, TerminalScreenAXReader.screenCharacterCap)
+        let sanitized = try XCTUnwrap(TerminalScreenText.sanitizedScreenText(raw))
+        XCTAssertLessThanOrEqual(sanitized.count, TerminalScreenText.screenCharacterCap)
         XCTAssertTrue(
             sanitized.contains("NeedleTailTerm.swift"),
             "the tail term survives only because compaction runs before the cap"
@@ -206,20 +206,20 @@ final class TerminalScreenContextTests: XCTestCase {
     }
 
     func testSanitizationCapsAtAbsoluteCap() {
-        let raw = String(repeating: "x", count: TerminalScreenAXReader.screenCharacterCap + 500)
-        let sanitized = TerminalScreenAXReader.sanitizedScreenText(raw)
-        XCTAssertEqual(sanitized?.count, TerminalScreenAXReader.screenCharacterCap)
+        let raw = String(repeating: "x", count: TerminalScreenText.screenCharacterCap + 500)
+        let sanitized = TerminalScreenText.sanitizedScreenText(raw)
+        XCTAssertEqual(sanitized?.count, TerminalScreenText.screenCharacterCap)
     }
 
     func testSanitizationKeepsTextAtOrBelowCapIntact() {
-        let raw = String(repeating: "y", count: TerminalScreenAXReader.screenCharacterCap)
-        XCTAssertEqual(TerminalScreenAXReader.sanitizedScreenText(raw)?.count, TerminalScreenAXReader.screenCharacterCap)
+        let raw = String(repeating: "y", count: TerminalScreenText.screenCharacterCap)
+        XCTAssertEqual(TerminalScreenText.sanitizedScreenText(raw)?.count, TerminalScreenText.screenCharacterCap)
     }
 
     func testEmptyOrWhitespaceOnlyScreenIsNotContext() {
-        XCTAssertNil(TerminalScreenAXReader.sanitizedScreenText(""))
-        XCTAssertNil(TerminalScreenAXReader.sanitizedScreenText("   \n\t\n  "))
-        XCTAssertNil(TerminalScreenAXReader.sanitizedScreenText("\u{0}\u{7}"))
+        XCTAssertNil(TerminalScreenText.sanitizedScreenText(""))
+        XCTAssertNil(TerminalScreenText.sanitizedScreenText("   \n\t\n  "))
+        XCTAssertNil(TerminalScreenText.sanitizedScreenText("\u{0}\u{7}"))
     }
 
     // Live AX text must never be stored or logged raw — the sanitizer is the
@@ -841,7 +841,7 @@ final class TerminalScreenContextTests: XCTestCase {
     func testPromptBudgetIsFarBelowTheAXReadCeiling() {
         XCTAssertLessThan(
             PolishContextBudget.totalCharacterBudget,
-            TerminalScreenAXReader.screenCharacterCap,
+            TerminalScreenText.screenCharacterCap,
             "a prompt excerpt must never be the size of the AX read ceiling"
         )
     }

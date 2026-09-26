@@ -37,6 +37,7 @@ PATTERNS=(
   '*HerdrClientTTYProbe*'                            # which surface is bound to a herdr client at all
   '*ClaudeRemoteHerdrForward*'                       # the ssh -L forward, its argv, leases and teardown
   '*ClaudeRemoteForwardSupervisor*'                  # the process supervision under that forward
+  '*ClaudeRemoteForwardProcess*'                     # the process seam that supervision drives
   '*ClaudeRemoteForwardCoordinator*'                 # which hosts get a forward, and in what order
   '*SSHDestinationCanonicalizer*'                    # ssh -G identity matching for the destination
   '*SSHDestinationTTYProbe*'                         # the argv fallback the panel binding falls through to

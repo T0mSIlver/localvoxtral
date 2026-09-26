@@ -14,6 +14,7 @@ Its vendored dependency pin and upgrade procedure live in `DEPENDENCY.md`.
   fetch fails transiently sometimes; retry). `xcrun --find metal` succeeding
   does NOT mean the toolchain is installed; only invoking `metal` proves it.
 - Engine, model-pin, packaging, or integration-contract changes here MUST run
-  the speechd live-model lane (`./scripts/remote-build.sh
-  integration-speechd`, or `[run-speechd-integration]` in the PR) — triggers
-  in `../docs/agent/test-tiers.md`.
+  the speechd live-model lane once, on the final diff: the PR's CI lane runs
+  it when its filter matches (or with `[run-speechd-integration]` in the
+  PR), so run `./scripts/remote-build.sh integration-speechd` by hand only
+  when neither applies. Triggers in `../docs/agent/test-tiers.md`.

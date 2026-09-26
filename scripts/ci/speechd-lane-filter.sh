@@ -27,9 +27,9 @@ MARKER='[run-speechd-integration]'
 # mlx-audio-swift pin surface.
 PATTERNS=(
   'SpeechHelper/*'
-  'Sources/localvoxtral/Backends/BackendCatalog.swift'
+  'Sources/localvoxtralCore/BackendCatalog.swift'
   'Sources/localvoxtral/Backends/BackendManager.swift'
-  'Sources/localvoxtral/Backends/SpeechModelCatalog.swift'
+  'Sources/localvoxtralCore/SpeechModelCatalog.swift'
   'scripts/package_app.sh'
   'scripts/ci/speechd-lane-filter.sh'
   'Tests/localvoxtralTests/SpeechHelperIntegrationTests.swift'

@@ -6,7 +6,7 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|test-cost-budgets|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|eval-llm|eval-e2e|eval-term-recall|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
+#   ./scripts/remote-build.sh [build|test|test-cost-budgets|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-e2e|eval-term-recall|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
 #     build        swift build
 #     test         swift build + unit tests (default; skips live-backend suites
 #                  and the cost-budget suite below). With no extra arguments
@@ -62,6 +62,14 @@ set -euo pipefail
 #                  from the Mac's system voice, needed for the time-to-first-
 #                  text and word timings to mean anything);
 #                  requires a prior `package`
+#     polishd-bench
+#                  time the packaged polishing helper on the polish eval
+#                  corpora, one arm after another per round: greedy, greedy
+#                  with MTP speculative decoding, and the production
+#                  temperature 0.3. Optional args = rounds (default 3) and an
+#                  absolute path on the build host to a baseline helper binary
+#                  (e.g. another LV_BUILD_DIR's packaged one), added as a
+#                  fourth arm at temperature 0.3; requires a prior `package`
 #     eval-llm     default-polish-prompt eval against a live chat/completions
 #                  server (the bundled polishd test service by default);
 #                  optional args = chat/completions endpoint and external
@@ -698,6 +706,38 @@ case "$CMD" in
     fi
     REMOTE_CMD=(swift test --build-system native --filter HerdrIntegrationTests)
     ;;
+  polishd-bench)
+    # Marker-gated XCTest, like speechd-bench: the gate cannot run the
+    # packaged helper directly.
+    if [[ $# -gt 2 ]]; then
+      echo "polishd-bench accepts optional rounds and baseline-helper-path arguments" >&2
+      exit 1
+    fi
+    POLISHD_BENCH_ROUNDS="${1:-3}"
+    POLISHD_BENCH_BASELINE="${2:-}"
+    if [[ ! "$POLISHD_BENCH_ROUNDS" =~ ^[1-9][0-9]*$ ]]; then
+      echo "polishd-bench rounds must be a positive integer" >&2
+      exit 1
+    fi
+    if [[ -n "$POLISHD_BENCH_BASELINE" && ! "$POLISHD_BENCH_BASELINE" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+      echo "polishd-bench baseline-helper-path must be an absolute path" >&2
+      exit 1
+    fi
+    POLISHD_BENCH_MARKER="$ROOT_DIR/.polishd-bench-enable.json"
+    trap 'cleanup_transient_marker "$POLISHD_BENCH_MARKER"' EXIT
+    POLISHD_BENCH_HELPER="PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd"
+    # The greedy arm comes first: the report compares every arm's outputs
+    # with the first, and MTP must reproduce greedy decoding exactly.
+    POLISHD_BENCH_ARMS="{\"name\":\"greedy\",\"helperPath\":\"$POLISHD_BENCH_HELPER\",\"temperature\":0}"
+    POLISHD_BENCH_ARMS+=",{\"name\":\"greedy+MTP\",\"helperPath\":\"$POLISHD_BENCH_HELPER\",\"arguments\":[\"--speculative-decoding\",\"mtp\"],\"temperature\":0}"
+    POLISHD_BENCH_ARMS+=",{\"name\":\"temp 0.3\",\"helperPath\":\"$POLISHD_BENCH_HELPER\"}"
+    if [[ -n "$POLISHD_BENCH_BASELINE" ]]; then
+      POLISHD_BENCH_ARMS+=",{\"name\":\"baseline temp 0.3\",\"helperPath\":\"$POLISHD_BENCH_BASELINE\"}"
+    fi
+    printf '{"rounds":%s,"arms":[%s]}\n' "$POLISHD_BENCH_ROUNDS" "$POLISHD_BENCH_ARMS" \
+      >"$POLISHD_BENCH_MARKER"
+    REMOTE_CMD=(swift test --build-system native --filter PolishdSpeculativeBenchTests)
+    ;;
   speechd-bench)
     # The SSH gate does not allow arbitrary packaged-binary execution. A marker-gated
     # root XCTest launches the xcodebuild-produced helper and relays its BENCH output.
@@ -1154,7 +1194,7 @@ case "$CMD" in
     REMOTE_CMD=("$@")
     ;;
   *)
-    echo "Usage: $0 [build|test|test-cost-budgets|integration|integration-polishd|integration-speechd|integration-herdr|speechd-bench|eval-llm|eval-e2e|eval-term-recall|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
+    echo "Usage: $0 [build|test|test-cost-budgets|integration|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-e2e|eval-term-recall|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
     exit 1
     ;;
 esac

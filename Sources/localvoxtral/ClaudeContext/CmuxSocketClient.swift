@@ -1,102 +1,15 @@
+#if canImport(AppKit)
 import AppKit
+#endif
 import Foundation
 
 #if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
 #endif
 
-/// What the resolver needs to know about cmux's focused surface.
-///
-/// `surfaceID` is `CMUX_SURFACE_ID`: minted by cmux and injected into the
-/// surface's process environment — and, through its ssh relay, into the
-/// environment of a `cmux ssh` shell on another host.
-///
-/// It is SESSION-SCOPED, not persistent: cmux re-mints surface ids when a
-/// workspace is restored (its own `PanelStableSurfaceIdentity` notes that
-/// `Panel/id` is "re-minted every time a panel is recreated, including session
-/// restore", and the restart-stable id is a different value that is neither
-/// exported to the environment nor returned on the socket). Nothing here is
-/// durable for that reason: both sides of the match — the session's published
-/// env and the socket's answer — come from the same cmux run, and a stale id
-/// simply fails to match, because these are UUIDs and a re-minted one cannot
-/// collide with an old one. `CMUX_WORKSPACE_ID` is equally volatile and is
-/// deliberately never consulted.
-struct CmuxFocusedSurface: Sendable, Equatable {
-    var surfaceID: String
-    /// The surface's controlling tty, when cmux reports one. Optional because a
-    /// non-answer must stay distinguishable from a disagreement: the resolver
-    /// cross-checks only when both sides know a tty.
-    var tty: String?
-    /// Whether the workspace HOSTING this surface is a live remote (`cmux ssh`)
-    /// workspace, as cmux reports it right now. Nil when cmux would not say.
-    ///
-    /// This is the only remote-ness signal cmux exposes to a client, and it is
-    /// deliberately read fresh per dictation. The surface node itself carries
-    /// nothing: a `cmux ssh` surface is an ordinary `type: "terminal"` whose
-    /// remoteness lives on the WORKSPACE (`workspace.remote.configure` stores
-    /// it; `Workspace.isRemoteWorkspace` is `remoteConfiguration != nil`), so
-    /// it takes a second method to see it. Nil is not "local" — it is "cmux did
-    /// not answer", which the resolver treats as refusing every remote claim.
-    var workspaceIsRemote: Bool?
-}
-
-/// One socket answer. Three cases rather than an optional because exactly one
-/// failure — "the socket did not let us in" — is the user's to fix, and folding
-/// it into a generic nil is how a fixable misconfiguration becomes an
-/// unexplained silence.
-enum CmuxQueryResult<Value: Sendable>: Sendable {
-    case value(Value)
-    /// The socket answered and refused us: password mode with no/wrong
-    /// password, or the default `cmuxOnly` mode, where cmux checks peer
-    /// ancestry and we are by construction not a cmux child.
-    case authenticationRequired
-    /// No socket, no answer, a malformed answer, a deadline, or an error that
-    /// is not about credentials. Includes "cmux is not running", which is the
-    /// common case and not an error.
-    case unavailable
-}
-
-/// Equatable only where the payload is — the internal wire shapes this enum
-/// also carries have no business gaining an equality just to be returned.
-extension CmuxQueryResult: Equatable where Value: Equatable {}
-
-/// The one short sentence the Settings row shows for the cmux socket. Details —
-/// which method, which code — go to the log; the pane gets a sentence (owner
-/// rule: never long text in the popover/pane).
-enum CmuxSocketStatus: Sendable, Equatable {
-    case ok
-    case authenticationRequired
-    case unavailable
-
-    var message: String? {
-        switch self {
-        case .ok:
-            return nil
-        case .authenticationRequired:
-            return "cmux socket requires password mode."
-        case .unavailable:
-            return "cmux socket not reachable."
-        }
-    }
-}
-
-/// Read-only access to cmux's control socket, as the join arm needs it.
-///
-/// Every call carries the pid the CONNECTED PEER must turn out to be — the
-/// running cmux app the join is about. It is a required argument rather than
-/// client state because it is a per-dictation fact (the frontmost app), and
-/// because a credential must never be sent to a peer nobody named.
-protocol CmuxSurfaceQuerying: Sendable {
-    /// The surface the user is currently looking at.
-    func focusedSurface(expectedPeerPID: pid_t) async -> CmuxQueryResult<CmuxFocusedSurface>
-    /// The visible text of EXACTLY `surfaceID`. Raw wire text: the caller owns
-    /// sanitization, bounding, and every consent gate.
-    func surfaceText(
-        surfaceID: String, expectedPeerPID: pid_t
-    ) async -> CmuxQueryResult<String>
-}
-
-#if canImport(Darwin)
+#if canImport(Darwin) || canImport(Glibc)
 /// Minimal read-only client for cmux's newline-delimited JSON control socket.
 ///
 /// Hand-written against cmux's wire contract, never derived from its code: cmux
@@ -164,7 +77,7 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
         },
         peerPID: @escaping @Sendable (Int32) -> pid_t? = { CmuxSocketClient.localPeerPID($0) },
         bundleIDOfRunningPID: @escaping @Sendable (pid_t) -> String? = {
-            NSRunningApplication(processIdentifier: $0)?.bundleIdentifier
+            CmuxSocketClient.runningBundleID(ofPID: $0)
         }
     ) {
         self.socketPaths = socketPaths
@@ -174,6 +87,16 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
         self.socketMetadata = socketMetadata
         self.peerPID = peerPID
         self.bundleIDOfRunningPID = bundleIDOfRunningPID
+    }
+
+    /// LaunchServices' bundle id for a running pid. There is none without
+    /// AppKit, and no bundle id matches no cmux, so the join abstains.
+    static func runningBundleID(ofPID pid: pid_t) -> String? {
+        #if canImport(AppKit)
+        NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+        #else
+        nil
+        #endif
     }
 
     /// `LOCAL_PEERPID` for a connected AF_UNIX descriptor: the kernel's answer
@@ -598,7 +521,7 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
     private func openConnection(to socketPath: String, deadline: UInt64) -> Int32? {
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
-        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        POSIXSocket.setLength(of: &address)
         let pathBytes = Array(socketPath.utf8)
         let capacity = MemoryLayout.size(ofValue: address.sun_path)
         guard pathBytes.count < capacity else { return nil }
@@ -607,7 +530,7 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
             raw[pathBytes.count] = 0
         }
 
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        let fd = socket(AF_UNIX, POSIXSocket.stream, 0)
         guard fd >= 0 else { return nil }
         guard makeNonBlocking(fd) else {
             close(fd)
@@ -616,6 +539,8 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
         // A failed SO_NOSIGPIPE is fatal to the CALLER, not just this query: a
         // peer closing mid-write would then SIGPIPE the whole app (the same
         // class of crash as the FileHandle field bug, PR #60). Abstain instead.
+        // Linux has no such option; its sends pass `MSG_NOSIGNAL`.
+        #if canImport(Darwin)
         var noSigPipe: Int32 = 1
         guard setsockopt(
             fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe,
@@ -624,10 +549,11 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
             close(fd)
             return nil
         }
+        #endif
 
         let status = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                LibC.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
         if status == 0 { return fd }
@@ -659,7 +585,9 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
             guard let base = raw.baseAddress else { return false }
             var offset = 0
             while offset < raw.count {
-                let written = Darwin.send(fd, base.advanced(by: offset), raw.count - offset, 0)
+                let written = LibC.send(
+                    fd, base.advanced(by: offset), raw.count - offset, POSIXSocket.sendFlags
+                )
                 if written > 0 {
                     offset += written
                     continue
@@ -690,7 +618,7 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
             let remainingThroughSentinel = Self.maxResponseLineBytes + 1 - buffer.count
             guard remainingThroughSentinel > 0 else { return nil }
             let readCapacity = min(chunk.count, remainingThroughSentinel)
-            let count = Darwin.read(fd, &chunk, readCapacity)
+            let count = LibC.read(fd, &chunk, readCapacity)
             if count < 0 {
                 if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
                 return nil
@@ -714,7 +642,7 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
             let roundedMillis = remaining / 1_000_000 + (remaining % 1_000_000 == 0 ? 0 : 1)
             let timeoutMillis = Int32(min(roundedMillis, UInt64(Int32.max)))
             var descriptor = pollfd(fd: fd, events: events, revents: 0)
-            let ready = Darwin.poll(&descriptor, 1, timeoutMillis)
+            let ready = LibC.poll(&descriptor, 1, timeoutMillis)
             if ready < 0, errno == EINTR { continue }
             return ready > 0
         }

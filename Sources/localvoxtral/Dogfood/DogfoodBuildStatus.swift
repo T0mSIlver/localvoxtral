@@ -22,13 +22,4 @@ enum DogfoodBuildStatus {
         guard isDogfoodBuild else { return "Standard" }
         return captureArmed ? "Dogfood — capture armed" : "Dogfood — capture disarmed"
     }
-
-    /// One short reference line under the label; nil for standard builds,
-    /// which have nothing to say (and must not advertise dogfood plumbing).
-    static func detail(isDogfoodBuild: Bool, captureArmed: Bool) -> String? {
-        guard isDogfoodBuild else { return nil }
-        return captureArmed
-            ? "Records: ~/Library/Application Support/localvoxtral/dogfood"
-            : "Arm: defaults write com.localvoxtral.app debug.dogfood_capture_enabled -bool true (relaunch)"
-    }
 }

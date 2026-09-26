@@ -1,5 +1,4 @@
 import ClaudeContextWire
-import CryptoKit
 import Foundation
 import Synchronization
 
@@ -113,16 +112,16 @@ public enum ClaudeRemoteTokenDigest {
     /// hosts issued (improbably) the same token do not share a stored hash, and
     /// so the file cannot be attacked with one precomputed table across users.
     public static func hash(token: String, salt: String) -> String {
-        HMAC<SHA256>.authenticationCode(
+        HMACSHA256.authenticationCode(
             for: Data(token.utf8),
-            using: SymmetricKey(data: Data(salt.utf8))
+            key: Data(salt.utf8)
         ).map { String(format: "%02x", $0) }.joined()
     }
 
     /// Verify-only compatibility for registries written before hashes were
     /// framed. Never use this for a newly issued or rotated credential.
     static func legacyHash(token: String, salt: String) -> String {
-        var hasher = SHA256()
+        var hasher = SHA256Hasher()
         hasher.update(data: Data(salt.utf8))
         hasher.update(data: Data(token.utf8))
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
@@ -292,7 +291,7 @@ public struct ClaudeRemoteHostFileStoreIO: ClaudeRemoteHostStoreIO {
             var offset = 0
             while offset < raw.count {
                 let written = ClaudeRemoteHostFileStoreIO.retryingOnEINTR {
-                    Darwin.write(fd, base.advanced(by: offset), raw.count - offset)
+                    LibC.write(fd, base.advanced(by: offset), raw.count - offset)
                 }
                 guard written > 0 else {
                     throw ClaudeRemoteHostRegistry.StoreError.writeFailed(path: url.path)
@@ -808,19 +807,6 @@ public final class ClaudeRemoteHostRegistry: Sendable {
             hosts[index].extraCredentials?.removeAll {
                 $0.purpose == pending.purpose && $0.tokenHash != kept
             }
-        }
-    }
-
-    /// Drop this host's extra credentials for `purpose`. The tokens stop
-    /// working the instant this returns.
-    public func removeCredential(hostID: String, purpose: ClaudeRemoteCredentialPurpose) throws {
-        try transact { hosts in
-            guard let index = hosts.firstIndex(where: { $0.id == hostID }) else {
-                throw StoreError.unknownHost(hostID)
-            }
-            let remaining = (hosts[index].extraCredentials ?? []).filter { $0.purpose != purpose }
-            hosts[index].extraCredentials = remaining.isEmpty ? nil : remaining
-            hosts[index].vibeHooksVersionReport = nil
         }
     }
 

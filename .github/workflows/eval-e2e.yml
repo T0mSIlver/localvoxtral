@@ -1,6 +1,6 @@
 name: Agent Dictation E2E Eval
 
-# The wide agent-dictation eval (owner decision 2026-07-11): nightly + manual
+# The wide agent-dictation eval (owner decision 2026-07-11): weekly + manual
 # only, NEVER per-PR — it runs live TTS -> speechd ASR -> polishd inference
 # over the ~160-case EvalCorpus/agent-dictation corpus and takes many minutes.
 # The operator-only human-WAV baseline uses remote-build.sh's optional
@@ -11,10 +11,11 @@ name: Agent Dictation E2E Eval
 on:
   workflow_dispatch:
   schedule:
-    # Nightly. ui-smoke moved to an evening lock-aware ladder (18:00–21:00
-    # UTC), so 04:45 no longer needs to dodge it — kept overnight because
-    # this lane needs no GUI session and the machine is idle then.
-    - cron: "45 4 * * *"
+    # Sundays only (owner decision 2026-09-25): at ~29 min a run it was the
+    # largest scheduled load on the Mac, and prompts and model pins change
+    # far less often than nightly. Overnight because this lane needs no GUI
+    # session and the machine is idle then.
+    - cron: "45 4 * * 0"
 
 concurrency:
   group: eval-e2e

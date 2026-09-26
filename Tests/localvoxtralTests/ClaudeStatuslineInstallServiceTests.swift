@@ -18,7 +18,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
     // MARK: - Status derivation
 
     func testAbsentFileIsNotConfigured() {
-        let service = ClaudeStatuslineInstallService(fileSystem: StubStatuslineFS(
+        let service = ClaudeStatuslineInstallService(fileSystem: StubStatuslineFileSystem(
             state: ClaudeStatuslineState(fileExists: false)
         ))
         XCTAssertEqual(service.status(), .notConfigured)
@@ -30,7 +30,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
             existing: nil, hookCommand: Self.hookCommand
         ))
         let service = ClaudeStatuslineInstallService(
-            fileSystem: StubStatuslineFS(
+            fileSystem: StubStatuslineFileSystem(
                 state: ClaudeStatuslineState(fileExists: true, data: existing)
             ),
             isExecutableFile: { _ in true }
@@ -47,7 +47,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
             "statusLine": ["type": "command", "command": stale],
         ])
         let staleService = ClaudeStatuslineInstallService(
-            fileSystem: StubStatuslineFS(
+            fileSystem: StubStatuslineFileSystem(
                 state: ClaudeStatuslineState(fileExists: true, data: existing)
             ),
             isExecutableFile: { _ in false }
@@ -58,7 +58,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
             "The installed path moved; update the status line."
         )
         let healthyService = ClaudeStatuslineInstallService(
-            fileSystem: StubStatuslineFS(
+            fileSystem: StubStatuslineFileSystem(
                 state: ClaudeStatuslineState(fileExists: true, data: existing)
             ),
             isExecutableFile: { _ in true }
@@ -72,7 +72,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
         let old = "/Users/me/Downloads/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook --statusline"
         let existing = try settingsJSON(["statusLine": ["type": "command", "command": old]])
         let service = ClaudeStatuslineInstallService(
-            fileSystem: StubStatuslineFS(state: ClaudeStatuslineState(fileExists: true, data: existing)),
+            fileSystem: StubStatuslineFileSystem(state: ClaudeStatuslineState(fileExists: true, data: existing)),
             isExecutableFile: { _ in true }
         )
         XCTAssertEqual(service.status(currentHookCommand: Self.hookCommand), .otherCopy)
@@ -89,7 +89,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
 
         // A missing file is still stale, whichever copy this is.
         let gone = ClaudeStatuslineInstallService(
-            fileSystem: StubStatuslineFS(state: ClaudeStatuslineState(fileExists: true, data: existing)),
+            fileSystem: StubStatuslineFileSystem(state: ClaudeStatuslineState(fileExists: true, data: existing)),
             isExecutableFile: { _ in false }
         )
         XCTAssertEqual(gone.status(currentHookCommand: Self.hookCommand), .stalePath)
@@ -100,7 +100,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
             "statusLine": ["type": "command", "command": "localvoxtral-claude-hook --statusline"],
         ])
         let service = ClaudeStatuslineInstallService(
-            fileSystem: StubStatuslineFS(state: ClaudeStatuslineState(fileExists: true, data: existing)),
+            fileSystem: StubStatuslineFileSystem(state: ClaudeStatuslineState(fileExists: true, data: existing)),
             isExecutableFile: { _ in true }
         )
         XCTAssertEqual(
@@ -204,7 +204,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
             let existing = try settingsJSON([
                 "statusLine": ["type": "command", "command": command],
             ])
-            let applyFS = StubStatuslineFS(state: ClaudeStatuslineState(
+            let applyFS = StubStatuslineFileSystem(state: ClaudeStatuslineState(
                 fileExists: true, data: existing, permissions: 0o644
             ))
             XCTAssertThrowsError(
@@ -214,7 +214,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
                 XCTAssertEqual(error as? ClaudeStatuslineError, .refused, "\(command)")
             }
             XCTAssertNil(applyFS.written, "never overwritten: \(command)")
-            let removeFS = StubStatuslineFS(state: ClaudeStatuslineState(
+            let removeFS = StubStatuslineFileSystem(state: ClaudeStatuslineState(
                 fileExists: true, data: existing, permissions: 0o644
             ))
             XCTAssertThrowsError(
@@ -246,7 +246,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
                 ClaudeStatuslineInstallService.sentence(for: .edited),
                 "Edited in settings.json; remove it there."
             )
-            let applyFS = StubStatuslineFS(state: ClaudeStatuslineState(
+            let applyFS = StubStatuslineFileSystem(state: ClaudeStatuslineState(
                 fileExists: true, data: existing, permissions: 0o644
             ))
             XCTAssertThrowsError(
@@ -256,7 +256,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
                 XCTAssertEqual(error as? ClaudeStatuslineError, .refused, "\(command)")
             }
             XCTAssertNil(applyFS.written, "an edited entry is never overwritten: \(command)")
-            let removeFS = StubStatuslineFS(state: ClaudeStatuslineState(
+            let removeFS = StubStatuslineFileSystem(state: ClaudeStatuslineState(
                 fileExists: true, data: existing, permissions: 0o644
             ))
             XCTAssertThrowsError(
@@ -288,7 +288,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
     }
 
     func testExistingButUnreadableFileIsUnknown() {
-        let service = ClaudeStatuslineInstallService(fileSystem: StubStatuslineFS(
+        let service = ClaudeStatuslineInstallService(fileSystem: StubStatuslineFileSystem(
             state: ClaudeStatuslineState(fileExists: true, data: nil)
         ))
         XCTAssertEqual(service.status(), .unknown)
@@ -340,7 +340,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
     // MARK: - Apply
 
     func testApplyCreatesTheFileAt0600() throws {
-        let fs = StubStatuslineFS(state: ClaudeStatuslineState(
+        let fs = StubStatuslineFileSystem(state: ClaudeStatuslineState(
             fileExists: false, directoryExists: false
         ))
         try ClaudeStatuslineInstallService(fileSystem: fs).apply(hookCommand: Self.hookCommand)
@@ -354,7 +354,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
 
     func testApplyPreservesUnknownKeys() throws {
         let existing = try settingsJSON(["theme": "dark", "other": ["nested": true]])
-        let fs = StubStatuslineFS(state: ClaudeStatuslineState(
+        let fs = StubStatuslineFileSystem(state: ClaudeStatuslineState(
             fileExists: true, data: existing, permissions: 0o644
         ))
         try ClaudeStatuslineInstallService(fileSystem: fs).apply(hookCommand: Self.hookCommand)
@@ -395,7 +395,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
     }
 
     func testReapplyIsByteIdentical() throws {
-        let fs = StubStatuslineFS(state: ClaudeStatuslineState(fileExists: false))
+        let fs = StubStatuslineFileSystem(state: ClaudeStatuslineState(fileExists: false))
         let service = ClaudeStatuslineInstallService(fileSystem: fs)
         try service.apply(hookCommand: Self.hookCommand)
         let first = try XCTUnwrap(fs.written?.data)
@@ -409,7 +409,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
         let existing = try settingsJSON([
             "statusLine": ["type": "command", "command": "~/.claude/mine.sh"],
         ])
-        let fs = StubStatuslineFS(state: ClaudeStatuslineState(
+        let fs = StubStatuslineFileSystem(state: ClaudeStatuslineState(
             fileExists: true, data: existing, permissions: 0o644
         ))
         XCTAssertThrowsError(
@@ -421,7 +421,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
     }
 
     func testApplyRefusesUnparseableJSON() throws {
-        let fs = StubStatuslineFS(state: ClaudeStatuslineState(
+        let fs = StubStatuslineFileSystem(state: ClaudeStatuslineState(
             fileExists: true, data: Data("garbage{".utf8), permissions: 0o644
         ))
         XCTAssertThrowsError(
@@ -437,7 +437,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
             ClaudeStatuslineState(fileExists: true, fileIsSymlink: true),
             ClaudeStatuslineState(fileExists: false, directoryIsSymlink: true),
         ] {
-            let fs = StubStatuslineFS(state: state)
+            let fs = StubStatuslineFileSystem(state: state)
             XCTAssertThrowsError(
                 try ClaudeStatuslineInstallService(fileSystem: fs)
                     .apply(hookCommand: Self.hookCommand)
@@ -449,7 +449,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
     }
 
     func testApplyRefusesAnUnreadableFile() throws {
-        let fs = StubStatuslineFS(state: ClaudeStatuslineState(
+        let fs = StubStatuslineFileSystem(state: ClaudeStatuslineState(
             fileExists: true, data: nil
         ))
         XCTAssertThrowsError(
@@ -465,7 +465,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
     func testCreateThenRemoveReturnsToAbsent() throws {
         // Byte-identical removal for the file we created: absent before,
         // absent after.
-        let fs = StubStatuslineFS(state: ClaudeStatuslineState(fileExists: false))
+        let fs = StubStatuslineFileSystem(state: ClaudeStatuslineState(fileExists: false))
         let service = ClaudeStatuslineInstallService(fileSystem: fs)
         try service.apply(hookCommand: Self.hookCommand)
         fs.state = ClaudeStatuslineState(
@@ -485,7 +485,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
         let installed = try XCTUnwrap(ClaudeStatuslineInstallService.updatedSettingsData(
             existing: before, hookCommand: Self.hookCommand
         ))
-        let fs = StubStatuslineFS(state: ClaudeStatuslineState(
+        let fs = StubStatuslineFileSystem(state: ClaudeStatuslineState(
             fileExists: true, data: installed, permissions: 0o644
         ))
         try ClaudeStatuslineInstallService(fileSystem: fs).remove()
@@ -501,7 +501,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
         let existing = try settingsJSON([
             "statusLine": ["type": "command", "command": "~/.claude/mine.sh"],
         ])
-        let fs = StubStatuslineFS(state: ClaudeStatuslineState(
+        let fs = StubStatuslineFileSystem(state: ClaudeStatuslineState(
             fileExists: true, data: existing, permissions: 0o644
         ))
         XCTAssertThrowsError(
@@ -520,7 +520,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
         XCTAssertEqual(
             ClaudeStatuslineInstallService.removalSettingsData(existing: existing), .noChange
         )
-        let fs = StubStatuslineFS(state: ClaudeStatuslineState(
+        let fs = StubStatuslineFileSystem(state: ClaudeStatuslineState(
             fileExists: true, data: existing, permissions: 0o644
         ))
         XCTAssertNoThrow(try ClaudeStatuslineInstallService(fileSystem: fs).remove())
@@ -529,7 +529,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
     }
 
     func testRemoveOnAnAbsentFileIsANoOp() throws {
-        let fs = StubStatuslineFS(state: ClaudeStatuslineState(fileExists: false))
+        let fs = StubStatuslineFileSystem(state: ClaudeStatuslineState(fileExists: false))
         try ClaudeStatuslineInstallService(fileSystem: fs).remove()
         XCTAssertNil(fs.written)
         XCTAssertFalse(fs.deleted)
@@ -584,21 +584,4 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
             XCTAssertEqual(error as? ClaudeStatuslineError, .isSymlink)
         }
     }
-}
-
-/// Fixture-driven test double for the statusline file system.
-private final class StubStatuslineFS: ClaudeStatuslineFileSystem, @unchecked Sendable {
-    var state: ClaudeStatuslineState
-    var written: (data: Data, permissions: UInt16)?
-    var createdDirectory = false
-    var deleted = false
-
-    init(state: ClaudeStatuslineState) { self.state = state }
-
-    func readState() throws -> ClaudeStatuslineState { state }
-    func createDirectory(permissions: UInt16) throws { createdDirectory = true }
-    func atomicWrite(_ data: Data, permissions: UInt16) throws {
-        written = (data, permissions)
-    }
-    func deleteFile() throws { deleted = true }
 }

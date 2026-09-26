@@ -323,7 +323,7 @@ def production_v2_system_prompt(system: str) -> str:
 # The Swift constants PolishReferenceGuide interpolates: (file, constant).
 REFERENCE_GUIDE_LABELS = {
     "PolishContextClipboardReader.contextMessageInstruction": (
-        "PolishContextClipboardReader.swift", "contextMessageInstruction"),
+        "../localvoxtralCore/PolishContextClipboardReader.swift", "contextMessageInstruction"),
     "TerminalScreenContext.contextMessageInstruction": (
         "TerminalScreenContext.swift", "contextMessageInstruction"),
     "ClaudeContextInstructions.repositoryInstruction": (

@@ -238,10 +238,10 @@ final class DictationSessionController {
         if let storedTermSuggestions { return storedTermSuggestions }
         let model = SpeakerTermSuggestionModel(
             settings: settings,
-            recentTexts: { [weak self] in
-                await self?.sessionStore?.recentFinalTexts(
+            recentDictations: { [weak self] in
+                await self?.sessionStore?.recentEntries(
                     limit: SpeakerTermSuggestions.maxDictations
-                ) ?? []
+                ).map { TermSuggestionScreen.Dictation(raw: $0.rawText, final: $0.finalText) } ?? []
             },
             learnedTerms: { [weak self] in
                 self?.learnedTermStore?.snapshot().confirmedEverywhere().map(\.term) ?? []

@@ -197,8 +197,8 @@ final class TerminalAppsModelTests: XCTestCase {
         )
         XCTAssertFalse(old.join)
         XCTAssertFalse(old.screen)
-        XCTAssertEqual(old.joinReason, "Ghostty 1.4 or newer needed.")
-        XCTAssertEqual(old.screenReason, "Ghostty 1.4 or newer needed.")
+        XCTAssertEqual(old.joinReason, "Needs Ghostty 1.4+")
+        XCTAssertEqual(old.screenReason, "Needs Ghostty 1.4+")
     }
 
     func testCmuxCapabilityVerdictsFollowSocketSetup() {
@@ -364,7 +364,7 @@ final class TerminalAppsModelTests: XCTestCase {
     /// Field bug (2026-09-16): Ghostty tip builds stamp the short commit hash
     /// into `CFBundleShortVersionString` (`8867c37c5`; `ghostty +version`
     /// says `1.3.2-main-+8867c37c5`, channel tip), so the dotted floor read it
-    /// as 0.0 and Settings said "Ghostty 1.4 or newer needed." on a build
+    /// as 0.0 and Settings said "Needs Ghostty 1.4+" on a build
     /// whose scripting dictionary declares exactly what the join sends. Runs
     /// the model's DEFAULT Info.plist and dictionary readers against a
     /// fixture bundle laid out like the tip `.app`.
@@ -404,7 +404,7 @@ final class TerminalAppsModelTests: XCTestCase {
         let ghostty = XCTUnwrapApp("ghostty")
         XCTAssertEqual(model.dot(for: ghostty), .yellow)
         XCTAssertEqual(
-            model.capabilityVerdicts(for: ghostty).joinReason, "Ghostty 1.4 or newer needed.")
+            model.capabilityVerdicts(for: ghostty).joinReason, "Needs Ghostty 1.4+")
     }
 
     func testGhosttyScriptingDictionaryProbeCases() {

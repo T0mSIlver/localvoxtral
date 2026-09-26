@@ -40,18 +40,23 @@ public struct PolishdRouter: Sendable {
 
         do {
             let start = ContinuousClock.now
-            let content = try await responder.respond(
+            let reply = try await responder.respond(
                 to: completion.messages,
                 chatTemplateArguments: completion.chatTemplateArguments,
                 sampling: completion.sampling
             )
             let elapsed = start.duration(to: .now)
-            PolishdLog.info("chat.completion ok in \(elapsed)")
+            if let timings = reply.timings {
+                PolishdLog.info("chat.completion ok in \(elapsed); \(timings.summary)")
+            } else {
+                PolishdLog.info("chat.completion ok in \(elapsed)")
+            }
             let response = ChatCompletionResponse(
                 id: "polishd-\(UUID().uuidString)",
                 created: Int(Date().timeIntervalSince1970),
                 model: completion.model ?? modelName,
-                content: content
+                content: reply.content,
+                timings: reply.timings
             )
             return .json(200, response)
         } catch let error as ChatRespondingError {

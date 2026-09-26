@@ -454,12 +454,16 @@ echo "Building polishing helper (xcodebuild; full log: $HELPER_BUILD_LOG)"
   # -disableAutomaticPackageResolution: the committed Package.resolved is the
   # contract — if a manifest edit invalidates it, fail loudly instead of
   # silently re-resolving to floating versions that never get committed.
+  # -skipPackagePluginValidation: mlx-swift 0.31.6 ships a build-tool plugin
+  # (CudaBuild, a no-op on macOS), and a headless build cannot answer Xcode's
+  # trust prompt for it.
   xcodebuild \
     -scheme PolishHelper \
     -destination 'platform=macOS,arch=arm64' \
     -configuration Release \
     -derivedDataPath "$HELPER_DERIVED_DATA" \
     -disableAutomaticPackageResolution \
+    -skipPackagePluginValidation \
     build > "$HELPER_BUILD_LOG" 2>&1
 ) || {
   echo "Polishing helper xcodebuild failed; last 40 log lines:"

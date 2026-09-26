@@ -21,8 +21,7 @@ struct ClaudeHerdrLocalPanelSettingsRow: View {
     var body: some View {
         if model.hasEnabledHerdrMachine {
             SettingsFieldRow(
-                title: "Panel row",
-                help: "Adds the mic-indicator row to ~/.config/herdr/config.toml.",
+                title: "Mic indicator in herdr panel",
                 status: model.localHerdrPanelSentence,
                 statusAccessibilityIdentifier: "integrations.claude.localHerdrPanel.status"
             ) {

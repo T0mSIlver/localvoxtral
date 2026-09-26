@@ -100,7 +100,7 @@ list, newest first:
 A shorter setting says how many dictations it deletes and asks before it does.
 Term suggestions read this history, so they stop under Don't keep.
 
-**Keep dictation audio**, off by default, also saves what the microphone
+**Keep dictation audio on this Mac**, off by default, also saves what the microphone
 heard for each dictation, as a WAV file in
 `~/Library/Application Support/localvoxtral/dictation-audio`. The app never
 sends the audio anywhere, the term suggestion pass included. It is there so
@@ -124,11 +124,11 @@ the last 7 days, the last 30, or all of them:
 - **Polishing**: how often it changed the text, the typical wait (the
   median), and the wait one polish in ten exceeds.
 - **Learning, last 12 weeks**: one bar per week, whatever the period says,
-  so you can see whether localvoxtral is learning how you speak. **Terms the
-  recognizer spelled right** takes your Names and terms and the learned terms
+  so you can see whether localvoxtral is learning how you speak. **Your terms
+  recognized correctly** takes your Names and terms and the learned terms
   that ended up in a dictation, and counts how many the transcript already
-  spelled exactly, before polishing or a replacement fixed them. **Transcripts
-  inserted as recognized** is the share of polished dictations whose text went
+  spelled exactly, before polishing or a replacement fixed them. **Polished
+  dictations needing no fix** is the share of polished dictations whose text went
   in exactly as the recognizer wrote it. A week with fewer than five
   dictations to count draws no bar. Both are a trend, not a measurement: the
   history only holds the terms that reached the inserted text, so a term that
@@ -202,7 +202,7 @@ History; the panes sit under the sidebar's Settings header:
   spelling for that project, and after three dictations it starts correcting
   the name on its own — including in dictations where nothing on screen
   mentions it. Those terms are offered as tags in **Suggestions** too, with
-  no API credits. **Advanced → Learned terms** counts them and forgets them.
+  no API credits. **Advanced → Terms learned from polishing** counts them and forgets them.
   It also learns from your own fixes. When a dictation joined a coding-agent
   session and you fix a misheard name before sending the prompt (`kwen` to
   `Qwen`), the app compares the prompt you sent with what it typed and
@@ -219,8 +219,8 @@ History; the panes sit under the sidebar's Settings header:
   it, and its spellings were imported into your terms once) and the prompt
   files
 - **Context** — what the polisher may see (repo vocabulary, clipboard, the
-  agent's screen and session); each toggle's help is one line naming what
-  leaves this Mac, and the full terms are in
+  agent's screen and session); each toggle's title names what leaves this
+  Mac, and the full terms are in
   [Terminals & coding agents](coding-agents.md#polish-context-what-each-toggle-sends)
 - **Integrations** — one pane per harness, each with a status dot: green
   means detected and set up, yellow means a setup step is pending, grey

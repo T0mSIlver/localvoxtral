@@ -25,10 +25,6 @@ final class PolishHelperIntegrationTests: XCTestCase {
     private static let defaultHelperPath =
         "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd"
 
-    /// Generous because the first request after a cold Metal JIT cache can
-    /// pay kernel-compilation time on top of model load.
-    private static let readyTimeout: TimeInterval = 300
-
     private struct MarkerConfig: Decodable {
         let helperPath: String?
         let model: String?
@@ -86,269 +82,14 @@ final class PolishHelperIntegrationTests: XCTestCase {
         return (binary, model?.isEmpty == false ? model! : SettingsStore.defaultLLMPolishingModel)
     }
 
-    private struct ModelProvisioningError: Error, CustomStringConvertible {
-        let description: String
-    }
-
-    /// The helper never downloads (missing model = hard error by design), so
-    /// the suite provisions the shared HF cache itself when the model is
-    /// absent — the same cache layout + include patterns as the app's
-    /// HFModelDownloader, idempotent, ~3.3 GB for the default 4B (once per
-    /// build host/user).
-    /// Provisioning failures are test FAILURES, not skips: this suite only
-    /// runs when explicitly enabled, and a green skip would hide broken infra.
-    private func ensureModelCached(_ repoID: String) async throws {
-        let cacheRoot = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".cache/huggingface/hub")
-        let repoDir = cacheRoot.appendingPathComponent(
-            "models--" + repoID.replacingOccurrences(of: "/", with: "--")
-        )
-        let snapshotsDir = repoDir.appendingPathComponent("snapshots")
-
-        // Provision the revision the app PINS (catalog), not whatever main
-        // points at — the helper now refuses any other snapshot, and tracking
-        // main is exactly how an upstream index rewrite broke this suite
-        // (2026-07-14). Custom repo ids (no catalog entry) still track main.
-        let pinnedRevision = PolishModelCatalog.option(forRepoID: repoID)?.revision
-
-        // Completeness marker is a sentinel INSIDE the snapshot, written LAST
-        // below. Keying on config.json alone would let a cancelled
-        // half-download (config present, weights missing) poison the cache
-        // into a permanently-failing suite. It is deliberately not refs/main:
-        // hf_hub writes no ref for a sha-pinned download, so a ref-keyed marker
-        // would (a) miss a cache the app itself populated and (b) force this
-        // suite to point the SHARED cache's main ref at a non-head commit,
-        // lying to every other tool on the host.
-        if let pinnedRevision {
-            if Self.snapshotIsProvisioned(snapshotsDir.appendingPathComponent(pinnedRevision)) {
-                return
-            }
-        } else if let revision = try? String(
-            contentsOf: repoDir.appendingPathComponent("refs/main"),
-            encoding: .utf8
-        )
-        .trimmingCharacters(in: .whitespacesAndNewlines),
-            !revision.isEmpty,
-            Self.snapshotIsProvisioned(snapshotsDir.appendingPathComponent(revision))
-        {
-            return
-        }
-
-        print("polishd integration: downloading \(repoID) into \(cacheRoot.path)")
-        struct RepoInfo: Decodable {
-            struct Sibling: Decodable { let rfilename: String }
-            let sha: String
-            let siblings: [Sibling]
-        }
-        let apiURL = URL(
-            string:
-                "https://huggingface.co/api/models/\(repoID)/revision/\(pinnedRevision ?? "main")"
-        )!
-        let (infoData, infoResponse) = try await URLSession.shared.data(from: apiURL)
-        guard (infoResponse as? HTTPURLResponse)?.statusCode == 200 else {
-            throw ModelProvisioningError(
-                description: "HF API unreachable for \(repoID): \(infoResponse)"
-            )
-        }
-        let info = try JSONDecoder().decode(RepoInfo.self, from: infoData)
-        if let pinnedRevision, info.sha != pinnedRevision {
-            throw ModelProvisioningError(
-                description:
-                    "HF resolved \(repoID)@\(pinnedRevision) to sha \(info.sha) — pin is not a commit"
-            )
-        }
-
-        // Same include patterns as BackendManager.modelPreparationRequest.
-        let patterns = [
-            "*.json", "model*.safetensors", "*.py", "tokenizer.model",
-            "*.tiktoken", "tiktoken.model", "*.txt", "*.jsonl", "*.jinja",
-        ]
-        let wanted = info.siblings.map(\.rfilename).filter { name in
-            patterns.contains { fnmatch($0, name, 0) == 0 }
-        }
-        guard !wanted.isEmpty else {
-            throw ModelProvisioningError(description: "HF listing for \(repoID) matched no files")
-        }
-
-        let snapshotDir = snapshotsDir.appendingPathComponent(info.sha)
-        try FileManager.default.createDirectory(
-            at: snapshotDir, withIntermediateDirectories: true
-        )
-        for name in wanted {
-            let destination = snapshotDir.appendingPathComponent(name)
-            if FileManager.default.fileExists(atPath: destination.path) { continue }
-            try FileManager.default.createDirectory(
-                at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
-            )
-            let source = URL(
-                string: "https://huggingface.co/\(repoID)/resolve/\(info.sha)/\(name)"
-            )!
-            let (temporary, response) = try await URLSession.shared.download(from: source)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                throw ModelProvisioningError(description: "download failed for \(name): \(response)")
-            }
-            try FileManager.default.moveItem(at: temporary, to: destination)
-        }
-
-        // An unpinned (custom) repo is still resolved through refs/main by the
-        // helper, so it needs the ref; a pinned one must not touch it.
-        if pinnedRevision == nil {
-            let refsDir = repoDir.appendingPathComponent("refs")
-            try FileManager.default.createDirectory(at: refsDir, withIntermediateDirectories: true)
-            try Data("\(info.sha)\n".utf8).write(to: repoDir.appendingPathComponent("refs/main"))
-        }
-        // Written LAST: everything above is resumable, this says "complete".
-        try Data().write(to: snapshotDir.appendingPathComponent(Self.provisionedSentinel))
-        print("polishd integration: model provisioned (\(wanted.count) files)")
-    }
-
-    /// Marker the suite writes after the last file lands (see ensureModelCached).
-    static let provisionedSentinel = ".localvoxtral-provisioned"
-
-    static func snapshotIsProvisioned(_ snapshot: URL) -> Bool {
-        FileManager.default.fileExists(
-            atPath: snapshot.appendingPathComponent(provisionedSentinel).path
-        )
-            && FileManager.default.fileExists(
-                atPath: snapshot.appendingPathComponent("config.json").path
-            )
-    }
-
-    /// Spawns the helper and waits for its stderr readiness line
-    /// ("ready on 127.0.0.1:<port>"), which carries the ephemeral port when
-    /// launched with --port 0. Event-driven via the same descriptor-safe
-    /// PipeLineReader the app's installer uses (never
-    /// FileHandle.availableData — PR #60).
-    private func launchHelper(
-        binary: URL,
-        model: String,
-        extraArguments: [String] = []
-    ) async throws -> (process: Process, port: UInt16, stderrLog: LineLog) {
-        let process = Process()
-        process.executableURL = binary
-        // Mirror BackendManager.arguments(for:): the app pins the revision, so
-        // the suite must exercise the helper with the pin attached.
-        var arguments = ["--model", model, "--port", "0"]
-        if let revision = PolishModelCatalog.option(forRepoID: model)?.revision {
-            arguments.append(contentsOf: ["--model-revision", revision])
-        }
-        process.arguments = arguments + extraArguments
-
-        let stderr = Pipe()
-        process.standardError = stderr
-        // Fulfilled on the ready line OR on early exit, so a crashing helper
-        // fails in seconds with its stderr instead of a 300 s silent timeout.
-        let readyOrExited = expectation(description: "helper ready or exited")
-        readyOrExited.assertForOverFulfill = false
-        let portBox = PortBox()
-        let stderrLog = LineLog()
-        let reader = PipeLineReader(fileHandle: stderr.fileHandleForReading) { line in
-            stderrLog.append(line)
-            if let range = line.range(of: "ready on 127.0.0.1:"),
-               let port = UInt16(line[range.upperBound...].prefix(while: \.isNumber))
-            {
-                if portBox.set(port) {
-                    readyOrExited.fulfill()
-                }
-            }
-        }
-        process.terminationHandler = { _ in readyOrExited.fulfill() }
-
-        try process.run()
-        reader.start()
-        addTeardownBlock {
-            await Self.reap(process)
-        }
-
-        await fulfillment(of: [readyOrExited], timeout: Self.readyTimeout)
-        guard let port = portBox.get() else {
-            let status = process.isRunning
-                ? "still running, no ready line after \(Int(Self.readyTimeout))s"
-                : "exited with status \(process.terminationStatus)"
-            XCTFail(
-                """
-                Helper failed to become ready (\(status)). stderr tail:
-                \(stderrLog.tail(30))
-                """
-            )
-            throw XCTSkip("helper did not become ready")
-        }
-        return (process, port, stderrLog)
-    }
-
-    /// Reap, don't just signal: SIGTERM is asynchronous, so `terminate()`
-    /// alone lets the caller move on while the helper is still dying — in
-    /// teardown that costs the CI runner ~105 s of orphan cleanup (#111),
-    /// and between back-to-back launches it would briefly keep TWO copies
-    /// of the model in memory on the shared runner. Wait for the exit
-    /// (bounded), and escalate to SIGKILL if it never comes. Idempotent for
-    /// an already-exited process.
-    private static func reap(_ process: Process) async {
-        if process.isRunning {
-            process.terminate()
-        }
-        let reaped = XCTestExpectation(description: "helper exited after SIGTERM")
-        DispatchQueue.global().async {
-            process.waitUntilExit()  // returns immediately if already exited
-            reaped.fulfill()
-        }
-        _ = await XCTWaiter.fulfillment(of: [reaped], timeout: 10)
-        if process.isRunning {
-            kill(process.processIdentifier, SIGKILL)
-            process.waitUntilExit()
-        }
-    }
-
-    private final class LineLog: @unchecked Sendable {
-        private let lock = NSLock()
-        private var lines: [String] = []
-
-        func append(_ line: String) {
-            lock.lock()
-            lines.append(line)
-            lock.unlock()
-        }
-
-        func tail(_ count: Int) -> String {
-            lock.lock()
-            defer { lock.unlock() }
-            return lines.suffix(count).joined(separator: "\n")
-        }
-
-        func countOfLines(containing substring: String) -> Int {
-            lock.lock()
-            defer { lock.unlock() }
-            return lines.count { $0.contains(substring) }
-        }
-    }
-
-    private final class PortBox: @unchecked Sendable {
-        private let lock = NSLock()
-        private var port: UInt16?
-
-        func set(_ value: UInt16) -> Bool {
-            lock.lock()
-            defer { lock.unlock() }
-            guard port == nil else { return false }
-            port = value
-            return true
-        }
-
-        func get() -> UInt16? {
-            lock.lock()
-            defer { lock.unlock() }
-            return port
-        }
-    }
-
     /// The parity proof: /health answers, and the production polish request
     /// path scores the SAME eval corpus the mlx-lm server was held to. A
     /// required-case failure here means the engine swap changed polish
     /// behavior — investigate before shipping, do not relax the corpus.
     func testHelperMatchesPolishEvalBaselineThroughProductionRequestPath() async throws {
         let (binary, model) = try helperConfiguration()
-        try await ensureModelCached(model)
-        let (process, port, stderrLog) = try await launchHelper(binary: binary, model: model)
+        try await ensurePolishModelCached(model)
+        let (process, port, stderrLog) = try await launchPolishHelper(binary: binary, model: model)
 
         let healthURL = URL(string: "http://127.0.0.1:\(port)/health")!
         let (_, healthResponse) = try await URLSession.shared.data(from: healthURL)
@@ -416,7 +157,7 @@ final class PolishHelperIntegrationTests: XCTestCase {
     /// (no-wall-clock rule).
     func testAppWarmupRequestPrimesPromptCacheForFirstRealPolish() async throws {
         let (binary, model) = try helperConfiguration()
-        try await ensureModelCached(model)
+        try await ensurePolishModelCached(model)
         let option = PolishModelCatalog.option(forRepoID: model)
         let (templates, cleanup) = try LLMPolishEvalSupport.defaultPromptTemplates()
         addTeardownBlock { cleanup() }
@@ -447,7 +188,7 @@ final class PolishHelperIntegrationTests: XCTestCase {
         )
 
         // Baseline: cold helper, the first real polish pays the full prefill.
-        let cold = try await launchHelper(binary: binary, model: model)
+        let cold = try await launchPolishHelper(binary: binary, model: model)
         let coldResult = try await service.polish(
             request: realPolishRequest,
             configuration: configuration(port: cold.port)
@@ -456,10 +197,10 @@ final class PolishHelperIntegrationTests: XCTestCase {
         // is only an asynchronous SIGTERM, and overlapping two helpers would
         // briefly double the model's memory on the shared runner (~2x 4 GB
         // with the 4B) — same reap-don't-signal rule as teardown (#111).
-        await Self.reap(cold.process)
+        await Self.reapPolishHelper(cold.process)
 
         // Warmed: cold helper again, the app's warmup request lands first.
-        let warmed = try await launchHelper(binary: binary, model: model)
+        let warmed = try await launchPolishHelper(binary: binary, model: model)
         let warmupRequest = PolishPromptWarmup.request(templates: templates)
         var warmupDuration = Double.nan
         do {
@@ -524,7 +265,7 @@ final class PolishHelperIntegrationTests: XCTestCase {
     /// print-only (no-wall-clock rule).
     func testTwoSlotPrefixCacheKeepsAlternatingProfilePrefixesWarm() async throws {
         let (binary, model) = try helperConfiguration()
-        try await ensureModelCached(model)
+        try await ensurePolishModelCached(model)
         let option = PolishModelCatalog.option(forRepoID: model)
         let (templates, cleanup) = try LLMPolishEvalSupport.defaultPromptTemplates()
         addTeardownBlock { cleanup() }
@@ -595,7 +336,7 @@ final class PolishHelperIntegrationTests: XCTestCase {
 
         // Default (2 slots): both profiles checkpoint once, then every
         // request is a hit — no evictions, no full prefills.
-        let twoSlot = try await launchHelper(binary: binary, model: model)
+        let twoSlot = try await launchPolishHelper(binary: binary, model: model)
         let twoSlotDurations = try await runAlternatingSequence(port: twoSlot.port)
         XCTAssertEqual(
             twoSlot.stderrLog.countOfLines(containing: "prompt cache: checkpointed"), 2,
@@ -608,11 +349,11 @@ final class PolishHelperIntegrationTests: XCTestCase {
         XCTAssertEqual(twoSlot.stderrLog.countOfLines(containing: "prompt cache: evicted"), 0)
         XCTAssertEqual(twoSlot.stderrLog.countOfLines(containing: "full prefill"), 0)
         // Reap before the second launch — never two helpers in memory (#111).
-        await Self.reap(twoSlot.process)
+        await Self.reapPolishHelper(twoSlot.process)
 
         // Pinned to 1 slot (the original behavior): every alternation
         // evicts the other profile and re-prefills.
-        let oneSlot = try await launchHelper(
+        let oneSlot = try await launchPolishHelper(
             binary: binary,
             model: model,
             extraArguments: ["--prompt-cache-slots", "1"]
@@ -651,8 +392,8 @@ final class PolishHelperIntegrationTests: XCTestCase {
     /// assertions are not perturbed by a second corpus on the same process.
     func testHelperAgentProfileScoreboard() async throws {
         let (binary, model) = try helperConfiguration()
-        try await ensureModelCached(model)
-        let (process, port, _) = try await launchHelper(binary: binary, model: model)
+        try await ensurePolishModelCached(model)
+        let (process, port, _) = try await launchPolishHelper(binary: binary, model: model)
 
         // Catalog-aware configuration, exactly like the baseline scoreboard:
         // production's managed configuration carries the model's catalog
@@ -731,8 +472,8 @@ final class PolishHelperIntegrationTests: XCTestCase {
     /// that repetition). Compare this scoreboard against the baseline test's.
     func testEvalScoreboardWithQwenRecommendedSampling() async throws {
         let (binary, model) = try helperConfiguration()
-        try await ensureModelCached(model)
-        let (process, port, _) = try await launchHelper(binary: binary, model: model)
+        try await ensurePolishModelCached(model)
+        let (process, port, _) = try await launchPolishHelper(binary: binary, model: model)
 
         // Catalog chat-template kwargs still apply (the experiment varies
         // sampling only, not templating).
@@ -765,7 +506,7 @@ final class PolishHelperIntegrationTests: XCTestCase {
     /// like the old fork's Python watchdog.
     func testHelperExitsWhenParentPIDDies() async throws {
         let (binary, model) = try helperConfiguration()
-        try await ensureModelCached(model)
+        try await ensurePolishModelCached(model)
 
         // A stand-in "app" process the test fully controls: /bin/cat with an
         // open stdin pipe blocks until terminated.
@@ -779,7 +520,7 @@ final class PolishHelperIntegrationTests: XCTestCase {
             }
         }
 
-        let (helper, _, _) = try await launchHelper(
+        let (helper, _, _) = try await launchPolishHelper(
             binary: binary,
             model: model,
             extraArguments: ["--parent-pid", "\(decoyParent.processIdentifier)"]

@@ -34,7 +34,7 @@ What it can never do:
 
 Two different switches, worth keeping apart:
 
-- **The toggle** (**Agent session**, Settings › Context) gates what a dictation
+- **The toggle** (**Send diff, recent files and last prompt**, Settings › Context) gates what a dictation
   ATTACHES. With it off, nothing a host sent reaches the polisher. It does not close the port: while any enrolled host is
   unrevoked, the listener keeps accepting and caching valid hook records.
 - **Revocation** is what stops a host. Its requests are then rejected rather
@@ -43,7 +43,7 @@ Two different switches, worth keeping apart:
   entirely.
 
 Polish context also stays on this Mac by default: everything above is sent only
-to a polisher running here, unless you turn on **Non-local endpoints**, which extends it to the polishing
+to a polisher running here, unless you turn on **Send context to non-local polishing servers**, which extends it to the polishing
 endpoint you configured.
 
 ---
@@ -453,7 +453,7 @@ stdin, never in a process argument on this Mac; on the host it is in that one
 
 ### Federated herdr machines
 
-If your local herdr 0.9 client is showing a machine from another host, localvoxtral can join the Claude Code session on that machine without needing an ssh process in the terminal: it reads which machine herdr selected, reaches that machine's herdr over the app-managed tunnel, and checks a short-lived panel marker on your screen. If the marker does not appear, use Settings › herdr › Saved machines › **Panel row** to add the indicator row to this Mac's herdr config, then reload config in herdr; localvoxtral cannot reload herdr for you.
+If your local herdr 0.9 client is showing a machine from another host, localvoxtral can join the Claude Code session on that machine without needing an ssh process in the terminal: it reads which machine herdr selected, reaches that machine's herdr over the app-managed tunnel, and checks a short-lived panel marker on your screen. If the marker does not appear, use Settings › herdr › Saved machines › **Mic indicator in herdr panel** to add the indicator row to this Mac's herdr config, then reload config in herdr; localvoxtral cannot reload herdr for you.
 
 The join can only pick from sessions whose hooks have reached this Mac, and a
 federated view carries none of your own ssh sessions to hold the hook tunnel

@@ -547,7 +547,7 @@ final class SettingsStore {
     /// the endpoint is not permitted, or an unlisted app is focused, the
     /// screen is never read at all (`TerminalScreenContext.shouldAttemptRead`).
     ///
-    /// Scope, in two tiers — and the help text must state the second one,
+    /// Scope, in two tiers — and the row's title must state the second one,
     /// because it is the one that SENDS text:
     ///
     /// 1. Always: the screen feeds the deterministic vocabulary MATCHER, which
@@ -559,7 +559,7 @@ final class SettingsStore {
     /// Tier 2 is live (the broker configures the authorizer); an unjoined pane
     /// still contributes vocabulary only. Consent is asked for the union: a user
     /// who reads "fixes spellings" has not agreed to have their screen sent, so
-    /// the help text names it.
+    /// the title says "Send agent's terminal screen".
     var terminalScreenContextEnabled: Bool {
         didSet {
             defaults.set(terminalScreenContextEnabled, forKey: Keys.terminalScreenContextEnabled)
@@ -671,7 +671,7 @@ final class SettingsStore {
     /// context toggle: those decide WHAT may be collected, this decides WHERE
     /// it may be sent. Off, the per-surface promises ("local polishing
     /// endpoints only") hold unconditionally; on, the user has explicitly
-    /// traded them for their chosen endpoint, and the Settings row's help text
+    /// traded them for their chosen endpoint, and the Settings row's title
     /// names exactly that trade. Each surface's own toggle still gates
     /// collection — this flag alone never causes a read.
     var polishContextTrustedEndpointEnabled: Bool {

@@ -35,14 +35,13 @@ extension ClaudeIntegrationSettingsModel {
         public var isPreview: Bool = false
     }
 
-    /// The generated update plan for one enrolled host.
+    /// The update panel for one enrolled host.
     public struct PluginUpdatePresentation: Identifiable, Equatable, Sendable {
         public var id: String { hostID }
         public var hostID: String
         /// The alias automated execution uses, or nil for a legacy host that
         /// must be re-enrolled before the app can safely address it.
         public var sshHostAlias: String?
-        public var commands: [String]
         /// This host's regenerated ssh-config block, when the local one did
         /// not match it when the panel opened; nil when it did. The run
         /// regenerates a nil one and checks the file again before writing,
@@ -56,27 +55,13 @@ extension ClaudeIntegrationSettingsModel {
         /// by the fix for it.
         public var sshConfigSnippet: String?
         public var canRun: Bool { sshHostAlias != nil }
-
-        /// Exact generated text retained as a test seam. Settings never renders
-        /// or copies it; the user-facing command reference lives in the docs.
-        public var applicationText: String {
-            guard let sshConfigSnippet else { return commands.joined(separator: "\n") }
-            return "# 1. Replace this host's block in ~/.ssh/config on this Mac:\n"
-                + sshConfigSnippet
-                + "\n\n# 2. Then, on the SSH host:\n"
-                + commands.joined(separator: "\n")
-        }
     }
 
     public enum EnrollmentAction: Sendable, Equatable {
-        case insertSSHConfig
-        case runRemoteSetup
         case setupHost
         /// Per-host, because the pane shows one row per host and the outcome
         /// has to render in the row whose button ran it.
-        case updateRemotePlugin(hostID: String)
         case updateHost(hostID: String)
-        case configureHerdrPanel(hostID: String)
         case configureLocalHerdrPanel
     }
 
@@ -84,15 +69,7 @@ extension ClaudeIntegrationSettingsModel {
         public var id = UUID()
         public var action: EnrollmentAction
         public var title: String
-        public var preview: String
         public var confirmButtonTitle: String
-    }
-
-    public struct EnrollmentStepStatus: Identifiable, Equatable, Sendable {
-        public var id: Int
-        public var text: String
-        public var succeeded: Bool
-        public var detail: String
     }
 
     /// Long-form detail. Alerts and the log take this; the pane never renders it

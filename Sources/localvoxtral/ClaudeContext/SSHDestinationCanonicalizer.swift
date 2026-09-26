@@ -413,7 +413,7 @@ final class SSHDestinationCanonicalizer: Sendable {
     }
 }
 
-#if canImport(Darwin)
+#if canImport(Darwin) || canImport(Glibc)
 extension SSHDestinationCanonicalizer {
     static func live() -> SSHDestinationCanonicalizer {
         let liveRunner = ClaudeRemoteEnrollmentService.processRunner(sshExecutableURL: executableURL)

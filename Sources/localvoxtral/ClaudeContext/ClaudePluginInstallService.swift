@@ -1,6 +1,11 @@
 import Dispatch
-import Darwin
 import Foundation
+
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 /// Drives `claude plugin …` on the user's behalf.
 ///
@@ -308,7 +313,7 @@ public struct ClaudePluginInstallService: Sendable {
     }
 }
 
-#if canImport(Darwin)
+#if canImport(Darwin) || canImport(Glibc)
 public extension ClaudePluginInstallService {
     /// Production wiring: the real `claude`, the bundled marketplace, and a
     /// subprocess runner.
@@ -423,7 +428,7 @@ public extension ClaudePluginInstallService {
                         // once reaped, the pid can be recycled onto an innocent
                         // process. isRunning is false only after collection.
                         let pid = process.processIdentifier
-                        if pid > 0, process.isRunning { _ = Darwin.kill(pid, SIGKILL) }
+                        if pid > 0, process.isRunning { _ = LibC.kill(pid, SIGKILL) }
                     },
                     waitForExit: waitForExit
                 )

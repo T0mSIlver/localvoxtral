@@ -40,19 +40,21 @@ filter_expect() {
   pass "filter: $description"
 }
 
-filter_expect true "session start and stop" Sources/localvoxtral/DictationViewModel.swift
-filter_expect true "a session controller extension" "Sources/localvoxtral/DictationSessionController+StopCommit.swift"
+filter_expect false "session start and stop" Sources/localvoxtral/DictationViewModel.swift
+filter_expect true "the controller's stop-commit" "Sources/localvoxtral/DictationSessionController+StopCommit.swift"
+filter_expect false "another session controller file" "Sources/localvoxtral/DictationSessionController+Realtime.swift"
 filter_expect true "the stop-commit" Sources/localvoxtral/StopCommitCoordinator.swift
-filter_expect true "a realtime client" Sources/localvoxtral/MistralRealtimeWebSocketClient.swift
-filter_expect true "the reconnect schedule" Sources/localvoxtral/RealtimeReconnectPolicy.swift
-filter_expect true "the live correction" Sources/localvoxtral/LiveReplacementCorrector.swift
-filter_expect true "transcript merging in core" Sources/localvoxtralCore/TextMergingAlgorithms.swift
+filter_expect false "a realtime client" Sources/localvoxtral/MistralRealtimeWebSocketClient.swift
+filter_expect false "the reconnect schedule" Sources/localvoxtral/RealtimeReconnectPolicy.swift
+filter_expect false "the live correction" Sources/localvoxtralCore/LiveReplacementCorrector.swift
+filter_expect false "transcript merging in core" Sources/localvoxtralCore/TextMergingAlgorithms.swift
 filter_expect true "text insertion" Sources/localvoxtral/TextInsertionService.swift
+filter_expect true "focus handling" Sources/localvoxtral/SystemAccessibilityFocus.swift
 filter_expect true "the overlay commit" Sources/localvoxtral/OverlayBufferSessionCoordinator.swift
 filter_expect true "the WAV source the check dictates from" Sources/localvoxtral/Dogfood/DogfoodAudioFileSource.swift
 filter_expect true "a scenario" scripts/e2e/scenarios/overlay-buffer.scenario
 filter_expect true "the lane's workflow" .github/workflows/ui-smoke.yml
-filter_expect true "one match among unrelated files" docs/README.md Sources/localvoxtral/RealtimeClient.swift
+filter_expect true "one match among unrelated files" docs/README.md Sources/localvoxtral/RealtimeClient.swift Sources/localvoxtral/TextInsertionService.swift
 filter_expect false "the polish path (goldens prove it)" Sources/localvoxtral/PolishRequestAssembler.swift Sources/localvoxtral/LLMPolishingService.swift
 filter_expect false "the overlay's look" Sources/localvoxtral/OverlayStableLineWrapper.swift Sources/localvoxtral/DictationOverlayView.swift
 filter_expect false "settings and docs" Sources/localvoxtral/Settings/DictationSettingsPane.swift docs/agent/test-tiers.md AGENTS.md
@@ -84,6 +86,15 @@ case "$1 ${2:-}" in
     case "$url" in
       */compare/*) jq -r "$jq_filter" "$SCEN/compare.json" ;;
       */check-runs*) jq -r "$jq_filter" "$SCEN/check-runs.json" ;;
+      */actions/runs/*/jobs*)
+        run_id="${url#*/actions/runs/}"
+        run_id="${run_id%%/*}"
+        if [[ -f "$SCEN/jobs-$run_id.json" ]]; then
+          jq -r "$jq_filter" "$SCEN/jobs-$run_id.json"
+        else
+          jq -r "$jq_filter" <<<'{"jobs":[{"name":"ui-smoke","conclusion":"failure","steps":[{"name":"Set up job"}]}]}'
+        fi
+        ;;
       */actions/workflows/ui-smoke.yml/runs*)
         echo "$url" >"$SCEN/runs-url"
         jq -r "$jq_filter" "$SCEN/runs.json"
@@ -186,6 +197,23 @@ expect 0 "a new commit an hour after the last run dispatches" newcommit "dispatc
 
 scenario override "$DOCS" completed/success "[$(run_json 11 completed "$HEAD_SHA" "$ISO_10M_AGO" failure)]"
 expect 0 "--override dispatches past the path, cooldown and same-commit refusals" override "override: owner asked for a rerun" --override "owner asked for a rerun"
+
+# A label other than needs-ui-smoke creates a run whose job is skipped, or
+# which the concurrency group cancels before it has a job (#570). Neither
+# touched the Mac, so neither blocks the real check, not even on the head.
+scenario labelnoise "$SESSION" completed/success "[$(run_json 21 completed "$HEAD_SHA" "$ISO_10M_AGO" cancelled),$(run_json 20 completed "$HEAD_SHA" "$ISO_10M_AGO" skipped)]"
+echo '{"jobs":[]}' >"$TMP_DIR/labelnoise/jobs-21.json"
+echo '{"jobs":[{"name":"ui-smoke","conclusion":"skipped","steps":[]}]}' >"$TMP_DIR/labelnoise/jobs-20.json"
+expect 0 "runs whose job never started block nothing" labelnoise "ignored: run 20 never started"
+# A dispatch cancelled while it waited for the Mac has a job but no steps.
+scenario queuecancel "$SESSION" completed/success "[$(run_json 22 completed "$HEAD_SHA" "$ISO_10M_AGO" cancelled)]"
+echo '{"jobs":[{"name":"ui-smoke","conclusion":"cancelled","steps":[]}]}' >"$TMP_DIR/queuecancel/jobs-22.json"
+expect 0 "a run cancelled before its first step blocks nothing" queuecancel "ignored: run 22 never started"
+# A red that reached the Mac (NOT RUN, lost focus) still counts, behind noise.
+scenario noisyred "$SESSION" completed/success "[$(run_json 24 completed "$HEAD_SHA" "$ISO_10M_AGO" skipped),$(run_json 23 completed "$HEAD_SHA" "$ISO_10M_AGO" failure)]"
+echo '{"jobs":[{"name":"ui-smoke","conclusion":"skipped","steps":[]}]}' >"$TMP_DIR/noisyred/jobs-24.json"
+expect 1 "a red run that started still blocks the head" noisyred "refused: run 23 already ran on aaaaaaaaa (failure)"
+expect 1 "a red run that started still starts the hour" noisyred "refused: run 23 started 10 min ago"
 
 # An unencoded '&' would split the query: the lookup would find no runs and
 # every run-history refusal would pass.

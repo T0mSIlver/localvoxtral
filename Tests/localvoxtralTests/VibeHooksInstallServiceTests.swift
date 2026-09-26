@@ -3,74 +3,6 @@ import XCTest
 
 @testable import localvoxtral
 
-/// In-memory `~/.vibe`: the two files the service touches, and a log of what
-/// it did to them.
-private final class StubVibeFS: VibeHooksFileSystem, @unchecked Sendable {
-    private let lock = NSLock()
-    private var _state: VibeHooksState
-    private var _operations: [String] = []
-
-    init(state: VibeHooksState) { _state = state }
-
-    /// Applied to the state on the Nth `readState` call (1-based), to play an
-    /// editor saving between the service's read and its write.
-    var mutateOnRead: (call: Int, change: @Sendable (inout VibeHooksState) -> Void)?
-    private var reads = 0
-
-    var state: VibeHooksState { lock.withLock { _state } }
-    var operations: [String] { lock.withLock { _operations } }
-    var hooksText: String? { state.hooksData.map { String(decoding: $0, as: UTF8.self) } }
-
-    func readState() throws -> VibeHooksState {
-        lock.withLock {
-            reads += 1
-            if let mutateOnRead, mutateOnRead.call == reads { mutateOnRead.change(&_state) }
-            return _state
-        }
-    }
-
-    func createShimDirectory(permissions: UInt16) throws {
-        lock.withLock {
-            _operations.append("mkdir \(String(permissions, radix: 8))")
-            _state.shimDirExists = true
-        }
-    }
-
-    func atomicWriteShim(_ data: Data, permissions: UInt16) throws {
-        lock.withLock {
-            _operations.append("write shim \(String(permissions, radix: 8))")
-            _state.shimFileExists = true
-            _state.shimData = data
-            _state.shimPermissions = permissions
-        }
-    }
-
-    func atomicWriteHooks(_ data: Data, permissions: UInt16) throws {
-        lock.withLock {
-            _operations.append("write hooks \(String(permissions, radix: 8))")
-            _state.hooksFileExists = true
-            _state.hooksData = data
-            _state.hooksPermissions = permissions
-        }
-    }
-
-    func deleteShim() throws {
-        lock.withLock {
-            _operations.append("delete shim")
-            _state.shimFileExists = false
-            _state.shimData = nil
-        }
-    }
-
-    func deleteHooks() throws {
-        lock.withLock {
-            _operations.append("delete hooks")
-            _state.hooksFileExists = false
-            _state.hooksData = nil
-        }
-    }
-}
-
 final class VibeHooksInstallServiceTests: XCTestCase {
     private static let shim = Data("#!/bin/sh\n# fixture shim\n".utf8)
     private static let block = """
@@ -95,8 +27,8 @@ final class VibeHooksInstallServiceTests: XCTestCase {
         state: VibeHooksState,
         shim: Data? = shim,
         block: String? = block
-    ) -> (VibeHooksInstallService, StubVibeFS) {
-        let fs = StubVibeFS(state: state)
+    ) -> (VibeHooksInstallService, StubVibeHooksFileSystem) {
+        let fs = StubVibeHooksFileSystem(state: state)
         return (
             VibeHooksInstallService(
                 bundledShimData: { shim }, bundledHooksBlock: { block }, fileSystem: fs

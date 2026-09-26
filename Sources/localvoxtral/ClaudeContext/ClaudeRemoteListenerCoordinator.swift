@@ -26,7 +26,7 @@ public protocol ClaudeRemoteListenerControlling: AnyObject {
     func reconcile() throws
 }
 
-#if canImport(Darwin)
+#if canImport(Darwin) || canImport(Glibc)
 
 /// The production coordinator.
 ///

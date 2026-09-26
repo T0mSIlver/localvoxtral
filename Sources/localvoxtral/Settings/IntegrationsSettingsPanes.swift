@@ -5,7 +5,7 @@ import SwiftUI
 /// spoken words reach the polisher.
 ///
 /// Split out of Text Processing (2026-08-04): these are consent-grade toggles
-/// whose help text is the consent, and they were being read past as formatting
+/// whose titles are the consent, and they were being read past as formatting
 /// options next to "Exact match". The group here is STATIC — a toggle
 /// switches a group's content, never the number or identity of the groups
 /// (owner rule, 2026-07-04).
@@ -14,8 +14,8 @@ import SwiftUI
 /// and cmux panes, remote hosts), which is why they are named for the agent
 /// session and live here rather than on one harness's pane.
 ///
-/// Copy rule (owner review, 2026-09-07): each toggle's help is ONE line
-/// stating what leaves the machine — the consequence, nothing else. The full
+/// Copy rule (owner review, 2026-09-25, #578): each toggle's title starts with
+/// "Send" and names what leaves the machine, with no line under it. The full
 /// terms live in `docs/coding-agents.md` behind the group's Learn more link.
 struct IntegrationsContextSettingsPane: View {
     @Bindable var settings: SettingsStore
@@ -52,40 +52,35 @@ struct IntegrationsContextSettingsPane: View {
 
                 Group {
                     SettingsFieldRow(
-                        title: "Repo vocabulary",
-                        help: "Sends file names from the repo in your terminal."
+                        title: "Send repo file names"
                     ) {
                         Toggle("", isOn: $settings.repoVocabularyEnabled)
                             .labelsHidden()
                     }
 
                     SettingsFieldRow(
-                        title: "Clipboard",
-                        help: "Sends a capped excerpt of your clipboard."
+                        title: "Send clipboard excerpt"
                     ) {
                         Toggle("", isOn: $settings.polishClipboardContextEnabled)
                             .labelsHidden()
                     }
 
                     SettingsFieldRow(
-                        title: "Agent screen",
-                        help: "Sends the text on screen in your coding agent's terminal."
+                        title: "Send agent's terminal screen"
                     ) {
                         Toggle("", isOn: $settings.terminalScreenContextEnabled)
                             .labelsHidden()
                     }
 
                     SettingsFieldRow(
-                        title: "Agent session",
-                        help: "Sends your uncommitted changes, recent files, and last prompt."
+                        title: "Send diff, recent files and last prompt"
                     ) {
                         Toggle("", isOn: $settings.claudeRepoContextEnabled)
                             .labelsHidden()
                     }
 
                     SettingsFieldRow(
-                        title: "Non-local endpoints",
-                        help: "Also sends enabled context to a non-local polishing endpoint."
+                        title: "Send context to non-local polishing servers"
                     ) {
                         Toggle("", isOn: $settings.polishContextTrustedEndpointEnabled)
                             .labelsHidden()
@@ -329,10 +324,7 @@ struct TerminalSettingsPane: View {
     /// socket password it needs, and the two-step setup behind one link.
     private var cmuxSessionJoinGroup: some View {
         SettingsGroup(title: "Automation socket", learnMoreURL: TerminalAppCatalog.cmuxDocsURL) {
-            SettingsFieldRow(
-                title: "Join sessions in cmux",
-                help: "Reads the pane you dictate into through cmux's socket."
-            ) {
+            SettingsFieldRow(title: "Join sessions in cmux") {
                 Toggle("", isOn: $settings.cmuxSurfaceJoinEnabled)
                     .labelsHidden()
             }
@@ -343,22 +335,18 @@ struct TerminalSettingsPane: View {
         }
     }
 
-    /// One capability row: "Yes", or "No" plus the one-line reason (e.g.
-    /// "Ghostty 1.4 or newer needed."). The Session join row may carry its
-    /// own value text when the join route asks for a permission on first
-    /// use (iTerm2 / Terminal.app: "Yes, asks for Automation permission on
-    /// first use").
+    /// One capability row: "Yes", or what is missing as the value (e.g.
+    /// "Needs Ghostty 1.4+"). The Session join row may carry its own value
+    /// text when the join route asks for a permission on first use (iTerm2 /
+    /// Terminal.app: "Yes, asks for Automation permission on first use").
     private func capabilityRow(
         title: String,
         valueText: String = "Yes",
         supported: Bool,
         reason: String?
     ) -> some View {
-        SettingsFieldRow(
-            title: title,
-            help: supported ? nil : reason
-        ) {
-            Text(supported ? valueText : "No")
+        SettingsFieldRow(title: title) {
+            Text(supported ? valueText : (reason ?? "No"))
         }
     }
 }

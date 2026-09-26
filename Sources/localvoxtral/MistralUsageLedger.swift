@@ -202,9 +202,14 @@ struct MistralUsageSummary: Equatable, Sendable {
     var isEmpty: Bool { dictationCount == 0 && polishCount == 0 }
 
     /// The Usage row's one line, e.g. "€0.42 · 38 min dictated · 112 polishes".
+    /// Requests with no price say so beside the total: "€0.42 + 2 unpriced".
     var line: String {
         guard !isEmpty else { return "No Mistral requests" }
-        var parts = [Self.formattedCost(costEUR)]
+        var cost = Self.formattedCost(costEUR)
+        if unpricedCount > 0 {
+            cost += " + \(unpricedCount) unpriced"
+        }
+        var parts = [cost]
         if dictationCount > 0 {
             parts.append("\(Self.formattedDuration(audioSeconds)) dictated")
         }
@@ -212,14 +217,6 @@ struct MistralUsageSummary: Equatable, Sendable {
             parts.append(polishCount == 1 ? "1 polish" : "\(polishCount) polishes")
         }
         return parts.joined(separator: " · ")
-    }
-
-    /// Said only when something is missing from the total.
-    var unpricedNote: String? {
-        guard unpricedCount > 0 else { return nil }
-        return unpricedCount == 1
-            ? "1 request has no price and is not in the total"
-            : "\(unpricedCount) requests have no price and are not in the total"
     }
 
     static func formattedCost(_ eur: Double) -> String {
