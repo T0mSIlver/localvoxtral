@@ -1234,6 +1234,27 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         }
     }
 
+    /// The project label comes from the one part of the shim that runs only
+    /// inside a repository, so it is run inside one. On macOS that is bash
+    /// 3.2 as /bin/sh, which ended the first version with a syntax error that
+    /// Linux's dash never raised (#652).
+    func testShimNamesTheRepositoryItRunsIn() throws {
+        let repo = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shim-repo-\(UUID().uuidString)/api")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: repo.deletingLastPathComponent()) }
+        let gitInit = Process()
+        gitInit.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        gitInit.arguments = ["git", "init", "-q", repo.path]
+        try gitInit.run()
+        gitInit.waitUntilExit()
+        XCTAssertEqual(gitInit.terminationStatus, 0)
+
+        let captured = try capturedRequestHeaders(environment: [:], workingDirectory: repo)
+        let request = try parseCapturedHeaders(captured)
+        XCTAssertEqual(ClaudeRemoteEnvironmentCodec.environment(in: request.headers)?.project, "api")
+    }
+
     func testShimTreatsAnExportedButEmptyVariableAsAbsent() throws {
         let captured = try capturedRequestHeaders(environment: [
             "HERDR_PANE_ID": "", "CMUX_SURFACE_ID": "",

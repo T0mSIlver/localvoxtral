@@ -274,20 +274,24 @@ EOF
 # a git too old for --path-format (it echoes the option back, which makes four
 # lines) or anything else sends no header, and the Mac falls back to the cwd's
 # last component.
-LVX_PROJECT="$(
+# A function called through $( ), not a `case` written inside $( ): the
+# bash 3.2 that is macOS's /bin/sh reads a case pattern's `)` as the end
+# of the command substitution. Called in a subshell, so its locale, IFS,
+# `set -f` and positional parameters stay there.
+lvx_project() {
   LC_ALL=C
   export LC_ALL
-  command -v git >/dev/null 2>&1 || exit 0
+  command -v git >/dev/null 2>&1 || return 0
   _lvx_git="$(git rev-parse --path-format=absolute --show-toplevel --git-dir \
-    --git-common-dir 2>/dev/null)" || exit 0
+    --git-common-dir 2>/dev/null)" || return 0
   set -f
   IFS='
 '
   # shellcheck disable=SC2086  # one field per line is the point
   set -- $_lvx_git
-  [ "$#" -eq 3 ] || exit 0
+  [ "$#" -eq 3 ] || return 0
   for _lvx_path in "$1" "$2" "$3"; do
-    case "$_lvx_path" in /*) ;; *) exit 0 ;; esac
+    case "$_lvx_path" in /*) ;; *) return 0 ;; esac
   done
   if [ "$2" = "$3" ]; then
     _lvx_name="${1##*/}"
@@ -299,11 +303,12 @@ LVX_PROJECT="$(
     _lvx_name="${3##*/}"
   fi
   case "$_lvx_name" in
-  "" | .* | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) exit 0 ;;
+  "" | .* | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) return 0 ;;
   esac
-  [ "${#_lvx_name}" -le 64 ] || exit 0
+  [ "${#_lvx_name}" -le 64 ] || return 0
   echo "$_lvx_name"
-)" 2>/dev/null || LVX_PROJECT=""
+}
+LVX_PROJECT="$(lvx_project 2>/dev/null)" || LVX_PROJECT=""
 
 (
   LC_ALL=C

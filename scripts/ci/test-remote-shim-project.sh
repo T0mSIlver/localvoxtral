@@ -77,6 +77,17 @@ TRANSCRIPT="$TMP_DIR/messages.jsonl"
 echo '{"role": "user", "content": "rename the wire enum", "injected": false}' >"$TRANSCRIPT"
 VIBE_PAYLOAD="{\"session_id\":\"7f4aefdf\",\"transcript_path\":\"$TRANSCRIPT\",\"cwd\":\"/srv/app\",\"parent_session_id\":null,\"hook_event_name\":\"post_agent\"}"
 
+# Each shim runs under /bin/sh and under bash: macOS's /bin/sh is bash 3.2,
+# which a Linux /bin/sh (dash) says nothing about, and bash in sh mode shares
+# most of its parser.
+SHELLS=(/bin/sh)
+BASH_BIN="$(command -v bash || true)"
+if [ -n "$BASH_BIN" ] && [ "$(readlink -f /bin/sh)" != "$(readlink -f "$BASH_BIN")" ]; then
+  mkdir -p "$TMP_DIR/bash-as-sh"
+  ln -s "$BASH_BIN" "$TMP_DIR/bash-as-sh/sh"
+  SHELLS+=("$TMP_DIR/bash-as-sh/sh")
+fi
+
 # project_header <claude|vibe> <cwd>: the header's value, empty when absent.
 project_header() {
   local capture="$TMP_DIR/capture-$1"
@@ -88,13 +99,13 @@ project_header() {
         XDG_RUNTIME_DIR="$TMP_DIR/run" CAPTURE="$capture" \
         GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
         CLAUDE_PLUGIN_OPTION_TOKEN=unit-test-token LVX_PROJECT=inherited \
-        /bin/sh "$CLAUDE_SHIM" Stop >/dev/null
+        "$SH" "$CLAUDE_SHIM" Stop >/dev/null
     else
       printf '%s' "$VIBE_PAYLOAD" | env -i PATH="$STUB:$PATH" HOME="$TMP_DIR" \
         XDG_RUNTIME_DIR="$TMP_DIR/run" CAPTURE="$capture" \
         GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
         LOCALVOXTRAL_VIBE_REMOTE_DIR="$VIBE_DIR" LOCALVOXTRAL_VIBE_WATCHER=off \
-        LVX_PROJECT=inherited /bin/sh "$VIBE_DIR/post.sh" >/dev/null
+        LVX_PROJECT=inherited "$SH" "$VIBE_DIR/post.sh" >/dev/null
     fi
   )
   [ -r "$capture" ] || fail "$1 shim in $2 never reached curl"
@@ -105,10 +116,12 @@ expect() {
   local agent="$1" dir="$2" want="$3" got
   got="$(project_header "$agent" "$dir")"
   [ "$got" = "$want" ] \
-    || fail "$agent shim in ${dir#"$TMP_DIR"/}: X-Lvx-Env-Project '$got', want '$want'"
-  pass "$agent shim in ${dir#"$TMP_DIR"/}: '${want}'"
+    || fail "$agent shim under $SH_NAME in ${dir#"$TMP_DIR"/}: X-Lvx-Env-Project '$got', want '$want'"
+  pass "$agent shim under $SH_NAME in ${dir#"$TMP_DIR"/}: '${want}'"
 }
 
+for SH in "${SHELLS[@]}"; do
+case "$SH" in */bash-as-sh/sh) SH_NAME=bash ;; *) SH_NAME=/bin/sh ;; esac
 for agent in claude vibe; do
   expect "$agent" "$TMP_DIR/work/repo" repo
   expect "$agent" "$TMP_DIR/work/repo/Sources/deep" repo
@@ -121,6 +134,7 @@ for agent in claude vibe; do
   expect "$agent" "$TMP_DIR/plain/dir" ""
   expect "$agent" "$TMP_DIR/work/my repo" ""
   expect "$agent" "$TMP_DIR/work/.dotted" ""
+done
 done
 
 # The Mac reads the header under this exact name (ClaudeRemoteEnvironmentField).
