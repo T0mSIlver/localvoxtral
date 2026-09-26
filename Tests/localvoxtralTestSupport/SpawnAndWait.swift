@@ -43,7 +43,13 @@ package enum SpawnAndWait {
         #if canImport(Darwin)
         posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT))
         #else
-        posix_spawn_file_actions_addclosefrom_np(&actions, 3)
+        // Not `addclosefrom_np`: the CI image's Glibc module (bookworm) does
+        // not export it. glibc ignores a close action on a descriptor that
+        // has been closed since.
+        let open = (try? FileManager.default.contentsOfDirectory(atPath: "/proc/self/fd")) ?? []
+        for fd in open.compactMap(Int32.init) where fd > 2 {
+            posix_spawn_file_actions_addclose(&actions, fd)
+        }
         #endif
 
         var argv = ([executable] + arguments).map { strdup($0) } + [nil]

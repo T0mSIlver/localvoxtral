@@ -879,7 +879,7 @@ final class ClaudeContextBrokerLifecycleTests: XCTestCase {
         POSIXSocket.setLength(of: &address)
         let bound = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
-                bind(stale, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+                LibC.bind(stale, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
         XCTAssertEqual(bound, 0)

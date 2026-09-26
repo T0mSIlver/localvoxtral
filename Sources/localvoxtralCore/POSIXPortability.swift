@@ -8,8 +8,9 @@ import Glibc
 
 #if canImport(Darwin) || canImport(Glibc)
 /// The C library by name, for call sites inside types that declare their own
-/// `read`, `send` or `connect`, where an unqualified call would resolve to the
-/// method. `Darwin.x` does the same job on Apple platforms only.
+/// `read`, `send`, `connect` or `bind` (an XCTestCase inherits NSObject's),
+/// where an unqualified call would resolve to the method. `Darwin.x` does the
+/// same job on Apple platforms only.
 package enum LibC {
     package static func connect(
         _ fd: Int32, _ address: UnsafePointer<sockaddr>, _ length: socklen_t
@@ -18,6 +19,16 @@ package enum LibC {
         Darwin.connect(fd, address, length)
         #else
         Glibc.connect(fd, address, length)
+        #endif
+    }
+
+    package static func bind(
+        _ fd: Int32, _ address: UnsafePointer<sockaddr>, _ length: socklen_t
+    ) -> Int32 {
+        #if canImport(Darwin)
+        Darwin.bind(fd, address, length)
+        #else
+        Glibc.bind(fd, address, length)
         #endif
     }
 
