@@ -229,7 +229,10 @@ fields and the threat model.
 > over cmux's own automation socket, which you must first switch to
 > `password` mode. The
 > [plugin README](../integrations/claude-code/README.md) covers the
-> two-step setup.
+> two-step setup. Once joined, the dictation goes into that surface through
+> the same socket, so it lands there even if you switch windows while you
+> speak. If cmux does not confirm the text arrived, it is not typed anywhere
+> else; it stays in History.
 >
 > Joins are exact-or-nothing: any ambiguity attaches no context at all. No
 > join ever reads a window title. The TTY arm needs Ghostty 1.4 or newer (or

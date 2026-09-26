@@ -250,6 +250,42 @@ extension ClaudeSessionJoinResolver {
         }
     }
 
+    /// The route that writes this dictation into the joined cmux surface
+    /// (#727), or nil. Like `cmuxSurfaceVisibleText(for:)`, it is keyed by
+    /// the binding the cmux arm captured, so it can name no other surface,
+    /// and it exists only for a `.cmuxSurface` join while the opt-in is on.
+    package func cmuxSurfaceRoute(
+        for join: ClaudeSessionJoin,
+        frontmostPID: @escaping @MainActor () -> pid_t?
+    ) -> CmuxSurfaceRoute? {
+        guard join.mechanism == .cmuxSurface, let binding = join.cmuxSurface else { return nil }
+        guard cmuxJoinEnabled() else { return nil }
+        guard let client = cmuxSurfaces as? any CmuxSurfaceQuerying & CmuxSurfaceWriting else {
+            Log.claudeContext.info("cmux surface route unavailable: the socket client cannot write")
+            return nil
+        }
+        let registry = registry
+        let sessionID = join.snapshot.sessionID
+        let surfaceID = binding.surfaceID
+        return CmuxSurfaceRoute(
+            surfaceID: surfaceID,
+            cmuxPID: join.target.pid,
+            client: client,
+            isEnabled: cmuxJoinEnabled,
+            frontmostPID: frontmostPID,
+            sessionHoldsSurface: {
+                // The join's own evidence, asked again: a live session
+                // still publishing this surface id.
+                [registry.resolve(cmuxSurfaceID: surfaceID), registry.resolveRemote(cmuxSurfaceID: surfaceID)]
+                    .contains { resolution in
+                        if case .resolved(let snapshot) = resolution { return snapshot.sessionID == sessionID }
+                        return false
+                    }
+            },
+            isRemoteJoin: !join.snapshot.origin.isLocalAuthenticated
+        )
+    }
+
     /// Outcome only: surface ids and surface text are live join material and
     /// never belong in the unified log.
     private static func abstainedCmuxJoin(outcome: String) {
