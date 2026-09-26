@@ -45,6 +45,7 @@ Settings, all environment variables:
 | `VOXTRAL_VLLM_KV_CACHE_BYTES` | `2600M` | 4096 tokens needs about 4.6 GB |
 | `VOXTRAL_VLLM_NEED_FREE_MIB` | `12500` | `up` refuses below this much free GPU memory |
 | `VOXTRAL_VLLM_COMPILE` | `0` | `1`: torch.compile and CUDA graphs |
+| `VOXTRAL_VLLM_LOGITS_PROCESSOR` | empty | `module:Class` of a logits processor on `PYTHONPATH` |
 
 A take longer than the token limit ends its generation there, and the next
 one starts mid-word (#516). Raise both the limit and the KV cache for
@@ -119,6 +120,25 @@ To redo the comparison against a newer run, download its
 # on the Mac: bash gen.sh in an empty directory, then copy the WAVs here
 ~/work/voxtral-vllm/.venv/bin/python scripts/linux/vllm_fidelity.py eval-e2e.log <wav dir> out.jsonl
 ```
+
+## Term biasing prototype (#316)
+
+`vllm_term_bias.py` is a vLLM logits processor that applies #316's biasing
+rules to this server, so a rule change costs a Linux run, not the Mac. Only
+the mlx-audio-swift hook can ship; this one measures direction. Start the
+server with it, then run one arm at a time over a term-recall recording set:
+
+```bash
+PYTHONPATH=scripts/linux VOXTRAL_VLLM_LOGITS_PROCESSOR=vllm_term_bias:TermBias scripts/linux/voxtral-vllm.sh up
+~/work/voxtral-vllm/.venv/bin/python scripts/linux/vllm_term_bias_eval.py --arm session --out EvalRecordings/term-recall/tb-session.jsonl
+```
+
+`up` does not restart a server that already runs, so run `down` first when
+switching the processor on or off. The realtime endpoint drops every
+`session.update` field but the model, so the driver hands the processor each
+case's list through a side file; that file applies to every request, so run
+one session at a time. Arms are `none`, `session` and `noise`. Score the
+output in `TermRecallEvalTests`' hypotheses mode (`EvalCorpus/term-recall/README.md`).
 
 ## What can use it today
 
