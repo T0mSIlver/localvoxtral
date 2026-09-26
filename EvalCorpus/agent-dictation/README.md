@@ -340,7 +340,7 @@ Pipelines:
 - Arrange `features` BEFORE the run: pasteboard payload, git-inited fixture
   repo (files from the spec, checked out on the spec's `branch`) fronted as
   the active terminal repo.
-- Score on `LLMPolishEvalSupport.normalizedSpacing`-normalized output:
+- Score on `AgentDictationEvalCorpus.normalizedSpacing`-normalized output:
   `tokens` = all requiredTokens present (case per `caseInsensitive`) and no
   forbiddenSubstrings (case-insensitive); `exactText` = normalized equality
   with `intendedText`.
