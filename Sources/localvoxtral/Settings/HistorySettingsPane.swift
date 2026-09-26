@@ -401,6 +401,10 @@ private struct HistoryEntryRow: View {
                 Text("·")
                 Text(appName)
             }
+            if let destination = entry.quickCaptureDestination {
+                Text("·")
+                Text("Quick capture: \(destination)")
+            }
             Spacer(minLength: 8)
             if let problem = DictationHistoryRowText.problem(for: entry) {
                 Text(problem)

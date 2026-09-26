@@ -41,6 +41,13 @@ final class DictationSessionRecord {
     var projectName: String?
     /// `claude`, `vibe`, `opencode`: the agent whose session it joined.
     var joinedAgent: String?
+    /// Where a quick capture went (#725): "Inbox" when saved, then the
+    /// project it was routed to, then "Filed in owner/name". Nil for every
+    /// other dictation. Additive optional field, like those above.
+    var quickCaptureDestination: String?
+
+    /// `outputMode` of a quick capture, which is never inserted anywhere.
+    static let quickCaptureOutputMode = "quickCapture"
 
     init(
         id: UUID = UUID(),
@@ -59,7 +66,8 @@ final class DictationSessionRecord {
         polishContextSummary: String? = nil,
         projectKey: String? = nil,
         projectName: String? = nil,
-        joinedAgent: String? = nil
+        joinedAgent: String? = nil,
+        quickCaptureDestination: String? = nil
     ) {
         self.id = id
         self.startedAt = startedAt
@@ -78,5 +86,6 @@ final class DictationSessionRecord {
         self.projectKey = projectKey
         self.projectName = projectName
         self.joinedAgent = joinedAgent
+        self.quickCaptureDestination = quickCaptureDestination
     }
 }

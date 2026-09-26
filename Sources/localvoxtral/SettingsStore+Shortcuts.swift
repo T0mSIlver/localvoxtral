@@ -172,4 +172,34 @@ extension SettingsStore {
         copyLastDictationShortcutCarbonModifierFlags = normalizedShortcut.carbonModifierFlags
         copyLastDictationShortcutEnabled = true
     }
+
+    // MARK: - Quick capture (#725)
+
+    /// The global shortcut that starts and stops a quick capture, nil when
+    /// none is set. Optional like the copy shortcut.
+    var quickCaptureShortcut: DictationShortcut? {
+        guard quickCaptureShortcutEnabled else { return nil }
+        let candidate = DictationShortcut(
+            keyCode: quickCaptureShortcutKeyCode,
+            carbonModifierFlags: quickCaptureShortcutCarbonModifierFlags
+        ).normalized
+        if DictationShortcutValidation.persistenceErrorMessage(for: candidate) != nil {
+            return nil
+        }
+        return candidate
+    }
+
+    func setQuickCaptureShortcut(_ shortcut: DictationShortcut?) {
+        guard let shortcut else {
+            quickCaptureShortcutEnabled = false
+            return
+        }
+        let normalizedShortcut = shortcut.normalized
+        guard DictationShortcutValidation.persistenceErrorMessage(for: normalizedShortcut) == nil else {
+            return
+        }
+        quickCaptureShortcutKeyCode = normalizedShortcut.keyCode
+        quickCaptureShortcutCarbonModifierFlags = normalizedShortcut.carbonModifierFlags
+        quickCaptureShortcutEnabled = true
+    }
 }

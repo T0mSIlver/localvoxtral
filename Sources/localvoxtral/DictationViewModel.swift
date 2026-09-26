@@ -84,6 +84,7 @@ final class DictationViewModel {
                 || message == HotKeyManager.livePasteUnavailableErrorMessage
                 || message == HotKeyManager.modifierOnlyUnavailableErrorMessage
                 || message == HotKeyManager.copyLastDictationUnavailableErrorMessage
+                || message == HotKeyManager.quickCaptureUnavailableErrorMessage
             {
                 return .hotKeyShortcutUnavailable
             }
@@ -116,6 +117,7 @@ final class DictationViewModel {
         static let finalizing = "Finalizing..."
         static let reconnecting = "Reconnecting..."
         static let lastDictationCopied = "Last dictation copied."
+        static let quickCaptureSaved = "Saved to inbox"
         static let noDictationToCopy = "No dictation to copy yet."
     }
 
@@ -245,6 +247,10 @@ final class DictationViewModel {
     /// onboarding wizard. Kept as a seam rather than a singleton reference.
     @ObservationIgnored
     var onRequestReRunOnboarding: (() -> Void)?
+
+    /// The quick capture Inbox (#725). Built with the runtime services, so
+    /// nil in a view model that runs none.
+    private(set) var quickCapture: QuickCaptureInboxViewModel?
 
     var requiredManagedBackendsReady: Bool {
         guard settings.onboardingCompleted else { return true }
@@ -646,6 +652,14 @@ final class DictationViewModel {
                     now: { Date() }
                 )
             }
+            installQuickCaptureInbox(
+                QuickCaptureInboxViewModel(
+                    settings: settings,
+                    learnedTerms: { [weak self] in self?.learnedTermStore?.snapshot() ?? LearnedTerms() },
+                    fileURL: QuickCaptureInboxViewModel.defaultFileURL(),
+                    applicationSupport: LearnedTermStore.defaultFileURL().deletingLastPathComponent()
+                )
+            )
             session.termSuggestionCadence = TermSuggestionCadence(
                 settings: settings,
                 model: { [weak self] in self?.termSuggestions },
@@ -871,3 +885,22 @@ extension DictationViewModel {
 }
 #endif
 
+
+extension DictationViewModel {
+    /// Points stopped quick captures at the Inbox, its routing sentence at
+    /// the popover, and where each capture went at its History record.
+    func installQuickCaptureInbox(_ inbox: QuickCaptureInboxViewModel) {
+        quickCapture = inbox
+        session.onQuickCapture = { [weak inbox] text, historyRecordID in
+            _ = inbox?.model.capture(text: text, historyRecordID: historyRecordID)
+        }
+        inbox.model.onStatus = { [weak self] sentence in
+            // Mid-session the status line belongs to the session.
+            guard let self, !self.isDictating, !self.isFinalizingStop, !self.isConnectingRealtimeSession else { return }
+            self.statusText = sentence
+        }
+        inbox.model.onRouted = { [weak self] recordID, destination in
+            self?.sessionStore?.setQuickCaptureDestination(destination, id: recordID)
+        }
+    }
+}
