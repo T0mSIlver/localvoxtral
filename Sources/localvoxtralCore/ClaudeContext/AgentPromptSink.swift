@@ -54,6 +54,11 @@ package final class AgentPromptSink {
     /// False from the first failed call on.
     package var isHealthy: Bool { failure == nil }
 
+    /// Whether text handed over now stays off the keyboard: the route is
+    /// healthy, or it failed with `keepInHistory`, after which the rest of
+    /// the dictation is kept, not typed.
+    package var takesText: Bool { failure == nil || failure == .keepInHistory }
+
     /// - Parameters:
     ///   - fallback: types a text the route did not take.
     ///   - kept: told of a text that is typed nowhere, so the user can be

@@ -45,6 +45,7 @@ final class AgentPromptSinkTests: XCTestCase {
         XCTAssertEqual(kept, ["second ", "third ", "fourth"], "in order, the per-call fallback too")
         XCTAssertEqual(typed, [])
         XCTAssertFalse(sink.isHealthy)
+        XCTAssertTrue(sink.takesText, "later text still goes to the sink, to be kept")
     }
 
     /// `typeInstead` keeps #719's behaviour: the refused text and what
@@ -63,5 +64,6 @@ final class AgentPromptSinkTests: XCTestCase {
         XCTAssertEqual(route.calls, [.append("hello ")])
         XCTAssertEqual(typed, ["hello ", "world"])
         XCTAssertEqual(kept, [])
+        XCTAssertFalse(sink.takesText, "later text goes to the keyboard directly")
     }
 }

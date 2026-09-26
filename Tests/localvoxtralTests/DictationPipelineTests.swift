@@ -304,7 +304,7 @@ final class DictationPipelineTests: XCTestCase {
 
         let typedAll = await typed.waitFor(Self.phrase)
         XCTAssertTrue(typedAll, "typed: \(typed.text.debugDescription)")
-        XCTAssertFalse(pipeline.viewModel.textInsertion.promptRelayIsHealthy)
+        XCTAssertFalse(pipeline.viewModel.textInsertion.promptRelayTakesText)
     }
 
     /// Joins the dictation to an opencode pane: a Ghostty pane whose TTY a

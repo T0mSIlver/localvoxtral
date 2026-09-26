@@ -17,10 +17,10 @@ extension DictationSessionController {
         })
     }
 
-    /// What the overlay commit inserts through: the relay while it is
-    /// healthy, the keyboard otherwise.
+    /// What the overlay commit inserts through: the route while it takes
+    /// text, the keyboard otherwise.
     var overlayTextCommitter: any OverlayTextCommitting {
-        guard textInsertion.promptRelayIsHealthy, let sink = textInsertion.promptRelaySink else {
+        guard textInsertion.promptRelayTakesText, let sink = textInsertion.promptRelaySink else {
             return textInsertion
         }
         return PromptRelayOverlayCommitter(sink: sink) { [weak self] text, pid in

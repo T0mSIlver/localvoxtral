@@ -379,7 +379,11 @@ final class TextInsertionService {
             promptRelaySink = nil
             return
         }
-        promptRelaySink = AgentPromptSink(route: route, kept: kept) { [weak self] text in
+        promptRelaySink = AgentPromptSink(route: route, kept: { [weak self] text in
+            // Kept text landed nowhere: no keyboard Return may follow it.
+            self?.liveInsertionTargetPIDs.append(nil)
+            kept(text)
+        }) { [weak self] text in
             if let fallback {
                 fallback(text)
             } else {
@@ -393,13 +397,14 @@ final class TextInsertionService {
         promptRelaySink = nil
     }
 
-    /// Whether text goes to the relay now. False once it failed.
-    var promptRelayIsHealthy: Bool {
-        promptRelaySink?.isHealthy ?? false
+    /// Whether text goes to the route now, to be delivered or kept in
+    /// History. False once it failed over to the keyboard.
+    var promptRelayTakesText: Bool {
+        promptRelaySink?.takesText ?? false
     }
 
     private func handToPromptRelay(_ text: String) -> Bool {
-        guard let sink = promptRelaySink, sink.isHealthy else { return false }
+        guard let sink = promptRelaySink, sink.takesText else { return false }
         sink.append(text)
         return true
     }

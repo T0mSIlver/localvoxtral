@@ -35,7 +35,7 @@ extension DictationSessionController {
         case .insertText, .none:
             return nil
         }
-        if textInsertion.promptRelayIsHealthy {
+        if textInsertion.promptRelayTakesText {
             transcript.currentDictationEventText = remainder
             refreshOverlayBufferSession()
             Log.dictation.notice(
@@ -112,7 +112,7 @@ extension DictationSessionController {
     func liveSpokenSendWithholdsSegment() -> Bool {
         if liveSpokenSendSegmentMode == .undecided {
             let withholds = settings.liveSpokenSendEnabled
-                && (textInsertion.promptRelayIsHealthy || frontmostReturnSubmitsPID() != nil)
+                && (textInsertion.promptRelayTakesText || frontmostReturnSubmitsPID() != nil)
             liveSpokenSendSegmentMode = withholds ? .withheld : .typedLive
         }
         return liveSpokenSendSegmentMode == .withheld
@@ -147,7 +147,7 @@ extension DictationSessionController {
             }
             // The relay puts the text in the pane's prompt whatever is
             // frontmost, and its submit follows the appends in order.
-            if textInsertion.promptRelayIsHealthy {
+            if textInsertion.promptRelayTakesText {
                 if case .insertTextAndPressReturn(let text) = action {
                     typeLiveSpokenSendText(text, startsMidWord: startsMidWord)
                 }
@@ -265,7 +265,7 @@ extension DictationSessionController {
     /// when the relay failed on the way, since that text went to the keys.
     private func submitLiveSpokenSendThroughPromptRelay() {
         textInsertion.flushFinalLiveReplacementCorrections()
-        guard !textInsertion.hasPendingInsertionText, textInsertion.promptRelayIsHealthy,
+        guard !textInsertion.hasPendingInsertionText, textInsertion.promptRelayTakesText,
               let sink = textInsertion.promptRelaySink
         else {
             Log.dictation.notice("spoken send: text not handed to the prompt relay; no submit")
