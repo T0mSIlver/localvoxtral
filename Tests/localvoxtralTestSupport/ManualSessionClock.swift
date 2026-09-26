@@ -1,7 +1,7 @@
 import Foundation
 import Synchronization
 import XCTest
-@testable import localvoxtral
+import localvoxtralCore
 
 /// A `SessionClock` a test advances by hand. A sleep returns when `advance`
 /// moves `now` to its deadline, or at once when the sleeping task is
@@ -10,7 +10,7 @@ import XCTest
 /// A woken task runs when the test next suspends, so a test waits for what
 /// it woke: the task's own `value`, or the next timer it arms
 /// (`waitForSleepers`).
-final class ManualSessionClock: Sendable {
+package final class ManualSessionClock: Sendable {
     private struct Sleeper {
         let id: UInt64
         let deadline: Date
@@ -41,23 +41,23 @@ final class ManualSessionClock: Sendable {
 
     private let state: Mutex<State>
 
-    init(now: Date = Date(timeIntervalSinceReferenceDate: 0)) {
+    package init(now: Date = Date(timeIntervalSinceReferenceDate: 0)) {
         state = Mutex(State(now: now))
     }
 
-    var clock: SessionClock {
+    package var clock: SessionClock {
         SessionClock(
             sleep: { [self] duration in await self.sleep(duration) },
             now: { [self] in self.now }
         )
     }
 
-    var now: Date { state.withLock { $0.now } }
+    package var now: Date { state.withLock { $0.now } }
 
     /// Sleeps in progress: timers armed and not yet due.
-    var pendingSleepers: Int { state.withLock { $0.sleepers.count } }
+    package var pendingSleepers: Int { state.withLock { $0.sleepers.count } }
 
-    func sleep(_ duration: Duration) async {
+    package func sleep(_ duration: Duration) async {
         let id = state.withLock { state -> UInt64 in
             state.nextID += 1
             return state.nextID
@@ -95,7 +95,7 @@ final class ManualSessionClock: Sendable {
     /// Moves `now` forward and wakes every sleeper whose deadline has come,
     /// earliest first. A deadline within a nanosecond counts as reached, so a
     /// test that gets there in two steps is not left a rounding error short.
-    func advance(by seconds: TimeInterval) {
+    package func advance(by seconds: TimeInterval) {
         let due = state.withLock { state -> [CheckedContinuation<Void, Never>] in
             state.now = state.now.addingTimeInterval(seconds)
             let reached = state.now.addingTimeInterval(1e-9)
@@ -111,7 +111,7 @@ final class ManualSessionClock: Sendable {
     /// code under test is certain to arm. If it never arms one, the test
     /// fails after `failAfter` seconds of wall time instead of hanging the
     /// suite: a bound on a failure, never a wait a passing test relies on.
-    func waitForSleepers(
+    package func waitForSleepers(
         _ count: Int,
         failAfter: TimeInterval = 10,
         isolation: isolated (any Actor)? = #isolation,

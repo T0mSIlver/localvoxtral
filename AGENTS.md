@@ -94,9 +94,9 @@ from your issue and say so in your report. Don't ask whether to file it.
   or a counter from one. Files and sockets get unique names.
 - The session's timers sleep on `Dependencies.clock`, the reconnect run on
   `Dependencies.reconnectSleep`. A test that starts or stops a session passes
-  a `ManualSessionClock` and advances it; on the wall clock the timers fire
-  into the process-retained view model after the test ends. New timers go on
-  the clock.
+  a `ManualSessionClock` (`Tests/localvoxtralTestSupport`) and advances it;
+  on the wall clock the timers fire into the process-retained view model
+  after the test ends. New timers go on the clock.
 - UI change: say exactly what you verified by hand and how.
 - Session-path change (start and stop, realtime clients, merging, insertion,
   overlay commit): prove it in process, in `DictationPipelineTests` or next
@@ -160,8 +160,10 @@ from your issue and say so in your report. Don't ask whether to file it.
   types use `Mutex` + `@unchecked Sendable`. No custom actors.
 - Prefer the existing DI seams (protocols, `#if DEBUG` hooks such as
   `debugConfigureInsertionHooks`) over new singletons. Shared test doubles
-  live in `Tests/localvoxtralTests/TestSupport`; extend them, never copy one
-  into a test file as `private` (#402).
+  that need only the core live in `Tests/localvoxtralTestSupport`, which both
+  test targets use and Linux builds; the rest live in
+  `Tests/localvoxtralTests/TestSupport`. Extend them, never copy one into a
+  test file as `private` (#402).
 - Never read a child process pipe with `FileHandle.availableData`. It raises an
   uncatchable ObjC exception on a descriptor error and aborts the app (#60).
   Use `POSIXPipeRead.nextChunk(fromDescriptor:)`.

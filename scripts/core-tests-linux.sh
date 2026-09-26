@@ -3,7 +3,7 @@
 # Foundation-only core, with no Mac. It also builds the Claude hook publisher,
 # which runs on remote Linux hosts, and runs its tests. The app and its suite
 # need AppKit and are not in the package on Linux, so the test product is
-# built alone.
+# built alone; it takes in the shared test doubles (Tests/localvoxtralTestSupport).
 #
 #   ./scripts/core-tests-linux.sh                       # every core test
 #   ./scripts/core-tests-linux.sh --filter TranscriptAccumulatorTests

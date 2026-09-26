@@ -77,9 +77,29 @@ var targets: [Target] = [
         name: "ClaudeContextWireTests",
         dependencies: ["ClaudeContextWire"]
     ),
+    // Test doubles that need only the core, shared by the core's suite and
+    // the app's (#616). A library, because test targets can't depend on each
+    // other.
+    .target(
+        name: "localvoxtralTestSupport",
+        dependencies: ["localvoxtralCore", "ClaudeContextWire", "localvoxtralTestSupportSignals"],
+        path: "Tests/localvoxtralTestSupport"
+    ),
+    // Makes a Linux test process ignore SIGPIPE when it loads. C, for the
+    // constructor.
+    .target(
+        name: "localvoxtralTestSupportSignals",
+        path: "Tests/localvoxtralTestSupportSignals"
+    ),
     .testTarget(
         name: "localvoxtralCoreTests",
-        dependencies: ["localvoxtralCore", "ClaudeContextWire"]
+        dependencies: [
+            "localvoxtralCore",
+            "ClaudeContextWire",
+            // The broker and Vibe suites drive the real hook publisher.
+            "ClaudeHookPublisherCore",
+            "localvoxtralTestSupport",
+        ]
     ),
 ]
 
@@ -110,6 +130,7 @@ targets += [
             "localvoxtralCore",
             "ClaudeContextWire",
             "ClaudeHookPublisherCore",
+            "localvoxtralTestSupport",
         ],
         // Golden fixtures are read through `#filePath`, not the bundle.
         exclude: ["Fixtures"],

@@ -1,5 +1,10 @@
+import Foundation
+import localvoxtralCore
+#if canImport(Darwin)
 import Darwin
-import XCTest
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 /// A loopback TCP port nothing listens on: the OS picks it for a socket that
 /// is closed again at once. For a listener that takes a port number, and for
@@ -10,13 +15,13 @@ import XCTest
 /// listener. Between the close here and the caller's bind, only another bind
 /// to port 0 can take this one, and the OS answers those from ~16,000
 /// ephemeral ports at random.
-func unusedLoopbackPort() throws -> UInt16 {
-    let fd = socket(AF_INET, SOCK_STREAM, 0)
+package func unusedLoopbackPort() throws -> UInt16 {
+    let fd = socket(AF_INET, POSIXSocket.stream, 0)
     guard fd >= 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
     defer { close(fd) }
 
     var address = sockaddr_in()
-    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    POSIXSocket.setLength(of: &address)
     address.sin_family = sa_family_t(AF_INET)
     address.sin_port = 0
     address.sin_addr = in_addr(s_addr: INADDR_LOOPBACK.bigEndian)
