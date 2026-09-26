@@ -6,7 +6,9 @@ APP_NAME="localvoxtral.app"
 INSTALL_PATH="/Applications/${APP_NAME}"
 VERSION="${LOCALVOXTRAL_VERSION:-latest}"
 # stable follows GitHub's /releases/latest pointer, which never points at a
-# prerelease. nightly follows the newest nightly prerelease built from main.
+# prerelease. nightly follows the newest build of main: a nightly prerelease
+# or a stable release, whichever is newer (main ships a stable release every
+# day, and nightlies are cut only on demand).
 # LOCALVOXTRAL_VERSION=<tag> overrides both and installs exactly that tag.
 CHANNEL="${LOCALVOXTRAL_CHANNEL:-stable}"
 DRYRUN="${LOCALVOXTRAL_INSTALL_DRYRUN:-0}"
@@ -37,23 +39,22 @@ resolve_release_api_url() {
   elif [ "$CHANNEL" = "nightly" ]; then
     # /releases/latest never returns a prerelease, and every nightly is one,
     # so the nightly channel reads the release list instead. The API returns
-    # it newest first; 30 covers the 7 nightlies that are kept plus the
-    # stable releases between them many times over.
+    # it newest first, and the newest stable release is always near the top.
     printf 'https://api.github.com/repos/%s/releases?per_page=30\n' "$REPO"
   else
     printf 'https://api.github.com/repos/%s/releases/latest\n' "$REPO"
   fi
 }
 
-# Newest nightly tag in a releases-list response, or nothing.
+# Newest nightly or stable tag in a releases-list response, or nothing.
 #
 # No jq (the installer runs on a bare macOS), so the JSON is reduced to the
 # three fields that matter, in document order, and walked as a stream: a
 # release object lists tag_name, then draft, then prerelease, then its
-# assets. The first release that is a published prerelease AND carries the
-# nightly tag shape wins, which is the newest one because the API orders the
-# list by creation date. A stable release is skipped (not a prerelease), and
-# so is an X.Y.Z-rc.N prerelease (not the nightly shape).
+# assets. The first published release that is either a prerelease with the
+# nightly tag shape or a non-prerelease with the plain vX.Y.Z shape wins,
+# which is the newest one because the API orders the list by creation date.
+# An X.Y.Z-rc.N prerelease (a branch build) and a draft are skipped.
 select_newest_nightly_tag() {
   printf '%s\n' "$1" |
     grep -oE '"(tag_name|draft|prerelease)"[[:space:]]*:[[:space:]]*("[^"]*"|true|false)' |
@@ -64,8 +65,9 @@ select_newest_nightly_tag() {
       $1 == "TAG" { tag = $2; draft = ""; next }
       $1 == "DRAFT" { draft = $2; next }
       $1 == "PRE" {
-        if (tag != "" && draft != "true" && $2 == "true" &&
-            tag ~ /^v[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9](\.[0-9]+)?$/) {
+        if (tag != "" && draft != "true" &&
+            (($2 == "true" && tag ~ /^v[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9](\.[0-9]+)?$/) ||
+             ($2 == "false" && tag ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/))) {
           print tag
           exit
         }
@@ -108,7 +110,7 @@ resolve_zip_url() {
   # VERSION=latest resolves correctly too.
   if [ "$VERSION" = "latest" ] && [ "$CHANNEL" = "nightly" ]; then
     tag="$(select_newest_nightly_tag "$release_json")"
-    [ -n "$tag" ] || die "No nightly release found among the 30 most recent releases of ${REPO}. Nightlies are built from main every night; see https://github.com/${REPO}/releases"
+    [ -n "$tag" ] || die "No nightly or stable release found among the 30 most recent releases of ${REPO}; see https://github.com/${REPO}/releases"
   else
     tag="$(printf '%s\n' "$release_json" |
       sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
@@ -206,7 +208,7 @@ main() {
   esac
 
   if [ "$CHANNEL" = "nightly" ] && [ "$VERSION" = "latest" ]; then
-    step "Resolving the newest localvoxtral NIGHTLY release zip"
+    step "Resolving the newest localvoxtral build of main (nightly or stable)"
   else
     step "Resolving localvoxtral release zip"
   fi

@@ -9,22 +9,12 @@ on:
         description: Run only the hosted AX drill, not the Mac's e2e dictation
         type: boolean
         default: false
-  schedule:
-    # Evening retry ladder anchored at 20:00 Paris (owner request,
-    # 2026-07-20): the e2e dictation needs an UNLOCKED GUI session on the
-    # owner's Mac, and the old 04:00 slot always found the MacBook locked
-    # (every window interaction false-reds — run 29722553773). Each slot runs
-    # the guard in the e2e-dictation job and skips green when the Mac is on
-    # battery power (personal machine — owner request, 2026-07-24), the
-    # screen is locked, or an earlier slot's dictation was already scored
-    # (see scripts/ci/ui-smoke-guard.sh), so at most one real dictation runs
-    # per day, at whichever slot finds the Mac unlocked. The hosted AX drill
-    # has no lock to wait for and runs at the first slot only. GitHub cron is UTC: 18:00 UTC = 20:00 Paris
-    # in summer (CEST), 19:00 in winter (CET) — the lane needs "evening,
-    # Mac likely unlocked", not a precise hour, so DST drift is fine.
-    - cron: "0 18 * * *"
-    - cron: "30 19 * * *"
-    - cron: "0 21 * * *"
+  # No schedule (owner, 2026-09-26). The e2e dictation needs the owner's
+  # Mac unlocked and idle, and GitHub cron starts up to an hour late, so the
+  # old evening slots took the Mac at unpredictable times. The owner starts a
+  # run on main himself when the Mac is free (the GitHub app's "Run workflow"
+  # button, or `gh workflow run ui-smoke.yml`); release.yml's daily release
+  # ships the newest main commit such a run scored.
   # UI-affecting PRs get automated proof on demand: add the needs-ui-smoke
   # label (re-add it to rerun after new pushes). Both jobs run.
   pull_request:
@@ -36,8 +26,6 @@ concurrency:
 
 permissions:
   contents: read
-  # ui-smoke-guard.sh reads past runs of this workflow.
-  actions: read
 
 jobs:
   # The AX drill (scripts/ui-smoke.sh) on a GitHub-hosted runner (#573): it
@@ -50,7 +38,6 @@ jobs:
   ax-drill:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'schedule' && github.event.schedule == '0 18 * * *') ||
       (github.event_name == 'pull_request' && github.event.label.name == 'needs-ui-smoke')
     runs-on: macos-latest
     timeout-minutes: 30
@@ -124,13 +111,19 @@ jobs:
     # Same security invariant as ci.yml: fork PRs must never reach the
     # self-hosted runner, label or no label.
     if: >-
-      (github.event_name == 'schedule') ||
       (github.event_name == 'workflow_dispatch' && !inputs.drill_only) ||
       (github.event_name == 'pull_request' &&
        github.event.label.name == 'needs-ui-smoke' &&
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 25
+    env:
+      # The owner's own dispatch on main, from his phone or a shell, is the
+      # run the daily release depends on. It is guarded: on battery or a
+      # locked screen it skips green instead of taking the Mac at a bad
+      # moment. Branch dispatches (scripts/ui-smoke-dispatch.sh) and the
+      # label are a PR asking for a result and always run.
+      GUARDED: ${{ github.event_name == 'workflow_dispatch' && github.ref_name == 'main' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -143,26 +136,22 @@ jobs:
           # Metal helper rebuilds (observed run 29763957545, 2026-07-20).
           clean: false
 
-      - name: Decide whether this scheduled slot runs (power + lock probes + already-covered)
-        # Enforced for schedule events only: workflow_dispatch and the
-        # needs-ui-smoke label are explicit operator intent and always run.
+      - name: Decide whether this dispatch on main runs (power + lock probes)
         # The decision logic lives in scripts/ci/ui-smoke-guard.sh (kept out
         # of the workflow so it is testable — test-ui-smoke-guard.sh runs in
         # ci.yml's shell-test step); it fails OPEN on probe errors so a
         # broken probe can never silently disable the lane.
         id: guard
-        if: github.event_name == 'schedule'
-        env:
-          GH_TOKEN: ${{ github.token }}
+        if: env.GUARDED == 'true'
         run: |
           set -euo pipefail
           DECISION="$(./scripts/ci/ui-smoke-guard.sh)"
           echo "$DECISION" >> "$GITHUB_OUTPUT"
           REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
           if [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" == "true" ]]; then
-            echo "E2E dictation slot: RUNNING ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "E2E dictation: RUNNING ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           else
-            echo "E2E dictation slot: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "E2E dictation: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Clean stale outputs (keep build caches)
@@ -173,7 +162,7 @@ jobs:
         # missing output fails OPEN: if the guard ever exits 0 without
         # emitting run=..., the dictation runs rather than every slot
         # silently skipping green forever. Same condition on the steps below.
-        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
+        if: steps.guard.outputs.run != 'false'
         run: ./scripts/ci/clean-stale-outputs.sh
 
       - name: Package dogfood app bundle (dictates from a file)
@@ -181,7 +170,7 @@ jobs:
         # dictate from a WAV in place of the microphone (docs/dogfood-builds.md).
         # Enablement is the step env, never the .dogfood-capture-enable marker
         # file, for the reason ci.yml gives: this workspace is persistent.
-        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
+        if: steps.guard.outputs.run != 'false'
         env:
           LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
           LOCALVOXTRAL_DOGFOOD: "1"
@@ -191,12 +180,12 @@ jobs:
         # The packaged app hears a WAV, dictates into a throwaway window, and
         # the inserted text is scored (scripts/e2e-dictation.sh). Exit 3 means
         # the Mac was not in a state to run it (locked, no STT server, no
-        # Accessibility grant, a lagging speech service): a scheduled slot
-        # reports that and stays green,
-        # like the guard's own skips, while a dispatch or a label is an operator
-        # asking for a result and goes red.
+        # Accessibility grant, a lagging speech service): a guarded dispatch
+        # on main reports that and stays green, like the guard's own skips,
+        # while a branch dispatch or a label is a PR asking for a result and
+        # goes red.
         id: e2e
-        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
+        if: steps.guard.outputs.run != 'false'
         # A job timeout SIGKILLs the step, and then nothing restores the
         # owner's defaults until the next lane run. Two scenarios take about
         # two minutes; this bound ends a wedged run while the job can still
@@ -214,17 +203,18 @@ jobs:
             echo "scored=true" >> "$GITHUB_OUTPUT"
           fi
           sed -n '/^E2E dictation summary:/,$p' logs/e2e-dictation.log >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$STATUS" == "3" && "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+          if [[ "$STATUS" == "3" && "$GUARDED" == "true" ]]; then
             echo "::warning::e2e dictation did not run: the Mac was not in a state to run it."
             exit 0
           fi
           exit "$STATUS"
 
       - name: E2E dictation scored
-        # What ui-smoke-guard.sh reads to decide that today's dictation is
-        # covered. The step above concludes `success` on a scheduled exit 3
-        # too, so its conclusion cannot say that every scenario was scored.
-        # The name must match E2E_STEP in the guard.
+        # What the release gates read (scripts/release.sh and
+        # scripts/ci/daily-release-plan.sh): the step above concludes
+        # `success` on a guarded exit 3 too, so its conclusion cannot say
+        # that every scenario was scored. The name must match E2E_STEP in
+        # both scripts.
         if: ${{ !cancelled() && steps.e2e.outputs.scored == 'true' }}
         run: echo "Every e2e dictation scenario was scored and passed."
 

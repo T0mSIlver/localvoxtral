@@ -123,8 +123,10 @@ echo "PASS: VERSION=latest resolves via the metadata tag_name"
 # Nightlies are prereleases, so GitHub's /releases/latest never returns one
 # and the nightly path reads the release LIST instead. Two things must hold:
 # the installer asks the right endpoint per channel, and the selector picks
-# the newest NIGHTLY out of a list that also holds stable releases, rc
-# prereleases and (for an authenticated caller) drafts.
+# the newest nightly OR stable release out of a list that also holds rc
+# prereleases and (for an authenticated caller) drafts. Stable counts since
+# main ships a stable release every day: a nightly user must not stay on the
+# last nightly while stable moves past it.
 # ---------------------------------------------------------------------------
 
 release_url="https://github.com/T0mSIlver/localvoxtral/releases/download"
@@ -153,15 +155,6 @@ cat > "$TMP_DIR/releases-list.json" <<'JSON'
     "body": "release candidate"
   },
   {
-    "tag_name": "v0.8.4",
-    "draft": false,
-    "prerelease": false,
-    "assets": [
-      {"browser_download_url": "https://github.com/T0mSIlver/localvoxtral/releases/download/v0.8.4/localvoxtral-v0.8.4.zip"}
-    ],
-    "body": "stable"
-  },
-  {
     "tag_name": "v0.8.5-nightly.20260917.2",
     "draft": false,
     "prerelease": true,
@@ -171,6 +164,15 @@ cat > "$TMP_DIR/releases-list.json" <<'JSON'
       {"browser_download_url": "https://github.com/T0mSIlver/localvoxtral/releases/download/v0.8.5-nightly.20260917.2/localvoxtral-v0.8.5-nightly.20260917.2.zip.sha256"}
     ],
     "body": "nightly build of main"
+  },
+  {
+    "tag_name": "v0.8.4",
+    "draft": false,
+    "prerelease": false,
+    "assets": [
+      {"browser_download_url": "https://github.com/T0mSIlver/localvoxtral/releases/download/v0.8.4/localvoxtral-v0.8.4.zip"}
+    ],
+    "body": "stable"
   },
   {
     "tag_name": "v0.8.5-nightly.20260916",
@@ -195,7 +197,38 @@ case "$(requested_url)" in
   *"/releases?per_page=30") ;;
   *) fail "nightly should read the releases list, asked for: $(requested_url)" ;;
 esac
-echo "PASS: nightly picks the newest nightly, ignoring stable, rc and draft releases"
+echo "PASS: nightly picks the newest nightly over an older stable, ignoring rc and draft releases"
+
+# The daily stable release that follows the last nightly: a newer stable wins.
+cat > "$TMP_DIR/releases-stable-newer.json" <<'JSON'
+[
+  {
+    "tag_name": "v0.10.0",
+    "draft": false,
+    "prerelease": false,
+    "assets": [
+      {"browser_download_url": "https://github.com/T0mSIlver/localvoxtral/releases/download/v0.10.0/localvoxtral-v0.10.0.zip"}
+    ],
+    "body": "daily release"
+  },
+  {
+    "tag_name": "v0.9.1-nightly.20260926",
+    "draft": false,
+    "prerelease": true,
+    "assets": [
+      {"browser_download_url": "https://github.com/T0mSIlver/localvoxtral/releases/download/v0.9.1-nightly.20260926/localvoxtral-v0.9.1-nightly.20260926.zip"}
+    ],
+    "body": "nightly build of main"
+  }
+]
+JSON
+output="$(run_resolve "$TMP_DIR/releases-stable-newer.json" latest nightly)" ||
+  fail "nightly (stable newer) dry run exited non-zero:
+$output"
+resolved="$(printf '%s\n' "$output" | sed -n 's/^Resolved zip: //p')"
+[ "$resolved" = "$release_url/v0.10.0/localvoxtral-v0.10.0.zip" ] ||
+  fail "nightly with a newer stable resolved '$resolved'"
+echo "PASS: nightly moves on to a stable release newer than the last nightly"
 
 # The stable channel must never land on a nightly. Its guarantee is the
 # endpoint: /releases/latest is documented to exclude prereleases, and every
@@ -252,11 +285,11 @@ $output"
 done
 echo "PASS: LOCALVOXTRAL_VERSION pins a nightly tag on either channel"
 
-# A repo with no nightly yet must say so instead of installing a stable build
-# behind the user's back.
+# A list with only drafts and rc prereleases must say so instead of
+# installing a branch build.
 cat > "$TMP_DIR/releases-no-nightly.json" <<'JSON'
 [
-  {"tag_name": "v0.8.4", "draft": false, "prerelease": false, "assets": []},
+  {"tag_name": "v0.8.5", "draft": true, "prerelease": false, "assets": []},
   {"tag_name": "v0.9.0-rc.1", "draft": false, "prerelease": true, "assets": []}
 ]
 JSON
@@ -266,11 +299,11 @@ if output="$(run_resolve "$TMP_DIR/releases-no-nightly.json" latest nightly 2>&1
 $output"
 fi
 case "$output" in
-  *"No nightly release found"*) ;;
-  *) fail "expected a 'no nightly release found' error, got:
+  *"No nightly or stable release found"*) ;;
+  *) fail "expected a 'no nightly or stable release found' error, got:
 $output" ;;
 esac
-echo "PASS: no nightly in the list fails with a clear error"
+echo "PASS: a list with no nightly or stable release fails with a clear error"
 
 # An empty or unrecognizable response must produce that same clear error and
 # not a bare non-zero exit from a pipeline under `set -o pipefail`.
@@ -280,7 +313,7 @@ if output="$(run_resolve "$TMP_DIR/releases-empty.json" latest nightly 2>&1)"; t
 $output"
 fi
 case "$output" in
-  *"No nightly release found"*) ;;
+  *"No nightly or stable release found"*) ;;
   *) fail "an empty releases list must still explain itself, got:
 $output" ;;
 esac

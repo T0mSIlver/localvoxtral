@@ -5,13 +5,18 @@ name: Release App
 # after every gate passes — a failed release leaves no orphan tag behind.
 # Trigger from anywhere: ./scripts/release.sh minor   (wraps gh workflow run)
 #
-# TWO CHANNELS, ONE PIPELINE. Stable is deliberate and hand-dispatched;
-# nightly ships main every night as a prerelease. They share every gate on
-# purpose — a second pipeline would drift, and a nightly that skipped gates
-# would not be the build the owner dogfoods. The only differences are the
-# version shape, `prerelease: true` (so GitHub's /releases/latest, which
-# install.sh's stable path follows, never points at a nightly), the fixed
-# nightly body, and the pruning step.
+# THREE CHANNELS, ONE PIPELINE, sharing every gate on purpose: a second
+# pipeline would drift.
+#   * stable: hand-dispatched through release.sh, which refuses unless the
+#     e2e dictation check passed on the release commit.
+#   * daily: the 03:15 UTC cron. A stable minor release (v0.9.x -> v0.10.0)
+#     of the newest main commit on which a UI Smoke run scored the e2e
+#     dictation check (scripts/ci/daily-release-plan.sh). The owner starts
+#     that run on main when he is at the Mac, so the commit is main as it was
+#     then, and can be behind main's head. Nothing new, or nothing checked:
+#     no release that day.
+#   * nightly: on demand only (release.sh nightly). A prerelease of main's
+#     head without the e2e gate, never /releases/latest, pruned to 7.
 #
 # Rehearsal: `publish=false` runs the whole pipeline and uploads the
 # artifacts, but creates no tag and no release. That is how a change to THIS
@@ -21,11 +26,11 @@ on:
   workflow_dispatch:
     inputs:
       channel:
-        description: "stable (hand-cut, follows /releases/latest) or nightly (main, prerelease)"
+        description: "stable (hand-cut), daily (minor bump of the newest main commit the e2e dictation passed on) or nightly (main, prerelease)"
         required: false
         default: "stable"
         type: choice
-        options: [stable, nightly]
+        options: [stable, daily, nightly]
       bump:
         description: "Version bump from the latest v* tag (stable channel only)"
         required: false
@@ -42,13 +47,15 @@ on:
         default: true
         type: boolean
   schedule:
-    # 03:15 UTC nightly. Deliberately clear of the other self-hosted lanes on
-    # the single runner: eval-e2e at 04:45 UTC and ui-smoke's evening ladder
-    # (18:00–21:00 UTC). A schedule event is always the nightly channel.
+    # 03:15 UTC daily release, while the owner is away from the Mac and clear
+    # of eval-e2e at 04:45 UTC on the same single runner. A schedule event is
+    # always the daily channel.
     - cron: "15 3 * * *"
 
 permissions:
   contents: write
+  # daily-release-plan.sh reads UI Smoke runs.
+  actions: read
 
 concurrency:
   group: release
@@ -72,8 +79,9 @@ jobs:
       # Stable releases dispatch on main; X.Y.Z-rc.N prereleases may dispatch
       # on any branch (the Compute version step enforces this pairing), so a
       # release candidate can be installed via install.sh and hand-tested
-      # end-to-end before the branch merges. Nightlies publish from main only.
-      # Rehearsals (publish=false) run from any ref on either channel.
+      # end-to-end before the branch merges. Daily and nightly releases
+      # publish from main only. Rehearsals (publish=false) run from any ref
+      # on any channel.
       - name: Checkout release ref
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -81,33 +89,38 @@ jobs:
           fetch-depth: 0
 
       - name: Plan this run
-        # Everything that decides WHETHER this run proceeds, in one place, so
-        # every step below carries a single `if:`. Three separate reasons a
-        # run stops here, all of them green (a skipped nightly is not a
-        # failure):
-        #   * the scheduled nightly on battery power (ac-power-guard.sh, the
-        #     same guard eval-e2e.yml and ui-smoke.yml use — owner rule
-        #     2026-07-24: scheduled lanes never drain the MacBook). Manual
-        #     dispatches are explicit intent and never consult it;
-        #   * a scheduled nightly with nothing new to ship (HEAD is already
-        #     the newest nightly's or the newest stable's commit);
-        #   * nothing else: a dispatch always builds.
+        # Everything that decides WHETHER this run proceeds, and for a daily
+        # release WHICH commit it ships, in one place, so every step below
+        # carries a single `if:`. A run stops here, green, when:
+        #   * it is scheduled and the Mac is on battery power
+        #     (ac-power-guard.sh, the same guard eval-e2e.yml and ui-smoke.yml
+        #     use; owner rule 2026-07-24: scheduled lanes never drain the
+        #     MacBook). Manual dispatches never consult it;
+        #   * it is a daily release and scripts/ci/daily-release-plan.sh finds
+        #     nothing to ship: main is already the newest stable tag, or no
+        #     commit since that tag passed the e2e dictation check.
+        # Stable and nightly dispatches always build.
+        #
+        # A daily release checks out the commit the plan picked, which can be
+        # behind main's head, so every step below builds, tags and ships that
+        # commit.
         id: plan
         env:
           CHANNEL_INPUT: ${{ inputs.channel }}
           PUBLISH_INPUT: ${{ inputs.publish }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
           if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
-            CHANNEL="nightly"
+            CHANNEL="daily"
             PUBLISH="true"
           else
             CHANNEL="${CHANNEL_INPUT:-stable}"
             PUBLISH="${PUBLISH_INPUT:-true}"
           fi
           case "$CHANNEL" in
-            stable|nightly) ;;
+            stable|daily|nightly) ;;
             *) echo "Unknown channel: $CHANNEL"; exit 1 ;;
           esac
           case "$PUBLISH" in
@@ -115,9 +128,9 @@ jobs:
             *) echo "Unknown publish value: $PUBLISH"; exit 1 ;;
           esac
 
-          if [[ "$PUBLISH" == "true" && "$CHANNEL" == "nightly" \
+          if [[ "$PUBLISH" == "true" && "$CHANNEL" != "stable" \
                 && "${{ github.ref_name }}" != "main" ]]; then
-            echo "Nightly releases publish from main only. To exercise this pipeline from '${{ github.ref_name }}', dispatch with publish=false (rehearsal)."
+            echo "The $CHANNEL channel publishes from main only. To exercise this pipeline from '${{ github.ref_name }}', dispatch with publish=false (rehearsal)."
             exit 1
           fi
 
@@ -132,37 +145,33 @@ jobs:
             if [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" != "true" ]]; then
               PROCEED=false
             fi
+          fi
 
-            if [[ "$PROCEED" == "true" ]]; then
-              # Nothing new to ship: the newest nightly (or the newest stable
-              # release) is already this exact commit. Rebuilding it would
-              # burn half an hour of the owner's Mac to publish a duplicate.
-              HEAD_SHA="$(git rev-parse HEAD)"
-              NEWEST_NIGHTLY="$(git tag --list 'v*-nightly.*' --sort=-creatordate | head -n 1)"
-              NEWEST_STABLE="$(git tag --list 'v[0-9]*' --sort=-creatordate \
-                | grep -vE -- '-' | head -n 1)"
-              for TAG in "$NEWEST_NIGHTLY" "$NEWEST_STABLE"; do
-                [[ -n "$TAG" ]] || continue
-                TAG_SHA="$(git rev-list -n 1 "$TAG" 2>/dev/null || true)"
-                if [[ -n "$TAG_SHA" && "$TAG_SHA" == "$HEAD_SHA" ]]; then
-                  PROCEED=false
-                  REASON="main is already released as $TAG ($(git rev-parse --short HEAD)) — nothing new to ship"
-                  break
-                fi
-              done
+          if [[ "$PROCEED" == "true" && "$CHANNEL" == "daily" ]]; then
+            # Fails closed: an API error exits non-zero and the run goes red.
+            DECISION="$(./scripts/ci/daily-release-plan.sh)"
+            REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
+            if [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" == "true" ]]; then
+              RELEASE_SHA="$(sed -n 's/^sha=//p' <<<"$DECISION")"
+              if [[ ! "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "daily-release-plan.sh said run=true without a commit: $DECISION"; exit 1
+              fi
+              git checkout --quiet --detach "$RELEASE_SHA"
+            else
+              PROCEED=false
             fi
           fi
           echo "proceed=$PROCEED" >> "$GITHUB_OUTPUT"
 
           {
             if [[ "$PROCEED" != "true" ]]; then
-              echo "## Nightly skipped"
+              echo "## Release skipped ($CHANNEL channel)"
               echo ""
               echo "$REASON"
             elif [[ "$PUBLISH" != "true" ]]; then
               echo "## REHEARSAL — no tag, no release"
               echo ""
-              echo "Channel \`$CHANNEL\` from \`${{ github.ref_name }}\` @ \`$(git rev-parse --short HEAD)\`."
+              echo "Channel \`$CHANNEL\` from \`${{ github.ref_name }}\` @ \`$(git rev-parse --short HEAD)\` — $REASON."
               echo "Every gate and the packaging run; the artifacts are uploaded as"
               echo "\`localvoxtral-release-rehearsal\` and nothing is tagged or published."
             else
@@ -188,10 +197,14 @@ jobs:
           PUBLISH: ${{ steps.plan.outputs.publish }}
         run: |
           set -euo pipefail
+          if [[ "$CHANNEL" != "stable" && -n "$EXPLICIT" ]]; then
+            echo "channel=$CHANNEL computes its own version; drop the version input (or dispatch channel=stable)."; exit 1
+          fi
+          # The daily release is always a minor bump, whatever `bump` says.
+          if [[ "$CHANNEL" == "daily" ]]; then
+            BUMP=minor
+          fi
           if [[ "$CHANNEL" == "nightly" ]]; then
-            if [[ -n "$EXPLICIT" ]]; then
-              echo "channel=nightly computes its own version; drop the version input (or dispatch channel=stable)."; exit 1
-            fi
             # Every tag that exists anywhere, so the same-day .N search cannot
             # pick a name the remote already holds.
             TAGS_FILE="$RUNNER_TEMP/existing-tags.txt"
@@ -488,8 +501,8 @@ jobs:
             dist/localvoxtral-speechd-${{ steps.meta.outputs.tag }}.dSYM.zip
 
       - name: Prune old nightly releases
-        # Nightly ships every night; without this the releases page becomes a
-        # log. Keep the newest 7 and delete the rest, releases and tags both.
+        # Without this, on-demand nightlies would pile up on the releases page.
+        # Keep the newest 7 and delete the rest, releases and tags both.
         #
         # The selection lives in scripts/ci/prune-nightly-releases.sh, which
         # takes tags on stdin, prints only tags matching the nightly shape
@@ -527,7 +540,7 @@ jobs:
             echo "Nightly pruning: deleted $(wc -l < "$RUNNER_TEMP/nightlies-to-delete.txt" | tr -d ' ') old nightly release(s), newest 7 kept"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # Stable releases only: nightlies and rc builds are prereleases, and the tap
+  # Stable and daily releases only: nightlies and rc builds are prereleases, and the tap
   # is what `brew upgrade` follows. This job runs after the release is public,
   # so a failure here leaves a good release and a stale tap; cask.yml's header
   # has the one-line repair.
