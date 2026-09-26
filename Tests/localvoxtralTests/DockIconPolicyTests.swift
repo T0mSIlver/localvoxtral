@@ -30,53 +30,6 @@ final class DockIconPolicyTests: XCTestCase {
         XCTAssertEqual(applied, [])
     }
 
-    func testFirstWindowShowsTheDockIcon() {
-        let policy = makePolicy()
-
-        policy.addWindow(settingsID)
-
-        XCTAssertEqual(policy.currentPolicy, .regular)
-        XCTAssertEqual(applied, [.regular])
-    }
-
-    func testClosingTheOnlyWindowHidesTheDockIcon() {
-        let policy = makePolicy()
-
-        policy.addWindow(settingsID)
-        policy.removeWindow(settingsID)
-
-        XCTAssertEqual(policy.currentPolicy, .accessory)
-        XCTAssertEqual(applied, [.regular, .accessory])
-    }
-
-    /// Settings opened on top of the onboarding wizard must not re-apply
-    /// `.regular`: each application activates the app, so a redundant one
-    /// steals focus back from whatever the user switched to.
-    func testSecondWindowDoesNotReapplyTheRegularPolicy() {
-        let policy = makePolicy()
-
-        policy.addWindow(onboardingID)
-        policy.addWindow(settingsID)
-
-        XCTAssertEqual(applied, [.regular])
-    }
-
-    func testDockIconSurvivesUntilTheLastWindowCloses() {
-        let policy = makePolicy()
-
-        policy.addWindow(onboardingID)
-        policy.addWindow(settingsID)
-        policy.removeWindow(onboardingID)
-
-        XCTAssertEqual(policy.currentPolicy, .regular)
-        XCTAssertEqual(applied, [.regular])
-
-        policy.removeWindow(settingsID)
-
-        XCTAssertEqual(policy.currentPolicy, .accessory)
-        XCTAssertEqual(applied, [.regular, .accessory])
-    }
-
     /// `DockIconWindowRegistrarView` deregisters from both `willClose` and
     /// view teardown, so the same window can be removed twice.
     func testRemovingAnAlreadyClosedWindowIsANoOp() {

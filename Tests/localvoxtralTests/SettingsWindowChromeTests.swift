@@ -22,53 +22,6 @@ final class SettingsWindowChromeTests: XCTestCase {
         )
     }
 
-    func testApplyChromeHidesTheTitleAndOpensUpTheTitlebar() {
-        let window = makeWindow()
-        window.title = "localvoxtral Settings"
-
-        SettingsWindowChromeView.applyChrome(to: window)
-
-        XCTAssertEqual(window.titleVisibility, .hidden)
-        XCTAssertTrue(window.titlebarAppearsTransparent)
-        XCTAssertEqual(window.titlebarSeparatorStyle, .none)
-        XCTAssertTrue(window.styleMask.contains(.fullSizeContentView))
-    }
-
-    /// The scene names the window "localvoxtral Settings" (macOS 26 field
-    /// report); the chrome names it after the app. `scripts/ui-smoke.sh` pins
-    /// every AX probe to that name, so the fix for a visible title is never an
-    /// empty title, and a title SwiftUI puts back counts as stale chrome.
-    func testApplyChromeNamesTheWindowAfterTheApp() {
-        let window = makeWindow()
-        window.title = "localvoxtral Settings"
-
-        SettingsWindowChromeView.applyChrome(to: window)
-
-        XCTAssertEqual(window.title, SettingsWindowChromeView.windowTitle)
-        XCTAssertFalse(window.title.isEmpty)
-        XCTAssertFalse(SettingsWindowChromeView.chromeIsStale(window))
-
-        window.title = "localvoxtral Settings"
-        XCTAssertTrue(SettingsWindowChromeView.chromeIsStale(window))
-    }
-
-    func testChromeIsStaleOnlyWhenSomethingWasPutBack() {
-        let window = makeWindow()
-        SettingsWindowChromeView.applyChrome(to: window)
-        XCTAssertFalse(SettingsWindowChromeView.chromeIsStale(window))
-
-        window.titleVisibility = .visible
-        XCTAssertTrue(SettingsWindowChromeView.chromeIsStale(window))
-
-        SettingsWindowChromeView.applyChrome(to: window)
-        window.titlebarAppearsTransparent = false
-        XCTAssertTrue(SettingsWindowChromeView.chromeIsStale(window))
-
-        SettingsWindowChromeView.applyChrome(to: window)
-        window.styleMask.remove(.fullSizeContentView)
-        XCTAssertTrue(SettingsWindowChromeView.chromeIsStale(window))
-    }
-
     /// The regression, in the shape the field bug actually had: the title is
     /// turned back on with the view already installed and the window already
     /// key, and NOTHING else happens afterwards — no further event, no window
@@ -78,28 +31,50 @@ final class SettingsWindowChromeTests: XCTestCase {
     /// returns.
     func testTitleTurnedBackOnIsHiddenAgainWithoutWaitingForAnEvent() {
         let window = makeWindow()
+        window.title = "localvoxtral Settings"
         let chrome = SettingsWindowChromeView()
         window.contentView?.addSubview(chrome)
         XCTAssertEqual(window.titleVisibility, .hidden, "installing the view applies the chrome")
+        XCTAssertEqual(window.title, SettingsWindowChromeView.windowTitle)
+        XCTAssertFalse(window.title.isEmpty)
+        XCTAssertTrue(window.titlebarAppearsTransparent)
+        XCTAssertEqual(window.titlebarSeparatorStyle, .none)
+        XCTAssertTrue(window.styleMask.contains(.fullSizeContentView))
 
         window.titleVisibility = .visible
 
         XCTAssertEqual(window.titleVisibility, .hidden)
     }
 
-    /// The backstop, exercised through a titlebar setting that is NOT the
-    /// observed one: a re-assertion that never goes through `titleVisibility`
-    /// is caught on the window's next update pass.
-    func testTitlebarPutBackOffTheObservedPropertyIsFixedOnTheNextWindowUpdate() {
-        let window = makeWindow()
-        let chrome = SettingsWindowChromeView()
-        window.contentView?.addSubview(chrome)
+    /// The update pass repairs each property that KVO does not observe.
+    /// Each case starts with a fresh window so another stale field cannot
+    /// cause the correction to pass for the wrong reason.
+    func testWindowUpdateRestoresEachStaleChromeProperty() {
+        func check(
+            _ property: String,
+            corrupt: (NSWindow) -> Void,
+            isRestored: (NSWindow) -> Bool
+        ) {
+            let window = makeWindow()
+            let chrome = SettingsWindowChromeView()
+            window.contentView?.addSubview(chrome)
 
-        window.titlebarAppearsTransparent = false
-        NotificationCenter.default.post(name: NSWindow.didUpdateNotification, object: window)
+            XCTAssertTrue(isRestored(window), "\(property) starts correct")
+            corrupt(window)
+            XCTAssertFalse(isRestored(window), "\(property) was changed")
+            NotificationCenter.default.post(name: NSWindow.didUpdateNotification, object: window)
+            XCTAssertTrue(isRestored(window), "\(property) is restored on update")
+            XCTAssertEqual(window.titleVisibility, .hidden)
+        }
 
-        XCTAssertTrue(window.titlebarAppearsTransparent)
-        XCTAssertEqual(window.titleVisibility, .hidden)
+        check("title", corrupt: { $0.title = "localvoxtral Settings" },
+              isRestored: { $0.title == SettingsWindowChromeView.windowTitle })
+        check("transparency", corrupt: { $0.titlebarAppearsTransparent = false },
+              isRestored: { $0.titlebarAppearsTransparent })
+        check("separator", corrupt: { $0.titlebarSeparatorStyle = .line },
+              isRestored: { $0.titlebarSeparatorStyle == .none })
+        check("full-size content", corrupt: { $0.styleMask.remove(.fullSizeContentView) },
+              isRestored: { $0.styleMask.contains(.fullSizeContentView) })
     }
 
     /// The update pass only listens to its own window: a sibling window's
