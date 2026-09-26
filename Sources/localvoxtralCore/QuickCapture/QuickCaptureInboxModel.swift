@@ -142,6 +142,7 @@ package final class QuickCaptureInboxModel {
                     case .success(let url):
                         item.state = .filed
                         item.filedURL = url
+                        item.filedAt = self.now()
                         item.note = nil
                     case .failure(let failure):
                         item.state = .ready
