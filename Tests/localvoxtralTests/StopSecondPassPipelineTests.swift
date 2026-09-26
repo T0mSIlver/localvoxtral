@@ -18,6 +18,8 @@ final class StopSecondPassPipelineTests: XCTestCase {
         let transcriber = FakeBatchTranscriber(.text(Self.batchText))
         let polisher = FakePolishingService()
         let harness = makeHarness(transcriber: transcriber, polisher: polisher)
+        let ledger = MistralUsageLedger(fileURL: nil)
+        harness.viewModel.session.secondPassUsageRecorder = ledger
 
         harness.stop()
         XCTAssertEqual(harness.viewModel.statusText, DictationViewModel.StatusStrings.transcribingAgain)
@@ -35,6 +37,10 @@ final class StopSecondPassPipelineTests: XCTestCase {
         XCTAssertEqual(harness.overlay.committedTexts, [Self.batchText])
         XCTAssertEqual(harness.records.map(\.rawText), [Self.batchText])
         XCTAssertEqual(harness.records.first?.commitSucceeded, true)
+        let usage = ledger.entries()
+        XCTAssertEqual(usage.map(\.kind), [.retranscription])
+        XCTAssertEqual(usage.first?.audioSeconds, 1)
+        XCTAssertEqual(usage.first?.costEUR ?? 0, 0.0026 / 60, accuracy: 1e-12)
     }
 
     func testTheDeadlineKeepsTheRealtimeTextAndCancelsTheRequest() async {

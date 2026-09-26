@@ -820,7 +820,18 @@ extension DictationSessionController {
         )
         polishAndCommitTask = Task { @MainActor [weak self] in
             let outcome = await StopSecondPass.run(deadline: deadline, sleep: sleep) {
-                try await transcriber.transcribe(
+                // Here, off the main actor: the ledger appends to its file
+                // synchronously. Recorded as the request goes out, whatever
+                // comes back: one the deadline cuts off may still be billed.
+                usageRecorder?.record(MistralUsageEntry(
+                    date: Date(),
+                    kind: .retranscription,
+                    model: MistralBatchTranscription.model,
+                    audioSeconds: request.audioSeconds,
+                    costEUR: MistralPricing.dictationCost(
+                        model: MistralBatchTranscription.model, audioSeconds: request.audioSeconds)
+                ))
+                return try await transcriber.transcribe(
                     wav: request.wav,
                     language: nil,
                     contextBias: request.contextBias,
@@ -828,16 +839,6 @@ extension DictationSessionController {
                     endpoint: request.endpoint
                 ).text
             }
-            // Recorded whatever the outcome: a request the deadline cut off
-            // may still have been billed.
-            usageRecorder?.record(MistralUsageEntry(
-                date: Date(),
-                kind: .retranscription,
-                model: MistralBatchTranscription.model,
-                audioSeconds: request.audioSeconds,
-                costEUR: MistralPricing.dictationCost(
-                    model: MistralBatchTranscription.model, audioSeconds: request.audioSeconds)
-            ))
             guard let self, outcome != .cancelled, !Task.isCancelled else { return }
             self.applyStopSecondPass(outcome)
             self.commitOverlayBufferText(sessionMode: sessionMode, sample: sample)
