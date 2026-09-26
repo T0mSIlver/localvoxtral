@@ -27,6 +27,18 @@ package struct ClaudeRepoSnapshot: Sendable, Equatable {
         package var touch: ClaudeFileTouchKind?
         /// True when `contents` is a prefix of a larger file.
         package var isTruncated: Bool
+
+        package init(
+            path: String,
+            contents: String,
+            touch: ClaudeFileTouchKind? = nil,
+            isTruncated: Bool
+        ) {
+            self.path = path
+            self.contents = contents
+            self.touch = touch
+            self.isTruncated = isTruncated
+        }
     }
 
     /// Display-only workspace name (`localvoxtral`), never the absolute path.

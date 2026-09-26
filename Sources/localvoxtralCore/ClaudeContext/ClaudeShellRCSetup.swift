@@ -229,6 +229,11 @@ public struct ClaudeShellRCWriter: Sendable {
         /// The file or a directory on the way to it is a symlink: every
         /// write refuses.
         public var isSymlinked: Bool
+
+        package init(block: BlockState? = nil, isSymlinked: Bool) {
+            self.block = block
+            self.isSymlinked = isSymlinked
+        }
     }
 
     /// Absent, current or outdated from ONE read of the file, so a save
