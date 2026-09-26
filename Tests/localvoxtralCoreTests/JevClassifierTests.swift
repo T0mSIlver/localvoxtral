@@ -9,13 +9,14 @@ final class JevClassifierTests: XCTestCase {
         QuickCaptureProject(key: "remote:website", name: "website", summary: nil, terms: [], userLine: nil),
     ])
 
-    /// The choice answer as docs.typesafe.ai/primitives/choice gives it, with
-    /// this question's id and options. Replace with a recorded answer once a
-    /// key exists (#730).
-    private let documentedAnswer = Data("""
-        {"model": "jev-1.13.0", "answers": {"project": {"type": "choice", "choice": "localvoxtral",
-         "confidence": 0.82, "probabilities": {"localvoxtral": 0.85, "website": 0.08, "inbox": 0.07}}},
-         "usage": {"input_tokens": 312, "output_tokens": 48}}
+    /// A real Vercel AI Gateway answer (2026-09-26), for options
+    /// `localvoxtral`, `reach` and `inbox`, with `providerMetadata.gateway`
+    /// (routing attempts, costs) cut.
+    private let recordedAnswer = Data("""
+        {"answers":{"project":{"type":"choice","choice":"localvoxtral",\
+        "probabilities":{"inbox":0.02,"localvoxtral":0.98,"reach":0},"confidence":0.97}},\
+        "model":"typesafe-ai/jev","providerMetadata":{"typesafe":{"confidence":{"project":0.97}}},\
+        "usage":{"inputTokens":358,"outputTokens":45}}
         """.utf8)
 
     func testBothHostsGetTheSameChoiceQuestionWithTheirOwnModel() throws {
@@ -41,9 +42,13 @@ final class JevClassifierTests: XCTestCase {
         }
     }
 
-    func testTheDocumentedAnswerRoutesThroughTheRouter() throws {
-        let probabilities = try Jev.probabilities(status: 200, body: documentedAnswer)
-        XCTAssertEqual(probabilities, ["localvoxtral": 0.85, "website": 0.08, "inbox": 0.07])
+    func testARecordedGatewayAnswerRoutesThroughTheRouter() throws {
+        let probabilities = try Jev.probabilities(status: 200, body: recordedAnswer)
+        XCTAssertEqual(probabilities, ["localvoxtral": 0.98, "reach": 0, "inbox": 0.02])
+        let options = QuickCaptureRouting.options(for: [
+            QuickCaptureProject(key: "/w/localvoxtral", name: "localvoxtral", summary: nil, terms: [], userLine: nil),
+            QuickCaptureProject(key: "/w/reach", name: "reach", summary: nil, terms: [], userLine: nil),
+        ])
         let route = QuickCaptureRouting.decide(probabilities: probabilities, options: options, classifier: .jev)
         XCTAssertEqual(route.destination, .project("/w/localvoxtral"))
     }
