@@ -534,6 +534,122 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(herdr.writes.count, 1, "the first refusal ends the route")
     }
 
+    // MARK: - Commits into one unsent prompt (#802)
+
+    /// Two Overlay Buffer dictations into the same unsent prompt of a joined
+    /// Claude Code session are one sentence after another, not
+    /// `doing.Usually`. Once the session submits, the next commit starts a
+    /// fresh prompt with no space, so a slash command stays a command.
+    func testOverlayBufferSpacesACommitThatContinuesTheUnsentPrompt() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.overlay.insertsThroughCommitter = true
+        pipeline.overlay.commitTargetAppPID = 4343
+        pipeline.overlay.passesTargetPIDToCommitter = false
+        let registry = joinClaudeCodeTerminal(pipeline)
+        let typed = recordTypedText(pipeline)
+
+        await dictate(pipeline, "that's what I was doing.")
+        await dictate(pipeline, "Usually it works.")
+        XCTAssertEqual(typed.text, "that's what I was doing. Usually it works.")
+
+        XCTAssertNotNil(registry.ingest(
+            ClaudeHookRecord(
+                event: .userPromptSubmit, sessionID: "s1", timestamp: 0, rawCwd: "/repo",
+                prompt: typed.text, files: []
+            ),
+            origin: .localAuthenticated(peerUID: 501)
+        ))
+        await dictate(pipeline, "/compact")
+        XCTAssertEqual(typed.text, "that's what I was doing. Usually it works./compact")
+    }
+
+    /// A submit while the next dictation runs is seen at its commit, not
+    /// only at its start (Vibe review of #806).
+    func testOverlayBufferAddsNoSpaceAfterASubmitDuringTheDictation() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.overlay.insertsThroughCommitter = true
+        pipeline.overlay.commitTargetAppPID = 4343
+        pipeline.overlay.passesTargetPIDToCommitter = false
+        let registry = joinClaudeCodeTerminal(pipeline)
+        let typed = recordTypedText(pipeline)
+
+        await dictate(pipeline, "run the tests.")
+        await dictate(pipeline, "/compact") {
+            XCTAssertNotNil(registry.ingest(
+                ClaudeHookRecord(
+                    event: .userPromptSubmit, sessionID: "s1", timestamp: 0, rawCwd: "/repo",
+                    prompt: nil, files: []
+                ),
+                origin: .localAuthenticated(peerUID: 501)
+            ))
+        }
+        XCTAssertEqual(typed.text, "run the tests./compact")
+    }
+
+    /// Without a joined session nothing proves the prompt is unsent, so the
+    /// commits stay as they are.
+    func testOverlayBufferAddsNoSpaceWithoutAJoin() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.overlay.insertsThroughCommitter = true
+        pipeline.overlay.commitTargetAppPID = 4343
+        pipeline.overlay.passesTargetPIDToCommitter = false
+        let typed = recordTypedText(pipeline)
+
+        await dictate(pipeline, "that's what I was doing.")
+        await dictate(pipeline, "Usually it works.")
+        XCTAssertEqual(typed.text, "that's what I was doing.Usually it works.")
+    }
+
+    /// One whole Overlay Buffer dictation of `text`; `whileDictating` runs
+    /// between its start and its stop.
+    private func dictate(
+        _ pipeline: Pipeline, _ text: String, file: StaticString = #filePath, line: UInt = #line,
+        whileDictating: () -> Void = {}
+    ) async {
+        pipeline.server.forgetFrames()
+        await startAndSpeak(pipeline, file: file, line: line)
+        whileDictating()
+        pipeline.server.send(["type": "transcription.delta", "delta": text])
+        await stopAndFinalize(pipeline, finalText: text, file: file, line: line)
+    }
+
+    /// Joins the dictation to Claude Code session `s1` in a Ghostty surface
+    /// by its tty, with polishing on (a fake polisher, so nothing leaves the
+    /// process). Returns the registry, for the session's later hooks.
+    private func joinClaudeCodeTerminal(_ pipeline: Pipeline) -> ClaudeSessionRegistry {
+        let settings = pipeline.viewModel.settings
+        settings.llmPolishingEnabled = true
+        settings.llmPolishingEndpointURL = "http://127.0.0.1:8080/v1/chat/completions"
+        settings.terminalScreenContextEnabled = true
+        pipeline.viewModel.llmPolishingService = FakePolishingService()
+        let tty = "/dev/ttys042"
+        let epoch = Date(timeIntervalSince1970: 3_000_000)
+        let registry = ClaudeSessionRegistry(now: { epoch }, isProcessAlive: { _ in true })
+        XCTAssertNotNil(registry.ingest(
+            ClaudeHookRecord(
+                event: .sessionStart, sessionID: "s1", timestamp: 0, rawCwd: "/repo", prompt: nil, files: [],
+                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001, tty: tty)
+            ),
+            origin: .localAuthenticated(peerUID: 501)
+        ))
+        pipeline.viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            focusedTerminalTTY: { _ in tty }
+        )
+        let ghostty = TerminalScreenAllowlist.ghosttyBundleID
+        TerminalScreenContextSource.debugFrontmostTargetOverride = {
+            TerminalScreenTarget(pid: 4343, bundleID: ghostty)
+        }
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { ghostty }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { @MainActor in
+            TerminalScreenContextSource.debugFrontmostTargetOverride = nil
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+            TerminalTargetDetector.debugSecureEventInputOverride = nil
+        }
+        return registry
+    }
+
     /// Joins the dictation to a Claude Code session in herdr pane `w1:p2`
     /// the way the app does: polishing on (a fake polisher, so nothing leaves
     /// the process) with screen context, a Ghostty surface bound to a herdr
@@ -784,6 +900,7 @@ final class DictationPipelineTests: XCTestCase {
         file: StaticString = #filePath, line: UInt = #line
     ) async {
         let viewModel = pipeline.viewModel
+        let recordsBefore = pipeline.records.all.count
         let unsent = Self.speech(seed: 2)
         XCTAssertTrue(pipeline.microphone.deliver(unsent), file: file, line: line)
 
@@ -806,7 +923,7 @@ final class DictationPipelineTests: XCTestCase {
         }
 
         pipeline.server.send(["type": "transcription.done", "text": finalText])
-        let recorded = await pipeline.records.written.value(failAfter: 10)
+        let recorded = await pipeline.records.waitForCount(recordsBefore + 1)
         XCTAssertTrue(recorded, "the session never finished and wrote its record", file: file, line: line)
         await pipeline.server.awaitClose(file: file, line: line)
 
@@ -916,15 +1033,27 @@ private final class QuickCaptures {
     var all: [(text: String, recordsWritten: Int)] = []
 }
 
-/// Every record a session wrote; `written` resolves on the first.
+/// Every record the sessions wrote, in order.
 @MainActor
 private final class SessionRecords {
     private(set) var all: [DictationSessionRecord] = []
-    let written = BoundedWait()
+    private var waits: [(count: Int, wait: BoundedWait)] = []
 
     func append(_ record: DictationSessionRecord) {
         all.append(record)
-        written.resolve()
+        for watch in waits where watch.count <= all.count {
+            watch.wait.resolve()
+        }
+        waits.removeAll { $0.count <= all.count }
+    }
+
+    /// True once `count` records were written; false if they are not within
+    /// `failAfter` seconds of wall time.
+    func waitForCount(_ count: Int, failAfter: TimeInterval = 10) async -> Bool {
+        if all.count >= count { return true }
+        let wait = BoundedWait()
+        waits.append((count, wait))
+        return await wait.value(failAfter: failAfter)
     }
 }
 #endif
