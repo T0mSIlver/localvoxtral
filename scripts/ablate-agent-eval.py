@@ -1295,7 +1295,10 @@ def request_experiment(
         except urllib.error.HTTPError as exc:
             # A 4xx is the request's fault (bad key, rejected field): retrying
             # only spends money. 429 and 5xx are worth another attempt.
-            detail = exc.read().decode("utf-8", errors="replace")[:300]
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")[:300]
+            except OSError:
+                detail = ""
             error = ValueError(f"HTTP {exc.code}: {detail}")
             if exc.code < 500 and exc.code != 429:
                 break
