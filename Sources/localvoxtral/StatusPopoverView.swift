@@ -34,10 +34,6 @@ struct StatusPopoverView: View {
     var viewModel: DictationViewModel
     var navigator: SettingsNavigator
 
-    private var hasLatestSegment: Bool {
-        !viewModel.lastFinalSegment.trimmed.isEmpty
-    }
-
     private var dictationButtonTitle: String {
         if viewModel.isFinalizingStop {
             return "Finalizing..."
@@ -107,11 +103,6 @@ struct StatusPopoverView: View {
                 viewModel.copyLastDictation()
             }
             .disabled(!viewModel.canCopyLastDictation)
-
-            Button("Copy latest segment") {
-                viewModel.copyLatestSegment()
-            }
-            .disabled(!hasLatestSegment)
 
             // Polished commits can't be un-typed into the target app; offer the
             // pre-polish raw transcript for one-tap copy instead (F6). Appears

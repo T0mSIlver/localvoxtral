@@ -787,15 +787,14 @@ final class DictationSessionController {
         statusText = "Transcript copied."
     }
 
-    func copyLatestSegment(updateStatus: Bool = true) {
+    /// Live Auto-Paste with "Copy on stop" on: after each final, the
+    /// dictation so far goes to the clipboard, so it holds the whole
+    /// dictation once the session stops. Silent, since the status line
+    /// belongs to the running session.
+    func autoCopyDictationSoFar() {
         let segment = lastFinalSegment.trimmed
         guard !segment.isEmpty else { return }
-
         writeToPasteboard(segment)
-
-        if updateStatus {
-            statusText = "Latest segment copied."
-        }
     }
 
     /// Copies the RAW (pre-polish) transcript of the last polish-changed commit
@@ -913,30 +912,6 @@ final class DictationSessionController {
         } else if currentErrorToken == .secureKeyboardEntryActive {
             // Stale warning from an earlier session; secure input is off now.
             lastError = nil
-        }
-    }
-
-    func pasteLatestSegment() {
-        let segment = lastFinalSegment.trimmed
-        guard !segment.isEmpty else { return }
-
-        textInsertion.refreshAccessibilityTrustState()
-
-        let directInsertResult = textInsertion.insertText(segment)
-        if directInsertResult.isSuccess {
-            statusText = "Pasted latest segment."
-            return
-        }
-
-        if textInsertion.pasteUsingCommandV(segment) {
-            statusText = "Pasted latest segment."
-            return
-        }
-
-        if !textInsertion.isAccessibilityTrusted {
-            statusText = StatusStrings.pasteBlockedByAccessibilityPermission
-        } else {
-            statusText = "Unable to paste latest segment."
         }
     }
 

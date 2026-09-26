@@ -96,8 +96,8 @@ width of that many letters. The committed text is the same either way.
 ## The menu bar popover
 
 localvoxtral lives in the menu bar. Its popover shows the dictation status, a
-**microphone picker**, an auto-copy toggle for the final text, and, after a
-polished commit, the raw transcript. You can edit the LLM polishing prompts
+**microphone picker**, **Copy last dictation**, and, after a polished commit,
+**Copy raw transcript**. You can edit the LLM polishing prompts
 (see the config folder below).
 
 **Copy last dictation** puts the last dictation on the clipboard: its polished
