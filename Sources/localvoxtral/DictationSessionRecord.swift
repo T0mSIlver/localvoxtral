@@ -32,6 +32,15 @@ final class DictationSessionRecord {
     /// content — just character counts. Additive optional field: SwiftData
     /// lightweight-migrates existing stores, and old records decode as nil.
     var polishContextSummary: String?
+    /// The joined coding-agent session's project, for `localvoxtral history
+    /// --project` (#721): its directory or `remote:<label>`
+    /// (`LearnedTermProjectResolver`), and the name a person would use. Nil
+    /// when the dictation joined no session. Additive optional fields, like
+    /// the two above.
+    var projectKey: String?
+    var projectName: String?
+    /// `claude`, `vibe`, `opencode`: the agent whose session it joined.
+    var joinedAgent: String?
 
     init(
         id: UUID = UUID(),
@@ -47,7 +56,10 @@ final class DictationSessionRecord {
         status: DictationSessionStatus,
         commitSucceeded: Bool,
         polishProfile: String? = nil,
-        polishContextSummary: String? = nil
+        polishContextSummary: String? = nil,
+        projectKey: String? = nil,
+        projectName: String? = nil,
+        joinedAgent: String? = nil
     ) {
         self.id = id
         self.startedAt = startedAt
@@ -63,5 +75,8 @@ final class DictationSessionRecord {
         self.commitSucceeded = commitSucceeded
         self.polishProfile = polishProfile
         self.polishContextSummary = polishContextSummary
+        self.projectKey = projectKey
+        self.projectName = projectName
+        self.joinedAgent = joinedAgent
     }
 }

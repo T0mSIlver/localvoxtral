@@ -259,3 +259,51 @@ entry, and the same row reverses both.
 a marked block in `~/.vibe/hooks.toml`, both removed by the same row. Vibe has
 no session-start hook, so localvoxtral learns about a Vibe session at its
 first file read or edit, or when its first turn ends.
+
+## The `localvoxtral` command
+
+A coding agent can read your dictation history and your terms, and propose
+terms of its own, with the `localvoxtral` command. Install it from
+**Settings → General → Command-line tool**: it links
+`/usr/local/bin/localvoxtral` to the copy inside the app, so app updates
+update it too. macOS asks for your password when `/usr/local/bin` is not
+yours to write.
+
+```text
+localvoxtral history search "mac queue" --since yesterday --project .
+localvoxtral history last
+localvoxtral terms list --project .
+localvoxtral terms propose Featherline QuillDoc --project .
+localvoxtral status
+```
+
+Every command takes `--json`. `--project` takes a directory, which counts
+every worktree of its repository, or a project name. `--since` takes `today`,
+`yesterday`, `3d`, `12h`, `30m`, `2w` or a date. Under **History → Don't
+keep**, `history` answers with nothing.
+
+A proposed term joins the project's terms the way the agent's own proposals
+do (see [Dictation](dictation.md)): it applies only where repo vocabulary
+may, and three dictations or a **Pin** make it yours. **Settings → Text
+Processing → Terms learned from polishing → Show** lists it as "Proposed by"
+the agent that ran the command. Claude Code, Codex and opencode are detected;
+Vibe passes `--agent vibe`. Unlike the headless run, a proposal from the
+command does not count as the project's one ask.
+
+The command talks to the running app over the same private socket the hooks
+use. It opens no network port, and only processes running as you can reach
+it. It needs the app running, and exits 3 when it is not.
+
+To let your agents find it, paste this into your `AGENTS.md` or `CLAUDE.md`:
+
+```markdown
+## Dictation
+
+I dictate prompts with localvoxtral. `localvoxtral history search <text>
+--json` finds what I said (`--since yesterday`, `--project .`), and
+`localvoxtral history last --json` returns my last dictation even when it
+never reached you. When you meet a project name, identifier or acronym that
+speech recognition would likely misspell, propose it with `localvoxtral terms
+propose <term>… --project .` (add `--agent vibe` in Mistral Vibe). Run
+`localvoxtral --help` for the rest.
+```
