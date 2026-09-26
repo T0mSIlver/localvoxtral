@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Synchronization
 import XCTest
 @testable import localvoxtral
 
@@ -108,6 +109,21 @@ final class DiagnosticRecordWiringTests: XCTestCase {
         XCTAssertEqual(records.map(\.id), [historyID.uuidString])
         let names = try FileManager.default.contentsOfDirectory(atPath: harness.captureDirectory.path)
         XCTAssertEqual(names.compactMap { DiagnosticRecordFileName.parse($0)?.id }, [historyID])
+    }
+
+    /// A record whose dictation was deleted before its write ran is not
+    /// written: the write waits behind the History queue and checks the entry.
+    func testARecordWaitingOnADeletedDictationIsNotWritten() async throws {
+        let history = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let wrote = WriteFlag()
+
+        let url = await history.writeDiagnosticRecord(forDictation: UUID()) {
+            wrote.set()
+            return URL(fileURLWithPath: "/tmp/never")
+        }
+
+        XCTAssertNil(url)
+        XCTAssertFalse(wrote.isSet, "the write must not run for a dictation not saved")
     }
 
     /// A record goes wherever its dictation goes: turning the switch off
@@ -818,3 +834,9 @@ private final class WiringPasteboardStub: PasteboardReading {
     func string() -> String? { text }
 }
 
+/// Whether a closure that crosses to another task ran.
+private final class WriteFlag: Sendable {
+    private let value = Mutex(false)
+    func set() { value.withLock { $0 = true } }
+    var isSet: Bool { value.withLock { $0 } }
+}

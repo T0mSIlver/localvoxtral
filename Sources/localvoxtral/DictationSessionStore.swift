@@ -273,6 +273,7 @@ final class DictationSessionStore {
                 try Self.removeOrphanedAudio(audioStore, context: context)
             }
             if let diagnosticRecordStore {
+                diagnosticRecordStore.removeStrayFiles()
                 diagnosticRecordStore.prune()
                 try Self.removeOrphanedDiagnosticRecords(diagnosticRecordStore, context: context)
             }
@@ -322,6 +323,33 @@ final class DictationSessionStore {
             Log.persistence.info("History: deleted \(removed, privacy: .public) recording(s)")
             return 0
         }
+    }
+
+    /// Runs `write` (a diagnostic record's) behind every History write queued
+    /// before it, and only while dictation `id` is still saved: a Delete, a
+    /// trim or Don't keep queued earlier wins, and one queued later deletes
+    /// the record it wrote.
+    func writeDiagnosticRecord(
+        forDictation id: UUID,
+        _ write: @escaping @Sendable () -> URL?
+    ) async -> URL? {
+        let container = modelContainer
+        let previous = lastWrite
+        let task = Task.detached { () -> URL? in
+            await previous?.value
+            let context = ModelContext(container)
+            let saved = (try? context.fetchCount(FetchDescriptor<DictationSessionRecord>(
+                predicate: #Predicate { $0.id == id }))) ?? 0
+            guard saved > 0 else {
+                Log.persistence.info(
+                    "History: no diagnostic record for dictation \(id, privacy: .public), which is no longer saved"
+                )
+                return nil
+            }
+            return write()
+        }
+        lastWrite = Task { _ = await task.value }
+        return await task.value
     }
 
     /// Deletes every diagnostic record and keeps the dictations: the

@@ -85,7 +85,17 @@ extension DictationSessionController {
         // A failed write leaves it open until its window closes, where it finds
         // no record and flushes nothing — the signal costs the record, never
         // the other way around.
-        let url = await DiagnosticRecordWriter.write(record, store: store, unlessDeletedSince: epoch)
+        let finished = record
+        let url: URL?
+        if let sessionStore {
+            // Queued with the History writes, so a delete of this dictation
+            // cannot slip between the check above and the file landing.
+            url = await sessionStore.writeDiagnosticRecord(forDictation: historyID) {
+                DiagnosticRecordWriter.writeSynchronously(finished, store: store, unlessDeletedSince: epoch)
+            }
+        } else {
+            url = await DiagnosticRecordWriter.write(record, store: store, unlessDeletedSince: epoch)
+        }
         // The History pane's count and size include this record now.
         if url != nil { sessionStore?.onChange?() }
         if let url, let watchToken {

@@ -244,6 +244,25 @@ final class DiagnosticRecordStoreTests: XCTestCase {
         XCTAssertNoThrow(try store.write(makeRecord(), unlessDeletedSince: store.deletionEpoch()))
     }
 
+    /// A write that died between its temp file and the rename leaves a whole
+    /// record under a name no sweep lists; the launch sweep deletes it and
+    /// nothing else.
+    func testRemoveStrayFilesDeletesInterruptedWritesOnly() throws {
+        let store = makeStore()
+        let kept = try store.write(makeRecord())
+        let stray = directory.appendingPathComponent(
+            ".dictation-20260724T191408.000Z-\(UUID().uuidString).json.4242.99.tmp")
+        let foreign = directory.appendingPathComponent("notes.txt")
+        io.seed(Data("partial record".utf8), at: stray)
+        io.seed(Data("owner's notes".utf8), at: foreign)
+
+        store.removeStrayFiles()
+
+        XCTAssertNil(try io.read(from: stray))
+        XCTAssertNotNil(try io.read(from: kept))
+        XCTAssertNotNil(try io.read(from: foreign))
+    }
+
     func testFileNameParsingRejectsForeignNames() {
         XCTAssertNil(DiagnosticRecordFileName.parse("notes.txt"))
         XCTAssertNil(DiagnosticRecordFileName.parse("dictation-garbage.json"))
@@ -493,6 +512,19 @@ final class DiagnosticRecordRedactionTests: XCTestCase {
         XCTAssertTrue(encoded.contains("Sources/App.swift (edit)"), "the rest of the context stays")
         XCTAssertEqual(record.text.rawTranscript, "rename the hook publisher",
                        "this dictation's own words are not the prior prompt")
+    }
+
+    /// A prompt too short for the line pass ("fix bug") is still found behind
+    /// its label.
+    func testWithholdsAShortPriorPromptBehindItsLabel() throws {
+        var record = recordCarrying("workspace: app\n\nprevious request to the agent: fix bug\n\nfiles")
+
+        DiagnosticRecordRedaction.withholdPrompt("fix bug", from: &record)
+
+        XCTAssertEqual(
+            record.text.userPrompts,
+            ["workspace: app\n\nprevious request to the agent: \(DiagnosticRecordRedaction.withheldPromptPlaceholder)\n\nfiles"]
+        )
     }
 
     /// An excerpt that kept only the start of a long prompt line still loses it.

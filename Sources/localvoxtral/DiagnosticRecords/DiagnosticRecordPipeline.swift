@@ -488,6 +488,15 @@ enum DiagnosticRecordWriter {
         store: DiagnosticRecordStore,
         unlessDeletedSince epoch: UInt64? = nil
     ) async -> URL? {
+        writeSynchronously(record, store: store, unlessDeletedSince: epoch)
+    }
+
+    /// The same write, for a caller already off the main actor.
+    nonisolated static func writeSynchronously(
+        _ record: DiagnosticRecord,
+        store: DiagnosticRecordStore,
+        unlessDeletedSince epoch: UInt64? = nil
+    ) -> URL? {
         do {
             let url = try store.write(record, unlessDeletedSince: epoch)
             Log.backends.info(

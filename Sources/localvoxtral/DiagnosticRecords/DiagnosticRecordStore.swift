@@ -261,6 +261,27 @@ struct DiagnosticRecordStore: Sendable {
         }
     }
 
+    /// Deletes the temporary files a write leaves when the app dies between
+    /// creating one and renaming it into place (`ClaudeRemoteHostFileStoreIO`
+    /// names them `.<record name>.<pid>.<random>.tmp`); they hold a whole
+    /// record that no sweep would otherwise find. Launch only, on the History
+    /// write queue, where no record write is in flight.
+    func removeStrayFiles() {
+        Self.recordMutationLock.withLock { _ in
+            let names = ((try? directoryIO.contents(of: directoryURL)) ?? nil) ?? []
+            for name in names
+            where name.hasPrefix("." + DiagnosticRecordFileName.prefix) && name.hasSuffix(".tmp") {
+                do {
+                    try directoryIO.remove(at: directoryURL.appendingPathComponent(name))
+                } catch {
+                    Log.backends.error(
+                        "Diagnostic record: could not delete \(name, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+            }
+        }
+    }
+
     /// Deletes every record, and whatever else is in the folder: a temporary
     /// file a write left when the app died mid-write holds a record too.
     @discardableResult

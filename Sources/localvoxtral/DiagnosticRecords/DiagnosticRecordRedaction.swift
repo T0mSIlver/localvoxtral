@@ -119,23 +119,27 @@ enum DiagnosticRecordRedaction {
     /// promises it never saves that prompt (docs/dictation.md), and a record
     /// is a save.
     ///
-    /// Line by line, because the excerpt selector keeps whole lines. Lines
-    /// shorter than `minimumLineLength` are left: "ok" would mask every "ok"
-    /// in the record. A line the excerpt cut short is caught by its first
+    /// First the whole prompt behind its label, whatever its length. Then line
+    /// by line, because the excerpt selector keeps whole lines and the screen
+    /// shows the prompt without the label. Lines shorter than
+    /// `minimumLineLength` are left to the first pass: "ok" would mask every
+    /// "ok" in the record. A line the excerpt cut short is caught by its first
     /// `truncatedPrefixLength` characters, masked to the end of that line.
     /// The transcript fields are left alone: the user may dictate the same
     /// words again, and those are this dictation's.
     static func withholdPrompt(_ prompt: String?, from record: inout DiagnosticRecord) {
-        guard let prompt else { return }
+        guard let prompt, !prompt.isEmpty else { return }
+        let labelled = ClaudeSessionContextText.priorPromptLabel + prompt
         let lines = prompt
             .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { $0.count >= minimumLineLength }
             .sorted { $0.count > $1.count }
-        guard !lines.isEmpty else { return }
 
         func withhold(_ text: String) -> String {
-            var output = text
+            var output = text.replacingOccurrences(
+                of: labelled,
+                with: ClaudeSessionContextText.priorPromptLabel + withheldPromptPlaceholder)
             for line in lines {
                 output = output.replacingOccurrences(of: line, with: withheldPromptPlaceholder)
             }
