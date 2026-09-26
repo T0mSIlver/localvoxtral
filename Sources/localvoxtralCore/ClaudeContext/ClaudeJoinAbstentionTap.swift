@@ -30,6 +30,19 @@ package enum ClaudeJoinAbstentionTap {
 
     private static let state = Mutex(State())
 
+    #if LOCALVOXTRAL_DOGFOOD
+    /// Where a dogfood build's capture record also takes each cause. The app's
+    /// `DogfoodCaptureTap` sets it when it is created; the core can't see that
+    /// tap. A cause noted before then would have been cleared by the tap's
+    /// `beginSession` before any record read it.
+    package static let dogfoodSink = Mutex<(@Sendable (String) -> Void)?>(nil)
+
+    /// Hands one cause to the dogfood capture, if it exists yet.
+    package static func noteForDogfood(_ cause: String) {
+        dogfoodSink.withLock { $0 }?(cause)
+    }
+    #endif
+
     /// Records one arm's abstention cause, e.g. `"tty: stale"`. A no-op unless
     /// a `collecting(_:)` call is in progress.
     package static func note(_ cause: String) {

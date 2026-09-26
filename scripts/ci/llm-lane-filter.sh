@@ -175,25 +175,25 @@ EXEMPT=(
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Statusline.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Verification.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Vibe.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationActionAttempts.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationActionAttempts.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudePluginInstalling.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeShellSetupStatus.swift'
   'Sources/localvoxtralCore/ClaudeContext/RemoteHostSetupRun.swift'
-  'Sources/localvoxtral/ClaudeContext/HerdrMachineImport.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationLiveIO.swift'         # its process/file seams
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService.swift'   # one-time host setup over ssh
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+Types.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+Plan.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+SSHConfig.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteSetup.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+RemotePlugin.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteEnvironment.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteHerdr.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+LocalHerdrPanel.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+Verification.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteSSHConfigFileSystem.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeLocalHerdrConfigFileSystem.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentLiveIO.swift'
+  'Sources/localvoxtralCore/ClaudeContext/HerdrMachineImport.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationLiveIO.swift'         # its process/file seams
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService.swift'   # one-time host setup over ssh
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+Types.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+Plan.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+SSHConfig.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteSetup.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+RemotePlugin.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteEnvironment.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteHerdr.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+LocalHerdrPanel.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+Verification.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteSSHConfigFileSystem.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeLocalHerdrConfigFileSystem.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentLiveIO.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudePluginInstallService.swift'      # `claude plugin` install/update
   'Sources/localvoxtralCore/ClaudeContext/ClaudePluginListing.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudePluginStatus.swift'
@@ -205,14 +205,14 @@ EXEMPT=(
   'Sources/localvoxtralCore/ClaudeStatuslineCombine.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeShellRCSetup.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardCoordinator.swift'  # keeping the ssh forward alive
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardLiveProcess.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardOrphanReaper.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardOwnership.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardPidLedger.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardPort.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardLiveProcess.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardOrphanReaper.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardOwnership.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardPidLedger.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardPort.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardSupervisor.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardProcess.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteTokenRedaction.swift'      # log redaction
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardProcess.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteTokenRedaction.swift'      # log redaction
   'Sources/localvoxtral/ClaudeContext/ClaudeSurfaceProbeCommand.swift'       # the --probe-surface CLI wrapper
 )
 

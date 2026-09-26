@@ -103,6 +103,12 @@ package struct ClaudeRepoContextPreparation: Sendable, Equatable {
         package var entityText: String = ""
 
         package var isEmpty: Bool { paths.isEmpty && branch == nil && entityText.isEmpty }
+
+        package init(paths: [String] = [], branch: String? = nil, entityText: String = "") {
+            self.paths = paths
+            self.branch = branch
+            self.entityText = entityText
+        }
     }
 
     /// Splits `snapshot` into its path and non-path grounding material.
@@ -151,6 +157,11 @@ package struct ClaudeRepoContextPreparation: Sendable, Equatable {
             terms.append(term)
         }
         return terms
+    }
+
+    package init(grounding: RepoVocabularyMatcher.GroundingOutcome, excerpt: String) {
+        self.grounding = grounding
+        self.excerpt = excerpt
     }
 }
 
