@@ -400,6 +400,19 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertFalse(viewModel.isDictating, "the permission gate still refused the start")
     }
 
+    /// A quick capture press refused by a gate leaves nothing behind (#732
+    /// review): with the flag set, the pending prompt's grant would have
+    /// turned the ordinary dictation it belongs to into a capture.
+    func testARefusedQuickCaptureLeavesNothingForTheNextStart() {
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        viewModel.session.isAwaitingMicrophonePermission = true
+
+        viewModel.session.toggleQuickCapture()
+
+        XCTAssertFalse(viewModel.isDictating, "the permission gate refused the start")
+        XCTAssertFalse(viewModel.session.requestedQuickCapture)
+    }
+
     // MARK: - Managed backend startup
 
     func testStartDictationManagedBothWithPolishingEnabledRequestsBothBackends() async {

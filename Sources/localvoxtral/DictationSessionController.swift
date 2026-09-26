@@ -379,6 +379,19 @@ final class DictationSessionController {
     /// then an Overlay Buffer dictation is never a command.
     @ObservationIgnored
     var sessionNavigator: SessionNavigator?
+    /// Asked for by the start that is under way; latched into
+    /// `sessionIsQuickCapture` with the output mode, so a start that never
+    /// got that far leaves nothing for the next dictation.
+    @ObservationIgnored
+    var requestedQuickCapture = false
+    /// This session is a quick capture (#725): its words go to the Inbox,
+    /// never into the focused app.
+    @ObservationIgnored
+    var sessionIsQuickCapture = false
+    /// Where a stopped quick capture's words go, with its History record's
+    /// id when History kept it. The view model points it at the Inbox.
+    @ObservationIgnored
+    var onQuickCapture: (@MainActor (_ text: String, _ historyRecordID: UUID?) -> Void)?
     @ObservationIgnored
     var polishAndCommitTask: Task<Void, Never>?
     /// Saves the dictation `polishAndCommitTask` is polishing, as not
@@ -590,8 +603,7 @@ final class DictationSessionController {
         guard audio.selectMicrophoneInput(id: id) else { return }
 
         guard isDictating else { return }
-        stopDictation(reason: "input device changed by user", finalizeRemainingAudio: false)
-        startDictation()
+        restartOnNewInput(reason: "input device changed by user")
     }
 
     var selectedInputDeviceChannelCount: UInt32 { audio.selectedInputDeviceChannelCount }
@@ -602,11 +614,37 @@ final class DictationSessionController {
         guard audio.selectMicrophoneInputChannel(channel) else { return }
 
         guard isDictating else { return }
-        stopDictation(reason: "input channel changed by user", finalizeRemainingAudio: false)
-        startDictation()
+        restartOnNewInput(reason: "input channel changed by user")
+    }
+
+    /// Stops the running session and starts the same kind again: a quick
+    /// capture restarts as a capture, never as a dictation into the app.
+    private func restartOnNewInput(reason: String) {
+        let quickCapture = sessionIsQuickCapture
+        stopDictation(reason: reason, finalizeRemainingAudio: false)
+        startDictation(outputMode: quickCapture ? .overlayBuffer : nil, quickCapture: quickCapture)
     }
 
     func startDictation(outputMode: DictationOutputMode? = nil) {
+        startDictation(outputMode: outputMode, quickCapture: false)
+    }
+
+    /// The quick capture shortcut: an Overlay Buffer capture, or the stop of
+    /// the one running. A press during an ordinary dictation does nothing,
+    /// so it can never turn that dictation into a capture.
+    func toggleQuickCapture() {
+        if isDictating {
+            guard sessionIsQuickCapture else {
+                Log.dictation.info("quick capture: pressed during a dictation; ignored")
+                return
+            }
+            stopDictation(reason: "quick capture toggle")
+            return
+        }
+        startDictation(outputMode: .overlayBuffer, quickCapture: true)
+    }
+
+    func startDictation(outputMode: DictationOutputMode?, quickCapture: Bool) {
         guard !isDictating else { return }
         onDictationStartRequested?()
         guard !isConnectingRealtimeSession else {
@@ -649,6 +687,9 @@ final class DictationSessionController {
 
         switch currentMicrophoneAuthorizationStatus() {
         case .authorized:
+            // Set only where the start goes ahead: a start refused above must
+            // leave nothing for the next one (#732 review).
+            requestedQuickCapture = quickCapture
             beginDictationAfterManagedBackendIfNeeded(outputMode: outputMode)
         case .notDetermined:
             isAwaitingMicrophonePermission = true
@@ -670,6 +711,9 @@ final class DictationSessionController {
                         self.shortcuts.clearPushToTalkShortcutSessionAttempt()
                         return
                     }
+                    // This start's kind, not whatever a press made of the
+                    // flag while the prompt was up.
+                    self.requestedQuickCapture = quickCapture
                     self.beginDictationAfterManagedBackendIfNeeded(outputMode: outputMode)
                     // The grant may land long after the initiating tap ended
                     // (toggle taps have no release event). If secure input

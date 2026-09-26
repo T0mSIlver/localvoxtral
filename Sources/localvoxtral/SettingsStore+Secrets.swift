@@ -17,6 +17,8 @@ extension SettingsStore {
         case .realtimeAPIKey: return Keys.apiKey
         case .llmPolishingAPIKey: return Keys.llmPolishingAPIKey
         case .mistralAPIKey: return Keys.mistralAPIKey
+        // Never stored in UserDefaults; the name only has to be unused.
+        case .jevAPIKey: return Keys.jevAPIKeyNeverStored
         }
     }
 
@@ -119,10 +121,14 @@ extension SettingsStore {
         }
     }
 
-    /// Every key, for the places that display or report all three: the Settings
-    /// window and the diagnostics export.
+    /// Every key, for the places that display or report them all: the Settings
+    /// window and the diagnostics export. The Jev key only once quick capture
+    /// routing is on: a feature the user never turned on must not cost them
+    /// a Keychain prompt.
     func ensureAllSecretsLoaded() {
-        ensureSecretsLoaded(Set(SecretKey.allCases))
+        var keys = Set(SecretKey.allCases)
+        if !quickCaptureJevEnabled { keys.remove(.jevAPIKey) }
+        ensureSecretsLoaded(keys)
     }
 
     /// The secrets the current configuration can actually use. Managed local
@@ -188,6 +194,7 @@ extension SettingsStore {
         case .realtimeAPIKey: apiKey = stored
         case .llmPolishingAPIKey: llmPolishingAPIKey = stored
         case .mistralAPIKey: mistralAPIKey = stored
+        case .jevAPIKey: jevAPIKey = stored
         }
     }
 

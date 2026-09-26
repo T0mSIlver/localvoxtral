@@ -17,6 +17,9 @@ enum SecretKey: String, CaseIterable, Sendable {
     case llmPolishingAPIKey
     /// The one Mistral account key, shared by both Mistral engines.
     case mistralAPIKey
+    /// Jev's key, TypeSafe's or Vercel AI Gateway's, for quick capture
+    /// routing (#725).
+    case jevAPIKey
 }
 
 /// Where a secret lives. `nil` and the empty string both mean "no secret":

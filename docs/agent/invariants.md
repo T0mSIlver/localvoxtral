@@ -2200,3 +2200,22 @@ there is not.
   does not stamp the project, because it is a few names, not the project's
   list. The hook receipt (`ClaudeBrokerResponse`) is untouched and still
   carries nothing a hook could print.
+
+- **A quick capture never reaches the focused app, and only File reaches
+  GitHub** (#725). A session started by the quick capture shortcut latches
+  `sessionIsQuickCapture` with its output mode (always Overlay Buffer), and
+  its stop takes `commitQuickCapture` before any polish, second pass, screen
+  or clipboard sample, or insertion: the History record is written first,
+  the overlay closes as a cancelled one does, and the words go to
+  `QuickCaptureInboxModel`, which writes them to its 0600 file before
+  routing. The router sends a low or tied answer to the catch-all, never a
+  guessed project. Jev and the chat model both need 0.9: on the replay
+  (#741, #744) every right project came at 0.95 or more, and nearly every
+  wrong one under 0.9. The drafting agent has
+  read-only tools and no shell, so it cannot run `gh`; the open issues reach
+  it through the prompt, from the app's own `gh issue list`. Its answer is
+  untrusted text: a one-line capped title, a body without control
+  characters, a related issue only if it was listed. `QuickCaptureInboxModel.file`
+  is the one call to `gh issue create`, reached only from the Inbox's File
+  button. A remote project gets no draft (a remote label never becomes a
+  working directory here; #745 moves drafting to the host).

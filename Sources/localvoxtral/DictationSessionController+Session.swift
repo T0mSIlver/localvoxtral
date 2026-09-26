@@ -41,6 +41,7 @@ extension DictationSessionController {
         // it just gave up still emits is refused from here on (#417).
         sessionConnectionGeneration = .none
         sessionOutputMode = nil
+        sessionIsQuickCapture = false
         sessionStartedAt = nil
         sessionProvider = nil
         sessionModelName = nil
@@ -440,6 +441,8 @@ extension DictationSessionController {
         sessionClaudeJoinBadge = .hidden
         clearLatchedSessionMetadata()
         sessionOutputMode = requestedOutputMode
+        sessionIsQuickCapture = requestedQuickCapture && requestedOutputMode == .overlayBuffer
+        requestedQuickCapture = false
         sessionStartedAt = Date()
         latchSessionAudio(outputMode: requestedOutputMode)
         sessionReplacementDictionary = StopCommitCoordinator.effectiveReplacementDictionary(
