@@ -64,7 +64,13 @@ var targets: [Target] = [
     // polish-outcome and connection-failure classifiers, the session clock
     // (#432 step 9), and the Claude session snapshot, which is why it depends
     // on the wire contract. The app re-exports it.
-    .target(name: "localvoxtralCore", dependencies: ["ClaudeContextWire"]),
+    // Built with the dogfood define too, for the Claude join code that moves
+    // here from the app and taps the dogfood capture (#591).
+    .target(
+        name: "localvoxtralCore",
+        dependencies: ["ClaudeContextWire"],
+        swiftSettings: dogfoodSwiftSettings
+    ),
     // The hook publisher and its Linux process-table reader; runs on both
     // platforms.
     .testTarget(
@@ -99,7 +105,8 @@ var targets: [Target] = [
             // The broker and Vibe suites drive the real hook publisher.
             "ClaudeHookPublisherCore",
             "localvoxtralTestSupport",
-        ]
+        ],
+        swiftSettings: dogfoodSwiftSettings
     ),
 ]
 
