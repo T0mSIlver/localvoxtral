@@ -196,8 +196,13 @@ final class RemoteProjectTermsLiveTests: XCTestCase {
         XCTAssertEqual(shared.seen.withLock(\.count), 1, "the run published a session of its own")
     }
 
+    /// The unified harness runs no user hook under `vibe -p` (programmatic
+    /// mode denies the callbacks), so this session is interactive, driven
+    /// through a pty. It also runs a hook command without a shell, so `$HOME`
+    /// in the shipped block is never expanded (#641 follow-up); the commands
+    /// here are absolute paths.
     func testAVibeSessionOnTheHostStartsTheRunnerFromItsHookUnified() throws {
-        try vibe(harness: "--experimental-harness", project: "quillmark-unified")
+        try vibe(harness: "--experimental-harness", project: "quillmark-unified", interactive: true)
     }
 
     func testAVibeSessionOnTheHostStartsTheRunnerFromItsHookLegacy() throws {
@@ -207,7 +212,7 @@ final class RemoteProjectTermsLiveTests: XCTestCase {
     /// A home of the user's own for the Vibe session: their real config and
     /// key, the shipped remote hooks from this tree, and a `post_agent`
     /// marker hook. The runner's app-owned Vibe home lands under it too.
-    private func vibe(harness: String, project: String) throws {
+    private func vibe(harness: String, project: String, interactive: Bool = false) throws {
         let (repo, marker) = try fixture(project)
         let base = ProcessInfo.processInfo.environment
         let realHome = try XCTUnwrap(base["HOME"])
@@ -216,9 +221,17 @@ final class RemoteProjectTermsLiveTests: XCTestCase {
         let remote = vibeHome + "/localvoxtral/remote"
         let fm = FileManager.default
         try fm.createDirectory(atPath: remote, withIntermediateDirectories: true)
-        for name in ["config.toml", ".env"] {
-            try fm.createSymbolicLink(atPath: vibeHome + "/" + name, withDestinationPath: realHome + "/.vibe/" + name)
-        }
+        try fm.createSymbolicLink(atPath: vibeHome + "/.env", withDestinationPath: realHome + "/.vibe/.env")
+        // The user's model config, without the update prompt an interactive
+        // session would otherwise open on.
+        let config = (try? String(contentsOfFile: realHome + "/.vibe/config.toml", encoding: .utf8)) ?? ""
+        try ("enable_update_checks = false\n" + config.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.hasPrefix("enable_update_checks") }.joined(separator: "\n"))
+            .write(toFile: vibeHome + "/config.toml", atomically: true, encoding: .utf8)
+        // A hook command is run without a shell on the unified harness, so the
+        // marker is a script that appends.
+        let markerScript = root.appendingPathComponent("\(project)-marker.sh").path
+        try "#!/bin/sh\necho fired >> \(marker)\n".write(toFile: markerScript, atomically: true, encoding: .utf8)
         for path in ["integrations/vibe/remote/post.sh", "integrations/vibe/remote/compact.py",
                      "integrations/claude-code/plugins/localvoxtral-remote/hooks/terms.sh"] {
             try fm.copyItem(
@@ -228,27 +241,37 @@ final class RemoteProjectTermsLiveTests: XCTestCase {
         }
         try token.write(toFile: remote + "/token", atomically: true, encoding: .utf8)
         try forwardPort.write(toFile: remote + "/port", atomically: true, encoding: .utf8)
-        let block = try String(
+        var block = try String(
             contentsOf: repoRoot.appendingPathComponent("integrations/vibe/remote/hooks.toml"), encoding: .utf8
         )
+        if interactive {
+            block = block.replacingOccurrences(
+                of: #"sh \"$HOME/.vibe/localvoxtral/remote/post.sh\" 2>/dev/null || :"#,
+                with: "sh \(remote)/post.sh"
+            )
+        }
         try (block + """
 
             [[hooks]]
             name = "marker"
             type = "post_agent"
-            command = "echo fired >> \(marker)"
+            command = "sh \(markerScript)"
             timeout = 5.0
             """).write(toFile: vibeHome + "/hooks.toml", atomically: true, encoding: .utf8)
 
-        let status = try run(try which("vibe"), [
-            harness, "--auto-approve",
-            "-p", "Read README.md, then reply with the single word ok.",
-            "--max-turns", "4",
-        ], in: repo, environment: [
+        let environment = [
             "HOME": home, "PATH": base["PATH"] ?? "", "LANG": base["LANG"] ?? "C.UTF-8",
             // The session must outlive the run; the watcher would end it.
             "LOCALVOXTRAL_VIBE_WATCHER": "off",
-        ])
+        ]
+        let prompt = "Read README.md, then reply with the single word ok."
+        let status = interactive
+            ? try run(try which("python3"), [
+                repoRoot.appendingPathComponent("scripts/linux/vibe-tty-turn.py").path,
+                prompt, try which("vibe"), harness, "--auto-approve",
+            ], in: repo, environment: environment)
+            : try run(try which("vibe"), [harness, "--auto-approve", "-p", prompt, "--max-turns", "4"],
+                      in: repo, environment: environment)
         XCTAssertEqual(status, 0)
         let terms = waitForProposals("remote:\(project)")
         report("vibe \(harness)", terms)
