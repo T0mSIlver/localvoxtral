@@ -375,6 +375,10 @@ final class DictationSessionController {
     var microphonePermissionTimeoutTask: Task<Void, Never>?
     @ObservationIgnored
     var sessionOutputMode: DictationOutputMode?
+    /// Resolves "go to <name>" (#723). Nil until the app installs it, and
+    /// then an Overlay Buffer dictation is never a command.
+    @ObservationIgnored
+    var sessionNavigator: SessionNavigator?
     @ObservationIgnored
     var polishAndCommitTask: Task<Void, Never>?
     /// Saves the dictation `polishAndCommitTask` is polishing, as not
