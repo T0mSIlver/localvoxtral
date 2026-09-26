@@ -35,9 +35,14 @@ final class SessionContextResolver {
     /// pane did not positively join. Cleared on every session exit.
     var claudeSessionJoin: ClaudeSessionJoin?
     /// The route into the joined agent's prompt, resolved once at start
-    /// next to the join: opencode's prompt relay (#719). Nil unless one
+    /// next to the join: opencode's prompt relay (#719) or the joined cmux
+    /// surface (#727). Nil unless one
     /// resolved. Cleared with the join.
     var agentPromptRoute: (any AgentPromptRoute)?
+    /// Whether this dictation's context join got past its gates and asked
+    /// the join arms. When it did and found nothing, the cmux route does not
+    /// dial the socket a second time for the same answer.
+    private var contextJoinAskedTheArms = false
     /// Panel indicators own their associated remote forward until an explicit
     /// token clear has completed, so teardown cannot close the tunnel before
     /// the clear request reaches herdr.
@@ -88,6 +93,7 @@ final class SessionContextResolver {
         // owner supersedes its post-commit edit watch before calling here.)
         DogfoodCaptureTap.shared.beginSession()
         #endif
+        contextJoinAskedTheArms = false
         guard let endpointURL = settings.llmPolishingConfiguration?.endpointURL else {
             terminalScreenStartCapture = nil
             claudeSessionJoin = nil
@@ -112,6 +118,7 @@ final class SessionContextResolver {
             await resolveClaudeSessionJoin(endpointURL: endpointURL)
         }
         claudeSessionJoin = attempt.join
+        if case .resolved = attempt { contextJoinAskedTheArms = true }
         noteJoinOutcome(attempt, causes: causes)
         // Ownership of the join's `ssh -L` is taken HERE, at the one place a
         // join is ever assigned, and never given back to whoever happens to
@@ -179,6 +186,27 @@ final class SessionContextResolver {
         }
     }
 
+    /// The joined cmux surface's route (#727). Only for a cmux join, which
+    /// proves the surface and the socket's peer. Writing needs none of the
+    /// context join's gates (context settings, polishing endpoint,
+    /// Accessibility), so with no context join it asks the cmux arm alone,
+    /// behind the cmux opt-in. That join reads the focused surface's id and
+    /// tty, never its text, and is used for the route only: no context
+    /// ships from it.
+    private func resolveCmuxSurfaceRoute() async -> CmuxSurfaceRoute? {
+        guard let resolver = claudeSessionJoinResolver else { return nil }
+        var join = claudeSessionJoin
+        if join == nil, !contextJoinAskedTheArms, resolver.cmuxJoinEnabled(),
+           let target = TerminalScreenContextSource.frontmostTarget(),
+           target.bundleID == TerminalScreenAllowlist.cmuxBundleID {
+            join = await resolver.resolveViaCmux(target: target)
+        }
+        guard let join else { return nil }
+        return resolver.cmuxSurfaceRoute(for: join) {
+            TerminalScreenContextSource.frontmostTarget()?.pid
+        }
+    }
+
     /// This dictation's route into the joined agent, if any. Runs after the
     /// join.
     func resolveAgentPromptRoute() async {
@@ -186,6 +214,9 @@ final class SessionContextResolver {
             agentPromptRoute = opencode
         } else {
             agentPromptRoute = resolveHerdrPaneRoute()
+            if agentPromptRoute == nil {
+                agentPromptRoute = await resolveCmuxSurfaceRoute()
+            }
         }
         if let route = agentPromptRoute {
             Log.claudeContext.notice("\(route.name, privacy: .public): resolved; dictation writes through it")

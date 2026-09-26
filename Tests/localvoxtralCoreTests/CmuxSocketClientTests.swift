@@ -228,6 +228,16 @@ private func treeResult(
     return result
 }
 
+/// A `surface.send_text` or `surface.send_key` success.
+private func writeResult(surfaceID: String = testSurfaceID, queued: Bool?) -> [String: Any] {
+    var result: [String: Any] = [
+        "surface_id": surfaceID, "surface_ref": "surface:2",
+        "workspace_id": "33333333-3333-3333-3333-333333333333", "workspace_ref": "workspace:1",
+    ]
+    if let queued { result["queued"] = queued }
+    return result
+}
+
 /// The cmux control-socket client, against a real socket speaking cmux's real
 /// wire shapes (manaflow-ai/cmux, `CmuxControlSocket` + `TerminalController`).
 @MainActor
@@ -977,5 +987,120 @@ final class CmuxSocketClientTests: XCTestCase {
             paths.contains { $0.contains("debug") || $0.contains("nightly") },
             "a development build of someone else's terminal is not ours to join unasked"
         )
+    }
+
+    // MARK: - Writes (#727)
+
+    /// Logs in, then one `surface.send_text` naming the surface, on one
+    /// connection. cmux's delivery report decides the result.
+    func testSendTextNamesTheSurfaceAndReportsDelivery() async throws {
+        let server = try CmuxTestServer { request, index in
+            index == 0
+                ? cmuxOK(for: request, result: ["authenticated": true])
+                : cmuxOK(for: request, result: writeResult(queued: true))
+        }
+        defer { server.stop() }
+
+        let result = await client(server: server, password: "hunter2")
+            .sendText("run the tests", surfaceID: testSurfaceID, expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(result, .accepted(queued: true))
+        XCTAssertEqual(server.requestLines.count, 2)
+        XCTAssertEqual(server.requestLines.first.flatMap(cmuxRequest)?["method"] as? String, "auth.login")
+        let send = try XCTUnwrap(server.requestLines.last.flatMap(cmuxRequest))
+        XCTAssertEqual(send["method"] as? String, "surface.send_text")
+        let params = try XCTUnwrap(send["params"] as? [String: String])
+        XCTAssertEqual(params, ["surface_id": testSurfaceID, "text": "run the tests"],
+                       "the surface is always named: without it cmux writes to whatever surface is focused")
+    }
+
+    func testSendEnterSendsTheEnterKeyToTheSurface() async throws {
+        let server = try CmuxTestServer { request, _ in
+            cmuxOK(for: request, result: writeResult(queued: false))
+        }
+        defer { server.stop() }
+
+        let result = await client(server: server).sendEnter(surfaceID: testSurfaceID, expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(result, .accepted(queued: false))
+        let send = try XCTUnwrap(server.requestLines.last.flatMap(cmuxRequest))
+        XCTAssertEqual(send["method"] as? String, "surface.send_key")
+        XCTAssertEqual(send["params"] as? [String: String], ["surface_id": testSurfaceID, "key": "enter"])
+    }
+
+    /// An older cmux answers without `queued`: accepted, but not confirmed.
+    func testASuccessWithoutADeliveryReportIsAcceptedWithoutOne() async throws {
+        let server = try CmuxTestServer { request, _ in
+            cmuxOK(for: request, result: writeResult(queued: nil))
+        }
+        defer { server.stop() }
+
+        let result = await client(server: server)
+            .sendText("hi", surfaceID: testSurfaceID, expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(result, .accepted(queued: nil))
+    }
+
+    func testAnErrorAnswerIsARefusal() async throws {
+        let server = try CmuxTestServer { request, _ in
+            cmuxError(for: request, code: "process_exited")
+        }
+        defer { server.stop() }
+
+        let result = await client(server: server)
+            .sendText("hi", surfaceID: testSurfaceID, expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(result, .refused)
+    }
+
+    /// A success about another surface means the text went there: not a
+    /// refusal, since it must not be typed again.
+    func testASuccessNamingAnotherSurfaceIsUnconfirmed() async throws {
+        let server = try CmuxTestServer { request, _ in
+            cmuxOK(for: request, result: writeResult(surfaceID: "99999999-9999-9999-9999-999999999999", queued: false))
+        }
+        defer { server.stop() }
+
+        let result = await client(server: server)
+            .sendText("hi", surfaceID: testSurfaceID, expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(result, .unconfirmed)
+    }
+
+    func testNoAnswerAfterTheWriteIsUnconfirmed() async throws {
+        let server = try CmuxTestServer { _, _ in nil }
+        defer { server.stop() }
+
+        let result = await client(server: server)
+            .sendText("hi", surfaceID: testSurfaceID, expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(result, .unconfirmed)
+        XCTAssertEqual(server.requestLines.count, 1)
+    }
+
+    func testARefusedLoginSendsNoText() async throws {
+        let server = try CmuxTestServer { request, _ in
+            cmuxError(for: request, code: "auth_failed")
+        }
+        defer { server.stop() }
+
+        let result = await client(server: server, password: "wrong")
+            .sendText("secret words", surfaceID: testSurfaceID, expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(result, .refused)
+        XCTAssertEqual(server.requestLines.count, 1, "the text never follows a refused login")
+    }
+
+    func testAnImpostorPeerReceivesNoText() async throws {
+        let impostor = try CmuxTestServer { request, _ in
+            cmuxOK(for: request, result: writeResult(queued: false))
+        }
+        defer { impostor.stop() }
+
+        let result = await client(server: impostor, peerPID: testCmuxPID &+ 1)
+            .sendText("secret words", surfaceID: testSurfaceID, expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(result, .refused)
+        XCTAssertTrue(impostor.requestLines.isEmpty)
     }
 }
