@@ -102,7 +102,7 @@ package struct AgentCLIService: Sendable {
             limit: filter == nil ? limit : Self.projectFilterFetchLimit
         )
         if let filter {
-            var cache: [String: String] = [:]
+            var cache: [String: AgentCLIProject] = [:]
             dictations = dictations.filter { filter.matches($0.project, cache: &cache) }
         }
         return AgentCLIResponse(
@@ -127,7 +127,7 @@ package struct AgentCLIService: Sendable {
         case .failure(let error): return AgentCLIResponse(error: error)
         }
         let memory = await source.learnedTerms()
-        var cache: [String: String] = [:]
+        var cache: [String: AgentCLIProject] = [:]
         let projects = memory.projects
             .filter { project in
                 filter?.matches(AgentCLIProject(key: project.key, name: project.name), cache: &cache) ?? true
@@ -253,18 +253,26 @@ package struct AgentCLIService: Sendable {
         /// A history entry keeps the joined session's directory, which may be
         /// a subdirectory or a worktree; resolving it (once per directory)
         /// puts it in its repository.
-        func matches(_ project: AgentCLIProject?, cache: inout [String: String]) -> Bool {
+        func matches(_ project: AgentCLIProject?, cache: inout [String: AgentCLIProject]) -> Bool {
             guard let project else { return false }
             if let name {
-                return project.name.caseInsensitiveCompare(name) == .orderedSame
+                if project.name.caseInsensitiveCompare(name) == .orderedSame { return true }
+                return resolved(project, cache: &cache).name.caseInsensitiveCompare(name) == .orderedSame
             }
             guard let key else { return false }
             if project.key == key { return true }
-            guard project.key.hasPrefix("/") else { return false }
-            if let resolved = cache[project.key] { return resolved == key }
-            let resolved = resolveLocalProject(project.key)?.key ?? project.key
-            cache[project.key] = resolved
-            return resolved == key
+            return resolved(project, cache: &cache).key == key
+        }
+
+        /// The repository a local entry belongs to, or the entry itself when
+        /// it is remote or its directory is gone.
+        private func resolved(_ project: AgentCLIProject, cache: inout [String: AgentCLIProject]) -> AgentCLIProject {
+            guard project.key.hasPrefix("/") else { return project }
+            if let cached = cache[project.key] { return cached }
+            let identity = resolveLocalProject(project.key)
+            let result = identity.map { AgentCLIProject(key: $0.key, name: $0.name) } ?? project
+            cache[project.key] = result
+            return result
         }
     }
 

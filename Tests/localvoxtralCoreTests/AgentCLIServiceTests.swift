@@ -96,9 +96,17 @@ final class AgentCLIServiceTests: XCTestCase {
     }
 
     func testHistorySearchFiltersByProjectName() async {
-        let response = await service(fixture()).respond(
+        let source = fixture()
+        // A session that ran in the repository's subdirectory keeps that
+        // directory's name; the repository's name still finds it.
+        source.state.withLock {
+            $0.dictations.append(dictation(
+                "s", minutesAgo: 2, raw: "queue from Sources",
+                project: AgentCLIProject(key: "/work/quillmark/Sources", name: "Sources")))
+        }
+        let response = await service(source).respond(
             to: AgentCLIRequest(command: .historySearch, text: "queue", project: "QuillMark"))
-        XCTAssertEqual(response.history?.dictations.map(\.id), ["c", "a"])
+        XCTAssertEqual(response.history?.dictations.map(\.id), ["s", "c", "a"])
     }
 
     func testHistorySearchRefusesAMissingDirectoryAndABadLimit() async {
