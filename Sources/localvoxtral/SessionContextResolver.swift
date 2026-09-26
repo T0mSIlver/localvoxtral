@@ -34,6 +34,10 @@ final class SessionContextResolver {
     /// re-derived: they must all describe the same session. Nil whenever the
     /// pane did not positively join. Cleared on every session exit.
     var claudeSessionJoin: ClaudeSessionJoin?
+    /// The focused opencode pane's prompt relay, resolved once at start next
+    /// to the join (#719). Nil unless that pane declared one. Cleared with
+    /// the join.
+    var opencodePromptRelay: OpencodePromptRelay?
     /// Panel indicators own their associated remote forward until an explicit
     /// token clear has completed, so teardown cannot close the tunnel before
     /// the clear request reaches herdr.
@@ -142,6 +146,29 @@ final class SessionContextResolver {
         return badge
     }
 
+    /// Resolves where this dictation may write instead of typing: the prompt
+    /// relay of the focused opencode pane (#719). Runs after the join. A
+    /// join that resolved answers from its own session and asks no surface
+    /// again; without one, the resolver asks the focused TTY, and only while
+    /// some opencode pane has a relay, so a Mac with none sends no Apple
+    /// event for it. Needs none of the join's context gates: nothing is read
+    /// here, and what is written is what the user dictated into that pane.
+    func resolveOpencodePromptRelay() async {
+        opencodePromptRelay = nil
+        guard let resolver = claudeSessionJoinResolver,
+              resolver.registry.hasFreshOpencodePromptRelay()
+        else { return }
+        if let join = claudeSessionJoin {
+            guard join.snapshot.agent == .opencode else { return }
+            opencodePromptRelay = resolver.registry.opencodePromptRelay(sessionID: join.snapshot.sessionID)
+        } else if let target = TerminalScreenContextSource.frontmostTarget() {
+            opencodePromptRelay = await resolver.opencodePromptRelay(target: target)
+        }
+        if opencodePromptRelay != nil {
+            Log.claudeContext.notice("opencode prompt relay: focused pane declared one; dictation writes through it")
+        }
+    }
+
     /// Resolves this dictation's Claude session join, ONCE, here at start.
     ///
     /// Start, not commit, for the same reason the screen is sampled here: this
@@ -247,6 +274,7 @@ final class SessionContextResolver {
         // attached to an unrelated sentence.
         //
         claudeSessionJoin = nil
+        opencodePromptRelay = nil
         // And the pane text with the join: it is that session's screen.
         socketPaneStartCapture = nil
         // Every `ssh -L` lease, not just this join's — abandoning a dictation

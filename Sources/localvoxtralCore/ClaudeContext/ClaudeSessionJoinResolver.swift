@@ -269,6 +269,25 @@ package struct ClaudeSessionJoinResolver {
         return ClaudeJoinResolution(join: await resolveSurface(target: target))
     }
 
+    /// The prompt relay of the opencode pane focused now (#719), or nil.
+    ///
+    /// The writing counterpart of `resolution(target:)`, asked only when that
+    /// resolution did not run (its gates are about reading context, and
+    /// writing needs none of them) or did not join. It asks the one local
+    /// question, the focused pane's TTY, and none of the herdr, ssh or cmux
+    /// arms: those open sockets and tunnels on the strength of a context
+    /// consent this path does not have. A pane that TTY resolves to a
+    /// session through anything but a fresh opencode focus declaration
+    /// carrying a relay gets nil, and the dictation types as before.
+    package func opencodePromptRelay(target: TerminalScreenTarget) async -> OpencodePromptRelay? {
+        guard TerminalScreenAllowlist.isSupported(target.bundleID),
+              let tty = await focusedTerminalTTY(target.bundleID),
+              case .resolved(let snapshot) = registry.resolve(tty: tty),
+              snapshot.agent == .opencode
+        else { return nil }
+        return registry.opencodePromptRelay(sessionID: snapshot.sessionID)
+    }
+
     private func resolveSurface(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {
         // A browser is a different kind of target with a different capability:
         // one short URL string, no screen, no pane. The two allowlists are

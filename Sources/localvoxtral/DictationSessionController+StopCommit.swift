@@ -114,7 +114,7 @@ extension DictationSessionController {
     ) {
         // Before the dictionary and the polisher: the trigger is a command,
         // not text, so neither may see it.
-        let spokenSendPID = stripOverlaySpokenSendTrigger()
+        let spokenSend = stripOverlaySpokenSendTrigger()
         let preparation = StopCommitCoordinator.prepare(
             originalText: transcript.currentDictationEventText,
             polishingConfig: sample.polishingConfig,
@@ -200,7 +200,7 @@ extension DictationSessionController {
                         audio: capturedAudio
                     ),
                     polishProfile: capturedPolishProfile,
-                    spokenSendPID: spokenSendPID
+                    spokenSend: spokenSend
                 )
             }
             return
@@ -209,7 +209,7 @@ extension DictationSessionController {
         // Non-polishing overlay commit path
         let overlayCommit = StopCommitCoordinator.commit(
             overlay: overlayBufferCoordinator,
-            textInsertion: textInsertion,
+            textInsertion: overlayTextCommitter,
             autoCopyEnabled: settings.autoCopyEnabled
         )
         if let failureMessage = overlayCommit.failureMessage {
@@ -220,7 +220,7 @@ extension DictationSessionController {
             expectCorrection(of: displayWorkingText, join: context.claudeSessionJoin, project: nil)
             proposeProjectTermsIfNew(join: context.claudeSessionJoin, inserted: displayWorkingText)
         }
-        pressOverlaySpokenSendReturnIfNeeded(pid: spokenSendPID, commit: overlayCommit)
+        sendOverlaySpokenSendIfNeeded(spokenSend, commit: overlayCommit)
 
         completeStoppedSessionCleanup(
             sessionMode: sessionMode,
@@ -264,7 +264,7 @@ extension DictationSessionController {
         capture: StopCommitCoordinator.Capture,
         record: StoppedSessionRecordFields,
         polishProfile capturedPolishProfile: String,
-        spokenSendPID: pid_t?
+        spokenSend: OverlaySpokenSend?
     ) async {
         let originalText = preparation.originalText
         let workingText = preparation.workingText
@@ -339,7 +339,7 @@ extension DictationSessionController {
         let insertedText = self.transcript.currentDictationEventText
         let overlayCommit = StopCommitCoordinator.commit(
             overlay: self.overlayBufferCoordinator,
-            textInsertion: self.textInsertion,
+            textInsertion: self.overlayTextCommitter,
             autoCopyEnabled: self.settings.autoCopyEnabled
         )
         if let failureMessage = overlayCommit.failureMessage {
@@ -353,7 +353,7 @@ extension DictationSessionController {
             )
             self.proposeProjectTermsIfNew(join: capture.claudeJoin, inserted: insertedText)
         }
-        self.pressOverlaySpokenSendReturnIfNeeded(pid: spokenSendPID, commit: overlayCommit)
+        self.sendOverlaySpokenSendIfNeeded(spokenSend, commit: overlayCommit)
 
         self.completeStoppedSessionCleanup(
             sessionMode: sessionMode,
@@ -577,6 +577,9 @@ extension DictationSessionController {
         textInsertion.stopInsertionRetryTask()
         textInsertion.logDiagnostics()
         textInsertion.endLiveReplacementSession()
+        // After the last flush and any submit: calls already handed to the
+        // relay still land, in order.
+        textInsertion.endPromptRelay()
 
         if sessionMode == .liveAutoPaste, textInsertion.hasPendingInsertionText {
             lastError = "Some realtime text could not be inserted into the focused app."

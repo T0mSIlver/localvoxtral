@@ -160,6 +160,12 @@ final class TextInsertionService {
     /// it went to the terminal the Return is for.
     @ObservationIgnored
     private(set) var liveInsertionTargetPIDs: [pid_t?] = []
+    /// This dictation's opencode prompt relay (#719), when the focused pane
+    /// declared one at start. While it is healthy, live text goes to it and
+    /// not to the keyboard, and records no landing PID: it lands in that
+    /// pane's prompt wherever focus is.
+    @ObservationIgnored
+    private(set) var promptRelaySink: OpencodePromptRelaySink?
 
 #if DEBUG
     @ObservationIgnored
@@ -358,6 +364,55 @@ final class TextInsertionService {
         return NSWorkspace.shared.frontmostApplication?.processIdentifier
     }
 
+    // MARK: - opencode prompt relay (#719)
+
+    /// Arms the relay for the dictation starting now, or disarms it with nil.
+    /// `fallback` receives, in order, text the relay did not take; Live
+    /// Auto-Paste passes nil to type it here.
+    func beginPromptRelay(
+        _ relay: OpencodePromptRelay?,
+        poster: any OpencodePromptRelayPosting = OpencodePromptRelayClient(),
+        fallback: (@MainActor (String) -> Void)? = nil
+    ) {
+        guard let relay else {
+            promptRelaySink = nil
+            return
+        }
+        promptRelaySink = OpencodePromptRelaySink(relay: relay, poster: poster) { [weak self] text in
+            if let fallback {
+                fallback(text)
+            } else {
+                self?.typeLiveTextThePromptRelayRefused(text)
+            }
+        }
+        Log.insertion.notice("opencode prompt relay armed for this dictation")
+    }
+
+    func endPromptRelay() {
+        promptRelaySink = nil
+    }
+
+    /// Whether text goes to the relay now. False once it failed.
+    var promptRelayIsHealthy: Bool {
+        promptRelaySink?.isHealthy ?? false
+    }
+
+    private func handToPromptRelay(_ text: String) -> Bool {
+        guard let sink = promptRelaySink, sink.isHealthy else { return false }
+        sink.append(text)
+        return true
+    }
+
+    /// Live text the relay did not take is typed, as it would have been
+    /// without one. Where it lands cannot be tied to where the relay's text
+    /// went, so a nil landing blocks a keyboard Return for the rest of the
+    /// dictation. Already prepared, so it goes to the keyboard as-is.
+    private func typeLiveTextThePromptRelayRefused(_ text: String) {
+        liveInsertionTargetPIDs.append(nil)
+        if insertTextPrioritizingKeyboard(text).isSuccess { return }
+        pendingHoldBackReleasedText += text
+    }
+
     func enqueueRealtimeInsertion(_ text: String) {
         guard !text.isEmpty else { return }
         pendingRealtimeInsertionText.append(text)
@@ -376,6 +431,11 @@ final class TextInsertionService {
         guard !pendingRealtimeInsertionText.isEmpty else { return }
 
         let prepared = preparedForLateTerminal(pendingRealtimeInsertionText)
+        if handToPromptRelay(prepared.text) {
+            commitLateTerminalGuard(prepared)
+            pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
+            return
+        }
         switch insertTextPrioritizingKeyboard(prepared.text) {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             commitLateTerminalGuard(prepared)
@@ -558,6 +618,11 @@ final class TextInsertionService {
         guard !releasedText.isEmpty else { return }
 
         let prepared = preparedForLateTerminal(releasedText)
+        if handToPromptRelay(prepared.text) {
+            commitLateTerminalGuard(prepared)
+            liveTypedTextForSession += prepared.text
+            return
+        }
         switch insertTextPrioritizingKeyboard(prepared.text) {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             commitLateTerminalGuard(prepared)
