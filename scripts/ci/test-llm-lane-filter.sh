@@ -75,17 +75,17 @@ expect true "claude-code plugin change runs the lane" \
 
 # Split out of files the lane already watched; they still shape the context.
 expect true "the screen text rules, split from the AX reader, run the lane" \
-  Sources/localvoxtral/TerminalScreenText.swift
+  Sources/localvoxtralCore/TerminalScreenText.swift
 expect true "the browser allowlist, split from the tab url reader, runs the lane" \
-  Sources/localvoxtral/BrowserTabAllowlist.swift
+  Sources/localvoxtralCore/BrowserTabAllowlist.swift
 expect true "the git runner, split from repo vocabulary, runs the lane" \
   Sources/localvoxtralCore/RepoGitRunner.swift
 expect true "the socket guard, moved to the core target, runs the lane" \
   Sources/localvoxtralCore/ClaudeSocketGuard.swift
 expect true "the Claude Desktop allowlist, split from its reader, runs the lane" \
-  Sources/localvoxtral/ClaudeDesktopAllowlist.swift
+  Sources/localvoxtralCore/ClaudeDesktopAllowlist.swift
 expect false "the forward process seam, split from the supervisor, stays exempt" \
-  Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardProcess.swift
+  Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardProcess.swift
 
 # --- Marker opt-in ----------------------------------------------------------
 
@@ -141,28 +141,28 @@ expect true "a longer marker name is not the skip marker" \
 
 # --- The ClaudeContext exemption list (#418) --------------------------------
 expect false "an enrollment change does not run the lane" \
-  Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService.swift
+  Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService.swift
 expect false "the enrollment service's split-out files do not run the lane" \
-  Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService+Verification.swift \
-  Sources/localvoxtral/ClaudeContext/ClaudeRemoteSSHConfigFileSystem.swift
+  Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+Verification.swift \
+  Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteSSHConfigFileSystem.swift
 expect false "a settings-model plus forward-supervisor change does not run the lane" \
   Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel.swift \
   Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardSupervisor.swift
 expect false "the settings model's files by area do not run the lane" \
   "Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+SetupRun.swift" \
   Sources/localvoxtralCore/ClaudeContext/ClaudeShellSetupStatus.swift \
-  Sources/localvoxtral/ClaudeContext/HerdrMachineImport.swift
+  Sources/localvoxtralCore/ClaudeContext/HerdrMachineImport.swift
 expect true "an exempt file beside a join change still runs the lane" \
-  Sources/localvoxtral/ClaudeContext/ClaudeRemoteEnrollmentService.swift \
-  Sources/localvoxtral/ClaudeContext/SSHDestinationTTYProbe.swift
+  Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService.swift \
+  Sources/localvoxtralCore/ClaudeContext/SSHDestinationTTYProbe.swift
 expect true "a NEW file in ClaudeContext runs the lane until it is exempted" \
   Sources/localvoxtral/ClaudeContext/SomethingNobodyClassifiedYet.swift
 expect true "a NEW file in the core's ClaudeContext runs the lane too" \
   Sources/localvoxtralCore/ClaudeContext/SomethingNobodyClassifiedYet.swift
 expect true "what reads a screen or accepts a hook record is not exempt" \
-  Sources/localvoxtral/ClaudeContext/ClaudeRemoteContextListener.swift
+  Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteContextListener.swift
 expect true "what evicts sessions from the registry is not exempt" \
-  Sources/localvoxtral/ClaudeContext/ClaudeRemoteListenerCoordinator.swift
+  Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteListenerCoordinator.swift
 expect true "what decides whether the cmux join arm authenticates is not exempt" \
   Sources/localvoxtralCore/ClaudeContext/CmuxSocketPasswordStore.swift
 

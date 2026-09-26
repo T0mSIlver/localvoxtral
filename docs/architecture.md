@@ -67,9 +67,12 @@ socket guard (`ClaudeSocketGuard`: `getpeereid` and `LOCAL_PEERPID` on Darwin,
 `SO_PEERCRED` on Linux), with the SHA-256 and HMAC helpers the Claude code
 hashes through, and the `RealtimeClient` protocol and its event types.
 `Sources/localvoxtralCore/ClaudeContext` holds the part of the Claude context
-path that needs no AppKit (#591): the repository collector and its selection,
-the context blocks, the plugin, statusline, opencode and Vibe installers, the
-shell rc setup and the cmux client. The rest stays in
+path that needs no AppKit (#591): the join resolver and its arms, the session
+registry and store, the broker and the remote listener, the herdr and cmux
+clients, the ssh forward and enrollment, the repository collector and its
+selection, the context blocks, and the plugin, statusline, opencode and Vibe
+installers. The settings model, the forward coordinator and supervisor
+(`@Observable`) and the `--probe-surface` command stay in
 `Sources/localvoxtral/ClaudeContext`.
 It builds and tests on Linux (`scripts/core-tests-linux.sh`); the app
 re-exports it. Test doubles that need only the core live in
