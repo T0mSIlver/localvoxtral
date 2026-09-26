@@ -488,7 +488,13 @@ public final class ClaudeContextBroker: Sendable {
         debugServeHook.withLock { $0 }?()
         #endif
 
-        POSIXSocket.suppressSIGPIPE(onSocket: fd)
+        // A reply to a peer that already left raises SIGPIPE, which kills the
+        // app, unless the socket has SO_NOSIGPIPE; Darwin refuses that option
+        // once the peer has closed (#791). Nobody is left to answer then.
+        guard POSIXSocket.suppressSIGPIPE(onSocket: fd) else {
+            Log.claudeContext.error("Dropping Claude broker connection: the peer left before it was served")
+            return
+        }
 
         // Authenticate BEFORE reading a single byte.
         guard let peerUID = ClaudeSocketGuard.peerUID(ofDescriptor: fd) else {
