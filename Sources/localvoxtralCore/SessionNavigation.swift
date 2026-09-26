@@ -4,10 +4,11 @@ import Synchronization
 
 // Going to a joined session by voice (#723): "go to payments" brings that
 // session's pane to the front, and "call this session payments" gives the
-// session dictated into that name. Nothing is typed and no Return is
-// pressed. The pieces here are pure: the command parse, a session's names,
-// the name lookup and which route can focus a session's pane. The Apple
-// events live in the app (`TerminalSessionPaneFocuser`).
+// session dictated into that name; neither types anything. "… send that to
+// payments" (step 3) sends the rest of the dictation to that session. The
+// pieces here are pure: the command parse, a session's names, the name
+// lookup and which route can focus a session's pane. The Apple events live
+// in the app (`TerminalSessionPaneFocuser`).
 
 /// A spoken session command (#723): the whole dictation, or in Live
 /// Auto-Paste a whole segment.
@@ -17,6 +18,19 @@ package enum SessionVoiceCommand: Equatable, Sendable {
     /// "call this session <name>": nickname the session dictated into
     /// (step 2).
     case nameThisSession(String)
+}
+
+/// An Overlay Buffer dictation that ended in "send that to <name>" (#723
+/// step 3).
+package struct AddressedDictation: Equatable, Sendable {
+    /// What is sent: everything before the phrase.
+    package var text: String
+    package var spokenName: String
+
+    package init(text: String, spokenName: String) {
+        self.text = text
+        self.spokenName = spokenName
+    }
 }
 
 package enum SessionVoiceCommandParser {
@@ -65,6 +79,58 @@ package enum SessionVoiceCommandParser {
     package static func spokenName(in text: String) -> String? {
         guard case .goTo(let name)? = command(in: text) else { return nil }
         return name
+    }
+
+    /// "send that to <name>" as the last words of an Overlay Buffer
+    /// dictation (#723 step 3): the text before it goes to that session.
+    package static let addressingWords = ["send", "that", "to"]
+
+    /// The dictation and the session it is addressed to, when the text ends
+    /// in "send that to" plus one to `maxNameWords` name words and has text
+    /// before it. The text keeps its own casing and inner punctuation; the
+    /// punctuation and spaces before the phrase are dropped.
+    package static func addressedDictation(in text: String) -> AddressedDictation? {
+        let words = wordRanges(in: text)
+        let folded = words.map { text[$0].trimmingCharacters(in: edgePunctuation).caseFoldedForMatching }
+        let count = addressingWords.count
+        guard folded.count > count else { return nil }
+        let lastOpening = (0...(folded.count - count)).last { start in
+            Array(folded[start..<(start + count)]) == addressingWords
+        }
+        guard let start = lastOpening, start > 0 else { return nil }
+        let nameWords = words[(start + count)...]
+            .map { text[$0].trimmingCharacters(in: edgePunctuation) }
+            .filter { !$0.isEmpty }
+        guard !nameWords.isEmpty, nameWords.count <= maxNameWords else { return nil }
+        let name = nameWords.joined(separator: " ")
+        guard !SessionNameMatching.key(name).isEmpty else { return nil }
+        let drop = edgePunctuation.union(.whitespacesAndNewlines)
+        var body = text[..<words[start].lowerBound]
+        while let last = body.last, last.unicodeScalars.allSatisfy({ drop.contains($0) }) {
+            body = body.dropLast()
+        }
+        body = body.drop { $0.isWhitespace }
+        guard !body.isEmpty else { return nil }
+        return AddressedDictation(text: String(body), spokenName: name)
+    }
+
+    private static func wordRanges(in text: String) -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var start: String.Index?
+        var index = text.startIndex
+        while index < text.endIndex {
+            if text[index].isWhitespace {
+                if let wordStart = start {
+                    ranges.append(wordStart..<index)
+                    start = nil
+                }
+            } else if start == nil {
+                start = index
+            }
+            index = text.index(after: index)
+        }
+        if let start { ranges.append(start..<text.endIndex) }
+        return ranges
     }
 
     /// What a Live Auto-Paste segment heard so far can still become (#747).
@@ -280,6 +346,10 @@ package enum SessionPaneFocusOutcome: Equatable, Sendable {
 @MainActor
 package protocol SessionPaneFocusing: AnyObject {
     func focusPane(of session: ClaudeSessionSnapshot) async -> SessionPaneFocusOutcome
+    /// Whether `bundleID`'s focused pane, read back the way the join reads
+    /// it, still carries the session's tty. Asked again right before a Return
+    /// into a pane `focusPane` answered `.focused` for (#723 step 3).
+    func focusedPaneShows(_ session: ClaudeSessionSnapshot, bundleID: String) async -> Bool
 }
 
 /// Registry sessions by name, and their panes brought forward.

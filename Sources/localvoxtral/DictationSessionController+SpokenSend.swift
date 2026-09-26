@@ -288,7 +288,7 @@ extension DictationSessionController {
         return pid
     }
 
-    private func returnSubmitsPrompt(inPID pid: pid_t) -> Bool {
+    func returnSubmitsPrompt(inPID pid: pid_t) -> Bool {
         ReturnSubmitsAppList.contains(
             dependencies.bundleIdentifier(pid),
             userTerminalBundleIDs: settings.userTerminalAppBundleIDs
@@ -300,7 +300,7 @@ extension DictationSessionController {
     /// Secure Keyboard Entry is sampled again here: it swallows synthetic
     /// keys while reporting success, and it may have come on since the text
     /// was judged.
-    private func pressSpokenSendReturn(pid: pid_t) -> Bool {
+    func pressSpokenSendReturn(pid: pid_t) -> Bool {
         guard !TerminalTargetDetector.isSecureKeyboardEntryEnabled() else {
             Log.dictation.notice("spoken send: Secure Keyboard Entry is on; no Return")
             return false
