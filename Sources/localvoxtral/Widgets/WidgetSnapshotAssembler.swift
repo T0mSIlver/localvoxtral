@@ -45,6 +45,13 @@ enum WidgetSnapshotAssembler {
                     spend.speechTodayEUR += cost
                     spend.audioSecondsToday += entry.audioSeconds ?? 0
                 }
+            case .retranscription:
+                // Speech spend; its audio was already counted by the realtime
+                // socket (MistralUsageEntry.Kind.retranscription).
+                spend.speechLast30DaysEUR += cost
+                if isToday {
+                    spend.speechTodayEUR += cost
+                }
             case .polish:
                 spend.polishLast30DaysEUR += cost
                 if isToday {
