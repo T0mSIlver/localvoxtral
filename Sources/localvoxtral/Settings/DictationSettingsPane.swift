@@ -212,18 +212,12 @@ struct DictationSettingsPane: View {
                     }
 
                     if settings.modifierOnlyHotKeyModifier == .chord {
-                        SettingsFieldRow(
+                        SettingsShortcutRow(
                             title: "Chord keys",
-                            controlAlignment: .top
+                            shortcut: dictationChordBinding,
+                            validationError: $dictationChordValidationError,
+                            acceptsModifierChord: true
                         ) {
-                            ShortcutRecorderField(
-                                shortcut: dictationChordBinding,
-                                validationError: $dictationChordValidationError,
-                                fixedWidth: 132,
-                                acceptsModifierChord: true
-                            )
-                            .frame(height: 24, alignment: .leading)
-                        } footer: {
                             if let dictationChordValidationError {
                                 SettingsInlineMessage(dictationChordValidationError, color: .red)
                             } else if settings.dictationChord == nil {
@@ -260,29 +254,19 @@ struct DictationSettingsPane: View {
                         }
                     }
                 } else {
-                    // `.top`: the recorder is a 24pt bordered field with a button
-                    // beside it, the tallest inline control in the pane.
-                    SettingsFieldRow(
+                    SettingsShortcutRow(
                         title: "Dictation shortcut",
-                        controlAlignment: .top
-                    ) {
-                        HStack(alignment: .center, spacing: 8) {
-                            ShortcutRecorderField(
-                                shortcut: overlayBufferShortcutBinding,
-                                validationError: $overlayValidationError,
-                                fixedWidth: 132
-                            )
-                            .frame(height: 24, alignment: .leading)
-
-                            Button("Reset") {
-                                overlayValidationError = nil
-                                assignOverlayBufferShortcut(
-                                    SettingsStore.defaultDictationShortcut)
-                            }
-                            .disabled(
-                                settings.overlayBufferShortcut == SettingsStore.defaultDictationShortcut)
+                        shortcut: overlayBufferShortcutBinding,
+                        validationError: $overlayValidationError,
+                        button: .init(
+                            title: "Reset",
+                            isDisabled: settings.overlayBufferShortcut
+                                == SettingsStore.defaultDictationShortcut
+                        ) {
+                            overlayValidationError = nil
+                            assignOverlayBufferShortcut(SettingsStore.defaultDictationShortcut)
                         }
-                    } footer: {
+                    ) {
                         // A footer, not a third item in the control column: a
                         // validation sentence right-aligned under the recorder
                         // wraps in a 200pt column and reads as unattached.
@@ -328,26 +312,16 @@ struct DictationSettingsPane: View {
 
                 // Optional: opens a dictation in the pane of the session that
                 // needs you, as Tab to it would.
-                SettingsFieldRow(
+                SettingsShortcutRow(
                     title: "Answer the agent that needs you",
-                    controlAlignment: .top
-                ) {
-                    HStack(alignment: .center, spacing: 8) {
-                        ShortcutRecorderField(
-                            shortcut: answerAgentShortcutBinding,
-                            validationError: $answerAgentValidationError,
-                            fixedWidth: 132,
-                            acceptsModifierChord: true
-                        )
-                        .frame(height: 24, alignment: .leading)
-
-                        Button("Clear") {
-                            answerAgentValidationError = nil
-                            assignAnswerAgentShortcut(nil)
-                        }
-                        .disabled(settings.answerAgentShortcut == nil)
+                    shortcut: answerAgentShortcutBinding,
+                    validationError: $answerAgentValidationError,
+                    acceptsModifierChord: true,
+                    button: .init(title: "Clear", isDisabled: settings.answerAgentShortcut == nil) {
+                        answerAgentValidationError = nil
+                        assignAnswerAgentShortcut(nil)
                     }
-                } footer: {
+                ) {
                     if let answerAgentValidationError {
                         SettingsInlineMessage(answerAgentValidationError, color: .red)
                     }
@@ -355,26 +329,16 @@ struct DictationSettingsPane: View {
 
                 // Optional: opens a dictation with the Inbox picked, as Tab to
                 // it would (#840). Its words never reach the focused app.
-                SettingsFieldRow(
+                SettingsShortcutRow(
                     title: "Quick capture to Inbox",
-                    controlAlignment: .top
-                ) {
-                    HStack(alignment: .center, spacing: 8) {
-                        ShortcutRecorderField(
-                            shortcut: quickCaptureShortcutBinding,
-                            validationError: $quickCaptureValidationError,
-                            fixedWidth: 132,
-                            acceptsModifierChord: true
-                        )
-                        .frame(height: 24, alignment: .leading)
-
-                        Button("Clear") {
-                            quickCaptureValidationError = nil
-                            assignQuickCaptureShortcut(nil)
-                        }
-                        .disabled(settings.quickCaptureShortcut == nil)
+                    shortcut: quickCaptureShortcutBinding,
+                    validationError: $quickCaptureValidationError,
+                    acceptsModifierChord: true,
+                    button: .init(title: "Clear", isDisabled: settings.quickCaptureShortcut == nil) {
+                        quickCaptureValidationError = nil
+                        assignQuickCaptureShortcut(nil)
                     }
-                } footer: {
+                ) {
                     if let quickCaptureValidationError {
                         SettingsInlineMessage(quickCaptureValidationError, color: .red)
                     }
@@ -487,25 +451,15 @@ struct DictationSettingsPane: View {
                             .labelsHidden()
                     }
                 } else {
-                    SettingsFieldRow(
+                    SettingsShortcutRow(
                         title: "Live Auto-Paste shortcut",
-                        controlAlignment: .top
-                    ) {
-                        HStack(alignment: .center, spacing: 8) {
-                            ShortcutRecorderField(
-                                shortcut: livePasteShortcutBinding,
-                                validationError: $livePasteValidationError,
-                                fixedWidth: 132
-                            )
-                            .frame(height: 24, alignment: .leading)
-
-                            Button("Clear") {
-                                livePasteValidationError = nil
-                                assignLivePasteShortcut(nil)
-                            }
-                            .disabled(settings.livePasteShortcut == nil)
+                        shortcut: livePasteShortcutBinding,
+                        validationError: $livePasteValidationError,
+                        button: .init(title: "Clear", isDisabled: settings.livePasteShortcut == nil) {
+                            livePasteValidationError = nil
+                            assignLivePasteShortcut(nil)
                         }
-                    } footer: {
+                    ) {
                         if let livePasteValidationError {
                             SettingsInlineMessage(livePasteValidationError, color: .red)
                         } else if settings.livePasteShortcut == nil {
@@ -532,26 +486,16 @@ struct DictationSettingsPane: View {
                     .labelsHidden()
                 }
 
-                SettingsFieldRow(
+                SettingsShortcutRow(
                     title: "Copy last dictation",
-                    controlAlignment: .top
-                ) {
-                    HStack(alignment: .center, spacing: 8) {
-                        ShortcutRecorderField(
-                            shortcut: copyLastDictationShortcutBinding,
-                            validationError: $copyLastDictationValidationError,
-                            fixedWidth: 132,
-                            acceptsModifierChord: true
-                        )
-                        .frame(height: 24, alignment: .leading)
-
-                        Button("Clear") {
-                            copyLastDictationValidationError = nil
-                            assignCopyLastDictationShortcut(nil)
-                        }
-                        .disabled(settings.copyLastDictationShortcut == nil)
+                    shortcut: copyLastDictationShortcutBinding,
+                    validationError: $copyLastDictationValidationError,
+                    acceptsModifierChord: true,
+                    button: .init(title: "Clear", isDisabled: settings.copyLastDictationShortcut == nil) {
+                        copyLastDictationValidationError = nil
+                        assignCopyLastDictationShortcut(nil)
                     }
-                } footer: {
+                ) {
                     if let copyLastDictationValidationError {
                         SettingsInlineMessage(copyLastDictationValidationError, color: .red)
                     }
@@ -608,7 +552,7 @@ struct SendPhrasesRow: View {
     private var saved: String { settings.spokenSendTriggerPhrases.joined(separator: ", ") }
 
     var body: some View {
-        SettingsFieldRow(title: "Phrases that press Return", controlAlignment: .top) {
+        SettingsFieldRow(title: "Phrases that press Return") {
             TextField("send it, send now", text: Binding(
                 get: { draft ?? saved },
                 set: { draft = $0 }
