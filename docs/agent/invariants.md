@@ -2258,6 +2258,15 @@ there is not.
   that could put a byte on a terminal, so there is no variable part left for a
   squatter to aim at. The fixed `X-Lvx-Session: joined|unknown` response header
   only selects a private per-session status stamp and never reaches stdout.
+  A second copy of the app (a `try-pr.sh` build, a CI launch smoke) loses
+  this port and the broker socket to the running copy, and then waits:
+  `ClaudeHookSocketTakeover` retries only the binds it lost, each time
+  another process with the app's bundle id exits (a kqueue exit watch), and
+  never on a timer, because the broker's liveness check connects to the
+  holder's socket. A retry that still finds the socket held waits for the
+  next exit. MEASURED 2026-09-27 (#655): without it, the survivor of two
+  copies kept dictating with no hook reaching it, and every Claude Desktop
+  join abstained until a relaunch.
   The shim's request-side `X-Lvx-Plugin-Version` header (its own version, a
   constant in `post.sh`) is the same shape of rule: validated to a strict
   numeric shape on arrival (`ClaudeRemotePluginVersionCodec`), recorded on the
