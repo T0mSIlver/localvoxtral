@@ -520,6 +520,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     #endif
 
+    /// Claude Desktop's session link, opened in Desktop itself (another app
+    /// may also claim `claude://`), read back through the join's resolver.
+    private static func liveClaudeDesktopFocuser(
+        resolver: ClaudeSessionJoinResolver,
+        sleep: @escaping @Sendable (Duration) async -> Void
+    ) -> ClaudeDesktopSessionPaneFocuser {
+        let runningDesktop = {
+            NSRunningApplication.runningApplications(withBundleIdentifier: ClaudeDesktopAllowlist.bundleID).first
+        }
+        return ClaudeDesktopSessionPaneFocuser(
+            desktopPID: { runningDesktop()?.processIdentifier },
+            frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
+            open: { link in
+                guard let appURL = runningDesktop()?.bundleURL else { return false }
+                NSWorkspace.shared.open([link], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+                    if error != nil {
+                        Log.claudeContext.error("go to session: Claude Desktop refused its session link")
+                    }
+                }
+                return true
+            },
+            shownSessionID: { pid in
+                await resolver.sessionShown(
+                    target: TerminalScreenTarget(pid: pid, bundleID: ClaudeDesktopAllowlist.bundleID)
+                )
+            },
+            sleep: sleep
+        )
+    }
+
     /// The needs-you cue (#717). Its own resolver asks only the local
     /// questions (`sessionShown`): nothing here can open a forward, stamp a
     /// herdr panel or dial cmux. A terminal it has no Automation consent for
@@ -673,7 +703,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             viewModel.session.sessionNavigator = SessionNavigator(
                 liveSessions: { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() },
                 repositoryRoot: SessionNavigator.liveRepositoryRoot,
-                focuser: TerminalSessionPaneFocuser.live(ttyReader: ttyReader),
+                focuser: SessionPaneFocuserRouter(
+                    terminal: TerminalSessionPaneFocuser.live(ttyReader: ttyReader),
+                    claudeDesktop: Self.liveClaudeDesktopFocuser(
+                        resolver: resolver,
+                        sleep: viewModel.session.dependencies.clock.sleep
+                    )
+                ),
                 sleep: viewModel.session.dependencies.clock.sleep,
                 nicknames: .userDefaults(.standard, key: "session_navigation.nicknames")
             )
