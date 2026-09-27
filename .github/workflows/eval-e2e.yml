@@ -146,8 +146,8 @@ jobs:
           # An older reaper stops the on-demand server 20 min after the last
           # `ensure` even while a client uses it, so an eval longer than that
           # lost its server mid-run (#821). The reaper counts clients since
-          # #829, but runs from the owner's checkout on the Mac: keep ours
-          # fresh until that checkout has it.
+          # #829, but runs a copy of the script on the Mac: keep ours fresh
+          # until that copy is refreshed (scripts/mac/README.md).
           if [ -d /Users/Shared/localvoxtral/run ]; then
             while sleep 300; do
               ./scripts/mac/lv-test-servers.sh ensure speechd >/dev/null 2>&1 || true

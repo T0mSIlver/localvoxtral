@@ -6,7 +6,7 @@
 # must be able to say whether the server was reaped, never started, or lost
 # its port to another process.
 #
-# netstat, nc, lsof, ps, launchctl and sleep are stubbed; their answers come
+# lsof, nc, ps, launchctl and sleep are stubbed; their answers come
 # from files under $TMP_DIR/state.
 set -euo pipefail
 
@@ -31,13 +31,18 @@ CALLS="$TMP_DIR/calls.log"
 mkdir -p "$TMP_DIR/bin" "$STATE"
 REAL_STAT="$(command -v stat)"
 
-# netstat prints state/netstat.<n> on its n-th call, or state/netstat once
-# those run out, so a test can make a client appear partway through a watch.
-cat >"$TMP_DIR/bin/netstat" <<STUB
+# lsof answers a -sTCP:ESTABLISHED query with state/conns.<n> on its n-th
+# such call, or state/conns once those run out, so a test can make a client
+# appear partway through a watch. A LISTEN query gets state/lsof.
+cat >"$TMP_DIR/bin/lsof" <<STUB
 #!/usr/bin/env bash
-n=\$(( \$(cat "$STATE/netstat-calls" 2>/dev/null || echo 0) + 1 ))
-echo "\$n" >"$STATE/netstat-calls"
-if [[ -f "$STATE/netstat.\$n" ]]; then cat "$STATE/netstat.\$n"; else cat "$STATE/netstat" 2>/dev/null; fi
+if [[ " \$* " == *" -sTCP:ESTABLISHED "* ]]; then
+  n=\$(( \$(cat "$STATE/conns-calls" 2>/dev/null || echo 0) + 1 ))
+  echo "\$n" >"$STATE/conns-calls"
+  if [[ -f "$STATE/conns.\$n" ]]; then cat "$STATE/conns.\$n"; else cat "$STATE/conns" 2>/dev/null; fi
+else
+  cat "$STATE/lsof" 2>/dev/null
+fi
 exit 0
 STUB
 # nc: the port is up while state/up exists.
@@ -50,11 +55,6 @@ cat >"$TMP_DIR/bin/launchctl" <<STUB
 #!/usr/bin/env bash
 printf 'launchctl %s\n' "\$*" >>"$CALLS"
 [[ "\$1" == kill ]] && rm -f "$STATE/up"
-exit 0
-STUB
-cat >"$TMP_DIR/bin/lsof" <<STUB
-#!/usr/bin/env bash
-cat "$STATE/lsof" 2>/dev/null
 exit 0
 STUB
 cat >"$TMP_DIR/bin/ps" <<STUB
@@ -102,7 +102,7 @@ MY_STAMP="$RUN/voxmlx.seen.$(id -u)"
 OTHER_STAMP="$RUN/voxmlx.seen.99999"
 # A server started by another account's `ensure` an hour ago.
 start_idle_server() {
-  rm -f "$RUN"/* "$STATE"/netstat* "$STATE/up"
+  rm -f "$RUN"/* "$STATE"/conns* "$STATE/up"
   : >"$CALLS"
   touch "$TRIGGER" "$OTHER_STAMP" "$STATE/up"
   touch -t 202001010000 "$TRIGGER" "$OTHER_STAMP"
@@ -110,17 +110,22 @@ start_idle_server() {
 mtime() {
   "$TMP_DIR/bin/stat" -f %m "$1"
 }
-# One server-side socket on 8000, its client side, and a socket on 18000 that
-# must not count as 8000.
-CLIENT_SOCKETS='tcp4       0      0  127.0.0.1.8000         127.0.0.1.52011        ESTABLISHED
-tcp4       0      0  127.0.0.1.52011        127.0.0.1.8000         ESTABLISHED
-tcp4       0      0  127.0.0.1.18000        127.0.0.1.52012        ESTABLISHED
-tcp4       0      0  *.8000                 *.*                    LISTEN'
+# lsof -Fn as measured on macOS 27: the server side of one client on 8000, its
+# client side, and a server on 18000 that must not count as 8000.
+CLIENT_SOCKETS='p4242
+f20
+n127.0.0.1:8000->127.0.0.1:52011
+p78862
+f3
+n127.0.0.1:52011->127.0.0.1:8000
+p5151
+f7
+n127.0.0.1:18000->127.0.0.1:52012'
 
 # ---- a connection at the reaper's run counts as use ---------------------------
 
 start_idle_server
-printf '%s\n' "$CLIENT_SOCKETS" >"$STATE/netstat"
+printf '%s\n' "$CLIENT_SOCKETS" >"$STATE/conns"
 servers reap >"$TMP_DIR/out" 2>&1 || fail "reap failed: $(cat "$TMP_DIR/out")"
 assert_has "$TMP_DIR/out" "reap speechd-voxtral: in use (1 open connection(s) on port 8000) — kept warm"
 grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z reap ' "$TMP_DIR/out" \
@@ -132,8 +137,8 @@ assert_lacks "$CALLS" "launchctl kill"
 
 # The stamp that use refreshed keeps the next run, with the client gone, from
 # stopping a server whose last `ensure` is past the window.
-: >"$STATE/netstat"
-rm -f "$STATE"/netstat-calls
+: >"$STATE/conns"
+rm -f "$STATE"/conns-calls
 servers reap >"$TMP_DIR/out" 2>&1 || fail "reap failed: $(cat "$TMP_DIR/out")"
 assert_has "$TMP_DIR/out" "reap speechd-voxtral: active (idle"
 [[ -e "$TRIGGER" ]] || fail "reap stopped a server used moments ago"
@@ -143,8 +148,8 @@ assert_lacks "$CALLS" "launchctl kill"
 
 # Past the window with no client at the first look; one connects on the third.
 start_idle_server
-: >"$STATE/netstat"
-printf '%s\n' "$CLIENT_SOCKETS" >"$STATE/netstat.3"
+: >"$STATE/conns"
+printf '%s\n' "$CLIENT_SOCKETS" >"$STATE/conns.3"
 servers reap >"$TMP_DIR/out" 2>&1 || fail "reap failed: $(cat "$TMP_DIR/out")"
 assert_has "$TMP_DIR/out" "but a client connected after 1s — kept warm"
 [[ -e "$TRIGGER" ]] || fail "reap stopped a server a client connected to while it watched"
@@ -154,7 +159,7 @@ assert_lacks "$CALLS" "launchctl kill"
 # ---- no client at all: stopped -------------------------------------------------
 
 start_idle_server
-: >"$STATE/netstat"
+: >"$STATE/conns"
 servers reap >"$TMP_DIR/out" 2>&1 || fail "reap failed: $(cat "$TMP_DIR/out")"
 assert_has "$TMP_DIR/out" "no client in 5s — stopped"
 assert_has "$CALLS" "launchctl kill SIGTERM gui/$(id -u)/com.localvoxtral.testspeechd"
@@ -163,14 +168,14 @@ assert_has "$CALLS" "launchctl kill SIGTERM gui/$(id -u)/com.localvoxtral.testsp
 # A server inside the window is kept without watching the port.
 start_idle_server
 touch "$OTHER_STAMP"
-rm -f "$STATE/netstat-calls"
+rm -f "$STATE/conns-calls"
 servers reap >"$TMP_DIR/out" 2>&1 || fail "reap failed"
 assert_has "$TMP_DIR/out" "active (idle"
-[[ "$(cat "$STATE/netstat-calls")" == 1 ]] || fail "reap watched the port of a server inside its window"
+[[ "$(cat "$STATE/conns-calls")" == 1 ]] || fail "reap watched the port of a server inside its window"
 
 # ---- status counts clients -----------------------------------------------------
 
-printf '%s\n' "$CLIENT_SOCKETS" >"$STATE/netstat"
+printf '%s\n' "$CLIENT_SOCKETS" >"$STATE/conns"
 servers status >"$TMP_DIR/out" 2>&1 || fail "status failed: $(cat "$TMP_DIR/out")"
 assert_has "$TMP_DIR/out" "clients=1   port 8000: up"
 
@@ -180,7 +185,7 @@ diagnose() {
   servers diagnose speechd >"$TMP_DIR/out" 2>&1 || fail "diagnose failed: $(cat "$TMP_DIR/out")"
   head -1 "$TMP_DIR/out"
 }
-: >"$STATE/netstat"
+: >"$STATE/conns"
 printf '%s reap speechd-voxtral: idle 1300s >= 1200s, no client in 60s — stopped (trigger removed + SIGTERM, drained in 1s)\n' \
   2026-09-27T07:03:00Z >"$LOGS/testservers-reaper.log"
 

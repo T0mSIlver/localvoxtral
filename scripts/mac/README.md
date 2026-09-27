@@ -302,7 +302,7 @@ cat > ~/Library/LaunchAgents/com.localvoxtral.testservers-reaper.plist <<'PLIST'
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/REPLACE_ME/work/localvoxtral/scripts/mac/lv-test-servers.sh</string>
+    <string>/Users/Shared/localvoxtral/lv-test-servers.sh</string>
     <string>reap</string>
   </array>
   <!-- Every 5 min: finer than the 20-min idle window, so RAM is reclaimed
@@ -318,8 +318,9 @@ PLIST
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.localvoxtral.testservers-reaper.plist
 ```
 
-(Point the script path at a stable checkout of this repo, or copy
-`lv-test-servers.sh` to a fixed location. A copy without
+(The reaper runs a copy of the script, so a change to `reap` reaches it only
+when the copy is refreshed:
+`install -m 0755 scripts/mac/lv-test-servers.sh /Users/Shared/localvoxtral/`. A copy without
 `test-speech-models.tsv` beside it reads the list `install-speech-models`
 installed; with neither, the reaper sees only Voxtral and polishd and never
 frees another speech model. Override the idle window by adding an

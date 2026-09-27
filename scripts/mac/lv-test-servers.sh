@@ -280,14 +280,14 @@ healthy() {
   esac
 }
 
-# Established TCP connections whose server side is this port. netstat reads the
-# kernel's socket table, so it counts every account's clients without root.
+# Established TCP connections whose server side is this port. lsof lists only
+# this account's sockets without root, which covers the server side of every
+# client: the reaper and the servers run as the same GUI owner. (netstat shows
+# no TCP sockets at all in that session on macOS 27.)
 open_connections() {
   local port="$1"
-  netstat -an -p tcp 2>/dev/null \
-    | awk -v suffix=".$port" '
-        $6 == "ESTABLISHED" && length($4) > length(suffix) \
-          && substr($4, length($4) - length(suffix) + 1) == suffix { n++ }
+  lsof -nP -iTCP:"$port" -sTCP:ESTABLISHED -Fn 2>/dev/null \
+    | awk -v local=":$port->" 'substr($0, 1, 1) == "n" && index($0, local) { n++ }
         END { print n + 0 }' || true
 }
 
