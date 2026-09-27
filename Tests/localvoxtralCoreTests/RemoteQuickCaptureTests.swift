@@ -233,6 +233,18 @@ final class RemoteQuickCaptureTests: XCTestCase {
         XCTAssertNil(store.snapshot().projects.first?.reportedAt)
     }
 
+    /// #891: a cwd label's hook before the dictation that adds its project
+    /// stamps nothing, so it must not use up the interval.
+    func testTheFirstHookAfterADictationAddsTheProjectStampsIt() throws {
+        // A session in `/srv/work/ink-fix` names only its cwd.
+        try hook("SessionStart", session: "s1", version: "1.12.0", project: "ink", sendsProject: false)
+        store.learn("ink-fix")
+        try hook(session: "s1", version: "1.12.0", project: "ink", sendsProject: false)
+        let project = try XCTUnwrap(store.snapshot().projects.first { $0.key == "remote:ink-fix" })
+        XCTAssertEqual(project.reportedAt, clock.now())
+        XCTAssertNil(project.reportedAsRepository)
+    }
+
     func testAProjectIsRecordedOncePerInterval() throws {
         try hook("SessionStart", session: "s1", project: "inkwell")
         try hook(session: "s1", project: "inkwell")

@@ -94,9 +94,41 @@ final class QuickCaptureProjectsTests: XCTestCase {
         }
         XCTAssertEqual(listed(at: now), ["/w/inkwell", "remote:quill-fix", "remote:quillmark"])
         XCTAssertEqual(
-            listed(at: now.addingTimeInterval(Double(QuickCaptureProjects.remoteLabelListedDays) * day)),
+            listed(at: now.addingTimeInterval(Double(LearnedTerms.remoteLabelListedDays) * day)),
             ["/w/inkwell", "remote:quillmark"],
             "an old shim's cwd label drops out a week after its last hook; a repository stays"
+        )
+    }
+
+    /// #891: the agent's sentence is the description when the user wrote
+    /// none, and a remote project whose host sent its README is listed:
+    /// only a shim that names the repository sends one.
+    func testTheAgentsSentenceDescribesAProjectUntilTheUserWritesOne() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        var quill = LearnedTermProject(key: "remote:quillmark", name: "quillmark", terms: [], lastSeen: now)
+        quill.summary = "Quillmark renders Markdown to PDF."
+        quill.summaryAt = now
+        var learned = LearnedTerms(projects: [quill])
+        func only(_ lines: [String: String] = [:]) -> QuickCaptureProject? {
+            QuickCaptureProjects.projects(from: learned, userLines: lines, now: now, readme: { _ in nil }).first
+        }
+        XCTAssertEqual(only()?.key, "remote:quillmark", "no hook stamp, but its host sent the README")
+        XCTAssertEqual(only()?.automaticLine, "Quillmark renders Markdown to PDF.")
+        XCTAssertEqual(only()?.description, "Project quillmark. Quillmark renders Markdown to PDF.")
+
+        learned.recordProposal(
+            [], line: "Markdown to PDF renderer: the qmk CLI, page sizes, fonts.", agent: .claude,
+            project: .init(key: "remote:quillmark", name: "quillmark"), now: now
+        )
+        XCTAssertEqual(only()?.automaticLine, "Markdown to PDF renderer: the qmk CLI, page sizes, fonts.")
+        XCTAssertEqual(
+            only()?.description,
+            "Project quillmark. Markdown to PDF renderer: the qmk CLI, page sizes, fonts. Quillmark renders Markdown to PDF."
+        )
+        XCTAssertEqual(
+            only(["remote:quillmark": "My PDF tool."])?.description,
+            "Project quillmark. My PDF tool. Quillmark renders Markdown to PDF.",
+            "the user's line replaces the agent's"
         )
     }
 

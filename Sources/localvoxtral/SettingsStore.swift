@@ -144,6 +144,7 @@ final class SettingsStore {
         static let answerAgentShortcutEnabled = "settings.answer_agent_shortcut_enabled"
         static let answerAgentShortcutChord = "settings.answer_agent_shortcut_chord"
         static let agentAttentionEnabled = "settings.agent_attention_enabled"
+        static let agentAttentionMark = "settings.agent_attention_mark"
         static let modifierHoldLiveAutoPaste = "settings.modifier_hold_live_auto_paste"
         static let quickCaptureShortcutKeyCode = "settings.quick_capture_shortcut_key_code"
         static let quickCaptureShortcutModifiers = "settings.quick_capture_shortcut_carbon_modifiers"
@@ -862,6 +863,11 @@ final class SettingsStore {
         didSet { defaults.set(agentAttentionEnabled, forKey: Keys.agentAttentionEnabled) }
     }
 
+    /// The mark the menu bar icon gets while an agent needs you.
+    var agentAttentionMark: AgentAttentionMark {
+        didSet { defaults.set(agentAttentionMark.rawValue, forKey: Keys.agentAttentionMark) }
+    }
+
     var answerAgentShortcutKeyCode: UInt32 {
         didSet { defaults.set(answerAgentShortcutKeyCode, forKey: Keys.answerAgentShortcutKeyCode) }
     }
@@ -1286,6 +1292,9 @@ final class SettingsStore {
             defaults: defaults, key: Keys.answerAgentShortcutEnabled, fallback: false)
         agentAttentionEnabled = Self.loadBool(
             defaults: defaults, key: Keys.agentAttentionEnabled, fallback: false)
+        agentAttentionMark =
+            defaults.string(forKey: Keys.agentAttentionMark)
+            .flatMap(AgentAttentionMark.init(rawValue:)) ?? .dot
         modifierHoldLiveAutoPaste = Self.loadBool(
             defaults: defaults, key: Keys.modifierHoldLiveAutoPaste, fallback: false)
         quickCaptureShortcutKeyCode =

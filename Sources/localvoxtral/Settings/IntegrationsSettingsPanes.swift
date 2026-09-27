@@ -22,11 +22,16 @@ struct IntegrationsContextSettingsPane: View {
     let viewModel: DictationViewModel
     @State private var isShowingProjectLines = false
 
-    /// Lines for the projects the router lists now; a line kept for a
-    /// project that dropped off the list is not counted.
+    /// The projects the router lists now that have a description: the
+    /// user's, the agent's, or a remote host's README summary (#891).
+    /// Read from memory, never a checkout's README, and re-read on the
+    /// learned terms' revision.
     private var projectLineCount: Int {
-        let keys = Set((viewModel.quickCapture?.model.projectChoices ?? []).map(\.key))
-        return settings.quickCaptureProjectLines.keys.filter(keys.contains).count
+        _ = viewModel.learnedTermRevision
+        let learned = viewModel.learnedTermStore?.snapshot() ?? LearnedTerms()
+        return learned.listedProjects(now: Date())
+            .filter { settings.quickCaptureProjectLines[$0.key] != nil || $0.agentLine != nil || $0.summary != nil }
+            .count
     }
 
     /// Where the group's Learn more link lands.

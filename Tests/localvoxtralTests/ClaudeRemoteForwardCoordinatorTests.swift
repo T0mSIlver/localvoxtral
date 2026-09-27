@@ -359,9 +359,9 @@ final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
     }
 
     func testNoReapWhileTheListenerIsUnbound() async throws {
-        // Multi-instance safety. A second app instance cannot bind the
-        // listener while the first lives — and it must not reap either, or it
-        // would kill the first instance's perfectly healthy tunnels.
+        // A copy that lost the listener runs no forwards, so it has nothing
+        // to reap. Another copy's forwards are safe from any reap by their
+        // recorded owner (ClaudeRemoteForwardOrphanReaperTests, #892).
         let registry = try makeRegistry()
         let host = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
         try registry.setPersistentForwardEnabled(true, hostID: host.id)

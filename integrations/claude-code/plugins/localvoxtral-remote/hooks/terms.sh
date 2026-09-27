@@ -84,7 +84,7 @@ vibe_usage() {
 # ProjectTermProposal.prompt, word for word (ProjectTermRunnerScriptTests).
 prompt() {
   cat <<'PROMPT'
-List the names someone dictating about this project would say that a speech recognizer is likely to misspell: this project's own modules, types, functions, files, commands, flags, environment variables and product names. Leave out common English words and well-known names. Read at most six files. Spell each name exactly as the code does. Reply with JSON only: {"terms": [...]}, at most 40 terms.
+List the names someone dictating about this project would say that a speech recognizer is likely to misspell: this project's own modules, types, functions, files, commands, flags, environment variables and product names. Leave out common English words and well-known names. Also describe the project in one sentence of at most 200 characters: what it is, then the features and parts someone would name when filing an idea for it. Read at most six files. Spell each name exactly as the code does. Reply with JSON only: {"terms": [...], "description": "..."}, at most 40 terms.
 PROMPT
 }
 
@@ -93,7 +93,7 @@ if [ "$AGENT" = claude ]; then
   # usage and cost, parsed on the Mac as a local run's is.
   "$BIN" -p "$(prompt)" \
     --model sonnet \
-    --system-prompt 'You list a code project'"'"'s own vocabulary for a dictation app. Reply only with the requested JSON.' \
+    --system-prompt 'You list a code project'"'"'s own vocabulary and describe it for a dictation app. Reply only with the requested JSON.' \
     --tools 'Read,Glob,Grep' \
     --settings '{"disableAllHooks":true}' \
     --strict-mcp-config \
@@ -101,7 +101,7 @@ if [ "$AGENT" = claude ]; then
     --max-turns 12 \
     --max-budget-usd 0.50 \
     --output-format json \
-    --json-schema '{"type":"object","properties":{"terms":{"type":"array","items":{"type":"string"},"maxItems":40}},"required":["terms"],"additionalProperties":false}' \
+    --json-schema '{"type":"object","properties":{"terms":{"type":"array","items":{"type":"string"},"maxItems":40},"description":{"type":"string"}},"required":["terms","description"],"additionalProperties":false}' \
     </dev/null >"$WORK/out" 2>/dev/null &
 else
   # Vibe has no flag to skip hooks: a home of its own, holding only links to
