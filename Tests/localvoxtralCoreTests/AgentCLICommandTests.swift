@@ -184,7 +184,9 @@ final class AgentCLIBrokerTests: XCTestCase {
 
     func testAHistoryAnswerLargerThanAHookReceiptArrivesWhole() throws {
         let source = fixture()
-        let long = String(repeating: "word ", count: 4_000)
+        // 200 entries of about a KiB: a ~200 KiB answer, three times a hook
+        // receipt's 64 KiB line cap — the boundary this test exists to cross.
+        let long = String(repeating: "word ", count: 80)
         source.state.withLock { state in
             state.dictations = (0..<AgentCLIWire.maxHistoryLimit).map { index in
                 AgentCLIDictation(

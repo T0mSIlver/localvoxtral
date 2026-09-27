@@ -250,6 +250,11 @@ final class RemoteProjectTermsTests: XCTestCase {
     }
 
     func testARevokedHostOrALocalJoinIsNotAsked() throws {
+        let local = try XCTUnwrap(sessions.ingest(
+            ClaudeHookRecord(event: .sessionStart, sessionID: "local-1", timestamp: 0, rawCwd: "/work/quill"),
+            origin: .localAuthenticated(peerUID: 501)))
+        XCTAssertFalse(requests.request(for: local, excluding: []), "a local join is never the host's to answer")
+
         try hook("SessionStart", session: "s1")
         let snapshot = try XCTUnwrap(sessions.snapshot(sessionID: key("s1")))
         try hosts.revoke(hostID: hostID)
