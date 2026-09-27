@@ -69,7 +69,8 @@ package struct LearnedTerm: Codable, Equatable, Sendable {
     }
 
     package static let correctionSource = "correction"
-    /// `agent:claude`, `agent:vibe`: the coding agent that proposed the term
+    /// `agent:claude`, `agent:vibe`, `agent:opencode`: the coding agent that
+    /// proposed the term
     /// (`ProjectTermProposal.Agent.source`).
     package static let agentSourcePrefix = "agent:"
 
@@ -89,9 +90,28 @@ package struct LearnedTerm: Codable, Equatable, Sendable {
         }.first
     }
 
+    /// The name after `agent:` in the first agent source: a headless run's
+    /// agent, or the caller of `localvoxtral terms propose` (#721), which may
+    /// be an agent that has no headless run (`AgentCLICaller`).
+    package var proposerName: String? {
+        sources.first { $0.hasPrefix(LearnedTerm.agentSourcePrefix) }
+            .map { String($0.dropFirst(LearnedTerm.agentSourcePrefix.count)) }
+    }
+
+    /// Who proposed it, as Settings names them.
+    package var proposerDisplayName: String? {
+        if let proposingAgent { return proposingAgent.displayName }
+        switch proposerName {
+        case nil: return nil
+        case "codex": return "Codex"
+        case "opencode": return "opencode"
+        default: return "a coding agent"
+        }
+    }
+
     /// An agent proposed it and neither use nor a pin has confirmed it yet.
     package var isUnconfirmedProposal: Bool {
-        proposingAgent != nil && !isConfirmed(minimumDictations: LearnedTerms.confirmedDictations)
+        proposerName != nil && !isConfirmed(minimumDictations: LearnedTerms.confirmedDictations)
     }
 }
 
@@ -114,6 +134,18 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
     /// next joined dictation asks again once `ProjectTermProposal.retryAfter`
     /// has passed.
     package var proposalAttemptedAt: Date? = nil
+    /// A remote project's README summary, as its host reported it (#745),
+    /// for quick capture's router. A local checkout's is read from disk.
+    package var summary: String? = nil
+    /// When the host last reported it, a README with no prose included.
+    package var summaryAt: Date? = nil
+    /// When a hook from a remote session last named this project (#819).
+    /// Nil for a project no hook has named since, like a pre-#652 worktree
+    /// label no session will report again.
+    package var reportedAt: Date? = nil
+    /// True once a host named it through `X-Lvx-Env-Project`: the name of a
+    /// repository, not of the directory a session happened to run in.
+    package var reportedAsRepository: Bool? = nil
 
     package init(
         key: String,
@@ -134,6 +166,10 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
     /// A project kept for its stamp alone: an agent answered with nothing
     /// new, or failed, and emptying it would ask again.
     package var hasProposalStamp: Bool { proposedAt != nil || proposalAttemptedAt != nil }
+
+    /// Kept with no terms: a proposal stamp, or a hook that named it. A
+    /// project holding neither is dropped once its last term goes.
+    var isKeptWithoutTerms: Bool { hasProposalStamp || reportedAt != nil }
 }
 
 /// A project's stable key and the name a human would recognize
@@ -188,6 +224,8 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// vocabulary follows the work: a name from a project finished last
     /// quarter should stop competing with the current one's.
     package static let staleAfterDays = 90
+    /// A remote README summary is asked for again after this long.
+    package static let summaryRefreshDays = 7
 
     /// Longest spelling remembered. Matches `SpeakerTerms.maxTermCharacters`,
     /// since both feed the same prompt slot.
@@ -239,6 +277,55 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// Whether a joined dictation in this project should ask its agent for
     /// terms: never asked, or the last attempt failed at least
     /// `ProjectTermProposal.retryAfter` ago.
+    /// Whether a remote project's host should be asked for its README
+    /// (#745): a project a dictation has shown the app, with no report or
+    /// one older than `LearnedTerms.summaryRefreshDays`.
+    package func needsSummary(projectKey: String, now: Date) -> Bool {
+        guard projectKey.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix),
+              let project = projects.first(where: { $0.key == projectKey })
+        else { return false }
+        guard let reported = project.summaryAt else { return true }
+        return now.timeIntervalSince(reported) >= Double(LearnedTerms.summaryRefreshDays) * 86_400
+    }
+
+    /// Keeps a host's README summary on an existing project; nil records a
+    /// README with no prose. Returns false when the project is gone.
+    @discardableResult
+    package mutating func recordSummary(_ summary: String?, projectKey: String, now: Date) -> Bool {
+        guard let index = projects.firstIndex(where: { $0.key == projectKey }) else { return false }
+        projects[index].summary = summary
+        projects[index].summaryAt = now
+        return true
+    }
+
+    /// A hook from a remote session named `project` (#819). A repository's
+    /// name adds the project when it is missing, so quick capture lists
+    /// every repository a session runs in, learned terms or not. A cwd label
+    /// only stamps a project a dictation already added: every worktree has
+    /// its own label, and none of them is a project. Returns true when it
+    /// added the project.
+    @discardableResult
+    package mutating func recordRemoteReport(
+        project: LearnedTermProjectIdentity,
+        asRepository: Bool,
+        now: Date
+    ) -> Bool {
+        guard project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix) else { return false }
+        let added = !projects.contains { $0.key == project.key }
+        let index: Int
+        if let existing = projects.firstIndex(where: { $0.key == project.key }) {
+            index = existing
+        } else {
+            guard asRepository else { return false }
+            projects.append(LearnedTermProject(key: project.key, name: project.name, terms: [], lastSeen: now))
+            index = projects.count - 1
+        }
+        projects[index].reportedAt = now
+        if asRepository { projects[index].reportedAsRepository = true }
+        prune(now: now)
+        return added
+    }
+
     package func needsProposal(projectKey: String, now: Date) -> Bool {
         guard let project = projects.first(where: { $0.key == projectKey }) else { return true }
         if project.proposedAt != nil { return false }
@@ -413,6 +500,47 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         return added
     }
 
+    /// Terms a coding agent proposed through `localvoxtral terms propose`
+    /// (#721). They join unconfirmed, exactly as `recordProposal`'s do, with
+    /// `agent:<proposer>` as their source. Unlike that answer, a proposal from
+    /// the command does not stamp the project: it is a few names an agent
+    /// just met, not the project's list, so the headless run still asks once.
+    /// `terms` must already be term-shaped (`ProjectTermProposal.acceptedTerms`);
+    /// a term the project holds or `excluding` names is dropped. Returns the
+    /// terms added.
+    @discardableResult
+    package mutating func recordCommandProposal(
+        _ terms: [String],
+        proposer: String,
+        project: LearnedTermProjectIdentity,
+        excluding: [String] = [],
+        now: Date
+    ) -> [String] {
+        let index = projectIndex(for: project, now: now)
+        var known = Set(projects[index].terms.map(\.term.caseFoldedForMatching))
+        known.formUnion(excluding.map(\.caseFoldedForMatching))
+        var added: [String] = []
+        for term in terms where known.insert(term.caseFoldedForMatching).inserted {
+            projects[index].terms.append(
+                LearnedTerm(
+                    term: term,
+                    sources: [LearnedTerm.agentSourcePrefix + proposer],
+                    dictations: 0,
+                    firstSeen: now,
+                    lastSeen: now
+                )
+            )
+            added.append(term)
+        }
+        prune(now: now)
+        // A full project evicts proposals first, so the cap can take back
+        // what was just added.
+        let kept = Set(
+            projects.first { $0.key == project.key }?.terms.map(\.term.caseFoldedForMatching) ?? []
+        )
+        return added.filter { kept.contains($0.caseFoldedForMatching) }
+    }
+
     /// A terms request for this project failed; the next joined dictation
     /// after `ProjectTermProposal.retryAfter` asks again.
     package mutating func recordProposalFailure(project: LearnedTermProjectIdentity, now: Date) {
@@ -446,7 +574,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
               let index = projects.firstIndex(where: { $0.key == projectKey })
         else { return }
         projects[index].terms.removeAll { $0.term.caseFoldedForMatching == key }
-        projects.removeAll { $0.terms.isEmpty && !$0.hasProposalStamp }
+        projects.removeAll { $0.terms.isEmpty && !$0.isKeptWithoutTerms }
     }
 
     private mutating func projectIndex(
@@ -471,6 +599,9 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         let cutoff = now.addingTimeInterval(-Double(LearnedTerms.staleAfterDays) * 86_400)
         for index in projects.indices {
             projects[index].terms.removeAll { !$0.isPinned && $0.lastSeen < cutoff }
+            if let reported = projects[index].reportedAt, reported < cutoff {
+                projects[index].reportedAt = nil
+            }
             if projects[index].terms.count > LearnedTerms.maxTermsPerProject {
                 projects[index].terms = Array(
                     projects[index].terms
@@ -480,16 +611,21 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
             }
         }
         // A stamped project stays with no terms: dropping it would ask its
-        // agent again at the next dictation.
-        projects.removeAll { $0.terms.isEmpty && !$0.hasProposalStamp }
+        // agent again at the next dictation. A reported one stays until its
+        // report is as old as a stale term.
+        projects.removeAll { $0.terms.isEmpty && !$0.isKeptWithoutTerms }
         if projects.count > LearnedTerms.maxProjects {
-            // A project holding a pinned term is evicted last.
+            // A project holding a pinned term is evicted last, one kept only
+            // for a hook's report first.
             projects = Array(
                 projects
                     .sorted { lhs, rhs in
                         let lhsPinned = lhs.terms.contains(where: \.isPinned)
                         let rhsPinned = rhs.terms.contains(where: \.isPinned)
                         if lhsPinned != rhsPinned { return lhsPinned }
+                        let lhsReportOnly = lhs.terms.isEmpty && !lhs.hasProposalStamp
+                        let rhsReportOnly = rhs.terms.isEmpty && !rhs.hasProposalStamp
+                        if lhsReportOnly != rhsReportOnly { return rhsReportOnly }
                         return lhs.lastSeen == rhs.lastSeen
                             ? lhs.key < rhs.key
                             : lhs.lastSeen > rhs.lastSeen

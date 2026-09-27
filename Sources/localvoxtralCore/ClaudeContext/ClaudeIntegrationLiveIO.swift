@@ -1,11 +1,9 @@
 import Foundation
 
 #if canImport(Darwin)
-#if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
-#endif
 #endif
 
 /// Live file systems for the Integrations pane's two installers, with the
@@ -35,7 +33,6 @@ package enum ClaudeIntegrationLiveIO {
             var code: Int32
             var description: String { "\(operation) failed with errno \(code)" }
         }
-        #if canImport(Darwin)
         let descriptor = temporaryURL.path.withCString {
             open($0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
         }
@@ -68,10 +65,6 @@ package enum ClaudeIntegrationLiveIO {
         }
         guard moved == 0 else { throw POSIXFailure(operation: "rename", code: errno) }
         renamed = true
-        #else
-        try data.write(to: temporaryURL, options: .atomic)
-        try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
-        #endif
     }
 
     /// Read-or-absent for a leaf file: nil data with `exists == true` means
@@ -313,6 +306,54 @@ package struct LiveVibeHooksFileSystem: VibeHooksFileSystem {
     package func deleteHooks() throws {
         if FileManager.default.fileExists(atPath: hooksURL.path) {
             try FileManager.default.removeItem(at: hooksURL)
+        }
+    }
+}
+
+/// The agents' user-level instructions files for the dictation note, live.
+/// Every path is under home; a symlinked file or directory on the way reads
+/// as a symlink, which the service refuses.
+package struct LiveDictationNoteFileSystem: DictationNoteFileSystem {
+    private let homeURL: URL
+
+    package init(homeDirectoryURL: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        homeURL = homeDirectoryURL
+    }
+
+    private func url(_ relativePath: String) -> URL {
+        homeURL.appendingPathComponent(relativePath, isDirectory: false)
+    }
+
+    package func readFile(relativePath: String) -> DictationNoteFile {
+        let leaf = ClaudeIntegrationLiveIO.readLeaf(at: url(relativePath))
+        guard leaf.exists else { return DictationNoteFile() }
+        let intermediateIsSymlink = LiveClaudeShellRCFileSystem.anyComponentIsSymlink(
+            under: homeURL, relativePath: relativePath
+        )
+        if leaf.isSymlink || intermediateIsSymlink {
+            return DictationNoteFile(exists: true, isSymlink: true)
+        }
+        return DictationNoteFile(exists: true, data: leaf.data, permissions: leaf.permissions)
+    }
+
+    package func createParentDirectory(of relativePath: String, permissions: UInt16) throws {
+        guard !LiveClaudeShellRCFileSystem.anyComponentIsSymlink(under: homeURL, relativePath: relativePath)
+        else { throw DictationNoteInstallService.ServiceError.refused(path: relativePath, .symlink) }
+        try FileManager.default.createDirectory(
+            at: url(relativePath).deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: NSNumber(value: permissions)]
+        )
+    }
+
+    package func atomicWrite(_ data: Data, relativePath: String, permissions: UInt16) throws {
+        try ClaudeIntegrationLiveIO.atomicWrite(data, to: url(relativePath), permissions: permissions)
+    }
+
+    package func delete(relativePath: String) throws {
+        let fileURL = url(relativePath)
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            try FileManager.default.removeItem(at: fileURL)
         }
     }
 }

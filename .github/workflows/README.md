@@ -382,6 +382,14 @@ from the built site. A PR gets the build, the check and the site as the
 look at the built site before merging. Build it locally with
 `scripts/docs-site/build.sh` (needs `zensical` on `PATH`).
 
+## `pr-waits-labels.yml`
+
+Adds `waits:mac-llm`, `waits:mac-voxtral` and `waits:stack` to a same-repo PR
+on open, push, and body or base edits, from `scripts/ci/waits-labels.sh`,
+which runs the same lane filters `ci.yml` does. Hosted Ubuntu, a few seconds,
+not a required check. It only adds labels. What each label means and who
+removes it: `docs/agent/test-tiers.md`, "Why a PR waits: the waits labels".
+
 ## Action pins
 
 Every `uses:` names a 40-character commit SHA with the tag in a trailing

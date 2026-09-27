@@ -2,25 +2,23 @@
 
 ## Shortcuts
 
-You pick one of two triggers in **Settings → Dictation**.
+One key dictates. You pick it in **Settings → Dictation**, as one of two
+triggers.
 
-**Single modifier key.** Fn/Globe, Right Command, or Right Option. The one key
-has two gestures:
+**Single modifier key.** Fn/Globe, Right Command, or Right Option.
 
 | Gesture | Behavior |
 |---|---|
-| Tap | Toggle Overlay Buffer dictation on/off |
-| Hold (past the hold delay, default 350 ms) | Live Auto-Paste push-to-talk: dictates while held, stops on release |
+| Tap | Start an Overlay Buffer dictation; tap again to stop |
+| Hold (past the hold delay, default 350 ms) | Dictate while held; letting go stops |
 
-The gesture picks the output mode. A tap commits through optional LLM
-polishing, and a hold streams words as you speak. The replacement dictionary
-applies to both. Pressing any other key while the modifier is down cancels
-the gesture, so your usual shortcuts with that modifier still work. This
-trigger needs Accessibility permission.
+Pressing any other key while the modifier is down cancels the gesture, so
+your usual shortcuts with that modifier still work. This trigger needs
+Accessibility permission.
 
-**Per-mode keyboard shortcuts.** Overlay Buffer and Live Auto-Paste each get
-their own shortcut, and the `Toggle` / `Push to Talk` setting decides how it
-behaves. A shortcut needs at least one modifier, except for a function key.
+**Keyboard shortcut.** One dictation shortcut, and the `Toggle` / `Push to
+Talk` setting decides how it behaves. A shortcut needs at least one modifier,
+except for a function key.
 F1 to F20 can be recorded on their own, so a spare F13 to F20 on a full-size
 keyboard makes a dedicated dictation key. F1 to F12 are accepted too, but
 macOS uses those presses for brightness and media unless **Use F1, F2, etc.
@@ -28,6 +26,32 @@ keys as standard function keys** is on in System Settings. Until then, the app
 never sees them.
 
 **Escape** cancels an in-progress dictation.
+
+### Where the words go
+
+While you dictate, the top of the overlay lists where the words can go, and
+**Tab** moves to the next one (**⇧Tab** to the previous):
+
+- **The app you started in**, named after its coding agent session when it
+  has one. This is where a dictation goes unless you press Tab.
+- **Each coding agent session that needs you**, oldest first, when
+  [Tell me when an agent needs you](#when-a-coding-agent-needs-you) is on.
+  Picking one brings its pane forward so you can read what it asked while
+  you talk, and your words go into that pane when you stop.
+- **Inbox**: a [quick capture](coding-agents.md#quick-capture). The words are
+  saved there and never typed anywhere.
+
+So with nobody waiting, one Tab sends the dictation to the Inbox. The
+overlay only moves to a session once its terminal confirms the pane is in
+front; otherwise it stays where it was and the menu bar popover says why.
+Tab reaches back to the app you started in unless it is the same terminal
+window as the session and has no session of its own to find the pane by.
+
+Two optional shortcuts under **Settings → Dictation → Output** open the
+overlay on a destination: **Answer the agent that needs you** on the session
+that has waited longest, **Quick capture to Inbox** on the Inbox. Pressed
+during a dictation, each picks its destination the way Tab would; pressed
+again, it stops.
 
 ## Output modes
 
@@ -43,14 +67,31 @@ never sees them.
   until that display is back.
 - **Live Auto-Paste.** Words land in the focused app while you talk. The app
   applies dictionary replacements before typing, and never backspaces over
-  text an app has already drawn.
+  text an app has already drawn. It is off unless you set it up under
+  **Settings → Dictation → Advanced**: **Hold the key for Live Auto-Paste**
+  with the single modifier key, or a **Live Auto-Paste shortcut** with
+  keyboard shortcuts. It has no overlay, so Tab does not apply.
+
+### Voice commands
 
 **Say "send it" to press Return.** In a terminal or Claude Desktop, end a
-dictation with "send it" or "send now" and the app inserts the text without
-those words, then presses Return in the same app. A coding agent gets the
-prompt without you touching the keyboard. The option is off by default and
-set per mode in Settings → Dictation.
+dictation with "send it" or "send now" and the app inserts the text without those words, then presses Return
+in the same app. A coding agent gets the prompt without you touching the
+keyboard. The option is off by default and set per mode in Settings →
+Dictation (Live Auto-Paste's under Advanced).
 
+- **Your own phrases.** Settings → Dictation → Output → **Phrases that press
+  Return** replaces "send it" and "send now" with your list, separated by
+  commas, in both modes. A phrase has at most four words. A single common
+  word ("go", "done", "enter") is refused, since you say it in ordinary
+  prompts.
+- **Overlay Buffer stops on its own.** When the words end in a send phrase
+  and three seconds pass with no new words, the dictation stops as if you
+  pressed the key: polish, commit, then Return. A phrase in the middle of a
+  sentence does nothing, and speaking again within the three seconds keeps
+  the dictation going. The key still stops it at once. A held (push to
+  talk) dictation stops only on release. A quick capture stops the same
+  way and goes to the Inbox without the phrase, and never presses Return.
 - In Overlay Buffer, the app removes the words before polishing, so the
   polisher never sees them.
 - In Live Auto-Paste, the app can only remove the trigger before typing it.
@@ -64,6 +105,23 @@ on, or when the text could not be inserted into that app. The app treats an
 app as a terminal only if it is a known terminal or listed in Settings →
 Terminals. Claude Desktop is recognized on its own; listing it there would
 make localvoxtral treat its prompt box as a terminal.
+
+**Say "go to" and a session's name to switch to it.** A dictation that is
+only "go to payments" (in Live Auto-Paste, a phrase between pauses) brings the pane of the joined coding
+agent session named payments to the front instead of typing anything. A
+session answers to its repository's name and, in a linked worktree, to the
+worktree's name. It works for sessions in Ghostty, iTerm2 and Terminal.app on
+this Mac, and for Claude Desktop Code-tab sessions, on this Mac or on an ssh
+host Desktop runs them on. When no session has that name, the dictation is typed as usual;
+when more than one does, or its pane can't be reached, nothing is typed and
+the menu bar popover says so. In Live Auto-Paste, what you say next is
+typed into the session you went to.
+
+**Give a session a name of your own.** Say "call this session payments" (or
+"name this session payments") while dictating into a joined session, and
+"go to payments" reaches it from then on, ahead of any repository or
+worktree name. Nothing is typed. Naming another session payments moves the
+name to it.
 
 ### Keeping words on their line
 
@@ -80,8 +138,8 @@ width of that many letters. The committed text is the same either way.
 ## The menu bar popover
 
 localvoxtral lives in the menu bar. Its popover shows the dictation status, a
-**microphone picker**, an auto-copy toggle for the final text, and, after a
-polished commit, the raw transcript. You can edit the LLM polishing prompts
+**microphone picker**, **Copy last dictation**, and, after a polished commit,
+**Copy raw transcript**. You can edit the LLM polishing prompts
 (see the config folder below).
 
 **Copy last dictation** puts the last dictation on the clipboard: its polished
@@ -94,7 +152,37 @@ that never reached the app because:
 - a new dictation started while the last one was still polishing.
 
 It works with history off, until the app quits. You can record a global
-shortcut for it under **Settings → Dictation → Output**.
+shortcut for it under **Settings → Dictation → Advanced**.
+
+## When a coding agent needs you
+
+Turn on **Tell me when an agent needs you** under **Settings → Dictation →
+Output**. localvoxtral then tells you when one of
+the coding agent sessions it joins waits for you: a permission prompt or a
+question, from Claude Code, Codex or opencode, on this Mac or an enrolled host.
+It also tells you when a session finishes its turn while you are looking at
+another window or pane. A Mistral Vibe session tells you only when it finishes,
+since Vibe reports no waits.
+
+Each time, the app plays a sound and shows a macOS banner, the menu bar icon
+gets an orange dot, and the popover names the session: "payments needs you"
+or "payments finished". Nothing fires for a turn that ends in the pane you are
+looking at.
+
+To answer by voice, press Tab during a dictation until the overlay shows the
+session, as in [Where the words go](#where-the-words-go). The optional
+**Answer the agent that needs you** shortcut does it in one press: it brings
+forward the pane of the session that has waited longest, or else the one
+that finished first, and starts a dictation there. Press it again to stop;
+the next press goes to the next session. Like "go to", both reach sessions in
+Ghostty, iTerm2 and Terminal.app on this Mac, and Claude Desktop Code-tab
+sessions, local or over ssh: Desktop switches to the session, and the words
+go there once its prompt has focus. For any other session, the popover says
+it can't bring that session forward.
+
+A session leaves the list when you send it a prompt, when it starts working
+again, when it ends, or when you dictate into it. The app never receives what
+the agent wrote or asked, only that it waits.
 
 ## History
 
@@ -185,12 +273,13 @@ History; the panes sit under the sidebar's Settings header.
   full chat completions URL; the app appends `/v1/chat/completions` to a base
   URL. Memory limit caps the dictation helper's buffer cache (2 GB by
   default). Nemotron never fills it, so the row appears only for Voxtral.
-- **Dictation**: the trigger (single modifier key with tap/hold gestures, or
-  per-mode keyboard shortcuts), the menu-bar mode, copy on stop, the **Copy
-  last dictation** shortcut, ducking other audio, the spoken "send it"
-  trigger for each mode, and the overlay's font size, how many lines it shows
-  before scrolling, and whether it
-  [keeps words on their line](#keeping-words-on-their-line).
+- **Dictation**: the trigger (single modifier key, or a keyboard shortcut),
+  copy on stop, the [phrases](#voice-commands) that press Return, the
+  needs-you cue and the two destination shortcuts, ducking other audio, the
+  overlay's font size, how many lines it shows before scrolling, whether it
+  [keeps words on their line](#keeping-words-on-their-line), and its spoken
+  "send it" trigger. **Advanced** holds Live Auto-Paste, its own "send it"
+  trigger, the menu bar mode and the **Copy last dictation** shortcut.
 
   **Lower other audio while dictating**, on unless you turn it off, drops
   music and calls to a fifth of your volume while a session runs, in both
@@ -264,7 +353,8 @@ History; the panes sit under the sidebar's Settings header.
 - **Integrations**: one pane per harness, each with a status dot. Green
   means detected and set up, yellow means a setup step is pending, grey
   means not installed. **Claude Code** and **opencode** install their
-  plugins, **Mistral Vibe** installs its hooks, **herdr** shows detection and
+  plugins, **Mistral Vibe** installs its hooks, **Codex** installs its plugin
+  and turns green once Codex has run the hooks, **herdr** shows detection and
   herdr's saved machines, and **Remote hosts** enrolls SSH hosts for remote
   sessions.
 - **Terminals**: one pane per terminal app (plus any you add), showing
@@ -282,8 +372,8 @@ History; the panes sit under the sidebar's Settings header.
 
 **Text Processing → Advanced → Ask the coding agent for each new project's
 terms** is off by default. When it is on, the first dictation that joins a
-local Claude Code or Mistral Vibe session in a project the app has not asked
-about starts that agent once, headless, in the project's repository. The
+local Claude Code, Mistral Vibe or opencode session in a project the app has
+not asked about starts that agent once, headless, in the project's repository. The
 agent reads a few files and answers with up to 40 of the project's own names:
 modules, types, commands, environment variables. Your session never sees the
 request, so it cannot interrupt a turn. Every worktree of a repository counts
@@ -291,7 +381,8 @@ as one project, and the app asks each project once, whichever agent joins
 first. It retries a failed run a day later.
 
 The names show in **Terms learned from polishing → Show** as "Proposed by
-Claude Code" or "Proposed by Mistral Vibe". They are suggestions. Polishing
+Claude Code", "Proposed by Mistral Vibe" or "Proposed by opencode". They are
+suggestions. Polishing
 applies one only where you allow repo vocabulary and only where the
 transcript spells it out, and it never reaches the polishing prompt's list of
 your terms. Three dictations that use it, or **Pin**, make it yours;
@@ -309,6 +400,16 @@ What a run costs and sends:
   run stays out of your Vibe history. Its prompt lists up to 200 tracked file
   names. Measured runs used about 115k input tokens, $0.05–0.10 at Vibe's
   default model prices, in 10–25 s.
+- **opencode**: `opencode run --pure` with your default model, read, glob,
+  grep and list only, at most 12 steps and 4,096 output tokens a step.
+  opencode has no price cap, so a run is also cut off after 2 minutes.
+  `--pure` keeps every plugin out, ours included. The run ignores the
+  repository's `opencode.json` (no MCP server starts) and keeps its session
+  in memory, so it stays out of your opencode history. A provider that only an
+  environment variable configures is not seen, because the app does not have
+  your shell's environment; `opencode auth login` stores a key it can use.
+  Measured runs with Mistral Medium used 5 steps, 5–9k input and 200–350
+  output tokens (under $0.02), in 5–14 s.
 
 Either way, the agent sends the files it reads to its provider, as it does in
 your own sessions.

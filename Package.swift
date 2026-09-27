@@ -58,6 +58,9 @@ var products: [Product] = [
     // Darwin/Glibc) so it builds for the remote Linux hosts Claude Code runs
     // on; scripts/core-tests-linux.sh builds it there.
     .executable(name: "localvoxtral-claude-hook", targets: ["localvoxtral-claude-hook"]),
+    // The `localvoxtral` command (#721): Foundation only, like the hook
+    // publisher, whose socket client it reuses.
+    .executable(name: "localvoxtral-cli", targets: ["localvoxtral-cli"]),
 ]
 var dependencies: [Package.Dependency] = []
 var targets: [Target] = [
@@ -74,6 +77,16 @@ var targets: [Target] = [
     .executableTarget(
         name: "localvoxtral-claude-hook",
         dependencies: ["ClaudeHookPublisherCore", "ClaudeContextWire"]
+    ),
+    // The `localvoxtral` command's arguments, request and output; the
+    // binary's main is a few lines around it.
+    .target(
+        name: "LocalvoxtralCLICore",
+        dependencies: ["ClaudeContextWire", "ClaudeHookPublisherCore"]
+    ),
+    .executableTarget(
+        name: "localvoxtral-cli",
+        dependencies: ["LocalvoxtralCLICore", "ClaudeContextWire"]
     ),
     // What the app computes without AppKit: the transcript merge, the text
     // merging algorithms, the polish token guard, the payload macro, the
@@ -120,6 +133,8 @@ var targets: [Target] = [
             "ClaudeContextWire",
             // The broker and Vibe suites drive the real hook publisher.
             "ClaudeHookPublisherCore",
+            // The CLI suite drives the command against a real broker.
+            "LocalvoxtralCLICore",
             "localvoxtralTestSupport",
         ],
         swiftSettings: dogfoodSwiftSettings

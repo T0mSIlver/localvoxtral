@@ -78,7 +78,7 @@ final class DiagnosticsExporterTests: XCTestCase {
 
         let snapshot = makeSnapshot(settings: store)
 
-        XCTAssertEqual(Set(secrets.reads), Set(SecretKey.allCases))
+        XCTAssertEqual(Set(secrets.reads), Set(SecretKey.allCases).subtracting([.jevAPIKey]))
         XCTAssertTrue(snapshot.hasRealtimeAPIKey)
         XCTAssertTrue(snapshot.hasPolishingAPIKey)
         let report = DiagnosticsExporter.makeReport(snapshot: snapshot, now: Date())

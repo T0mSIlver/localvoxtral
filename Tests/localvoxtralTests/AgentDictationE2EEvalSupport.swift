@@ -698,6 +698,8 @@ enum AgentDictationE2EEvalSupport {
     struct CaseCapture {
         /// ASR output (nil when the pipeline skipped speech recognition).
         var transcript: String?
+        /// Why speech recognition threw, for the STT service watch.
+        var speechError: (any Error)?
         /// The system prompt exactly as the production request carried it.
         var polishSystemPrompt: String?
         var polishUserPrompts: [String]?

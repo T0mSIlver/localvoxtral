@@ -172,4 +172,64 @@ extension SettingsStore {
         copyLastDictationShortcutCarbonModifierFlags = normalizedShortcut.carbonModifierFlags
         copyLastDictationShortcutEnabled = true
     }
+
+    // MARK: - Answer the agent that needs you (#717)
+
+    /// The global shortcut that goes to the agent session that needs you,
+    /// nil when none is set. Nil also turns the needs-you cue off.
+    var answerAgentShortcut: DictationShortcut? {
+        guard answerAgentShortcutEnabled else { return nil }
+        let candidate = DictationShortcut(
+            keyCode: answerAgentShortcutKeyCode,
+            carbonModifierFlags: answerAgentShortcutCarbonModifierFlags
+        ).normalized
+        if DictationShortcutValidation.persistenceErrorMessage(for: candidate) != nil {
+            return nil
+        }
+        return candidate
+    }
+
+    func setAnswerAgentShortcut(_ shortcut: DictationShortcut?) {
+        guard let shortcut else {
+            answerAgentShortcutEnabled = false
+            return
+        }
+        let normalizedShortcut = shortcut.normalized
+        guard DictationShortcutValidation.persistenceErrorMessage(for: normalizedShortcut) == nil else {
+            return
+        }
+        answerAgentShortcutKeyCode = normalizedShortcut.keyCode
+        answerAgentShortcutCarbonModifierFlags = normalizedShortcut.carbonModifierFlags
+        answerAgentShortcutEnabled = true
+    }
+
+    // MARK: - Quick capture (#725)
+
+    /// The global shortcut that starts and stops a quick capture, nil when
+    /// none is set. Optional like the copy shortcut.
+    var quickCaptureShortcut: DictationShortcut? {
+        guard quickCaptureShortcutEnabled else { return nil }
+        let candidate = DictationShortcut(
+            keyCode: quickCaptureShortcutKeyCode,
+            carbonModifierFlags: quickCaptureShortcutCarbonModifierFlags
+        ).normalized
+        if DictationShortcutValidation.persistenceErrorMessage(for: candidate) != nil {
+            return nil
+        }
+        return candidate
+    }
+
+    func setQuickCaptureShortcut(_ shortcut: DictationShortcut?) {
+        guard let shortcut else {
+            quickCaptureShortcutEnabled = false
+            return
+        }
+        let normalizedShortcut = shortcut.normalized
+        guard DictationShortcutValidation.persistenceErrorMessage(for: normalizedShortcut) == nil else {
+            return
+        }
+        quickCaptureShortcutKeyCode = normalizedShortcut.keyCode
+        quickCaptureShortcutCarbonModifierFlags = normalizedShortcut.carbonModifierFlags
+        quickCaptureShortcutEnabled = true
+    }
 }

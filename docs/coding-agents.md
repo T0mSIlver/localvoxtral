@@ -84,6 +84,38 @@ file's text reaches the polisher except a term the transcript matched.
 A coding agent can add a term by editing this file, and the next dictation in
 that repo uses it.
 
+## Telling the agent you dictate
+
+Each agent's pane in Settings (Claude Code, opencode, Mistral Vibe, Codex) has a
+**Tell … you dictate** row. **Add** puts a short note in that agent's
+user-level instructions file, saying your prompts come from speech-to-text:
+the agent should fix an obvious transcription error itself and ask before
+acting when a likely error changes the request, and should propose what it
+creates or renames with [the `localvoxtral` command](#the-localvoxtral-command).
+**Remove** takes it out. A note added by an older version reads as another
+version, with an **Update** button.
+
+| Agent | File |
+|---|---|
+| Claude Code | `~/.claude/CLAUDE.md` |
+| opencode | `~/.config/opencode/AGENTS.md`, or `~/.claude/CLAUDE.md` when that file does not exist |
+| Mistral Vibe | `~/.vibe/AGENTS.md` |
+| Codex | `~/.codex/AGENTS.override.md` when it is not blank, else `~/.codex/AGENTS.md` |
+
+opencode reads only the first of its two files that exists, so creating
+`~/.config/opencode/AGENTS.md` would stop it from reading your CLAUDE.md. For
+that reason the note goes into whichever file opencode reads today, and
+Claude Code and opencode then share it. Likewise, Codex reads only its
+override while that file is not blank, so the note goes into the override
+then.
+
+The note sits between `<!-- begin localvoxtral dictation note -->` and
+`<!-- end localvoxtral dictation note -->`. The app writes only between those
+lines, and only when you press the button. A file that is a symlink, or that
+holds only one of the two lines, is left alone; the row then says so. The
+app does not see `VIBE_HOME`, `CODEX_HOME` or `CLAUDE_CONFIG_DIR`; if you
+moved one of those directories, copy the note by hand.
+
 ## Polish context: what each toggle sends
 
 Each **Settings → Context** toggle is named for what it sends. Here is what
@@ -133,6 +165,46 @@ dictating into and reads that surface as context, for local surfaces and for
 sessions opened with `cmux ssh`. Your Keychain stores the socket password,
 and localvoxtral sends it only to cmux's local socket. Saving an empty field
 removes it.
+
+## Quick capture
+
+Press Tab during a dictation until the overlay shows **Inbox**
+([Where the words go](dictation.md#where-the-words-go)), or use the optional
+**Quick capture to Inbox** shortcut (**Settings → Dictation**), for an idea
+that has no place in the app you are in.
+Your words never reach the focused app. They are saved in History, then shown
+on the **Inbox** page of the localvoxtral window.
+
+1. **Route.** A classifier picks one of your projects: a checkout on this
+   Mac that a dictation joined, or a repository on an ssh host where a
+   session has run (host plugin 1.13.0 or later; an older host lists a
+   project for a week after its last hook). It reads each project's name, the opening of its README (read from a
+   checkout on this Mac, or reported by a remote project's host), and its
+   learned terms. When it is unsure, or two
+   projects tie, the capture stays unplaced.
+2. **Draft.** For a checkout on this Mac, that project's Claude Code (or
+   Mistral Vibe) runs in the background with read-only tools and drafts an
+   issue: title, scope, constraints and proof, following the repository's
+   AGENTS.md, and naming any open issue it duplicates. The run is capped at
+   20 turns and $0.50 (Claude Code) or $0.30 (Vibe) of your agent plan or API
+   key. For a project on an ssh host, the host runs the agent in its own
+   checkout, the next time a session there sends a hook
+   ([Quick capture on a host](remote-claude-context.md#quick-capture-on-a-host)).
+3. **Review.** On the Inbox page you edit the draft, move the capture to
+   another project, or discard it. **File** creates the issue with your GitHub
+   CLI (`gh issue create`), with your dictated words quoted under the draft.
+   Nothing is filed any other way.
+
+Which classifier routes a capture:
+
+- **Send quick captures to Jev for routing**, when on and with a **Jev API
+  key** set (TypeSafe's, or a Vercel AI Gateway key starting `vck_`), sends
+  the capture text and the project descriptions to Jev, TypeSafe's hosted
+  classifier. It is off by default.
+- Otherwise, or when Jev fails, your polishing model routes it, wherever
+  polishing runs: on this Mac for the bundled helper, at the endpoint you
+  configured otherwise.
+- With neither, every capture waits in the Inbox for you to place it.
 
 ## Dictating into Claude Code
 
@@ -199,7 +271,10 @@ fields and the threat model.
 > over cmux's own automation socket, which you must first switch to
 > `password` mode. The
 > [plugin README](../integrations/claude-code/README.md) covers the
-> two-step setup.
+> two-step setup. Once joined, the dictation goes into that surface through
+> the same socket, so it lands there even if you switch windows while you
+> speak. If cmux does not confirm the text arrived, it is not typed anywhere
+> else; it stays in History.
 >
 > Joins are exact-or-nothing: any ambiguity attaches no context at all. No
 > join ever reads a window title. The TTY arm needs Ghostty 1.4 or newer (or
@@ -235,3 +310,53 @@ entry, and the same row reverses both.
 a marked block in `~/.vibe/hooks.toml`, both removed by the same row. Vibe has
 no session-start hook, so localvoxtral learns about a Vibe session at its
 first file read or edit, or when its first turn ends.
+
+A [Codex plugin](../integrations/codex/README.md) installs from
+**Settings → Codex**, through Codex's own `codex plugin` commands. Codex runs
+a plugin's hooks only after you trust them: when Codex next starts, it shows
+**Hooks need review**, and **Trust all and continue** turns them on. The
+row's dot turns green once a Codex hook has reached localvoxtral. A Codex
+session then joins like a Claude Code one, on its terminal's tty or its herdr
+or cmux pane, with its last prompt, working directory and the files it
+patched.
+
+## The `localvoxtral` command
+
+A coding agent can read your dictation history and your terms, and propose
+terms of its own, with the `localvoxtral` command. Install it from
+**Settings → General → Command-line tool**: it links
+`/usr/local/bin/localvoxtral` to the copy inside the app, so app updates
+update it too. macOS asks for your password when `/usr/local/bin` is not
+yours to write.
+
+```text
+localvoxtral history search "mac queue" --since yesterday --project .
+localvoxtral history last
+localvoxtral terms list --project .
+localvoxtral terms propose Featherline QuillDoc --project .
+localvoxtral status
+```
+
+Every command takes `--json`. `--project` takes a directory, which counts
+every worktree of its repository, or a project name. `--since` takes `today`,
+`yesterday`, `3d`, `12h`, `30m`, `2w` or a date. Under **History → Don't
+keep**, `history` answers with nothing.
+
+A proposed term joins the project's terms the way the agent's own proposals
+do (see [Dictation](dictation.md)): it applies only where repo vocabulary
+may, and three dictations or a **Pin** make it yours. **Settings → Text
+Processing → Terms learned from polishing → Show** lists it as "Proposed by"
+the agent that ran the command. Claude Code, Codex and opencode are detected;
+Vibe passes `--agent vibe`. Unlike the headless run, a proposal from the
+command does not count as the project's one ask.
+
+The command talks to the running app over the same private socket the hooks
+use. It opens no network port, and only processes running as you can reach
+it. It needs the app running, and exits 3 when it is not.
+
+To let your agents find it, add the note from the **Tell … you dictate** row
+(see [Telling the agent you dictate](#telling-the-agent-you-dictate)): it
+tells them to propose what they create or rename. Vibe is not detected, so
+its proposals read "Proposed by a coding agent". To have them name Vibe, ask
+it to add `--agent vibe` in a line of `~/.vibe/AGENTS.md` outside the note;
+an edit inside the note makes the row offer **Update**, which undoes it.

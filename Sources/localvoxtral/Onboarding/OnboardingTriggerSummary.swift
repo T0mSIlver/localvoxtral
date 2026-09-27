@@ -19,7 +19,9 @@ struct DictationTriggerSummary: Equatable {
         if settings.modifierOnlyHotKeyEnabled {
             return DictationTriggerSummary(
                 primary: settings.modifierOnlyHotKeyModifier.displayName,
-                explanation: "Tap for Overlay Buffer, hold for Live Auto-Paste.",
+                explanation: settings.modifierHoldLiveAutoPaste
+                    ? "Tap for Overlay Buffer, hold for Live Auto-Paste."
+                    : "Tap to dictate, or hold and let go when done.",
                 isModifierOnly: true
             )
         }

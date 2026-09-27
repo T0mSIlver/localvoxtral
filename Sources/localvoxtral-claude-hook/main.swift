@@ -64,6 +64,20 @@ if let index = arguments.firstIndex(of: "--agent"), index + 1 < arguments.count,
     exit(0)
 }
 
+// Codex mode: `localvoxtral-claude-hook --agent codex`, run by the shim the
+// Codex plugin's `hooks/hooks.json` names. Same contract: exit 0, print
+// nothing — Codex reads a hook's stdout as a decision.
+if let index = arguments.firstIndex(of: "--agent"), index + 1 < arguments.count,
+   arguments[index + 1] == "codex" {
+    let payload = ClaudeHookPublisher.readBoundedStdin(
+        limits: ClaudeHookLimits(maxLineBytes: CodexHookInputParser.maxPayloadBytes),
+        timeout: ClaudeHookPublisher.codexStdinReadTimeout,
+        drainsExcess: true
+    )
+    ClaudeHookPublisher().runCodex(stdin: payload)
+    exit(0)
+}
+
 let event = parsedEvent(from: arguments)
 let stdin = ClaudeHookPublisher.readBoundedStdin()
 ClaudeHookPublisher().run(stdin: stdin, fallbackEvent: event)

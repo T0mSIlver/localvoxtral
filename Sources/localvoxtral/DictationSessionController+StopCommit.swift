@@ -47,11 +47,16 @@ extension DictationSessionController {
             return
         }
 
+        // A go-to still bringing a pane forward: the segments behind it land
+        // before the session ends.
+        guard !finishLiveAutoPasteSessionAfterGoTo(sessionMode: sessionMode, finish: { [weak self] sessionAudio in
+            self?.finishLiveAutoPasteSession(sessionMode: sessionMode, finishedAudio: sessionAudio)
+        }) else { return }
         finishLiveAutoPasteSession(sessionMode: sessionMode)
     }
 
     /// The record fields a stopped session samples at stop.
-    private struct StoppedSessionRecordFields {
+    struct StoppedSessionRecordFields {
         let startedAt: Date
         let provider: String
         let model: String
@@ -67,7 +72,7 @@ extension DictationSessionController {
     /// fields, and with a polishing configuration the world the polish is
     /// grounded in. The screen re-read compares against the start capture,
     /// and seconds of agent output scrolling past would drop it as mutated.
-    private struct OverlayStopSample {
+    struct OverlayStopSample {
         let record: StoppedSessionRecordFields
         let polishingConfig: LLMPolishingConfiguration?
         let capture: StopCommitCoordinator.Capture?
@@ -76,6 +81,12 @@ extension DictationSessionController {
     /// An Overlay Buffer session that was not cancelled: transcribed again
     /// first when the session has a second pass, then committed.
     private func commitOverlayBufferSession(sessionMode: DictationOutputMode) {
+        if sessionIsQuickCapture {
+            commitQuickCapture(sessionMode: sessionMode)
+            return
+        }
+        let destinationCheck = checkDestinationBeforeCommit(sessionMode: sessionMode)
+        if destinationCheck == .kept { return }
         let sessionAudio = audio.sessionRecording.finish()
         let polishingConfig = settings.llmPolishingConfiguration
         let sample = OverlayStopSample(
@@ -99,22 +110,43 @@ extension DictationSessionController {
                 )
             }
         )
-        if let secondPass = stopSecondPassRequest(audio: sessionAudio, capture: sample.capture) {
-            startStopSecondPass(secondPass, sessionMode: sessionMode, sample: sample)
+        let proceed: @MainActor () -> Void = { [weak self] in
+            guard let self else { return }
+            if let secondPass = self.stopSecondPassRequest(audio: sessionAudio, capture: sample.capture) {
+                self.startStopSecondPass(secondPass, sessionMode: sessionMode, sample: sample)
+                return
+            }
+            self.commitOverlayBufferText(sessionMode: sessionMode, sample: sample)
+        }
+        if case .readBack(let sessionID, let bundleID) = destinationCheck {
+            commitAfterPaneReadBack(
+                sessionID: sessionID, bundleID: bundleID, sessionMode: sessionMode,
+                record: sample.record, proceed: proceed
+            )
             return
         }
-        commitOverlayBufferText(sessionMode: sessionMode, sample: sample)
+        proceed()
     }
 
     /// Polished and committed by a task when polishing has a configuration,
-    /// committed as-is otherwise.
-    private func commitOverlayBufferText(
+    /// committed as-is otherwise. `addressedTo` is the session a "send that
+    /// to <name>" named (#723 step 3): the commit goes there, never to the
+    /// focused app.
+    func commitOverlayBufferText(
         sessionMode: DictationOutputMode,
-        sample: OverlayStopSample
+        sample: OverlayStopSample,
+        goToChecked: Bool = false,
+        addressedTo: ClaudeSessionSnapshot? = nil
     ) {
+        if !goToChecked,
+           startGoToSessionIfSpoken(sessionMode: sessionMode, sample: sample)
+            || startAddressedSendIfSpoken(sessionMode: sessionMode, sample: sample) {
+            return
+        }
         // Before the dictionary and the polisher: the trigger is a command,
-        // not text, so neither may see it.
-        let spokenSendPID = stripOverlaySpokenSendTrigger()
+        // not text, so neither may see it. An addressed dictation is
+        // submitted by its own delivery, in the named session.
+        let spokenSend = addressedTo == nil ? stripOverlaySpokenSendTrigger() : nil
         let preparation = StopCommitCoordinator.prepare(
             originalText: transcript.currentDictationEventText,
             polishingConfig: sample.polishingConfig,
@@ -167,6 +199,8 @@ extension DictationSessionController {
             statusText = StatusStrings.polishing
             debugLog("LLM polishing started for \(workingText.count) chars")
 
+            // A value, not the join: the closure outlives the stop.
+            let historyJoin = capture.claudeJoin.map(AgentCLIJoin.init)
             saveInterruptedPolishCommit = { [weak self] in
                 self?.saveSessionRecord(
                     startedAt: capturedSessionStartedAt,
@@ -180,7 +214,8 @@ extension DictationSessionController {
                     status: .sttCompleted,
                     commitSucceeded: false,
                     polishContextSummary: payloadProvenanceSummary,
-                    clipboardPayload: clipboardPayload
+                    clipboardPayload: clipboardPayload,
+                    joined: historyJoin
                 )
             }
             polishAndCommitTask = Task { @MainActor [weak self] in
@@ -200,16 +235,71 @@ extension DictationSessionController {
                         audio: capturedAudio
                     ),
                     polishProfile: capturedPolishProfile,
-                    spokenSendPID: spokenSendPID
+                    spokenSend: spokenSend,
+                    addressedTo: addressedTo
                 )
             }
             return
         }
 
+        if let addressedTo {
+            let historyJoin = (sample.capture?.claudeJoin ?? context.claudeSessionJoin).map(AgentCLIJoin.init)
+            saveInterruptedPolishCommit = { [weak self] in
+                self?.saveSessionRecord(
+                    startedAt: capturedSessionStartedAt,
+                    rawText: originalText,
+                    polishedText: workingText != originalText ? workingText : nil,
+                    polishingDuration: nil,
+                    provider: capturedProvider,
+                    model: capturedModel,
+                    outputMode: capturedOutputMode,
+                    targetAppBundleID: capturedTargetBundleID,
+                    status: .sttCompleted,
+                    commitSucceeded: false,
+                    polishContextSummary: payloadProvenanceSummary,
+                    clipboardPayload: clipboardPayload,
+                    audio: capturedAudio,
+                    joined: historyJoin
+                )
+            }
+            polishAndCommitTask = Task { @MainActor [weak self] in
+                guard let self,
+                      let addressed = await self.commitOverlayAddressed(to: addressedTo)
+                else { return }
+                self.finishAddressedCommit(addressed, sessionMode: sessionMode)
+                self.saveSessionRecord(
+                    startedAt: capturedSessionStartedAt,
+                    rawText: originalText,
+                    polishedText: workingText != originalText ? workingText : nil,
+                    polishingDuration: nil,
+                    provider: capturedProvider,
+                    model: capturedModel,
+                    outputMode: capturedOutputMode,
+                    targetAppBundleID: capturedTargetBundleID,
+                    status: llmConfigurationFailure == nil ? .sttCompleted : .llmFailed,
+                    commitSucceeded: addressed.inserted,
+                    polishContextSummary: payloadProvenanceSummary,
+                    clipboardPayload: clipboardPayload,
+                    audio: capturedAudio,
+                    joined: historyJoin
+                )
+                if let llmConfigurationFailure, !addressed.superseded {
+                    self.handleLLMPolishingConnectionFailure(
+                        message: llmConfigurationFailure.message,
+                        technicalDetails: llmConfigurationFailure.technicalDetails
+                    )
+                }
+            }
+            return
+        }
+
         // Non-polishing overlay commit path
+        // Read before the cleanup below discards the join; a capture taken
+        // for a polish that could not run holds it instead.
+        let historyJoin = (sample.capture?.claudeJoin ?? context.claudeSessionJoin).map(AgentCLIJoin.init)
         let overlayCommit = StopCommitCoordinator.commit(
             overlay: overlayBufferCoordinator,
-            textInsertion: textInsertion,
+            textInsertion: overlayTextCommitter,
             autoCopyEnabled: settings.autoCopyEnabled
         )
         if let failureMessage = overlayCommit.failureMessage {
@@ -220,7 +310,7 @@ extension DictationSessionController {
             expectCorrection(of: displayWorkingText, join: context.claudeSessionJoin, project: nil)
             proposeProjectTermsIfNew(join: context.claudeSessionJoin, inserted: displayWorkingText)
         }
-        pressOverlaySpokenSendReturnIfNeeded(pid: spokenSendPID, commit: overlayCommit)
+        sendOverlaySpokenSendIfNeeded(spokenSend, commit: overlayCommit)
 
         completeStoppedSessionCleanup(
             sessionMode: sessionMode,
@@ -243,7 +333,8 @@ extension DictationSessionController {
             commitSucceeded: overlayCommit.succeeded,
             polishContextSummary: payloadProvenanceSummary,
             clipboardPayload: clipboardPayload,
-            audio: capturedAudio
+            audio: capturedAudio,
+            joined: historyJoin
         )
 
         if let llmConfigurationFailure {
@@ -264,7 +355,8 @@ extension DictationSessionController {
         capture: StopCommitCoordinator.Capture,
         record: StoppedSessionRecordFields,
         polishProfile capturedPolishProfile: String,
-        spokenSendPID: pid_t?
+        spokenSend: OverlaySpokenSend?,
+        addressedTo: ClaudeSessionSnapshot?
     ) async {
         let originalText = preparation.originalText
         let workingText = preparation.workingText
@@ -333,13 +425,51 @@ extension DictationSessionController {
         }
 
         guard !Task.isCancelled else { return }
-        // From here the task commits and saves the dictation itself.
-        self.saveInterruptedPolishCommit = nil
 
         let insertedText = self.transcript.currentDictationEventText
-        let overlayCommit = StopCommitCoordinator.commit(
+        let overlayCommit: StopCommitCoordinator.CommitResult
+        if let addressedTo {
+            // Clears the interrupted-save once the text is handed over.
+            guard let addressed = await self.commitOverlayAddressed(to: addressedTo) else { return }
+            self.finishAddressedCommit(addressed, sessionMode: sessionMode)
+            self.saveSessionRecord(
+                startedAt: capturedSessionStartedAt,
+                rawText: originalText,
+                polishedText: processedTextForPersistence,
+                polishingDuration: polishingDuration,
+                provider: capturedProvider,
+                model: capturedModel,
+                outputMode: capturedOutputMode,
+                targetAppBundleID: capturedTargetBundleID,
+                status: sessionStatus,
+                commitSucceeded: addressed.inserted,
+                polishProfile: capturedPolishProfile,
+                polishContextSummary: StopCommitCoordinator.mergedPolishProvenanceSummary(
+                    context: assembly.polishContextSummary,
+                    payload: payloadProvenanceSummary,
+                    vocabulary: StopCommitCoordinator.vocabularyProvenance(
+                        repoVocabularyCount: assembly.repoVocabularyCount,
+                        clipboardVocabularyCount: assembly.clipboardVocabularyCount
+                    )
+                ),
+                clipboardPayload: preparation.clipboardPayload,
+                audio: record.audio,
+                joined: capture.claudeJoin.map(AgentCLIJoin.init)
+            )
+            if let llmConnectionFailure, !addressed.superseded {
+                self.handleLLMPolishingConnectionFailure(
+                    title: llmConnectionFailure.title,
+                    message: llmConnectionFailure.message,
+                    technicalDetails: llmConnectionFailure.technicalDetails
+                )
+            }
+            return
+        }
+        // From here the task commits and saves the dictation itself.
+        self.saveInterruptedPolishCommit = nil
+        overlayCommit = StopCommitCoordinator.commit(
             overlay: self.overlayBufferCoordinator,
-            textInsertion: self.textInsertion,
+            textInsertion: self.overlayTextCommitter,
             autoCopyEnabled: self.settings.autoCopyEnabled
         )
         if let failureMessage = overlayCommit.failureMessage {
@@ -353,7 +483,7 @@ extension DictationSessionController {
             )
             self.proposeProjectTermsIfNew(join: capture.claudeJoin, inserted: insertedText)
         }
-        self.pressOverlaySpokenSendReturnIfNeeded(pid: spokenSendPID, commit: overlayCommit)
+        self.sendOverlaySpokenSendIfNeeded(spokenSend, commit: overlayCommit)
 
         self.completeStoppedSessionCleanup(
             sessionMode: sessionMode,
@@ -382,7 +512,8 @@ extension DictationSessionController {
                 )
             ),
             clipboardPayload: preparation.clipboardPayload,
-            audio: record.audio
+            audio: record.audio,
+            joined: capture.claudeJoin.map(AgentCLIJoin.init)
         )
 
         #if LOCALVOXTRAL_DOGFOOD
@@ -465,15 +596,18 @@ extension DictationSessionController {
 
     /// A Live Auto-Paste session: the text is already typed, so what is left
     /// is the final flush and the record.
-    private func finishLiveAutoPasteSession(sessionMode: DictationOutputMode) {
+    /// - Parameter finishedAudio: the recording, when the stop already
+    ///   finished it.
+    private func finishLiveAutoPasteSession(sessionMode: DictationOutputMode, finishedAudio: Data?? = nil) {
         // Non-overlay path (live auto-paste)
         let capturedSessionStartedAt = sessionStartedAt ?? Date()
         let capturedProvider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
         let capturedModel = sessionModelName ?? settings.effectiveModelName
         let capturedOutputMode = sessionMode.rawValue
-        let sessionAudio = audio.sessionRecording.finish()
+        let sessionAudio = finishedAudio ?? audio.sessionRecording.finish()
         let capturedAudio = sessionStoresAudio ? sessionAudio : nil
         textInsertion.flushFinalLiveReplacementCorrections()
+        let historyJoin = context.claudeSessionJoin.map(AgentCLIJoin.init)
         // Read before the cleanup below discards the join.
         if liveDictationCanTeachACorrection {
             expectCorrection(of: liveTypedText(), join: context.claudeSessionJoin, project: nil)
@@ -498,12 +632,14 @@ extension DictationSessionController {
             targetAppBundleID: nil,
             status: .sttCompleted,
             commitSucceeded: true,
-            audio: capturedAudio
+            audio: capturedAudio,
+            joined: historyJoin
         )
     }
 
     func configureLiveAutoPasteReplacementCorrectorForSession() {
         resetLiveSpokenSendForSession()
+        resetLiveGoToForSession()
         // The verdict below is taken once; focus can reach a terminal later.
         textInsertion.setLiveLateTerminalProbe(
             isLiveAutoPasteModeEnabled && !sessionTargetIsTerminalLike
@@ -551,6 +687,7 @@ extension DictationSessionController {
         polishAndCommitTask = nil
         saveInterruptedPolishCommit = nil
         liveSpokenSendSegmentMode = .undecided
+        resetLiveGoToForSession()
         // Every stop funnels through here. The commit path has already
         // consumed the capture by now (it reconciles synchronously, before
         // spawning the polish Task), so this is a no-op there — it exists to
@@ -577,6 +714,9 @@ extension DictationSessionController {
         textInsertion.stopInsertionRetryTask()
         textInsertion.logDiagnostics()
         textInsertion.endLiveReplacementSession()
+        // After the last flush and any submit: calls already handed to the
+        // relay still land, in order.
+        textInsertion.endPromptRelay()
 
         if sessionMode == .liveAutoPaste, textInsertion.hasPendingInsertionText {
             lastError = "Some realtime text could not be inserted into the focused app."
@@ -645,7 +785,45 @@ extension DictationSessionController {
     }
 
 
-    private func saveSessionRecord(
+    /// A quick capture's stop (#725): the words are saved in History first,
+    /// then handed to the Inbox; nothing is inserted, polished or sampled
+    /// from the screen or the clipboard. The overlay closes as a cancelled
+    /// one does.
+    private func commitQuickCapture(sessionMode: DictationOutputMode) {
+        let sessionAudio = audio.sessionRecording.finish()
+        let text = quickCaptureTextWithoutSpokenStopPhrase(transcript.currentDictationEventText)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let recordID = UUID()
+        let keptInHistory = !text.isEmpty && settings.dictationHistoryRetention.savesDictations && sessionStore != nil
+        saveSessionRecord(
+            id: recordID,
+            startedAt: sessionStartedAt ?? Date(),
+            rawText: text,
+            polishedText: nil,
+            polishingDuration: nil,
+            provider: sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue,
+            model: sessionModelName ?? settings.effectiveModelName,
+            outputMode: DictationSessionRecord.quickCaptureOutputMode,
+            targetAppBundleID: nil,
+            status: .sttCompleted,
+            commitSucceeded: true,
+            quickCaptureDestination: "Inbox",
+            audio: sessionStoresAudio ? sessionAudio : nil,
+            joined: nil
+        )
+        overlayBufferCoordinator.reset()
+        completeStoppedSessionCleanup(sessionMode: sessionMode, overlayCommitOutcome: nil, shouldCommitOverlay: true)
+        guard !text.isEmpty else {
+            Log.dictation.info("quick capture: nothing was said")
+            return
+        }
+        Log.dictation.info("quick capture: \(text.count, privacy: .public) chars to the inbox")
+        statusText = StatusStrings.quickCaptureSaved
+        onQuickCapture?(text, keptInHistory ? recordID : nil)
+    }
+
+    func saveSessionRecord(
+        id: UUID = UUID(),
         startedAt: Date,
         rawText: String,
         polishedText: String?,
@@ -659,7 +837,9 @@ extension DictationSessionController {
         polishProfile: String? = nil,
         polishContextSummary: String? = nil,
         clipboardPayload: String? = nil,
-        audio: Data? = nil
+        quickCaptureDestination: String? = nil,
+        audio: Data? = nil,
+        joined: AgentCLIJoin?
     ) {
         let trimmedRawText = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedRawText.isEmpty else {
@@ -668,6 +848,7 @@ extension DictationSessionController {
             return
         }
         let record = DictationSessionRecord(
+            id: id,
             startedAt: startedAt,
             finishedAt: Date(),
             rawText: rawText,
@@ -680,8 +861,15 @@ extension DictationSessionController {
             status: status,
             commitSucceeded: commitSucceeded,
             polishProfile: polishProfile,
-            polishContextSummary: polishContextSummary
+            polishContextSummary: polishContextSummary,
+            quickCaptureDestination: quickCaptureDestination
         )
+        // What `localvoxtral history` and `status` report (#721): the
+        // session's own directory or remote label, nothing read from disk.
+        record.projectKey = joined?.project?.key
+        record.projectName = joined?.project?.name
+        record.joinedAgent = joined?.agent
+        lastDictationJoin = joined
         dependencies.onSessionRecord?(record)
         let retention = settings.dictationHistoryRetention
         // The record holds the clipboard placeholder; the copy the user takes
@@ -919,6 +1107,9 @@ extension DictationSessionController {
     ) {
         statusText = StatusStrings.transcribingAgain
         let realtimeText = transcript.currentDictationEventText
+        // Only what the history keeps: the closure outlives the stop, and a
+        // join can hold an ssh forward open.
+        let historyJoin = (sample.capture?.claudeJoin ?? context.claudeSessionJoin).map(AgentCLIJoin.init)
         saveInterruptedPolishCommit = { [weak self] in
             self?.saveSessionRecord(
                 startedAt: sample.record.startedAt,
@@ -931,7 +1122,8 @@ extension DictationSessionController {
                 targetAppBundleID: sample.record.targetAppBundleID,
                 status: .sttCompleted,
                 commitSucceeded: false,
-                audio: sample.record.audio
+                audio: sample.record.audio,
+                joined: historyJoin
             )
         }
         let deadline = StopSecondPass.deadline(audioSeconds: request.audioSeconds)
@@ -948,9 +1140,10 @@ extension DictationSessionController {
                 // Here, off the main actor: the ledger appends to its file
                 // synchronously. Recorded as the request goes out, whatever
                 // comes back: one the deadline cuts off may still be billed.
-                usageRecorder?.record(MistralUsageEntry(
+                usageRecorder?.record(UsageEntry(
                     date: Date(),
-                    kind: .retranscription,
+                    feature: .secondPass,
+                    backend: .mistral,
                     model: MistralBatchTranscription.model,
                     audioSeconds: request.audioSeconds,
                     costEUR: MistralPricing.dictationCost(

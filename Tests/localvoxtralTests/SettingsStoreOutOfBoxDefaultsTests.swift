@@ -65,6 +65,19 @@ final class SettingsStoreOutOfBoxDefaultsTests: XCTestCase {
         XCTAssertTrue(makeStore().liveSpokenSendEnabled)
     }
 
+    /// The send phrases (#839): the default until set, then the user's
+    /// list across a restart. A stored list that no longer validates loads
+    /// as the default, never as no phrase at all.
+    func testSendPhrasesSurviveARestart() {
+        XCTAssertEqual(makeStore().spokenSendTriggerPhrases, ["send it", "send now"])
+
+        makeStore().spokenSendTriggerPhrases = ["ship it", "over and out"]
+        XCTAssertEqual(makeStore().spokenSendTriggerPhrases, ["ship it", "over and out"])
+
+        defaults.set(["done"], forKey: "settings.spoken_send_trigger_phrases")
+        XCTAssertEqual(makeStore().spokenSendTriggerPhrases, ["send it", "send now"])
+    }
+
     func testAnInstallThatTurnedDuckingOffKeepsItOff() {
         let store = makeStore()
         store.audioDuckingEnabled = false

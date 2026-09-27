@@ -57,12 +57,15 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
     private let store: any ProjectTermProposalStoring
     private let hosts: ClaudeRemoteHostRegistry
     private let now: @Sendable () -> Date
+    private let usageRecorder: (any UsageRecording)?
 
     package init(
         store: any ProjectTermProposalStoring,
         hosts: ClaudeRemoteHostRegistry,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        usageRecorder: (any UsageRecording)? = nil
     ) {
+        self.usageRecorder = usageRecorder
         self.store = store
         self.hosts = hosts
         self.now = now
@@ -71,13 +74,13 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
     // MARK: Step 1, at commit
 
     /// Marks `join` as wanting terms when it is a remote Claude Code or Vibe
-    /// session, its host's shim reads the header, and its project has no
+    /// session (opencode has no host shim), its host's shim reads the header, and its project has no
     /// stamp. Returns whether it marked. Runs on the commit path: no I/O
     /// beyond the in-memory store snapshot.
     @discardableResult
     package func request(for join: ClaudeSessionSnapshot, excluding: [String]) -> Bool {
-        guard case .remote = join.origin,
-              let agent = ProjectTermProposal.Agent(join.agent),
+        guard let agent = ProjectTermProposal.Agent(join.agent),
+              case .remote = join.origin,
               let hostID = ClaudeRemoteSessionScope.hostID(fromScopedSessionID: join.sessionID),
               let host = hosts.host(id: hostID), !host.isRevoked,
               Self.hostReadsTheHeader(host, agent: agent),
@@ -122,6 +125,8 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
         case .vibe:
             guard let version = host.reportedVibeHooksVersion else { return false }
             return !ClaudeRemotePluginVersionCodec.isVersion(version, olderThan: minimumVibeHooksVersion)
+        case .opencode:
+            return false
         }
     }
 
@@ -163,6 +168,9 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
         #if DEBUG
         debugAnswerObserver.withLock { $0 }?(answer.count)
         #endif
+        // The host ran the agent whatever it answered. Its shim sends the
+        // answer text only, so the run is counted without its usage.
+        usageRecorder?.record(.agentRun(date: now(), feature: .projectTerms, agent: slot.agent, usage: nil))
         guard let text = String(data: answer, encoding: .utf8),
               let raw = ProjectTermProposal.termsObject(in: text)
         else { return nil }

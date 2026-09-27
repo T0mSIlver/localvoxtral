@@ -1,4 +1,5 @@
 import AppKit
+import ClaudeContextWire
 import Foundation
 import Observation
 import os
@@ -74,6 +75,9 @@ final class DictationSessionController {
     private(set) var lastDictation: DictationHistoryEntry? {
         didSet { lastDictationGeneration &+= 1 }
     }
+    /// The session the last saved dictation joined, for `localvoxtral
+    /// status` (#721). Nil when it joined none.
+    @ObservationIgnored var lastDictationJoin: AgentCLIJoin?
     /// Whether `lastDictation` is also in History. Only then does an empty
     /// History mean it was deleted.
     @ObservationIgnored private var lastDictationIsInHistory = false
@@ -319,6 +323,17 @@ final class DictationSessionController {
     /// watch can resume without re-reading Settings. Nil: no watch.
     @ObservationIgnored
     var silenceAutoStopThreshold: TimeInterval?
+    /// Stops an Overlay Buffer dictation that ended in a send phrase
+    /// (`DictationSessionController+SpokenStop.swift`), and the words it
+    /// was armed on.
+    @ObservationIgnored
+    var spokenStopTask: Task<Void, Never>?
+    @ObservationIgnored
+    var spokenStopArmedWords: [Substring]?
+    /// This session was stopped by its send phrase: a quick capture then
+    /// saves without it.
+    @ObservationIgnored
+    var sessionStoppedBySpokenPhrase = false
     @ObservationIgnored
     var isResolvingConnectTimeout = false
     /// The connect snapshot THIS session opened with. A mid-session reconnect
@@ -371,6 +386,28 @@ final class DictationSessionController {
     var microphonePermissionTimeoutTask: Task<Void, Never>?
     @ObservationIgnored
     var sessionOutputMode: DictationOutputMode?
+    /// Resolves "go to <name>" (#723). Nil until the app installs it, and
+    /// then an Overlay Buffer dictation is never a command.
+    @ObservationIgnored
+    var sessionNavigator: SessionNavigator?
+    /// The needs-you queue (#717). Nil until the app installs it. Observed:
+    /// the menu bar icon and the popover read its queue.
+    var agentAttention: AgentAttentionModel?
+    @ObservationIgnored
+    var answerAgentTask: Task<Void, Never>?
+    /// Asked for by the start that is under way; latched into
+    /// `sessionIsQuickCapture` with the output mode, so a start that never
+    /// got that far leaves nothing for the next dictation.
+    @ObservationIgnored
+    var requestedQuickCapture = false
+    /// This session is a quick capture (#725): its words go to the Inbox,
+    /// never into the focused app.
+    @ObservationIgnored
+    var sessionIsQuickCapture = false
+    /// Where a stopped quick capture's words go, with its History record's
+    /// id when History kept it. The view model points it at the Inbox.
+    @ObservationIgnored
+    var onQuickCapture: (@MainActor (_ text: String, _ historyRecordID: UUID?) -> Void)?
     @ObservationIgnored
     var polishAndCommitTask: Task<Void, Never>?
     /// Saves the dictation `polishAndCommitTask` is polishing, as not
@@ -387,6 +424,21 @@ final class DictationSessionController {
     var wasCancelled = false
     @ObservationIgnored
     let escapeCancelHandler = EscapeCancelHandler()
+    /// Tab and ⇧Tab while an Overlay Buffer dictation runs (#840).
+    @ObservationIgnored
+    let destinationKeyHandler = DestinationKeyHandler()
+    /// The running overlay's destinations; nil outside an Overlay Buffer
+    /// dictation. `sessionIsQuickCapture` follows its pick: the Inbox is a
+    /// quick capture.
+    @ObservationIgnored
+    var destinations: SessionDestinations?
+    /// Brings a picked pane forward, or the focused app back.
+    @ObservationIgnored
+    var destinationFocusTask: Task<Void, Never>?
+    /// What the commit checks when the stopped dictation's picks moved the
+    /// focus, kept from the stop to the commit.
+    @ObservationIgnored
+    var sessionCommitGuard: DestinationCommitGuard?
     @ObservationIgnored
     var sessionStartedAt: Date?
     @ObservationIgnored
@@ -405,7 +457,7 @@ final class DictationSessionController {
     /// Where the second pass reports what it cost; the realtime client and
     /// the polishing service hold the same ledger.
     @ObservationIgnored
-    var secondPassUsageRecorder: (any MistralUsageRecording)?
+    var secondPassUsageRecorder: (any UsageRecording)?
     /// Live Auto-Paste spoken send trigger state
     /// (`DictationSessionController+SpokenSend.swift`), reset per session.
     enum LiveSpokenSendSegmentMode {
@@ -431,6 +483,23 @@ final class DictationSessionController {
     /// The "text went to another app" line is logged once per dictation.
     @ObservationIgnored
     var liveSpokenSendBlockLogged = false
+    /// Live Auto-Paste "go to <name>" state
+    /// (`DictationSessionController+LiveGoToSession.swift`), reset per session.
+    @ObservationIgnored
+    var liveGoToSegmentMode = LiveGoToSegmentMode.undecided
+    /// The current segment's deltas the go-to hold-back has not typed.
+    @ObservationIgnored
+    var liveGoToHeldText = ""
+    /// Resolves a spoken name and brings its pane forward; later segments
+    /// wait for it.
+    @ObservationIgnored
+    var liveGoToTask: Task<Void, Never>?
+    /// Segments that ended while `liveGoToTask` ran, in order.
+    @ObservationIgnored
+    var liveGoToQueuedSegments: [LiveGoToQueuedSegment] = []
+    /// Where the last go-to of this dictation moved the words, if one did.
+    @ObservationIgnored
+    var liveGoToLanding: LiveGoToLanding?
     @ObservationIgnored
     var firstChunkPreprocessor = FirstChunkPreprocessor()
 
@@ -582,8 +651,7 @@ final class DictationSessionController {
         guard audio.selectMicrophoneInput(id: id) else { return }
 
         guard isDictating else { return }
-        stopDictation(reason: "input device changed by user", finalizeRemainingAudio: false)
-        startDictation()
+        restartOnNewInput(reason: "input device changed by user")
     }
 
     var selectedInputDeviceChannelCount: UInt32 { audio.selectedInputDeviceChannelCount }
@@ -594,11 +662,35 @@ final class DictationSessionController {
         guard audio.selectMicrophoneInputChannel(channel) else { return }
 
         guard isDictating else { return }
-        stopDictation(reason: "input channel changed by user", finalizeRemainingAudio: false)
-        startDictation()
+        restartOnNewInput(reason: "input channel changed by user")
+    }
+
+    /// Stops the running session and starts the same kind again: a quick
+    /// capture restarts as a capture, never as a dictation into the app.
+    private func restartOnNewInput(reason: String) {
+        let quickCapture = sessionIsQuickCapture
+        stopDictation(reason: reason, finalizeRemainingAudio: false)
+        startDictation(outputMode: quickCapture ? .overlayBuffer : nil, quickCapture: quickCapture)
     }
 
     func startDictation(outputMode: DictationOutputMode? = nil) {
+        startDictation(outputMode: outputMode, quickCapture: false)
+    }
+
+    /// The quick capture shortcut: an Overlay Buffer capture, or the stop of
+    /// the one running. During an Overlay Buffer dictation it picks the
+    /// Inbox, as Tab would (#840); during Live Auto-Paste it does nothing,
+    /// since words already typed cannot go to the Inbox.
+    func toggleQuickCapture() {
+        if isDictating {
+            if pickInboxOrStop() { return }
+            Log.dictation.info("quick capture: pressed during a Live Auto-Paste dictation; ignored")
+            return
+        }
+        startDictation(outputMode: .overlayBuffer, quickCapture: true)
+    }
+
+    func startDictation(outputMode: DictationOutputMode?, quickCapture: Bool) {
         guard !isDictating else { return }
         onDictationStartRequested?()
         guard !isConnectingRealtimeSession else {
@@ -641,6 +733,9 @@ final class DictationSessionController {
 
         switch currentMicrophoneAuthorizationStatus() {
         case .authorized:
+            // Set only where the start goes ahead: a start refused above must
+            // leave nothing for the next one (#732 review).
+            requestedQuickCapture = quickCapture
             beginDictationAfterManagedBackendIfNeeded(outputMode: outputMode)
         case .notDetermined:
             isAwaitingMicrophonePermission = true
@@ -662,6 +757,9 @@ final class DictationSessionController {
                         self.shortcuts.clearPushToTalkShortcutSessionAttempt()
                         return
                     }
+                    // This start's kind, not whatever a press made of the
+                    // flag while the prompt was up.
+                    self.requestedQuickCapture = quickCapture
                     self.beginDictationAfterManagedBackendIfNeeded(outputMode: outputMode)
                     // The grant may land long after the initiating tap ended
                     // (toggle taps have no release event). If secure input
@@ -709,6 +807,7 @@ final class DictationSessionController {
         debugLog("stopDictation reason=\(reason)")
         shortcuts.clearPushToTalkShortcutSessionAttempt()
         disarmSilenceAutoStop()
+        disarmSpokenStop()
 
         // Before anything else: a reconnect run still in flight must not be
         // allowed to hand this session a socket after the user stopped it.
@@ -724,6 +823,7 @@ final class DictationSessionController {
         audio.flushBufferedAudio(to: activeRealtimeClient)
         isDictating = false
         escapeCancelHandler.stop()
+        endDestinations()
 
         guard finalizeRemainingAudio else {
             activeRealtimeClient.disconnect()
@@ -762,15 +862,14 @@ final class DictationSessionController {
         statusText = "Transcript copied."
     }
 
-    func copyLatestSegment(updateStatus: Bool = true) {
+    /// Live Auto-Paste with "Copy on stop" on: after each final, the
+    /// dictation so far goes to the clipboard, so it holds the whole
+    /// dictation once the session stops. Silent, since the status line
+    /// belongs to the running session.
+    func autoCopyDictationSoFar() {
         let segment = lastFinalSegment.trimmed
         guard !segment.isEmpty else { return }
-
         writeToPasteboard(segment)
-
-        if updateStatus {
-            statusText = "Latest segment copied."
-        }
     }
 
     /// Copies the RAW (pre-polish) transcript of the last polish-changed commit
@@ -891,30 +990,6 @@ final class DictationSessionController {
         }
     }
 
-    func pasteLatestSegment() {
-        let segment = lastFinalSegment.trimmed
-        guard !segment.isEmpty else { return }
-
-        textInsertion.refreshAccessibilityTrustState()
-
-        let directInsertResult = textInsertion.insertText(segment)
-        if directInsertResult.isSuccess {
-            statusText = "Pasted latest segment."
-            return
-        }
-
-        if textInsertion.pasteUsingCommandV(segment) {
-            statusText = "Pasted latest segment."
-            return
-        }
-
-        if !textInsertion.isAccessibilityTrusted {
-            statusText = StatusStrings.pasteBlockedByAccessibilityPermission
-        } else {
-            statusText = "Unable to paste latest segment."
-        }
-    }
-
     var acceptsRealtimeEvents: Bool {
         isDictating || isFinalizingStop
     }
@@ -978,5 +1053,7 @@ extension DictationSessionController {
         dogfoodEditSignalWatcher.supersede()
         #endif
         sessionClaudeJoinBadge = await context.captureAtStart()
+        noteDictationJoinedAgentSession(context.claudeSessionJoin?.snapshot.sessionID)
+        await context.resolveAgentPromptRoute()
     }
 }

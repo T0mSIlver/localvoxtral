@@ -125,6 +125,9 @@ extension ClaudeHookPublisher {
     /// it exits with the hook — publishing it would mark every session dead.
     /// So: climb while the process is one of the hook's own.
     ///
+    /// Codex starts its hooks the same way, through `$SHELL -lc`, and uses
+    /// this walk too (`runCodex`).
+    ///
     /// A process with a terminal stops the climb even inside our session. That
     /// case does not exist today; if Vibe ever stops detaching its hooks it is
     /// what keeps the walk from climbing past Vibe to the user's login shell.

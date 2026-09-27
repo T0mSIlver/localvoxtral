@@ -102,6 +102,22 @@ public final class ClaudeIntegrationSettingsModel {
     /// Short outcome of the last Vibe action, e.g. "Installed.".
     public internal(set) var vibeResult: String?
     public internal(set) var isPerformingVibeAction = false
+    /// Each agent's dictation note, refreshed with the rest of the pane and
+    /// after every note action (opencode and Claude Code can share a file).
+    public internal(set) var dictationNoteStatuses: [DictationNoteAgent: DictationNoteInstallService.Status] = [:]
+    /// "Could not add." or "Could not remove." after a failed note action;
+    /// success needs no line, the status says where the note is.
+    public internal(set) var dictationNoteResults: [DictationNoteAgent: String] = [:]
+    public internal(set) var isPerformingDictationNoteAction = false
+    /// The Codex plugin's state from `codex plugin list`, refreshed with the
+    /// rest of the pane.
+    public internal(set) var codexStatus: CodexPluginInstallService.Status = .unknown
+    /// Whether a Codex hook has reached the app since the plugin was
+    /// installed: the only proof Codex's trust gate lets the hooks run.
+    public internal(set) var codexHookHeard = false
+    /// Short outcome of the last Codex action, e.g. "Installed.".
+    public internal(set) var codexResult: String?
+    public internal(set) var isPerformingCodexAction = false
     /// Whether the herdr row is shown at all. Refreshed with the rest of the
     /// pane; hidden until something reports herdr.
     public internal(set) var isHerdrDetected = false
@@ -189,9 +205,16 @@ public final class ClaudeIntegrationSettingsModel {
     /// Copies the bundled Vibe shim and edits `~/.vibe/hooks.toml`. Nil
     /// disables the row's actions.
     let vibeService: @Sendable () -> VibeHooksInstallService?
+    /// Adds and removes the dictation note in an agent's instructions file.
+    /// Nil disables the row's actions.
+    let dictationNoteService: @Sendable (DictationNoteAgent) -> DictationNoteInstallService?
     /// The files the setup run writes onto a host that has Vibe. Nil skips
     /// that step, which is what a test that injects nothing gets.
     let vibeRemoteFiles: @Sendable () -> VibeRemoteHooksFiles?
+    /// Nil when this build cannot drive Codex's CLI.
+    let codexService: @Sendable () -> CodexPluginInstallService?
+    let codexBundledVersion: String?
+    let codexHookMemory: CodexHookHeardMemory?
     /// Hosts whose last setup run, this app session, found no Vibe. Not
     /// persisted, like the plugin version report: after a relaunch the run is
     /// offered again, which is also how a Vibe installed later gets its hooks.
@@ -326,7 +349,11 @@ public final class ClaudeIntegrationSettingsModel {
         statuslineHookCommand: @escaping @Sendable () -> String? = { nil },
         opencodeService: @escaping @Sendable () -> OpencodePluginInstallService? = { nil },
         vibeService: @escaping @Sendable () -> VibeHooksInstallService? = { nil },
+        dictationNoteService: @escaping @Sendable (DictationNoteAgent) -> DictationNoteInstallService? = { _ in nil },
         vibeRemoteFiles: @escaping @Sendable () -> VibeRemoteHooksFiles? = { nil },
+        codexService: @escaping @Sendable () -> CodexPluginInstallService? = { nil },
+        codexBundledVersion: String? = nil,
+        codexHookMemory: CodexHookHeardMemory? = nil,
         herdrBinaryAvailable: @escaping @Sendable () -> Bool = { false },
         herdrPresenceReport: @escaping @Sendable () -> Bool = { false },
         herdrPaneReportingHostIDs: @escaping @Sendable () -> [String] = { [] },
@@ -346,7 +373,11 @@ public final class ClaudeIntegrationSettingsModel {
         self.statuslineHookCommand = statuslineHookCommand
         self.opencodeService = opencodeService
         self.vibeService = vibeService
+        self.dictationNoteService = dictationNoteService
         self.vibeRemoteFiles = vibeRemoteFiles
+        self.codexService = codexService
+        self.codexBundledVersion = codexBundledVersion
+        self.codexHookMemory = codexHookMemory
         self.herdrBinaryAvailable = herdrBinaryAvailable
         self.herdrPresenceReport = herdrPresenceReport
         self.herdrPaneReportingHostIDs = herdrPaneReportingHostIDs

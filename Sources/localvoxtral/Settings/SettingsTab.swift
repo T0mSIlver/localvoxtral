@@ -22,6 +22,7 @@ struct SettingsTab: Hashable, Sendable {
         case integrationsClaude = "integrations.claude"
         case integrationsOpencode = "integrations.opencode"
         case integrationsVibe = "integrations.vibe"
+        case integrationsCodex = "integrations.codex"
         case integrationsHerdr = "integrations.herdr"
         case integrationsRemote = "integrations.remote"
         /// Raw value completed with the terminal row's slug — see `rawValue`.
@@ -29,6 +30,8 @@ struct SettingsTab: Hashable, Sendable {
         case about
         case history
         case insights
+        /// Quick captures waiting for review (#725).
+        case inbox
     }
 
     let kind: Kind
@@ -84,7 +87,8 @@ extension SettingsTab {
     /// The window is the app's one window (owner decision, 2026-09-22): the
     /// dictations first, then the settings. History and Insights sit above
     /// the Settings section, and the menu bar opens the window on History.
-    static let historySidebarItems: [SettingsTab] = [.history, .insights]
+    /// The Inbox leads: it is the one pane that waits on the user (#725).
+    static let historySidebarItems: [SettingsTab] = [.inbox, .history, .insights]
 
     /// The Settings section. Context sits with the app's own panes: it is a
     /// polishing feature that every harness feeds, not a harness. Its raw
@@ -101,8 +105,8 @@ extension SettingsTab {
     /// own row because both the Claude Code remote plugin and remote herdr
     /// joins ride its tunnels.
     static let integrationsSidebarItems: [SettingsTab] = [
-        .integrationsClaude, .integrationsOpencode, .integrationsVibe, .integrationsHerdr,
-        .integrationsRemote,
+        .integrationsClaude, .integrationsOpencode, .integrationsVibe, .integrationsCodex,
+        .integrationsHerdr, .integrationsRemote,
     ]
 
     /// Convenience accessors for the static panes, so call sites keep the
@@ -115,9 +119,11 @@ extension SettingsTab {
     static let integrationsClaude = SettingsTab(.integrationsClaude)
     static let integrationsOpencode = SettingsTab(.integrationsOpencode)
     static let integrationsVibe = SettingsTab(.integrationsVibe)
+    static let integrationsCodex = SettingsTab(.integrationsCodex)
     static let integrationsHerdr = SettingsTab(.integrationsHerdr)
     static let integrationsRemote = SettingsTab(.integrationsRemote)
     static let about = SettingsTab(.about)
     static let history = SettingsTab(.history)
     static let insights = SettingsTab(.insights)
+    static let inbox = SettingsTab(.inbox)
 }

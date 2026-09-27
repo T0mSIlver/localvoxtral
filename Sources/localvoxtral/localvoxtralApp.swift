@@ -59,6 +59,13 @@ struct localvoxtralApp: App {
                             "secure-input-warning",
                             "localvoxtral, Secure Keyboard Entry is blocking dictation typing"
                         )
+                    case .agentNeedsYou:
+                        return (
+                            MenuBarIconAsset.attentionIcon ?? idleIcon,
+                            .original,
+                            "agent-needs-you",
+                            "localvoxtral, an agent needs you"
+                        )
                     case .failure:
                         if let failureIcon = MenuBarIconAsset.failureIcon {
                             return (
@@ -101,6 +108,8 @@ struct localvoxtralApp: App {
                 case .secureInputWarning:
                     Label("localvoxtral", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
+                case .agentNeedsYou:
+                    Label("localvoxtral", systemImage: "bell.badge")
                 }
             }
         }
@@ -511,6 +520,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     #endif
 
+    /// Claude Desktop's session link, opened in Desktop itself (another app
+    /// may also claim `claude://`), read back through the join's resolver.
+    private static func liveClaudeDesktopFocuser(
+        resolver: ClaudeSessionJoinResolver,
+        sleep: @escaping @Sendable (Duration) async -> Void
+    ) -> ClaudeDesktopSessionPaneFocuser {
+        let runningDesktop = {
+            NSRunningApplication.runningApplications(withBundleIdentifier: ClaudeDesktopAllowlist.bundleID).first
+        }
+        return ClaudeDesktopSessionPaneFocuser(
+            desktopPID: { runningDesktop()?.processIdentifier },
+            frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
+            open: { link in
+                guard let appURL = runningDesktop()?.bundleURL else { return false }
+                NSWorkspace.shared.open([link], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+                    if error != nil {
+                        Log.claudeContext.error("go to session: Claude Desktop refused its session link")
+                    }
+                }
+                return true
+            },
+            shownSessionID: { pid in
+                await resolver.sessionShown(
+                    target: TerminalScreenTarget(pid: pid, bundleID: ClaudeDesktopAllowlist.bundleID)
+                )
+            },
+            sleep: sleep
+        )
+    }
+
+    /// The needs-you cue (#717). Its own resolver asks only the local
+    /// questions (`sessionShown`): nothing here can open a forward, stamp a
+    /// herdr panel or dial cmux. A terminal it has no Automation consent for
+    /// is not asked at all, so a turn's end never raises the consent sheet;
+    /// that answer counts as not looking, and the cue fires.
+    private func installAgentAttention(
+        ttyReader: AppleScriptTerminalTTYReader,
+        desktopSessionReader: AXClaudeDesktopSessionURLReader,
+        herdrClient: HerdrSocketClient
+    ) {
+        let registry = claudeSessionRegistry
+        let paneResolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            focusedTerminalTTY: { bundleID in
+                guard await AutomationConsent.isGranted(bundleID: bundleID) else { return nil }
+                return await ttyReader.focusedTerminalTTY(bundleID: bundleID)
+            },
+            focusedDesktopSessionURL: { await desktopSessionReader.focusedSessionURL(applicationPID: $0) },
+            herdrClientProbe: { HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0) },
+            herdrFederation: { HerdrMachineFederationReader.live().federation() },
+            herdrClientSurfaceCount: { HerdrClientTTYProbe.clientSurfaceCount() },
+            herdrPanes: herdrClient
+        )
+        let settings = viewModel.settings
+        let tracker = AgentAttentionTracker(
+            isEnabled: { settings.agentAttentionEnabled },
+            isWatching: { session in
+                guard let target = TerminalScreenContextSource.frontmostTarget() else { return false }
+                return await paneResolver.sessionShown(target: target) == session.sessionID
+            },
+            liveSessionIDs: { Set(registry.liveSessions().map(\.sessionID)) },
+            now: { Date() }
+        )
+        let announcer = AgentAttentionAnnouncer()
+        viewModel.agentAttention = AgentAttentionModel(tracker: tracker, announcer: announcer)
+        // The registry calls this on whichever socket thread ingested; the
+        // sequence it stamps under its lock puts a session's events back in
+        // order.
+        registry.setTurnObserver { event, session, sequence in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { _ = tracker.receive(event, session: session, sequence: sequence) }
+            }
+        }
+    }
+
     /// Binds the hook socket and installs the pane authorizer that depends on it.
     ///
     /// Failure is non-fatal by design: the app's own dictation does not need the
@@ -525,9 +609,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.claudeContext.error("Claude context broker not started: no socket path (HOME unset)")
             return
         }
+        // The `localvoxtral` command's requests arrive on the same socket
+        // (#721) and are answered from the app's own stores.
+        let agentCLI = AgentCLIService(source: AgentCLIAppDataSource(viewModel: viewModel))
         let broker = ClaudeContextBroker(
             socketPath: socketPath,
-            registry: claudeSessionRegistry
+            registry: claudeSessionRegistry,
+            agentCLI: { await agentCLI.respond(to: $0) }
         )
         do {
             try broker.start()
@@ -565,6 +653,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 herdrFederation: { HerdrMachineFederationReader.live().federation() },
                 herdrClientSurfaceCount: { HerdrClientTTYProbe.clientSurfaceCount() },
                 herdrPanes: herdrClient,
+                // Writes wait longer than reads: a write that times out after
+                // landing would be typed a second time by the fallback.
+                herdrPaneWriter: HerdrSocketClient(timeout: 2),
                 cmuxSurfaces: CmuxSocketClient(
                     password: { cmuxPasswords.password() },
                     bundleIDOfRunningPID: { CmuxSocketClient.runningBundleID(ofPID: $0) }
@@ -606,6 +697,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             )
             viewModel.context.claudeSessionJoinResolver = resolver
+            // "Go to <name>" (#723): the same registry and the same
+            // focused-pane reader as the join, so a pane counts as brought
+            // forward by the evidence the join trusts.
+            viewModel.session.sessionNavigator = SessionNavigator(
+                liveSessions: { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() },
+                repositoryRoot: SessionNavigator.liveRepositoryRoot,
+                focuser: SessionPaneFocuserRouter(
+                    terminal: TerminalSessionPaneFocuser.live(ttyReader: ttyReader),
+                    claudeDesktop: Self.liveClaudeDesktopFocuser(
+                        resolver: resolver,
+                        sleep: viewModel.session.dependencies.clock.sleep
+                    )
+                ),
+                sleep: viewModel.session.dependencies.clock.sleep,
+                nicknames: .userDefaults(.standard, key: "session_navigation.nicknames")
+            )
+            installAgentAttention(
+                ttyReader: ttyReader,
+                desktopSessionReader: desktopSessionReader,
+                herdrClient: herdrClient
+            )
             // Correction learning compares each submitted prompt with the
             // dictation the app inserted into that session. The registry
             // calls this on the ingesting socket thread.
@@ -739,6 +851,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }
         }
+        // Codex reads its local marketplace in place, from the path it was
+        // added with, so it gets the same fixed-path copy.
+        if let bundled = CodexPluginAssets.marketplaceURL() {
+            do {
+                let outcome = try ClaudeMarketplaceMirror.refresh(
+                    source: bundled, mirrorURL: CodexPluginAssets.mirrorURL()
+                )
+                if outcome != .unchanged {
+                    Log.claudeContext.info(
+                        "Codex marketplace mirror \(String(describing: outcome), privacy: .public) from \(bundled.path, privacy: .public)"
+                    )
+                }
+            } catch {
+                Log.claudeContext.error(
+                    "Codex marketplace mirror refresh failed: \(String(describing: error), privacy: .public)"
+                )
+            }
+        }
         guard let settings = viewModel.claudeIntegrationSettings else { return }
         Task {
             // Order matters: the registration is re-pointed at the mirror
@@ -767,9 +897,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A remote project's terms come from a run on its host (#641); the
         // proposer marks the session, the listener asks and takes the answer.
         let projectTerms: RemoteProjectTermRequests? = registry.flatMap { hosts in
-            viewModel.learnedTermStore.map { RemoteProjectTermRequests(store: $0, hosts: hosts) }
+            viewModel.learnedTermStore.map {
+                RemoteProjectTermRequests(store: $0, hosts: hosts, usageRecorder: viewModel.engines.usageLedger)
+            }
         }
         viewModel.session.projectTermProposer?.attachRemote(projectTerms)
+        // Quick capture's README summaries and drafts for remote projects
+        // (#745), on the same channel.
+        let quickCapture: RemoteQuickCaptureRequests? = registry.flatMap { hosts in
+            viewModel.learnedTermStore.map {
+                RemoteQuickCaptureRequests(
+                    store: $0, hosts: hosts, registry: claudeSessionRegistry,
+                    usageRecorder: viewModel.engines.usageLedger
+                )
+            }
+        }
+        viewModel.quickCapture?.attachRemote(quickCapture)
 
         let coordinator = registry.map { hosts in
             ClaudeRemoteListenerCoordinator(
@@ -790,7 +933,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         )
                     }
                 },
-                projectTerms: projectTerms
+                projectTerms: projectTerms,
+                quickCapture: quickCapture
             )
         }
         claudeRemoteListenerCoordinator = coordinator
@@ -943,7 +1087,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     fileSystem: LiveVibeHooksFileSystem()
                 )
             },
+            dictationNoteService: { agent in
+                DictationNoteInstallService(agent: agent, fileSystem: LiveDictationNoteFileSystem())
+            },
             vibeRemoteFiles: { VibeRemoteHooksFiles.bundled() },
+            codexService: { CodexPluginInstallService.live() },
+            codexBundledVersion: CodexPluginAssets.bundledPluginVersion(),
+            codexHookMemory: CodexHookHeardMemory(
+                registry: claudeSessionRegistry,
+                load: { UserDefaults.standard.bool(forKey: CodexHookHeardMemory.defaultsKey) },
+                save: { UserDefaults.standard.set($0, forKey: CodexHookHeardMemory.defaultsKey) }
+            ),
             // A binary on this Mac: a synchronous PATH scan, decided at model
             // construction so the row paints on first paint.
             herdrBinaryAvailable: {
@@ -1228,6 +1382,8 @@ private enum MenuBarIconAsset {
         "MicIconTemplate_failure",
         "MicIconTemplate@2x_failure",
     ])
+
+    static let attentionIcon: NSImage? = idleIcon.map(MenuBarStatusIcon.withAttentionDot(template:))
 
     private static func adaptiveIcon(coloredCandidates: [String]) -> NSImage? {
         guard let template = idleIcon,

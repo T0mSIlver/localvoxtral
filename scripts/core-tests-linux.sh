@@ -26,5 +26,6 @@ cp Package.resolved "$resolved_backup"
 trap 'cat "$resolved_backup" >Package.resolved; rm -f "$resolved_backup"' EXIT
 
 "$SWIFT" build --scratch-path "$SCRATCH" --product localvoxtral-claude-hook
+"$SWIFT" build --scratch-path "$SCRATCH" --product localvoxtral-cli
 "$SWIFT" build --scratch-path "$SCRATCH" --product localvoxtralPackageTests
 "$SWIFT" test --skip-build --scratch-path "$SCRATCH" "$@"

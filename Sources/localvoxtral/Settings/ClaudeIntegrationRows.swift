@@ -155,6 +155,47 @@ struct OpencodePluginRow: View {
     }
 }
 
+/// Install/remove the Codex plugin.
+///
+/// Same shape as `ClaudePluginInstallRow`: one click, because Codex's own CLI
+/// does the install. The status sentence, not a result line, follows a
+/// successful action: after an install it tells the user to trust the hooks
+/// at Codex's next start, the one step the app cannot take for them.
+struct CodexPluginRow: View {
+    @Bindable var model: ClaudeIntegrationSettingsModel
+
+    var body: some View {
+        SettingsFieldRow(
+            title: "Plugin",
+            status: model.codexResult ?? model.codexSentence,
+            statusAccessibilityIdentifier: "integrations.codex.status"
+        ) {
+            HStack(spacing: 8) {
+                if let title = model.codexStatus.primaryActionTitle {
+                    Button(title) {
+                        Task { await model.installCodexPlugin() }
+                    }
+                    .disabled(model.isPerformingCodexAction)
+                    .accessibilityIdentifier("integrations.codex.install")
+                }
+
+                if model.codexStatus.offersRemove {
+                    Button("Remove") {
+                        Task { await model.removeCodexPlugin() }
+                    }
+                    .disabled(model.isPerformingCodexAction)
+                    .accessibilityIdentifier("integrations.codex.remove")
+                }
+
+                if model.isPerformingCodexAction {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            .controlSize(.small)
+        }
+    }
+}
+
 /// Install/remove the Mistral Vibe hooks.
 ///
 /// Same shape as `OpencodePluginRow`: the buttons follow
@@ -195,6 +236,42 @@ struct VibeHooksRow: View {
         }
         .sheet(isPresented: $isShowingSetup) {
             VibeHooksSetupSheet(model: model) { isShowingSetup = false }
+        }
+    }
+}
+
+/// Add or remove the dictation note in one agent's instructions file.
+///
+/// Writes only on a press. The buttons follow the file: Add when the note is
+/// absent, Update when the file holds another version, Remove when it is
+/// there, nothing while the file needs a hand fix.
+struct DictationNoteRow: View {
+    @Bindable var model: ClaudeIntegrationSettingsModel
+    let agent: DictationNoteAgent
+
+    var body: some View {
+        SettingsFieldRow(
+            title: "Tell \(agent.displayName) you dictate",
+            status: model.dictationNoteSentence(for: agent),
+            statusAccessibilityIdentifier: "integrations.\(agent.rawValue).dictationNote.status"
+        ) {
+            HStack(spacing: 8) {
+                let status = model.dictationNoteStatus(for: agent)
+                if let title = DictationNoteInstallService.addButtonTitle(for: status) {
+                    Button(title) { Task { await model.addDictationNote(for: agent) } }
+                        .disabled(model.isPerformingDictationNoteAction)
+                        .accessibilityIdentifier("integrations.\(agent.rawValue).dictationNote.add")
+                }
+                if DictationNoteInstallService.offersRemove(for: status) {
+                    Button("Remove") { Task { await model.removeDictationNote(for: agent) } }
+                        .disabled(model.isPerformingDictationNoteAction)
+                        .accessibilityIdentifier("integrations.\(agent.rawValue).dictationNote.remove")
+                }
+                if model.isPerformingDictationNoteAction {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            .controlSize(.small)
         }
     }
 }

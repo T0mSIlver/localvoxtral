@@ -94,6 +94,11 @@ On the host, each hook runs `remote/post.sh`:
    ([Terms from the coding agent on a host](../../docs/remote-claude-context.md#terms-from-the-coding-agent-on-a-host)).
    It runs under a Vibe home of its own, under `~/.vibe/localvoxtral/remote/vibe-home/`, so
    none of your hooks fire and the run stays out of your Vibe history.
+6. When the reply carries `X-Lvx-Readme: wanted` or `X-Lvx-Draft: <id>`, it
+   starts `capture.sh` detached, which posts the first 16 KiB of the
+   project's README, or drafts a quick capture with a read-only `vibe -p` in
+   the project and posts the draft
+   ([Quick capture on a host](../../docs/remote-claude-context.md#quick-capture-on-a-host)).
 
 It prints nothing and always exits 0.
 
@@ -104,6 +109,12 @@ markers and hook names differ.
 
 Delete the marked block from `~/.vibe/hooks.toml` and remove
 `~/.vibe/localvoxtral/`.
+
+## Telling Vibe you dictate
+
+**Settings → Mistral Vibe → Tell Mistral Vibe you dictate → Add** puts a short
+note in `~/.vibe/AGENTS.md` saying your prompts come from speech-to-text. See
+[Telling the agent you dictate](../../docs/coding-agents.md#telling-the-agent-you-dictate).
 
 ## What is published
 

@@ -5,11 +5,11 @@ import XCTest
 
 @testable import localvoxtralCore
 
-/// The real `claude -p` and `vibe -p` runs of #609, through the production
-/// proposer and runner, against a fixture repository whose hooks write a
-/// marker file. Spends real tokens (about $0.25 for the whole class), so it
-/// runs only through `scripts/linux/project-terms-live.sh`, on Linux, never on
-/// the Mac.
+/// The real `claude -p`, `vibe -p` (#609) and `opencode run` (#642) runs,
+/// through the production proposer and runner, against a fixture repository
+/// whose hooks and plugins write a marker file. Spends real tokens (about
+/// $0.25 for the whole class), so it runs only through
+/// `scripts/linux/project-terms-live.sh`, on Linux, never on the Mac.
 final class ProjectTermProposalLiveTests: XCTestCase {
     private final class Store: ProjectTermProposalStoring, @unchecked Sendable {
         let memory = Mutex(LearnedTerms())
@@ -45,6 +45,12 @@ final class ProjectTermProposalLiveTests: XCTestCase {
     /// `post_agent` hook that writes the marker.
     private var userVibe: URL { root.appendingPathComponent("user-vibe") }
     private var appVibeHome: URL { root.appendingPathComponent("app-vibe-home") }
+    /// Stands in for the user's `~/.config` (`XDG_CONFIG_HOME`): an opencode
+    /// config naming the model, and a plugin in the global plugin directory,
+    /// where the app installs ours, that writes the marker.
+    private var userConfig: URL { root.appendingPathComponent("user-config") }
+    private var opencodeGlobalMarker: String { root.appendingPathComponent("opencode-global-plugin-ran").path }
+    private var opencodeProjectMarker: String { root.appendingPathComponent("opencode-project-plugin-ran").path }
 
     override func setUpWithError() throws {
         guard ProcessInfo.processInfo.environment["LV_PROJECT_TERMS_LIVE"] == "1" else {
@@ -55,6 +61,7 @@ final class ProjectTermProposalLiveTests: XCTestCase {
         let fm = FileManager.default
         try fm.createDirectory(atPath: repo + "/src", withIntermediateDirectories: true)
         try fm.createDirectory(atPath: repo + "/.claude", withIntermediateDirectories: true)
+        try fm.createDirectory(atPath: repo + "/.opencode/plugins", withIntermediateDirectories: true)
         try """
             # quillmark
             Quillmark renders Markdown to PDF through the `inkwell` layout engine.
@@ -67,6 +74,8 @@ final class ProjectTermProposalLiveTests: XCTestCase {
             """.write(toFile: repo + "/src/PageComposer.swift", atomically: true, encoding: .utf8)
         try #"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch \#(claudeMarker)"}]}]}}"#
             .write(toFile: repo + "/.claude/settings.json", atomically: true, encoding: .utf8)
+        try Self.markerPlugin(opencodeProjectMarker)
+            .write(toFile: repo + "/.opencode/plugins/marker.js", atomically: true, encoding: .utf8)
         for arguments in [["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]] {
             let git = Process()
             git.executableURL = URL(fileURLWithPath: "/usr/bin/git")
@@ -91,6 +100,13 @@ final class ProjectTermProposalLiveTests: XCTestCase {
             command = "touch \(vibeMarker)"
             timeout = 5.0
             """.write(to: userVibe.appendingPathComponent("hooks.toml"), atomically: true, encoding: .utf8)
+    }
+
+    private static func markerPlugin(_ marker: String) -> String {
+        """
+        import { writeFileSync } from "node:fs";
+        export const Marker = async () => { writeFileSync("\(marker)", "ran"); return {}; };
+        """
     }
 
     override func tearDownWithError() throws {
@@ -170,6 +186,69 @@ final class ProjectTermProposalLiveTests: XCTestCase {
         )
         print("[vibe control, user home] marker present: \(FileManager.default.fileExists(atPath: vibeMarker))")
         XCTAssertTrue(FileManager.default.fileExists(atPath: vibeMarker), "control: the hook never fires here")
+    }
+
+    /// The model comes from the stand-in user config, as a user's default
+    /// would: `LV_OPENCODE_LIVE_MODEL` (default Mistral Medium, whose key
+    /// `LV_OPENCODE_LIVE_MISTRAL_KEY` carries so the Vibe runs keep their own).
+    func testOpencodeProposesTheFixturesTermsWithoutLoadingAnyPlugin() async throws {
+        let fm = FileManager.default
+        let environment = ProcessInfo.processInfo.environment
+        let model = environment["LV_OPENCODE_LIVE_MODEL"] ?? "mistral/mistral-medium-latest"
+        let opencodeConfig = userConfig.appendingPathComponent("opencode")
+        try fm.createDirectory(at: opencodeConfig.appendingPathComponent("plugins"), withIntermediateDirectories: true)
+        try #"{"$schema":"https://opencode.ai/config.json","model":"\#(model)","permission":{"bash":"allow","edit":"allow"}}"#
+            .write(to: opencodeConfig.appendingPathComponent("opencode.json"), atomically: true, encoding: .utf8)
+        try Self.markerPlugin(opencodeGlobalMarker)
+            .write(to: opencodeConfig.appendingPathComponent("plugins/marker.js"), atomically: true, encoding: .utf8)
+        var runEnvironment = environment
+        runEnvironment["XDG_CONFIG_HOME"] = userConfig.path
+        if let key = environment["LV_OPENCODE_LIVE_MISTRAL_KEY"] { runEnvironment["MISTRAL_API_KEY"] = key }
+
+        let runner = Recording(ProjectTermProposalProcessRunner(
+            environment: runEnvironment, vibeHome: appVibeHome, userVibeDirectory: userVibe
+        ))
+        let store = Store()
+        let proposer = ProjectTermProposer(store: store, runner: runner, now: { Date() })
+        await proposer.dictationCommitted(join: join(.opencode), enabled: true, excluding: [])?.value
+        let outcome = runner.outcomes.withLock { $0.first }
+        report("opencode, \(model)", outcome, store)
+        guard case .terms(_, let usage)? = outcome else { return XCTFail("opencode run failed") }
+        print("[opencode] usage: \(usage?.summary ?? "none")")
+        XCTAssertFalse(store.snapshot().unconfirmedProposals(projectKey: repo).isEmpty)
+        print("[opencode] global plugin marker present: \(fm.fileExists(atPath: opencodeGlobalMarker))")
+        print("[opencode] project plugin marker present: \(fm.fileExists(atPath: opencodeProjectMarker))")
+        XCTAssertFalse(fm.fileExists(atPath: opencodeGlobalMarker), "a global plugin loaded")
+        XCTAssertFalse(fm.fileExists(atPath: opencodeProjectMarker), "a project plugin loaded")
+        let status = try gitStatus()
+        print("[opencode] git status --porcelain --ignored: \(status.isEmpty ? "(clean)" : status)")
+        XCTAssertEqual(status, "", "the run changed the repository")
+
+        // Control: the same run without `--pure` does load the global
+        // plugin, so the marker's absence above means something.
+        let executable = try XCTUnwrap(ProjectTermProposalProcessRunner.candidates(
+            for: .opencode, environment: runEnvironment
+        ).first { fm.isExecutableFile(atPath: $0) })
+        _ = await BoundedProcess.run(
+            executableURL: URL(fileURLWithPath: executable),
+            arguments: ProjectTermProposal.opencodeArguments(workingDirectory: repo).filter { $0 != "--pure" },
+            environment: runEnvironment.merging(ProjectTermProposal.opencodeEnvironment) { _, run in run },
+            currentDirectory: repo, timeoutSeconds: 120, maxBytes: 8_000_000, label: "control"
+        )
+        print("[opencode control, no --pure] global plugin marker present: \(fm.fileExists(atPath: opencodeGlobalMarker))")
+        XCTAssertTrue(fm.fileExists(atPath: opencodeGlobalMarker), "control: the plugin never loads here")
+    }
+
+    private func gitStatus() throws -> String {
+        let git = Process()
+        let pipe = Pipe()
+        git.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        git.arguments = ["-C", repo, "status", "--porcelain", "--ignored"]
+        git.standardOutput = pipe
+        try git.run()
+        git.waitUntilExit()
+        return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Vibe caches its server-side rollout per home; before the first run

@@ -270,6 +270,10 @@ public enum ClaudeSessionReducer {
             snapshot.activity = .working
         case .stop:
             snapshot.activity = .idle
+        case .notification:
+            // A wait inside a turn: the turn is not over, and a permission
+            // answered in the pane resumes it without another hook.
+            break
         case .focusChanged, .focusCleared:
             // Focus is registry-level state (a TTY→session binding, held in
             // `ClaudeSessionRegistry`'s focus table) — a pane DISPLAYING or

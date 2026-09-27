@@ -219,6 +219,83 @@ you make a helper depend on something outside its directory — a local `path:`
 dependency, a shared source directory — the premise breaks and the shared list
 in the filter has to grow in the same PR.
 
+## Why a PR waits: the waits labels
+
+An open PR that cannot merge yet carries one `waits:` label per reason, so the
+owner and the scheduler can read the queue from the PR list. Mac inference
+runs only in the night window the scheduler books, so the three Mac labels
+say what that night has to run.
+
+| Label | Waits for | Added by | Removed by |
+|---|---|---|---|
+| `waits:mac-voxtral` | Voxtral inference on the Mac: the speechd or live STT lane, an ASR eval, a speech helper replay | CI from the lane filters, or the worker | the scheduler, once the night run passed |
+| `waits:mac-llm` | LLM inference on the Mac: the LLM lane, the eval-e2e scoreboard, a polish helper replay or bench | CI from the lane filters, or the worker | the scheduler, once the night run passed |
+| `waits:mac-e2e` | a scored UI Smoke e2e dictation on the final diff, which the owner starts | the worker | the scheduler, once a run scored |
+| `waits:stack` | its base PR to merge | CI when the base is not `main` | the scheduler, after the retarget |
+| `waits:ci-red` | a known flake or a semantic conflict with main that someone is fixing | the worker or the scheduler | whoever gets it green |
+| `waits:external` | a key, account or decision from outside the repo | the worker | the worker |
+
+The owner's OK to merge and a hand check stay on `needs-human-review`, which
+also marks merged PRs and drives the board's Needs human review status.
+
+`pr-waits-labels.yml` adds the lane and stack labels on every push, body or
+base edit (`scripts/ci/waits-labels.sh`, the same filters `ci.yml` runs). It
+never removes one. A push after the night run adds the Mac label back, which
+is right: the lanes must pass on the final diff. CI cannot see an eval-e2e
+scoreboard, a replay, or a lane waived in an earlier commit's message, so the
+worker adds or removes those labels by hand.
+
+## Merging on the owner's OK: the board pass
+
+The owner approves an open PR by moving its card on the project board from
+Needs human review to Done. GitHub sends no event for a card move on a
+personal board, so the scheduler runs `scripts/board/merge-approved.sh`
+every 10 minutes, from a checkout of main it pulls first. One pass spends one
+GraphQL query (cost 1): the board's open PRs in Done, with labels,
+mergeability and checks. For each PR it prints one line:
+
+| Verdict | When | What the pass does |
+|---|---|---|
+| `wait` | stacked, a `waits:` label, a draft, a check still running, or `build-test`, `linux` or `mac-lanes` not green yet; also a head that moved since the query, or main changed a file the PR changes, or a check, since its CI run | nothing; the card stays in Done because the OK still holds |
+| `back` | a failed or cancelled check (the newest run of each counts), a conflict with main, a fork PR, a dependency pinned to a fork | moves the card to Needs human review, then comments the reason and the failed job's log tail |
+| `merge` | everything else | squash-merges at the checked sha, retargets PRs stacked on it to main, then deletes the branch |
+
+A `waits:` label holds a PR even with a red check: someone is on it. The
+pre-merge check is the one in the orchestrate-sessions skill, in git: CI
+tested the merge with main as it was when the run was created, so only what
+landed since counts. When that touches a file the PR changes, `.github/` or
+`scripts/ci/`, the line says so, and the scheduler runs the combined check (a
+hosted combo PR) and merges by hand. Deleting a merged branch would close
+the PRs based on it, so when listing or retargeting them fails, the branch
+stays and the pass exits 1. A merged PR with a hand check (the `needs-human-review` label
+and Hand check steps in its body) goes back to Needs human review on the next
+pass, once GitHub's "Pull request merged" workflow has set it to Done.
+
+Why not a scheduled workflow: the repo token can neither read nor move cards
+on a user-owned board, so it would need the owner's token as a secret, and a
+merge made with the repo token starts no workflow on main. The board's
+"Auto-close issue" workflow leaves an open PR in Done alone (checked on
+2026-09-26 with a throwaway PR).
+
+## Scheduled Mac inference stays in the night window
+
+Scheduled inference on the Mac runs 00:00–07:00 UTC; after that the owner
+works on the machine. GitHub fires `schedule:` events hours late (#822: the
+04:45 UTC Sunday `eval-e2e` was created at 09:33 and 09:48 UTC), so a cron
+inside the window does not keep the run there. So `eval-e2e` runs two ways:
+
+- The dev box's scheduler dispatches it on main on Sundays at about 04:45 UTC.
+  A dispatch always runs.
+- The cron stays as the fallback, for a night the scheduler's timers miss. A
+  scheduled run skips green, with the reason under "E2E eval (scheduled):
+  SKIPPED" in the step summary, when it cannot finish by 07:00 UTC
+  (`scripts/ci/night-window-guard.sh 30`) or when another `eval-e2e` run on
+  main succeeded, or is queued or running, in the last 20 hours
+  (`scripts/ci/recent-run-guard.sh`), which is what keeps the dispatch and the
+  cron from both running.
+
+A new scheduled workflow that runs inference on the Mac takes both guards.
+
 ## Dispatching a run without deepening the queue
 
 There is ONE self-hosted runner (the owner's MacBook), so CI concurrency is 1

@@ -20,7 +20,8 @@ ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd -P)"
 FIXTURE="$ROOT_DIR/scripts/herdr-integration-fixture.sh"
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lv-herdr-fixture-recovery.XXXXXX")"
-trap 'rm -rf "$TMP_DIR"' EXIT
+DECOY_PID=""
+trap '[[ -z "$DECOY_PID" ]] || kill "$DECOY_PID" 2>/dev/null || :; rm -rf "$TMP_DIR"' EXIT
 
 fail() {
   printf 'FAIL: %s\n' "$*" >&2
@@ -155,7 +156,10 @@ pass "a second hold is refused rather than overwriting the pristine copies"
 
 setup_home
 DECOY="$TMP_DIR/herdr-integration-fixture-decoy.sh"
-printf '#!/bin/sh\nsleep 30\n' > "$DECOY"
+# `exec -a`, not a shell that runs `sleep` as its child: killing that shell
+# orphaned the child for its full 30 s (#714). The decoy keeps its own name in
+# argv, which is all the liveness check reads.
+printf '#!/bin/bash\nexec -a "$0" sleep 30\n' > "$DECOY"
 chmod +x "$DECOY"
 "$DECOY" &
 DECOY_PID=$!
@@ -175,6 +179,7 @@ pass "a live run's hold is refused rather than reclaimed"
 
 kill "$DECOY_PID" 2>/dev/null || true
 wait "$DECOY_PID" 2>/dev/null || true
+DECOY_PID=""
 release_account_files 2>/dev/null || true
 
 # --- 6. Restoring absent files means removing them, not writing empties ----

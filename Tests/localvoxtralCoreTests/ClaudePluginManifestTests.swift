@@ -1,3 +1,4 @@
+import ClaudeContextWire
 import Foundation
 import XCTest
 @testable import localvoxtralCore
@@ -225,8 +226,18 @@ final class ClaudePluginManifestTests: XCTestCase {
             events,
             [
                 "SessionStart", "UserPromptSubmit", "CwdChanged",
-                "PostToolUse", "Stop", "SessionEnd",
+                "PostToolUse", "Stop", "Notification", "SessionEnd",
             ]
+        )
+    }
+
+    /// Only the waits the app shows (#717); `idle_prompt` and the rest never
+    /// start the publisher.
+    func testTheNotificationHookMatchesOnlyTheWaitsTheWireCarries() throws {
+        let matcher = try XCTUnwrap(try hooksByEvent()["Notification"]?.first?["matcher"] as? String)
+        XCTAssertEqual(
+            Set(matcher.split(separator: "|").map(String.init)),
+            Set(ClaudeNotificationType.allCases.map(\.rawValue))
         )
     }
 
@@ -246,7 +257,7 @@ final class ClaudePluginManifestTests: XCTestCase {
 
     func testEveryHookCommandUsesPluginRootAndTheShim() throws {
         let commands = try allCommands()
-        XCTAssertEqual(commands.count, 6, "one command per event")
+        XCTAssertEqual(commands.count, 7, "one command per event")
         for command in commands {
             // QUOTED (F7): hook commands run through a shell, and the plugin
             // root lives under "~/.claude" today but is an implementation

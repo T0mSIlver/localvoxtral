@@ -679,6 +679,8 @@ final class TerminalTargetDetectorTests: XCTestCase {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         retainForTestProcessLifetime(viewModel)
         viewModel.session.secureInputWarningSound = {}
+        // A hold is Live Auto-Paste only with the Advanced toggle on (#840).
+        viewModel.settings.modifierHoldLiveAutoPaste = true
 
         viewModel.shortcuts.handleModifierOnlyHoldStart()
         XCTAssertFalse(viewModel.isDictating, "start is refused under secure input")

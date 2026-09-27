@@ -97,14 +97,16 @@ final class ProjectTermProposerTests: XCTestCase {
     private func proposer(
         _ runner: FakeRunner,
         store: FakeStore? = nil,
-        files: [String] = ["README.md", "src/PageComposer.swift"]
+        files: [String] = ["README.md", "src/PageComposer.swift"],
+        usage: UsageLedger? = nil
     ) -> (ProjectTermProposer, FakeStore) {
         let store = store ?? FakeStore(now: clock.now)
         let proposer = ProjectTermProposer(
             store: store,
             runner: runner,
             now: clock.now,
-            trackedFiles: { _ in files }
+            trackedFiles: { _ in files },
+            usageRecorder: usage
         )
         return (proposer, store)
     }
@@ -216,15 +218,45 @@ final class ProjectTermProposerTests: XCTestCase {
         XCTAssertEqual(runner.count, 0)
     }
 
+    // MARK: opencode
+
+    /// From a subdirectory, the run's `--dir` and working directory are both
+    /// the repository root, and it needs no file list.
+    func testALocalOpencodeJoinRunsOpencodeInTheRepositoryRoot() async throws {
+        let repo = try checkout("quillmark")
+        let runner = FakeRunner(.terms(["inkwell"]))
+        let (proposer, store) = proposer(runner)
+
+        await commit(proposer, join(repo + "/src", agent: .opencode))
+
+        XCTAssertEqual(runner.invocations.withLock { $0 }, [
+            ProjectTermProposal.Invocation(
+                agent: .opencode,
+                workingDirectory: repo,
+                arguments: ProjectTermProposal.opencodeArguments(workingDirectory: repo),
+                environment: ProjectTermProposal.opencodeEnvironment
+            ),
+        ])
+        XCTAssertEqual(store.snapshot().projects.first?.terms.first?.sources, ["agent:opencode"])
+        XCTAssertEqual(store.snapshot().projects.first?.terms.first?.isUnconfirmedProposal, true)
+        XCTAssertEqual(store.snapshot().unconfirmedProposals(projectKey: repo), ["inkwell"])
+
+        await commit(proposer, join(repo, agent: .opencode))
+        await commit(proposer, join(repo, agent: .claude))
+        XCTAssertEqual(runner.count, 1, "one ask per project, whichever agent joins next")
+    }
+
     // MARK: Does not run
 
-    func testNothingRunsWithoutALocalClaudeOrVibeJoinOrWithTheSettingOff() async throws {
+    func testNothingRunsWithoutALocalJoinOrWithTheSettingOff() async throws {
         let repo = try checkout("quillmark")
         let runner = FakeRunner(.terms(["inkwell"]))
         let (proposer, _) = proposer(runner)
 
         XCTAssertNil(proposer.dictationCommitted(join: nil, enabled: true, excluding: []))
-        XCTAssertNil(proposer.dictationCommitted(join: join(repo, agent: .opencode), enabled: true, excluding: []))
+        XCTAssertNil(proposer.dictationCommitted(
+            join: join(repo, agent: .opencode, origin: .remote(channel: "ssh")), enabled: true, excluding: []
+        ))
         XCTAssertNil(proposer.dictationCommitted(
             join: join(repo, origin: .remote(channel: "ssh")), enabled: true, excluding: []
         ))
@@ -262,6 +294,32 @@ final class ProjectTermProposerTests: XCTestCase {
         await commit(relaunched, join(repo))
         XCTAssertEqual(answering.count, 1)
         XCTAssertEqual(store.snapshot().unconfirmedProposals(projectKey: repo), ["inkwell"])
+    }
+
+    // MARK: Usage
+
+    func testEveryRunThatStartedIsChargedToProjectTermsWithWhatItReported() async throws {
+        let reported = ProjectTermProposal.Usage(
+            turns: 5, costUSD: 0.09, inputTokens: 12, cacheWriteTokens: 20_000,
+            cacheReadTokens: 25_000, outputTokens: 900)
+        let cases: [(ProjectTermProposal.Outcome, [UsageEntry])] = [
+            (.terms(["inkwell"], usage: reported), [UsageEntry(
+                date: clock.now(), feature: .projectTerms, backend: .claudeCode, model: "sonnet",
+                promptTokens: 45_012, cachedPromptTokens: 25_000, completionTokens: 900, agentCostUSD: 0.09)]),
+            (.failed(.budgetExceeded), [UsageEntry(
+                date: clock.now(), feature: .projectTerms, backend: .claudeCode, model: "sonnet")]),
+            (.failed(.agentNotFound), []),
+            (.failed(.launchFailed), []),
+        ]
+        for (index, (outcome, expected)) in cases.enumerated() {
+            let repo = try checkout("usage-\(index)")
+            let usage = UsageLedger(fileURL: nil)
+            let (proposer, _) = proposer(FakeRunner(outcome), usage: usage)
+
+            await commit(proposer, join(repo))
+
+            XCTAssertEqual(usage.entries(), expected, "\(outcome)")
+        }
     }
 
     func testADirectoryOutsideARepositoryIsItsOwnProject() async throws {

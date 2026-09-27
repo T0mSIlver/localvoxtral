@@ -24,6 +24,13 @@ protocol OverlayTextCommitting: AnyObject {
 
     func insertTextPrioritizingKeyboard(_ text: String, preferredAppPID: pid_t?) -> TextInsertResult
     func pasteUsingCommandV(_ text: String, preferredAppPID: pid_t?) -> Bool
+    /// True for a committer that delivers without posting keys (the
+    /// opencode prompt relay), which Secure Keyboard Entry cannot swallow.
+    var postsNoKeys: Bool { get }
+}
+
+extension OverlayTextCommitting {
+    var postsNoKeys: Bool { false }
 }
 
 extension TextInsertionService: OverlayTextCommitting {}
@@ -65,11 +72,15 @@ protocol OverlayBufferSessionCoordinating: AnyObject {
     /// transcript, so the overlay shows the "Polished" badge while the polished
     /// text is held before dismissal. Defaulted so test doubles stay unchanged.
     func markPolished(_ polished: Bool)
+    /// Shows the overlay's destinations (#840). Defaulted so test doubles
+    /// stay unchanged.
+    func showDestinations(_ strip: OverlayDestinationStrip?)
 }
 
 extension OverlayBufferSessionCoordinating {
     func showSecureInputWarning() {}
     func markPolished(_ polished: Bool) {}
+    func showDestinations(_ strip: OverlayDestinationStrip?) {}
 }
 
 @MainActor
@@ -193,7 +204,7 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         // happily, and the words would be gone. Skip the doomed attempts,
         // put the text on the clipboard unconditionally — losing it is the
         // only alternative — and show the failure state.
-        if TerminalTargetDetector.isSecureKeyboardEntryEnabled() {
+        if !textCommitter.postsNoKeys, TerminalTargetDetector.isSecureKeyboardEntryEnabled() {
             // The clipboard is the ONLY preservation path here: if the write
             // fails, claiming "copied" and dismissing the panel would lose
             // the transcript's last remaining copy — fall back to the
@@ -272,6 +283,11 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
     func markPolished(_ polished: Bool) {
         stateMachine.setPolished(polished)
+        renderCurrentSnapshot()
+    }
+
+    func showDestinations(_ strip: OverlayDestinationStrip?) {
+        stateMachine.setDestinations(strip)
         renderCurrentSnapshot()
     }
 

@@ -182,6 +182,7 @@ struct LearnedTermsSheet: View {
     /// strongest evidence first, the order the prompt ranks them in.
     nonisolated static func displayOrder(_ terms: LearnedTerms) -> [LearnedTermProject] {
         terms.projects
+            .filter { !$0.terms.isEmpty }
             .map { project in
                 var sorted = project
                 sorted.terms.sort(by: LearnedTerms.isStrongerEvidence)
@@ -202,8 +203,8 @@ struct LearnedTermsSheet: View {
     nonisolated static func detailParts(for term: LearnedTerm) -> (text: String, lastApplied: Date?) {
         guard term.isConfirmed(minimumDictations: LearnedTerms.confirmedDictations) else {
             let progress = "heard in \(term.dictations) of \(LearnedTerms.confirmedDictations) dictations"
-            if let agent = term.proposingAgent {
-                return ("Proposed by \(agent.displayName): \(progress)", nil)
+            if let proposer = term.proposerDisplayName {
+                return ("Proposed by \(proposer): \(progress)", nil)
             }
             return ("Learning: \(progress)", nil)
         }

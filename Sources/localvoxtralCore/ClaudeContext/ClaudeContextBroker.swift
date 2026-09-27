@@ -25,19 +25,24 @@ public struct ClaudeBrokerLimits: Sendable, Equatable {
     /// sends exactly one; more than a handful means something is wrong.
     public var maxRecordsPerConnection: Int
     public var wire: ClaudeHookLimits
+    /// How long a `localvoxtral` command request may take to answer, and to
+    /// write back. A caller that stops reading must not hold a slot.
+    public var agentCLITimeout: TimeInterval
 
     public init(
         maxConcurrentConnections: Int = 8,
         backlog: Int32 = 16,
         readTimeout: TimeInterval = 2.0,
         maxRecordsPerConnection: Int = 8,
-        wire: ClaudeHookLimits = .default
+        wire: ClaudeHookLimits = .default,
+        agentCLITimeout: TimeInterval = 10.0
     ) {
         self.maxConcurrentConnections = maxConcurrentConnections
         self.backlog = backlog
         self.readTimeout = readTimeout
         self.maxRecordsPerConnection = maxRecordsPerConnection
         self.wire = wire
+        self.agentCLITimeout = agentCLITimeout
     }
 
     public static let `default` = ClaudeBrokerLimits()
@@ -77,6 +82,9 @@ public final class ClaudeContextBroker: Sendable {
     private let registry: ClaudeSessionRegistry
     private let limits: ClaudeBrokerLimits
     private let uptimeNanos: @Sendable () -> UInt64
+    /// Answers the `localvoxtral` command's requests (#721). Nil answers every
+    /// request with an error.
+    private let agentCLI: (@Sendable (AgentCLIRequest) async -> AgentCLIResponse)?
 
     #if DEBUG
     /// Test seam: fires after each record is accepted or rejected, so a socket
@@ -96,6 +104,14 @@ public final class ClaudeContextBroker: Sendable {
         debugReadHook.withLock { $0 = hook }
     }
 
+    /// Test seam: fires on a connection's thread before anything is done with
+    /// it, so a test can let the peer leave first.
+    private let debugServeHook = Mutex<(@Sendable () -> Void)?>(nil)
+
+    public func debugConfigureServeHook(_ hook: (@Sendable () -> Void)?) {
+        debugServeHook.withLock { $0 = hook }
+    }
+
     private func debugNotify(_ result: Result<ClaudeHookRecord, ClaudeHookWireError>) {
         let hook = debugIngestHook.withLock { $0 }
         hook?(result)
@@ -106,12 +122,14 @@ public final class ClaudeContextBroker: Sendable {
         socketPath: String,
         registry: ClaudeSessionRegistry,
         limits: ClaudeBrokerLimits = .default,
-        uptimeNanos: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
+        uptimeNanos: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
+        agentCLI: (@Sendable (AgentCLIRequest) async -> AgentCLIResponse)? = nil
     ) {
         self.socketPath = socketPath
         self.registry = registry
         self.limits = limits
         self.uptimeNanos = uptimeNanos
+        self.agentCLI = agentCLI
     }
 
     public enum StartFailure: Error, Equatable {
@@ -466,6 +484,17 @@ public final class ClaudeContextBroker: Sendable {
 
     private func serve(connectionFD fd: Int32) {
         defer { close(fd) }
+        #if DEBUG
+        debugServeHook.withLock { $0 }?()
+        #endif
+
+        // A reply to a peer that already left raises SIGPIPE, which kills the
+        // app, unless the socket has SO_NOSIGPIPE; Darwin refuses that option
+        // once the peer has closed (#791). Nobody is left to answer then.
+        guard POSIXSocket.suppressSIGPIPE(onSocket: fd) else {
+            Log.claudeContext.error("Dropping Claude broker connection: the peer left before it was served")
+            return
+        }
 
         // Authenticate BEFORE reading a single byte.
         guard let peerUID = ClaudeSocketGuard.peerUID(ofDescriptor: fd) else {
@@ -482,7 +511,6 @@ public final class ClaudeContextBroker: Sendable {
         // why it applies to opencode records and cannot apply to Claude's.
         let peerPID = ClaudeSocketGuard.peerPID(ofDescriptor: fd)
 
-        POSIXSocket.suppressSIGPIPE(onSocket: fd)
         let deadline = uptimeNanos() &+ UInt64(max(0, limits.readTimeout) * 1_000_000_000)
 
         var pending = Data()
@@ -508,6 +536,12 @@ public final class ClaudeContextBroker: Sendable {
             }
 
             for line in lines where !line.isEmpty {
+                // A command request is answered and ends the connection. It
+                // never reaches the registry: a hook record has no `cli` key.
+                if AgentCLIWire.isRequest(line) {
+                    answerAgentCLI(line: line, fd: fd)
+                    return
+                }
                 recordCount += 1
                 if recordCount > limits.maxRecordsPerConnection {
                     Log.claudeContext.error("Dropping connection: too many records")
@@ -584,7 +618,71 @@ public final class ClaudeContextBroker: Sendable {
             // ignore the unknown key (synthesized Codable), so no bump.
             ClaudeBrokerResponse(version: version, accepted: accepted)
         ) else { return }
-        _ = line.withUnsafeBytes { raw -> Int in
+        _ = writeAll(fd: fd, data: line)
+    }
+
+    /// Answers one `localvoxtral` command request on the connection's thread.
+    ///
+    /// Unlike a hook receipt, this reply is data: history, terms, status. It
+    /// goes to the peer the uid check already let in, which is the user's own
+    /// process and could read the same store from disk.
+    private func answerAgentCLI(line: Data, fd: Int32) {
+        var response: AgentCLIResponse
+        do {
+            let request = try AgentCLIWire.decodeRequest(line)
+            if let agentCLI {
+                response = Self.wait(for: request, answeredBy: agentCLI, timeout: limits.agentCLITimeout)
+                    ?? .failure(.busy, "the app did not answer in time")
+            } else {
+                response = .failure(.busy, "this app does not answer commands")
+            }
+        } catch let error as AgentCLIError {
+            response = AgentCLIResponse(error: error)
+        } catch {
+            response = .failure(.badRequest, "unreadable request")
+        }
+        if let error = response.error {
+            Log.backends.error("CLI: request refused: \(error.code.rawValue, privacy: .public)")
+        }
+        var encoded = AgentCLIWire.encodeLine(response)
+        if (encoded?.count ?? 0) > AgentCLIWire.maxResponseBytes {
+            Log.backends.error("CLI: answer over \(AgentCLIWire.maxResponseBytes, privacy: .public) bytes")
+            encoded = AgentCLIWire.encodeLine(
+                AgentCLIResponse.failure(.badRequest, "the answer is too large; lower --limit")
+            )
+        }
+        guard let encoded else { return }
+        var sendTimeout = timeval(tv_sec: Int(limits.agentCLITimeout), tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size))
+        if writeAll(fd: fd, data: encoded) < encoded.count {
+            Log.backends.error("CLI: caller left before the answer was written")
+        }
+    }
+
+    /// Runs an async answer from a connection thread, which has nothing else
+    /// to do while it waits. Nil when it does not finish in time.
+    private static func wait(
+        for request: AgentCLIRequest,
+        answeredBy answer: @escaping @Sendable (AgentCLIRequest) async -> AgentCLIResponse,
+        timeout: TimeInterval
+    ) -> AgentCLIResponse? {
+        let result = Mutex<AgentCLIResponse?>(nil)
+        let done = DispatchSemaphore(value: 0)
+        let task = Task {
+            let response = await answer(request)
+            result.withLock { $0 = response }
+            done.signal()
+        }
+        guard done.wait(timeout: .now() + timeout) == .success else {
+            task.cancel()
+            return nil
+        }
+        return result.withLock { $0 }
+    }
+
+    /// Writes everything it can; returns how many bytes went.
+    private func writeAll(fd: Int32, data: Data) -> Int {
+        data.withUnsafeBytes { raw -> Int in
             guard let base = raw.baseAddress else { return 0 }
             var offset = 0
             while offset < raw.count {

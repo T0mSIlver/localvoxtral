@@ -449,6 +449,41 @@ final class HerdrIntegrationTests: XCTestCase {
         XCTAssertNil(foreign, "a read for an unknown pane must return nothing")
     }
 
+    /// The herdr pane route's two writes (#726) against the live server:
+    /// `pane.send_text` puts the text in the pane, `pane.send_keys ["enter"]`
+    /// submits it (the pane's shell runs the echo, so the marker shows twice),
+    /// and a write to a pane that does not exist is refused, never unknown:
+    /// only a refusal may fall back to keystrokes.
+    func testPaneWritesReachTheJoinedPaneAndAnUnknownPaneIsRefused() async throws {
+        let marker = "LVXHERDRWRITE\(Int.random(in: 100_000...999_999))"
+        let (service, handle) = try await openForward()
+        defer { handle.close(); service.stopAllForQuit() }
+        let client = Self.makeLaneClient()
+
+        let sent = await client.sendText(
+            socketPath: handle.localSocketPath, paneID: fixture.info.paneID, text: "echo \(marker)"
+        )
+        let pressed = await client.pressEnter(socketPath: handle.localSocketPath, paneID: fixture.info.paneID)
+        XCTAssertEqual(sent, .ok)
+        XCTAssertEqual(pressed, .ok)
+
+        var text: String?
+        for _ in 0..<40 {
+            text = await client.paneVisibleText(socketPath: handle.localSocketPath, paneID: fixture.info.paneID)
+            if (text?.components(separatedBy: marker).count ?? 0) >= 3 { break }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        XCTAssertGreaterThanOrEqual(
+            (text?.components(separatedBy: marker).count ?? 0) - 1, 2,
+            "the echo was typed and then run: \(text ?? "nil")"
+        )
+
+        let foreignText = await client.sendText(socketPath: handle.localSocketPath, paneID: "w99:p99", text: "x")
+        let foreignEnter = await client.pressEnter(socketPath: handle.localSocketPath, paneID: "w99:p99")
+        XCTAssertEqual(foreignText, .refused)
+        XCTAssertEqual(foreignEnter, .refused)
+    }
+
     // MARK: - The app's forward
 
     /// A dictation leases the forward; the next one reuses it. The lease is

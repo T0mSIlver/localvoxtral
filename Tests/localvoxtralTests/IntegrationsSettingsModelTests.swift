@@ -34,6 +34,7 @@ final class IntegrationsSettingsModelTests: XCTestCase {
         statusline: ClaudeStatuslineInstallService? = nil,
         statuslineHookCommand: (@Sendable () -> String?)? = nil,
         opencode: OpencodePluginInstallService? = nil,
+        dictationNotes: MemoryDictationNoteFileSystem? = nil,
         herdrBinaryAvailable: @escaping @Sendable () -> Bool = { false },
         herdrPresenceReport: @escaping @Sendable () -> Bool = { false }
     ) -> ClaudeIntegrationSettingsModel {
@@ -56,9 +57,50 @@ final class IntegrationsSettingsModelTests: XCTestCase {
             statuslineService: { statusline },
             statuslineHookCommand: statuslineHookCommand ?? { nil },
             opencodeService: { opencode },
+            dictationNoteService: { agent in
+                dictationNotes.map { DictationNoteInstallService(agent: agent, fileSystem: $0) }
+            },
             herdrBinaryAvailable: herdrBinaryAvailable,
             herdrPresenceReport: herdrPresenceReport
         )
+    }
+
+    // MARK: - Dictation note
+
+    /// opencode reads `~/.claude/CLAUDE.md` while its own file is absent, so
+    /// adding the note from opencode's row turns Claude Code's row to added
+    /// on the same refresh, and nothing is written before the press.
+    @MainActor
+    func testDictationNoteAddedFromOneRowRefreshesEveryRow() async {
+        let files = MemoryDictationNoteFileSystem(files: [".claude/CLAUDE.md": "mine\n"])
+        let model = makeModel(dictationNotes: files)
+        await model.refreshIntegrationsStatuses()
+        XCTAssertEqual(model.dictationNoteStatus(for: .claudeCode), .notAdded)
+        XCTAssertEqual(model.dictationNoteSentence(for: .opencode), "Not added.")
+        XCTAssertTrue(files.snapshot.writes.isEmpty)
+
+        await model.addDictationNote(for: .opencode)
+
+        XCTAssertEqual(model.dictationNoteStatus(for: .claudeCode), .added(path: ".claude/CLAUDE.md"))
+        XCTAssertEqual(model.dictationNoteSentence(for: .opencode), "In ~/.claude/CLAUDE.md.")
+        XCTAssertEqual(model.dictationNoteStatus(for: .vibe), .notAdded)
+
+        await model.removeDictationNote(for: .claudeCode)
+        XCTAssertEqual(model.dictationNoteStatus(for: .opencode), .notAdded)
+        XCTAssertEqual(files.text(".claude/CLAUDE.md"), "mine\n")
+    }
+
+    @MainActor
+    func testDictationNoteFailureShowsOneLineAndTheDetailInAnAlert() async {
+        let files = MemoryDictationNoteFileSystem()
+        files.set(".vibe/AGENTS.md", DictationNoteFile(exists: true, isSymlink: true))
+        let model = makeModel(dictationNotes: files)
+
+        await model.addDictationNote(for: .vibe)
+
+        XCTAssertEqual(model.dictationNoteSentence(for: .vibe), "Could not add.")
+        XCTAssertEqual(model.alert?.detail, "~/.vibe/AGENTS.md is a symlink; edit it by hand.")
+        XCTAssertTrue(files.snapshot.writes.isEmpty)
     }
 
     // MARK: - Plugin status

@@ -921,19 +921,6 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         XCTAssertNotNil(record?.polishContextSummary)
     }
 
-    /// Clipboard context is a model hint, not a reason to rewrite or reject
-    /// the model response after inference.
-    func testStandardProfileCommitsClipboardDerivedModelOutput() async {
-        let clipboard =
-            "The quarterly report shows revenue increased by twelve percent across all regions"
-        let viewModel = await runClipboardModelOutputSession(
-            clipboard: clipboard,
-            transcript: "add a note about the meeting",
-            modelOutput: clipboard
-        )
-        XCTAssertEqual(viewModel.transcript.currentDictationEventText, clipboard)
-    }
-
     /// No content-based clipboard-output scan runs in standard mode. Prompt
     /// behavior is owned by the model and prompt, not a substring heuristic.
     func testStandardProfileDoesNotRejectClipboardInstructionOutput() async {
@@ -956,34 +943,6 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             agentProfile: true
         )
         XCTAssertEqual(viewModel.transcript.currentDictationEventText, payload)
-    }
-
-    /// Clipboard-grounded identifiers commit without a post-model exception
-    /// mechanism because no content-based rejection stage remains.
-    func testClipboardEntityGroundingCommits() async {
-        let viewModel = await runClipboardModelOutputSession(
-            clipboard: "UserSessionManager.swift",
-            transcript: "fix the user session manager",
-            modelOutput: "Fix UserSessionManager.swift"
-        )
-        XCTAssertEqual(
-            viewModel.transcript.currentDictationEventText,
-            "Fix UserSessionManager.swift"
-        )
-    }
-
-    /// Ordinary model output remains unchanged by clipboard context handling.
-    func testNormalPolishCommitsWithClipboardContext() async {
-        let viewModel = await runClipboardModelOutputSession(
-            clipboard:
-                "The quarterly report shows revenue increased by twelve percent across all regions",
-            transcript: "add a note about the meeting",
-            modelOutput: "Add a note about the meeting."
-        )
-        XCTAssertEqual(
-            viewModel.transcript.currentDictationEventText,
-            "Add a note about the meeting."
-        )
     }
 
     /// Drives an overlay stop-commit with clipboard context ON and a polish

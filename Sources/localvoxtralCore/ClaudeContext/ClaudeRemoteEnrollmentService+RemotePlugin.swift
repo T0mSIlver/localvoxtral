@@ -19,6 +19,44 @@ extension ClaudeRemoteEnrollmentService {
         """
     }
 
+    /// Where the host keeps this app's marketplace copy. A fixed path, because
+    /// Claude Code stores a directory marketplace by the path it was added with
+    /// and re-reads it at every session start.
+    package static let remoteMarketplaceDirectory = "$HOME/.local/share/localvoxtral/claude-marketplace"
+
+    /// Writes `marketplace` into a fresh staging directory beside
+    /// `remoteMarketplaceDirectory` and swaps it in, leaving `$M` set to the
+    /// final path. The swap is two renames, so a session starting in between
+    /// finds no marketplace for an instant; files left over from an older copy
+    /// never survive it.
+    package static func remoteMarketplaceWriteScript(_ marketplace: ClaudeRemoteMarketplaceFiles) -> String {
+        var script = """
+            M="\(remoteMarketplaceDirectory)"
+            mkdir -p "$(dirname "$M")"
+            rm -rf "$M.lvx-new" "$M.lvx-old"
+
+            """
+        let directories = Set(marketplace.files.map { ($0.relativePath as NSString).deletingLastPathComponent })
+        for directory in directories.sorted() {
+            script += "mkdir -p \"$M.lvx-new/\(directory)\"\n"
+        }
+        for (index, file) in marketplace.files.enumerated() where ClaudeRemoteMarketplaceFiles.isCarriablePath(file.relativePath) {
+            script += writeFileScript(
+                path: "$M.lvx-new/\(file.relativePath)",
+                content: file.content,
+                mode: file.executable ? "755" : "644",
+                seed: "MKT\(index)"
+            )
+        }
+        script += """
+            if [ -e "$M" ] || [ -L "$M" ]; then mv "$M" "$M.lvx-old"; fi
+            mv "$M.lvx-new" "$M"
+            rm -rf "$M.lvx-old"
+
+            """
+        return script
+    }
+
     /// The installed version of `reference` in a framed listing capture, or
     /// nil when the host has no such plugin. A user-scope entry wins over a
     /// project/local one; among equals the first entry wins. Throws when the
@@ -73,12 +111,24 @@ extension ClaudeRemoteEnrollmentService {
         sshHostAlias: String,
         token: String?,
         remoteForwardPort: UInt16,
+        marketplace: ClaudeRemoteMarketplaceFiles? = .bundled(),
         timeout: TimeInterval = defaultRemoteSetupTimeout
     ) throws -> PluginSetupOutcome {
         guard let runner else { throw ServiceError.executionNotConfigured }
         guard Self.isValidHostAlias(sshHostAlias) else { throw ServiceError.invalidHostAlias }
         let reference = Self.remotePluginReference
         let expected = Self.remotePluginVersion
+        // The host gets exactly the plugin this build verifies below. A copy
+        // carrying another version is a broken build, and would only fail the
+        // read-back after changing the host.
+        guard let marketplace, marketplace.remotePluginVersion == expected else {
+            throw ServiceError.commandFailed(
+                step: 0,
+                command: "install remote plugin",
+                exitCode: 47,
+                message: "This build's remote plugin files are missing."
+            )
+        }
         let tokenArguments = token.map {
             " --config '\(Self.tokenConfigKey)=\($0)'"
         } ?? ""
@@ -92,7 +142,8 @@ extension ClaudeRemoteEnrollmentService {
                             sshHostAlias, "/bin/sh", "-s",
                         ],
                         standardInput: Data(script.utf8),
-                        timeout: max(timeout, 0)
+                        timeout: max(timeout, 0),
+                        budget: Self.fileWritingRunnerBudget
                     )
                 )
             } catch {
@@ -128,14 +179,28 @@ extension ClaudeRemoteEnrollmentService {
 
         let before = try installedVersion(command: "list remote plugins", listing: firstListing)
 
+        // Every branch first writes this build's marketplace to a fixed
+        // directory on the host and registers it as `localvoxtral`. On a
+        // registered name `marketplace add` REPLACES the source in place and
+        // keeps the installed plugin and its stored token, so a host enrolled
+        // from the GitHub marketplace moves over without a credential. Never
+        // `marketplace remove`: it uninstalls the plugin and deletes the token.
+        // `plugin update` installs whatever the marketplace offers, older
+        // included, so a host a newer app updated comes back to this one.
+        // (All verified on Claude Code 2.1.283, 2026-09-27, #836.)
+        //
         // Every branch ends in `install … --config 'port=…'`. `--config` is
         // repeatable and MERGES per key on an installed plugin, and `plugin
         // update` takes none (both verified on Claude Code 2.1.220), so that
         // line is how a host enrolled before per-Mac ports (#215) learns this
         // Mac's port without re-sending a credential. It changes no version:
         // on an installed plugin `install` exits 0 with "already installed",
-        // which is why a stale plugin needs `marketplace update` then
-        // `plugin update`, in that order.
+        // which is why a plugin at another version needs `marketplace update`
+        // then `plugin update`, in that order.
+        let preamble = "set -eu\n" + Self.claudePathResolverPreamble
+            + Self.remoteMarketplaceWriteScript(marketplace)
+            + "claude plugin marketplace add \"$M\"\n"
+        let install = "claude plugin install \(reference)\(tokenArguments) --config '\(Self.portConfigKey)=\(remoteForwardPort)'"
         let mutation: String
         let outcome: PluginSetupOutcome
         switch before {
@@ -154,26 +219,19 @@ extension ClaudeRemoteEnrollmentService {
                         + "give it. Rotate this host's token, then run setup again."
                 )
             }
-            mutation = """
-                set -eu
-                \(Self.claudePathResolverPreamble)claude plugin marketplace add \(Self.repositoryMarketplaceReference)
-                claude plugin install \(reference)\(tokenArguments) --config '\(Self.portConfigKey)=\(remoteForwardPort)'
-                """
+            mutation = preamble + install
             outcome = .installed
         case expected?:
             // Current already; the install re-applies the port config only.
-            mutation = """
-                set -eu
-                \(Self.claudePathResolverPreamble)claude plugin install \(reference)\(tokenArguments) --config '\(Self.portConfigKey)=\(remoteForwardPort)'
-                """
+            mutation = preamble + install
             outcome = .alreadyCurrent
         default:
-            mutation = """
-                set -eu
-                \(Self.claudePathResolverPreamble)claude plugin marketplace update \(ClaudePluginAssets.marketplaceName)
-                claude plugin update \(reference)
-                claude plugin install \(reference)\(tokenArguments) --config '\(Self.portConfigKey)=\(remoteForwardPort)'
-                """
+            // Older or NEWER than this build: either way the host gets this
+            // build's plugin, the version the read-back below demands.
+            mutation = preamble
+                + "claude plugin marketplace update \(ClaudePluginAssets.marketplaceName)\n"
+                + "claude plugin update \(reference)\n"
+                + install
             outcome = .updated
         }
 

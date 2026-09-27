@@ -146,6 +146,19 @@ final class ProjectTermProposalWiringTests: XCTestCase {
         XCTAssertEqual(harness.runner.all.first?.invocation.arguments, ProjectTermProposal.vibeArguments(trackedFiles: []))
     }
 
+    func testAJoinedOpencodeDictationAsksOpencode() async {
+        let harness = makeHarness()
+        await dictate(harness, join: join(agent: .opencode))
+        XCTAssertEqual(harness.runner.all.map(\.invocation), [
+            ProjectTermProposal.Invocation(
+                agent: .opencode,
+                workingDirectory: Self.projectDirectory,
+                arguments: ProjectTermProposal.opencodeArguments(workingDirectory: Self.projectDirectory),
+                environment: ProjectTermProposal.opencodeEnvironment
+            ),
+        ])
+    }
+
     /// Without polish the commit takes the other path; it asks too.
     func testAnUnpolishedJoinedDictationAsks() async {
         let harness = makeHarness(polish: false)
@@ -153,11 +166,11 @@ final class ProjectTermProposalWiringTests: XCTestCase {
         XCTAssertEqual(harness.runner.all.map(\.commitsBeforeRun), [1])
     }
 
-    func testNothingAsksForARemoteOpencodeOrMissingJoinOrWithTheSettingOff() async {
+    func testNothingAsksForARemoteOrMissingJoinOrWithTheSettingOff() async {
         let harness = makeHarness()
         await dictate(harness, join: join(origin: .remote(channel: "ssh")))
         await dictate(harness, join: join(agent: .vibe, origin: .remote(channel: "ssh")))
-        await dictate(harness, join: join(agent: .opencode))
+        await dictate(harness, join: join(agent: .opencode, origin: .remote(channel: "ssh")))
         await dictate(harness, join: nil)
         XCTAssertEqual(harness.runner.all, [])
 

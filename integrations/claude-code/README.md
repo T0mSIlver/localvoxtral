@@ -22,6 +22,9 @@ $0.03–0.12, or the same share of a Claude.ai plan's quota (see
 On an enrolled host, `localvoxtral-remote` runs that `claude -p` on the host
 instead, when the Mac asks for a session's project
 ([Terms from the coding agent on a host](../../docs/remote-claude-context.md#terms-from-the-coding-agent-on-a-host)).
+It also drafts a quick capture routed to one of that host's projects, with
+the same caps as the Mac's own draft, $0.50 at most
+([Quick capture on a host](../../docs/remote-claude-context.md#quick-capture-on-a-host)).
 
 On each hook event, Claude Code runs `hooks/publish.sh`. It finds the
 `localvoxtral-claude-hook` publisher and runs it as a **child process**, not
@@ -39,6 +42,7 @@ private UNIX socket owned by the app and exits.
 | `CwdChanged` | the session moved to another directory |
 | `PostToolUse` (`Read`/`Edit`/`Write`/`NotebookEdit`) | which files were just read or edited |
 | `Stop` | the turn finished |
+| `Notification` (`permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`) | the session waits for you: its type, never its text |
 | `SessionEnd` | the session is gone (the app evicts it immediately) |
 
 There is no `FileChanged` hook. Claude Code fires it only for a hook that
@@ -409,6 +413,12 @@ Verify:
 claude plugin list
 ```
 
+## Telling Claude Code you dictate
+
+**Settings → Claude Code → Tell Claude Code you dictate → Add** puts a short
+note in `~/.claude/CLAUDE.md` saying your prompts come from speech-to-text.
+See [Telling the agent you dictate](../../docs/coding-agents.md#telling-the-agent-you-dictate).
+
 ## Connection indicator (opt-in status line)
 
 Claude Code's bottom bar can show whether localvoxtral is connected to this
@@ -494,6 +504,9 @@ Only what this allowlist names:
 
 * the event name, session id, timestamp, and cwd
 * your prompt text (`UserPromptSubmit` only)
+* what a `Notification` waits for: its `notification_type`, one of the four
+  above. Its `message` and `title` stay behind, since they quote tool names
+  and command text
 * absolute file paths from the tools above
 * safe process metadata: pid, ppid, controlling TTY, `$TERM_PROGRAM`, and the
   multiplexer and bridge handles that say which pane the session lives in:
@@ -505,6 +518,7 @@ These never cross:
 
 * **transcript contents**. The publisher drops `transcript_path` entirely, so
   there is nothing to scrape and no pointer to it.
+* **the agent's replies**. `Stop`'s `last_assistant_message` is dropped.
 * **file contents**: `Write.content`, `Edit.new_string`, `Read` output.
 * **command strings**. The plugin does not subscribe to `Bash`.
 * **anything claiming to be trusted**. The app decides trust from UNIX peer
@@ -894,6 +908,10 @@ sentence names the local files and enrolled SSH alias, and **Set Up** runs the
 same seven-step flow as enrollment. The app never uses the display name in
 place of the alias. A host enrolled before aliases were recorded must be
 re-enrolled before the app can update it.
+The app does not install from GitHub: it writes its own copy of this
+marketplace to `~/.local/share/localvoxtral/claude-marketplace` on the host
+and registers that directory, so the host gets the plugin version the app
+was built for even when main has moved on.
 Non-interactive SSH skips your login shell's rc, so the app's version of these
 commands first sets `PATH` to the usual `claude` install locations. Add that
 yourself if `claude` is off the PATH a plain `ssh host 'claude …'` sees.
@@ -1009,4 +1027,8 @@ overrides, and zero-width characters before it is stored, so foreign text
 stays text and cannot act on anything.
 
 Transcript contents, `Bash` command strings, and anything claiming to be trusted
-still never cross, exactly as locally.
+still never cross, exactly as locally. The shim rebuilds two events' bodies
+instead of posting them as-is. A `Notification` sends the session id and the
+`notification_type`, so its `message` and `title` never leave the host. A
+`Stop` sends the session id and cwd, so the agent's reply
+(`last_assistant_message`) never leaves it either.

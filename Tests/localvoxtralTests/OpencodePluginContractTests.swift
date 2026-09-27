@@ -79,6 +79,7 @@ final class OpencodePluginContractTests: XCTestCase {
     globalThis.Buffer = {
       byteLength: (value) => __utf8Bytes(value).length,
       from: (value) => __wrapBytes(__utf8Bytes(value)),
+      concat: (parts) => __wrapBytes(parts.reduce((all, part) => all.concat(Array.from(part)), [])),
     };
 
     globalThis.process = {
@@ -124,6 +125,32 @@ final class OpencodePluginContractTests: XCTestCase {
       readlinkSync: () => "/dev/pts/7",
     };
     globalThis.isatty = () => true;
+
+    // The prompt relay's listener (#719): records the request handler and
+    // what it was asked to listen on; a test calls `listening()` to finish
+    // the bind at a fixed port.
+    globalThis.__servers = [];
+    globalThis.http = {
+      createServer(handler) {
+        const server = {
+          handler,
+          on() {},
+          listen(port, host, callback) {
+            this.requested = { port, host };
+            this.listening = callback;
+          },
+          address() { return { port: 50123 }; },
+          unref() { this.unrefed = true; },
+          close() { this.closed = true; },
+        };
+        globalThis.__servers.push(server);
+        return server;
+      },
+    };
+    globalThis.crypto = {
+      randomBytes: () => ({ toString: () => "ab".repeat(32) }),
+      timingSafeEqual: (a, b) => a.toString() === b.toString(),
+    };
     """#
 
     private func loadPlugin(isMainThread: Bool) throws {
@@ -198,6 +225,51 @@ final class OpencodePluginContractTests: XCTestCase {
         """#)
         let sampler = try XCTUnwrap(run("globalThis.__intervals.length")?.toInt32())
         XCTAssertEqual(sampler, 1, "the TUI half must register exactly one sampling interval")
+    }
+
+    /// The TUI half with a client, so it starts its prompt relay, bound and
+    /// listening. Every call the relay forwards lands in `__forwarded`.
+    private func startTUIWithRelay() throws {
+        try loadPlugin(isMainThread: true)
+        run(#"""
+        globalThis.__forwarded = [];
+        globalThis.__api = {
+          route: { current: undefined },
+          event: { on: (type, fn) => (() => {}) },
+          lifecycle: { onDispose: (fn) => { globalThis.__dispose = fn; } },
+          client: { tui: {
+            appendPrompt: (input) => { __forwarded.push({ append: input.text }); return Promise.resolve({ data: true }); },
+            submitPrompt: () => { __forwarded.push({ submit: true }); return Promise.resolve({ data: true }); },
+          } },
+        };
+        globalThis.__module.tui(globalThis.__api);
+        globalThis.__servers[0].listening();
+        """#)
+    }
+
+    /// One request to the relay; returns the status it answered.
+    private func relayRequest(
+        method: String = "POST", path: String, token: String = String(repeating: "ab", count: 32),
+        host: String = "127.0.0.1:50123", body: String
+    ) -> Int32? {
+        run(#"""
+        globalThis.__status = undefined;
+        (() => {
+          const handlers = {};
+          const request = {
+            method: "\#(method)", url: "\#(path)",
+            headers: { authorization: "Bearer \#(token)", host: "\#(host)" },
+            on(name, fn) { handlers[name] = fn; },
+            destroy() {},
+          };
+          const response = { writeHead(status) { globalThis.__status = status; }, end() {} };
+          globalThis.__servers[0].handler(request, response);
+          if (handlers.data) handlers.data(\#(body.debugDescription));
+          if (handlers.end) handlers.end();
+        })();
+        """#)
+        // The forward's promise settles once the script above returns.
+        return run("globalThis.__status")?.toInt32()
     }
 
     private func setRoute(sessionID: String?) {
@@ -448,6 +520,44 @@ final class OpencodePluginContractTests: XCTestCase {
         XCTAssertEqual(try records(event: "SessionEnd", session: "parent").count, 1)
     }
 
+    /// Shapes from @opencode-ai/sdk 1.17 (`EventPermissionAsked`,
+    /// `EventQuestionAsked`) and the pre-v2 `permission.updated`.
+    func testAWaitIsPublishedAsANotificationCarryingOnlyItsType() throws {
+        try startServer()
+        createSession(id: "parent", directory: "/repo/p")
+        createSession(id: "child", parentID: "parent")
+        run(#"""
+        __hooks.event({ event: { type: "permission.asked", properties: {
+          id: "per_1", sessionID: "parent", permission: "bash", patterns: ["rm -rf build"],
+          metadata: { command: "rm -rf build" }, always: [] } } });
+        __hooks.event({ event: { type: "permission.updated", properties: {
+          id: "per_2", sessionID: "parent", type: "bash", title: "rm -rf build" } } });
+        __hooks.event({ event: { type: "question.asked", properties: {
+          id: "que_1", sessionID: "parent", questions: [{ question: "Which color?" }] } } });
+        __hooks.event({ event: { type: "permission.asked", properties: {
+          id: "per_3", sessionID: "child", permission: "bash", patterns: [], metadata: {}, always: [] } } });
+        """#)
+
+        let waits = try records(event: "Notification")
+        XCTAssertEqual(
+            waits.map { $0["notification_type"] as? String },
+            ["permission_prompt", "permission_prompt", "elicitation_dialog"],
+            "the child session's wait is not published"
+        )
+        for wait in waits {
+            XCTAssertEqual(wait["session_id"] as? String, "parent")
+            XCTAssertEqual(wait["cwd"] as? String, "/repo/p")
+            let line = try JSONSerialization.data(withJSONObject: wait)
+            let decoded = try ClaudeHookWireCodec.decodeLine(line)
+            XCTAssertEqual(decoded.event, .notification)
+            XCTAssertNotNil(decoded.notificationType)
+        }
+        let written = try writtenRecords().map { String(describing: $0) }.joined()
+        for quoted in ["rm -rf build", "Which color?"] {
+            XCTAssertFalse(written.contains(quoted), "\(quoted) crossed the socket")
+        }
+    }
+
     func testChildSessionLifecycleIsNeverPublished() throws {
         try startServer()
         createSession(id: "parent", directory: "/repo/p")
@@ -523,5 +633,56 @@ final class OpencodePluginContractTests: XCTestCase {
             try records(event: "UserPromptSubmit", session: "top-0").count, 0,
             "past the tracking bound the oldest top-level session drops out fail-closed"
         )
+    }
+
+    // MARK: Prompt relay (#719)
+
+    func testTheRelayListensOnLoopbackOnlyAndDeclaresItselfInFocusChanged() throws {
+        try startTUIWithRelay()
+        let requested = try XCTUnwrap(run("JSON.stringify(__servers[0].requested)")?.toString())
+        XCTAssertEqual(requested, #"{"port":0,"host":"127.0.0.1"}"#)
+        XCTAssertEqual(run("__servers[0].unrefed === true")?.toBool(), true, "the relay cannot keep opencode alive")
+
+        setRoute(sessionID: "sesA")
+        sample()
+        let declaration = try XCTUnwrap(try records(event: "FocusChanged", session: "sesA").last)
+        let relay = try XCTUnwrap(declaration["prompt_relay"] as? [String: Any])
+        XCTAssertEqual(relay["port"] as? Int, 50123)
+        XCTAssertEqual(relay["token"] as? String, String(repeating: "ab", count: 32))
+        let address = OpencodePromptRelayAddress(port: 50123, token: String(repeating: "ab", count: 32))
+        XCTAssertTrue(address.isWellFormed, "the token shape the plugin mints is one the app accepts")
+        XCTAssertTrue(try records(event: "SessionStart").allSatisfy { $0["prompt_relay"] == nil })
+    }
+
+    func testTheRelayForwardsOnlyAppendAndSubmitForTheDisplayedSession() throws {
+        try startTUIWithRelay()
+        setRoute(sessionID: "sesA")
+
+        XCTAssertEqual(relayRequest(path: "/tui/append-prompt", body: #"{"session_id":"sesA","text":"hello "}"#), 200)
+        XCTAssertEqual(relayRequest(path: "/tui/submit-prompt", body: #"{"session_id":"sesA"}"#), 200)
+        XCTAssertEqual(
+            run("JSON.stringify(__forwarded)")?.toString(),
+            #"[{"append":"hello "},{"submit":true}]"#
+        )
+
+        // Everything else is refused and forwards nothing.
+        XCTAssertEqual(relayRequest(path: "/tui/clear-prompt", body: #"{"session_id":"sesA"}"#), 404)
+        XCTAssertEqual(relayRequest(method: "GET", path: "/tui/append-prompt", body: ""), 404)
+        XCTAssertEqual(relayRequest(path: "/tui/append-prompt", token: String(repeating: "cd", count: 32),
+                                    body: #"{"session_id":"sesA","text":"x"}"#), 401)
+        XCTAssertEqual(relayRequest(path: "/tui/append-prompt", host: "evil.example",
+                                    body: #"{"session_id":"sesA","text":"x"}"#), 403)
+        XCTAssertEqual(relayRequest(path: "/tui/append-prompt", body: #"{"session_id":"sesB","text":"x"}"#), 409)
+        XCTAssertEqual(relayRequest(path: "/tui/append-prompt", body: #"{"session_id":"sesA"}"#), 400)
+        setRoute(sessionID: nil)
+        XCTAssertEqual(relayRequest(path: "/tui/submit-prompt", body: #"{"session_id":"sesA"}"#), 409,
+                       "a pane that left the session takes nothing for it")
+        XCTAssertEqual(try XCTUnwrap(run("__forwarded.length")?.toInt32()), 2)
+    }
+
+    func testDisposeClosesTheRelay() throws {
+        try startTUIWithRelay()
+        run("__dispose();")
+        XCTAssertEqual(run("__servers[0].closed === true")?.toBool(), true)
     }
 }
