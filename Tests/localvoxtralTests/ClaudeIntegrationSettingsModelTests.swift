@@ -1243,7 +1243,12 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertTrue(written.contains("Host unrelated"), "the rest of the file is untouched")
 
         // Half two: the remote now stores the same port.
-        let scripts = recorder.all.map { String(decoding: $0.standardInput, as: UTF8.self) }
+        // The `claude` lines only: the plugin install also carries the shims'
+        // own text, whose comments mention `--config token=…`.
+        let scripts = recorder.all.map {
+            String(decoding: $0.standardInput, as: UTF8.self)
+                .components(separatedBy: "\n").filter { $0.hasPrefix("claude ") }.joined(separator: "\n")
+        }
         XCTAssertTrue(
             scripts.contains { $0.contains("--config 'port=28542'") },
             "the plugin-side port write must have run too: \(scripts)"
@@ -2674,6 +2679,12 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let vibeRunner = vibeHost?.runner
         return { invocation in
             let stdin = String(decoding: invocation.standardInput, as: UTF8.self)
+            // First: the plugin install carries the shims' own text, which
+            // names the Vibe directory, LC_LVX_TTY and SessionStart.
+            if stdin.contains(ClaudeRemoteEnrollmentService.remoteMarketplaceDirectory) {
+                recorder.record(invocation)
+                return script.plugin
+            }
             // The Vibe scripts really run, against the fake host's own $HOME.
             if let vibeRunner, stdin.contains(ClaudeRemoteEnrollmentService.vibeRemoteDirectory) {
                 return try vibeRunner(invocation)
@@ -2956,6 +2967,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertTrue(sshFS.configText?.contains("SendEnv LC_LVX_TTY") == true)
         let invocationOrder = recorder.all.map { invocation in
             let script = String(decoding: invocation.standardInput, as: UTF8.self)
+            if script.contains(ClaudeRemoteEnrollmentService.remoteMarketplaceDirectory) { return "remote plugin" }
             if script.contains(ClaudeRemoteEnrollmentService.claudeDesktopFramePrefix) { return "claude desktop" }
             if script.contains(ClaudeRemoteEnrollmentService.pluginListFrameBegin) { return "plugin listing" }
             if script.contains("claude plugin install") { return "remote plugin" }
