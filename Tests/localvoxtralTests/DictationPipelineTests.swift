@@ -1375,6 +1375,35 @@ final class DictationPipelineTests: XCTestCase {
         return typed
     }
 
+    // MARK: - The first words (#527)
+
+    /// People speak as they press. The microphone runs while the socket is
+    /// still opening, and what it heard then reaches the backend first.
+    func testWordsSpokenWhileTheSocketOpensReachTheBackendFirst() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.server.holdConnections()
+
+        pipeline.viewModel.startDictation()
+        await pipeline.server.awaitHeldConnection()
+        XCTAssertTrue(pipeline.viewModel.isConnectingRealtimeSession)
+        let firstWord = Self.speech(seed: 4)
+        XCTAssertTrue(
+            pipeline.microphone.deliver(firstWord),
+            "the microphone runs before the socket opens"
+        )
+
+        pipeline.server.releaseHeldConnections()
+        await pipeline.server.awaitFrame("session.update") { $0.type == "session.update" }
+        let rest = Self.speech(seed: 5)
+        XCTAssertTrue(pipeline.microphone.deliver(rest))
+        await pipeline.clock.waitForSleepers(2)
+        pipeline.clock.advance(by: TimingConstants.audioSendInterval)
+        let sent = await pipeline.server.awaitFrame("the captured audio") { $0.audio != nil }
+        XCTAssertEqual(sent?.audio, firstWord + rest, "the first word leads the audio, whole")
+
+        await stopAndFinalize(pipeline)
+    }
+
     // MARK: - The two halves every scenario shares
 
     /// Start, connect, open the microphone, and get one captured chunk to the

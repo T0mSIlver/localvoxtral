@@ -816,10 +816,12 @@ final class TerminalTargetDetectorTests: XCTestCase {
         // the mode that actually consults it.
         settings.dictationBackendMode = .externalURL
         settings.realtimeAPIEndpointURL = "ws://127.0.0.1:1/realtime"
+        // The dial opens the microphone (#527): never the host's.
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: coordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(microphone: { FakeMicrophoneCaptureService() })
         )
         viewModel.session.realtimeAPIClient.debugSkipSocketCreationForTesting()
         // Keep tests hermetic: capture reads the terminal-apps config through
