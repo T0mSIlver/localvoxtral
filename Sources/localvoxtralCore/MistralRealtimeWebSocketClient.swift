@@ -18,13 +18,6 @@ import Synchronization
 ///    are queued until it does — there is no compatibility bypass timer.
 ///  - The server closes the socket normally after `transcription.done`; the
 ///    base class maps a normal closure to a silent `.disconnected`.
-/// Where a Mistral realtime socket reports the audio it sent, once, when it
-/// closes. The app's usage ledger prices and stores it; the price table stays
-/// with the ledger.
-package protocol MistralRealtimeUsageRecording: Sendable {
-    func recordRealtimeDictation(date: Date, model: String, audioSeconds: Double)
-}
-
 package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchecked Sendable,
     RealtimeClient
 {
@@ -86,7 +79,7 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
     }
 
     private let state = Mutex(State())
-    private let usageRecorder = Mutex<(any MistralRealtimeUsageRecording)?>(nil)
+    private let usageRecorder = Mutex<(any RealtimeUsageRecording)?>(nil)
 
     /// Latency/accuracy knob (`target_streaming_delay_ms`). `nil` leaves the
     /// server default in place; a later PR surfaces this in Settings.
@@ -117,7 +110,7 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
 
     /// Where each socket reports the audio it sent when it closes. Nil (the
     /// default) records nothing.
-    package func setUsageRecorder(_ recorder: (any MistralRealtimeUsageRecording)?) {
+    package func setUsageRecorder(_ recorder: (any RealtimeUsageRecording)?) {
         usageRecorder.withLock { $0 = recorder }
     }
 
@@ -755,7 +748,7 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
     private func recordUsage(_ usage: SocketUsage?) {
         guard let usage, let recorder = usageRecorder.withLock({ $0 }) else { return }
         recorder.recordRealtimeDictation(
-            date: usage.date, model: usage.model, audioSeconds: usage.audioSeconds
+            date: usage.date, backend: .mistral, model: usage.model, audioSeconds: usage.audioSeconds
         )
     }
 

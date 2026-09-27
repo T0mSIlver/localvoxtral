@@ -5,12 +5,24 @@ package struct RealtimeSessionConfiguration: Sendable {
     package let endpoint: URL
     package let apiKey: String
     package let model: String
+    /// Who serves the socket, for the usage ledger: the bundled helper or the
+    /// user's own server. Nil records nothing. The Mistral client ignores it:
+    /// its socket is always `.mistral`.
+    package let usageBackend: UsageEntry.Backend?
 
-    package init(endpoint: URL, apiKey: String, model: String) {
+    package init(endpoint: URL, apiKey: String, model: String, usageBackend: UsageEntry.Backend? = nil) {
         self.endpoint = endpoint
         self.apiKey = apiKey
         self.model = model
+        self.usageBackend = usageBackend
     }
+}
+
+/// Where a realtime socket reports the audio it sent, once, when it closes.
+/// The app's usage ledger prices a Mistral socket and stores the rest
+/// unpriced; the price table stays with the ledger.
+package protocol RealtimeUsageRecording: Sendable {
+    func recordRealtimeDictation(date: Date, backend: UsageEntry.Backend, model: String, audioSeconds: Double)
 }
 
 /// Which socket an event came from (#417).

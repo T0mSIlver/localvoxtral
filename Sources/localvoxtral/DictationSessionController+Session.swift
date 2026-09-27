@@ -311,6 +311,7 @@ extension DictationSessionController {
         // Mistral session the external key to api.mistral.ai (GLM review,
         // 2026-09-16). One mode, one snapshot: client, endpoint, model, key.
         let apiKey = settings.trimmedAPIKey
+        let usageBackend = Self.usageBackend(for: settings.dictationBackendMode)
         // Pick THIS session's client before anything else touches one: from
         // here to the stop, every send, poll and disconnect goes to the latched
         // client, whatever Settings does in the meantime.
@@ -385,8 +386,19 @@ extension DictationSessionController {
         return RealtimeSessionConfiguration(
             endpoint: endpoint,
             apiKey: apiKey,
-            model: model
+            model: model,
+            usageBackend: usageBackend
         )
+    }
+
+    /// Who the usage ledger charges a dictation in `mode` to. The Mistral
+    /// client files its own sockets under `.mistral`.
+    static func usageBackend(for mode: BackendMode) -> UsageEntry.Backend {
+        switch mode {
+        case .managedLocal: return .bundledHelper
+        case .externalURL: return .userServer
+        case .mistralAPI: return .mistral
+        }
     }
 
     /// Opens the socket for a prepared start, and arms its timeout. It dials
