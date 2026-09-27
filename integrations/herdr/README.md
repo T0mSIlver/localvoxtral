@@ -123,8 +123,9 @@ carry the session's hooks back to your Mac. Details:
 - **Two herdr servers running on one Mac.** The app can't tell which one you
   are looking at, so it joins neither.
 - **Repository context from a remote pane.** A remote join gets the pane's
-  screen, your last prompt and short tool excerpts, but no repository file
-  names.
+  screen, your last prompt, the names of files the agent recently touched and
+  short tool excerpts. It reads nothing from the host's repository: no
+  status, no diff, no file list.
 - **"Send that to" a remote or federated session.** The popover says "Can't
   send to that session yet".
 - **Codex and opencode on a remote host.** Only Claude Code and Mistral Vibe
@@ -132,8 +133,8 @@ carry the session's hooks back to your Mac. Details:
 
 ## Fix common problems
 
-- **Remote pane not joined.** Show herdr's agents panel, make it wider than
-  21 columns and tall enough for the session's entry, and check the marker
+- **Remote pane not joined.** Show herdr's agents panel, make it at least
+  21 columns wide and tall enough for the session's entry, and check the marker
   row is in the host's herdr config. Or start herdr with a plain
   `ssh <host> herdr`.
 - **Federated machine not joined, host's dot grey.** Turn on **Keep the
