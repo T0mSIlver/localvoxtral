@@ -45,12 +45,26 @@ never sees them.
   applies dictionary replacements before typing, and never backspaces over
   text an app has already drawn.
 
-**Say "send it" to press Return.** In a terminal or Claude Desktop, end a
-dictation with "send it" or "send now" and the app inserts the text without
-those words, then presses Return in the same app. A coding agent gets the
-prompt without you touching the keyboard. The option is off by default and
-set per mode in Settings → Dictation.
+### Voice commands
 
+**Say "send it" to press Return.** In a terminal or Claude Desktop, end a
+dictation with "send it" or "send now" and the app inserts the text without those words, then presses Return
+in the same app. A coding agent gets the prompt without you touching the
+keyboard. The option is off by default and set per mode in Settings →
+Dictation.
+
+- **Your own phrases.** Settings → Dictation → Output → **Phrases that press
+  Return** replaces "send it" and "send now" with your list, separated by
+  commas, in both modes. A phrase has at most four words. A single common
+  word ("go", "done", "enter") is refused, since you say it in ordinary
+  prompts.
+- **Overlay Buffer stops on its own.** When the words end in a send phrase
+  and three seconds pass with no new words, the dictation stops as if you
+  pressed the key: polish, commit, then Return. A phrase in the middle of a
+  sentence does nothing, and speaking again within the three seconds keeps
+  the dictation going. The key still stops it at once. A held (push to
+  talk) dictation stops only on release. A quick capture stops the same
+  way and goes to the Inbox without the phrase, and never presses Return.
 - In Overlay Buffer, the app removes the words before polishing, so the
   polisher never sees them.
 - In Live Auto-Paste, the app can only remove the trigger before typing it.
@@ -233,9 +247,9 @@ History; the panes sit under the sidebar's Settings header.
 - **Dictation**: the trigger (single modifier key with tap/hold gestures, or
   per-mode keyboard shortcuts), the menu-bar mode, copy on stop, the **Copy
   last dictation** shortcut, ducking other audio, the spoken "send it"
-  trigger for each mode, and the overlay's font size, how many lines it shows
-  before scrolling, and whether it
-  [keeps words on their line](#keeping-words-on-their-line).
+  trigger for each mode and its [phrases](#voice-commands), and the
+  overlay's font size, how many lines it shows before scrolling, and
+  whether it [keeps words on their line](#keeping-words-on-their-line).
 
   **Lower other audio while dictating**, on unless you turn it off, drops
   music and calls to a fifth of your volume while a session runs, in both
